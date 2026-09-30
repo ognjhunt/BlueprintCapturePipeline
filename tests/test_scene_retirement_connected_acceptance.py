@@ -869,7 +869,7 @@ def _source_owned_configuration(base, monkeypatch, policy):
     member = input_root / request['preparation_id']
     generation = Path(policy['generation_store']) / (hashlib.sha256(str(member).encode()).hexdigest() + '.json')
     assert json.loads(generation.read_bytes())['canonical_path'] == str(member)
-    return {'base': source, 'queue': queue, 'input_root': input_root, 'progression_output': progression_output,
+    return {'base': source, 'config_path': config, 'queue': queue, 'input_root': input_root, 'progression_output': progression_output,
             'intake': intake, 'intent_id': intent_id, 'owner': _raw(intake / intent_id / 'intent.json'),
             'request': request, 'envelope': (str(envelope_path), envelope_path.read_bytes()),
             'result': (str(result_path), result_path.read_bytes()), 'issued_at': issued_at}
@@ -1000,7 +1000,7 @@ def _website_owned_configuration(base, monkeypatch, policy):
     envelope_path = next((queue / state / result_path.name for state in ('materialized', 'completed')
                           if (queue / state / result_path.name).is_file()), queue / 'materialized' / result_path.name)
     request = json.loads(envelope_path.read_bytes())['request']
-    return {'base': source, 'queue': queue, 'input_root': input_root, 'progression_output': progression_output,
+    return {'base': source, 'config_path': config, 'queue': queue, 'input_root': input_root, 'progression_output': progression_output,
             'intake': intake, 'intent_id': intent_id, 'owner': _raw(intake / intent_id / 'intent.json'),
             'request': request, 'envelope': (str(envelope_path), envelope_path.read_bytes()),
             'result': (str(result_path), result_path.read_bytes()), 'issued_at': SCENE_SOURCE_EPOCH,
@@ -1290,6 +1290,10 @@ def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True, we
     from blueprint_pipeline.task_evaluation_scene_owner_authority import validate_task_scene_owner
     for task_path, raw in args['source_records']['sam_host_tasks']:
         task = json.loads(raw)
+        owned_attempt = Path(task['scene_intent_authority']['attempt']['path'])
+        actual_attempts = Path(task['scene_intent_authority']['intent']['path']).parent / 'attempts'
+        assert owned_attempt.is_file(), (task_path, str(owned_attempt),
+                                        sorted(path.name for path in actual_attempts.glob('*.json')))
         verified = validate_task_scene_owner(task, now=200 if task['scene_intent_authority']['intent'] == prior_owner
                                              else SCENE_SOURCE_EPOCH + 2)
         expected = prior['intent_id'] if task['expected_production_commit'] == 'a'*40 and task['scene_intent_authority']['intent']==prior_owner else accepted['intent_id']
@@ -1410,14 +1414,43 @@ def _produce_current_activation(args, context, base, monkeypatch, policy, source
         completeness_reference=str(baseline), authorized_by='fixture-owner',
         authorized_on=datetime.now(timezone.utc).isoformat(), output_path=spend)
     registry = base / 'activation-intents'
-    activation.provision_scene_configuration_activation_intent(
-        expected_production_commit=request['expected_production_commit'],
-        team_namespace=request['team_namespace'], scene_id=request['scene']['identity']['id'],
-        task_id=request['task']['identity']['id'], authorization_reference='scene-intent:' + request['scene_intent_digest'],
-        authorized_by=pwd.getpwuid(os.geteuid()).pw_name, profile_revision='fixture', valid_for_seconds=3600,
-        project_spend_reconciliation_path=spend, rights_scope='internal_noncommercial_research_only',
-        maximum_hard_cap_usd=request['spend']['hard_cap_usd'], release_reference='development-fixture',
-        intent_root=registry, materialization_root=base / 'activation-intent-inputs', release_scoped=True)
+    from blueprint_pipeline.task_evaluation_scene_spend import publish_current_scene_project_spend
+    from blueprint_pipeline import task_evaluation_scene_progression as owner_progression
+    moment = source['issued_at'] + 2
+    current_spend = base / 'activation-project-spend-current.json'
+    publish_current_scene_project_spend(
+        scene_root=source['intake'], seed_reconciliation_path=spend,
+        output_root=base / 'activation-spend-snapshots', current_path=current_spend, now=moment)
+    config = json.loads(source['config_path'].read_bytes())
+    config.update(activation_enabled=True, activation_intent_root=str(registry),
+                  project_spend_current_path=str(current_spend),
+                  launch_execution_root=args['roots']['launch_execution_root'])
+    _sealed_file(source['config_path'], config, 'config_digest')
+    # The actual owner controller reserves construction and publishes its
+    # activation link. An independent provisioner leaves the owner running and
+    # cannot support a later authentic terminal join.
+    advanced = owner_progression.process_scene_intents(
+        config_path=source['config_path'], only_intent_id=source['intent_id'], now=moment,
+        activation_provisioner=activation.provision_scene_configuration_activation_intent)
+    assert advanced['results'][0]['status'] == 'awaiting_execution', advanced
+    assert advanced['results'][0]['phase'] == 'scene_configuration', advanced
+    owner_directory = source['intake'] / source['intent_id']
+    args['seed_records']['events'] = [(str(path), path.read_bytes()) for path in sorted(
+        (owner_directory / 'progression-events').glob('*.json'))]
+    projection = owner_directory / 'progression.json'
+    args['seed_records']['projection'] = (str(projection), projection.read_bytes())
+    for role, paths in (
+        ('events', [Path(path) for path, _ in args['seed_records']['events']]),
+        ('preparation_links', sorted((owner_directory / 'preparations').glob('*.json'))),
+        ('attempts', sorted((owner_directory / 'attempts').glob('*.json'))),
+    ):
+        if role != 'events':
+            known = {path for path, _ in args['seed_records'][role]}
+            args['seed_records'][role].extend((str(path), path.read_bytes()) for path in paths
+                                               if str(path) not in known)
+        selected = {row['path'] for row in context['retained_metadata_files']}
+        context['retained_metadata_files'].extend({'role': role, 'path': str(path)} for path in paths
+                                                  if str(path) not in selected)
     lineage = _publisher('scene-configuration-activation-lineage')
     window = _publisher('coordinator-release-windows')
     now = datetime.now(timezone.utc)
@@ -1825,6 +1858,37 @@ def test_source_produced_preparation_reaches_local_activation_receipt(short_scen
     assert result['status'] == 'profile_authority_materialized_no_execution'
     receipt = Path(args['roots']['activation_output_root']) / result['activation_id'] / 'launch-set' / 'profile_publication_receipt.v1.json'
     assert receipt.is_file() and result['profile_publication_receipt_digest'] == _raw(receipt)['sha256']
+
+
+@pytest.mark.slow
+def test_website_owner_progression_selects_real_activation(short_scene_directory, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_progression_state import load_progression
+    from tests.test_scene_retirement_real_participants import access_fixture
+
+    base = short_scene_directory.resolve()
+    _, policy, placeholder = access_fixture(base, monkeypatch)
+    placeholder.rmdir()
+    journals = Path(policy['journal_store'])
+    journals.mkdir(mode=0o700)
+    (journals / 'retired').mkdir(mode=0o700)
+    monkeypatch.delenv('BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE')
+    args, _, _, _, source = _authentic_connected_graph(base, monkeypatch, policy, website=True)
+    directory = source['intake'] / source['intent_id']
+    progress = load_progression(directory, json.loads((directory / 'intent.json').read_bytes()))
+    assert progress['status'] == 'awaiting_execution', progress
+    assert progress['phase'] == 'scene_configuration', progress
+    activation = progress['state']['activation']
+    assert activation == _raw(Path(activation['path']))
+    provisioned = json.loads(Path(activation['path']).read_bytes())['activation_intent']
+    result = json.loads(args['downstream_records']['activation_results'][0][1])
+    assert provisioned['expected_production_commit'] == result['source_commit']
+    assert provisioned['provider_mutation_performed'] is False
+    selected_link = progress['state']['activation_link']
+    assert selected_link == _raw(Path(selected_link['path']))
+    link = json.loads(Path(selected_link['path']).read_bytes())
+    attempt = link['scene_configuration_attempt']
+    assert attempt == _raw(Path(attempt['path']))
+    assert link['preparation_id'] == source['request']['preparation_id']
 
 
 @pytest.mark.slow
