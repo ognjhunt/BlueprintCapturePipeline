@@ -962,7 +962,8 @@ def test_failed_deploy_rechecks_a_hold_created_after_unit_snapshot(tmp_path, mon
         unit: {"enabled": "enabled", "state": "active"}
     })
     monkeypatch.setattr(deploy, "_quiesce_active_path_units", lambda _before: [])
-    monkeypatch.setattr(deploy, "_restore_installed_path_units", lambda _units, **kwargs: restored.append(kwargs))
+    monkeypatch.setattr(deploy, "_restore_installed_path_units",
+                        lambda _units, **kwargs: restored.append(kwargs) or [])
 
     with pytest.raises(ValueError, match="deploy_failed"):
         with deploy._restore_path_unit_states_on_deploy_failure(
@@ -1384,6 +1385,189 @@ def test_deploy_reads_held_units_at_restore_and_warns_on_unreadable_records(tmp_
     bad.write_text("", encoding="utf-8")
     receipt = deploy.deploy_control_plane_commit(**args, door_holds_dir=bad)
     assert "door_holds_unreadable" in receipt["alerts"]
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_timer_restore_allows_hold_sweep_to_take_its_lock(tmp_path, monkeypatch, rollback):
+    """A real flock must not be held while systemd waits for the sweep dependency."""
+    import fcntl
+
+    sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
+    from operator_door import holds as door_holds
+
+    restore = deploy._restore_installed_path_units
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    timer = "blueprint-pubsub-handoff-listener.timer"
+    held = "blueprint-agent-run-dispatcher.timer"
+    root = tmp_path / "holds"
+    root.mkdir()
+    record = {
+        "schema": door_holds.SCHEMA, "unit": held, "owner": "release-owner",
+        "reason": "compatibility review", "request_id": "20260927T000000Z-hold-0000abcd",
+        "requested_by": "cloud", "status": "active", "enabled_before": True,
+        "expires_at": "2099-01-01T00:00:00+00:00", "expires_at_epoch": 4070908800,
+    }
+    record_path = root / f"{held}.json"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    original_record = record_path.read_bytes()
+    states = {
+        timer: {"enabled": "enabled", "state": "inactive"},
+        held: {"enabled": "disabled", "state": "inactive"},
+    }
+    queued = []
+    sweep_calls = []
+    commands = []
+    paid_lock = tmp_path / "vast_paid_launch.lock"
+    paid_lock.touch()
+
+    @contextlib.contextmanager
+    def paid_gate(_locks):
+        with deploy._holding_paid_launch_locks([str(paid_lock)]):
+            yield []
+
+    def sweep_dependency():
+        with paid_lock.open("r") as paid_contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(paid_contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Independent open descriptions exercise the kernel lock, even in one PID.
+        with (root / ".lock").open("a") as contender:
+            try:
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise subprocess.TimeoutExpired("hold-sweep dependency waiting for deploy lock", 0.1)
+        assert door_holds.sweep(root) == 0
+        sweep_calls.append(True)
+
+    def systemctl(argv, **_kwargs):
+        commands.append(tuple(argv))
+        assert argv[0] == "systemctl", "No real host command is allowed"
+        verb, unit = [item for item in argv[1:] if not item.startswith("--")]
+        if verb == "restart":
+            if "--no-block" in argv:
+                queued.append(unit)
+            else:
+                sweep_dependency()
+                states[unit]["state"] = "active"
+        elif verb in {"enable", "disable"}:
+            states[unit]["enabled"] = "enabled" if verb == "enable" else "disabled"
+        elif verb == "stop":
+            states[unit]["state"] = "inactive"
+        else:
+            raise AssertionError(f"Unexpected host operation: {verb}")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def complete_jobs(_seconds):
+        if queued:
+            sweep_dependency()
+            for unit in queued:
+                states[unit]["state"] = "active"
+            queued.clear()
+
+    monkeypatch.setattr(deploy, "DEFAULT_DEPLOYED_SYSTEMD_UNITS", (timer, held))
+    monkeypatch.setattr(deploy, "_holding_paid_launch_gate", paid_gate)
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", restore)
+    monkeypatch.setattr(deploy, "_install_release_systemd_units",
+                        lambda **_kwargs: [{"unit": timer}, {"unit": held}])
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", lambda _units: {
+        timer: {"enabled": "enabled", "state": "active"},
+        held: {"enabled": "disabled", "state": "inactive"},
+    })
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit: dict(states[unit]))
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    monkeypatch.setattr(deploy.time, "sleep", complete_jobs)
+    if rollback:
+        def fail_runtime(*_args, **_kwargs):
+            raise ValueError("runtime_identity_refused")
+        monkeypatch.setattr(deploy, "_verify_intake_runtime", fail_runtime)
+        with pytest.raises(ValueError, match="^runtime_identity_refused$"):
+            deploy.deploy_control_plane_commit(**arguments, door_holds_dir=root)
+    else:
+        receipt = deploy.deploy_control_plane_commit(**arguments, door_holds_dir=root)
+        assert receipt["status"] == "deployed"
+        restored = next(row for row in receipt["timer_unit_states"] if row["unit"] == held)
+        assert restored["held"] and restored["owner"] == record["owner"]
+    assert sweep_calls == [True]
+    assert states[timer] == {"enabled": "enabled", "state": "active"}
+    assert states[held] == {"enabled": "disabled", "state": "inactive"}
+    assert record_path.read_bytes() == original_record
+    assert not any(command[-1] == held and "restart" in command for command in commands)
+    with paid_lock.open("r") as paid_contender:
+        fcntl.flock(paid_contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_owner_hold_cancels_a_queued_timer_restore(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    root = tmp_path / "holds"
+    root.mkdir()
+    state = {"enabled": "enabled", "state": "inactive"}
+    commands = []
+
+    def systemctl(argv, **_kwargs):
+        commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(state))
+    with deploy._locked_door_holds(root) as (held_units, warning):
+        assert warning is None
+        restored = deploy._restore_installed_path_units(
+            [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "active"}},
+            arm_path_units=False, held_units=held_units, defer_start_verification=True,
+        )
+    assert commands == [("systemctl", "enable", unit),
+                        ("systemctl", "--no-block", "restart", unit)]
+    # An owner can obtain the lock between enqueue and completion and cancel the job.
+    record = {
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "new-owner",
+        "reason": "inspect", "request_id": "20260927T000000Z-hold-0000abcd",
+        "status": "active", "expires_at": "2099-01-01T00:00:00+00:00",
+        "expires_at_epoch": 4070908800,
+    }
+    path = root / f"{unit}.json"
+    with deploy._locked_door_holds(root):
+        state.update(enabled="disabled", state="inactive")
+        path.write_text(json.dumps(record), encoding="utf-8")
+    original = path.read_bytes()
+    assert deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=root) is None
+    assert restored[0]["held"] and restored[0]["owner"] == "new-owner"
+    assert restored[0]["after"] == state
+    assert "_start_pending" not in restored[0]
+    assert len(commands) == 2 and path.read_bytes() == original
+
+
+def test_queued_timer_start_has_a_bounded_verification_timeout(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    state = {"enabled": "enabled", "state": "inactive"}
+    restored = [{"unit": unit, "after": state, "_start_pending": True}]
+    clock = iter([0.0, 1.0])
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(state))
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host mutation"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_path_unit_start_timeout:"):
+        deploy._verify_deferred_path_unit_starts(
+            restored, door_holds_dir=tmp_path / "absent", timeout_seconds=0.5,
+        )
+
+
+def test_timer_verification_preserves_boot_policy_check(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    restored = [{"unit": unit, "after": {"enabled": "enabled"}, "_start_pending": True}]
+    monkeypatch.setattr(deploy, "_systemd_unit_state",
+                        lambda _unit: {"enabled": "disabled", "state": "active"})
+    with pytest.raises(deploy.ControlPlaneDeployError, match="enabled_state_mismatch"):
+        deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=tmp_path / "absent")
+
+
+def test_timer_verification_state_probe_is_bounded(monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+
+    def timeout(argv, **kwargs):
+        assert kwargs["timeout"] == 15
+        raise subprocess.TimeoutExpired(argv, 15)
+
+    monkeypatch.setattr(deploy.subprocess, "run", timeout)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_systemd_state_probe_failed:"):
+        deploy._systemd_unit_state(unit)
 
 
 def test_unreadable_break_glass_notes_never_fail_a_finished_deploy(tmp_path, monkeypatch) -> None:
@@ -2925,7 +3109,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
         "_restore_installed_path_units",
         lambda installed, **kwargs: restored.append(
             {"installed": installed, **kwargs}
-        ),
+        ) or [],
     )
     monkeypatch.setattr(
         deploy,
@@ -2979,6 +3163,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
             "arm_path_units": False,
             "always_arm_units": (),
             "held_units": {},
+            "defer_start_verification": True,
         }
     ]
 

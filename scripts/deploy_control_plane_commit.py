@@ -2331,8 +2331,9 @@ def _systemd_unit_state(unit: str) -> dict[str, str]:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=15,
             )
-        except OSError as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             raise ControlPlaneDeployError(
                 f"deploy_systemd_state_probe_failed:{unit}:{probe}"
             ) from exc
@@ -2469,6 +2470,7 @@ def _restore_installed_path_units(
     always_arm_timer_units: Sequence[str] = (),
     preserve_configured_controls_state: bool = False,
     held_units: Mapping[str, Mapping[str, Any]] | None = None,
+    defer_start_verification: bool = False,
 ) -> list[dict[str, Any]]:
     """Restore path/timer intent without widening arbitrary launch authority.
 
@@ -2532,11 +2534,13 @@ def _restore_installed_path_units(
         commands = ["enable" if should_enable else "disable"]
         commands.append("restart" if should_start else "stop")
         for verb in commands:
+            deferred = defer_start_verification and verb == "restart"
             result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
-                ["systemctl", verb, unit],
+                ["systemctl", *(["--no-block"] if deferred else []), verb, unit],
                 capture_output=True,
                 text=True,
                 check=False,
+                **({"timeout": 15} if deferred else {}),
             )
             if result.returncode != 0:
                 observed = _systemd_unit_state(unit)
@@ -2556,7 +2560,7 @@ def _restore_installed_path_units(
                 f"deploy_path_unit_enabled_state_mismatch:{unit}:"
                 f"{after['enabled']}:{expected_enabled}"
             )
-        if after["state"] != expected_state:
+        if after["state"] != expected_state and not (defer_start_verification and should_start):
             raise ControlPlaneDeployError(
                 f"deploy_path_unit_active_state_mismatch:{unit}:"
                 f"{after['state']}:{expected_state}"
@@ -2584,9 +2588,58 @@ def _restore_installed_path_units(
                     and not arm_progression
                     and not should_start
                 ),
+                **({"_start_pending": True} if defer_start_verification and should_start else {}),
             }
         )
     return receipts
+
+
+def _verify_deferred_path_unit_starts(
+    receipts: Sequence[dict[str, Any]], *, door_holds_dir: str | Path,
+    timeout_seconds: float = 60,
+) -> str | None:
+    """Wait outside the hold lock so a timer's hold-sweep dependency can run.
+
+    Starts are enqueued under the lock to serialize them with new holds. Each
+    probe rechecks current holds under that same lock: a subsequent owner hold
+    may cancel a queued start and must still be reported as held, never rearmed.
+    """
+    pending = [row for row in receipts if row.get("_start_pending")]
+    deadline = time.monotonic() + timeout_seconds
+    warning = None
+    while pending:
+        with _locked_door_holds(door_holds_dir) as (held_units, hold_warning):
+            warning = warning or hold_warning
+            for row in pending[:]:
+                unit = row["unit"]
+                hold = held_units.get(unit)
+                after = _systemd_unit_state(unit)
+                if hold is not None:
+                    if after["state"] != "inactive":
+                        continue
+                    row.update(requested_intent="hold", operator_freeze_preserved=True,
+                               held=True, owner=hold["owner"], reason=hold["reason"],
+                               expires_at=hold["expires_at"])
+                else:
+                    expected_enabled = row["after"]["enabled"]
+                    if after["enabled"] != expected_enabled:
+                        raise ControlPlaneDeployError(
+                            f"deploy_path_unit_enabled_state_mismatch:{unit}:"
+                            f"{after['enabled']}:{expected_enabled}"
+                        )
+                    if after["state"] != "active":
+                        continue
+                row["after"] = after
+                row.pop("_start_pending")
+                pending.remove(row)
+        if pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ControlPlaneDeployError(
+                    "deploy_path_unit_start_timeout:" + ",".join(row["unit"] for row in pending)
+                )
+            time.sleep(min(0.1, remaining))
+    return warning
 
 
 @contextlib.contextmanager
@@ -2613,13 +2666,15 @@ def _restore_path_unit_states_on_deploy_failure(
     except BaseException as deployment_error:
         try:
             with _locked_door_holds(door_holds_dir) as (held_units, _warning):
-                _restore_installed_path_units(
+                restored = _restore_installed_path_units(
                     installed_units,
                     before=before,
                     arm_path_units=False,
                     always_arm_units=(),
                     held_units=held_units,
+                    defer_start_verification=True,
                 )
+            _verify_deferred_path_unit_starts(restored, door_holds_dir=door_holds_dir)
         except Exception as restore_error:
             raise ControlPlaneDeployError(
                 "deploy_failed_path_unit_restore_failed:"
@@ -3466,7 +3521,12 @@ def deploy_control_plane_commit(
                 always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
                 preserve_configured_controls_state=preserve_configured_controls_state,
                 held_units=held_units,
+                defer_start_verification=True,
             )
+        verification_warning = _verify_deferred_path_unit_starts(
+            automation_unit_state_receipts, door_holds_dir=door_holds_dir,
+        )
+        door_holds_warning = door_holds_warning or verification_warning
         # Last, with the new release proven live: retire the trees this deploy
         # superseded, so per-commit growth is bounded by keep_last instead of
         # by the number of deploys ever made.
