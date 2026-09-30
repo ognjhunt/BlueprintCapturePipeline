@@ -713,12 +713,23 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 else:
                     assert all((target / name).read_bytes() == value for name, value in original.items())
                 if restore_interruption == 'restore_member_chown':
-                    assert (target / 'one.log').stat().st_uid == foreign.pw_uid
-                    assert (target / 'two.log').stat().st_uid == 0
+                    # Descendants transition before their parent directories.
+                    # Pin the actual partial kernel effect, not an assumed
+                    # top-level iteration order or a synthetic permission row.
+                    first = (target / 'nested/two.log').stat()
+                    assert (first.st_uid, first.st_gid) == (foreign.pw_uid, foreign.pw_gid)
+                    assert (target / 'one.log').stat().st_uid == 0
+                    assert (target / 'nested').stat().st_uid == 0
                 interrupted_prefix = {path.name: path.read_bytes() for path in
                                       (journals / restore['action_id']).iterdir()}
                 interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
                                       if name.startswith('e-')]
+                if restore_interruption == 'restore_member_chown':
+                    intent = max(interrupted_events, key=lambda event: event['sequence'])
+                    assert intent['kind'] == 'restore_intent'
+                    assert intent['body']['phase'] == 'owner_rights'
+                    assert intent['body']['path'] == 'nested/two.log'
+                    assert intent['body']['version'][3:5] == [0, 0]
                 assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
                     restore_interruption in ('restore_final', 'access_intent'))
                 assert ('restore.snapshot.json' in interrupted_prefix) == (
