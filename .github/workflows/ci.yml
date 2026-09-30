@@ -53,7 +53,8 @@ jobs:
           assert isinstance(selected, list) and all(isinstance(row, str) for row in selected)
           changed = plan["changed_files"]
           assert isinstance(changed, list) and all(isinstance(row, str) for row in changed)
-          native_tests = {"tests/test_registered_feature_linux.py", "tests/test_legacy_owner_linux.py"}
+          native_tests = {"tests/test_registered_feature_linux.py", "tests/test_legacy_owner_linux.py",
+                          "tests/test_historical_generation_linux.py"}
           required = bool(native_tests.intersection(changed)) or any(row.split("::", 1)[0] in native_tests for row in selected)
           with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
               output.write("required=" + str(required).lower() + "\n")
@@ -294,12 +295,13 @@ jobs:
             tests/test_registered_feature_linux.py::test_actual_root_blueprint_uid_cache_lifetime_and_revoke \
             tests/test_registered_feature_linux.py::test_actual_contained_blueprint_native_pair_child_and_kernel_completion \
             tests/test_legacy_owner_linux.py::test_actual_legacy_owner_door_privilege_and_revocation \
+            tests/test_historical_generation_linux.py::test_actual_historical_target_only_write_and_foreign_reference_visibility \
             -m 'slow or not slow' --basetemp="$test_temp" \
             --junitxml="$evidence/native-junit.xml" -q
           /opt/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
-          assert len(cases) == 3, "all three exact native selectors must execute"
+          assert len(cases) == 4, "all four exact native selectors must execute"
           assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "native skips and refusals do not prove acceptance"
           PYTHON
 

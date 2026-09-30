@@ -6,6 +6,7 @@ It neither starts a unit nor closes readers or mutates historical payloads.
 from __future__ import annotations
 
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -43,6 +44,28 @@ def _unit_properties(target, private_store):
 
 def _require(value, code):
     generation._require(value, 'dispatch_' + code)
+
+
+def _unit_property_assignments(target, private_store):
+    """Finite first scope refuses unit specifiers/escaping instead of expanding them."""
+    for path in (target, private_store):
+        _require(isinstance(path, (str, Path)) and re.fullmatch(r'/[A-Za-z0-9_./-]+', str(path))
+                 and len(os.fsencode(path)) <= 4096, 'unit_path_unsupported')
+        legacy._absolute(Path(path))
+    _require(Path(target) != Path(private_store)
+             and not Path(target).is_relative_to(private_store)
+             and not Path(private_store).is_relative_to(target), 'unit_path_unsupported')
+    assignments = []
+    for key, value in _unit_properties(target, str(private_store)).items():
+        if key == 'SystemCallFilter':
+            assignments.extend(key + '=' + part for part in value)
+        else:
+            if isinstance(value, bool):
+                value = 'yes' if value else 'no'
+            elif isinstance(value, list):
+                value = ' '.join(value)
+            assignments.append(key + '=' + str(value))
+    return tuple(assignments)
 
 
 def _selection(files, config, store, config_path, action_id, moment):
@@ -111,6 +134,7 @@ def select_historical_action(*, installed_config_path, action_id, now, monotonic
             and legacy._directory_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
             == manifest['target_identity'] and str(store.root) == private_store, 'target_changed')
         generation.verify_historical_member_versions(manifest, tick=files.budget.tick)
+        assignments = _unit_property_assignments(target, private_store)
         value = dict(schema_version='control_plane_historical_action_selection.v1', action_id=action_id,
             action=decision['action'], owner=decision['owner'], records=records,
             packet_id=packet['packet_id'], generation_digest=manifest['generation_digest'],
@@ -119,6 +143,7 @@ def select_historical_action(*, installed_config_path, action_id, now, monotonic
             unit_name='blueprint-historical-generation-' + action_id + '.service',
             exec_start=[_ACTION_EXECUTABLE, action_id],
             service_properties=_unit_properties(target, private_store),
+            unit_property_assignments=list(assignments),
             observed_at_epoch=operation.moment(), expires_at_epoch=decision['expires_at_epoch'],
             execution_authorized=False, action_unit_started=False)
         value['selection_digest'] = canonical_digest(value, digest_field='selection_digest')

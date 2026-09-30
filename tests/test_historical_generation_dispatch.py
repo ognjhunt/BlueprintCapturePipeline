@@ -158,3 +158,22 @@ def test_owner_expiry_during_final_member_check_keeps_target(historical_installa
         select_historical_action(installed_config_path=historical_installation[0],
             action_id=approved['action_id'], now=1030, monotonic=lambda: elapsed[0])
     assert (historical_installation[1] / 'one.log').is_file()
+
+
+def test_unit_assignments_preserve_two_syscall_filters_and_only_selected_mounts(historical_installation):
+    from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
+    target, store = historical_installation[1], historical_installation[3]
+    assignments = _unit_property_assignments(target, store)
+    filters = [row for row in assignments if row.startswith('SystemCallFilter=')]
+    assert filters == ['SystemCallFilter=@system-service',
+                       'SystemCallFilter=~ptrace process_vm_readv process_vm_writev']
+    assert [row for row in assignments if row.startswith('ReadWritePaths=')] == [
+        'ReadWritePaths=' + str(target) + ' ' + str(store)]
+    assert 'PrivateUsers=no' in assignments and 'NoNewPrivileges=yes' in assignments
+
+
+@pytest.mark.parametrize('suffix', [' with space', '%n', '\nReadWritePaths=/', '"', '\\'])
+def test_unsupported_unit_path_never_expands_into_write_authority(historical_installation, suffix):
+    from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
+    with pytest.raises(ValueError, match='unit_path_unsupported'):
+        _unit_property_assignments(str(historical_installation[1]) + suffix, historical_installation[3])
