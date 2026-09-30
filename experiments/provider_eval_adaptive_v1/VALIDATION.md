@@ -100,3 +100,57 @@ The parent's runtime checkpoint is 227 events, 113 completed attempts, zero
 uncertain attempts and $2.289635 reserved; the prior 225-event prefix and 37
 diagnostic answers are preserved. Those runtime files were not materialized in
 this executor. Implementation provider calls and spend remain zero.
+
+## Bounded citation normalization and four-step followup continuation
+
+This revision supersedes the earlier per-website pagination restriction. It
+accepts bounded numeric pagination keys, removes bounded known UTM tracking/safe
+anchors from display citations, and quarantines unsupported or unsafe individual
+sources. Userinfo, credential markers, redirect targets, duplicate query keys,
+unsupported keys, malformed/nondecimal/oversized pagination and private fragments
+are refused. Quarantined source URLs/titles/excerpts do not enter model inputs;
+raw envelopes stay immutable, with URL hashes/ranks retained in citation audits.
+Real provider input warnings still stop the whole phase. URLs are never fetched
+or upgraded from HTTP, and syntax acceptance never establishes vendor authority.
+
+The exact parent-supplied ten followup URLs were audited offline in all four
+modes. All ten are accepted, Tracxn's display loses its tracking/anchor, and the
+three numeric Chef pagination URLs plus both HTTP URLs remain intact. This is
+parent-message provenance; runtime files and Library recovery material were not
+materialized here. The public URL audit is committed alongside the code.
+
+Chained continuation verifies the pinned 08fb88c2 first patch fingerprint,
+original continuation proof and both failed receipts, all four canonical paid
+requests/envelope digests, unchanged first-search assessment model inputs,
+775 count/usage agreement, and the retained decision's exact followup query.
+Creation permits exactly the four completed adaptive steps, rejects extra even
+released attempts, and requires the existing sole owner/effective scope digest.
+Both failures, original proof, scope, raw envelopes and ledger prefix are kept.
+A new immutable proof and followup receipt sidecar are shared by resume, pilot
+validation and isolated review. No code-scope reset or reservation release occurs.
+
+**30 hermetic tests passed in 112.411 seconds** using:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m unittest experiments.provider_eval_adaptive_v1.test_adaptive experiments.provider_eval_adaptive_v1.test_continuation -q
+.venv/bin/ruff check experiments/provider_eval_adaptive_v1
+git diff --check
+```
+
+Coverage includes representative public/security-invalid URLs across all modes,
+unsafe-source exclusion while safe evidence continues, all-source URL auditing
+before clipping, zero-call/idempotent continuation, tamper and extra-attempt
+refusal, original first-input replay, first new request as synthesis counting,
+44 new mock pilot requests instead of 48, and bytewise preservation of both failed
+receipts/old proof/raw/scope/journal prefix. The full matrix and isolated review
+still reserve exactly $9.857510 including prior exposure. Ruff, diff and CLI help
+checks passed. Independent **GPT6.1Sol** review passed all **29 focused non-full
+tests**, verified the 08fb88c2 fingerprint and found no must-fix issues.
+
+The parent-reported used checkpoint is 233 events, 116 completed, 0 uncertain and
+$2.322630 reserved. The unchanged adaptive/review envelope leaves $7.534880 new
+reservation; remaining pilot reservation is $0.609120. Provider billing remains
+unreconciled. This implementation task performed **zero live calls/$0 spend**.
+The fresh execution owner must verify the actual retained state with the explicit
+zero-call continuation command before resuming; no runtime success is inferred
+from the local mock regression.

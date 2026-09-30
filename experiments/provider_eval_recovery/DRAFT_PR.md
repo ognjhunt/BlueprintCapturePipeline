@@ -5,7 +5,7 @@ truncated before the company name. This isolated recovery now supplies a separat
 search, then evidence-only synthesis. It retains the earlier 37 answers as
 diagnostics; protocol scores must not be mixed. Parallel objective and keywords
 are separate; Perplexity receives the same case-specific goal through its native
-query field. Warnings stop a cell before interpreting provider quality.
+query field. Warnings stop the whole phase before interpreting provider quality.
 
 All 20 frozen public cases run across Parallel Fast/Advanced and Perplexity
 Fast/standard with `gpt-6.1-sol` only and the existing Default project. Exact
@@ -38,21 +38,29 @@ migration receipt; original scope bytes and all prior journal entries remain
 intact. The two-case search/controller ceiling is $0.646240, with complete
 matrix/review headroom preserved under the same aggregate $10 cap.
 
-The first corrected pilot search succeeded, but its two safe Chef homepage
-pagination URLs were blocked by local parsing. The narrow numeric-query fix is
-now separate from actual provider-warning handling; the entire supplied ten-URL
-list passes offline without HTTP upgrades or authority claims for a lookalike
-domain. A digest-bound zero-call continuation verifies the used effective scope,
-completed search/envelope and original failed receipt before authorizing the
-reviewed parser patch. It preserves the original plan/key/hold/journal and failed
-receipt, then writes an explicit sidecar consumed consistently by resume, pilot
-gates and review. The accepted search is never repeated or reserved twice.
+The corrected pilot accepted both searches plus input count and Sol assessment,
+then local parsing rejected safe tracking/anchor and numeric pagination syntax.
+Bounded display normalization now removes known UTM tracking/safe anchors,
+preserves numeric pagination, and quarantines unsupported/unsafe individual
+sources without disclosing their titles/text to Sol. Credential/userinfo/redirect
+protections remain; raw URLs/evidence and HTTP schemes are preserved with durable
+transformation/quarantine audits. Syntax acceptance does not establish authority.
+
+A zero-call chained continuation verifies the exact four completed dependencies,
+original request/model inputs, count/usage agreement, retained query decision,
+pinned prior continuation and both immutable failure receipts. It preserves the
+original plan/key/grant/hold/journal, reuses both searches and count/assessment,
+and writes a new explicit sidecar shared by resume, pilot gates and review.
+The first new request is synthesis counting; 44 pilot requests remain, with
+$0.609120 new pilot reservation. At the supplied $2.322630 checkpoint the remaining
+full adaptive/review reservation is $7.534880; no duplicate spend or cap increase.
 
 The earlier narrow BMW locale-query fix and offline adoption remain intact,
 preserving their original scope/grant/journal with no repeated search.
 Independent Sol review verified fixes for followup-evidence crowd-out, malformed
 assessment JSON, and preservation of the existing secure-access receipt gate.
-All 27 adaptive hermetic tests pass, with 26 focused checks independently replayed;
+All 30 hermetic tests pass; independent GPT6.1Sol review passed 29 focused checks
+with no must-fix findings. Final parser/chained-replay evidence is in adaptive VALIDATION.md;
 Ruff and diff checks pass. Verification covers the whole adaptive matrix and review,
 resume/uncertainty/budget/round/privacy boundaries and native query contracts.
 No live calls or credential/subscription/top-up/deployment/schedule changes were

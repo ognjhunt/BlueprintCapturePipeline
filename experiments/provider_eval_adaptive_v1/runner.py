@@ -16,9 +16,9 @@ from experiments.provider_eval_recovery.live_http import (COUNT_ALLOWANCE, COUNT
 from experiments.provider_eval_recovery.live_runner import CATALOG, OWNER
 from experiments.provider_eval_recovery.public_inputs import DECLARED_ORIGINAL_SHA256, load_public
 
-from .continuation import (BASE_CODE, RECEIPT_NAME, ContinuationError, authorize as authorize_continuation,
+from .continuation import (BASE_CODE, FOLLOWUP_RECEIPT_NAME, RECEIPT_NAME, ContinuationError, authorize as authorize_continuation,
                           receipt_path, verify as verify_continuation)
-from .citations import CitationNormalizationError, ProviderInputWarning
+from .citations import CitationNormalizationError, ProviderInputWarning, audit_urls
 
 from .protocol import (APPROVAL, CURRENT_DATE, LIMITS, MODES, PROTOCOL, RATES, ROOT, SEEDS,
     budget, code_hash, decision, evidence, model_envelopes, model_input, model_reserve, search_request)
@@ -310,6 +310,7 @@ def model_text(raw, role):
 
 def research(transport, index, mode):
     case, cell = transport.public["cases"][index - 1], f"{index:02d}_{mode}"
+    raws = []
     check, sources, status, answer = None, [], "completed_ungraded", "Unknown: no supported answer within this protocol."
     try:
         raws = [transport.search(index, mode, 1, SEEDS[index - 1])]
@@ -337,7 +338,8 @@ def research(transport, index, mode):
     receipt = {"protocol": PROTOCOL, "case_id": case["id"], "cell": cell, "mode": mode,
                "status": status, "answer": answer, "sources": sources, "operational_coverage": check,
                "grade": "pending isolated reviewer; controller triage is not ground truth",
-               "retained_attempts": attempts, "current_date": CURRENT_DATE}
+               "retained_attempts": attempts, "current_date": CURRENT_DATE,
+               "citation_audits": {"search" + str(i + 1): audit_urls(mode, raw) for i, raw in enumerate(raws)}}
     with exclusive(transport.root):
         write_once(receipt_path(transport.paths, cell), receipt)
     return receipt
@@ -378,9 +380,10 @@ def run(root, access, inputs, *, phase="pilot", execute=False, owner_task_id=Non
                 "budget": {k: str(v) for k, v in budget().items()}, "matrix": "20cases x4modes",
                 "diagnostic_answers_preserved": len(list((Path(root) / "live_receipts").glob("*.json")))}
         if (paths / RECEIPT_NAME).exists():
-            accepted = read_json(paths / RECEIPT_NAME)
+            selected = FOLLOWUP_RECEIPT_NAME if (paths / FOLLOWUP_RECEIPT_NAME).exists() else RECEIPT_NAME
+            accepted = read_json(paths / selected)
             result["accepted_search_continuation"] = {"attempt_id": accepted["attempt_id"],
-                "citation_urls_audited": len(accepted["citation_url_audit"]), "search_redispatch": False}
+                "citation_urls_audited": len(accepted["citation_url_audit"]), "search_redispatch": False, "retained_steps_reused": len(accepted.get("completed_attempts", {})) or 1}
         return result
     if owner_task_id != OWNER:
         raise Blocked("sole_fresh_execution_owner_required")
@@ -407,7 +410,7 @@ def main():
     parser.add_argument("--input", type=Path, default=ROOT.parent / "provider_eval_recovery/real_public/inputs.parent-message.json")
     parser.add_argument("--phase", choices=("pilot", "remaining"), default="pilot")
     parser.add_argument("--adopt-unused-scope-sha256", help="explicit zero-reservation migration; network-free preflight only")
-    parser.add_argument("--continue-retained-attempt", help="explicit accepted first-search continuation; network-free preflight only")
+    parser.add_argument("--continue-retained-attempt", help="explicit accepted search continuation; network-free preflight only")
     parser.add_argument("--retained-envelope-sha256")
     parser.add_argument("--expected-adaptive-scope-sha256", help="owner-supplied digest of the existing effective adaptive scope")
     parser.add_argument("--execute", action="store_true")

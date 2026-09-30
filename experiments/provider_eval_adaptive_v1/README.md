@@ -20,7 +20,8 @@ same keywords followed by the same objective. Generic grading instructions are
 supplied to the controller only. Native character/token controls differ; the
 controller additionally clips evidence to the same character limits. Any search
 warning retains an unscorable contract diagnostic and stops the whole phase
-before another arm/case can dispatch. Security failures likewise stop the phase.
+before another arm/case can dispatch. Transport/admission security failures likewise stop the phase; unsafe individual
+citation sources are quarantined with their raw evidence retained.
 All controller and reviewer developer instructions supply the trusted date
 2026-09-30; retrieved text cannot change it.
 
@@ -78,55 +79,70 @@ aggregate root and `live_access.json`; creating another run root is not a resume
 No credential values belong in commands, receipts, chat, or committed files.
 The old implementation task performs only mock verification.
 
-### Current accepted-search continuation
+### Current four-step continuation
 
-The corrected pilot accepted one Parallel search, then the local citation parser
-rejected two Chef homepage pagination URLs. This was a local normalizer failure,
-not a provider warning. The narrow exception accepts only HTTPS
-`www.chefrobotics.ai` homepage URLs with the exact `3f5a3c8b_page` key and an
-unsigned decimal value of at most six digits. BMW's existing language exception
-is unchanged; all other query/security restrictions remain enforced.
+The corrected first search and its count/assessment succeeded. The accepted
+follow-up then encountered benign tracking/anchor and numeric pagination syntax.
+The parser now keeps bounded unsigned numeric pagination on any public citation,
+removes known bounded UTM tracking and safe anchors from display citations, and
+quarantines unsupported/unsafe individual sources. Userinfo, credentials,
+redirect targets, signed/unrecognized queries, duplicate keys and malformed
+values cannot be stripped into an accepted source. No citation is requested.
+Original URL/evidence bytes remain in the retained raw envelope. Display changes
+or quarantine retain raw URL digests and ranks in durable citation audits;
+quarantined titles/excerpts never reach Sol. Real provider warnings and malformed
+response contracts still stop the whole phase.
 
-All ten parent-supplied URLs were audited offline in all four modes. Their order
-and exact URLs are preserved, including three HTTP URLs. URL validation does not
-establish vendor authority: the lookalike `chefroboticsai.com` remains unverified,
-and secondary/social/CDN sources retain their authority limits. The audit packet
-is task-input provenance, not materialized Library content or independent proof
-of a vendor claim. See `retained_case01_url_audit.json`.
+The parent supplied the exact ten URLs and four-step checkpoint. The offline
+URL audit accepts all ten in all four modes, strips only Tracxn's tracking/anchor
+for display, preserves Chef pagination and both HTTP URLs, and confers no vendor
+authority. See `retained_case01_followup_url_audit.json`. This task-input audit
+is not Library materialization or independent evidence of vendor claims.
 
-The current scope has a paid attempt, so **do not use unused-scope adoption**.
-After checking out the reviewed patch, run this zero-network continuation using
-the owner's existing aggregate root:
+The existing effective scope is used and has four paid completed steps. **Do not
+use unused-scope adoption or create another run root.** Check out the reviewed
+remote commit, then authorize this network-free continuation:
 
 ```sh
+EVAL_ROOT='/workspace/provider-eval-private-live-20260930'
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_adaptive_v1.runner \
   --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json" --phase pilot \
-  --continue-retained-attempt 875515c0d3d6797bc84d53a1fea1d630628ede05d29a5629bc0198c188d7515d \
-  --retained-envelope-sha256 63d8b7bfc7220741c114bea090006ffdbd2c58fa68a43c9d0eccf9fa71d6a535 \
+  --continue-retained-attempt 31b8682404eb1d9b171ad98f13e584ce7ebb66e8a01a523d5d44c668e80d9fa3 \
+  --retained-envelope-sha256 b2573b5a447069c9dff1bdde5b669c1aefb1f64a901ea96e5fe2b8fba7d89f12 \
   --expected-adaptive-scope-sha256 09680b135d5bd7dded1ee8cbcdb120bf894f4277eb5ed3c8cc8223bcdb2f19c0 \
   --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
 ```
 
-This verifies the effective scope, pinned prior code, exact original request,
-attempt, completed journal state, whole retained-envelope digest and canonical
-failed receipt. Exactly one adaptive attempt may exist when creating the
-authorization. All bounded citation URLs are validated before context clipping;
-provider warnings or unresolved normalization prevent authorization. No request,
-reservation, journal transition, billing release or source fetch occurs.
+The free command verifies the original plan, pinned prior code/first continuation,
+both failed receipts, and exactly four completed dependent requests/envelopes:
+search1, assess_count, assess, search2. It reconstructs and verifies the original
+assessment input, the 775 count/usage agreement and the retained decision's exact
+follow-up query. Original first-search model inputs remain byte-equivalent.
+Changes to those dependencies refuse continuation before a paid stage; no recount,
+assessment rerun, search retry, reservation, ledger transition or release occurs.
 
-The immutable `citation_continuation.json` authorizes only the reviewed code
-exception. The original plan, allocation binding, search key, raw envelope,
-failed receipt and journal entries remain intact. Resume writes the first cell's
-new receipt to `continued_receipts/01_parallel_fast.json`; pilot replay, remaining
-admission and isolated review all use that explicit path. Changes to code,
-scope, retained evidence or authorization block before a new paid stage.
+`followup_citation_continuation.json` binds the new code and all four retained
+steps. Both `receipts/01_parallel_fast.json` and
+`continued_receipts/01_parallel_fast.json`, original first continuation, raw
+files, scope, allocation binding, journal prefix and holds remain immutable.
+Resume writes `followup_receipts/01_parallel_fast.json`; pilot gating and the
+isolated reviewer resolve this same explicit sidecar.
 
-Then resume the pilot with the normal execute command below, without continuation
-flags. The accepted search is adopted; the first new request is input counting.
-At most 47 new pilot HTTP requests remain. Its remaining search/controller
-reservation is $0.642115. Of the unchanged $7.572000 full adaptive envelope,
-$0.004125 is already held, leaving at most $7.567875 of new reservation; the
-aggregate bound remains $9.857510, with no double counting of this search.
+Then resume, without continuation flags:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_adaptive_v1.runner \
+  --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json" --phase pilot --execute \
+  --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
+```
+
+All four completed steps are reused. The first new request is **synthesis input
+counting**. At most **44 new pilot HTTP requests** remain and at most **$0.609120**
+new pilot reservation. The parent-reported checkpoint is 233 events, 116 completed,
+zero uncertain and $2.322630 reserved. Of the unchanged $7.572000 adaptive envelope,
+$0.037120 is already held, leaving at most **$7.534880** new reservation including
+remaining cases and isolated review. The proposed aggregate reservation bound is
+still **$9.857510**; actual bills/taxes remain unreconciled.
 
 ### Earlier unused-preflight setup
 
