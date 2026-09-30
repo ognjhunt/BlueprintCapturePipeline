@@ -708,6 +708,24 @@ resource "google_project_iam_member" "pipeline_runner_storage" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"
   member  = "serviceAccount:${google_service_account.pipeline_runner.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant stops at
+  # their transport bucket, which holds live presigned links.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-transport"
+      description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
+      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_project_iam_member" "privacy_services_storage" {
@@ -721,6 +739,24 @@ resource "google_project_iam_member" "privacy_services_storage" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"
   member  = "serviceAccount:${each.value}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant stops at
+  # their transport bucket, which holds live presigned links.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-transport"
+      description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
+      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_project_iam_member" "privacy_services_logging" {
@@ -784,6 +820,24 @@ resource "google_project_iam_member" "storage_trigger_storage" {
   project = var.project_id
   role    = "roles/storage.objectViewer"
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant stops at
+  # their transport bucket, which holds live presigned links.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-transport"
+      description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
+      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Firestore access (create capture records)

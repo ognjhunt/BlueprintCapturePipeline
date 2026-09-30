@@ -114,6 +114,24 @@ def _hcl_regex(body: str, variable: str) -> re.Pattern[str]:
     return re.compile(json.loads(match.group(1)))
 
 
+def _project_grants(main: str, role_prefix: str) -> dict[str, str]:
+    """Every project-wide ``google_project_iam_member`` whose role starts with ``role_prefix``."""
+    return {name: body for (kind, name), body in _resources(main).items()
+            if kind == "google_project_iam_member"
+            and (_strings(_attr(body, "role")) or [""])[0].startswith(role_prefix)}
+
+
+def _remote_cpu_exclusion(body: str) -> str:
+    """The condition a project-wide grant gains when, and only when, remote CPU workers exist."""
+    condition = _child(body, 'dynamic "condition"')
+    assert _attr(condition, "for_each") == "var.remote_cpu_workers_enabled ? [1] : []"
+    content = _child(condition, "content")
+    assert _strings(_attr(content, "title"))
+    # A new condition replaces the binding: create the conditioned one before removing the old.
+    assert _attr(_child(body, "lifecycle"), "create_before_destroy") == "true"
+    return _strings(_attr(content, "expression"))[0]
+
+
 def test_remote_cpu_jobs_are_off_by_default_and_us_only() -> None:
     main = _main()
     flag = _terraform_variable_body(main, "remote_cpu_workers_enabled")
@@ -326,3 +344,22 @@ def test_no_service_account_key_is_managed_by_terraform() -> None:
     assert "google_service_account_key" not in terraform
     assert "private_key" not in terraform
     assert "keys create" not in DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+
+def test_existing_storage_grants_exclude_the_transport_bucket() -> None:
+    """Plan 14 C2: no project-wide storage role reaches the bucket that holds live presigned links."""
+    main = _main()
+    bucket = _terraform_resource_body(main, "google_storage_bucket", "remote_cpu_transport")
+    transport = "projects/_/buckets/" + _strings(_attr(bucket, "name"))[0]
+
+    grants = _project_grants(main, "roles/storage.")
+    assert sorted(grants) == [
+        "pipeline_runner_storage",  # objectAdmin
+        "privacy_services_storage",  # objectAdmin, four privacy services
+        "storage_trigger_storage",  # objectViewer
+    ]
+    for name, body in sorted(grants.items()):
+        # The bucket itself and everything in it, and nothing else: a bucket merely sharing the
+        # name as a prefix is unaffected.
+        assert _remote_cpu_exclusion(body) == (
+            f'resource.name != "{transport}" && !resource.name.startsWith("{transport}/")'), name
