@@ -288,7 +288,7 @@ def _enabled_sdk_native_phase():
         guard=root/'guard.py'
         guard.write_text('import runpy,sys\nassert sys.argv[1:]==["-m","blueprint_pipeline.production_runtime_env_guard"]\n'
             'sys.argv=["blueprint_pipeline.production_runtime_env_guard"]\nsys.path[:0]='+repr([str(runtime/'src'),str(dependencies),str(runtime)])
-            +'\nrunpy.run_module("blueprint_pipeline.production_runtime_env_guard",run_name="__main__")\n')
+            +'\nrunpy.run_module("blueprint_pipeline.production_runtime_env_guard",run_name="__main__",alter_sys=True)\n')
         guard.chmod(0o644)
         executable=root/'sdk-python'
         executable.write_text('#!/bin/sh\nexec /usr/bin/python3 -I -S '+str(guard)+' "$@"\n')
