@@ -181,6 +181,29 @@ for path, directory, mode in zip(sys.argv[1:], (True, False), (0o700, 0o600)):
 PYLEGACYOWNER
 # LEGACY OWNER REVIEW PROVISIONING END
 
+# Historical packets and distinct decommission decisions are private metadata;
+# provisioning grants no target write mount, cleanup switch or payload action.
+historical_generation_store="$state_root/requests/historical-generation-actions"
+if [ ! -e "$historical_generation_store" ] && [ ! -L "$historical_generation_store" ]; then
+  install -d -o root -g root -m 0700 "$historical_generation_store"
+fi
+historical_generation_lock="$historical_generation_store/.historical-generation.lock"
+if [ ! -e "$historical_generation_lock" ] && [ ! -L "$historical_generation_lock" ]; then
+  (umask 077; set -o noclobber; : >"$historical_generation_lock")
+  chown root:root "$historical_generation_lock"
+  chmod 0600 "$historical_generation_lock"
+fi
+python3 - "$historical_generation_store" "$historical_generation_lock" <<'PYHISTORICALGENERATION'
+import os, stat, sys
+for path, directory, mode in zip(sys.argv[1:], (True, False), (0o700, 0o600)):
+    value = os.lstat(path)
+    kind = stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)
+    if (not kind or value.st_uid != 0 or value.st_gid != 0
+            or stat.S_IMODE(value.st_mode) != mode
+            or (not directory and (value.st_nlink != 1 or value.st_size != 0))):
+        raise SystemExit("historical_generation_provisioning_unsafe")
+PYHISTORICALGENERATION
+
 # 3b. The repository is private and the host has no other GitHub credential, so
 #     deploys fetch with a read-only deploy key. It is generated once, never
 #     replaced (its public half is registered on GitHub), and kept in a root-only
