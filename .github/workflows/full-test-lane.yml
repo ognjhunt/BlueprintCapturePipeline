@@ -171,6 +171,13 @@ jobs:
           uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
             --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3
           uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
+          # Noneditable policy CLIs resolve retained documents beside their
+          # installed package. Preserve those exact committed bytes outside
+          # runner home, where the different-UID child can read them safely.
+          native_resource_root="$(/opt/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
+          test "$native_resource_root" = /opt/blueprint-native-test-venv/lib/python3.12
+          git archive HEAD docs | tar -x -C "$native_resource_root"
+          diff -rq -- docs "$native_resource_root/docs"
           # The actual different-UID child has ProtectHome=yes. Its interpreter
           # and imported dependencies must be protected outside /home/runner.
           sudo chown -hR root:root /opt/blueprint-native-test-venv
