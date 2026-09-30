@@ -2,6 +2,7 @@
 #   deploy/terraform/main.tf
 #   deploy/terraform/terraform.tfvars.example
 #   deploy/scripts/deploy.sh
+#   .github/workflows/terraform-static.yml
 """ADP-009D/day-28, plan 14 PR 5: the remote CPU worker infrastructure is off by default and fenced.
 
 Terraform is read as text, as the deploy contract tests read it: CI has no terraform binary and no
@@ -14,6 +15,8 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 from blueprint_pipeline import cloud_run_jobs_client
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline.cloud_run_jobs_client import BOOTSTRAP_COMMAND, job_definition_blockers
@@ -24,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
 DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
+TERRAFORM_STATIC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "terraform-static.yml"
 GIB = 1024**3
 IMAGE = "gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:" + "d" * 64
 # Plan 14 §14: run with overrides and read or cancel executions; nothing that operates on the project.
@@ -485,3 +489,45 @@ def test_deploy_script_defaults_remote_cpu_workers_off_and_exports_the_flag() ->
     # Terraform's own default agrees with the script's.
     flag_variable = _terraform_variable_body(_main(), "remote_cpu_workers_enabled")
     assert _attr(flag_variable, "default") == "false"
+
+
+def test_terraform_static_workflow_pins_setup_terraform_and_never_plans() -> None:
+    """Plan 14 PR 5.2: CI checks syntax and provider schema with no credentials and no plan."""
+    text = TERRAFORM_STATIC_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    events = workflow.get("on", workflow.get(True))  # YAML 1.1 reads the bare key on as true
+    for event in ("pull_request", "push"):
+        assert "deploy/terraform/**" in events[event]["paths"], event
+    assert events["push"]["branches"] == ["main"]
+    assert workflow["permissions"] == {"contents": "read"}
+
+    job = workflow["jobs"]["terraform-static"]
+    assert 0 < job["timeout-minutes"] <= 15
+    assert job["defaults"]["run"]["working-directory"] == "deploy/terraform"
+    steps = job["steps"]
+    checkout = [step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
+    assert len(checkout) == 1 and checkout[0]["with"]["persist-credentials"] is False
+    setup = [step for step in steps
+             if str(step.get("uses", "")).startswith("hashicorp/setup-terraform@")]
+    assert len(setup) == 1
+    assert re.fullmatch(r"hashicorp/setup-terraform@[0-9a-f]{40}", setup[0]["uses"])
+    # An exact release, never latest or a range, and one main.tf accepts.
+    version = str(setup[0]["with"]["terraform_version"])
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)
+    required = re.search(r'required_version = ">= ([0-9]+)\.([0-9]+)\.([0-9]+)"', _main())
+    assert required is not None
+    assert tuple(map(int, version.split("."))) >= tuple(map(int, required.groups()))
+    assert setup[0]["with"]["terraform_wrapper"] is False
+
+    # fmt, then init with the committed lock and no backend, then validate: nothing else runs.
+    commands = [" ".join(str(step["run"]).split()) for step in steps if "run" in step]
+    assert commands == [
+        "terraform fmt -check -diff -recursive",
+        "terraform init -backend=false -input=false -lockfile=readonly",
+        "terraform validate -no-color",
+    ]
+    invoked = re.findall(r"(?m)(?<![\w./-])terraform[ \t]+([a-z-]+)", text)
+    assert set(invoked) == {"fmt", "init", "validate"}
+    for credential in ("secrets.", "google-github-actions/auth", "GOOGLE_", "id-token",
+                       "cli_config_credentials_token"):
+        assert credential not in text, credential
