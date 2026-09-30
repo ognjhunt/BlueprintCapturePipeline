@@ -17,10 +17,12 @@ umask 022
 
 upgrade=0
 caddy=1
+dispatcher_hold_only=0
 for argument in "$@"; do
   case "$argument" in
     --upgrade) upgrade=1 ;;
     --no-caddy) caddy=0 ;;
+    --dispatcher-hold-only) dispatcher_hold_only=1 ;;
     *) echo "unknown argument: $argument" >&2; exit 2 ;;
   esac
 done
@@ -39,6 +41,26 @@ units=(blueprint-operator-door.service blueprint-operator-door-runner.service bl
 units_backup="$install_root.previous-units"
 
 [ "$(id -u)" -eq 0 ] || { echo "install.sh must run as root" >&2; exit 1; }
+# The live door's original upgrade protocol cannot pass new installer flags.
+# This exact observed baseline therefore gets only its admitted controls plus
+# the approved dispatcher hold, even when invoked by its old upgrade wrapper.
+if [ "$upgrade" -eq 1 ] && [ -f "$install_root/INSTALLED_COMMIT" ] \
+    && grep -qx 'd78ee479368c2df99370a9dc4a61dd328d07d215' "$install_root/INSTALLED_COMMIT"; then
+  dispatcher_hold_only=1
+fi
+# A later code upgrade must not silently remove an installed admission fence.
+if [ "$upgrade" -eq 1 ] && [ -f "$install_root/operator_door/admitted_controls.py" ] \
+    && grep -qx 'DISPATCHER_HOLD_ONLY = True' "$install_root/operator_door/admitted_controls.py"; then
+  dispatcher_hold_only=1
+fi
+if [ "$dispatcher_hold_only" -eq 1 ]; then
+  [ "$upgrade" -eq 1 ] && [ -d "$install_root" ] || { echo "hold profile requires an existing door upgrade" >&2; exit 1; }
+  # Presence only: this mode never bootstraps, replaces or prints credentials.
+  for existing in "$config_dir/tokens.json" "$config_dir/deploy-key/github" "$config_dir/deploy-key/known_hosts"; do
+    [ -f "$existing" ] && [ ! -L "$existing" ] || { echo "hold upgrade credential prerequisite missing" >&2; exit 1; }
+  done
+  caddy=0
+fi
 id blueprint >/dev/null
 getent group systemd-journal >/dev/null
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
@@ -49,6 +71,10 @@ stage="$install_root.new"
 rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
+if [ "$dispatcher_hold_only" -eq 1 ]; then
+  printf '"""Root-owned dispatcher-only hold upgrade admission fence."""\nDISPATCHER_HOLD_ONLY = True\n' \
+    >"$stage/operator_door/admitted_controls.py"
+fi
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
   "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh \
   "$source_dir"/install.sh "$stage/"
@@ -61,6 +87,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$stage" python3 -c 'import operator_door.s
 had_previous=0
 [ -d "$install_root" ] && had_previous=1
 swapped=0
+moved_previous=0
 
 rollback() {
   trap - ERR TERM INT
@@ -68,7 +95,9 @@ rollback() {
   if [ "$swapped" -eq 1 ]; then
     rm -rf "$install_root.failed"
     mv "$install_root" "$install_root.failed" 2>/dev/null || true
-    if [ -d "$install_root.previous" ]; then mv "$install_root.previous" "$install_root"; fi
+  fi
+  if [ "$moved_previous" -eq 1 ] && [ -d "$install_root.previous" ]; then
+    mv "$install_root.previous" "$install_root"
   fi
   for unit in "${units[@]}"; do
     if [ -f "$units_backup/$unit" ]; then
@@ -97,10 +126,11 @@ for unit in "${units[@]}"; do
 done
 if [ "$had_previous" -eq 1 ]; then
   rm -rf "$install_root.previous"
+  moved_previous=1
   mv "$install_root" "$install_root.previous"
 fi
-mv "$stage" "$install_root"
 swapped=1
+mv "$stage" "$install_root"
 
 # 3. State and config. Only pending/ is writable by the door (through a group only
 #    the door unit has); everything the root runner and scripts write is root's,
@@ -114,13 +144,16 @@ done
 install -d -o root -g root -m 0755 "$state_root/requests/holds"
 install -d -o blueprint -g blueprint -m 0750 "$state_root/audit"
 install -d -o root -g blueprint -m 2750 "$config_dir"
+if [ "$dispatcher_hold_only" -eq 0 ]; then
 if [ ! -e "$config_dir/tokens.json" ]; then
   printf '{"schema": "blueprint_operator_door_tokens.v1", "tokens": []}\n' >"$config_dir/tokens.json"
 fi
 chown root:blueprint "$config_dir/tokens.json"
 chmod 0640 "$config_dir/tokens.json"
+fi
 
 # OWNER CONSENT PROVISIONING BEGIN
+if [ "$dispatcher_hold_only" -eq 0 ]; then
 # Existing policy, records and lock inode are preserved. This never enables intent.
 owner_store="$state_root/requests/owner-consents"
 owner_policy="$config_dir/lane-owner-policy.json"
@@ -180,6 +213,7 @@ for path, directory, mode in zip(sys.argv[1:], (True, False), (0o700, 0o600)):
         raise SystemExit("legacy_owner_provisioning_unsafe")
 PYLEGACYOWNER
 # LEGACY OWNER REVIEW PROVISIONING END
+fi
 
 # 3b. The repository is private and the host has no other GitHub credential, so
 #     deploys fetch with a read-only deploy key. It is generated once, never
@@ -188,6 +222,7 @@ PYLEGACYOWNER
 #     API over verified TLS; without them door deploys refuse rather than trust
 #     whatever key github.com presents.
 key_dir="$config_dir/deploy-key"
+if [ "$dispatcher_hold_only" -eq 0 ]; then
 install -d -o root -g root -m 0700 "$key_dir"
 if [ ! -e "$key_dir/github" ]; then
   ssh-keygen -q -t ed25519 -N '' -C "operator-door@$(hostname -s) read-only" -f "$key_dir/github"
@@ -202,6 +237,7 @@ else
   echo "warning: could not fetch GitHub's host keys; door deploys refuse until $key_dir/known_hosts exists" >&2
 fi
 
+fi
 # 4. Units.
 for unit in "${units[@]}"; do
   install -o root -g root -m 0644 "$units_dir/$unit" "$systemd_dir/$unit"
@@ -247,5 +283,7 @@ if [ "$caddy" -eq 1 ] && ! grep -q 'handle /api/live-pipeline/operator/\*' "$cad
   fi
 fi
 
-echo "deploy key (register on GitHub as a read-only deploy key): $(cat "$key_dir/github.pub")"
+if [ "$dispatcher_hold_only" -eq 0 ]; then
+  echo "deploy key (register on GitHub as a read-only deploy key): $(cat "$key_dir/github.pub")"
+fi
 echo "{\"installed\": \"$(cat "$install_root/INSTALLED_COMMIT")\", \"upgrade\": $upgrade, \"caddy\": $caddy}"

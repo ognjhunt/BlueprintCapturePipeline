@@ -18,6 +18,7 @@ from .native_task_arena_policy_canary_session import (
     RUN_KIND,
 )
 from .task_evaluation_policy_canary_result import validate_policy_canary_result
+from .policy_canary_output_members import NOT_INGESTED_GAP
 
 
 ErrorFactory = Callable[[str], Exception]
@@ -25,6 +26,14 @@ ErrorFactory = Callable[[str], Exception]
 
 def _is_digest(value: Any) -> bool:
     return bool(re.fullmatch(r"sha256:[0-9a-f]{64}", str(value or "")))
+
+
+def _execution_claim(row: Mapping[str, Any], claim: str) -> bool | None:
+    """Keep an un-ingested claim unknown without discarding observed booleans."""
+    value = row.get(claim)
+    if value is None and row.get("typed_harness_failure") == NOT_INGESTED_GAP:
+        return None
+    return value is True
 
 
 def derive_policy_canary_episode_blockers(episodes: Any) -> list[str]:
@@ -223,9 +232,9 @@ def build_policy_canary_result_projection(
                 "terminal_state": (
                     "completed" if row.get("status") == "completed" else "blocked"
                 ),
-                "candidate_policy_queried": row.get("candidate_policy_queried") is True,
-                "actions_reached_robot": row.get("actions_reached_robot") is True,
-                "arm_moved": row.get("arm_moved") is True,
+                "candidate_policy_queried": _execution_claim(row, "candidate_policy_queried"),
+                "actions_reached_robot": _execution_claim(row, "actions_reached_robot"),
+                "arm_moved": _execution_claim(row, "arm_moved"),
                 "policy_outcome_interpretable": (
                     row.get("policy_outcome_interpretable") is True
                 ),
@@ -264,7 +273,7 @@ def build_policy_canary_result_projection(
                     row["policy_outcome_interpretable"] for row in rows
                 ),
                 "actions_delivered_episode_count": sum(
-                    row["actions_reached_robot"] for row in rows
+                    row["actions_reached_robot"] is True for row in rows
                 ),
                 "metrics": {
                     key: value

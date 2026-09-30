@@ -254,8 +254,10 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-task-evaluation-episode-compilation-remote.timer",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
-    # The storage reaper is no-spend housekeeping: it only ever removes
-    # unpinned cache bytes and offloads sealed evidence behind pointers.
+    # The storage reaper is no-spend housekeeping. By default it removes
+    # unpinned cache and replay bytes, releases stale pins, offloads sealed
+    # evidence and registry residue behind pointers, and retires finished
+    # website scene workspaces, each behind its own proofs (docs/CONTROL_PLANE_STORAGE.md).
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-completed-replay-cache-gc.timer",
     "blueprint-control-plane-capacity.timer",

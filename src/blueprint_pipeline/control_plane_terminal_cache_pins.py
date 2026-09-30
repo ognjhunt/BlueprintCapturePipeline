@@ -10,9 +10,9 @@ without a result registry (``sealed_cold_run``). The extended proofs
 (``sealed_registry_run``, ``activation_expired_unlaunched`` for
 profile-authority activations, and ``unconsumed_stale_pin``) live in the
 read-only ``control_plane_pin_proofs``, which says what each requires. They are
-evaluated on every tick but release a pin only with the owner's opt-in,
-``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``; until then their
-candidates are listed with ``"enabled": false``.
+evaluated on every tick and release a pin unless the owner opts out with
+``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=0`` (on by default since 2026-09-30);
+opted out, their candidates are listed with ``"enabled": false``.
 
 Every proof keeps the six-hour minimum pin age, the dependency closure (a pin
 is released only when no queue row or process references any pin in it), and
@@ -61,11 +61,12 @@ _MAX_ROWS = 200
 def extended_pin_proofs_setting(environ=os.environ):
     """Whether the extended proofs may release pins, and an alert when the setting is invalid.
 
-    Its own opt-in, parsed exactly like the storage GC's others: an invalid value
-    only lists candidates and alerts, and it never follows another opt-in.
+    Its own switch, on by default (owner decision 2026-09-30) and parsed exactly like the
+    storage GC's others: ``0`` turns it off, an invalid value only lists candidates and
+    alerts, and it never follows another switch.
     """
 
-    return _truthy_setting(environ, EXTENDED_PIN_PROOFS_ENV, EXTENDED_PIN_PROOFS_INVALID)
+    return _truthy_setting(environ, EXTENDED_PIN_PROOFS_ENV, EXTENDED_PIN_PROOFS_INVALID, default=True)
 
 
 def _closed_proof(pin, evidence_roots, *, hot_window_seconds=DEFAULT_HOT_WINDOW_SECONDS, now=None):

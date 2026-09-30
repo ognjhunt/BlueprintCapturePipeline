@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DoorConfig
+from .admitted_controls import DISPATCHER_HOLD_ONLY
 from .hostinfo import UNIT_NAME
 from .secrets_guard import redact_lines
 
@@ -64,6 +65,11 @@ _SCOPES = {
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
 }
+if DISPATCHER_HOLD_ONLY:
+    # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
+    # The API and privileged spool reader share this exact request allowlist.
+    _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
+               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -83,6 +89,7 @@ _SAFETY_CRITICAL = re.compile(
     r"spend-guard|watchdog|teardown|reaper|provider-zero|"
     r"terminal-resource-release|storage-gc|capacity|replay-cache-gc|preflight"
 )
+_BASELINE_TRIGGER_SAFETY = re.compile(r"spend-guard|watchdog|teardown|reaper|provider-zero")
 _LOG_TAIL_LINES = 200
 
 
@@ -118,6 +125,8 @@ def _hold_unit(unit: Any) -> str:
         raise RequestRefused("unit_is_door")
     if _SAFETY_CRITICAL.search(unit):
         raise RequestRefused("unit_safety_critical")
+    if DISPATCHER_HOLD_ONLY and unit != "blueprint-agent-run-dispatcher.timer":
+        raise RequestRefused("hold_unit_profile_refused")
     return unit
 
 
@@ -133,6 +142,7 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(body, dict):
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
+    required_scope(kind)
     if kind in ("retire-scene", "restore-scene"):
         fields = {"kind", "intent_id", "consent_id", "expected_sha256", "expected_size_bytes"}
         if kind == "retire-scene":
@@ -179,9 +189,12 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             # Pausing a trigger never kills a running job; stopping a service could.
             if not unit.endswith((".timer", ".path")):
                 raise RequestRefused("unit_action_not_allowed")
-            if _SAFETY_CRITICAL.search(unit):
+            safety = _BASELINE_TRIGGER_SAFETY if DISPATCHER_HOLD_ONLY else _SAFETY_CRITICAL
+            if safety.search(unit):
                 raise RequestRefused("unit_safety_critical")
-            if action == "stop":
+            if action == "stop" and (
+                not DISPATCHER_HOLD_ONLY or unit == "blueprint-agent-run-dispatcher.timer"
+            ):
                 raise RequestRefused("unit_stop_requires_hold")
         return {"kind": kind, "unit": unit, "action": action}
     if kind == "hold":

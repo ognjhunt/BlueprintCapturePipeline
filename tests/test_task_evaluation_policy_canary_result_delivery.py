@@ -11,6 +11,8 @@ from blueprint_pipeline.decision_evidence_contracts import (
     canonical_digest,
     cross_runtime_canonical_digest,
 )
+from blueprint_pipeline.policy_canary_output_members import NOT_INGESTED_GAP
+from blueprint_pipeline import task_evaluation_result_delivery as delivery_module
 from blueprint_pipeline.task_evaluation_result_delivery import (
     POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES,
     TaskEvaluationResultDeliveryError,
@@ -21,6 +23,10 @@ from blueprint_pipeline.task_evaluation_result_delivery import (
 )
 from blueprint_pipeline.task_evaluation_policy_canary_result_projection import (
     build_policy_canary_result_projection,
+)
+from blueprint_pipeline.task_evaluation_policy_canary_result import (
+    TaskEvaluationPolicyCanaryResultError,
+    validate_policy_canary_result,
 )
 from blueprint_pipeline.task_evaluation_result_archive_members import (
     REFERENCES_RELATIVE_PATH as REFERENCES,
@@ -730,3 +736,185 @@ def test_view_digest_mismatch_is_the_download_mode_digest_refusal(tmp_path, monk
             with pytest.raises(TaskEvaluationResultDeliveryError, match="^policy_canary_artifact_inventory_invalid$"):
                 _deliver(run_root, evidence, changed)
     assert streamed.data_ranges() == []
+
+
+# A streamed Quick-10 whose output arrived but was never ingested has no value
+# for these claims. Delivering false would say the policy was never queried and
+# the arm never moved.
+_EXECUTION_CLAIMS = ("candidate_policy_queried", "actions_reached_robot", "arm_moved")
+_ABSENT = object()
+
+
+def _claim_rule_before_null_passthrough(row: dict, claim: str) -> bool:
+    """The delivery's rule before unknown claims passed through: anything but True is False."""
+    return row.get(claim) is True
+
+
+def _deliver_under_both_claim_rules(tmp_path, monkeypatch, evidence, result, deliver):
+    """Deliver ``result`` under the previous claim rule and the current one, in separate run roots."""
+    with monkeypatch.context() as patch:
+        patch.setattr(delivery_module, "_execution_claim", _claim_rule_before_null_passthrough)
+        before = deliver(tmp_path / "before", evidence, result)
+    return before, deliver(tmp_path / "after", evidence, result)
+
+
+def _differences(before: object, after: object, path: tuple = ()) -> dict[tuple, tuple]:
+    """Every leaf that differs between two JSON values, keyed by its path."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        found: dict[tuple, tuple] = {}
+        for key in before.keys() | after.keys():
+            found.update(_differences(before.get(key, _ABSENT), after.get(key, _ABSENT), (*path, key)))
+        return found
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        found = {}
+        for index, (left, right) in enumerate(zip(before, after)):
+            found.update(_differences(left, right, (*path, index)))
+        return found
+    same = type(before) is type(after) and before == after
+    return {} if same else {path: (before, after)}
+
+
+def _gap_row(candidate_id: str, cell_id: str, seed: int, *, gap: str, claims: object) -> dict:
+    """A blocked episode as the dispatcher's gap path writes it: no receipt, a typed media gap."""
+    row: dict[str, object] = {
+        "candidate_id": candidate_id,
+        "cell_id": cell_id,
+        "seed": seed,
+        "status": "blocked",
+        "policy_outcome_interpretable": False,
+        "typed_harness_failure": gap,
+        "checkpoint_digest": "sha256:" + "1" * 64,
+        "runtime_identity_digest": "sha256:" + "2" * 64,
+        "reset_state_digest": "sha256:" + "9" * 64,
+        "visual_evidence": {"media_gap": {"type": gap, "reason": f"{gap}_reason"}},
+        "evidence_artifacts": {},
+    }
+    if claims is not _ABSENT:
+        row.update({claim: claims for claim in _EXECUTION_CLAIMS})
+    return row
+
+
+def _mixed_result(evidence: Path) -> dict:
+    result = _result(evidence)
+    result["episodes"] += [
+        # Before first observation: the run never observed, so the claims are false.
+        _gap_row("groot_n17_droid", "quick-cell-0", 3100, gap="before_first_observation", claims=False),
+        # Unreported or null claims without the ingestion gap keep today's false.
+        _gap_row("pi05_droid", "quick-cell-1", 3101, gap="before_first_observation", claims=_ABSENT),
+        _gap_row("groot_n17_droid", "quick-cell-1", 3101, gap="before_first_observation", claims=None),
+        # The streamed gap: the output arrived but was never ingested.
+        _gap_row("pi05_droid", "quick-cell-2", 3102, gap=NOT_INGESTED_GAP, claims=None),
+        # A reported boolean is an observation, even beside that gap.
+        _gap_row("groot_n17_droid", "quick-cell-2", 3102, gap=NOT_INGESTED_GAP, claims=False),
+    ]
+    result["status"] = "blocked"
+    result["blockers"] = [f"policy_canary_episode_failure:{NOT_INGESTED_GAP}"]
+    return _reseal(result)
+
+
+def _deliver_blocked(run_root: Path, evidence: Path, result: dict) -> dict:
+    return materialize_policy_canary_result_delivery(
+        run_root=run_root, run_id="scene-839873-canary-1", result_status="blocked",
+        session_result=result, evidence_root=evidence, closure_records=_closures(run_root))
+
+
+def _delivered_claims(delivery: dict) -> dict[tuple[str, str], tuple[object, object, object]]:
+    return {
+        (episode["variation"]["cell_id"], episode["subject_id"]): (
+            episode["policy_query"]["candidate_policy_queried"],
+            episode["action_delivery"]["actions_reached_robot"],
+            episode["action_delivery"]["arm_moved"],
+        )
+        for episode in delivery["episodes"]
+    }
+
+
+def test_completed_canary_delivery_is_byte_identical_under_either_claim_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    before, after = _deliver_under_both_claim_rules(
+        tmp_path, monkeypatch, evidence, _result(evidence), _deliver
+    )
+
+    assert _delivered_claims(after) == {("quick-cell-0", "pi05_droid"): (True, True, True)}
+    assert after == before
+    delivered = Path("artifacts/result_delivery/delivery.json")
+    assert (tmp_path / "after" / delivered).read_bytes() == (tmp_path / "before" / delivered).read_bytes()
+
+
+def test_not_ingested_episode_delivers_unknown_execution_claims_as_null(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    before, after = _deliver_under_both_claim_rules(
+        tmp_path, monkeypatch, evidence, _mixed_result(evidence), _deliver_blocked
+    )
+
+    assert _delivered_claims(after) == {
+        ("quick-cell-0", "pi05_droid"): (True, True, True),
+        ("quick-cell-0", "groot_n17_droid"): (False, False, False),
+        ("quick-cell-1", "pi05_droid"): (False, False, False),
+        ("quick-cell-1", "groot_n17_droid"): (False, False, False),
+        ("quick-cell-2", "pi05_droid"): (None, None, None),
+        ("quick-cell-2", "groot_n17_droid"): (False, False, False),
+    }
+    # The Website copy carries the same nulls.
+    assert _delivered_claims(compact_policy_canary_website_delivery(after)) == _delivered_claims(after)
+    # The previous rule delivered false for the unknown claims. Nothing else
+    # moved: the three claims of that one episode, and the digest over them.
+    index = next(
+        position
+        for position, episode in enumerate(after["episodes"])
+        if (episode["variation"]["cell_id"], episode["subject_id"]) == ("quick-cell-2", "pi05_droid")
+    )
+    assert _differences(before, after) == {
+        ("episodes", index, "policy_query", "candidate_policy_queried"): (False, None),
+        ("episodes", index, "action_delivery", "actions_reached_robot"): (False, None),
+        ("episodes", index, "action_delivery", "arm_moved"): (False, None),
+        ("delivery_digest",): (before["delivery_digest"], after["delivery_digest"]),
+    }
+    assert after["delivery_digest"] == cross_runtime_canonical_digest(
+        after, digest_field="delivery_digest"
+    )
+
+
+def test_terminal_projection_preserves_only_typed_not_ingested_unknowns(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _mixed_result(evidence)
+    result["episodes"][0]["evidence_artifacts"]["review_video"] = next(
+        artifact for artifact in result["artifact_inventory"] if artifact["role"] == "review_video"
+    )
+    result["episodes"].extend([
+        _gap_row("pi05_droid", "quick-cell-3", 3103, gap=NOT_INGESTED_GAP, claims=True),
+        _gap_row("groot_n17_droid", "quick-cell-3", 3103, gap=NOT_INGESTED_GAP, claims=_ABSENT),
+    ])
+    result["configuration_digest"] = "sha256:" + "a" * 64
+    result = _reseal(result)
+    delivery = _deliver_blocked(tmp_path / "delivery", evidence, result)
+    projection = build_policy_canary_result_projection(
+        setup={
+            "scene_id": "839873",
+            "request_digest": "sha256:" + "b" * 64,
+            "scene_revision_digest": result["scene_revision_digest"],
+            "task_success_contract": result["task_success_contract"],
+            "task_success_contract_digest": result["task_success_contract_digest"],
+        },
+        result=result,
+        delivery=delivery,
+    )
+    assert {
+        (row["cell_id"], row["candidate_id"]): tuple(row[claim] for claim in _EXECUTION_CLAIMS)
+        for row in projection["episodes"]
+    } == _delivered_claims(delivery)
+    assert [row["actions_delivered_episode_count"] for row in projection["candidate_results"]] == [2, 0]
+    unknown = next(row for row in projection["episodes"] if row["candidate_policy_queried"] is None)
+    unknown["failure_taxonomy"] = "before_first_observation"
+    projection["projection_digest"] = cross_runtime_canonical_digest(
+        projection, digest_field="projection_digest"
+    )
+    with pytest.raises(TaskEvaluationPolicyCanaryResultError, match="policy_canary_result_invalid:episodes"):
+        validate_policy_canary_result(projection)
