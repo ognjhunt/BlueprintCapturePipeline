@@ -203,6 +203,51 @@ def worker_main(root, action_id):
 
 
 def _launch_worker(entry, action_id, target, journals, *, expected='completed', restore=False, launch=None):
+    # Each invocation reaches a real terminal unit before another GC tick is
+    # considered. Never overlap handles, change an ID or mint a new deadline.
+    receipt = _later_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
+        restore=restore, launch=launch), journals, action_id)
+    assert receipt['status'] == expected, receipt
+    return receipt
+
+
+def _later_reference_attempts(invoke, journals, action_id):
+    """Keep genuine unknowns; at most three later SAME-operation attempts.
+
+    This is fixture cadence, not reader clearance or worker recovery. Every
+    later real unit reauthenticates the original clock, authority and all native
+    facts. An unsupported partial state remains KEEP rather than being retried.
+    """
+    directory = journals / action_id
+    def prefix():
+        if not directory.exists():
+            return {}
+        rows = {path.name: path.read_bytes() for path in directory.iterdir()}
+        assert len(rows) <= 256 and sum(map(len, rows.values())) <= 1024**2
+        return rows
+    original = prefix()
+    for attempt in range(3):
+        receipt = invoke()
+        current = prefix()
+        assert all(current.get(name) == raw for name, raw in original.items()), 'original_journal_changed'
+        if receipt.get('status') not in ('kept', 'failed') or receipt.get('code') != \
+                'historical_generation_process_unknown':
+            return receipt
+        raw = current.get('e-00000.json')
+        assert raw is not None, 'refused_unit_has_no_original_intent'
+        intent = json.loads(raw)
+        assert intent['kind'] == 'intent' and intent['action_id'] == action_id
+        # Evidence of the real refusal is retained, not relabeled completion.
+        print(json.dumps(dict(fixture_reference_refusal=receipt, action_id=action_id,
+            attempt=attempt + 1, original_intent_sha256=hashlib.sha256(raw).hexdigest())), flush=True)
+        if attempt == 2:
+            return receipt
+        original = current
+        time.sleep(0.05)
+    raise AssertionError('bounded_reference_attempts_exhausted')
+
+
+def _launch_worker_once(entry, action_id, target, journals, *, restore=False, launch=None):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
     def observations():
@@ -280,7 +325,6 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     if remote is not None:
         assert len(_encoded(remote)) <= 16384
         _write(entry.parent / 'cloud-fixture.json', _encoded(remote))
-    assert receipt['status'] == expected, receipt
     return receipt
 
 
@@ -366,6 +410,11 @@ def _installed_entry(root, entry):
             assert options['region_name'] == 'us-east-1'
             return cloud
         boto3.client = object_client
+        def remote_state():
+            return dict(corrupt=cloud.corrupt,
+                objects={key: base64.b64encode(raw).decode() for key, raw in cloud.objects.items()},
+                metadata=cloud.metadata, calls=cloud.calls)
+        globals()['_installed_fixture_remote'] = remote_state
 """.replace('FAKE_CLOUD', repr(str(root / 'python/historical_generation_fake_cloud.py'))).replace(
             'CLOUD_STATE', repr(str(root / 'cloud-fixture.json')))
         boot = boot.replace(needle, transport + needle)
@@ -375,6 +424,13 @@ def _installed_entry(root, entry):
 """
         boot = boot.replace('        print(json.dumps(receipt, sort_keys=True, separators=',
                             emit + '        print(json.dumps(receipt, sort_keys=True, separators=')
+        # Retain the actual fake-transport calls after a real worker refusal,
+        # while preserving the shipped typed KEEP code and nonzero exit. This
+        # never supplies preservation, removal, completion or provider receipts.
+        refusal = "dict(status='kept', code=code, error_type=type(error).__name__)"
+        assert boot.count(refusal) == 1
+        boot = boot.replace(refusal, refusal[:-1] + ", **({'_fixture_remote': "
+            "_installed_fixture_remote()} if '_installed_fixture_remote' in globals() else {}))")
     _write(installed / 'historical-generation-entry.py', boot.encode(), 0o644)
     _write(entry, ('#!/bin/sh\nexec /usr/bin/python3 -I -S '
                    + str(installed / 'historical-generation-entry.py') + ' "$@"\n').encode(), 0o755)

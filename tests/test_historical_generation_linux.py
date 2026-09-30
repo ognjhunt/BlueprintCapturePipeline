@@ -254,7 +254,7 @@ def _root_fixture():
 @pytest.mark.slow
 @pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
                    reason='actual disposable Linux action sandbox required; Mac skip is unmet')
-def test_actual_historical_target_only_write_and_foreign_reference_visibility():
+def test_actual_historical_target_only_write_and_foreign_reference_visibility(record_property):
     command = [sys.executable, str(Path(__file__).resolve()), '--root-fixture']
     if os.geteuid() != 0:
         command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
@@ -262,6 +262,7 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
     done = subprocess.run(command, capture_output=True, text=True, timeout=150,
                           cwd=Path(__file__).parents[1],
                           env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    _record_reference_refusals(done.stdout, record_property)
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(target_writable=True,
         adjacent_and_parent_denied=2, foreign_fd_cwd_mapping_visible=True,
@@ -291,7 +292,7 @@ if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
 @pytest.mark.slow
 @pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
                    reason='actual disposable installed Linux GC required; Mac skip is unmet')
-def test_actual_installed_historical_gc_default_off_delete_and_second_tick():
+def test_actual_installed_historical_gc_default_off_delete_and_second_tick(record_property):
     command = [sys.executable, str(Path(__file__).resolve()), '--installed-root-fixture']
     if os.geteuid() != 0:
         command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
@@ -299,6 +300,7 @@ def test_actual_installed_historical_gc_default_off_delete_and_second_tick():
     done = subprocess.run(command, capture_output=True, text=True, timeout=150,
                           cwd=Path(__file__).parents[1],
                           env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    _record_reference_refusals(done.stdout, record_property)
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(actual_owner_approved_delete=True,
         original_member_journal=True, historical_delete_idempotent=True)
@@ -312,7 +314,7 @@ if __name__ == '__main__' and sys.argv[1:] == ['--installed-root-fixture']:
 @pytest.mark.slow
 @pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
                    reason='actual disposable installed archive/restore required; Mac skip is unmet')
-def test_actual_installed_historical_gc_offload_and_restore():
+def test_actual_installed_historical_gc_offload_and_restore(record_property):
     command = [sys.executable, str(Path(__file__).resolve()), '--installed-archive-fixture']
     if os.geteuid() != 0:
         command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
@@ -320,6 +322,7 @@ def test_actual_installed_historical_gc_offload_and_restore():
     done = subprocess.run(command, capture_output=True, text=True, timeout=150,
                           cwd=Path(__file__).parents[1],
                           env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    _record_reference_refusals(done.stdout, record_property)
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(
         historical_offload_full_readback=True, historical_restore_decision_bound=True,
@@ -333,3 +336,18 @@ if __name__ == '__main__' and sys.argv[1:] == ['--installed-archive-fixture']:
     results.update(connected_delete(installed=True, action='offload', corrupt=True))
     results.update(connected_delete(installed=True, action='offload', destination_conflict=True))
     print(json.dumps(results, sort_keys=True))
+
+
+def _record_reference_refusals(stdout, record_property):
+    rows = []
+    for line in stdout.splitlines():
+        if not line.startswith('{'):
+            continue
+        value = json.loads(line)
+        if 'fixture_reference_refusal' in value:
+            assert len(rows) < 64
+            assert value['fixture_reference_refusal']['code'] == 'historical_generation_process_unknown'
+            rows.append(value)
+    encoded = json.dumps(rows, sort_keys=True)
+    assert len(encoded) <= 32768
+    record_property('historical_reference_refusals', encoded)
