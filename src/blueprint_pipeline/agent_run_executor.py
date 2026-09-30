@@ -618,7 +618,8 @@ def poll_once(
             journal["state"] = "native_execution_in_progress"
             _write_json_atomic(journal_path, journal)
             execute_staged_controlled_request(request=canonical,
-                job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]))
+                job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
+                pipeline_run_id=journal.get("pipeline_run_id"))
         terminal = terminal_reader(
             job_dir=jobs_root_for(journal) / str(journal["canonical_job_id"]),
             expected_job_id=str(journal["canonical_job_id"]),

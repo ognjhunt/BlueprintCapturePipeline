@@ -129,7 +129,8 @@ def _url(inventory: dict[str, Any], name: str) -> str:
 def _identity(path: Path, row: dict[str, Any]) -> tuple[str, int]:
     if path.is_symlink() or not path.is_file():
         raise ValueError("g1_pi_tokenizer_file_missing_or_symlink:" + row["path"])
-    digest = hashlib.sha256() if "sha256" in row else hashlib.sha1()
+    # SHA-1 is the upstream Git blob identifier, not a security digest.
+    digest = hashlib.sha256() if "sha256" in row else hashlib.sha1(usedforsecurity=False)
     size = path.stat().st_size
     if size != row["size_bytes"]:
         raise ValueError("g1_pi_tokenizer_file_size_mismatch:" + row["path"])
