@@ -161,8 +161,18 @@ _CLOSURE = textwrap.dedent('''
     state, result = compile_claimed_envelope(Path(claimed), source_name=Path(claimed).name, inputs=Path(inputs),
                                              outputs=Path(outputs), source_commit=commit, episode_compiler=compiler,
                                              disk_reservation_root=None, storage_pins_root=None)
+    # Only what the compile loads from installed distributions counts.  This harness imports the repository's
+    # own ``tests`` package, and packages_distributions() credits a top-level name to every distribution that
+    # ships one: draccus (via lerobot in uv.lock) ships a top-level ``tests``.  Modules loaded from the
+    # repository's src/ and tests/ are ours, even where a virtualenv sits inside the checkout.
+    repository = [(Path.cwd() / part).resolve() for part in ("src", "tests")]
+
+    def ours(name):
+        path = getattr(sys.modules.get(name), "__file__", None)
+        return bool(path) and any(Path(path).resolve().is_relative_to(root) for root in repository)
+
     owners = importlib.metadata.packages_distributions()
-    loaded = {name.split(".")[0] for name in set(sys.modules) - baseline}
+    loaded = {name.split(".")[0] for name in set(sys.modules) - baseline if not ours(name)}
     distributions = sorted({owner for top in loaded for owner in owners.get(top, ())} - {"blueprint-capture-pipeline"})
     Path(out).write_text(json.dumps({"status": result["status"], "blockers": result["blockers"],
                                      "distributions": distributions}), encoding="utf-8")
