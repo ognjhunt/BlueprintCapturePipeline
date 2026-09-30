@@ -72,3 +72,30 @@ def unknown_creation_scope(original, observed, decision, events, action_id, *, t
         original_generation_digest=original['generation_digest'],
         observed_generation_digest=observed['generation_digest'], pending_intent=pending,
         remove_member=unknown, parent_path=parent, parent_before=before, parent_after=after))
+
+
+def reconciled_parent(approved, observed, scope, *, tick=lambda: None):
+    """One exact absent dentry and its parent transition; never freed credit."""
+    before, rows = _members(approved), _members(observed)
+    relative, parent = scope['remove_member']['path'], scope['parent_path']
+    _require(before.get(relative) == scope['remove_member']
+        and before[parent]['version'] == scope['parent_after']
+        and set(rows) == set(before) - {relative}
+        and set(observed) == set(approved)
+        and observed['generation_digest'] == canonical_digest(observed, digest_field='generation_digest')
+        and observed['execution_authorized'] is False
+        and all(observed[key] == approved[key] for key in
+            ('schema_version', 'target_path', 'parent_path', 'root_identity', 'root_version'))
+        and observed['target_version'] == rows['']['version']
+        and observed['member_count'] == approved['member_count'] - 1
+        and observed['logical_payload_bytes'] == approved['logical_payload_bytes'] - scope['remove_member']['size_bytes'])
+    old, current = before[parent]['version'], rows[parent]['version']
+    _require(current[:5] == old[:5]
+        and current[5] == old[5] - int(scope['remove_member']['kind'] == 'directory')
+        and current[7] >= old[7] and current[8] >= old[8])
+    for name, row in rows.items():
+        tick()
+        original = before[name]
+        _require(row.keys() == original.keys() and (row == original if name != parent else
+            all(row[key] == original[key] for key in original if key not in ('version', 'allocated_bytes'))))
+    return current.copy()
