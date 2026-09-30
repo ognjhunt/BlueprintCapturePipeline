@@ -2091,6 +2091,56 @@ resource "google_storage_bucket_iam_member" "remote_cpu_transport_worker" {
   member = "serviceAccount:${google_service_account.remote_cpu_worker[0].email}"
 }
 
+# The host's paid unit dispatches as this identity. Its roles are custom and
+# bound only on the stage jobs and the transport bucket. Its key is created by
+# the owner and loaded into that unit alone with LoadCredential=; Terraform
+# never manages a service account key.
+resource "google_service_account" "remote_cpu_dispatcher" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  account_id   = "remote-cpu-dispatcher"
+  display_name = "Blueprint Remote CPU Dispatcher"
+  description  = "Runs remote CPU worker jobs with attempt overrides and cancels their executions"
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_dispatcher" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "remoteCpuDispatcher"
+  title       = "Blueprint Remote CPU Dispatcher"
+  description = "Run a remote CPU worker job with overrides and read or cancel its executions; bound only on those jobs."
+  permissions = [
+    "run.executions.cancel",
+    "run.executions.get",
+    "run.executions.list",
+    "run.jobs.get",
+    "run.jobs.runWithOverrides",
+  ]
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_transport_writer" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "remoteCpuTransportWriter"
+  title       = "Blueprint Remote CPU Transport Writer"
+  description = "Create, read and delete remote CPU transport objects; bound only on the transport bucket."
+  permissions = [
+    "storage.objects.create",
+    "storage.objects.delete",
+    "storage.objects.get",
+  ]
+}
+
+resource "google_storage_bucket_iam_member" "remote_cpu_transport_dispatcher" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  bucket = google_storage_bucket.remote_cpu_transport[0].name
+  role   = google_project_iam_custom_role.remote_cpu_transport_writer[0].name
+  member = "serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"
+}
+
 resource "google_cloud_run_v2_job" "remote_cpu_worker" {
   provider = google-beta
   for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
@@ -2158,6 +2208,16 @@ resource "google_cloud_run_v2_job" "remote_cpu_worker" {
   depends_on = [
     google_project_service.required_apis["run.googleapis.com"],
   ]
+}
+
+resource "google_cloud_run_v2_job_iam_member" "remote_cpu_dispatcher" {
+  for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
+
+  project  = var.project_id
+  location = var.primary_region
+  name     = google_cloud_run_v2_job.remote_cpu_worker[each.key].name
+  role     = google_project_iam_custom_role.remote_cpu_dispatcher[0].name
+  member   = "serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"
 }
 
 # =============================================================================

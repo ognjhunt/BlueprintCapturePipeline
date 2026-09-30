@@ -25,6 +25,15 @@ TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
 GIB = 1024**3
 IMAGE = "gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:" + "d" * 64
+# Plan 14 §14: run with overrides and read or cancel executions; nothing that operates on the project.
+DISPATCHER_PERMISSIONS = [
+    "run.executions.cancel",
+    "run.executions.get",
+    "run.executions.list",
+    "run.jobs.get",
+    "run.jobs.runWithOverrides",
+]
+TRANSPORT_WRITER_PERMISSIONS = ["storage.objects.create", "storage.objects.delete", "storage.objects.get"]
 IMAGE_VARIABLES = {
     "docker_image",
     "privacy_sam3_image",
@@ -258,3 +267,48 @@ def test_remote_cpu_worker_identity_has_no_project_roles() -> None:
     # No authoritative project policy exists that could hand it a role either.
     assert 'resource "google_project_iam_binding"' not in main
     assert 'resource "google_project_iam_policy"' not in main
+
+
+def test_dispatcher_roles_are_custom_minimal_and_resource_scoped() -> None:
+    main = _main()
+    resources = _resources(main)
+    dispatcher = resources[("google_service_account", "remote_cpu_dispatcher")]
+    assert _attr(dispatcher, "account_id") == '"remote-cpu-dispatcher"'
+
+    # Custom and minimal. No run.operations.get, which grants nothing at job scope; no object
+    # listing and no bucket permission.
+    for name, permissions in (("remote_cpu_dispatcher", DISPATCHER_PERMISSIONS),
+                              ("remote_cpu_transport_writer", TRANSPORT_WRITER_PERMISSIONS)):
+        role = resources[("google_project_iam_custom_role", name)]
+        assert _attr(role, "project") == "var.project_id"
+        assert sorted(_list(role, "permissions")) == permissions, name
+
+    # Resource-scoped: bound on every stage's job and on the transport bucket, never the project.
+    holders = {address for address, body in resources.items()
+               if "google_service_account.remote_cpu_dispatcher[" in body}
+    assert holders == {("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher"),
+                       ("google_storage_bucket_iam_member", "remote_cpu_transport_dispatcher")}
+    member = '"serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"'
+    job = resources[("google_cloud_run_v2_job", "remote_cpu_worker")]
+    on_job = resources[("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher")]
+    assert _attr(on_job, "for_each") == _attr(job, "for_each")
+    assert _attr(on_job, "name") == "google_cloud_run_v2_job.remote_cpu_worker[each.key].name"
+    assert _attr(on_job, "location") == _attr(job, "location")
+    assert _attr(on_job, "role") == "google_project_iam_custom_role.remote_cpu_dispatcher[0].name"
+    assert _attr(on_job, "member") == member
+    on_bucket = resources[("google_storage_bucket_iam_member", "remote_cpu_transport_dispatcher")]
+    assert _attr(on_bucket, "bucket") == "google_storage_bucket.remote_cpu_transport[0].name"
+    assert _attr(on_bucket, "role") == (
+        "google_project_iam_custom_role.remote_cpu_transport_writer[0].name")
+    assert _attr(on_bucket, "member") == member
+
+    # Each custom role is bound exactly where it belongs and nowhere else.
+    bindings = {address: re.findall(r"google_project_iam_custom_role\.(remote_cpu_[a-z_]+)\[", body)
+                for address, body in resources.items()}
+    assert {address: roles for address, roles in bindings.items() if roles} == {
+        ("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher"): ["remote_cpu_dispatcher"],
+        ("google_storage_bucket_iam_member", "remote_cpu_transport_dispatcher"):
+            ["remote_cpu_transport_writer"],
+        ("google_storage_bucket_iam_member", "remote_cpu_transport_worker"):
+            ["remote_cpu_transport_reader"],
+    }
