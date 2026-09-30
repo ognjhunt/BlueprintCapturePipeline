@@ -142,6 +142,10 @@ def _recover_before_final(worker, events, roots, monotonic):
     """Complete only authenticated physical stages or privately snapshotted trees."""
     if events[-1]['kind'] == 'restore_intent' and events[-1]['body'].get('phase') == 'stage_complete':
         return _recover_complete_stage(worker, events, roots, monotonic)
+    if events[-1]['kind'] == 'restore_intent' and events[-1]['body'].get('phase') in (
+            'publish', 'publish_observed', 'stage_remove'):
+        from .control_plane_lane_historical_restore_split_worker import recover_split_stage
+        return recover_split_stage(worker, events, roots, monotonic)
     if all(event['kind'] in ('intent', 'restore_directory', 'restore_member')
            or event['kind'] == 'restore_intent' and event['body'].get('phase') in
                ('reservation', 'directory', 'member') for event in events):

@@ -120,12 +120,12 @@ class RestoreTree:
             version=self.held.versions[relative], sha256=row['sha256'], size_bytes=row['size_bytes'],
             parent_path=parent_path, parent_version=self.held.versions[parent_path]))
 
-    def verify_bytes(self, *, staged):
+    def verify_bytes(self, *, staged, published=()):
         self.held.verify()
         for row in self.manifest['members']:
             if row['kind'] != 'file':
                 continue
-            relative = self.name + '/' + row['path'] if staged else row['path']
+            relative = self.name + '/' + row['path'] if staged and row['path'].split('/')[0] not in published else row['path']
             digest, size = hashlib.sha256(), 0
             with self.held._opened(relative) as (fd, guard):
                 while True:
@@ -141,18 +141,26 @@ class RestoreTree:
             _require(size == row['size_bytes'] and 'sha256:' + digest.hexdigest() == row['sha256'],
                      'restore_payload_changed')
 
-    def publish(self):
+    def publication_observed(self, name, *, uncertain):
+        self.worker.record('restore_intent', dict(phase='publish_observed', path=name,
+            stage_version=self.held.versions[self.name], target_version=self.held.versions[''],
+            member_version=self.held.versions[name], uncertain=uncertain))
+
+    def publish(self, *, published=(), pending=None, stage_removal_pending=False):
         library = ctypes.CDLL(None, use_errno=True)
         rename = library.renameat2
         rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
         rename.restype = ctypes.c_int
         tops = sorted(row['path'] for row in self.manifest['members'] if row['path'] and '/' not in row['path'])
         for name in tops:
+            if name in published:
+                continue
             old = self.name + '/' + name
             is_directory = self.held.rows[old]['kind'] == 'directory'
-            self.worker.record('restore_intent', dict(phase='publish', path=name,
-                stage_version=self.held.versions[self.name], target_version=self.held.versions[''],
-                member_version=self.held.versions[old]))
+            if name != pending:
+                self.worker.record('restore_intent', dict(phase='publish', path=name,
+                    stage_version=self.held.versions[self.name], target_version=self.held.versions[''],
+                    member_version=self.held.versions[old]))
             with self.held._opened(self.name) as (stage, stage_guard):
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                              dir_fd=stage)
@@ -183,6 +191,10 @@ class RestoreTree:
                         self.held._guard(fd, name, self.held.root, name)
                 finally:
                     os.close(fd)
+            self.publication_observed(name, uncertain=False)
+        if not stage_removal_pending:
+            self.worker.record('restore_intent', dict(phase='stage_remove',
+                stage_version=self.held.versions[self.name], target_version=self.held.versions['']))
         with self.held._opened(self.name) as (fd, guard):
             with self.worker.mutation_authority(readers=True):
                 guard()

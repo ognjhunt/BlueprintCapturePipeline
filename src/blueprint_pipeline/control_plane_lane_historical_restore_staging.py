@@ -16,16 +16,10 @@ def _require(value):
     generation._require(value, 'restore_stage_changed')
 
 
-def _validate_stage(original, observed, decision, events, action_id, *, complete, tick):
-    originals, rows = _members(original), _members(observed)
+def stage_birth_versions(original, decision, events, action_id, *, complete, tick):
+    """Replay original durable births only; this supplies no physical observation."""
+    originals = _members(original)
     stage = '.historical-restore-' + action_id
-    _require(type(observed) is dict and set(observed) == set(original)
-        and observed['schema_version'] == original['schema_version']
-        and observed['execution_authorized'] is False
-        and observed['generation_digest'] == canonical_digest(observed, digest_field='generation_digest')
-        and all(observed[key] == original[key] for key in ('target_path', 'parent_path'))
-        and observed['root_version'] == decision['parent_version']
-        and rows['']['version'] == observed['target_version'])
     _require(type(events) is list and events)
     files = [row for row in originals.values() if row['kind'] == 'file']
     if complete:
@@ -89,13 +83,27 @@ def _validate_stage(original, observed, decision, events, action_id, *, complete
             and after[7] >= before[7] and after[8] >= before[8])
         versions[parent], versions[relative] = after, version
         births.add(path)
+    if complete:
+        _require(births == set(originals))
+    return versions, births
+
+
+def _validate_stage(original, observed, decision, events, action_id, *, complete, tick):
+    originals, rows = _members(original), _members(observed)
+    stage = '.historical-restore-' + action_id
+    versions, births = stage_birth_versions(original, decision, events, action_id, complete=complete, tick=tick)
+    _require(type(observed) is dict and set(observed) == set(original)
+        and observed['schema_version'] == original['schema_version']
+        and observed['execution_authorized'] is False
+        and observed['generation_digest'] == canonical_digest(observed, digest_field='generation_digest')
+        and all(observed[key] == original[key] for key in ('target_path', 'parent_path'))
+        and observed['root_version'] == decision['parent_version']
+        and rows['']['version'] == observed['target_version'])
     _require('' in births and rows['']['version'] == versions['']
         and set(rows) == {''} | {stage + ('/' + path if path else '') for path in births}
         and observed['member_count'] == len(births) + 1
         and observed['logical_payload_bytes'] == sum(originals[path]['size_bytes']
             for path in births if originals[path]['kind'] == 'file'))
-    if complete:
-        _require(births == set(originals))
     for path in births:
         old = originals[path]
         tick()

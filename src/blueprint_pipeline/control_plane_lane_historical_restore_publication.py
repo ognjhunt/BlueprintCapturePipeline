@@ -33,6 +33,11 @@ def _rights_transition(before, after, owner):
 def validate_publication(original, observed, decision, events, action_id, *,
                          tick=lambda: None, pending_owner_rights=False):
     """Complete publication, with only authenticated planned private effects."""
+    published_versions = None
+    if any(event['kind'] == 'restore_intent' and event['body'].get('phase') in
+           ('publish_observed', 'stage_remove') for event in events):
+        from .control_plane_lane_historical_restore_split import validate_publication_events
+        published_versions = validate_publication_events(original, decision, events, action_id, tick=tick)
     originals = _members(original)
     _require(type(observed) is dict and set(observed) == set(original)
         and observed['schema_version'] == original['schema_version']
@@ -115,8 +120,8 @@ def validate_publication(original, observed, decision, events, action_id, *,
         if path in rights:
             _require(_rights_transition(rights[path], before, owner))
         else:
-            born = versions[path]
-            _require(before == born if path not in publications else
+            born = published_versions[path] if published_versions is not None else versions[path]
+            _require(before == born if published_versions is not None or path not in publications else
                 type(before) is list and len(before) == 10
                 and before[:8] == born[:8] and before[9] == born[9] and before[8] >= born[8])
         rights[path] = before
@@ -127,6 +132,7 @@ def validate_publication(original, observed, decision, events, action_id, *,
         if path in rights:
             _require(_rights_transition(rights[path], row['version'], originals[path]['version']))
             continue
-        before, after = versions[path], row['version']
-        _require(after == before if path not in publications else
+        before = published_versions[path] if published_versions is not None else versions[path]
+        after = row['version']
+        _require(after == before if published_versions is not None or path not in publications else
             after[:8] == before[:8] and after[9] == before[9] and after[8] >= before[8])
