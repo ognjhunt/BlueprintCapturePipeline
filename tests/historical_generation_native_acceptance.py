@@ -383,7 +383,7 @@ def _installed_entry(root, entry):
 
 
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
-                     restore_interruption='restore_final', installed=False):
+                     restore_interruption='restore_final', installed=False, destination_conflict=False):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -519,7 +519,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                                    'removed': 'removed', 'unlink': 'removal_intent'}[interruption]
             (root / 'interrupt-once').unlink()
         if corrupt:
-            refused = _launch_worker(entry, action_id, target, journals, expected='failed')
+            refused = _launch_worker(entry, action_id, target, journals,
+                expected='kept' if installed else 'failed', launch=gc_tick if installed else None)
             assert refused['code'].endswith('archive_preservation_failed'), refused
             assert all((target / path).read_bytes() == raw for path, raw in original.items())
             events = [json.loads(path.read_bytes()) for path in (journals / action_id).glob('e-*.json')]
@@ -613,6 +614,23 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 else:
                     raise AssertionError('unapproved restore decision published')
                 assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
+            if destination_conflict:
+                # A real post-approval destination write must not be overwritten
+                # or incorporated into the approved empty-tombstone generation.
+                sentinel = target / 'one.log'
+                _write(sentinel, b'keep unapproved destination bytes')
+                refused = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
+                    expected='kept' if installed else 'failed', launch=gc_tick if installed else None)
+                assert refused['code'].endswith('restore_tombstone_changed'), refused
+                assert sentinel.read_bytes() == b'keep unapproved destination bytes'
+                assert set(path.name for path in target.iterdir()) == {'one.log'}
+                assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
+                refused_events = [json.loads(path.read_bytes()) for path in
+                                  (journals / restore['action_id']).glob('e-*.json')]
+                assert [event['kind'] for event in refused_events] == ['intent']
+                assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
+                assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+                return dict(historical_restore_existing_destination_kept=True)
             if restore_interruption is not None:
                 _write(root / 'interrupt-once', restore_interruption.encode())
                 interrupted = _launch_worker(entry, restore['action_id'], target, journals,
