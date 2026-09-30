@@ -232,6 +232,7 @@ def test_restore_snapshot_is_private_immutable_metadata_not_an_extra_event(histo
         head = journal.head
         selected = journal.publish_restore_snapshot(snapshot)
         assert journal.read_restore_snapshot(selected) == snapshot
+        assert journal.select_restore_snapshot() == (selected, snapshot)
         assert journal.head == head
         count, _ = journal._scan()
         assert count == 1

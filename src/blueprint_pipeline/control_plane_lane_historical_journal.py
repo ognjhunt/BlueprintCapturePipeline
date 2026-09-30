@@ -255,6 +255,23 @@ class HistoricalActionJournal:
         self.files.verify_record(record)
         return value
 
+    def select_restore_snapshot(self):
+        """Observe fixed protected snapshot bytes before a final can select them.
+
+        This supplies an immutable byte selector, never authority or completion.
+        The worker still proves original member creations, current owner/clock,
+        exact private inode inventory and full original cloud/local readback.
+        """
+        self._load()
+        _require(self.scope['action'] == 'restore', 'snapshot_invalid')
+        raw, record = self.files.read(self.root / 'restore.snapshot.json',
+            cap=generation.MAX_MANIFEST_BYTES, protected=True, mode=0o600)
+        selector = authority._selector(raw)
+        self.files.verify_record(record)
+        snapshot = self.read_restore_snapshot(selector)
+        self.files.verify_record(record)
+        return selector, snapshot
+
 
 class HistoricalJournalObservation:
     """Read past immutable facts without adopting their expired write authority.
