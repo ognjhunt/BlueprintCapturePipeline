@@ -152,23 +152,7 @@ def worker_main(root, action_id):
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
     except BaseException as error:
-        # Temporary fixture-only diagnostic: exception classes/errno/code
-        # locations, never foreign proc contents or authority overrides.
-        frames, current = [], error
-        for _ in range(4):
-            if current is None:
-                break
-            trace = current.__traceback__
-            locations = []
-            while trace is not None and len(locations) < 24:
-                locations.append((Path(trace.tb_frame.f_code.co_filename).name,
-                                  trace.tb_frame.f_code.co_name, trace.tb_lineno))
-                trace = trace.tb_next
-            frames.append(dict(type=type(current).__name__, errno=getattr(current, 'errno', None),
-                               locations=locations))
-            current = current.__context__
-        emit(dict(status='failed', error_type=type(error).__name__, code=str(error),
-                  _fixture_exception_frames=frames))
+        emit(dict(status='failed', error_type=type(error).__name__, code=str(error)))
         raise
     emit(receipt)
 
