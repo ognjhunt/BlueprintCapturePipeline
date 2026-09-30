@@ -47,7 +47,7 @@ def _validate_unit_observation(action_id, target, private_store, fields, status,
     _require(fields.get('TimeoutStartUSec') == '4h', code)
     syscall_filter = fields.get('SystemCallFilter', '')
     _require(syscall_filter and not syscall_filter.startswith('~')
-        and {'landlock_create_ruleset', 'landlock_add_rule', 'landlock_restrict_self'}
+        and {'seccomp', 'landlock_create_ruleset', 'landlock_add_rule', 'landlock_restrict_self'}
             .issubset(syscall_filter.split())
         and not {'ptrace', 'process_vm_readv', 'process_vm_writev'}.intersection(syscall_filter.split()), code)
     _require(set(str(fields.get('CapabilityBoundingSet', '')).lower().split()) == _CAPS

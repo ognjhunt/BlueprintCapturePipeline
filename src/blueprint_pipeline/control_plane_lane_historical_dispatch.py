@@ -37,7 +37,7 @@ def _unit_properties(target, private_store):
                               'CAP_FOWNER', 'CAP_SYS_PTRACE'], AmbientCapabilities=[],
         RestrictAddressFamilies=['AF_UNIX', 'AF_INET', 'AF_INET6'],
         SystemCallArchitectures='native',
-        SystemCallFilter=['@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self',
+        SystemCallFilter=['@system-service seccomp landlock_create_ruleset landlock_add_rule landlock_restrict_self',
                           '~ptrace process_vm_readv process_vm_writev'],
         ReadWritePaths=[str(target), private_store], TasksMax=64, LimitNOFILE=512,
         MemoryMax=512 * 1024**2, TimeoutStartSec=generation.MAX_SECONDS, Restart='no',
