@@ -45,9 +45,9 @@ ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining
 # SAM31 preparation cache is inventoried only; no GC phase may remove it without a separate owner decision.
 ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
-# Activation lookaheads are only planned until BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1 is set. With it, every
-# scratch input under a finished lookahead's prepared-references goes, not only its store copies, and then the
-# directories left empty there.
+# Activation lookaheads: replay cache retention is on by default; set BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=0
+# in the operator environment file to opt out, and they are only planned. On, every scratch input under a finished
+# lookahead's prepared-references goes, not only its store copies, and then the directories left empty there.
 ReadWritePaths=-/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls/scene-configuration-activations
 # Finished website scene workspaces are retired here, and their receipts written beside them.
 ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs
@@ -66,14 +66,14 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_DERIVED_ROOTS=/var/lib/blueprint/task-eva
 Environment=BLUEPRINT_CONTROL_PLANE_GC_PLAN_ONLY_DERIVED_ROOTS=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
 Environment=BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls/scene-configuration-activations
 Environment=BLUEPRINT_CONTROL_PLANE_GC_QUEUE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-preparations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches:/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-constructions
-# Sealed run evidence eligible for offload after the hot window; offload itself stays dry-run until
-# BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1 is set in the operator environment file.
+# Sealed run evidence eligible for offload after the hot window; offload is on by default, and
+# BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=0 in the operator environment file keeps it a dry run.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs:/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries:/var/lib/blueprint/pipeline-control-plane/episode-interpretation-backfills:/var/lib/blueprint/pipeline-control-plane/policy-canary-preprovider-audits
 # Settled attempts keep reopening their launch run's local receipt; retention
 # reads these records so it never archives evidence the accounting still needs.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
-# Offload itself stays an operator opt-in: BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1
-# in the environment file.  Once opted in, the artifact store is the system of
+# Offload is on by default; set BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=0 in the
+# environment file to opt out.  While it is on, the artifact store is the system of
 # record for sealed run evidence and the host keeps a digest-bound pointer; two
 # days covers every closeout that still reads a sealed run directory
 # (interpretation, website sync, billing).
@@ -91,9 +91,9 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS=/var/lib/blueprint
 Environment=BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS=21600
 # Website scene working copies are retired once every file verifies in Firebase Storage or is
 # archived to the artifact store behind a replayable receipt, and no ledger lease, pin, queue,
-# live process or open scene intent can still read them. Retirement is its own owner decision:
-# it applies only with BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1 in the operator
-# environment file (never following the offload opt-in), and otherwise only plans. That file also
+# live process or open scene intent can still read them. Retirement is its own owner decision,
+# on by default: BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=0 in the operator environment
+# file opts out (never following the offload switch), and then it only plans. That file also
 # supplies GOOGLE_APPLICATION_CREDENTIALS for the Firebase Storage listing.
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS=/var/lib/blueprint/pubsub-handoffs
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents

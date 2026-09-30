@@ -25,8 +25,9 @@ from tests.test_task_evaluation_scene_configuration_bundle import (
 
 @pytest.fixture(autouse=True)
 def _ceiling_output_admission(monkeypatch):
-    """These lane runs pin today's ceiling admission, whatever the shell exports."""
-    monkeypatch.delenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION", raising=False)
+    """These lane runs pin the ceiling admission, the explicit opt-out from the measured default,
+    whatever the shell exports."""
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION", "ceiling")
 
 
 @pytest.mark.parametrize("preparation_rejected", [False, True])

@@ -500,15 +500,21 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
         "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"]
     assert classify_path(roots(SCENE_INTENT_ROOT_ENV)[0]).storage_class == "work"
     assert roots(PINS_ROOT_ENV) == ["/var/lib/blueprint/pipeline-control-plane/storage-pins"]
-    for opt_in in ("BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD", SCENE_WORKSPACE_RETIREMENT_ENV, REPLAY_CACHE_RETENTION_ENV):
+    switches = (
+        "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD", "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD",
+        SCENE_WORKSPACE_RETIREMENT_ENV, REPLAY_CACHE_RETENTION_ENV,
+        "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH", "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS",
+    )
+    for switch in switches:
         assert not any(
-            row.startswith(f"Environment={opt_in}=") for row in service.splitlines()
-        ), "offload, scene retirement and replay cache retention stay operator opt-ins from the environment file"
-    # Retirement is its own owner decision: the example environment documents it but leaves it off.
+            row.startswith(f"Environment={switch}=") for row in service.splitlines()
+        ), "every storage GC switch is on by default in code; only the operator's environment file may opt out"
+    # Owner decision 2026-09-30: each switch is on by default. The example environment documents
+    # each one's opt-out, commented, so a host seeded from it runs the code's default.
     example = text("deploy/systemd/pipeline-control-plane.env.example")
-    for opt_in in (SCENE_WORKSPACE_RETIREMENT_ENV, REPLAY_CACHE_RETENTION_ENV):
-        assert f"# {opt_in}=1" in example
-        assert not any(row.startswith(f"{opt_in}=") for row in example.splitlines())
+    for switch in switches:
+        assert f"# {switch}=0" in example
+        assert not any(row.startswith(f"{switch}=") for row in example.splitlines())
     assert "Unit=blueprint-control-plane-storage-gc.service" in timer
     assert "OnUnitInactiveSec=" in timer and "Persistent=true" in timer
 

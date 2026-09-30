@@ -94,7 +94,9 @@ def _verify_embedded_pi_tokenizer(
         if "sha256" in file:
             digest = hashlib.sha256(content).hexdigest()
         else:
-            digest = hashlib.sha1(f"blob {len(content)}\0".encode("ascii") + content).hexdigest()
+            # Preserve upstream Git blob identity; the inventory is SHA-256 bound.
+            digest = hashlib.sha1(f"blob {len(content)}\0".encode("ascii") + content,
+                usedforsecurity=False).hexdigest()
         if digest != (file.get("sha256") or file.get("git_blob_sha1")):
             raise ValueError("g1_provider_bundle_pi_tokenizer_file_digest_mismatch")
         rows.append({"path": file["path"], "digest": digest, "size_bytes": len(content)})

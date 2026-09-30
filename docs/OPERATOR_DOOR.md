@@ -273,7 +273,21 @@ on the next request.
 
 Upgrade from a session with the `deploy` scope:
 `python3 scripts/operator_door.py upgrade-door <main commit> --wait`, or rerun
-`install.sh --upgrade` as root. Remove: `systemctl disable --now
+`install.sh --upgrade` as root.
+
+An upgrade from recorded baseline `d78ee479368c2df99370a9dc4a61dd328d07d215`
+automatically preserves that door's `deploy`, `unit`, and `door-upgrade`
+request set and adds only `hold`/`release-hold` for
+`blueprint-agent-run-dispatcher.timer`. A host operator can explicitly select
+the same profile with `install.sh --upgrade --dispatcher-hold-only`.
+This profile refuses missing existing credentials before staging, preserves
+credential bytes/permissions and Caddy, and skips unrelated owner-store
+provisioning. It persists across subsequent upgrades. `/status` reports
+`door.request_kinds` and `door.hold_target` so operators can verify the fence.
+An ordinary full code upgrade from the old baseline would otherwise admit
+additional privileged operations under existing `operate` scopes.
+
+Remove: `systemctl disable --now
 blueprint-operator-door.service blueprint-operator-door-runner.path`, delete the
 `handle /api/live-pipeline/operator/*` block from the live Caddyfile and reload
 Caddy, then remove `/opt/blueprint/operator-door*`,

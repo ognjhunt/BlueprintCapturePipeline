@@ -48,7 +48,7 @@ and never a host path.
 | `policy_canary_dispatch` | 2 GiB | the measured footprint | canary dispatcher queue boundary |
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
-| `scene_configuration_output` | 2 GiB | only with `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`, for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix leaves archives in the job directory, estimated at one unpacked bundle (an estimate, not a proven bound). When it shares the volume, admission checks the larger of its own need and the hold plus those archives up front, and the hold is taken after the prefix releases; otherwise one reservation holds both. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
+| `scene_configuration_output` | 2 GiB | under measured output admission, the default since 2026-09-30 (unset, empty or `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`; `=ceiling` opts out to the 5U + 512 MiB free-space check), for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix leaves archives in the job directory, estimated at one unpacked bundle (an estimate, not a proven bound). When it shares the volume, admission checks the larger of its own need and the hold plus those archives up front, and the hold is taken after the prefix releases; otherwise one reservation holds both. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
 | `policy_canary_output` | 1 GiB | only when the Quick-10 streams (`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`, or unset with the B2 store configured and the host's needed-set measurement recorded within budget): a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
 
 A measured output hold refused after the CPU prefix is sealed like one refused
@@ -551,18 +551,30 @@ hourly (`OnUnitInactiveSec=1h`: an hour after the previous tick finished) as
 `root`, confined by its unit to the roots it may write, and writes
 `/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. The report
 directory is traversable (0755) and the atomic report is readable (0644), so the
-owner can inspect it with `python3 scripts/operator_door.py cat
-/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json` before enabling
-scene-workspace retirement. The door still scans report content for secrets.
+owner can inspect every tick with `python3 scripts/operator_door.py cat
+/var/lib/blueprint/pipeline-control-plane/storage-gc/latest.json`. The door still
+scans report content for secrets.
+
+**Every switch is on by default** (owner decision 2026-09-30): evidence offload,
+result residue offload, scene workspace retirement, replay cache retention, shared
+replay scratch and the extended pin proofs. Unset or empty means on. `0`, `false` or
+`no` in `/etc/blueprint/pipeline-control-plane.env` is the operator's opt-out for
+that one switch, and the phase then only plans. Any other value also keeps the
+phase planning: every switch but evidence offload adds its
+`*_setting_invalid` alert, and evidence offload stays silent, as it always has.
+No switch follows another. Only the default changed: every proof, pin, lease,
+receipt, live-reader check, lock and budget each phase checks before it removes
+anything is unchanged. Lane scratch stays report-only and off.
+
 One tick runs nine phases in order:
 
 1. **Stranded queue rows**: pending rows bound to a release other than the
    running one move to `stranded/` beside a receipt, so they stop counting as
    live queue references. Nothing is deleted.
 2. **Terminal cache pins** whose run is proven closed are released: by the two
-   original proofs always, and by the extended proofs only with
-   `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1` in the operator
-   environment file (until then they list candidates with `"enabled": false`).
+   original proofs always, and by the extended proofs unless
+   `BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=0` is set in the operator
+   environment file (then they list candidates with `"enabled": false`).
    Only the pin ledger changes. The proofs are described under
    [Terminal cache pin proofs](#terminal-cache-pin-proofs).
 3. **Derived directories** under the configured `cache` roots are retired when
@@ -578,8 +590,8 @@ One tick runs nine phases in order:
    that are sealed (terminal receipt present) and idle past the two-day hot
    window (`BLUEPRINT_CONTROL_PLANE_EVIDENCE_HOT_WINDOW_SECONDS=172800`), or that
    have no receipt and have not changed for three days (abandoned by a superseded
-   or torn-down worker). It applies only when
-   `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=1` is set in
+   or torn-down worker). It applies unless
+   `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=0` is set in
    `/etc/blueprint/pipeline-control-plane.env`: the directory is packed, published
    to the artifact store under kind `control-plane-evidence` with full readback,
    replaced by `<name>.offloaded.v1.json` (URI, digest, size, per-member digests),
@@ -593,9 +605,9 @@ One tick runs nine phases in order:
    is removed (`task_evaluation_result_residue_offload`). The registry, the
    delivery, the receipts, every registered file, every path a live reader
    reopens and anything a reader can reach from those (a link's target inside
-   the run, any file a kept text document names) stay. This step only
-   plans until `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1` is set as
-   well, and then attempts at most
+   the run, any file a kept text document names) stay. This step applies only
+   while evidence offload does, and only plans when
+   `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=0` is set. It attempts at most
    `BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_MAX_RUNS_PER_TICK` (default 5)
    publications a tick, failed ones included; later runs wait
    (`deferred_tick_cap`). Each hour's tick starts at another run, so runs that
@@ -609,8 +621,8 @@ One tick runs nine phases in order:
    semantic-pretraining workspace that has been idle and unpinned for six hours
    is removed behind a sealed marker.
 9. **Scene workspaces** are retired only after terminal, acknowledgement,
-   reference, and remote-copy checks pass. This phase plans until
-   `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` enables it; its
+   reference, and remote-copy checks pass. This phase only plans when
+   `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=0` is set; its
    detailed contract is below.
 
 Between the workspace bundles and the scene workspaces the tick also runs the
@@ -621,8 +633,8 @@ replay cache phase, described next.
 Every scene-configuration activation replays its parent preparation under
 `<activation>/lookahead/` (the unit's `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS`,
 class `work`); each `parent-*` directory there is one replay's temporary root.
-Until `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1` the phase only
-estimates. With it, a tick that applies takes, from each finished parent replay
+With `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=0` the phase only
+estimates. Otherwise (the default), a tick that applies takes, from each finished parent replay
 whose report says it ran in that root, with no paid execution and no provider
 mutation, closed for an hour and with no live reader, every regular file in its
 `prepared-references` whose links are all inside that tree and that is not newer
@@ -656,9 +668,9 @@ directories a replay's removals leave empty are pruned as above right after them
 before the next replay. No scratch file's bytes are read;
 only the holders' small reports are hashed, and only on a tick that applies.
 
-This removal needs its own `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1`
-beside the retention opt-in, on a tick that applies; either switch alone removes
-nothing shared. The report's `replay_caches.shared_scratch` always says what it
+This removal has its own switch, `BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH`
+(on by default; `=0` opts out), beside the retention switch, on a tick that applies;
+with either switch off nothing shared is removed. The report's `replay_caches.shared_scratch` always says what it
 found: `enabled` (both switches), `status` (`applied` only when the tick removed),
 `live_readers_checked` (false on a tick that does not apply, which sweeps no
 process table, so its candidates are an upper bound), `candidate_groups` and
@@ -698,7 +710,8 @@ a terminal receipt without a result registry and idle past the hot window
 (`sealed_cold_run`). Until 10c they stopped at the first such name, so a
 website activation's sealed own directory could release the pin while its
 `<id>-launch` run was still going. The extended proofs, in the read-only
-`control_plane_pin_proofs` module, apply only with the opt-in:
+`control_plane_pin_proofs` module, apply unless the operator opts out with
+`BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=0`:
 
 - `sealed_registry_run`: every run under the activation's evidence names
   carries its terminal receipt and a result registry the artifact store accepts
@@ -884,7 +897,9 @@ so each manifest (and its receipt) also records `walked_file_count` and
 With `--report-out` the tick also writes `summary.json`
 (`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same
 way (0644 in the 0755 directory). It holds the tick's status and
-`source_report_digest`, the opt-in flags, alerts, `phase_errors` and
+`source_report_digest`, the `opt_in` flags (each switch as the tick read it: `true`
+unless the operator opted out or set an invalid value, except `lane_scratch`, which
+stays `false` until plan 12's apply lands), alerts, `phase_errors` and
 `skipped_roots`. Per phase it gives `candidate_bytes`,
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
 phase counts without sizing, and the terminal pin phase also gives
@@ -1048,12 +1063,12 @@ raises an alert signal and leaves the message retryable
 `BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT`, else `<intent root parent>/website-source-bindings`)
 and reports them under `scene_workspaces` (candidates, retired count and bytes,
 `retained_counts` by reason). It attempts at most 20 retirements per tick (attempts,
-not successes, since each can publish a large archive), and only with its own explicit
-opt-in, `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1` in the operator
-environment file: unset, each tick only plans. It never follows
+not successes, since each can publish a large archive). It is on by default (owner
+decision 2026-09-30); its own switch, `BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=0`
+in the operator environment file, is the opt-out, and then each tick only plans. It never follows
 `BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD`. Any other value disables it and puts
 `scene_workspace_retirement_setting_invalid` in the report's `alerts` without aborting
-the tick. Neither the unit nor the example environment enables it. The operator door offers the same operation by
+the tick. Neither the unit nor the example environment sets it, so the default applies. The operator door offers the same operation by
 hand (`retire-scene-workspace`, see `docs/OPERATOR_DOOR.md`), plan first and
 `--apply` second. Every phase of the tick is isolated: a phase that raises is recorded
 as `{"status": "error", "error": "<type>"}` under its key, later phases still run, and

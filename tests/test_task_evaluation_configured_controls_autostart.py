@@ -152,9 +152,12 @@ def test_intent_binds_every_fixed_cpu_and_paid_boundary_input(tmp_path: Path) ->
     }
 
 
-def test_signed_legacy_placement_model_remains_readable_after_model_upgrade(tmp_path: Path) -> None:
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-5.6-sol"])
+def test_signed_legacy_placement_model_remains_readable_after_model_upgrade(
+    tmp_path: Path, model: str,
+) -> None:
     _path, value = _intent(tmp_path)
-    value["placement"]["agent_model"] = "gpt-5.6-sol"
+    value["placement"]["agent_model"] = model
     value["intent_digest"] = autostart.canonical_digest(value, digest_field="intent_digest")
     assert autostart.validate_configured_controls_autostart_intent(value) == value
 
