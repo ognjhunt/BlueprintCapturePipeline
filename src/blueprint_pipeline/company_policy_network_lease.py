@@ -60,19 +60,30 @@ def _outbound_ipv4(connection: Mapping[str, Any], *, attempt_dir: Path) -> str:
     if endpoint is None or identity is None:
         raise ValueError("policy_network_gpu_ssh_unavailable")
     host, port = endpoint
-    enrollment = enroll_vast_ssh_host_key(
-        {"ssh_host": host, "ssh_port": port}, attempt_dir=attempt_dir, timeout_seconds=10,
-    )
-    known_hosts_value = str(enrollment.get("known_hosts_file") or "")
-    pin = (_validated_vast_known_hosts_pin(known_hosts_value, host=host, port=port)
-           if enrollment.get("status") == "enrolled" and known_hosts_value else None)
+    deadline = time.monotonic() + 180
+    pin = None
+    last_blocker = "vast_ssh_host_key_scan_failed"
+    while time.monotonic() < deadline:
+        enrollment = enroll_vast_ssh_host_key(
+            {"ssh_host": host, "ssh_port": port}, attempt_dir=attempt_dir,
+            timeout_seconds=15,
+        )
+        known_hosts_value = str(enrollment.get("known_hosts_file") or "")
+        pin = (_validated_vast_known_hosts_pin(known_hosts_value, host=host, port=port)
+               if enrollment.get("status") == "enrolled" and known_hosts_value else None)
+        if pin is not None:
+            break
+        last_blocker = str((enrollment.get("blockers") or ["host_key_pin_invalid"])[0])
+        if last_blocker == "vast_ssh_existing_host_key_pin_invalid":
+            break
+        time.sleep(5)
     if pin is None:
-        raise ValueError("policy_network_gpu_host_key_unavailable")
+        raise TimeoutError("policy_network_gpu_host_key_unavailable:" + last_blocker)
     known_hosts, _ = pin
     remote = shlex.join(["sh", "-c", _REMOTE_IP_SCRIPT])
     command = _ssh_command(host=host, port=port, identity=identity,
                            known_hosts=known_hosts, remote=remote)
-    deadline = time.monotonic() + 90
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         try:
             completed = subprocess.run(command, capture_output=True, timeout=35, check=False)
