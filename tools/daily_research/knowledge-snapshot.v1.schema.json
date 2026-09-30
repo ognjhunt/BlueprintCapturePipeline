@@ -52,6 +52,24 @@
             "required": [
               "kind",
               "value"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "page_last_edited_at"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "value": {
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
             ]
           }
         },
@@ -431,6 +449,29 @@
                 "sources",
                 "limits",
                 "conflicts"
+              ],
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "field": {
+                        "const": "specification"
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "specification"
+                    ]
+                  },
+                  "else": {
+                    "not": {
+                      "required": [
+                        "specification"
+                      ]
+                    }
+                  }
+                }
               ]
             },
             "maxItems": 20

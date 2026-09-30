@@ -50,10 +50,21 @@ def identifier(value):
     require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,120}", value) is not None)
 
 
-def timestamp(value):
-    require(isinstance(value, str))
+def calendar_date(value):
+    require(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is not None,
+            "knowledge_date_invalid")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return date.fromisoformat(value)
+    except ValueError:
+        raise SnapshotError("knowledge_date_invalid") from None
+
+
+def timestamp(value):
+    require(isinstance(value, str) and re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)", value) is not None,
+        "knowledge_date_invalid")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value)
     except ValueError:
         raise SnapshotError("knowledge_date_invalid") from None
     require(parsed.tzinfo is not None, "knowledge_date_invalid")
@@ -64,7 +75,7 @@ def source_moment(value):
     # Date-only reviews keep their honest granularity. Midnight is used only
     # for conservative freshness arithmetic, never emitted as provenance.
     if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        return datetime.combine(date.fromisoformat(value), time.min, ZoneInfo("America/Chicago"))
+        return datetime.combine(calendar_date(value), time.min, ZoneInfo("America/Chicago"))
     return timestamp(value)
 
 
@@ -183,9 +194,10 @@ def _validate(value, now):
                 require(checked <= exported, "knowledge_date_in_future")
                 if source["publication_date"] is not None:
                     require(isinstance(source["publication_date"], str))
-                    require(date.fromisoformat(source["publication_date"]) <= checked.date(), "knowledge_date_in_future")
+                    require(calendar_date(source["publication_date"]) <= checked.date(), "knowledge_date_in_future")
                 if source["revalidated_at"] is not None:
                     require(checked <= source_moment(source["revalidated_at"]) <= exported, "knowledge_date_invalid")
+            require(("specification" in fact) == (fact["field"] == "specification"), "knowledge_specification_required")
             if "specification" in fact:
                 spec = fact["specification"]
                 shape(spec, {"name", "value", "unit", "conditions"})
@@ -225,6 +237,8 @@ def load(path, now):
 
 
 def fact_state(fact, now):
+    if fact["field"] == "unknown":
+        return "unknown"
     if fact["status"] != "reviewed":
         return fact["status"]
     if fact["field"] in LIVE_FIELDS or fact["evidence_level"] == "current_availability":

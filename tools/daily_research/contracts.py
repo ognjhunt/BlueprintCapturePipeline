@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from tools.daily_research.knowledge import (
     LEVELS,
     SnapshotError,
+    calendar_date,
+    fact_state,
     require,
     shape,
     source_moment,
@@ -34,10 +36,13 @@ def lookup(context, record_id, fact_id):
 
 
 def evidence(value, day, context, observed_at=None):
-    require(value["evidence_level"] in LEVELS, "evidence_level_invalid")
-    require(value["evidence_level"] != "unknown", "unsupported_evidence_level")
+    if value["role"] == "capability":
+        require(value["evidence_level"] in LEVELS, "evidence_level_invalid")
+        require(value["evidence_level"] != "unknown", "unsupported_evidence_level")
+    else:
+        require(value["evidence_level"] is None, "site_evidence_level_must_be_null")
     require(value["checked_date"] == checked_day(value["source_checked_at"]), "evidence_date_integrity_invalid")
-    require(date.fromisoformat(value["checked_date"]) <= date.fromisoformat(day), "evidence_date_in_future")
+    require(calendar_date(value["checked_date"]) <= date.fromisoformat(day), "evidence_date_in_future")
     require(source_moment(value["source_checked_at"]) <= timestamp(context["snapshot_loaded_at"])
             or value["origin"] == "live", "evidence_date_in_future")
     if value["origin"] == "live":
@@ -50,7 +55,8 @@ def evidence(value, day, context, observed_at=None):
     require(value["origin"] == "snapshot", "evidence_origin_invalid")
     require(value["role"] == "capability", "live_task_geography_required")
     fact = lookup(context, value["snapshot_record_id"], value["snapshot_fact_id"])
-    require(fact["load_state"] == "usable_background", "cached_fact_not_usable")
+    require(fact["load_state"] == "usable_background"
+            and fact_state(fact, observed_at or datetime.now(timezone.utc)) == "usable_background", "cached_fact_not_usable")
     require(value["claim"] == fact["statement"] and value["evidence_level"] == fact["evidence_level"]
             and value["snapshot_loaded_at"] == context["snapshot_loaded_at"], "cached_fact_binding_invalid")
     source = {"url": value["url"], "publisher": value["publisher"], "publication_date": value["source_date"],
@@ -86,4 +92,4 @@ def deltas(values, day, context, observed_at=None):
             require(item["classification"] in {"operator", "vendor", "independent"} and item["evidence_level"] in LEVELS,
                     "knowledge_delta_evidence_invalid")
             if item["publication_date"] is not None:
-                require(date.fromisoformat(item["publication_date"]) <= date.fromisoformat(day), "source_date_in_future")
+                require(calendar_date(item["publication_date"]) <= date.fromisoformat(day), "source_date_in_future")

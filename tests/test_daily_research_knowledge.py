@@ -1,6 +1,7 @@
 """Synthetic, offline snapshot/provenance tests; never real qualified evidence."""
 import json
 from copy import deepcopy
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,7 @@ def v2(ctx):
     result = output()
     result.update(schema_version="blueprint.daily-research.v2", snapshot_content_hash=ctx["content_hash"], proposed_knowledge_deltas=[])
     for e in result["candidates"][0]["evidence"]:
-        e.update(origin="live", evidence_level="demonstrated_capability", source_checked_at=DAY,
+        e.update(origin="live", evidence_level="demonstrated_capability" if e["role"] == "capability" else None, source_checked_at=DAY,
                  snapshot_loaded_at=None, revalidated_at=None, snapshot_record_id=None, snapshot_fact_id=None)
     fact = ctx["records"][0]["facts"][0]
     source = fact["sources"][0]
@@ -103,6 +104,8 @@ def test_cached_provenance_cannot_be_rewritten(field, value, code):
     ctx = context()
     result = v2(ctx)
     result["candidates"][0]["evidence"][1][field] = value
+    if field == "role":
+        result["candidates"][0]["evidence"][1]["evidence_level"] = None
     if field == "source_checked_at":
         result["candidates"][0]["evidence"][1]["checked_date"] = DAY
     with pytest.raises(Refusal, match=code):
@@ -293,6 +296,7 @@ def test_configuration_explicit_v2_and_export_validated(tmp_path):
 
 def test_published_schemas_accept_synthetic_fixture_and_v2_packet():
     from jsonschema import Draft202012Validator, FormatChecker
+    assert "date-time" in FormatChecker().checkers, "date-time format validation must be installed"
     directory = Path(__file__).parents[1] / "tools/daily_research"
     for filename, value in (("knowledge-snapshot.v1.schema.json", snapshot()),
                             ("daily-research.v2.schema.json", v2(context()))):
@@ -335,3 +339,177 @@ def test_exact_reviewed_quote_and_source_precision_are_preserved():
     cached = candidates[0]["evidence"][1]
     assert cached["source_checked_at"] == "2026-09-29T18:30:00Z"
     assert cached["quote"] == "Synthetic source exact quote"
+
+
+@pytest.mark.parametrize("change", [
+    lambda f:f.update(field="specification"),
+    lambda f:f.update(field="specification", specification=None),
+    lambda f:f.update(field="specification", specification={"name":"payload", "value":5, "conditions":["Synthetic rated limit"]}),
+    lambda f:f.update(field="specification", specification={"name":"payload", "value":5, "unit":"kg", "conditions":[]}),
+    lambda f:f.update(specification={"name":"payload", "value":5, "unit":"kg", "conditions":["Synthetic rated limit"]}),
+])
+def test_specification_shape_cannot_bypass_loader_or_schema(change):
+    from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+    value = snapshot()
+    change(value["records"][0]["facts"][0])
+    rehash(value)
+    with pytest.raises(k.SnapshotError):
+        k.validate(value, NOW)
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/knowledge-snapshot.v1.schema.json").read_text())
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+
+
+def test_expiry_during_run_refuses_cache_without_rewriting_saved_context():
+    value = snapshot()
+    fact = value["records"][0]["facts"][0]
+    fact["freshness_days"] = 1
+    fact["sources"][0]["source_checked_at"] = (NOW - timedelta(days=1) + timedelta(seconds=60)).isoformat()
+    ctx = context(value)
+    original = deepcopy(ctx)
+    assert ctx["records"][0]["facts"][0]["load_state"] == "usable_background"
+    validate_output(v2(ctx), DAY, set(), contract_version=2, knowledge_context=ctx, observed_at=NOW + timedelta(seconds=30))
+    with pytest.raises(Refusal, match="cached_fact_not_usable"):
+        validate_output(v2(ctx), DAY, set(), contract_version=2, knowledge_context=ctx, observed_at=NOW + timedelta(seconds=120))
+    assert ctx == original
+
+
+def test_resume_refuses_cache_that_expired_after_create(runner_fixture, tmp_path):
+    runner, api, ledger = runner_fixture
+    path = enable_v2(runner, tmp_path)
+    value = snapshot()
+    value["records"][0]["facts"][0]["freshness_days"] = 1
+    value["records"][0]["facts"][0]["sources"][0]["source_checked_at"] = (NOW - timedelta(days=1) + timedelta(seconds=60)).isoformat()
+    save_json(path, rehash(value))
+    api.turn_status = "in_progress"
+    row = runner.start_or_resume()
+    original = deepcopy(row["knowledge_context"])
+    assert row["state"] == "running"
+    api.turn_status = "completed"
+    api.raw = json.dumps(v2(original)).encode()
+    runner.clock = lambda: NOW + timedelta(seconds=120)
+    row = runner.start_or_resume(allow_create=False)
+    assert row["state"] == "failed" and row["error"] == "cached_fact_not_usable"
+    assert ledger.get(DAY)["knowledge_context"] == original
+    assert len(api.payloads) == 1
+
+
+def test_reviewed_unknown_field_is_always_a_gap():
+    value = snapshot()
+    value["records"][0]["facts"][0].update(field="unknown", status="reviewed")
+    ctx = context(value)
+    assert ctx["records"][0]["facts"][0]["load_state"] == "unknown"
+    with pytest.raises(Refusal, match="cached_fact_not_usable"):
+        validate(v2(ctx), ctx)
+
+
+@pytest.mark.parametrize("field,bad_date", [
+    ("exported_at", "20260930T110000+0000"),
+    ("exported_at", "2026-09-30X11:00:00+00:00"),
+    ("exported_at", "2026-09-30T11:00:00+00:00:00"),
+    ("exported_at", "2026-09-30T11:00:00+00:90"),
+    ("exported_at", "2026-09-30T11:00:00+24:00"),
+    ("exported_at", "2026-09-30T24:00:00Z"),
+    ("exported_at", "2026-09-30T11:60:00Z"),
+    ("exported_at", "2026-09-30 11:00:00Z"),
+    ("source_checked_at", "20260929"),
+    ("source_checked_at", "2026-09-29X11:00:00Z"),
+    ("publication_date", "20260929"),
+    ("publication_date", "2026-02-30"),
+    ("revision", "2026-09-29X11:00:00Z"),
+])
+def test_date_lexical_contract_matches_loader_and_active_schema(field, bad_date):
+    from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+    checker = FormatChecker()
+    assert "date-time" in checker.checkers
+    value = snapshot()
+    if field == "exported_at":
+        value[field] = bad_date
+    elif field == "revision":
+        value["source_pages"][0]["revision"]["value"] = bad_date
+    else:
+        value["records"][0]["facts"][0]["sources"][0][field] = bad_date
+    rehash(value)
+    with pytest.raises(k.SnapshotError, match="date_invalid"):
+        k.validate(value, NOW)
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/knowledge-snapshot.v1.schema.json").read_text())
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema, format_checker=checker).validate(value)
+
+
+def test_valid_rfc3339_precision_is_preserved_without_normalizing_source_string():
+    from jsonschema import Draft202012Validator, FormatChecker
+    value = snapshot()
+    source = value["records"][0]["facts"][0]["sources"][0]
+    source["source_checked_at"] = "2026-09-29t18:30:00.123456789z"
+    value["exported_at"] = "2026-09-30T06:00:00-05:00"
+    rehash(value)
+    ctx = context(value)
+    assert ctx["records"][0]["facts"][0]["sources"][0]["source_checked_at"] == "2026-09-29t18:30:00.123456789z"
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/knowledge-snapshot.v1.schema.json").read_text())
+    Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+
+
+@pytest.mark.parametrize("failure", ["missing", "bad_hash", "too_broad", "bad_filters"])
+def test_cli_v2_preflight_refuses_bad_snapshot_before_provider_construction(runner_fixture, tmp_path, monkeypatch, capsys, failure):
+    from datetime import datetime
+
+    from tools.daily_research import runner as module
+    runner, api, _ = runner_fixture
+    path = enable_v2(runner, tmp_path)
+    code = "knowledge_snapshot_missing"
+    if failure == "missing":
+        path.unlink()
+    elif failure == "bad_hash":
+        value = snapshot()
+        value["content_hash"] = "f" * 64
+        save_json(path, value)
+        code = "knowledge_hash_mismatch"
+    elif failure == "too_broad":
+        value = snapshot()
+        for i in range(12):
+            record = deepcopy(value["records"][0])
+            record["record_id"] = f"extra-{i}"
+            value["records"].append(record)
+        save_json(path, rehash(value))
+        code = "knowledge_filter_required"
+    else:
+        runner.config["knowledge_filters"] = {"unknown_filter":["x"]}
+        code = "knowledge_schema_invalid"
+    config_path = tmp_path / "config.json"
+    save_json(config_path, runner.config)
+    constructors = []
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    def provider(_key):
+        constructors.append(True)
+        return api
+
+    monkeypatch.setattr(module, "datetime", FixedDatetime)
+    monkeypatch.setattr(module, "Provider", provider)
+    assert module.main(["--config", str(config_path), "--state-dir", str(tmp_path / "cli-state"), "preflight"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == code
+    assert constructors == [] and api.calls == []
+
+
+@pytest.mark.parametrize("role,level,code", [
+    ("task", "demonstrated_capability", "site_evidence_level_must_be_null"),
+    ("geography", "named_deployment", "site_evidence_level_must_be_null"),
+    ("capability", None, "evidence_level_invalid"),
+    ("capability", "unknown", "unsupported_evidence_level"),
+])
+def test_site_facts_cannot_be_mislabeled_as_capability_demonstrations(role, level, code):
+    from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+    ctx = context()
+    result = v2(ctx)
+    entry = next(e for e in result["candidates"][0]["evidence"] if e["role"] == role)
+    entry["evidence_level"] = level
+    with pytest.raises(Refusal, match=code):
+        validate(result, ctx)
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/daily-research.v2.schema.json").read_text())
+    with pytest.raises(ValidationError):
+        Draft202012Validator(schema, format_checker=FormatChecker()).validate(result)

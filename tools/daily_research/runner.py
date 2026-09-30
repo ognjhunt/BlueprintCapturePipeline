@@ -177,6 +177,16 @@ def crm_snapshot(path, now):
     return snapshot, known
 
 
+def load_knowledge_context(config, now):
+    """Shared local preflight boundary; no provider calls or saved-state mutation."""
+    if config.get("research_contract_version", 1) != 2:
+        return None
+    try:
+        return knowledge.select(knowledge.load(config["knowledge_snapshot"], now), now, config.get("knowledge_filters"))
+    except knowledge.SnapshotError as exc:
+        raise Refusal(str(exc)) from None
+
+
 def validate_output(output, run_date, known, *, contract_version=1, knowledge_context=None, observed_at=None):
     if not isinstance(output, dict):
         raise Refusal("output_schema_invalid")
@@ -235,8 +245,13 @@ def validate_output(output, run_date, known, *, contract_version=1, knowledge_co
                 raise Refusal("evidence_field_invalid")
             if e["classification"] == "vendor" and e["claim_kind"] == "fact":
                 raise Refusal("vendor_claim_presented_as_fact")
-            if e["source_date"] is not None and date.fromisoformat(e["source_date"]) > date.fromisoformat(run_date):
-                raise Refusal("source_date_in_future")
+            if e["source_date"] is not None:
+                try:
+                    published = knowledge.calendar_date(e["source_date"]) if contract_version == 2 else date.fromisoformat(e["source_date"])
+                except knowledge.SnapshotError as exc:
+                    raise Refusal(str(exc)) from None
+                if published > date.fromisoformat(run_date):
+                    raise Refusal("source_date_in_future")
             if contract_version == 2:
                 try:
                     contracts.evidence(e, run_date, knowledge_context, observed_at)
@@ -375,7 +390,7 @@ def prompt(day, knowledge_context=None):
         example.update(schema_version="blueprint.daily-research.v2", snapshot_content_hash=knowledge_context["content_hash"],
                        proposed_knowledge_deltas=[])
         for entry in example["candidates"][0]["evidence"]:
-            entry.update(origin="live", evidence_level="demonstrated_capability", source_checked_at=day,
+            entry.update(origin="live", evidence_level=None, source_checked_at=day,
                          snapshot_loaded_at=None, revalidated_at=None, snapshot_record_id=None, snapshot_fact_id=None)
     result = (f"Daily Blueprint sites-first public research for {day}. Read deep-research and "
             "blueprint-evidence-qualification from /workspace/capabilities/blueprint. Find up to THREE "
@@ -405,7 +420,8 @@ def prompt(day, knowledge_context=None):
                    "Preserve publication_date as source_date and source_checked_at; revalidated_at advances only after actual "
                    "live source review. Stale, conflicted, unknown and unsupported facts are gaps, never positive matches. "
                    "Availability, geography, deployment, integrations, support, price, supervision and safety require live sources. "
-                   "Evidence levels distinguish vendor_claim, demonstrated_capability, named_deployment, current_availability. "
+                   "Capability evidence levels distinguish vendor_claim, demonstrated_capability, named_deployment, current_availability. "
+                   "For ordinary task/geography site facts use evidence_level null; these are not robot demonstrations. "
                    "Hardware specifications need units and conditions; max payload never proves a bounded task. Software-only "
                    "teams need no hardware specs. Keep company and exact product/version, supported hardware and task scope separate. "
                    "Do not infer service eligibility from unknown geography or deployment from a shipment announcement. "
@@ -441,15 +457,8 @@ class Runner:
             if any(x.get("cleanup_required") for x in rows):
                 raise Refusal("previous_hosted_cleanup_unresolved")
             snapshot, _ = crm_snapshot(self.config["crm_snapshot"], self.clock())
-            context = None
             version = self.config.get("research_contract_version", 1)
-            if version == 2:
-                try:
-                    loaded_at = self.clock()
-                    context = knowledge.select(knowledge.load(self.config["knowledge_snapshot"], loaded_at),
-                                               loaded_at, self.config.get("knowledge_filters"))
-                except knowledge.SnapshotError as exc:
-                    raise Refusal(str(exc)) from None
+            context = load_knowledge_context(self.config, self.clock())
             checked = preflight(self.api)
             if self.stop_requested():
                 return {"date": day, "state": "stopped_before_create"}
@@ -746,13 +755,18 @@ def main(argv=None):
                               "review_file": str(ledger.root / (row["date"] + "-review.json")) if row.get("packet") else None}
                              for row in ledger.rows()]))
             return 0
+        if args.command == "preflight":
+            preflight_now = datetime.now(timezone.utc)
+            snapshot, _ = crm_snapshot(cfg["crm_snapshot"], preflight_now)
+            context = load_knowledge_context(cfg, preflight_now)
         local = args.command in {"review", "receipt"}
         api = None if local else Provider(os.environ.get("OPENAI_API_KEY", ""))
         runner = Runner(ledger, cfg, api)
         if args.command == "preflight":
-            snapshot, _ = crm_snapshot(cfg["crm_snapshot"], runner.clock())
             result = {**preflight(api), "crm_digest": digest(snapshot), "enabled": cfg["enabled"],
                       "unresolved_runs": [r["run_key"] for r in ledger.rows() if r.get("cleanup_required")]}
+            if context is not None:
+                result.update(snapshot_content_hash=context["content_hash"], knowledge_context_digest=digest(context))
         elif args.command in {"review", "receipt", "record-cleanup"}:
             if not args.date or not args.input:
                 raise Refusal("date_and_input_required")

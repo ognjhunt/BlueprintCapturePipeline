@@ -19,12 +19,14 @@ state. No private prospects or contacts belong in this mirror.
 
 The snapshot schema separates companies with extensible team roles from records
 for exact products/robots/policies/software/verticals/world models and versions.
-A software-only company needs no hardware specification. Each record contains a
+A software-only company needs no hardware specification. Every specification
+fact requires its typed value/unit/conditions object; other fields cannot carry
+a specification object. Each record contains a
 small set of typed facts: task claims, specifications, supported hardware,
 availability, deployment, geography, integration requirements, limits, unknowns
 and later qualification details such as cycle time, reliability and supervision.
 Specifications carry units and conditions; a rated payload does not prove a task.
-Facts carry individual confidence, status, freshness days, relevance tags and
+Unknown fields always remain gaps, even when reviewed. Facts carry individual confidence, status, freshness days, relevance tags and
 source evidence. No giant fleet or vendor directory is required.
 
 Evidence levels distinguish `vendor_claim`, `demonstrated_capability`,
@@ -43,7 +45,9 @@ Hashing proves integrity/binding, not reviewer identity or authenticity.
 Every source preserves publication date (null when unknown), original
 `source_checked_at`, and separately `revalidated_at` (null unless actually
 reviewed again). Date-only source review dates remain date-only; exact timezone
-instants remain exact. Freshness arithmetic conservatively uses the start of a
+instants remain exact. Dates must use YYYY-MM-DD and timestamps must use
+RFC3339-compatible timezone forms; noncanonical or normalized-overflow offsets
+are refused. Freshness arithmetic conservatively uses the start of a
 date-only review day in America/Chicago without changing stored provenance.
 `exported_at` and `snapshot_loaded_at` are exact timezone instants and never imply
 a source was checked again. Quotes are exact reviewed source excerpts, or null
@@ -87,6 +91,8 @@ MCP tool, hosted handler, networking, credential or agent definition is needed.
 The runner persists exact filtered context and its digest in the durable ledger
 before its single create attempt. Resume/collection uses that immutable context
 and rejects ledger tampering even if the configured export changes or disappears.
+Cache freshness is recomputed at collection time; a fact that expires after load
+cannot satisfy a candidate, and the saved context is never refreshed or rewritten.
 The current complete CRM snapshot is revalidated at collection; the runner does
 not query live Sheets itself. Chicago-date idempotency, cancellation,
 cleanup, cost/usage semantics and saved provider bindings remain unchanged.
@@ -99,6 +105,9 @@ also enforces the semantic bindings and candidate role coverage. Evidence adds
 `revalidated_at`, `snapshot_record_id`, `snapshot_fact_id` to v1's fields.
 
 Task and geography evidence must be live and checked on the run's Chicago date.
+Their `evidence_level` is null: an ordinary operator task or location fact is not
+a robot demonstration. Non-null supported evidence levels are required only for
+capability evidence; classification and claim_kind apply to every role.
 Capability evidence may reuse a reviewed, supported, nonconflicted stable fact
 within its field freshness envelope, with the exact selected record/fact,
 statement, source, dates, evidence level and preserved/null quote. Cached review
@@ -129,9 +138,14 @@ units change in this integration.
 
 ## Offline verification
 
+CLI preflight shares the local snapshot validation/filtering boundary with run
+admission and refuses invalid v2 inputs before provider construction or reads.
+
 The lightweight daily-research workflow runs the existing lifecycle suite plus
 `tests/test_daily_research_knowledge.py`, schema/fixture checks and changed-file
-lint. It rejects skipped/failed/errored cases. Tests cover missing snapshots before
+lint. Its test-only jsonschema format extras activate date-time validation; tests
+assert that the checker is installed and reject malformed dates through both the
+schema and loader. It rejects skipped/failed/errored cases. Tests cover missing snapshots before
 provider access, bounds, hashing, revisions, date granularity, stale/conflicted/
 unsupported facts, stable cached capability reuse, live operational boundaries,
 filtered relevance/unknown geography, fabricated quotes, ledger resume/tampering,

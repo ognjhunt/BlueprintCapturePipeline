@@ -144,12 +144,19 @@
           ]
         },
         "evidence_level": {
-          "enum": [
-            "current_availability",
-            "demonstrated_capability",
-            "named_deployment",
-            "unknown",
-            "vendor_claim"
+          "anyOf": [
+            {
+              "enum": [
+                "current_availability",
+                "demonstrated_capability",
+                "named_deployment",
+                "unknown",
+                "vendor_claim"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "source_checked_at": {
@@ -280,6 +287,34 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 2000
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "capability"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence_level": {
+                "enum": [
+                  "current_availability",
+                  "demonstrated_capability",
+                  "named_deployment",
+                  "vendor_claim"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "evidence_level": {
+                "type": "null"
               }
             }
           }
