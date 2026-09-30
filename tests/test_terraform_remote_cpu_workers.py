@@ -458,3 +458,30 @@ def test_remote_cpu_budget_alerts_at_the_approved_cap() -> None:
                     ("google_storage_bucket", "remote_cpu_transport")):
         assert _attr(resources[address], "labels") == (
             'merge(local.common_labels, { cost-center = "remote-cpu-workers" })'), address
+
+
+def test_deploy_script_defaults_remote_cpu_workers_off_and_exports_the_flag() -> None:
+    """Enablement persists only as a committed default (review finding I7), never as a one-off
+    environment value that the next deploy would silently undo by destroying the workers."""
+    deploy = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    configuration = deploy[: deploy.index("# Directories")].splitlines()
+    default = 'REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-false}"'
+    assert configuration.count(default) == 1
+    # Beside the other committed flag defaults, the privacy flags.
+    fail_closed = configuration.index('PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"')
+    assert fail_closed < configuration.index(default) < configuration.index(
+        'PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"')
+    assert 'REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-}"' in configuration
+    assert "REMOTE_CPU_WORKERS_ENABLED:-true" not in deploy
+
+    # Exported with the rest of the fixed TF_VAR set, before the backend is touched or any plan.
+    start = deploy.index("apply_terraform() {")
+    exports = [line.strip() for line in
+               deploy[start : deploy.index("    validate_terraform_state_backend", start)].splitlines()]
+    flag = 'export TF_VAR_remote_cpu_workers_enabled="$REMOTE_CPU_WORKERS_ENABLED"'
+    prefix = 'export TF_VAR_remote_cpu_worker_object_prefix="$REMOTE_CPU_WORKER_OBJECT_PREFIX"'
+    assert exports.index('export TF_VAR_privacy_fail_closed="$PRIVACY_FAIL_CLOSED"') < exports.index(flag)
+    assert prefix in exports
+    # Terraform's own default agrees with the script's.
+    flag_variable = _terraform_variable_body(_main(), "remote_cpu_workers_enabled")
+    assert _attr(flag_variable, "default") == "false"
