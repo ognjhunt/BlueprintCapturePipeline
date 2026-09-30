@@ -7,6 +7,8 @@ import json
 
 import pytest
 
+from blueprint_pipeline.remote_cpu_job_contract import job_id_for
+
 from tests.test_scene_compilation_owner_preparations import api, change, fixture as prep_fixture, refuses
 from tests.test_scene_source_family_website import pair, seal
 
@@ -176,7 +178,8 @@ def _pointer(args, **changes):
     value = {'schema_version': 'remote_cpu_output_pointer.v1', 'stage': 'episode_compilation',
         'compilation_id': compilation_id, 'queue_row': {'queue': 'task-evaluation-episode-compilations', 'name': name,
             'envelope_digest': 'sha256:'+name[len(compilation_id)+1:-5]},
-        'attempt_id': 'rcj-ec-'+'0'*24+'-a1-'+'1'*32, 'descriptor_digest': 'sha256:'+'5'*64, 'receipt_digest': 'sha256:'+'6'*64,
+        'attempt_id': job_id_for('episode_compilation', name)+'-a1-'+'1'*32, 'descriptor_digest': 'sha256:'+'5'*64,
+        'receipt_digest': 'sha256:'+'6'*64,
         'execution': {'provider': 'gcp_cloud_run_job', 'job': 'blueprint-remote-cpu-episode-compilation',
             'worker_identity': 'gcp-cloud-run:project/us-central1/blueprint-remote-cpu-episode-compilation/executions/run-1',
             'allocation_binding_digest': 'sha256:'+'7'*64, 'spend_consumption': 'sha256:'+'8'*64},
@@ -227,10 +230,12 @@ def test_census_accepts_a_remote_output_pointer_for_the_packet_raw_reference():
         {'path': packet, 'digest': 'sha256:'+'0'*64, 'size_bytes': 5}])]
     assert {r['status'] for r in _packet(api().join_retained_scene_compilation_native_owner_inventory(**other), packet)} == {
         'kept_unresolved'}
-    # A pointer bound to another output, listing bytes outside its own, or from another stage contradicts itself.
+    # A pointer bound to another output, listing bytes outside its own, or from another stage contradicts itself;
+    # so does one the canonical pointer contract refuses: an attempt not of its row, or an unknown field.
     for changes in ({'output_root': args['roots']['compilation_output_root']+'/another-prep'},
                     {'raw_references': [{'path': '/retained/elsewhere/packet.zip', 'digest': 'sha256:'+'f'*64, 'size_bytes': 5}]},
-                    {'stage': 'environment_probe'}):
+                    {'stage': 'environment_probe'}, {'attempt_id': 'rcj-ec-'+'0'*24+'-a1-'+'1'*32},
+                    {'unreviewed_field': True}):
         bad = fixture()
         bad['bridge_records'][POINTERS] = [_pointer(bad, **changes)]
         refuses(bad)

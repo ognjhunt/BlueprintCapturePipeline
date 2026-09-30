@@ -265,14 +265,14 @@ def validate_teardown(value: Mapping[str, Any]) -> dict[str, Any]:
     return record
 
 
-def _pointer_reasons(pointer: Mapping[str, Any]) -> list[str]:
+def _pointer_reasons(pointer: Mapping[str, Any], *, output_roots: tuple[str, ...] = PERMITTED_PATH_ROOTS) -> list[str]:
     reasons = forbidden_record_content(pointer)
     _check(pointer, _POINTER_SPEC, "", reasons)
     if reasons:
         return reasons
     row, stage, execution = pointer["queue_row"], pointer["stage"], pointer["execution"]
     paths, total, known, landed = pointer["paths_total"], pointer["bytes_total"], pointer["host_known"], pointer["landed"]
-    reasons.extend(_path_reasons(pointer["output_root"], "output_root", PERMITTED_PATH_ROOTS))
+    reasons.extend(_path_reasons(pointer["output_root"], "output_root", output_roots))
     references = pointer["raw_references"]
     for index, reference in enumerate(references):
         reasons.extend(_path_reasons(reference["path"], f"raw_references[{index}].path", (pointer["output_root"] + "/",)))
@@ -291,6 +291,20 @@ def _pointer_reasons(pointer: Mapping[str, Any]) -> list[str]:
         "provider_zero_unbound": pointer["provider_zero_proven"] is not (pointer["teardown_receipt_digest"] is not None),
     }.items() if failed)
     return reasons
+
+
+def validate_pointer(value: Mapping[str, Any], *, output_roots: tuple[str, ...] = PERMITTED_PATH_ROOTS) -> dict[str, Any]:
+    """A sealed ``remote_cpu_output_pointer.v1`` exactly as the collector writes it, or a typed refusal.
+
+    ``output_roots`` names where its output may lie: a reader of retained records, such as the owner census,
+    checks the pointer against its own compiled-episodes root rather than this host's.
+    """
+    pointer = _clone(value, "pointer")
+    reasons = _pointer_reasons(pointer, output_roots=tuple(output_roots))
+    if pointer.get("pointer_digest") != canonical_digest(pointer, digest_field="pointer_digest"):
+        reasons.append("remote_cpu_pointer_digest_mismatch")
+    _raise_if(reasons)
+    return pointer
 
 
 def pointer_record(fields: Mapping[str, Any], *, previous: Mapping[str, Any] | None = None,

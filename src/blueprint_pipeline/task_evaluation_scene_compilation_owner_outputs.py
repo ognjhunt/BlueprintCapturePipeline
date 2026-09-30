@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 from . import task_evaluation_scene_compilation_owner_contracts as c
+from .remote_cpu_job_records import validate_pointer
 
 ADAPTER_NAME = 'task_evaluation_native_arena_adapter_result.v1.json'
 RESULT_SCHEMA = 'task_evaluation_episode_compilation_result.v1'
@@ -43,6 +44,10 @@ def _pointers(context):
     index, root = {}, context.roots['compilation_output_root']
     for row in context.known(POINTER_ROLE):
         value, proof = row
+        try:  # the canonical contract first (fields, seal, attempt, CAS names, totals), against this census's root
+            validate_pointer(value, output_roots=(root+'/',))
+        except ValueError:
+            c.require(False, 'remote_pointer_invalid')
         comp_id, queue_row, refs = value.get('compilation_id'), value.get('queue_row'), value.get('raw_references')
         c.require(c.matches(comp_id, c.ID) and value.get('stage') == 'episode_compilation'
             and value['schema_version'] in REMOTE_OUTPUT_POINTER_SCHEMAS and proof['path'] == c.child(root, comp_id+POINTER_SUFFIX)

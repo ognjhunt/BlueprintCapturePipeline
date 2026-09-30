@@ -799,6 +799,18 @@ def test_pointer_lists_remote_raw_references_only_under_its_own_output_root() ->
         lambda: records.pointer_record({key: value for key, value in fields.items() if key != "raw_references"}))
 
 
+def test_validate_pointer_accepts_what_the_collector_seals_and_names_every_other_reason() -> None:
+    """The canonical pointer check a reader of retained records (the owner census) applies; its output root is
+    checked against the root the reader names."""
+    landed = records.pointer_record(_pointer_fields(_descriptor()))
+    assert records.validate_pointer(landed) == landed
+    assert "remote_cpu_pointer_digest_mismatch" in _reasons(lambda: records.validate_pointer({**landed, "paths_total": 13}))
+    parent = landed["output_root"].rsplit("/", 1)[0]
+    assert records.validate_pointer(landed, output_roots=(parent + "/",)) == landed
+    assert "remote_cpu_path_outside_allowed_roots:output_root" in _reasons(
+        lambda: records.validate_pointer(landed, output_roots=("/retained/compiled/",)))
+
+
 def test_pointer_reseal_replaces_only_the_record_it_read(tmp_path: Path) -> None:
     descriptor = _descriptor()
     identity = contract.worker_identity_for(descriptor["execution"], EXECUTION)
