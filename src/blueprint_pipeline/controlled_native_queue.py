@@ -127,8 +127,20 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
         observation = {"observation_id": request["job_id"] + "-native-0", "task_id": profile["task_id"],
             "scenario_id": profile["scenario_id"], "scenario_eval_run_id": request["job_id"] + "-native-0"}
         credential = None
+        payload = request["policy_package"][modalities[0]]
+        access_client = None
+        if payload.get("credential_ref"):
+            from .checkpoint_policy_credentials import CheckpointPolicyCredentialClient
+            access_client = CheckpointPolicyCredentialClient(request=request, payload=payload)
+            access = access_client.access()
+            if modalities[0] == "policy_api_endpoint":
+                if access.get("kind") != "bearer" or not isinstance(access.get("credential"), Mapping):
+                    raise ValueError("controlled_native_bearer_credential_required")
+                credential = dict(access["credential"])
+            elif access.get("kind") != "registry":
+                raise ValueError("controlled_native_registry_credential_required")
         credential_path = profile.get("policy_credential_path")
-        if credential_path and modalities[0] == "policy_api_endpoint":
+        if credential_path and modalities[0] == "policy_api_endpoint" and access_client is None:
             credential_file = Path(credential_path)
             if credential_file.is_symlink() or credential_file.stat().st_mode & 0o077:
                 raise ValueError("controlled_native_policy_credential_not_private")
@@ -147,13 +159,19 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
                 )
                 contract = materialize_company_policy_contract(job_request=request,
                     template=config["contract"],
-                    approved_model_runner_image=str(manager_profile["approved_model_runner_image"]))
+                    approved_model_runner_image=str(manager_profile["approved_model_runner_image"]),
+                    registry_credential_available=access_client is not None)
+                tenant_id = str(manager_profile["tenant_id"])
+                lease_id = (access_client.registry_lease(contract=contract, tenant_id=tenant_id)
+                    if access_client is not None else payload.get("registry_credential_lease_id"))
                 admission = stage_company_policy_session_admission(job_request=request,
-                    contract=contract, tenant_id=str(manager_profile["tenant_id"]),
+                    contract=contract, tenant_id=tenant_id,
                     root=job_dir / "sandbox_admissions",
                     allowed_registry_hosts=list(manager_profile["allowed_registry_hosts"]),
-                    registry_credential_lease_id=(request["policy_package"][modalities[0]]
-                        .get("registry_credential_lease_id")))
+                    registry_credential_lease_id=lease_id)
+                if access_client is not None:
+                    access_client.bind_admission(contract=contract, tenant_id=tenant_id,
+                        admission=admission, lease_id=lease_id)
                 manager = SandboxManagerClient(endpoint_url=str(manager_profile["endpoint_url"]),
                     token_file=Path(str(manager_profile["token_file"])),
                     certificate_file=Path(str(manager_profile["certificate_file"])))

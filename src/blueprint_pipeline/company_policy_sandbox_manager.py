@@ -170,7 +170,10 @@ class SandboxManager:
                 "--approved-model-runner-image", str(settings["approved_model_runner_image"])])
         if contract["container"]["visibility"] == "private":
             image = contract["container"]["image"]
-            if image.startswith("us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/"):
+            package = request.get("policy_package") or {}
+            payload = package.get("docker_container") or package.get("sim_controller_plugin") or {}
+            if (image.startswith("us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/")
+                    and not payload.get("credential_ref")):
                 argv.append("--blueprint-owned-vm-identity")
             else:
                 argv.extend(["--broker-base-url", str(settings["broker_base_url"]),
