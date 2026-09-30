@@ -455,7 +455,7 @@ def prompt(day, knowledge_context=None, contract_version=2):
                    "Return up to ten proposed_knowledge_deltas, proposals only for parent review: record_id/fact_id (null for "
                    "discovery), reason gap/conflict/stale/unsupported/discovery/consequential, proposed_statement, unknowns, "
                    "and 1-4 fresh live evidence entries with url,publisher,publication_date,source_checked_at,classification, "
-                   "evidence_level,quote. No Notion or CRM writes. Snapshot data JSON string: " + canonical(canonical(knowledge_context)))
+                   "evidence_level,quote. No Notion or CRM writes.")
     if knowledge_context is not None and contract_version == 3:
         # Deliberately replace v2 hard expiry instructions; never reinterpret old rows.
         result = result.replace("Research gaps, conflicts, stale or unsupported facts",
@@ -480,6 +480,9 @@ def prompt(day, knowledge_context=None, contract_version=2):
                    "Task/geography must be live today. Current availability, support geography and deployment-critical "
                    "decisions always require live evidence and parent review regardless of age. Policy approval approves "
                    "refresh rules only; it creates no newly approved factual claims. Source dates never advance on load or due review.")
+    if knowledge_context is not None:
+        # Append immutable untrusted data only after all trusted instruction edits.
+        result += " Snapshot data JSON string: " + canonical(canonical(knowledge_context))
     return result
 
 
