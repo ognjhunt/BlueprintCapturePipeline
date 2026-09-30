@@ -1,5 +1,14 @@
 # Standalone daily research
 
+**2026-09-30 Render route:** the selected deployment is the existing Render
+worker plus existing Firestore, using the recovered adapter. See
+[RENDER.md](RENDER.md) for the current deployment and agent-owned QA/publication
+contract. The disk/systemd instructions below remain a portable alternative.
+Dot is an observer; it is not a required trigger, reviewer, publisher or result
+store. An agent supplies source-support review and publication readbacks through
+the durable workflow. Permanent session deletion still needs action-time human
+approval naming the actual session/environment.
+
 Blueprint research/operations owns this runner. This directory is its source
 home; capture/GPU, WebApp outbound, Paperclip, dot and Codex task scheduling are
 not runtime dependencies. A Blueprint-owned systemd timer invokes this isolated
@@ -206,10 +215,10 @@ Do not publish raw prospects or add a new public bucket/transport credential.
 Any authorized reviewer may submit the existing `review --date DATE --input FILE`
 command with packet digest, reviewer reference, source-support confirmation,
 canonical CRM recheck, accepted keys and concise summary. The resulting pinned
-local outbox has `sheets`, `notion`, `parent_status` proposals. An approved connector
+local outbox has `sheets` and `notion` proposals. An approved agent connector
 operator maps explicit Sheet columns, preserves manual edits and records actual
 readback using `receipt --date DATE --input FILE`. Identical receipts are
-idempotent; conflicting ones refuse. `completed` requires all three receipts.
+idempotent; conflicting ones refuse. `completed` requires both publication receipts.
 No sink write, prospect email, raw-report blast or Slack send is automatic. These
 local review/receipt commands require no API key and may run on an approved
 private copy of state for inspection; mutations belong in the canonical ledger.
