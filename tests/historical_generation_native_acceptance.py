@@ -7,6 +7,7 @@ No live host or provider is used.
 from __future__ import annotations
 
 import ast
+import errno
 import hashlib
 import json
 import os
@@ -140,12 +141,43 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
         assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
         return [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
     previous = observations()
-    # One persistent manager waiter: spawning systemctl every half-second
-    # changes the very process/FD namespace the worker must prove stable.
-    done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--wait', '--collect',
+    done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
         *('--property=' + value for value in _unit_property_assignments(target, journals)),
-        '--', str(entry), action_id], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0 or expected == 'failed', done.stdout + done.stderr
+        '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
+    assert done.returncode == 0, done.stdout + done.stderr
+    # The launcher must exit: its argv contains the selected write mount and
+    # therefore is a real reference. Wait on one retained kernel cgroup FD in
+    # this existing parent, without spawning pollers or changing its FD set.
+    events = Path('/sys/fs/cgroup/system.slice') / (unit + '.service') / 'cgroup.events'
+    deadline, fd = time.monotonic() + 60, None
+    while time.monotonic() < deadline:
+        try:
+            fd = os.open(events, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            break
+        except FileNotFoundError:
+            if time.monotonic() >= deadline - 55:
+                # A short completed cached-result unit may already be collected.
+                # Its sole current journal receipt is still required below.
+                break
+            time.sleep(0.01)
+    if fd is not None:
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    raw = os.pread(fd, 1025, 0)
+                except OSError as error:
+                    assert error.errno == errno.ENODEV, error
+                    break
+                assert 0 < len(raw) <= 1024
+                fields = dict(line.split() for line in raw.splitlines())
+                assert fields.get(b'populated') in (b'0', b'1')
+                if fields[b'populated'] == b'0':
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError('actual worker did not reach terminal cgroup state')
+        finally:
+            os.close(fd)
     current = observations()
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
