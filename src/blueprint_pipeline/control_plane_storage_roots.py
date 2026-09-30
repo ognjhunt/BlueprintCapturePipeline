@@ -127,6 +127,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/storage-pins", "ledger", "blueprint", "derived-directory pins"),
     StorageRoot(f"{_CONTROL_PLANE}/provider-locks", "ledger", "blueprint", "paid launch lock slots"),
     StorageRoot(f"{_CONTROL_PLANE}/release-leases", "ledger", "root", "release retention leases (sidecars for immutable bindings)"),
+    StorageRoot(f"{_CONTROL_PLANE}/remote-cpu-jobs", "ledger", "blueprint",
+                "remote CPU job leases held until provider zero, hand-offs, receipts, teardown and parity records"),
     # --- queues and scratch
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
@@ -161,6 +163,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_INPUTS}/prepared-references", "cache", "blueprint", "materialized references and content store"),
     StorageRoot(f"{_INPUTS}/sam31-preparations", "cache", "blueprint", "reproducible SAM preparation artifacts"),
     StorageRoot(f"{_INPUTS}/compiled-episodes", "cache", "blueprint", "compiled episodes and adapter member store"),
+    StorageRoot(f"{_INPUTS}/particlefield-runtime-assets", "cache", "blueprint",
+                "content-addressed ParticleField runtime assets converted from NuRec sources"),
     StorageRoot(f"{_INPUTS}/launch-activations", "cache", "blueprint", "activation launch sets"),
     StorageRoot(f"{_INPUTS}/scene-object-discoveries", "cache", "blueprint", "scene object discovery inputs"),
     StorageRoot(f"{_INPUTS}/scene-object-discovery-outputs", "cache", "blueprint", "scene object discovery outputs"),

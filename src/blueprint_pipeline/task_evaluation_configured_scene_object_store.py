@@ -20,11 +20,12 @@ from urllib.parse import urlsplit
 from .paid_resource_admission import PaidResourceAdmissionGrant, require_paid_resource_admission_grant
 
 
-DEFAULT_KEY_PREFIX = "blueprint/arm-decision-proof-v1/configured-scenes"
-LARGE_ARTIFACT_KEY_PREFIX = f"{DEFAULT_KEY_PREFIX}/artifacts"
-# Runtime-source wrapper layers are published under this artifact kind; the
-# wrapper builder embeds the resulting URI, so the two must agree exactly.
-EXTERNAL_LAYER_ARTIFACT_KIND = "native-runtime-source-layer"
+from .task_evaluation_configured_scene_object_keys import (
+    DEFAULT_KEY_PREFIX,
+    EXTERNAL_LAYER_ARTIFACT_KIND,
+    LARGE_ARTIFACT_KEY_PREFIX,
+)
+
 _RANGE_READBACK_THRESHOLD_BYTES = 32 * 1024 * 1024
 _RANGE_READBACK_CHUNK_BYTES = 8 * 1024 * 1024
 _RANGE_READBACK_CONCURRENCY = 4
@@ -1082,13 +1083,14 @@ def _precondition_failed(exc: Exception) -> bool:
 
 
 def _server_side_copy(client: Any, *, bucket: str, source: str, key: str, size: int, etag: str,
-                      metadata: Mapping[str, str], single_copy_limit: int, part_bytes: int) -> None:
+                      metadata: Mapping[str, str], single_copy_limit: int, part_bytes: int) -> str | None:
+    """Copy server-side; returns the version id the copy created, when the store names one."""
     copy_source = {"Bucket": bucket, "Key": source}
     common = {"Metadata": dict(metadata), "ContentType": "application/octet-stream"}
     if size <= single_copy_limit:
-        client.copy_object(Bucket=bucket, Key=key, CopySource=copy_source, CopySourceIfMatch=etag,
-                           MetadataDirective="REPLACE", **common)
-        return
+        response = client.copy_object(Bucket=bucket, Key=key, CopySource=copy_source, CopySourceIfMatch=etag,
+                                      MetadataDirective="REPLACE", **common)
+        return str((response or {}).get("VersionId") or "") or None
     upload_id = client.create_multipart_upload(Bucket=bucket, Key=key, **common)["UploadId"]
     try:
         parts = []
@@ -1098,8 +1100,9 @@ def _server_side_copy(client: Any, *, bucket: str, source: str, key: str, size: 
                 Bucket=bucket, Key=key, UploadId=upload_id, PartNumber=number, CopySource=copy_source,
                 CopySourceRange=f"bytes={start}-{end}", CopySourceIfMatch=etag)
             parts.append({"PartNumber": number, "ETag": response["CopyPartResult"]["ETag"]})
-        client.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id,
-                                         MultipartUpload={"Parts": parts})
+        completed = client.complete_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id,
+                                                     MultipartUpload={"Parts": parts})
+        return str((completed or {}).get("VersionId") or "") or None
     except BaseException:
         try:
             client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
@@ -1127,7 +1130,7 @@ def copy_remote_cpu_staging_to_cas(
         raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_promotion_invalid")
     hexdigest = digest.removeprefix("sha256:")
     key = f"{LARGE_ARTIFACT_KEY_PREFIX}/{artifact_kind}/sha256/{hexdigest}/{filename}"
-    copied = False
+    copied, created = False, None
     try:
         try:
             head = client.head_object(Bucket=bucket, Key=key)
@@ -1136,9 +1139,9 @@ def copy_remote_cpu_staging_to_cas(
                 raise
             # PR 4: this stamps Metadata.sha256 before any byte is read back; the collector's one
             # streaming readback deletes the CAS object when the bytes do not match it.
-            _server_side_copy(client, bucket=bucket, source=source, key=key, size=size_bytes, etag=etag,
-                              metadata={"sha256": hexdigest}, single_copy_limit=single_copy_limit,
-                              part_bytes=part_bytes)
+            created = _server_side_copy(client, bucket=bucket, source=source, key=key, size=size_bytes, etag=etag,
+                                        metadata={"sha256": hexdigest}, single_copy_limit=single_copy_limit,
+                                        part_bytes=part_bytes)
             copied = True
             head = client.head_object(Bucket=bucket, Key=key)
     except Exception as exc:  # noqa: BLE001 - typed, never echoing the provider message
@@ -1151,6 +1154,8 @@ def copy_remote_cpu_staging_to_cas(
     return {
         "schema_version": "remote_cpu_cas_promotion.v1", "status": "copied" if copied else "already_present",
         "artifact_kind": artifact_kind, "uri": f"s3://{bucket}/{key}", "digest": digest, "size_bytes": size_bytes,
+        # Only a version this promotion created may ever be discarded; another pointer may share the key.
+        "created_version_id": created,
         "remote_identity_verified": True, "full_byte_service_account_readback_passed": False,
         "bytes_through_host": 0,
     }
@@ -1193,6 +1198,44 @@ def delete_remote_cpu_staging_versions(*, staging_prefix: str, client: Any, buck
             f"remote_cpu_staging_delete_failed:{type(exc).__name__}") from None
     return {"versions_deleted": len(entries), "versions_remaining": len(remaining), "listing_complete": True,
             "listing_pages": pages}
+
+
+def discard_remote_cpu_output_object(*, uri: str, digest: str, client: Any, bucket: str,
+                                     version_id: str | None) -> dict[str, Any]:
+    """Remove the one version of a promoted ``remote-cpu-output`` CAS object that this promotion created,
+    after its readback failed (plan 14 §9).
+
+    ``copy_remote_cpu_staging_to_cas`` stamps ``Metadata.sha256`` before any byte is read back, so the
+    version it created would otherwise answer every later promotion of that digest.  A content-addressed
+    key may be shared by another pointer, so no other version is ever deleted: when the key existed
+    before this promotion (``version_id`` is ``None``), nothing is.
+    """
+
+    key = _remote_cpu_key(uri, bucket=bucket, cas=True)
+    parts = key.removeprefix(LARGE_ARTIFACT_KEY_PREFIX + "/").split("/")
+    if parts[0] != "remote-cpu-output" or f"sha256:{parts[2]}" != digest:
+        raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_discard_invalid")
+    if not version_id:
+        return {"versions_deleted": 0, "version_present": False, "reason": "remote_cpu_discard_not_created_here"}
+
+    def present() -> bool:
+        page = client.list_object_versions(Bucket=bucket, Prefix=key, MaxKeys=1000)
+        if page.get("IsTruncated"):
+            raise TaskEvaluationConfiguredSceneObjectStoreError("remote_cpu_discard_listing_unbounded")
+        return any(row.get("Key") == key and row.get("VersionId") == version_id
+                   for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])])
+
+    try:
+        found = present()
+        if found:
+            client.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
+        remaining = present()
+    except TaskEvaluationConfiguredSceneObjectStoreError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - typed, never echoing the provider message
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            f"remote_cpu_discard_failed:{type(exc).__name__}") from None
+    return {"versions_deleted": int(found and not remaining), "version_present": remaining}
 
 
 def _presigned_put(url: str, data: bytes) -> int:
@@ -1294,6 +1337,7 @@ __all__ = [
     "configured_scene_object_store_publisher",
     "copy_remote_cpu_staging_to_cas",
     "delete_remote_cpu_staging_versions",
+    "discard_remote_cpu_output_object",
     "materialize_configured_scene_artifact",
     "presign_configured_scene_artifact",
     "presign_remote_cpu_get",

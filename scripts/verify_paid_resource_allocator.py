@@ -120,13 +120,15 @@ S3_TRANSPORT_CAPABILITIES = frozenset(
     {"_issue_transport_execution_capability", "_upload_and_verify_model_cache_impl"}
 )
 # Plan 14: B2 write authority for remote CPU staging.  The presigned PUT and the sentinel also
-# require the attempt's grant; the copy and the version delete run in later processes without
-# one (the collector, a resumed teardown), so only these functions may call any of them.
+# require the attempt's grant; the copy, the version delete and the discard of a promoted object
+# whose readback failed run in later processes without one (the collector, a resumed teardown), so
+# only these functions may call any of them.
 REMOTE_CPU_OBJECT_STORE_WRITERS = frozenset(
     {
         "presign_remote_cpu_put",
         "copy_remote_cpu_staging_to_cas",
         "delete_remote_cpu_staging_versions",
+        "discard_remote_cpu_output_object",
         "remote_cpu_object_store_sentinel",
     }
 )
@@ -138,6 +140,8 @@ APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS = {
         "src/blueprint_pipeline/task_evaluation_configured_scene_object_store.py",
         "remote_cpu_object_store_sentinel",
     ),
+    # Plan 14 §9 (PR 4): promotion and one readback of an episode compilation's output.
+    ("src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py", "_promote"),
 }
 SURFACE_CLASSIFICATIONS = {
     "canonical_allocator",

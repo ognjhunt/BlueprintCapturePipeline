@@ -682,6 +682,8 @@ def _pointer_fields(descriptor: dict) -> dict:
         "bytes_total": 50000,
         "host_known": {"count": 8, "bytes": 40000},
         "landed": {"subset": "episode_compilation_consumer.v1", "paths": 3, "bytes": 2000},
+        "raw_references": [{"path": descriptor["outputs"]["output_root"] + "/native-task-packet/bundle.zip",
+                            "digest": "sha256:" + "5" * 64, "size_bytes": 4096}],
         "state": "landed",
     }
 
@@ -777,6 +779,64 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
     assert "remote_cpu_pointer_teardown_attempt_mismatch" in _reasons(
         lambda: records.pointer_record({}, previous=landed, teardown=foreign)
     )
+
+
+def test_pointer_lists_remote_raw_references_only_under_its_own_output_root() -> None:
+    """Plan 14 task 4.8: the owner census lets a pointer stand for the bytes it lists, so each must be its output's."""
+    descriptor = _descriptor()
+    fields = _pointer_fields(descriptor)
+    root = descriptor["outputs"]["output_root"]
+    [packet] = fields["raw_references"]
+    assert records.pointer_record(fields)["raw_references"] == [packet]
+    for path, reason in ((root + "-other/bundle.zip", "remote_cpu_path_outside_allowed_roots"),
+                         (root, "remote_cpu_path_outside_allowed_roots"),
+                         (root + "/../bundle.zip", "remote_cpu_path_not_normalized")):
+        listed = {**fields, "raw_references": [dict(packet, path=path)]}
+        assert f"{reason}:raw_references[0].path" in _reasons(lambda listed=listed: records.pointer_record(listed))
+    assert "remote_cpu_pointer_raw_references_invalid" in _reasons(
+        lambda: records.pointer_record({**fields, "raw_references": [packet, packet]}))
+    assert "remote_cpu_field_missing:raw_references" in _reasons(
+        lambda: records.pointer_record({key: value for key, value in fields.items() if key != "raw_references"}))
+
+
+def test_validate_pointer_accepts_what_the_collector_seals_and_names_every_other_reason() -> None:
+    """The canonical pointer check a reader of retained records (the owner census) applies; its output root is
+    checked against the root the reader names."""
+    landed = records.pointer_record(_pointer_fields(_descriptor()))
+    assert records.validate_pointer(landed) == landed
+    assert "remote_cpu_pointer_digest_mismatch" in _reasons(lambda: records.validate_pointer({**landed, "paths_total": 13}))
+    parent = landed["output_root"].rsplit("/", 1)[0]
+    assert records.validate_pointer(landed, output_roots=(parent + "/",)) == landed
+    assert "remote_cpu_path_outside_allowed_roots:output_root" in _reasons(
+        lambda: records.validate_pointer(landed, output_roots=("/retained/compiled/",)))
+
+
+def test_only_a_link_or_a_special_file_at_a_record_path_is_a_conflict(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: a record path that cannot be opened for an ordinary reason (EMFILE, EIO) is that error,
+    retried by its caller; only a symlink or a non-regular file at the path is a conflict."""
+    import errno
+    import os
+
+    value = _seal({"schema_version": "x.v1", "value": 1, "digest": ""}, "digest")
+    link = tmp_path / "link.json"
+    link.symlink_to(tmp_path / "elsewhere.json")
+    assert f"remote_cpu_record_conflict:{link.name}" in _reasons(
+        lambda: records.replace_remote_cpu_record(link, value, previous_digest=None, digest_field="digest"))
+    (tmp_path / "folder.json").mkdir()
+    assert "remote_cpu_record_conflict:folder.json" in _reasons(
+        lambda: records.replace_remote_cpu_record(tmp_path / "folder.json", value, previous_digest=None,
+                                                  digest_field="digest"))
+    real_open = os.open
+
+    def exhausted(path, flags, *args, **kwargs):
+        if str(path).endswith("busy.json"):
+            raise OSError(errno.EMFILE, "Too many open files")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(records.os, "open", exhausted)
+    with pytest.raises(OSError) as raised:
+        records.replace_remote_cpu_record(tmp_path / "busy.json", value, previous_digest=None, digest_field="digest")
+    assert raised.value.errno == errno.EMFILE and not isinstance(raised.value, contract.RemoteCpuContractError)
 
 
 def test_pointer_reseal_replaces_only_the_record_it_read(tmp_path: Path) -> None:

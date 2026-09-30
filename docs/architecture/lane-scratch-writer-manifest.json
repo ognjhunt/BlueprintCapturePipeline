@@ -72,14 +72,14 @@
     },
     {
       "path": "scripts/install_live_pipeline_control_plane.sh",
-      "sha256": "a74031c63524148156a5efca8d12e52f9fa81b7fecf095bf3d4a6f8aa0e1aeb3",
+      "sha256": "cff5057cc177070bb8211377633218727043335e6904362cc66d1764538899ff",
       "responsibility": "parent_provisioning",
       "output_class": "container",
       "admission_method": "mounted volume preflight then bounded install -d",
       "characterization_tests": [
         "tests/test_lane_scratch_install_wiring.py"
       ],
-      "review_reference": "2026-09-27: independent spec and code-quality reviewers approved implementation at exact commit 030f9f30cd34b11878707c16722a970111e0923c; post-rebase exact-head confirmation remains a separate merge gate",
+      "review_reference": "2026-09-30: independent combined review of Phase 3b PR 4 approved the installer's remote episode-compilation lines at 422890429 (sha256 563866c85bc6358b2aad3eefaab6f123683d2635819cf6da12c3539e46656b84); the four backstop-timer lines added after it are listed for that review's re-check. Lane-parent provisioning is unchanged since the 2026-09-27 independent spec and code-quality review at 030f9f30cd34b11878707c16722a970111e0923c; re-checked at 70b0b4f9e",
       "historical_exceptions": [
         "Provisioning lane parents does not register or authorize historical scratch."
       ]

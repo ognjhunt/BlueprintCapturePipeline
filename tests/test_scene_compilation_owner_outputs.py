@@ -7,6 +7,8 @@ import json
 
 import pytest
 
+from blueprint_pipeline.remote_cpu_job_contract import job_id_for
+
 from tests.test_scene_compilation_owner_preparations import api, change, fixture as prep_fixture, refuses
 from tests.test_scene_source_family_website import pair, seal
 
@@ -162,3 +164,78 @@ def test_reused_compilation_result_extension_keeps_new_output_bindings_unproven(
     assert not row['adapter_metadata_binding_verified'] and not row['compiler_output_metadata_binding_verified']
     assert any(r['role'] == 'compilation_results' and r['reason'] == 'unsupported_retained_field_set'
         for r in result['structural_join_obligations'])
+
+
+POINTERS = 'compilation_remote_output_pointers'
+
+
+def _pointer(args, **changes):
+    """The paid unit's ``<output root>/<id>.remote-output.v1.json`` for the fixture's compile (plan 14 §16)."""
+    result_path, raw = args['downstream_records']['compilation_results'][0]
+    result, root = json.loads(raw), args['roots']['compilation_output_root']
+    compilation_id, name = result['compilation_id'], result_path.rsplit('/', 1)[1]
+    cas = 's3://blueprint-artifacts/remote-cpu-output/sha256/'
+    value = {'schema_version': 'remote_cpu_output_pointer.v1', 'stage': 'episode_compilation',
+        'compilation_id': compilation_id, 'queue_row': {'queue': 'task-evaluation-episode-compilations', 'name': name,
+            'envelope_digest': 'sha256:'+name[len(compilation_id)+1:-5]},
+        'attempt_id': job_id_for('episode_compilation', name)+'-a1-'+'1'*32, 'descriptor_digest': 'sha256:'+'5'*64,
+        'receipt_digest': 'sha256:'+'6'*64,
+        'execution': {'provider': 'gcp_cloud_run_job', 'job': 'blueprint-remote-cpu-episode-compilation',
+            'worker_identity': 'gcp-cloud-run:project/us-central1/blueprint-remote-cpu-episode-compilation/executions/run-1',
+            'allocation_binding_digest': 'sha256:'+'7'*64, 'spend_consumption': 'sha256:'+'8'*64},
+        'code': {'source_commit': 'a'*40, 'source_archive_digest': 'sha256:'+'9'*64,
+            'image': 'us-central1-docker.pkg.dev/project/workers/remote-cpu@sha256:'+'d'*64, 'environment_digest': 'sha256:'+'c'*64},
+        'archive': {'uri': cas+'0a'*32+'/blobs.tar', 'digest': 'sha256:'+'0a'*32, 'size_bytes': 10240},
+        'index': {'uri': cas+'0b'*32+'/index.json', 'digest': 'sha256:'+'0b'*32, 'size_bytes': 900},
+        'output_root': root+'/'+compilation_id, 'paths_total': 12, 'bytes_total': 50000,
+        'host_known': {'count': 1, 'bytes': 10}, 'landed': {'subset': 'episode_compilation_consumer.v1', 'paths': 3, 'bytes': 900},
+        'raw_references': [{'path': result['compiled_episode_packet_path'], 'digest': result['compiled_episode_packet_digest'],
+            'size_bytes': result['compiled_episode_packet_size_bytes']}],
+        'state': 'landed', 'teardown_receipt_digest': None, 'provider_zero_proven': False}
+    value.update(changes)
+    return pair(root+'/'+compilation_id+'.remote-output.v1.json', seal(value, 'pointer_digest'))
+
+
+def _packet(result, packet_path):
+    return [row for row in result['raw_reference_obligations'] if row['path'] == packet_path]
+
+
+def test_census_accepts_a_remote_output_pointer_for_the_packet_raw_reference():
+    """Plan 14 task 4.8: a remote compile lands only what consumers read, so its packet's bytes stay remote; the
+    pointer that lists the packet's path, digest and size stands for them."""
+    from blueprint_pipeline import task_evaluation_scene_compilation_owner_outputs as outputs
+
+    assert 'remote_cpu_output_pointer.v1' in outputs.REMOTE_OUTPUT_POINTER_SCHEMAS
+    args = fixture()
+    packet = json.loads(args['downstream_records']['compilation_results'][0][1])['compiled_episode_packet_path']
+    unpointed = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert {(r['status'], r['reason']) for r in _packet(unpointed, packet)} == {('kept_unresolved', 'reference_bytes_unavailable')}
+
+    args['bridge_records'][POINTERS] = [_pointer(args)]
+    before = copy.deepcopy(args)
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert args == before
+    # Both edges that name the packet, the compile result and the compiler's output metadata, resolve to the pointer.
+    rows = _packet(result, packet)
+    assert len(rows) == 2 and {(r['status'], r['reason']) for r in rows} == {('matched_remote_output_pointer', None)}
+    assert {r['matched_provenance']['path'] for r in rows} == {args['bridge_records'][POINTERS][0][0]}
+    assert any(r['role'] == POINTERS for r in result['raw_versions'])
+    # The pointer's archive and index are remote references like any other: the census never checks availability.
+    assert {r['reason'] for r in result['remote_reference_obligations']
+            if r['uri'].startswith('s3://blueprint-artifacts/remote-cpu-output/')} == {'remote_availability_unverified'}
+
+    # A pointer that lists other bytes stands for nothing: the packet stays unresolved.
+    other = fixture()
+    other['bridge_records'][POINTERS] = [_pointer(other, raw_references=[
+        {'path': packet, 'digest': 'sha256:'+'0'*64, 'size_bytes': 5}])]
+    assert {r['status'] for r in _packet(api().join_retained_scene_compilation_native_owner_inventory(**other), packet)} == {
+        'kept_unresolved'}
+    # A pointer bound to another output, listing bytes outside its own, or from another stage contradicts itself;
+    # so does one the canonical pointer contract refuses: an attempt not of its row, or an unknown field.
+    for changes in ({'output_root': args['roots']['compilation_output_root']+'/another-prep'},
+                    {'raw_references': [{'path': '/retained/elsewhere/packet.zip', 'digest': 'sha256:'+'f'*64, 'size_bytes': 5}]},
+                    {'stage': 'environment_probe'}, {'attempt_id': 'rcj-ec-'+'0'*24+'-a1-'+'1'*32},
+                    {'unreviewed_field': True}):
+        bad = fixture()
+        bad['bridge_records'][POINTERS] = [_pointer(bad, **changes)]
+        refuses(bad)
