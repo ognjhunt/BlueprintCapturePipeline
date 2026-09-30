@@ -443,12 +443,85 @@ def test_sdk_wire_contract_no_retries_redirects_or_paid_calls():
     assert result.stdout.strip() == "sdk_wire_contract_verified"
 
 
-def test_cli_status_without_provider_or_key(fixture, capsys):
+@pytest.mark.parametrize("caller_umask", [0o022, 0o027, 0o077])
+def test_cli_status_without_provider_or_key(fixture, capsys, caller_umask):
     runner, _, ledger = fixture
     config = ledger.root / "config.json"
     save_json(config, runner.config)
-    assert main(["--config", str(config), "--state-dir", str(ledger.root), "status"]) == 0
-    assert json.loads(capsys.readouterr().out) == []
+    state = ledger.root / "cli-state"
+    previous_umask = os.umask(caller_umask)
+    try:
+        assert main(["--config", str(config), "--state-dir", str(state), "status"]) == 0
+        assert json.loads(capsys.readouterr().out) == []
+        assert state.stat().st_mode & 0o777 == 0o700
+        assert (state / "ledger.sqlite3").stat().st_mode & 0o777 == 0o600
+        assert os.umask(caller_umask) == caller_umask
+        later = ledger.root / "later-authority"
+        later.mkdir(mode=0o750)
+        assert later.stat().st_mode & 0o777 == 0o750 & ~caller_umask
+    finally:
+        os.umask(previous_umask)
+
+
+@pytest.mark.parametrize("failure", ["configuration", "ledger_initialization"])
+def test_cli_failure_restores_caller_umask(tmp_path, capsys, failure):
+    config = tmp_path / "config.json"
+    save_json(config, {})
+    state = tmp_path / "state"
+    if failure == "ledger_initialization":
+        state.write_text("not a directory")
+    previous_umask = os.umask(0o022)
+    try:
+        assert main(["--config", str(config), "--state-dir", str(state), "status"]) == 1
+        error = "config_invalid" if failure == "configuration" else "local_or_provider_configuration_unavailable"
+        assert json.loads(capsys.readouterr().out) == {"state": "blocked", "error": error}
+        assert os.umask(0o022) == 0o022
+        later = tmp_path / "later-authority"
+        later.mkdir(mode=0o750)
+        assert later.stat().st_mode & 0o777 == 0o750
+    finally:
+        os.umask(previous_umask)
+
+
+def test_cli_database_close_failure_keeps_private_umask_then_restores_caller(
+    fixture, monkeypatch, capsys,
+):
+    from tools.daily_research import runner as cli
+
+    runner, _, ledger = fixture
+    config = ledger.root / "config.json"
+    save_json(config, runner.config)
+    state = ledger.root / "cli-state"
+
+    def failing_close_ledger(root):
+        installed = Ledger(root)
+        database = installed.db
+
+        class Database:
+            def __getattr__(self, name):
+                return getattr(database, name)
+
+            def close(self):
+                (state / "close-private").touch(mode=0o666)
+                database.close()
+                raise RuntimeError("close failed")
+
+        installed.db = Database()
+        return installed
+
+    monkeypatch.setattr(cli, "Ledger", failing_close_ledger)
+    previous_umask = os.umask(0o022)
+    try:
+        with pytest.raises(RuntimeError, match="close failed"):
+            main(["--config", str(config), "--state-dir", str(state), "status"])
+        assert json.loads(capsys.readouterr().out) == []
+        assert (state / "close-private").stat().st_mode & 0o777 == 0o600
+        assert os.umask(0o022) == 0o022
+        later = ledger.root / "later-authority"
+        later.mkdir(mode=0o750)
+        assert later.stat().st_mode & 0o777 == 0o750
+    finally:
+        os.umask(previous_umask)
 
 
 def test_review_cannot_approve_different_packet_or_repeat_decision(fixture):

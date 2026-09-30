@@ -650,9 +650,10 @@ def main(argv=None):
     parser.add_argument("--date")
     parser.add_argument("--input", help="Nonsecret review/receipt JSON path")
     args = parser.parse_args(argv)
-    os.umask(0o077)
-    ledger = Ledger(args.state_dir)
+    previous_umask = os.umask(0o077)
+    ledger = None
     try:
+        ledger = Ledger(args.state_dir)
         cfg = configuration(read_json(args.config))
         if args.command == "status":
             print(canonical([{**status_summary(row),
@@ -697,7 +698,11 @@ def main(argv=None):
         print(canonical({"state": "blocked", "error": code}))
         return 1
     finally:
-        ledger.db.close()
+        try:
+            if ledger is not None:
+                ledger.db.close()
+        finally:
+            os.umask(previous_umask)
 
 
 def status_summary(row):
