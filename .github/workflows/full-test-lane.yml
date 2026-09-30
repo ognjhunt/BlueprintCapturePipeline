@@ -45,7 +45,7 @@ jobs:
       # Reuse their disposable Linux installation rather than recording skips.
       BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      UV_PROJECT_ENVIRONMENT: /opt/blueprint-native-test-venv
+      UV_PROJECT_ENVIRONMENT: /var/lib/blueprint-native-test-venv
       BLUEPRINT_RESEARCH_SDK_PYTHON: /opt/blueprint-research-sdk-proof/bin/python
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
@@ -155,7 +155,7 @@ jobs:
           task_deps_ready=0
           for attempt in 1 2; do
             task_unit="blueprint-ci-browser-deps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${FULL_TEST_LANE_SHARD_INDEX}-${attempt}"
-            if sudo -n systemd-run --unit="$task_unit" --wait --collect --pipe \
+            if sudo --non-interactive systemd-run --unit="$task_unit" --wait --collect --pipe \
                 --property=Type=exec --property=User=root --property=KillMode=control-group \
                 --property=RuntimeMaxSec=240s --property=TimeoutStopSec=10s \
                 --working-directory="$PWD" -- "$task_node" "$PWD/node_modules/playwright/cli.js" install-deps chromium; then
@@ -182,22 +182,22 @@ jobs:
           printf 'PID 1 executable: %s\n' "$manager"
           test "$manager" = /usr/lib/systemd/systemd
           test -f /sys/fs/cgroup/cgroup.controllers
-          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-native-test-venv
-          uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/blueprint-native-test-venv
+          uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
           uv lock --check
           uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
             --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3
-          uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
+          uv pip install --python /var/lib/blueprint-native-test-venv/bin/python ./BlueprintContracts
           # Noneditable policy CLIs resolve retained documents beside their
           # installed package. Preserve those exact committed bytes outside
           # runner home, where the different-UID child can read them safely.
-          native_resource_root="$(/opt/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
-          test "$native_resource_root" = /opt/blueprint-native-test-venv/lib/python3.12
+          native_resource_root="$(/var/lib/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
+          test "$native_resource_root" = /var/lib/blueprint-native-test-venv/lib/python3.12
           git archive HEAD docs | tar -x -C "$native_resource_root"
           diff -rq -- docs "$native_resource_root/docs"
           # The actual different-UID child has ProtectHome=yes. Its interpreter
           # and imported dependencies must be protected outside /home/runner.
-          sudo chown -hR root:root /opt/blueprint-native-test-venv
+          sudo chown -hR root:root /var/lib/blueprint-native-test-venv
 
       - name: Install isolated daily research SDK for wire proof
         if: hashFiles('tools/daily_research/requirements.txt') != ''

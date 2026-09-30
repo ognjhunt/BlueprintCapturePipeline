@@ -71,7 +71,7 @@ def test_full_shards_reuse_the_protected_native_environment_without_reducing_col
         "sudo --non-interactive true",
         'test "$manager" = /usr/lib/systemd/systemd',
         "test -f /sys/fs/cgroup/cgroup.controllers",
-        "uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv",
+        "uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv",
     )
     for command in preflight:
         assert command in install
@@ -79,8 +79,8 @@ def test_full_shards_reuse_the_protected_native_environment_without_reducing_col
     sync = install.split("uv sync --frozen", 1)[1].split("uv pip install", 1)[0]
     assert "--python /usr/bin/python3" in sync
     assert "--no-editable" in sync
-    assert "uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts" in install
-    seal = "sudo chown -hR root:root /opt/blueprint-native-test-venv"
+    assert "uv pip install --python /var/lib/blueprint-native-test-venv/bin/python ./BlueprintContracts" in install
+    seal = "sudo chown -hR root:root /var/lib/blueprint-native-test-venv"
     assert install.index(seal) > install.index("uv pip install")
     for step in shard["steps"]:
         for line in step.get("run", "").splitlines():
