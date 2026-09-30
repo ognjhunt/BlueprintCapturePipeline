@@ -263,6 +263,9 @@ def worker_main(root, action_id):
                 if phase == 'access_intent' and kind == 'restore_intent' \
                         and body.get('phase') == 'owner_rights' and body.get('path') == '':
                     raise RuntimeError('fixture_interrupted_after_' + phase)
+                if kind == phase and phase in ('restore_directory', 'restore_member'):
+                    from blueprint_pipeline.control_plane_lane_historical_generation import HistoricalGenerationError
+                    raise HistoricalGenerationError('fixture_interrupted_after_' + phase)
                 if kind == phase or (kind == 'restore_intent' and body.get('phase') == phase):
                     raise RuntimeError('fixture_interrupted_after_' + phase)
             _Worker.record = record

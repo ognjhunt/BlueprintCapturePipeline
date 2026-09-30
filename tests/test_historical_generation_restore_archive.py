@@ -83,17 +83,19 @@ def test_existing_private_member_is_never_overwritten(source, tmp_path):  # noqa
     assert sentinel.read_bytes() == b'keep existing destination' and cloud.calls[-1] == 'client_closed'
 
 
-@pytest.mark.parametrize('code', ['process_unknown', 'process_reference'])
+@pytest.mark.parametrize('code', ['process_unknown', 'process_reference', 'fixture_interrupted_after_restore_member'])
 def test_native_reference_refusal_keeps_its_type_and_closes_archive(source, tmp_path, code):  # noqa: F811
     from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
     from blueprint_pipeline.control_plane_lane_historical_processes import HistoricalProcessError
     manifest, raw, _, pointer, cloud = prepared(source)
-    refusal = HistoricalProcessError('historical_generation_' + code)
+    from blueprint_pipeline.control_plane_lane_historical_generation import HistoricalGenerationError
+    error_class = HistoricalGenerationError if code.startswith('fixture_') else HistoricalProcessError
+    refusal = error_class('historical_generation_' + code)
     class RefusedStage(PrivateStage):
         def directory(self, row):
             raise refusal
     stage = RefusedStage(tmp_path / 'stage')
-    with pytest.raises(HistoricalProcessError) as caught:
+    with pytest.raises(error_class) as caught:
         extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', stage, lambda: None)
     assert caught.value is refusal
     assert list(stage.root.iterdir()) == []
