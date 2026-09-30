@@ -1,0 +1,33 @@
+[Unit]
+Description=Blueprint business research for dot review
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/blueprint/researcher.json
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-researcher-daily.timer.json
+
+[Service]
+Type=oneshot
+User=blueprint
+Group=blueprint
+UMask=0077
+WorkingDirectory=/opt/blueprint/task-evaluation-control-plane
+EnvironmentFile=-/etc/blueprint/researcher.env
+ExecStart=/opt/blueprint/researcher-venv/bin/python -m tools.daily_research.runner --config /etc/blueprint/researcher.json --state-dir /var/lib/blueprint/researcher run
+TimeoutStartSec=8min
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/blueprint/researcher
+MemoryMax=256M
+TasksMax=32
+CPUQuota=50%
