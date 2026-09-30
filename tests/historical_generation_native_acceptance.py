@@ -7,6 +7,7 @@ No live host or provider is used.
 from __future__ import annotations
 
 import ast
+import base64
 import errno
 import hashlib
 import json
@@ -34,7 +35,8 @@ def _stage(root):
     origin = source / 'src/blueprint_pipeline'
     destination = root / 'python/blueprint_pipeline'
     destination.mkdir(parents=True, mode=0o755)
-    todo = ['__init__', 'control_plane_lane_historical_action', 'control_plane_lane_scratch_census']
+    todo = ['__init__', 'control_plane_lane_historical_action', 'control_plane_lane_scratch_census',
+            'control_plane_lane_experiment_archive']
     seen, size = set(), 0
     while todo:
         name = todo.pop()
@@ -58,6 +60,8 @@ def _stage(root):
                 names = []
             todo.extend(name for name in names if (origin / (name + '.py')).is_file())
     _write(root / 'python/fixture_acceptance.py', Path(__file__).read_bytes(), 0o644)
+    _write(root / 'python/historical_generation_fake_cloud.py',
+           (source / 'tests/historical_generation_fake_cloud.py').read_bytes(), 0o644)
     package = root / 'operator/operator_door'
     package.mkdir(parents=True, mode=0o700)
     for name in ('__init__.py', 'config.py'):
@@ -81,6 +85,22 @@ def worker_main(root, action_id):
     root = Path(root)
     _namespace(root)
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
+    cloud = None
+    cloud_fixture = root / 'cloud-fixture.json'
+    if cloud_fixture.exists():
+        from historical_generation_fake_cloud import Cloud
+        from blueprint_pipeline import control_plane_lane_experiment_archive as transport
+        seed = json.loads(cloud_fixture.read_bytes())
+        cloud = Cloud(corrupt=seed['corrupt'])
+        cloud.objects = {key: base64.b64decode(raw) for key, raw in seed['objects'].items()}
+        cloud.metadata = seed['metadata']
+        transport._client = lambda _files, _config: (cloud, 'development-only')
+    def emit(receipt):
+        if cloud is not None:
+            receipt = dict(receipt, _fixture_remote=dict(corrupt=cloud.corrupt,
+                objects={key: base64.b64encode(raw).decode() for key, raw in cloud.objects.items()},
+                metadata=cloud.metadata, calls=cloud.calls))
+        print(json.dumps(receipt), flush=True)
     # Fault injection interrupts actual completed syscalls/publications. It
     # never supplies a kernel observation, authority record or success result.
     interruption = root / 'interrupt-once'
@@ -116,20 +136,9 @@ def worker_main(root, action_id):
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
     except BaseException as error:
-        frames, cause = [], error
-        for _ in range(4):
-            if cause is None:
-                break
-            trace = cause.__traceback__
-            while trace is not None and len(frames) < 32:
-                frames.append(dict(module=Path(trace.tb_frame.f_code.co_filename).name,
-                    function=trace.tb_frame.f_code.co_name, line=trace.tb_lineno,
-                    error_type=type(cause).__name__, errno=getattr(cause, 'errno', None)))
-                trace = trace.tb_next
-            cause = cause.__context__
-        print(json.dumps(dict(status='failed', error_type=type(error).__name__, code=str(error), frames=frames)), flush=True)
+        emit(dict(status='failed', error_type=type(error).__name__, code=str(error)))
         raise
-    print(json.dumps(receipt), flush=True)
+    emit(receipt)
 
 
 def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
@@ -190,11 +199,15 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
         current = observations()
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
+    remote = receipt.pop('_fixture_remote', None)
+    if remote is not None:
+        assert len(_encoded(remote)) <= 16384
+        _write(entry.parent / 'cloud-fixture.json', _encoded(remote))
     assert receipt['status'] == expected, receipt
     return receipt
 
 
-def connected_delete(interruption=None):
+def connected_delete(interruption=None, *, action='delete', corrupt=False):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -203,6 +216,8 @@ def connected_delete(interruption=None):
         root.chmod(0o755)
         _stage(root)
         _namespace(root)
+        if action == 'offload':
+            _write(root / 'cloud-fixture.json', _encoded(dict(corrupt=corrupt, objects={}, metadata={})))
         from blueprint_pipeline import control_plane_lane_owner_consents as owners
         from blueprint_pipeline import control_plane_lane_historical_authority as authority
         from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
@@ -280,7 +295,7 @@ def connected_delete(interruption=None):
             consent_size_bytes=consent.stat().st_size, now=time.time())
         decision = authority.approve_historical_decommission(installed_config_path=config,
             packet_id=selected['packet_id'], ack_packet_digest=selected['packet_digest'], principal='operator',
-            owner='owner', action='delete', finished_run_ref='real-tiny-completed-fixture',
+            owner='owner', action=action, finished_run_ref='real-tiny-completed-fixture',
             no_future_writers=True, no_future_readers=True, expires_at_epoch=clock + 700, now=time.time())
         action_id = decision['action_id']
         entry = root / 'action-entry'
@@ -302,7 +317,17 @@ def connected_delete(interruption=None):
             assert head['kind'] == {'fenced': 'fenced', 'chown': 'fence_intent',
                                    'removed': 'removed', 'unlink': 'removal_intent'}[interruption]
             (root / 'interrupt-once').unlink()
+        if corrupt:
+            refused = _launch_worker(entry, action_id, target, journals, expected='failed')
+            assert refused['code'].endswith('archive_preservation_failed'), refused
+            assert all((target / path).read_bytes() == raw for path, raw in original.items())
+            events = [json.loads(path.read_bytes()) for path in (journals / action_id).glob('e-*.json')]
+            assert not any(event['kind'] in ('preservation', 'removal_intent', 'removed', 'final') for event in events)
+            remote = json.loads((root / 'cloud-fixture.json').read_bytes())
+            assert remote['calls'].count('readback') == 1 and remote['calls'][-1] == 'client_closed'
+            return dict(historical_corrupt_offload_keeps_bytes=True)
         receipt = _launch_worker(entry, action_id, target, journals)
+        assert receipt['action'] == action
         assert receipt['removed_files'] == (1 if interruption == 'unlink' else 2) and receipt['removed_directories'] == 1
         assert receipt['logical_bytes'] == sum(map(len, original.values())) - (len(original['nested/two.log']) if interruption == 'unlink' else 0)
         assert receipt['uncertain_removed_allocated_bytes'] == 0
@@ -317,6 +342,15 @@ def connected_delete(interruption=None):
         assert len(uncertain) == int(interruption == 'unlink')
         assert all(event['body']['observed_removed_allocated_bytes'] == 0 for event in uncertain)
         assert receipt['observed_removed_allocated_bytes'] == sum(event['body']['observed_removed_allocated_bytes'] for event in events if event['kind'] == 'removed')
+        if action == 'offload':
+            preservation = [event for event in events if event['kind'] == 'preservation']
+            assert len(preservation) == 1
+            assert receipt['preservation_event_digest'] == preservation[0]['event_digest']
+            assert preservation[0]['sequence'] < min(event['sequence'] for event in events if event['kind'] == 'removal_intent')
+            assert receipt['preservation'] == preservation[0]['body']['archive']
+            assert receipt['preservation']['full_byte_service_account_readback_passed'] is True
+            remote = json.loads((root / 'cloud-fixture.json').read_bytes())
+            assert remote['calls'].count('readback') == 1
         assert all(events[index]['previous_event_digest'] == events[index - 1]['event_digest']
                    for index in range(1, len(events)))
         if interruption:
@@ -329,6 +363,9 @@ def connected_delete(interruption=None):
         assert repeated['observed_removed_allocated_bytes'] == 0
         assert repeated['removed_files'] == repeated['removed_directories'] == 0
         assert repeated['original_final_event_digest'] == events[-1]['event_digest']
+        if action == 'offload':
+            remote = json.loads((root / 'cloud-fixture.json').read_bytes())
+            assert remote['calls'].count('readback') == 1
         assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
         assert not list(target.iterdir())
         # A completed receipt never adopts a rewritten or repopulated tombstone.
@@ -337,6 +374,8 @@ def connected_delete(interruption=None):
         assert changed['code'].endswith('action_tombstone_changed'), changed
         assert (target / 'changed-after-final').read_bytes() == b'keep changed bytes'
         assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+        if action == 'offload':
+            return dict(historical_offload_full_readback=True)
         return dict(actual_owner_approved_delete=True, original_member_journal=True,
                     historical_delete_idempotent=True)
 
@@ -347,9 +386,12 @@ def connected_delete_recovery():
             connected_delete(phase)
         except Exception as error:
             raise AssertionError('connected phase=' + str(phase) + ':' + str(error)) from error
+    connected_delete(action='offload')
+    connected_delete(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
                 historical_delete_idempotent=True, original_fence_recovered=True,
-                interrupted_removal_recovered=True, uncertain_removal_credit_zero=True)
+                interrupted_removal_recovered=True, uncertain_removal_credit_zero=True,
+                historical_offload_full_readback=True, historical_corrupt_offload_keeps_bytes=True)
 
 
 if __name__ == '__main__':
