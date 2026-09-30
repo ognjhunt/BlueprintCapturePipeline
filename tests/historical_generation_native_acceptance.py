@@ -161,13 +161,17 @@ def worker_main(root, action_id):
     interruption = root / 'interrupt-once'
     if interruption.exists():
         phase = interruption.read_text()
-        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed'):
+        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed', 'unwritten_stage'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
                 if phase == 'before_restore_final' and kind == 'restore_final':
                     raise RuntimeError('fixture_interrupted_after_' + phase)
                 original_record(self, kind, body)
+                if phase == 'unwritten_stage' and kind == 'restore_intent' \
+                        and body.get('phase') == 'directory' and body.get('path') == '':
+                    from blueprint_pipeline.control_plane_lane_historical_generation import HistoricalGenerationError
+                    raise HistoricalGenerationError('fixture_interrupted_after_' + phase)
                 if kind == phase or (kind == 'restore_intent' and body.get('phase') == phase):
                     raise RuntimeError('fixture_interrupted_after_' + phase)
             _Worker.record = record
@@ -693,14 +697,18 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                                              restore=True, expected='failed')
                 assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption, interrupted
                 assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
-                assert all((target / name).read_bytes() == value for name, value in original.items())
+                if restore_interruption == 'unwritten_stage':
+                    assert not list(target.iterdir())
+                else:
+                    assert all((target / name).read_bytes() == value for name, value in original.items())
                 interrupted_prefix = {path.name: path.read_bytes() for path in
                                       (journals / restore['action_id']).iterdir()}
                 interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
                                       if name.startswith('e-')]
                 assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
                     restore_interruption == 'restore_final')
-                assert ('restore.snapshot.json' in interrupted_prefix) == (restore_interruption != 'stage_removed')
+                assert ('restore.snapshot.json' in interrupted_prefix) == (
+                    restore_interruption not in ('stage_removed', 'unwritten_stage'))
                 assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
                 (root / 'interrupt-once').unlink()
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
@@ -708,9 +716,13 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             if restore_interruption is not None:
                 recovery = {'restore_final': 'recovered_access',
                             'before_restore_final': 'recovered_before_final',
-                            'stage_removed': 'recovered_publication'}
+                            'stage_removed': 'recovered_publication', 'unwritten_stage': 'restarted_unwritten'}
                 assert restored[recovery[restore_interruption]] is True
-                assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
+                if restore_interruption == 'unwritten_stage':
+                    assert restored['restored_files'] == len(original)
+                    assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
+                else:
+                    assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
                 assert all((journals / restore['action_id'] / name).read_bytes() == raw
                            for name, raw in interrupted_prefix.items())
             else:
@@ -775,6 +787,7 @@ def connected_delete_recovery():
         run_case(interruption=phase)
     run_case(action='offload')
     run_case(action='offload', restore_interruption='before_restore_final')
+    run_case(action='offload', restore_interruption='unwritten_stage')
     run_case(action='offload', restore_interruption='stage_removed')
     run_case(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
