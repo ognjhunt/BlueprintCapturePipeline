@@ -164,3 +164,82 @@ skills, supplied v2 input, resulting output/artifact provenance and run-date liv
 evidence. Parent source review, delivery readback receipts, usage reconciliation
 and hosted cleanup must succeed before coordinated single-trigger cutover. This
 PR supplies offline verification only; none of these live actions is performed.
+
+## Explicit approved refresh policy: research v3
+
+The owner's separately approved field-specific refresh policy is a deliberate
+opt-in `research_contract_version=3`. v1 and v2 defaults, source-date checks,
+`freshness_days` hard expiry semantics and saved ledgers remain unchanged. A v2
+run still resumes and validates as v2 even if the current config selects v3.
+The disabled `knowledge.v3.config.example.json` requires both a snapshot and
+`knowledge_refresh_policy`; selecting this policy on an older contract is refused.
+No schedule, deployment, credential or saved-agent change is included.
+
+`knowledge-refresh-policy.v1.schema.json` defines a separate approved overlay.
+It binds the original snapshot content hash **and exact file SHA-256**, the
+approval record/reference, complete record/fact assignments and each original
+fact digest. Its own `policy_hash` is SHA-256 of canonical JSON excluding only
+`policy_hash`. The artifact is capped at 64 KiB and 200 assignments. References
+record approval authority; hashes bind integrity and cannot authenticate a
+reviewer or promote factual claims. Prepare the artifact with the local
+`freshness.build` function from explicitly approved assignments, never from an
+automatic vendor classifier. The existing snapshot/exporter/schema is unchanged.
+
+Fixed classes make facts eligible for targeted review at 90 days for stable
+versioned specifications and dated historical reports, 30 days for vendor
+capabilities/limits, and 7 days for operational status/requirements. An age equal
+to the threshold is due. Unknown/unsupported facts are gaps and conflicts remain
+guardrails; neither has an age-based review clock. Review eligibility is a
+relevance-driven priority, not automatic invalidation, deletion, truth renewal
+or an approved refresh schedule. Original source dates and evidence labels remain
+intact. Actual `revalidated_at` may determine age when present; publication,
+export and load dates never determine review eligibility. Date-only arithmetic
+retains the existing conservative Chicago start-of-day convention.
+
+The overlay cannot reclassify original operational fields as cached positive
+capability. `current_availability` evidence forces the operational class even on
+a deployment field. Historical deployment reports retain their dated meaning and
+can inform research background; they never prove ongoing operation or a new
+site's eligibility. Unknown/conflicted/unsupported original status overrides
+policy labels. Units/conditions, subordinate unknowns, limits and exclusions stay
+bound to the exact original fact, including after review becomes due.
+
+V3 deltas use reason `refresh_due` instead of V2’s `stale`; this describes review
+eligibility, not factual invalidation. V1/V2 output and ledger semantics remain unchanged.
+
+V3 session context adds `refresh_class`, `refresh_due` and `reuse_mode` and a small
+policy header. Legacy `load_state` remains visibly dated metadata; v3 does not
+use its age-expiry result as a reuse gate. All selected context remains subject
+to the same 12-record/60-fact/32-KiB caps, including policy annotations. The full
+approved overlay is persisted separately with the immutable context and both
+digests before the single create attempt. Resume uses these saved values even
+when local snapshot/policy files change or disappear. Collection recomputes due
+status for a separate `knowledge_refresh_assessment` in the parent packet, without
+changing the saved context, source dates or policy. Legitimate due transitions
+are not tampering and age alone does not reject dated background.
+
+`daily-research.v3.schema.json` adds `refresh_policy_hash` and an explicit evidence
+`assertion_scope`: `as_of_background`, `current_operational`, or
+`deployment_critical`. Snapshot citations must be exact, dated
+`as_of_background` evidence. A reviewed `task_claim` may supply hypothetical
+capability coverage; historical reports, specifications, operational requirements
+and negative limits are supplemental `role=background` only. These cannot replace
+required task/capability/geography coverage. Unknowns/conflicts stay in context
+as gaps/guardrails and cannot provide positive citations. Current operational and
+deployment-critical assertions, and task/geography evidence, require live
+run-date source checks regardless of age. Candidate status remains unqualified
+or needs_review; all consequential decisions require parent review.
+
+Prompt instructions prioritize relevant due facts, conflicts, changed evidence
+and consequential gaps instead of rediscovering everything. Freshness-policy
+approval approves review rules only; no fact becomes newly approved, current,
+independently demonstrated or deployment-ready. The parent independently reviews
+sources, task/product/geography conditions and any proposed knowledge deltas.
+The runner still makes no Notion/CRM writes.
+
+The four reviewed records can therefore use the approved overlay while their
+original one-day snapshot fields, source dates, content hash, exact file bytes
+and earlier Library bundle remain preserved. A separate approved overlay and v3
+context/assessment/report are new artifacts; no original snapshot re-export is
+needed. Before any future live use, retain the existing README's separately
+authorized canary, parent review, receipt, cleanup and single-trigger gates.

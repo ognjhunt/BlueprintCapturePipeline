@@ -1,4 +1,5 @@
 """Synthetic, offline snapshot/provenance tests; never real qualified evidence."""
+import hashlib
 import json
 import re
 from copy import deepcopy
@@ -9,6 +10,7 @@ import pytest
 
 from tests import test_daily_research_runner as lifecycle
 from tests.test_daily_research_runner import DAY, NOW, output
+from tools.daily_research import contracts, freshness
 from tools.daily_research import knowledge as k
 from tools.daily_research.runner import (
     Refusal,
@@ -554,3 +556,345 @@ def test_schema_datetime_oracle_does_not_call_loader_parser(monkeypatch):
     assert not checker.conforms("2026-09-30T11:00:00+00:90", "date-time")
     assert not checker.conforms("20260930T110000+0000", "date-time")
     assert not checker.conforms("2026-02-30T11:00:00Z", "date-time")
+
+
+def policy_bundle(value=None, policy_class="vendor_capability_or_limit", now=NOW):
+    value = rehash(value or snapshot())
+    raw = (json.dumps(value, indent=2) + "\n").encode()
+    k.validate(value, now)
+    assignments = [{"record_id":r["record_id"], "fact_id":f["fact_id"], "policy_class":policy_class}
+                   for r in value["records"] for f in r["facts"]]
+    policy = freshness.build(value, hashlib.sha256(raw).hexdigest(), assignments, "synthetic-parent-approved", now)
+    return value, raw, policy, freshness.select(value, policy, now)
+
+
+def v3(ctx):
+    result = v2(ctx)
+    result.update(schema_version="blueprint.daily-research.v3", refresh_policy_hash=ctx["refresh_policy"]["policy_hash"])
+    for entry in result["candidates"][0]["evidence"]:
+        entry["assertion_scope"] = "as_of_background" if entry["origin"] == "snapshot" else "current_operational"
+        entry["checked_date"] = contracts.checked_day(entry["source_checked_at"])
+    return result
+
+
+def validate_v3(result, ctx, policy, observed_at=NOW):
+    return validate_output(result, DAY, set(), contract_version=3, knowledge_context=ctx, refresh_policy=policy, observed_at=observed_at)
+
+
+def enable_v3(runner, tmp_path, value=None, policy_class="vendor_capability_or_limit"):
+    value, raw, policy, _ctx = policy_bundle(value, policy_class)
+    snapshot_path = tmp_path / "v3-snapshot.json"
+    policy_path = tmp_path / "v3-policy.json"
+    snapshot_path.write_bytes(raw)
+    save_json(policy_path, policy)
+    runner.config.update(research_contract_version=3, knowledge_snapshot=str(snapshot_path), knowledge_refresh_policy=str(policy_path))
+    return snapshot_path, policy_path
+
+
+@pytest.mark.parametrize("policy_class,field,days", [
+    ("vendor_capability_or_limit", "task_claim", 30),
+    ("stable_versioned_embodiment_or_specification", "specification", 90),
+    ("dated_historical_report", "deployment", 90),
+    ("operational_status_or_requirements", "integration", 7),
+])
+def test_v3_refresh_eligibility_boundary_uses_check_not_publication_or_load(policy_class, field, days):
+    value = snapshot()
+    fact = value["records"][0]["facts"][0]
+    fact["field"] = field
+    if field == "specification":
+        fact["specification"] = {"name":"payload", "value":5, "unit":"kg", "conditions":["Synthetic rated limit only"]}
+    fact["freshness_days"] = 1
+    checked = NOW - timedelta(days=days) + timedelta(seconds=60)
+    fact["sources"][0].update(source_checked_at=checked.isoformat(), publication_date="2020-01-01")
+    _value, _raw, policy, ctx = policy_bundle(value, policy_class)
+    original = deepcopy(ctx)
+    selected = ctx["records"][0]["facts"][0]
+    assert selected["load_state"] in {"stale", "live_required"}
+    assert selected["refresh_due"] is False
+    assert freshness.refresh_due(selected, policy_class, NOW + timedelta(seconds=59)) is False
+    assert freshness.refresh_due(selected, policy_class, NOW + timedelta(seconds=60)) is True
+    later = freshness.assessment(ctx, policy, NOW + timedelta(seconds=120))
+    assert later["facts"][0]["refresh_due"] is True and ctx == original
+    assert selected["sources"][0]["source_checked_at"] == checked.isoformat()
+    if field == "task_claim":
+        validate_v3(v3(ctx), ctx, policy, observed_at=NOW + timedelta(seconds=120))
+
+
+def test_v3_age_alone_keeps_dated_vendor_background_and_negative_limit():
+    value = snapshot()
+    fact = value["records"][0]["facts"][0]
+    fact["sources"][0]["source_checked_at"] = "2025-09-29"
+    limitation = deepcopy(fact)
+    limitation.update(fact_id="negative-limit", field="limit", statement="Synthetic excluded object remains excluded")
+    limitation["limits"] = ["Preserve exclusion pending source-backed parent review"]
+    value["records"][0]["facts"].append(limitation)
+    _value, _raw, policy, ctx = policy_bundle(value)
+    assert all(f["refresh_due"] and f["load_state"] == "stale" for f in ctx["records"][0]["facts"])
+    result = v3(ctx)
+    cached = deepcopy(result["candidates"][0]["evidence"][1])
+    cached.update(role="background", claim=limitation["statement"], snapshot_fact_id="negative-limit")
+    result["candidates"][0]["evidence"].append(cached)
+    validate_v3(result, ctx, policy)
+    assert ctx["records"][0]["facts"][1]["limits"] == limitation["limits"]
+    with pytest.raises(Refusal, match="output_version"):
+        validate_output(result, DAY, set(), contract_version=2, knowledge_context=ctx, observed_at=NOW)
+
+
+@pytest.mark.parametrize("status,field,policy_class", [
+    ("unknown", "unknown", "explicit_unknown"),
+    ("unsupported", "task_claim", "explicit_unknown"),
+    ("reviewed", "unknown", "explicit_unknown"),
+    ("conflicted", "task_claim", "unresolved_conflict"),
+])
+def test_v3_gap_or_conflict_never_becomes_positive_cached_evidence(status, field, policy_class):
+    value = snapshot()
+    fact = value["records"][0]["facts"][0]
+    fact.update(status=status, field=field)
+    if status == "conflicted":
+        fact["conflicts"] = ["Synthetic contradictory claims"]
+        fact["limits"] = ["Exclude disputed scope until source review"]
+    _value, _raw, policy, ctx = policy_bundle(value, policy_class)
+    assert ctx["records"][0]["facts"][0]["refresh_due"] is None
+    with pytest.raises(Refusal, match="cached_fact_not_usable"):
+        validate_v3(v3(ctx), ctx, policy)
+    assert freshness.assessment(ctx, policy, NOW + timedelta(days=365))["facts"][0]["reuse_mode"] in {"gap_only", "conflict_guardrail"}
+
+
+@pytest.mark.parametrize("field,level,bad_class", [
+    ("availability", "vendor_claim", "dated_historical_report"),
+    ("geography", "vendor_claim", "vendor_capability_or_limit"),
+    ("integration", "vendor_claim", "vendor_capability_or_limit"),
+    ("deployment", "current_availability", "dated_historical_report"),
+    ("task_claim", "current_availability", "vendor_capability_or_limit"),
+])
+def test_v3_policy_cannot_relabel_live_operational_fields_as_background_capability(field, level, bad_class):
+    value = snapshot()
+    fact = value["records"][0]["facts"][0]
+    fact.update(field=field, evidence_level=level)
+    with pytest.raises(k.SnapshotError, match="unsafe_classification"):
+        policy_bundle(value, bad_class)
+
+
+@pytest.mark.parametrize("field,policy_class", [
+    ("deployment", "dated_historical_report"),
+    ("integration", "operational_status_or_requirements"),
+    ("limit", "vendor_capability_or_limit"),
+    ("specification", "stable_versioned_embodiment_or_specification"),
+])
+def test_v3_non_task_facts_only_supplement_background_not_required_capability(field, policy_class):
+    value = snapshot()
+    fact = value["records"][0]["facts"][0]
+    fact["field"] = field
+    if field == "specification":
+        fact["specification"] = {"name":"payload", "value":5, "unit":"kg", "conditions":["Synthetic rated limit"]}
+    _value, _raw, policy, ctx = policy_bundle(value, policy_class)
+    result = v3(ctx)
+    with pytest.raises(Refusal, match="cached_positive_capability_not_supported"):
+        validate_v3(result, ctx, policy)
+    result["candidates"][0]["evidence"][1]["role"] = "background"
+    with pytest.raises(Refusal, match="task_capability_geography_evidence_required"):
+        validate_v3(result, ctx, policy)
+    live = deepcopy(result["candidates"][0]["evidence"][0])
+    live.update(role="capability", evidence_level="demonstrated_capability")
+    result["candidates"][0]["evidence"].append(live)
+    validate_v3(result, ctx, policy)
+    result["candidates"][0]["evidence"][1]["assertion_scope"] = "deployment_critical"
+    with pytest.raises(Refusal, match="cached_operational_assertion_forbidden"):
+        validate_v3(result, ctx, policy)
+
+
+@pytest.mark.parametrize("mutation,code", [
+    (lambda p:p.update(schema_version="unknown"), "version_unsupported"),
+    (lambda p:p.update(approved_at="2027-01-01T00:00:00Z"), "date_in_future"),
+    (lambda p:p.update(approved_at="20260930T110000+0000"), "knowledge_date_invalid"),
+    (lambda p:p.update(approval_reference="PENDING-review"), "approval_missing"),
+    (lambda p:p.update(snapshot_file_sha256="f"*64), "snapshot_binding"),
+    (lambda p:p.update(snapshot_content_hash="f"*64), "snapshot_binding"),
+    (lambda p:p["classes"].update(vendor_capability_or_limit=90), "thresholds_unsupported"),
+    (lambda p:p["assignments"][0].update(fact_hash="f"*64), "fact_binding"),
+    (lambda p:p["assignments"].append(deepcopy(p["assignments"][0])), "assignment_binding"),
+    (lambda p:p.update(assignments=[]), "incomplete"),
+])
+def test_v3_policy_integrity_and_approval_fail_closed(mutation, code):
+    value, raw, policy, _ctx = policy_bundle()
+    mutation(policy)
+    policy["policy_hash"] = freshness.policy_hash(policy)
+    with pytest.raises(k.SnapshotError, match=code):
+        freshness.validate(policy, value, hashlib.sha256(raw).hexdigest(), NOW)
+
+
+@pytest.mark.parametrize("failure", ["missing", "tampered", "unsupported", "too_large"])
+def test_v3_bad_policy_rejected_before_provider_reads_or_create(runner_fixture, tmp_path, failure):
+    runner, api, ledger = runner_fixture
+    _snapshot_path, policy_path = enable_v3(runner, tmp_path)
+    if failure == "missing":
+        policy_path.unlink()
+    elif failure == "too_large":
+        policy_path.write_bytes(b" " * (freshness.MAX_BYTES + 1))
+    else:
+        policy = json.loads(policy_path.read_text())
+        if failure == "unsupported":
+            policy["schema_version"] = "future-unsupported-policy"
+        else:
+            policy["policy_hash"] = "f" * 64
+        save_json(policy_path, policy)
+    with pytest.raises(Refusal):
+        runner.start_or_resume()
+    assert api.calls == [] and ledger.rows() == []
+
+
+def test_v3_resume_pins_saved_policy_and_due_transition_without_source_refresh(runner_fixture, tmp_path):
+    runner, api, ledger = runner_fixture
+    value = snapshot()
+    value["records"][0]["facts"][0]["sources"][0]["source_checked_at"] = (NOW-timedelta(days=30)+timedelta(seconds=60)).isoformat()
+    snapshot_path, policy_path = enable_v3(runner, tmp_path, value)
+    api.turn_status = "in_progress"
+    row = runner.start_or_resume()
+    original_context, original_policy = deepcopy(row["knowledge_context"]), deepcopy(row["refresh_policy"])
+    assert original_context["records"][0]["facts"][0]["refresh_due"] is False
+    snapshot_path.unlink(); policy_path.unlink()
+    api.turn_status = "completed"
+    api.raw = json.dumps(v3(original_context)).encode()
+    runner.clock = lambda:NOW+timedelta(seconds=120)
+    row = runner.start_or_resume(allow_create=False)
+    assert row["state"] == "awaiting_review" and len(api.payloads) == 1
+    assert row["packet"]["knowledge_refresh_assessment"]["facts"][0]["refresh_due"] is True
+    assert ledger.get(DAY)["knowledge_context"] == original_context and row["refresh_policy"] == original_policy
+    assert row["packet"]["candidates"][0]["evidence"][1]["source_checked_at"] == value["records"][0]["facts"][0]["sources"][0]["source_checked_at"]
+
+
+def test_v3_policy_ledger_tamper_refused(runner_fixture, tmp_path):
+    runner, api, ledger = runner_fixture
+    enable_v3(runner, tmp_path)
+    api.turn_status = "in_progress"
+    row = runner.start_or_resume()
+    row["refresh_policy"]["approval_reference"] = "changed-on-resume"
+    ledger.put(row)
+    api.turn_status = "completed"
+    api.raw = json.dumps(v3(row["knowledge_context"])).encode()
+    row = runner.start_or_resume(allow_create=False)
+    assert row["state"] == "failed" and row["error"] == "refresh_policy_ledger_binding_invalid"
+
+
+def test_v2_ledger_stays_v2_when_new_configuration_opts_into_v3(runner_fixture, tmp_path):
+    runner, api, ledger = runner_fixture
+    enable_v2(runner, tmp_path)
+    api.turn_status = "in_progress"
+    original = runner.start_or_resume()
+    enable_v3(runner, tmp_path)
+    api.turn_status = "completed"
+    api.raw = json.dumps(v2(original["knowledge_context"])).encode()
+    row = runner.start_or_resume(allow_create=False)
+    assert row["state"] == "awaiting_review" and row["research_contract_version"] == 2
+    assert "refresh_policy" not in ledger.get(DAY)
+
+
+def test_v3_filtering_and_policy_annotations_enforce_context_cap():
+    value = snapshot()
+    record = value["records"][0]
+    record["facts"][0]["statement"] = "S" * 600
+    for i in range(19):
+        fact = deepcopy(record["facts"][0]); fact["fact_id"] = f"fact-{i}"
+        record["facts"].append(fact)
+    value, _raw, policy, ctx = policy_bundle(value)
+    assert len(k.canonical(ctx).encode()) < k.MAX_CONTEXT_BYTES
+    record["facts"][0]["statement"] = "S" * 1000
+    for fact in record["facts"]:
+        fact["statement"] = "S" * 1000
+    value = rehash(value)
+    k.select(value, NOW)  # Legacy context still fits; overlay must enforce its own increased size.
+    raw = (json.dumps(value, indent=2)+"\n").encode()
+    assignments=[{"record_id":record["record_id"],"fact_id":f["fact_id"],"policy_class":"vendor_capability_or_limit"} for f in record["facts"]]
+    policy=freshness.build(value,hashlib.sha256(raw).hexdigest(),assignments,"synthetic-approved",NOW)
+    with pytest.raises(k.SnapshotError,match="context_too_large"):
+        freshness.select(value,policy,NOW)
+    assert freshness.select(value,policy,NOW,{"record_ids":["absent"]})["records"] == []
+
+
+def test_v3_schema_bindings_and_prompt_scope_are_explicit():
+    from jsonschema import Draft202012Validator
+    value,_raw,policy,ctx=policy_bundle()
+    for name,payload in (("knowledge-refresh-policy.v1.schema.json",policy),("daily-research.v3.schema.json",v3(ctx))):
+        schema=json.loads((Path(__file__).parents[1]/"tools/daily_research"/name).read_text())
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema,format_checker=schema_format_checker()).validate(payload)
+    p=prompt(DAY,ctx,3)
+    assert "legacy load_state is informational only" in p and "refresh_due is priority" in p
+    assert "Preserve negative constraints" in p and "as_of_background" in p
+    assert "usable_background facts" not in p and "Policy approval approves refresh rules only" in p
+    assert value["records"][0]["facts"][0]["freshness_days"] == 30  # fixture's original threshold unchanged
+
+
+def test_v3_actual_revalidation_sets_age_without_rewriting_original_check_granularity():
+    value = snapshot()
+    source = value["records"][0]["facts"][0]["sources"][0]
+    source.update(source_checked_at="2025-09-29", revalidated_at="2026-09-29", publication_date="2020-01-01")
+    _value,_raw,policy,ctx=policy_bundle(value)
+    assert ctx["records"][0]["facts"][0]["refresh_due"] is False
+    result=v3(ctx)
+    validate_v3(result,ctx,policy)
+    cached=result["candidates"][0]["evidence"][1]
+    assert cached["checked_date"] == cached["source_checked_at"] == "2025-09-29"
+    assert cached["revalidated_at"] == "2026-09-29" and cached["source_date"] == "2020-01-01"
+
+
+def test_v3_policy_binds_exact_snapshot_bytes_even_when_json_content_hash_matches(tmp_path):
+    value,raw,policy,_ctx=policy_bundle()
+    snapshot_path=tmp_path/"snapshot.json";policy_path=tmp_path/"policy.json"
+    snapshot_path.write_bytes(raw);save_json(policy_path,policy)
+    freshness.load(snapshot_path,policy_path,NOW)
+    snapshot_path.write_text(k.canonical(value)+"\n")
+    assert k.load(snapshot_path,NOW)["content_hash"] == value["content_hash"]
+    with pytest.raises(k.SnapshotError,match="snapshot_binding_invalid"):
+        freshness.load(snapshot_path,policy_path,NOW)
+
+
+def test_v3_policy_and_output_context_tampering_rejected():
+    value,raw,policy,ctx=policy_bundle()
+    corrupt=deepcopy(policy);corrupt["approval_reference"]="rewritten"
+    with pytest.raises(k.SnapshotError,match="hash_mismatch"):
+        freshness.validate(corrupt,value,hashlib.sha256(raw).hexdigest(),NOW)
+    corrupt_context=deepcopy(ctx);corrupt_context["records"][0]["facts"][0]["refresh_class"]="dated_historical_report"
+    with pytest.raises(Refusal,match="context_binding_invalid"):
+        validate_v3(v3(corrupt_context),corrupt_context,policy)
+    result=v3(ctx);result["refresh_policy_hash"]="f"*64
+    with pytest.raises(Refusal,match="output_refresh_policy_binding_invalid"):
+        validate_v3(result,ctx,policy)
+    result=v3(ctx);result["candidates"][0]["evidence"][1]["assertion_scope"]="current_operational"
+    with pytest.raises(Refusal,match="cached_operational_assertion_forbidden"):
+        validate_v3(result,ctx,policy)
+
+
+def test_v3_configuration_is_deliberate_and_never_silently_applies_to_v1_v2(runner_fixture,tmp_path):
+    runner,_api,_ledger=runner_fixture
+    enable_v3(runner,tmp_path)
+    assert configuration(runner.config)["research_contract_version"] == 3
+    missing=deepcopy(runner.config);missing.pop("knowledge_refresh_policy")
+    with pytest.raises(Refusal,match="refresh_policy_required"):
+        configuration(missing)
+    for version in (1,2):
+        legacy=deepcopy(runner.config);legacy["research_contract_version"]=version
+        with pytest.raises(Refusal,match="refresh_policy_requires_v3_contract"):
+            configuration(legacy)
+
+
+@pytest.mark.parametrize("version,reason,accepted", [(2, "stale", True), (2, "refresh_due", False),
+                                                   (3, "refresh_due", True), (3, "stale", False)])
+def test_delta_age_reason_is_deliberately_versioned(version, reason, accepted):
+    _value, _raw, policy, ctx = policy_bundle()
+    result = v3(ctx) if version == 3 else v2(ctx)
+    result["proposed_knowledge_deltas"] = [delta()]
+    result["proposed_knowledge_deltas"][0]["reason"] = reason
+    if accepted:
+        validate_output(result, DAY, set(), contract_version=version, knowledge_context=ctx,
+                        refresh_policy=policy if version == 3 else None, observed_at=NOW)
+    else:
+        with pytest.raises(Refusal, match="knowledge_delta_reason_invalid"):
+            validate_output(result, DAY, set(), contract_version=version, knowledge_context=ctx,
+                            refresh_policy=policy if version == 3 else None, observed_at=NOW)
+    from jsonschema import Draft202012Validator
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research" / f"daily-research.v{version}.schema.json").read_text())
+    validator = Draft202012Validator(schema, format_checker=schema_format_checker())
+    assert bool(list(validator.iter_errors(result))) is not accepted
+    message = prompt(DAY, ctx, contract_version=version)
+    assert ("reason gap/conflict/refresh_due/" in message) is (version == 3)

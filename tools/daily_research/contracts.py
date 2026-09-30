@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+from tools.daily_research import freshness
 from tools.daily_research.knowledge import (
     LEVELS,
     SnapshotError,
@@ -35,8 +36,8 @@ def lookup(context, record_id, fact_id):
     raise SnapshotError("snapshot_fact_not_in_context")
 
 
-def evidence(value, day, context, observed_at=None):
-    if value["role"] == "capability":
+def evidence(value, day, context, observed_at=None, *, policy=None):
+    if value["role"] in {"capability", "background"}:
         require(value["evidence_level"] in LEVELS, "evidence_level_invalid")
         require(value["evidence_level"] != "unknown", "unsupported_evidence_level")
     else:
@@ -45,6 +46,10 @@ def evidence(value, day, context, observed_at=None):
     require(calendar_date(value["checked_date"]) <= date.fromisoformat(day), "evidence_date_in_future")
     require(source_moment(value["source_checked_at"]) <= timestamp(context["snapshot_loaded_at"])
             or value["origin"] == "live", "evidence_date_in_future")
+    if policy is not None:
+        require(value["assertion_scope"] in {"as_of_background", "current_operational", "deployment_critical"}, "evidence_assertion_scope_invalid")
+        if value["origin"] == "snapshot":
+            require(value["assertion_scope"] == "as_of_background", "cached_operational_assertion_forbidden")
     if value["origin"] == "live":
         require(source_moment(value["source_checked_at"]) <= (observed_at or datetime.now(timezone.utc)), "evidence_date_in_future")
         require(value["checked_date"] == day and value["snapshot_loaded_at"] is None
@@ -53,10 +58,13 @@ def evidence(value, day, context, observed_at=None):
         require(value["revalidated_at"] in {None, value["source_checked_at"]}, "evidence_date_integrity_invalid")
         return
     require(value["origin"] == "snapshot", "evidence_origin_invalid")
-    require(value["role"] == "capability", "live_task_geography_required")
+    require(value["role"] in ({"capability", "background"} if policy is not None else {"capability"}), "live_task_geography_required")
     fact = lookup(context, value["snapshot_record_id"], value["snapshot_fact_id"])
-    require(fact["load_state"] == "usable_background"
-            and fact_state(fact, observed_at or datetime.now(timezone.utc)) == "usable_background", "cached_fact_not_usable")
+    if policy is not None:
+        freshness.cached_citation(fact, policy, value["snapshot_record_id"], value["role"])
+    else:
+        require(fact["load_state"] == "usable_background"
+                and fact_state(fact, observed_at or datetime.now(timezone.utc)) == "usable_background", "cached_fact_not_usable")
     require(value["claim"] == fact["statement"] and value["evidence_level"] == fact["evidence_level"]
             and value["snapshot_loaded_at"] == context["snapshot_loaded_at"], "cached_fact_binding_invalid")
     source = {"url": value["url"], "publisher": value["publisher"], "publication_date": value["source_date"],
@@ -68,11 +76,12 @@ def evidence(value, day, context, observed_at=None):
         require(value["claim_kind"] == "vendor_claim", "vendor_claim_presented_as_fact")
 
 
-def deltas(values, day, context, observed_at=None):
+def deltas(values, day, context, observed_at=None, contract_version=2):
     require(isinstance(values, list) and len(values) <= 10, "knowledge_deltas_invalid")
     for delta in values:
         shape(delta, {"record_id", "fact_id", "reason", "proposed_statement", "evidence", "unknowns"})
-        require(delta["reason"] in {"gap", "conflict", "stale", "unsupported", "discovery", "consequential"}, "knowledge_delta_reason_invalid")
+        age_reason = "refresh_due" if contract_version == 3 else "stale"
+        require(delta["reason"] in {"gap", "conflict", age_reason, "unsupported", "discovery", "consequential"}, "knowledge_delta_reason_invalid")
         if delta["reason"] == "discovery":
             require(delta["record_id"] is None and delta["fact_id"] is None, "knowledge_delta_binding_invalid")
         else:

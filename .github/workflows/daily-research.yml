@@ -46,7 +46,7 @@ jobs:
       - name: Verify lifecycle, SDK contracts and changed-file lint
         run: |
           "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
-          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/runner.py tools/daily_research/knowledge.py tools/daily_research/contracts.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py
+          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/runner.py tools/daily_research/knowledge.py tools/daily_research/contracts.py tools/daily_research/freshness.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py
           python3 - "${RUNNER_TEMP}/daily-research-tests.xml" <<'PYTHON'
           import sys
           import xml.etree.ElementTree as ET
