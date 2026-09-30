@@ -106,6 +106,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_PUBSUB}/.scene-workspace-inventory", "cache", "root",
                 "per-file digests for scene workspace retirement plans; rebuilt by re-hashing"),
     StorageRoot(f"{_CONTROL_PLANE}/episode-interpretation-rights", "evidence_hot", "blueprint", "human-approved per-episode disclosure rights"),
+    StorageRoot(f"{_CONTROL_PLANE}/policy-canary-output", "evidence_hot", "blueprint",
+                "sealed Quick-10 needed-set measurement that lets auto delivery stream"),
     # Digest-bound SAM server profiles registered once per release and read by
     # every resolver unit (including the look-ahead admission replay). Profiles
     # are evidence, not reproducible cache: never evicted or offloaded.

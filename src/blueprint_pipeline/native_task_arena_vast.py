@@ -589,15 +589,21 @@ def run_native_task_arena_policy_canary_session_vast(
     witness_capacity = witness_binding['maximum_archive_bytes']
     # The output delivery mode is settled before the authority is consumed:
     # an invalid mode, or streaming without the B2 store, allocates nothing.
+    # Unset is auto (stream only with a store promotion accepts and the host's
+    # needed-set measurement within budget), and every result from here on
+    # records the mode and why.
     from . import policy_canary_output_members as output_members
     try:
-        delivery = output_members.resolve_output_delivery()
+        resolved = output_members.resolve_output_delivery()
     except output_members.PolicyCanaryOutputDeliveryError as exc:
         return _unconsumed_policy_canary_refusal([str(exc)])
+    delivery, recorded = resolved.mode, {output_members.RESOLUTION_FIELD: resolved.record()}
     member_contract = output_hold = None
     if delivery == output_members.STREAM:
+        # Auto streams only with the store; an explicit ``stream`` is refused here without it.
         if not output_members.artifact_store_configured():
-            return _unconsumed_policy_canary_refusal([output_members.ARTIFACT_STORE_NOT_CONFIGURED])
+            refusal = _unconsumed_policy_canary_refusal([output_members.ARTIFACT_STORE_NOT_CONFIGURED])
+            return {**refusal, **recorded}
         member_contract = output_members.POLICY_CANARY_OUTPUT_CONTRACT
         if execute:
             # The needed members' forecast hold, taken before any spend (review I3).
@@ -607,7 +613,8 @@ def run_native_task_arena_policy_canary_session_vast(
                 output_hold = reserve_forecast_hold(job_dir=job_dir, contract=member_contract)
             except ControlPlaneDiskBudgetError as exc:
                 refusal = _unconsumed_policy_canary_refusal(["policy_canary_output_disk_admission_refused"])
-                return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)}}
+                return {**refusal, "provider_output_admission": {"status": "refused", "reason": str(exc)},
+                        **recorded}
     outcome = "failed"
     try:
         consumption = (
@@ -628,6 +635,7 @@ def run_native_task_arena_policy_canary_session_vast(
                 "retry_cap": 0,
                 "authorization_consumption": consumption,
                 "blockers": list(consumption.get("blockers") or []),
+                **recorded,
             }
         owner = authority.get("scene_execution_owner")
         def owner_pre_create() -> dict[str, Any]:
@@ -680,6 +688,7 @@ def run_native_task_arena_policy_canary_session_vast(
             provider_runtime_environment=validated_environment,
             paired_witness_binding=witness_binding,
             provider_output_delivery=delivery,
+            provider_output_delivery_resolution=resolved.record(),
             provider_output_member_contract=member_contract,
             provider_output_reservation=output_hold,
         )

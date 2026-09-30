@@ -1,15 +1,38 @@
 """The Quick-10 provider-output delivery mode and its member contract (plan 15, PR C).
 
-Delivery mode. ``BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY`` is ``download``
-(also when unset or empty: today's path, byte for byte) or ``stream``. Only
-the Quick-10 session (``native_task_arena_vast.run_native_task_arena_policy_canary_session_vast``)
-reads it, before its session authority is consumed; any other value, however
-close (``Stream``, ``stream ``), refuses there with
-``policy_canary_output_delivery_mode_invalid`` and zero provider mutations.
-``stream`` also refuses there unless the dedicated B2 artifact store is
-configured (review I4). Every other arena caller keeps the lane's ``download``
-default. Readers never read the environment: they learn the mode from the
-records on disk (the lane result, a member view descriptor).
+Delivery mode. ``BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY`` unset or empty means
+auto (the founder's default, 2026-09-30); an explicit ``download`` or
+``stream`` means exactly what it says. Auto streams only when both hold, and
+otherwise downloads, today's path:
+
+- promotion would accept the dedicated B2 artifact store
+  (``artifact_store_configured``: promotion's own private-file reader, client
+  construction and bucket identity check, ``verify_dedicated_artifact_store``), and
+- the host holds a needed-set measurement that fits
+  (``needed_set_measurement_refusal``): a sealed record at ``MEASUREMENT_PATH``
+  naming the current contract and selection version, measured on an archive
+  of the full ``QUICK10_SHAPE`` with a needed set, of a run the contract
+  admits within the hold the session takes (``PolicyCanaryOutputContract.admits``,
+  ``forecast_hold_cap_bytes``).
+
+Deploying is therefore never the flip. The switch is the one host command
+that measures a retained Quick-10 and seals the record:
+``python -m blueprint_pipeline.provider_output_member_view plan --archive <zip>
+--contract policy_canary_output_member_contract.v1 --record``. Neither check
+raises: whatever cannot be read is a reason to download.
+
+Only the Quick-10 session
+(``native_task_arena_vast.run_native_task_arena_policy_canary_session_vast``)
+resolves the setting, before its session authority is consumed; any other
+value, however close (``Stream``, ``stream ``, ``auto``), refuses there with
+``policy_canary_output_delivery_mode_invalid`` and zero provider mutations. An
+explicit ``stream`` is the owner's override: it needs no measurement, and
+refuses there without the store (review I4). The session records the effective
+mode and why (``REASON_MODES``) in every result it returns once resolved, the
+lane result included, as ``provider_output_delivery_resolution``. Every other
+arena caller keeps the lane's ``download`` default and records nothing.
+Readers never read the environment: they learn the mode from the records on
+disk (the lane result, a member view descriptor).
 
 Contract ``policy_canary_output_member_contract.v1``. A streamed attempt
 materializes under ``immutable_execution/`` every file member whose name ends
@@ -35,16 +58,17 @@ aggregate, needs 436,485,098 bytes (416 MiB); the children would add
 191,208,330. 640 MiB is 1.5 times that measurement, and with the ingestion
 metadata still fits the ``policy_canary_output`` role's 1 GiB declared
 footprint. A run whose needed set exceeds it seals blocked with its archive
-durable. The measurement is an estimate: before flipping the flag the owner
-measures one retained Quick-10 with
-``python -m blueprint_pipeline.provider_output_member_view plan --archive <zip>
---contract policy_canary_output_member_contract.v1`` (docs/CONTROL_PLANE_STORAGE.md).
+durable. The measurement is an estimate, which is why auto streams only
+once the host has measured one retained Quick-10 and recorded that it fits
+(docs/CONTROL_PLANE_STORAGE.md).
 """
 
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import Mapping
+import stat
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -55,10 +79,54 @@ STREAM = "stream"
 DELIVERY_MODES = (DOWNLOAD, STREAM)
 MODE_INVALID = "policy_canary_output_delivery_mode_invalid"
 ARTIFACT_STORE_NOT_CONFIGURED = "policy_canary_output_stream_artifact_store_not_configured"
+# Why the mode was chosen: the setting named it, or it was unset or empty (auto)
+# and auto streamed, or downloaded for the first condition that failed.
+EXPLICIT = "explicit"
+AUTO_NEEDED_SET_WITHIN_BUDGET = "auto_needed_set_within_budget"
+AUTO_ARTIFACT_STORE_NOT_CONFIGURED = "auto_artifact_store_not_configured"
+AUTO_ARTIFACT_STORE_INVALID = "auto_artifact_store_invalid"
+AUTO_NEEDED_SET_UNMEASURED = "auto_needed_set_unmeasured"
+AUTO_NEEDED_SET_RECORD_INVALID = "auto_needed_set_record_invalid"
+AUTO_NEEDED_SET_OVER_BUDGET = "auto_needed_set_over_budget"
+# Each reason, and the modes it can explain.
+REASON_MODES: dict[str, tuple[str, ...]] = {
+    EXPLICIT: DELIVERY_MODES,
+    AUTO_NEEDED_SET_WITHIN_BUDGET: (STREAM,),
+    AUTO_ARTIFACT_STORE_NOT_CONFIGURED: (DOWNLOAD,),
+    AUTO_ARTIFACT_STORE_INVALID: (DOWNLOAD,),
+    AUTO_NEEDED_SET_UNMEASURED: (DOWNLOAD,),
+    AUTO_NEEDED_SET_RECORD_INVALID: (DOWNLOAD,),
+    AUTO_NEEDED_SET_OVER_BUDGET: (DOWNLOAD,),
+}
+# The result field holding ``OutputDelivery.record()``.
+RESOLUTION_FIELD = "provider_output_delivery_resolution"
+# The host's needed-set measurement (review: deploying must not be the flip):
+# one sealed record at a fixed path under the control plane's state, beside
+# its other policy-canary roots, which the dispatcher (``blueprint``) reads.
+MEASUREMENT_SCHEMA = "policy_canary_output_needed_set_measurement.v1"
+MEASUREMENT_PATH = Path(
+    "/var/lib/blueprint/pipeline-control-plane/policy-canary-output/needed-set-measurement.v1.json")
+MEASUREMENT_MAXIMUM_BYTES = 64 * 1024
+_MEASUREMENT_FIELDS = frozenset({
+    "schema_version", "contract", "selection_version", "needed_set_budget_bytes", "materialized_members",
+    "materialized_bytes", "archive", "quick10_shape", "measured_at", "record_digest"})
+_MEASURED_ARCHIVE_FIELDS = frozenset({"name", "size_bytes", "sha256", "members"})
 CONTRACT_VERSION = "policy_canary_output_member_contract.v1"
 # The worker's per-cell child result name (native_task_arena_policy_canary_session.
 # PROVIDER_RESULT_FILENAME, kept equal by a test so this module imports nothing heavy).
+# The session's aggregate result has the same name, at the archive's root.
 CHILD_RESULT_NAME = "native_task_arena_policy_canary_session_result.v1.json"
+# The Quick-10 layout a measurement must come from (review: a record of the wrong
+# archive would stream every Quick-10 after it): the aggregate result, one child
+# result ``cell_runs/NN/<CHILD_RESULT_NAME>`` per cell, and the first cell's
+# static startup preflight, which also binds the streamed native inventory
+# (``arena_provider_output_streaming.IDENTITY_DOCUMENT``). One cell runs per
+# episode of each policy (the session's ``EPISODES_PER_POLICY``, kept equal by a test).
+QUICK10_CELL_COUNT = 10
+STARTUP_PREFLIGHT_MEMBER = "cell_runs/00/policy_canary_static_startup_preflight.v1.json"
+QUICK10_SHAPE = {"aggregate": True, "cell_results": QUICK10_CELL_COUNT, "startup_preflight": True}
+# The disk role whose hold a streamed session takes before its run.
+OUTPUT_ROLE = "policy_canary_output"
 # A streamed output that arrived but was never ingested: the lane's and the dispatcher's media gap.
 NOT_INGESTED_GAP = "provider_output_not_ingested"
 NEEDED_SET_BUDGET_BYTES = 640 * 1024**2
@@ -79,31 +147,68 @@ class PolicyCanaryOutputDeliveryError(ValueError):
     """A typed refusal; the message is the stable code."""
 
 
-def resolve_output_delivery(environ: Mapping[str, str] | None = None) -> str:
-    """``download`` when unset or empty, the value when it is a mode, else a typed refusal."""
-    raw = (os.environ if environ is None else environ).get(DELIVERY_ENV)
+@dataclass(frozen=True)
+class OutputDelivery:
+    """The effective delivery mode (one of ``DELIVERY_MODES``) and why (a ``REASON_MODES`` key)."""
+
+    mode: str
+    reason: str
+
+    def record(self) -> dict[str, str]:
+        """What the session's results record as ``RESOLUTION_FIELD``."""
+        return {"mode": self.mode, "reason": self.reason}
+
+
+def resolve_output_delivery(environ: Mapping[str, str] | None = None, *,
+                            measurement_path: str | Path | None = None) -> OutputDelivery:
+    """The mode the setting names; unset or empty is auto; any other value is a typed refusal.
+
+    Auto checks the store first, then the needed-set record at
+    ``measurement_path`` (default ``MEASUREMENT_PATH``), and downloads for the
+    first that fails; neither check raises. An explicit ``stream`` resolves
+    without either: the session, not the resolution, refuses it without the store.
+    """
+    values = os.environ if environ is None else environ
+    raw = values.get(DELIVERY_ENV)
     if raw is None or raw == "":
-        return DOWNLOAD
+        refusal = _artifact_store_refusal(values) or needed_set_measurement_refusal(measurement_path)
+        return OutputDelivery(DOWNLOAD, refusal) if refusal else OutputDelivery(STREAM, AUTO_NEEDED_SET_WITHIN_BUDGET)
     if raw in DELIVERY_MODES:
-        return raw
+        return OutputDelivery(raw, EXPLICIT)
     raise PolicyCanaryOutputDeliveryError(MODE_INVALID)
 
 
 def artifact_store_configured(environ: Mapping[str, str] | None = None) -> bool:
-    """Whether all five dedicated B2 artifact-store settings name readable regular files (review I4).
+    """Whether promotion would accept the dedicated B2 artifact store (review I4); never raises.
 
-    A setting that is empty, or names a missing file, a directory or a file
-    this process cannot read, would only fail when promotion first reads it,
-    after the paid run (review minor 8).
+    Configured means exactly what promotion's own client accepts
+    (``verify_dedicated_artifact_store``): all five settings name private,
+    non-empty UTF-8 files its reader takes, and the bucket is the expected one.
+    Anything else would only fail when promotion first reads it, after the
+    paid run (review minor 8), so auto, an explicit ``stream`` and the
+    session's re-check all use this one check.
     """
-    from .task_evaluation_configured_scene_object_store import _ARTIFACT_STORE_FILE_ENV
+    return _artifact_store_refusal(os.environ if environ is None else environ) is None
 
-    values = os.environ if environ is None else environ
-    for name in _ARTIFACT_STORE_FILE_ENV.values():
-        setting = str(values.get(name) or "").strip()
-        if not setting or not Path(setting).is_file() or not os.access(setting, os.R_OK):
-            return False
-    return True
+
+def _artifact_store_refusal(values: Mapping[str, str]) -> str | None:
+    """None when promotion would accept the store, else why auto downloads.
+
+    Never raises: a setting that cannot be read -- below Python 3.13 even one
+    under a parent this process cannot traverse -- is a refusal, not an error.
+    """
+    from .task_evaluation_configured_scene_object_store import (
+        _ARTIFACT_STORE_FILE_ENV,
+        verify_dedicated_artifact_store,
+    )
+
+    if not any(str(values.get(name) or "").strip() for name in _ARTIFACT_STORE_FILE_ENV.values()):
+        return AUTO_ARTIFACT_STORE_NOT_CONFIGURED
+    try:
+        verify_dedicated_artifact_store(values)
+    except (OSError, ValueError, RuntimeError):  # the store's typed refusal is a RuntimeError
+        return AUTO_ARTIFACT_STORE_INVALID
+    return None
 
 
 def _needed(path: str) -> bool:
@@ -152,25 +257,202 @@ class PolicyCanaryOutputContract:
         return self.hold_bytes(needed_bytes=self.needed_set_budget_bytes, member_count=FORECAST_MEMBER_COUNT,
                                index_file_bytes=FORECAST_MEMBER_COUNT * FORECAST_INDEX_ROW_BYTES)
 
+    def admits(self, *, needed_bytes: int, member_count: int, hold_cap_bytes: int | None = None) -> bool:
+        """Whether a run of this shape only ever shrinks the hold taken before it.
+
+        Its needed set is within the budget, and its hold -- index rows at the
+        forecast's allowance, since only the run's own index would say better
+        -- is within ``hold_cap_bytes``: the hold the session takes
+        (``forecast_hold_cap_bytes``), by default the uncapped forecast. A run
+        it does not admit pays and then seals blocked with its archive durable.
+        """
+        cap = self.forecast_hold_bytes() if hold_cap_bytes is None else hold_cap_bytes
+        return (needed_bytes <= self.needed_set_budget_bytes
+                and self.hold_bytes(needed_bytes=needed_bytes, member_count=member_count,
+                                    index_file_bytes=member_count * FORECAST_INDEX_ROW_BYTES) <= cap)
+
 
 POLICY_CANARY_OUTPUT_CONTRACT = PolicyCanaryOutputContract()
 
+
+def forecast_hold_cap_bytes(contract: PolicyCanaryOutputContract | None = None) -> int:
+    """The ``OUTPUT_ROLE`` hold a streamed session takes before its run.
+
+    The contract's forecast, capped at the role's declared footprint or the
+    operator's ``BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_POLICY_CANARY_OUTPUT_BYTES``.
+    Raises ``ControlPlaneDiskBudgetError`` when that override is not a byte count.
+    """
+    from .control_plane_disk_ledger import footprint_bytes
+
+    contract = POLICY_CANARY_OUTPUT_CONTRACT if contract is None else contract
+    return min(contract.forecast_hold_bytes(), footprint_bytes(OUTPUT_ROLE))
+
+
+def quick10_shape(member_paths: Iterable[str]) -> dict[str, Any]:
+    """Which of the Quick-10 layout's identifying members ``member_paths`` holds (``QUICK10_SHAPE`` when all)."""
+    paths = set(member_paths)
+    return {"aggregate": CHILD_RESULT_NAME in paths,
+            "cell_results": sum(f"cell_runs/{cell:02d}/{CHILD_RESULT_NAME}" in paths
+                                for cell in range(QUICK10_CELL_COUNT)),
+            "startup_preflight": STARTUP_PREFLIGHT_MEMBER in paths}
+
+
+def seal_needed_set_measurement(*, contract: str, materialized_members: int, materialized_bytes: int,
+                                archive: Mapping[str, Any], quick10_shape: Mapping[str, Any],
+                                measured_at: str) -> dict[str, Any]:
+    """The sealed record of one retained Quick-10's measured needed set (``MEASUREMENT_SCHEMA``).
+
+    ``contract`` is the rule it was measured under; the record also names the
+    current contract's selection version and budget. ``archive`` is the
+    measured archive's {name, size_bytes, sha256, members}, and
+    ``quick10_shape`` the identifying members it held (``quick10_shape()``).
+    ``record_digest`` seals every other field.
+    """
+    from .decision_evidence_contracts import canonical_digest
+
+    current = POLICY_CANARY_OUTPUT_CONTRACT
+    record = {"schema_version": MEASUREMENT_SCHEMA, "contract": contract, "selection_version": current.version,
+              "needed_set_budget_bytes": current.needed_set_budget_bytes,
+              "materialized_members": materialized_members, "materialized_bytes": materialized_bytes,
+              "archive": dict(archive), "quick10_shape": dict(quick10_shape), "measured_at": measured_at,
+              "record_digest": ""}
+    record["record_digest"] = canonical_digest(record, digest_field="record_digest")
+    return record
+
+
+def write_needed_set_measurement(record: Mapping[str, Any], path: str | Path | None = None) -> Path:
+    """Replace the record at ``path`` (default ``MEASUREMENT_PATH``) whole; returns the path.
+
+    The file is ``0644`` and a directory this call creates ``0755``, so the
+    dispatcher (``blueprint``) reads the record whoever wrote it; it holds no
+    secret. Raises ``OSError``.
+    """
+    from .common import write_json
+
+    target = Path(MEASUREMENT_PATH if path is None else path)
+    created = not target.parent.exists()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if created:
+        os.chmod(target.parent, 0o755)
+    write_json(target, dict(record))
+    os.chmod(target, 0o644)
+    return target
+
+
+def needed_set_measurement_refusal(path: str | Path | None = None) -> str | None:
+    """None when the host's recorded needed set lets auto stream, else why auto downloads.
+
+    The record at ``path`` (default ``MEASUREMENT_PATH``) must be a regular,
+    non-symlink file of at most ``MEASUREMENT_MAXIMUM_BYTES`` holding exactly
+    the ``MEASUREMENT_SCHEMA`` fields, sealed by a ``record_digest`` that
+    verifies, naming the current contract and selection version, and measured
+    on an archive of the full ``QUICK10_SHAPE`` with a needed set that is not
+    empty; else ``auto_needed_set_record_invalid`` (no file at all is
+    ``auto_needed_set_unmeasured``). Its run must be one the current contract
+    admits within the hold the session can take (``forecast_hold_cap_bytes``),
+    else ``auto_needed_set_over_budget``. Never raises.
+    """
+    target = Path(MEASUREMENT_PATH if path is None else path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(target, flags)
+    except FileNotFoundError:
+        return AUTO_NEEDED_SET_UNMEASURED
+    except (OSError, ValueError):
+        return AUTO_NEEDED_SET_RECORD_INVALID
+    data = b""
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MEASUREMENT_MAXIMUM_BYTES:
+            return AUTO_NEEDED_SET_RECORD_INVALID
+        while chunk := os.read(descriptor, MEASUREMENT_MAXIMUM_BYTES + 1 - len(data)):
+            data += chunk
+            if len(data) > MEASUREMENT_MAXIMUM_BYTES:
+                return AUTO_NEEDED_SET_RECORD_INVALID
+    except OSError:
+        return AUTO_NEEDED_SET_RECORD_INVALID
+    finally:
+        os.close(descriptor)
+    try:
+        record = json.loads(data.decode("utf-8"))
+        sealed = _sealed_measurement(record)
+    except (ValueError, TypeError, RecursionError):  # UnicodeError and JSONDecodeError are ValueErrors
+        return AUTO_NEEDED_SET_RECORD_INVALID
+    if not sealed:
+        return AUTO_NEEDED_SET_RECORD_INVALID
+    contract = POLICY_CANARY_OUTPUT_CONTRACT
+    try:
+        cap = forecast_hold_cap_bytes(contract)
+    except RuntimeError:  # an override that is not a byte count: the session could take no hold either
+        return AUTO_NEEDED_SET_OVER_BUDGET
+    admitted = contract.admits(needed_bytes=record["materialized_bytes"], member_count=record["archive"]["members"],
+                               hold_cap_bytes=cap)
+    return None if admitted else AUTO_NEEDED_SET_OVER_BUDGET
+
+
+def _count(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _sealed_measurement(record: Any) -> bool:
+    """Whether ``record`` is exactly a sealed measurement under the current contract."""
+    from .decision_evidence_contracts import canonical_digest
+
+    if not isinstance(record, dict) or set(record) != _MEASUREMENT_FIELDS:
+        return False
+    archive, shape = record["archive"], record["quick10_shape"]
+    return (record["schema_version"] == MEASUREMENT_SCHEMA
+            and record["contract"] == CONTRACT_VERSION
+            and record["selection_version"] == POLICY_CANARY_OUTPUT_CONTRACT.version
+            and all(_count(record[key]) for key in ("needed_set_budget_bytes", "materialized_members",
+                                                    "materialized_bytes"))
+            and record["materialized_bytes"] > 0
+            and isinstance(archive, dict) and set(archive) == _MEASURED_ARCHIVE_FIELDS
+            and _count(archive["size_bytes"]) and _count(archive["members"])
+            # The measured archive was a Quick-10 (review): every identifying member, typed exactly.
+            and isinstance(shape, dict) and shape == QUICK10_SHAPE
+            and all(type(shape[key]) is type(value) for key, value in QUICK10_SHAPE.items())
+            and record["record_digest"] == canonical_digest(record, digest_field="record_digest"))
+
+
 __all__ = [
     "ARTIFACT_STORE_NOT_CONFIGURED",
+    "AUTO_ARTIFACT_STORE_INVALID",
+    "AUTO_ARTIFACT_STORE_NOT_CONFIGURED",
+    "AUTO_NEEDED_SET_OVER_BUDGET",
+    "AUTO_NEEDED_SET_RECORD_INVALID",
+    "AUTO_NEEDED_SET_UNMEASURED",
+    "AUTO_NEEDED_SET_WITHIN_BUDGET",
     "CHILD_RESULT_NAME",
     "CONTRACT_VERSION",
     "DELIVERY_ENV",
     "DELIVERY_MODES",
     "DOWNLOAD",
+    "EXPLICIT",
     "FORECAST_INDEX_ROW_BYTES",
     "FORECAST_MEMBER_COUNT",
+    "MEASUREMENT_MAXIMUM_BYTES",
+    "MEASUREMENT_PATH",
+    "MEASUREMENT_SCHEMA",
     "MODE_INVALID",
     "NOT_INGESTED_GAP",
     "NEEDED_SET_BUDGET_BYTES",
+    "OUTPUT_ROLE",
+    "OutputDelivery",
     "POLICY_CANARY_OUTPUT_CONTRACT",
     "PolicyCanaryOutputContract",
     "PolicyCanaryOutputDeliveryError",
+    "QUICK10_CELL_COUNT",
+    "QUICK10_SHAPE",
+    "REASON_MODES",
+    "RESOLUTION_FIELD",
+    "STARTUP_PREFLIGHT_MEMBER",
     "STREAM",
     "artifact_store_configured",
+    "forecast_hold_cap_bytes",
+    "needed_set_measurement_refusal",
+    "quick10_shape",
     "resolve_output_delivery",
+    "seal_needed_set_measurement",
+    "write_needed_set_measurement",
 ]
