@@ -140,17 +140,29 @@ jobs:
 
       - name: Install sealed-camera renderer dependencies
         working-directory: tools/splat_render
-        # A runner-owned timeout cannot kill the sudo apt children of combined
-        # --with-deps installs. Dependency timeout must itself run as root;
-        # browser download runs separately as the ordinary runner.
+        # Root dependencies run in a bounded cgroup so an apt descendant cannot
+        # outlive its parent timeout and keep dpkg locked during the next attempt.
+        # Each later attempt retains apt's completed download cache.
         timeout-minutes: 12
         run: |
           set -euo pipefail
           npm ci
           task_node="$(command -v node)"
-          sudo -n timeout --kill-after=10s 300s "$task_node" node_modules/playwright/cli.js install-deps chromium
+          task_deps_ready=0
           for attempt in 1 2; do
-            if timeout --kill-after=10s 150s "$task_node" node_modules/playwright/cli.js install chromium; then
+            task_unit="blueprint-ci-browser-deps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${FULL_TEST_LANE_SHARD_INDEX}-${attempt}"
+            if sudo -n systemd-run --unit="$task_unit" --wait --collect --pipe \
+                --property=Type=exec --property=User=root --property=KillMode=control-group \
+                --property=RuntimeMaxSec=240s --property=TimeoutStopSec=10s \
+                --working-directory="$PWD" -- "$task_node" "$PWD/node_modules/playwright/cli.js" install-deps chromium; then
+              task_deps_ready=1
+              break
+            fi
+            echo "playwright system dependency attempt ${attempt} reached terminal failure"
+          done
+          test "$task_deps_ready" = 1
+          for attempt in 1 2; do
+            if timeout --kill-after=10s 80s "$task_node" node_modules/playwright/cli.js install chromium; then
               exit 0
             fi
             echo "playwright chromium download attempt ${attempt} did not finish"
