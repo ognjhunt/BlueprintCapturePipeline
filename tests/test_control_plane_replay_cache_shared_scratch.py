@@ -1,4 +1,4 @@
-"""Storage GC reclaims lookahead scratch that several lookaheads share, only under its own opt-in."""
+"""Storage GC reclaims lookahead scratch that several lookaheads share, under its own switch (on unless set to 0)."""
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_replay_cache_shared_scratch.py
@@ -509,12 +509,31 @@ def _strings(value):
             yield from _strings(item)
 
 
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, (True, None)), ("", (True, None)), ("1", (True, None)), ("true", (True, None)), (" YES ", (True, None)),
+    ("0", (False, None)), ("false", (False, None)), ("No", (False, None)),
+    ("sometimes", (False, "replay_cache_shared_scratch_setting_invalid")),
+    ("2", (False, "replay_cache_shared_scratch_setting_invalid")),
+])
+def test_shared_scratch_switch_is_on_by_default_and_zero_opts_out(value, expected) -> None:
+    """Owner decision 2026-09-30: on unless the operator says ``0``. It still only widens the retention
+    switch, and an invalid value still only plans and alerts."""
+
+    environ = {} if value is None else {SHARED_ENV: value}
+    assert replay_gc.replay_cache_shared_scratch_setting(environ) == expected
+    # The retention switch never moves it, either way.
+    for retention_value in ("0", "1"):
+        environ[replay_gc.REPLAY_CACHE_RETENTION_ENV] = retention_value
+        assert replay_gc.replay_cache_shared_scratch_setting(environ) == expected
+
+
 def test_summary_reports_shared_scratch_and_its_opt_in(tmp_path, monkeypatch, capsys) -> None:
     """The unit reads the switch from the operator's environment file like every opt-in, records it
     in the report's and the summary's opt_in, and an invalid value only plans and alerts. The
     summary the door reads carries the shared block's counters and typed reasons, never a path, and
     the phase's candidate and removed totals include the shared bytes it removed. The unit never sets
-    the switch itself, and the example environment documents it off."""
+    the switch itself, and the example environment documents its opt-out, commented, so the code's
+    default (on) applies."""
 
     from blueprint_pipeline import control_plane_storage_gc_reasons as reasons
 
@@ -577,9 +596,9 @@ def test_summary_reports_shared_scratch_and_its_opt_in(tmp_path, monkeypatch, ca
     unit = (root / "deploy/systemd/blueprint-control-plane-storage-gc.service").read_text(encoding="utf-8")
     example = (root / "deploy/systemd/pipeline-control-plane.env.example").read_text(encoding="utf-8")
     assert replay_gc.REPLAY_CACHE_SHARED_SCRATCH_ENV == SHARED_ENV
-    assert f"Environment={SHARED_ENV}=" not in unit, "the shared switch stays an operator opt-in"
-    assert f"# {SHARED_ENV}=1" in example and not any(row.startswith(f"{SHARED_ENV}=") for row in example.splitlines())
-    assert example.index("# BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1") < example.index(f"# {SHARED_ENV}=1")
+    assert f"Environment={SHARED_ENV}=" not in unit, "only the operator's environment file may opt the shared switch out"
+    assert f"# {SHARED_ENV}=0" in example and not any(row.startswith(f"{SHARED_ENV}=") for row in example.splitlines())
+    assert example.index("# BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=0") < example.index(f"# {SHARED_ENV}=0")
 
 
 def test_shared_scratch_reports_each_directory_its_prune_kept(tmp_path, monkeypatch) -> None:

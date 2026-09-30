@@ -243,12 +243,14 @@ _MIB = 1024 * 1024
 def result_residue_offload_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
     """Whether residue offload may apply, and an alert when its setting is invalid.
 
-    Its own owner decision, parsed like every other storage GC opt-in: only
-    ``1``, ``true`` or ``yes`` enables it; any other value leaves it planning and
-    is reported. The evidence offload opt-in never enables it.
+    Its own owner decision, on by default (2026-09-30) and parsed like every other storage
+    GC switch: unset, empty, ``1``, ``true`` or ``yes`` enables it; ``0``, ``false`` or
+    ``no`` leaves it planning; any other value leaves it planning and is reported. The
+    evidence offload switch never moves it, though a tick applies it only while evidence
+    offload applies.
     """
 
-    return _truthy_setting(environ, RESIDUE_OFFLOAD_ENV, RESIDUE_OFFLOAD_INVALID)
+    return _truthy_setting(environ, RESIDUE_OFFLOAD_ENV, RESIDUE_OFFLOAD_INVALID, default=True)
 
 
 def _new_row(name: str, *, apply: bool, now: Callable[[], float]) -> dict[str, Any]:

@@ -20,8 +20,9 @@ is not newer than the replay's report, each inode with all of its names, and
 then the directories left empty inside the tree; for any other replay, only
 digest-verified store copies. A file with a link anywhere else is kept. It
 keeps every report, including the lookahead report the activation records by
-path, digest and size, the replay's scratch queue and every other file. Until
-the owner sets ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1`` a tick
+path, digest and size, the replay's scratch queue and every other file. The
+phase is on by default (owner decision 2026-09-30). Once the owner opts out with
+``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=0`` (or sets an invalid value) a tick
 removes nothing, hashes nothing, reads no file's bytes and sweeps no process
 table: it estimates from names, link counts and sizes, though it still parses
 each replay's report. A tick that applies reads no scratch input's bytes
@@ -30,9 +31,9 @@ each by inode, links, size and mtime.
 
 Scratch several lookaheads share (``control_plane_replay_cache_shared_scratch``) is
 planned once per tick across every lookahead scanned, after each one's own pass, and
-reported under ``shared_scratch``. It is removed only when the tick applies with
-``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1`` beside the retention
-opt-in, and only then do its bytes join the phase's totals.
+reported under ``shared_scratch``. It is removed only when the tick applies with both
+the retention switch and ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH`` on
+(each is on unless set to ``0``), and only then do its bytes join the phase's totals.
 """
 
 from __future__ import annotations
@@ -63,18 +64,24 @@ _TRUE = frozenset({"1", "true", "yes"})
 _FALSE = frozenset({"0", "false", "no"})
 
 
-def _truthy_setting(environ: Mapping[str, str], name: str, invalid_code: str) -> tuple[bool, str | None]:
-    """An owner's opt-in: whether it is on, and ``invalid_code`` as an alert when its value is not a setting.
+def _truthy_setting(
+    environ: Mapping[str, str], name: str, invalid_code: str, *, default: bool = False,
+) -> tuple[bool, str | None]:
+    """An owner's switch: whether it is on, and ``invalid_code`` as an alert when its value is not a setting.
 
-    Only ``1``, ``true`` or ``yes`` turns it on; unset, ``0``, ``false`` or ``no`` leaves it
-    off. Any other value leaves it off and is reported; it never aborts a tick. Storage GC's
-    scene workspace retirement opt-in is read the same way.
+    ``1``, ``true`` or ``yes`` turns it on; ``0``, ``false`` or ``no`` turns it off. Unset or
+    empty, it is ``default``: off unless the caller passes ``default=True``, as every storage
+    GC switch does since the owner turned them on by default (2026-09-30). Any other value
+    leaves it off whatever the default, and is reported; it never aborts a tick. Storage GC's
+    scene workspace retirement switch is read the same way.
     """
 
     raw = str(environ.get(name) or "").strip().lower()
+    if not raw:
+        return default is True, None
     if raw in _TRUE:
         return True, None
-    if not raw or raw in _FALSE:
+    if raw in _FALSE:
         return False, None
     return False, invalid_code
 
@@ -82,21 +89,23 @@ def _truthy_setting(environ: Mapping[str, str], name: str, invalid_code: str) ->
 def replay_cache_retention_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
     """Whether the phase may remove copies, and an alert when its setting is invalid.
 
-    Its own opt-in, parsed exactly like the scene workspace retirement opt-in: an invalid
-    value only plans and alerts, and it never follows another opt-in.
+    Its own switch, on by default (owner decision 2026-09-30) and parsed exactly like the
+    scene workspace retirement switch: ``0`` turns it off, an invalid value only plans and
+    alerts, and it never follows another switch.
     """
 
-    return _truthy_setting(environ, REPLAY_CACHE_RETENTION_ENV, REPLAY_CACHE_RETENTION_INVALID)
+    return _truthy_setting(environ, REPLAY_CACHE_RETENTION_ENV, REPLAY_CACHE_RETENTION_INVALID, default=True)
 
 
 def replay_cache_shared_scratch_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
     """Whether scratch several lookaheads share may go too, and an alert when its setting is invalid.
 
-    Parsed like the retention opt-in, and it only ever widens it: without that one it removes
-    nothing, and that one never turns it on.
+    Parsed like the retention switch and on by default too, and it only ever widens it: with
+    that one off it removes nothing, and that one never turns it on or off.
     """
 
-    return _truthy_setting(environ, REPLAY_CACHE_SHARED_SCRATCH_ENV, REPLAY_CACHE_SHARED_SCRATCH_INVALID)
+    return _truthy_setting(
+        environ, REPLAY_CACHE_SHARED_SCRATCH_ENV, REPLAY_CACHE_SHARED_SCRATCH_INVALID, default=True)
 
 
 def reclaim_replay_caches(

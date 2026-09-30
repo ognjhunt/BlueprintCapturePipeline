@@ -1,9 +1,10 @@
 """Measured admission for a website scene configuration's provider output.
 
-Plan 13a.1, step 3a1.0. Under ``ceiling`` (the default, today's path byte for
-byte) a paid run needs 5U + 512 MiB of raw free space before staging, where U
-is the provider's upload ceiling: U for the returned zip and 4U for the
-largest extraction that zip may declare. Under ``measured``:
+Plan 13a.1, step 3a1.0. Under ``ceiling`` (the operator's explicit opt-out, the
+pre-measured path byte for byte) a paid run needs 5U + 512 MiB of raw free space
+before staging, where U is the provider's upload ceiling: U for the returned zip
+and 4U for the largest extraction that zip may declare. Under ``measured`` (the
+default since the owner's 2026-09-30 decision: unset, empty or ``measured``):
 
 1. the output holds U + 512 MiB on the disk ledger (role
    ``scene_configuration_output``) from before the paid allocation until the
@@ -124,11 +125,12 @@ class SceneConfigurationOutputHoldRefused(TaskEvaluationSceneConfigurationVastEr
 
 
 def configured_output_admission_mode(environment: Mapping[str, str] | None = None) -> str | None:
-    """``ceiling`` when unset or empty, ``measured`` when asked for, else None."""
+    """``measured`` when unset or empty (the default since 2026-09-30) or asked for,
+    ``ceiling`` when the operator opts out, else None: refused before staging."""
 
     raw = (os.environ if environment is None else environment).get(OUTPUT_ADMISSION_ENV)
     if raw is None or raw == "":
-        return CEILING_MODE
+        return MEASURED_MODE
     return raw if raw in (CEILING_MODE, MEASURED_MODE) else None
 
 

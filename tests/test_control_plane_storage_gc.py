@@ -1359,20 +1359,74 @@ def test_gc_phase_counts_why_scenes_are_retained(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(("retirement", "offload", "enabled", "alert"), [
-    (None, None, False, None),
-    (None, "1", False, None),  # the offload opt-in never enables retirement
+    (None, None, True, None),  # owner decision 2026-09-30: on by default
+    ("", None, True, None),
+    (None, "0", True, None),  # the offload switch never disables retirement
     ("1", None, True, None),
     ("true", "0", True, None),
-    ("0", "1", False, None),
+    ("0", "1", False, None),  # nor overrides retirement's own opt-out
+    ("false", None, False, None),
+    ("no", "0", False, None),
     ("maybe", "1", False, "scene_workspace_retirement_setting_invalid"),
+    ("2", None, False, "scene_workspace_retirement_setting_invalid"),
 ])
-def test_scene_retirement_needs_its_own_explicit_opt_in(monkeypatch, retirement, offload, enabled, alert):
+def test_scene_retirement_is_its_own_switch_on_by_default(monkeypatch, retirement, offload, enabled, alert):
     for name, value in ((gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, retirement), (gc_module.EVIDENCE_OFFLOAD_ENV, offload)):
         if value is None:
             monkeypatch.delenv(name, raising=False)
         else:
             monkeypatch.setenv(name, value)
     assert gc_module.scene_workspace_retirement_setting() == (enabled, alert)
+
+
+@pytest.mark.parametrize(("value", "enabled"), [
+    (None, True), ("", True), ("  ", True), ("1", True), ("true", True), (" YES ", True),
+    ("0", False), ("false", False), ("No", False),
+    # Any other value stays off without an alert, exactly as before the default changed.
+    ("maybe", False), ("2", False), ("on", False),
+])
+def test_evidence_offload_is_on_by_default_and_zero_opts_out(value, enabled) -> None:
+    environ = {} if value is None else {gc_module.EVIDENCE_OFFLOAD_ENV: value}
+    assert gc_module.evidence_offload_setting(environ) is enabled
+
+
+def test_the_command_line_turns_every_finished_switch_on_by_default(tmp_path, monkeypatch, capsys) -> None:
+    """Owner decision 2026-09-30: every finished storage GC switch is on unless the operator's
+    environment file says ``0``. Lane scratch is report-only (plan 12) and stays off."""
+
+    from blueprint_pipeline import control_plane_replay_cache_gc as replay_gc
+    from blueprint_pipeline import control_plane_terminal_cache_pins as terminal_pins
+    from blueprint_pipeline import task_evaluation_result_residue_offload as residue
+
+    switches = {
+        gc_module.EVIDENCE_OFFLOAD_ENV: ("offload_enabled", None),
+        residue.RESIDUE_OFFLOAD_ENV: ("result_residue_offload_enabled", "result_residue_offload_alert"),
+        gc_module.SCENE_WORKSPACE_RETIREMENT_ENV: (
+            "scene_workspace_retirement_enabled", "scene_workspace_retirement_alert"),
+        replay_gc.REPLAY_CACHE_RETENTION_ENV: ("replay_cache_retention_enabled", "replay_cache_retention_alert"),
+        replay_gc.REPLAY_CACHE_SHARED_SCRATCH_ENV: (
+            "replay_cache_shared_scratch_enabled", "replay_cache_shared_scratch_alert"),
+        terminal_pins.EXTENDED_PIN_PROOFS_ENV: ("extended_pin_proofs_enabled", "extended_pin_proofs_alert"),
+    }
+    seen: list[dict] = []
+
+    def run(**kwargs):
+        seen.append(kwargs)
+        return {"schema_version": gc_module.RUN_SCHEMA_VERSION, "report_digest": "sha256:0"}
+
+    monkeypatch.setattr(gc_module, "run_storage_gc", run)
+    for name in (*switches, gc_module.LANE_SCRATCH_ENV):
+        monkeypatch.delenv(name, raising=False)
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+    for name in switches:
+        monkeypatch.setenv(name, "0")
+    assert gc_main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+
+    for call, expected in zip(seen, (True, False)):
+        assert {flag: call[flag] for flag, _ in switches.values()} == {flag: expected for flag, _ in switches.values()}
+        assert all(call[alert] is None for _, alert in switches.values() if alert)
+        assert (call["lane_scratch_enabled"], call["lane_scratch_alert"]) == (False, None)
+    assert "storage_gc_alert" not in capsys.readouterr().err
 
 
 def test_an_invalid_retirement_setting_only_plans_and_alerts_without_aborting(tmp_path) -> None:
@@ -1456,7 +1510,8 @@ def test_gc_unit_can_write_scene_workspace_roots() -> None:
     assert not any(path == root or path.startswith(root + "/") for root in roots for path in read_only)
     assert f"Environment={gc_module.SCENE_INTENT_ROOT_ENV}=" in unit
     for opt_in in (gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, gc_module.EVIDENCE_OFFLOAD_ENV):
-        assert f"Environment={opt_in}=" not in unit, "retirement stays an operator opt-in"
+        assert f"Environment={opt_in}=" not in unit, (
+            "on by default in code; only the operator's environment file may opt out")
 
 
 def test_each_tick_first_finishes_removals_a_crash_left_behind(tmp_path) -> None:

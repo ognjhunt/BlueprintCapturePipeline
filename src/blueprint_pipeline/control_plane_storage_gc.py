@@ -10,8 +10,8 @@ plans before it mutates, and a tick applies nothing unless it runs with
 * **Terminal cache pins** whose run is proven closed by archived-run or sealed
   cold-run evidence are released. The extended proofs (a sealed registry run,
   an activation whose mutation window lapsed unlaunched, a stale preparation or
-  compilation nothing consumes) only list their candidates until
-  ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=1``. This changes only the
+  compilation nothing consumes) only list their candidates with
+  ``BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS=0``. This changes only the
   pin ledger.
 * **Derived directories** (``cache`` class: prepared references, compiled
   episodes, activation launch sets) are retired when no live storage pin names
@@ -27,10 +27,10 @@ plans before it mutates, and a tick applies nothing unless it runs with
   implicit pin, so retiring directories first is what frees blobs.
 * **Evidence offload** (``evidence_cold`` class) migrates sealed run
   directories, and first their result artifacts, to the artifact store behind
-  a digest-bound pointer; it stays a dry run until the operator enables it. A
-  result run's residue follows once its bulk artifacts are remote
-  (``task_evaluation_result_residue_offload``), only planned until
-  ``BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=1`` as well.
+  a digest-bound pointer; ``BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD=0`` keeps it a
+  dry run. A result run's residue follows once its bulk artifacts are remote
+  (``task_evaluation_result_residue_offload``), only planned with
+  ``BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD=0`` or evidence offload off.
 * **Scratch directories** (``scratch`` class) idle longer than their window
   are reaped by age alone: nothing references them.
 * **Workspace bundles**: the reproducible ``bundle/`` copy inside an idle,
@@ -38,14 +38,19 @@ plans before it mutates, and a tick applies nothing unless it runs with
 * **Scene workspaces** (``scene_workspace`` class) are retired by
   ``website_scene_workspace_retention`` once every file verifies in Firebase
   Storage or is archived to the artifact store behind a replayable receipt, and
-  nothing can still need them. It only plans until its own explicit opt-in,
-  ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1``, enables it.
+  nothing can still need them. It only plans with its own switch,
+  ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=0``.
 * **Replay caches** (``work`` class: activation lookaheads): the scratch inputs
   left in completed parent replays are removed by ``control_plane_replay_cache_gc``,
-  which only plans until ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=1``.
-  Scratch several lookaheads share also needs
-  ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=1``; until then it is
-  only reported.
+  which only plans with ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION=0``.
+  Scratch several lookaheads share is only reported with that or
+  ``BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH=0``.
+
+Every switch named above is on by default (owner decision 2026-09-30): unset or
+empty is on, ``0``/``false``/``no`` is the operator's opt-out, and any other value
+keeps its phase planning (with an alert, except evidence offload). No switch
+follows another, and each phase's own checks are unchanged. Lane scratch is
+report-only.
 
 Each phase runs isolated: an exception is recorded under its report key and the
 remaining phases still run. Evidence-hot roots, release worktrees, and runtime
@@ -1061,17 +1066,29 @@ def apply_workspace_bundle_manifest(
     return result
 
 
+def evidence_offload_setting(environ: Mapping[str, str] = os.environ) -> bool:
+    """Whether evidence offload may apply.
+
+    On by default (owner decision 2026-09-30): unset, empty, ``1``, ``true`` or ``yes``.
+    ``0``, ``false`` or ``no`` is the operator's opt-out. Any other value keeps it off
+    without an alert, exactly as before the default changed.
+    """
+
+    raw = str(environ.get(EVIDENCE_OFFLOAD_ENV) or "").strip().lower()
+    return not raw or raw in {"1", "true", "yes"}
+
+
 def scene_workspace_retirement_setting(environ: Mapping[str, str] = os.environ) -> tuple[bool, str | None]:
     """Whether scene workspace retirement applies, and an alert when its setting is invalid.
 
-    Retirement is its own owner decision: only
-    ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=1`` (or ``true``/``yes``)
-    enables it, and unset it only plans. It never follows the evidence offload
-    opt-in. Any other value disables it and is reported as an alert; it never
-    aborts the tick.
+    Retirement is its own owner decision, on by default since 2026-09-30:
+    ``BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT=0`` (or ``false``/``no``)
+    keeps it planning. It never follows the evidence offload switch. Any other
+    value disables it and is reported as an alert; it never aborts the tick.
     """
 
-    return _truthy_setting(environ, SCENE_WORKSPACE_RETIREMENT_ENV, SCENE_WORKSPACE_RETIREMENT_INVALID)
+    return _truthy_setting(
+        environ, SCENE_WORKSPACE_RETIREMENT_ENV, SCENE_WORKSPACE_RETIREMENT_INVALID, default=True)
 
 
 def retire_scene_workspaces(
@@ -1816,8 +1833,7 @@ def _run_main(argv: list[str]) -> int:
         pins_root=pins_root,
         evidence_roots=args.evidence_root or _split_env(EVIDENCE_ROOTS_ENV),
         settlement_roots=args.settlement_root or _split_env(SETTLEMENT_ROOTS_ENV),
-        offload_enabled=str(os.getenv(EVIDENCE_OFFLOAD_ENV) or "").strip().lower()
-        in {"1", "true", "yes"},
+        offload_enabled=evidence_offload_setting(),
         result_residue_offload_enabled=residue_enabled,
         result_residue_offload_alert=residue_alert,
         result_residue_max_runs_per_tick=args.result_residue_max_runs_per_tick,
@@ -1913,6 +1929,7 @@ __all__ = [
     "apply_gc_manifest",
     "build_derived_directory_manifest",
     "build_gc_manifest",
+    "evidence_offload_setting",
     "main",
     "retire_scene_workspaces",
     "run_storage_gc",

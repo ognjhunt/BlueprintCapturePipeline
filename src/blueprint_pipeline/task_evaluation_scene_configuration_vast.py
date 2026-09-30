@@ -1244,8 +1244,8 @@ def run_scene_configuration_vast(
     output_disk_requirements = _provider_output_disk_requirements(
         expected_upload_bytes
     )
-    # Ceiling unless BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured on a production
-    # website run; its ledger hold is released when the terminal result is sealed.
+    # Measured by default on a production website run (BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=ceiling
+    # opts out); its ledger hold is released when the terminal result is sealed.
     output_admission = open_scene_configuration_output_admission(
         job=job, receipt=receipt, read_envelope=_portable_construction_envelope,
         expected_upload_bytes=expected_upload_bytes, diagnostic_only=diagnostic_only,
