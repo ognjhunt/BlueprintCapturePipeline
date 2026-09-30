@@ -129,10 +129,10 @@ def test_authenticated_worker_frame_supports_every_held_reference_recheck(
 
 
 def test_historical_recheck_allowance_is_fixed_and_keeps_original_deadline():
-    from blueprint_pipeline.control_plane_lane_historical_authority import _HistoricalReferenceBudget
+    from blueprint_pipeline.control_plane_lane_historical_authority import _historical_reference_budget
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudgetError
     elapsed = [0]
-    budget = _HistoricalReferenceBudget(monotonic=lambda: elapsed[0])
+    budget = _historical_reference_budget(monotonic=lambda: elapsed[0])
     generic = ReferenceCollectionBudget(monotonic=lambda: elapsed[0])
     try:
         assert generic.limits['roots'] == 16
@@ -142,7 +142,7 @@ def test_historical_recheck_allowance_is_fixed_and_keeps_original_deadline():
     finally:
         budget.close()
         generic.close()
-    timed = _HistoricalReferenceBudget(monotonic=lambda: elapsed[0])
+    timed = _historical_reference_budget(monotonic=lambda: elapsed[0])
     try:
         timed.tick()
         elapsed[0] = 5
