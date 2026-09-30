@@ -49,7 +49,8 @@ class _Worker:
             else:
                 _require(current == self.selected, 'authority_changed')
             target = current[2]['target_path']
-            prove_historical_unit(self.action_id, target, str(journal_root(config)))
+            restore = current[1]['action'] == 'restore'
+            prove_historical_unit(self.action_id, target, str(journal_root(config)), restore=restore)
             selected_journal = HistoricalActionJournal(files, config, current, self.operation) if journal else None
             if selected_journal is not None:
                 head = selected_journal.head
@@ -61,7 +62,7 @@ class _Worker:
             again = dispatch._selection(files, config, store, self.config_path,
                                          self.action_id, self.operation.moment())
             _require(again == current, 'authority_changed')
-            prove_historical_unit(self.action_id, target, str(journal_root(config)))
+            prove_historical_unit(self.action_id, target, str(journal_root(config)), restore=restore)
             self.operation.remaining()
 
     @contextmanager
@@ -207,6 +208,9 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
             # new-generation hash preflight. Complete chain and exact current
             # tombstone verification are still required before a cached result.
             prior = True
+    if worker.selected[1]['action'] == 'restore':
+        from .control_plane_lane_historical_restore_worker import run_restore
+        return run_restore(worker, roots, monotonic)
     recovered, events = None, None
     if prior:
         events = worker.replay()

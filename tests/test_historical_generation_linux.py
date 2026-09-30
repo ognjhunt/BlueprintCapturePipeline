@@ -9,6 +9,12 @@ not a historical owner decision, a deletion receipt or a cleared reference set.
 #   src/blueprint_pipeline/control_plane_lane_historical_processes.py
 #   src/blueprint_pipeline/control_plane_lane_historical_action.py
 #   src/blueprint_pipeline/control_plane_lane_historical_references.py
+#   src/blueprint_pipeline/control_plane_lane_historical_restore_authority.py
+#   src/blueprint_pipeline/control_plane_lane_historical_restore_worker.py
+#   src/blueprint_pipeline/control_plane_lane_historical_restore_tree.py
+#   src/blueprint_pipeline/control_plane_lane_historical_restore_archive.py
+#   src/blueprint_pipeline/control_plane_lane_historical_sandbox.py
+#   src/blueprint_pipeline/control_plane_lane_historical_unit.py
 #   tests/historical_generation_native_acceptance.py
 import json
 import os

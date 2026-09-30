@@ -88,7 +88,7 @@ def _readonly_observer():
         library.seccomp_release(context)
 
 
-def _restrict_mutations(target, journal):
+def _restrict_mutations(target, journal, reservation=None):
     _require(platform.machine() in ('x86_64', 'aarch64'), 'sandbox_unknown')
     library = ctypes.CDLL(None, use_errno=True)
     library.syscall.restype = ctypes.c_long
@@ -109,13 +109,23 @@ def _restrict_mutations(target, journal):
     descriptor = _checked(library.syscall(444, ctypes.byref(ruleset), ctypes.sizeof(ruleset), 0))
     try:
         identities = []
-        for root in (target, journal):
+        roots = (target, journal)
+        if reservation is not None:
+            from blueprint_pipeline.control_plane_disk_ledger import DEFAULT_RESERVATION_ROOT
+            info = os.fstat(reservation)
+            named = os.stat(DEFAULT_RESERVATION_ROOT, follow_symlinks=False)
+            _require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0
+                and stat.S_IMODE(info.st_mode) == 0o2770
+                and (info.st_dev, info.st_ino) == (named.st_dev, named.st_ino)
+                and not any('acl' in name for name in os.listxattr(reservation)), 'sandbox_unknown')
+            roots += (reservation,)
+        for root in roots:
             info = os.fstat(root)
             _require(stat.S_ISDIR(info.st_mode), 'sandbox_unknown')
             identities.append((info.st_dev, info.st_ino))
             rule = PathRule(allowed, root)
             _checked(library.syscall(445, descriptor, 1, ctypes.byref(rule), 0))
-        _require(identities[0] != identities[1], 'sandbox_unknown')
+        _require(len(set(identities)) == len(identities), 'sandbox_unknown')
         # NoNewPrivileges is required and independently proven on the actual
         # fixed unit. A successful syscall establishes the current restriction.
         _checked(library.syscall(446, descriptor, 0))
@@ -149,7 +159,7 @@ def _verify_inherited_reads():
 class HistoricalNativeSandbox:
     """One fixed immutable manifest and one bounded current scan per request."""
 
-    def __init__(self, target, journal, manifest, *, tick):
+    def __init__(self, target, journal, manifest, *, tick, reservation=None):
         _require(sys.platform == 'linux' and os.geteuid() == 0, 'native_unavailable')
         _require(os.listdir('/proc/self/task') == [str(os.getpid())], 'sandbox_unknown')
         self.requests, self.answers = queue.Queue(1), queue.Queue(1)
@@ -166,7 +176,7 @@ class HistoricalNativeSandbox:
             _require(set(os.listdir('/proc/self/task')) ==
                 {str(os.getpid()), str(self.thread.native_id)}, 'sandbox_unknown')
             _verify_inherited_reads()
-            _restrict_mutations(target, journal)
+            _restrict_mutations(target, journal, reservation)
         except BaseException:
             self.close()
             raise

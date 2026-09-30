@@ -106,6 +106,10 @@ def _original_selection(store, action_id):
 
 
 def _selection(files, config, store, config_path, action_id, moment):
+    value, _ = store.read(action_id)
+    if value.get('schema_version') == 'control_plane_historical_restore_decision.v1':
+        from .control_plane_lane_historical_restore_authority import select_restore
+        return select_restore(files, config, store, config_path, action_id, moment)
     selected = _original_selection(store, action_id)
     packet, decision, _, _ = selected
     _require(packet['observed_at_epoch'] <= decision['issued_at_epoch'] <= moment

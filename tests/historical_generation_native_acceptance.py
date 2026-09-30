@@ -73,12 +73,18 @@ def _namespace(root):
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
     from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
     from blueprint_pipeline import control_plane_lane_historical_unit as unit
+    from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
+    from blueprint_pipeline import control_plane_disk_ledger as ledger
     # A fixed, protected disposable installation. This changes no authority,
     # time, namespace, process or service-property observation.
     consumer.LANE_ROOTS = (root / 'work/lanes', root / 'inputs/lanes')
     owners.INSTALLED_PACKAGE_ROOT = root / 'operator'
     legacy._GC_UNIT = root / 'gc.service'
     unit._EXECUTABLE = str(root / 'action-entry')
+    ledger.DEFAULT_RESERVATION_ROOT = dispatch.DEFAULT_RESERVATION_ROOT = root / 'disk-reservations'
+    if not ledger.DEFAULT_RESERVATION_ROOT.exists():
+        ledger.DEFAULT_RESERVATION_ROOT.mkdir(mode=0o2770)
+        ledger.DEFAULT_RESERVATION_ROOT.chmod(0o2770)
 
 
 def worker_main(root, action_id):
@@ -150,7 +156,7 @@ def worker_main(root, action_id):
     emit(receipt)
 
 
-def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
+def _launch_worker(entry, action_id, target, journals, *, expected='completed', restore=False):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
     def observations():
@@ -160,7 +166,7 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
         return [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
     previous = observations()
     done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
-        *('--property=' + value for value in _unit_property_assignments(target, journals)),
+        *('--property=' + value for value in _unit_property_assignments(target, journals, restore=restore)),
         '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
     assert done.returncode == 0, done.stdout + done.stderr
     # The launcher must exit: its argv contains the selected write mount and
@@ -418,7 +424,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
                 else:
                     raise AssertionError('unapproved restore decision published')
                 assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
-            restored = _launch_worker(entry, restore['action_id'], target, journals)
+            restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True)
             assert restored['action'] == 'restore' and restored['owner_access_reopened'] is True
             assert restored['fresh_disk_reservation'] is True
             assert all((target / name).read_bytes() == value for name, value in original.items())

@@ -44,7 +44,8 @@ def _scope(selected):
     return dict(action_id=decision['action_id'], action=decision['action'], owner=decision['owner'],
         packet=records['packet'], decision=records['decision'], manifest=decision['manifest'],
         generation_digest=manifest['generation_digest'], target_path=manifest['target_path'],
-        policy=decision['policy'], installed_config=packet['installed_config'],
+        policy=decision['policy'], installed_config=(decision['installed_config']
+            if decision['action'] == 'restore' else packet['installed_config']),
         expires_at_epoch=decision['expires_at_epoch'])
 
 

@@ -1,6 +1,7 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_historical_authority.py
 #   src/blueprint_pipeline/control_plane_lane_historical_generation.py
+#   src/blueprint_pipeline/control_plane_lane_historical_restore_authority.py
 """ADP-009D/day28: original historical bytes need a distinct owner decision."""
 import hashlib
 import json
