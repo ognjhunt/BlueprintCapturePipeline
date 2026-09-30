@@ -67,12 +67,12 @@ def completed(tmp_path):
             records[name] = file_record(path)
         result = sealed({"schema_version": "task_object_astra_authoring_result.v1",
                          "status": "candidate_authored_pending_native_qualification",
-                         "request_digest": old[part]["request_digest"], "model": "gpt-6-sol",
+                         "request_digest": old[part]["request_digest"], "model": "gpt-6.1-sol",
                          **records}, "result_digest")
         (directory / "result.json").write_text(json.dumps(result))
         parts[part] = result
         receipt = sealed({"schema_version": "task_asset_agents_api_stage_receipt.v1",
-                          "provider": "openai", "model": "gpt-6-sol", "runtime": "openai_agents_api",
+                          "provider": "openai", "model": "gpt-6.1-sol", "runtime": "openai_agents_api",
                           "run_id": "original-run", "object_id": old[part]["object_id"],
                           "session_cleanup": "deleted", "result_digest": result["result_digest"]}, "receipt_digest")
         receipt_path = prior / "inference/agents_api/parts" / part / "agents_api_stage_receipt.json"
@@ -84,7 +84,7 @@ def completed(tmp_path):
     plan["source_geometry_receipt"]["construction_envelope_digest"] = SUCCESSOR_ENVELOPE
     authored = sealed({"schema_version": "task_object_astra_articulated_authoring_result.v1",
                        "status": "parts_authored_pending_native_qualification", "provider": "openai",
-                       "agent_runtime": "openai_agents_api", "model": "gpt-6-sol", "plan": source_plan,
+                       "agent_runtime": "openai_agents_api", "model": "gpt-6.1-sol", "plan": source_plan,
                        "parts": parts, "part_request_digests": {
                            part: row["request_digest"] for part, row in old.items()}}, "result_digest")
     (prior / "authoring/result.json").write_text(json.dumps(authored))

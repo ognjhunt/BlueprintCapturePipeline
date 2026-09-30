@@ -146,7 +146,7 @@ def test_materializer_binds_evidence_without_reading_secrets(inputs, monkeypatch
     assert validate_sam31_preparation_plan(plan, source_commit=inputs['source_commit'],
                                          approved_roots=(tmp_path,)) == plan
     assert plan['human_review_required'] is False
-    assert plan['review_model'] == 'gpt-6-sol'
+    assert plan['review_model'] == 'gpt-6.1-sol'
     tampered = json.loads(json.dumps(plan))
     tampered["camera_policy"]["views"][0]["position_offset_m"][0] += 0.1
     tampered["plan_digest"] = canonical_digest(tampered, digest_field="plan_digest")

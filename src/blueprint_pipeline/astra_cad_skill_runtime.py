@@ -226,8 +226,8 @@ class _SDKChatBridge:
         if len(payload.encode()) > self.max_input_tokens:
             raise AstraCADRuntimeBlocked("cad_input_token_ceiling_exceeded")
         index = len(self.calls)
-        selected_model = getattr(self.invoker, 'model', 'gpt-6-sol')
-        if selected_model not in {'gpt-6-sol', 'claude-opus-5-5'}:
+        selected_model = getattr(self.invoker, 'model', 'gpt-6.1-sol')
+        if selected_model not in {'gpt-6.1-sol', 'claude-opus-5-5'}:
             raise AstraCADRuntimeBlocked('cad_authoring_model_unsupported')
         record: dict[str, Any] = {"index": index, "model": selected_model, "max_turns": 1,
                                   "input_sha256": hashlib.sha256(payload.encode()).hexdigest()}
@@ -243,7 +243,7 @@ class _SDKChatBridge:
             "Use only requested schema fields and keep narrative concise. "
             "In build123d selector expressions, length, area and volume are properties, not methods.")
         stable_prefix = instructions + '\n' + self.stable_prefix if self.stable_prefix else None
-        if stable_prefix and selected_model == 'gpt-6-sol':
+        if stable_prefix and selected_model == 'gpt-6.1-sol':
             from .asset_authoring_prompt_cache import asset_cache_policy
             policy = asset_cache_policy(family='cad', output_type=_TextOutput,
                 stable_prefix=stable_prefix, reasoning_effort=self.reasoning_effort)
@@ -343,7 +343,7 @@ def _read_step(step: Path, expected: tuple[float, float, float], tolerance: floa
 
 
 def _adopt_completed_phases(source: Path, budget_root: Path, parameters: dict[str, Any], nodes: Any,
-                            *, provider: str = 'openai', model_id: str = 'gpt-6-sol'):
+                            *, provider: str = 'openai', model_id: str = 'gpt-6.1-sol'):
     """Authenticate retained typed outputs against completed SDK receipts."""
     source = source.resolve(strict=True)
     previous = json.loads((source / "parameters.json").read_text())
@@ -403,7 +403,7 @@ def _compact_coder_prompt(**kwargs: Any) -> str:
 
 
 def _adopt_completed_coder(source: Path, budget_root: Path, parameters: dict[str, Any],
-                           *, provider: str = 'openai', model_id: str = 'gpt-6-sol'):
+                           *, provider: str = 'openai', model_id: str = 'gpt-6.1-sol'):
     previous = json.loads((source / "parameters.json").read_text())
     for key in ("brief", "expected_dimensions_mm", "run_id", "object_label"):
         if previous.get(key) != parameters[key]:
@@ -531,8 +531,8 @@ def execute_mac_candidate(
         nodes._CFG_MAX_RETRIES = repair_budget + 1  # one initial QA + at most two repairs
         nodes._CFG_MAX_EXEC_RETRIES = 0
         graph._MAX_SELF_RETRIES = 1
-        selected_model = getattr(invoker, 'model', 'gpt-6-sol')
-        if selected_model not in {'gpt-6-sol', 'claude-opus-5-5'}:
+        selected_model = getattr(invoker, 'model', 'gpt-6.1-sol')
+        if selected_model not in {'gpt-6.1-sol', 'claude-opus-5-5'}:
             raise AstraCADRuntimeBlocked('cad_authoring_model_unsupported')
         selected_provider = 'anthropic' if selected_model == 'claude-opus-5-5' else 'openai'
         nodes._SP_MODEL = nodes._ARCH_MODEL = nodes._CODER_MODEL = nodes._REPAIR_MODEL = selected_model
