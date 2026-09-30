@@ -810,18 +810,29 @@ def _collect(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.R
         return _commit(c, path, marker, plan, lease, descriptor, verdict["receipt"])
     except _AttemptFailed as exc:
         return _fail(c, _lease(c, lease["job_id"]), str(exc))
-    except Exception as exc:  # noqa: BLE001 - past compute-zero, any other error still ends in provider-zero
-        current = _lease(c, lease["job_id"])
-        if current["state"] != "collecting" or (current["dispatch_started"] and not current["compute_zero_proven"]):
-            raise  # nothing was committed yet: the next run tries again
-        return _abandon_commit(c, path, marker, current, f"remote_cpu_commit_failed:{_typed(exc)}")
+    except Exception as exc:  # noqa: BLE001 - only a named conflict is abandoned; anything else resumes next run
+        current, code = _lease(c, lease["job_id"]), _typed(exc)
+        committed = c.queue_root / "results" / plan.queue_row["name"]
+        if (current["state"] != "collecting" or not _cannot_finish(code)
+                or (current["dispatch_started"] and not current["compute_zero_proven"])
+                or (committed.is_file() and committed.read_bytes() == _canonical_bytes(verdict["receipt"]["result"]))):
+            raise  # transient, or this attempt's result is written: the next run resumes where this one stopped
+        return _abandon_commit(c, path, marker, current, f"remote_cpu_commit_failed:{code}")
+
+
+def _cannot_finish(code: str) -> bool:
+    """The commit errors that no retry can clear (review N1): a result or a pointer at the row's paths that is not
+    this attempt's, or the row gone from the queue.  A write that fails (a full disk, an I/O error) is not one."""
+
+    return (code in {"remote_cpu_result_conflict", "remote_episode_compilation_row_unlocated"}
+            or (code.startswith("remote_cpu_record_conflict:") and code.endswith(POINTER_SUFFIX)))
 
 
 def _abandon_commit(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str, Any],
                     reason: str) -> dict[str, Any]:
-    """Review I3: a commit that cannot finish (a result or pointer already there, a row gone, a read that
-    fails) must not hold the attempt's slot forever.  The row, if still claimed, goes back to the host; the
-    attempt is torn down to provider-zero and settled; the lease ends ``blocked``."""
+    """Review I3: a commit that cannot finish (a result or pointer already there that is not this attempt's,
+    the row gone) must not hold the attempt's slot forever.  The row, if still claimed, goes back to the host;
+    the attempt is torn down to provider-zero and settled; the lease ends ``blocked``."""
 
     _give_up(c, marker, reason=reason, attempts=lease["attempt"])
     return _close(c, path, marker, lease, terminal="blocked", outcome=reason)
@@ -865,6 +876,10 @@ def _settle(c: Collector, attempt: Mapping[str, Any], descriptor: dict[str, Any]
                                         settled_usd=settled, basis=basis, now=c.now)
 
 
+def _settled(attempt_id: str) -> bool:
+    return (allocator._settled_root() / f"{allocator._attempt_key(attempt_id)}.json").exists()
+
+
 def _close(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str, Any], *, terminal: str,
            outcome: str | None = None) -> dict[str, Any]:
     """Tear every started attempt down to provider-zero, reseal the pointer, then turn the lease terminal."""
@@ -874,16 +889,25 @@ def _close(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str,
                                   now=c.now, updates={"outcome": _outcome(outcome)})
     pending = 0
     for attempt in [*lease["prior_attempts"], lease]:
-        if not attempt["dispatch_started"] or attempt["provider_zero_proven"]:
+        if not attempt["dispatch_started"]:
             continue
         descriptor, _ = _descriptor(c, attempt["attempt_id"])
-        record = _seal_teardown(c, attempt, descriptor)
-        if record is None:
-            pending += 1
-            continue
-        lease = leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"], to_state=None,
-                                  now=c.now, updates={"teardown": record})
-        _settle(c, attempt, descriptor, record)
+        if attempt["provider_zero_proven"]:
+            sealed = _read_json(c.jobs_root / "teardowns" / f"{attempt['attempt_id']}.json")
+            if sealed is None:
+                continue  # torn down by the allocator itself, which settled it
+            record = validate_teardown(sealed)
+        else:
+            record = _seal_teardown(c, attempt, descriptor)
+            if record is None:
+                pending += 1
+                continue
+            lease = leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"], to_state=None,
+                                      now=c.now, updates={"teardown": record})
+        # Settled and resealed until done, not only on the first teardown: a run that died between them left
+        # the worst case charged and the pointer unsealed (review N1).
+        if not _settled(attempt["attempt_id"]):
+            _settle(c, attempt, descriptor, record)
         if terminal == "completed" and attempt["attempt_id"] == lease["attempt_id"]:
             _reseal_pointer(c, marker["plan"]["compilation_id"], record)
     if pending:

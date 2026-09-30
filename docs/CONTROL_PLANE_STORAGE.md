@@ -1424,8 +1424,11 @@ never compiles: it dispatches through `paid_resource_allocator remote-cpu-job`,
 follows, collects and tears down. A refused dispatch writes the fallback, then
 drops the hand-off, and a hand-off whose row was given up, handed back or moved
 on is never dispatched again. A commit that cannot finish after compute-zero (a
-result or pointer already there, a row gone) hands the row back and still tears
-the attempt down to provider-zero; its lease ends `blocked`.
+result or pointer already there that is not this attempt's, or the row gone)
+hands the row back and still tears the attempt down to provider-zero; its lease
+ends `blocked`. Anything else, such as a failed write or a teardown or
+settlement error once the result is written, is resumed by the next run from
+the step that failed.
 
 **What lands on the host.** A remote compile writes its whole tree in the
 worker. The host gains only what later stages read by path, the consumer

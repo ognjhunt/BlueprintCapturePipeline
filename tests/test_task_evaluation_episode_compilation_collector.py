@@ -812,3 +812,70 @@ def test_an_allocator_call_reads_only_its_own_result_and_a_lost_dispatch_is_ambi
                   if "dispatch" in argv else world.allocate(argv))
     assert remote.marker_path(world.host.jobs, "authoritative", world.name).is_file()
     assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+
+
+@pytest.mark.parametrize("where", ["provider_zero", "settle"])
+def test_a_transient_error_after_the_row_committed_resumes_its_teardown(tmp_path: Path, monkeypatch,
+                                                                        where: str) -> None:
+    """Review N1: once the result is written, an error in the teardown (the provider-zero proof, or the
+    settlement after it) is retried by the next run, which finishes ``completed`` with the pointer resealed and
+    exactly one settlement; it is never taken for a commit that could not finish."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    failures = {"left": 1}
+    if where == "provider_zero":
+        real_proof = collector.allocator.prove_provider_zero
+
+        def flaky_proof(action, attempt, descriptor):
+            if failures["left"] and world.row_state() == "completed":
+                failures["left"] -= 1
+                raise ConnectionResetError(54, "Connection reset by peer")
+            return real_proof(action, attempt, descriptor)
+
+        monkeypatch.setattr(collector.allocator, "prove_provider_zero", flaky_proof)
+    else:
+        real_settle = collector._settle
+
+        def flaky_settle(c, attempt, descriptor, record):
+            if failures["left"]:
+                failures["left"] -= 1
+                raise ConnectionResetError(54, "Connection reset by peer")
+            return real_settle(c, attempt, descriptor, record)
+
+        monkeypatch.setattr(collector, "_settle", flaky_settle)
+    _complete(world, step=300)
+    lease = world.lease()
+    assert failures["left"] == 0
+    assert (lease["state"], lease["outcome"], world.row_state()) == (
+        "completed", "compiled_for_production_launch", "completed")
+    pointer = json.loads((world.host.outputs / f"{world.plan.compilation_id}.remote-output.v1.json").read_text(
+        encoding="utf-8"))
+    assert pointer["provider_zero_proven"] and pointer["teardown_receipt_digest"] == lease["teardown_digest"]
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    _assert_torn_down(world)  # one settlement for the one started attempt
+
+
+def test_a_transient_write_error_before_the_result_resumes_the_same_attempt(tmp_path: Path, monkeypatch) -> None:
+    """Review N1: a full disk while writing the pointer is not a conflict.  The next run resumes the same
+    attempt at the step that failed: no fallback, no interruption counted, nothing set aside."""
+
+    import errno
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    real, failures = collector.replace_remote_cpu_record, {"left": 1}
+
+    def full(path, value, **kwargs):
+        if failures["left"] and str(path).endswith(".remote-output.v1.json"):
+            failures["left"] -= 1
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(path, value, **kwargs)
+
+    monkeypatch.setattr(collector, "replace_remote_cpu_record", full)
+    _complete(world)
+    assert failures["left"] == 0
+    assert (world.lease()["state"], world.row_state()) == ("completed", "completed")
+    assert len(world.executions()) == 1 and world.lease()["attempt"] == 1
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    assert not list(world.host.outputs.glob(".*.interrupted-*"))
+    assert not list((world.host.jobs / "recovery").rglob("*.json"))
+    _assert_torn_down(world)
