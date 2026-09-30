@@ -156,14 +156,18 @@ def _measure(value, limit, *, reserve_proofs=False, work_budget=None):
         elif isinstance(item, str):
             _require(len(item) <= limit - size)
             size += 2
-            for char in item:
-                if work_budget is not None:
+            # Check the same original deadline around bounded pure character
+            # work. Every character still contributes its exact byte/cap check.
+            for offset, char in enumerate(item):
+                if work_budget is not None and offset % 1024 == 0:
                     work_budget.tick()
                 code = ord(char)
                 _require(not 0xD800 <= code <= 0xDFFF)
                 size += (2 if char in '"\\\b\f\n\r\t' else 6 if code < 32 else
                          1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
                 _require(size <= limit)
+            if work_budget is not None:
+                work_budget.tick()
         elif item is None:
             size += 4
         elif type(item) is bool:
