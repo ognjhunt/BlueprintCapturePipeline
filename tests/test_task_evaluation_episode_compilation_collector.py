@@ -954,3 +954,31 @@ def test_two_wedged_rows_free_their_slots_for_a_third_hand_off(tmp_path: Path, m
     assert "awaiting_capacity" in seen
     assert [_lease_of(world, plan)["state"] for plan in (world.plan, wedged)] == ["blocked", "blocked"]
     assert len(world.executions()) == 3 and leases.slots_in_use(world.host.jobs) == 0
+
+
+def test_a_row_gone_after_its_result_was_written_still_reaches_teardown(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: the result was written, the run died before the row moved, and the row then left
+    processing/.  A resume goes straight to the teardown, skipping the move that no longer applies, rather
+    than re-reading the gone row forever with the slot held."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    crashed: list[str] = []
+
+    def crash_after_result(step: str, attempt_id: str) -> None:
+        if step == "result" and not crashed:
+            crashed.append(step)
+            raise Crash(step)
+
+    monkeypatch.setattr(collector, "_after_step", crash_after_result)
+    for _ in range(200):
+        try:
+            world.collect()
+        except Crash:
+            break
+        world.advance(60)
+    assert crashed == ["result"] and (world.host.queue / "results" / world.name).is_file()
+    (world.host.queue / "processing" / world.name).unlink()  # gone, and never moved
+    _complete(world, step=300)
+    assert world.lease()["state"] == "completed" and world.row_state() is None
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    _assert_torn_down(world)

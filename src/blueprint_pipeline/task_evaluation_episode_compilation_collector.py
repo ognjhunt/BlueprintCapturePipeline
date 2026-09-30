@@ -660,6 +660,13 @@ def _commit(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.Re
         return _close(c, path, marker, lease, terminal="blocked", outcome=abandoned["reason"])
     blocked = receipt["status"] == "blocked"
     terminal = "blocked" if blocked else "completed"
+    if _decided(c, plan, lease, descriptor, receipt):
+        # This attempt's result is written: only the row's move and the teardown can be left.  A row that is no
+        # longer claimed has nothing left to move, so the teardown is never held up re-reading it.
+        if (c.queue_root / "processing" / name).exists():
+            _move_row(c, name, terminal)
+            _after_step("move", attempt_id)
+        return _close(c, path, marker, lease, terminal=terminal, outcome=result["status"])
     if (c.queue_root / terminal / name).is_file() and not (c.queue_root / "processing" / name).exists():
         return _close(c, path, marker, lease, terminal=terminal, outcome=result["status"])
     if not _compute_zero(c, lease, descriptor):
