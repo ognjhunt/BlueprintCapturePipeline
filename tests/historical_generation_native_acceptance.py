@@ -652,7 +652,17 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             assert kinds.index('restore_final') < kinds.index('access_reopened')
             assert sum(kind == 'restore_member' for kind in kinds) == len(original)
             restore_before = {path.name: path.read_bytes() for path in (journals / restore['action_id']).iterdir()}
-            restore_again = _launch_worker(entry, restore['action_id'], target, journals, restore=True)
+            restore_again = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
+                                           launch=gc_tick if installed else None)
+            if installed:
+                assert restore_again.get('observation_only') is True, restore_again
+                assert restore_again['execution_authorized'] is restore_again['action_unit_started'] is False
+                later = gc_tick(now=lambda: time.time() + 1000)
+                assert later['units_started'] == later['removed_bytes'] == later['mutations'] == 0, later
+                observed_restore = next(row for row in later['outcomes']
+                                        if row['action_id'] == restore['action_id'])
+                assert observed_restore == dict(restore_again,
+                    observed_at_epoch=observed_restore['observed_at_epoch'])
             assert restore_again['idempotent'] is True and restore_again['owner_access_reopened'] is True
             assert restore_again['restored_files'] == 0 and restore_again['restored_logical_bytes'] == 0
             assert {path.name: path.read_bytes() for path in (journals / restore['action_id']).iterdir()} == restore_before

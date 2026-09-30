@@ -1,0 +1,66 @@
+"""ADP-009D/day28: restore labels cannot replace births, final and owner access.
+
+These parser observations grant no native authority. Positive installed action
+and read-only GC observation are exercised by the disposable Linux selector.
+"""
+# Covers: src/blueprint_pipeline/control_plane_lane_historical_restore_receipts.py
+from copy import deepcopy
+
+import pytest
+
+from tests.test_historical_generation_restore_snapshot import observations
+from tests.test_historical_generation_authority import historical_installation  # noqa: F401
+from tests.test_registered_experiment_issuer import installation  # noqa: F401
+from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
+
+# ruff: noqa: F811
+
+
+def recorded_observations(installed):
+    original, private, reopened = observations(installed)
+    action_id = 'a' * 32
+    decision = dict(action_id=action_id, owner='owner', manifest='original-selector',
+        final_event_digest='offload-final', archive={'sha256': 'archive', 'size_bytes': 42},
+        parent_version=private['root_version'], issued_at_epoch=100, expires_at_epoch=200)
+    files = [row for row in original['members'] if row['kind'] == 'file']
+    receipt = dict(status='completed', action='restore', action_id=action_id, owner='owner',
+        generation_digest=original['generation_digest'], original_manifest=decision['manifest'],
+        original_final_event_digest=decision['final_event_digest'], archive_sha256='archive',
+        archive_size_bytes=42, restored_files=len(files),
+        restored_logical_bytes=sum(row['size_bytes'] for row in files), fresh_disk_reservation=True,
+        root_directory_retained=True, owner_access_reopened=False,
+        protected_root_version=private['members'][0]['version'])
+    events = [dict(kind='restore_member', body=deepcopy(row), sequence=index,
+                   observed_at_epoch=110) for index, row in enumerate(files)]
+    events.extend([dict(kind='restore_final', body=receipt, sequence=len(events),
+                        observed_at_epoch=120, event_digest='restore-final'),
+                   dict(kind='access_reopened', body=dict(phase='owner_rights_observed', path='',
+                        version=reopened), sequence=len(events)+1, observed_at_epoch=121)])
+    return ({}, decision, original, {}), events, private
+
+
+@pytest.mark.parametrize('change', ['missing_final', 'missing_access', 'access_before_final',
+    'duplicate_birth', 'wrong_birth', 'changed_byte', 'wrong_owner', 'late_final', 'false_count'])
+def test_invalid_restore_history_cannot_be_observed_as_completed(historical_installation, change):
+    from blueprint_pipeline.control_plane_lane_historical_restore_receipts import validate_restored_receipt
+    selected, events, snapshot = recorded_observations(historical_installation)
+    if change == 'missing_final':
+        events = [event for event in events if event['kind'] != 'restore_final']
+    elif change == 'missing_access':
+        events.pop()
+    elif change == 'access_before_final':
+        events[-1]['sequence'] = 0
+    elif change == 'duplicate_birth':
+        events.insert(0, deepcopy(events[0]))
+    elif change == 'wrong_birth':
+        events[0]['body']['version'][1] += 1
+    elif change == 'changed_byte':
+        events[0]['body']['sha256'] = 'sha256:' + 'f' * 64
+    elif change == 'wrong_owner':
+        events[-2]['body']['owner'] = 'other-owner'
+    elif change == 'late_final':
+        events[-2]['observed_at_epoch'] = 200
+    else:
+        events[-2]['body']['restored_files'] += 1
+    with pytest.raises(ValueError):
+        validate_restored_receipt(selected, events, snapshot)
