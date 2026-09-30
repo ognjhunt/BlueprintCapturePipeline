@@ -233,6 +233,24 @@ def _recover_publication(worker, events, roots, monotonic):
         return dict(receipt, recovered_publication=True, restored_files=0, restored_logical_bytes=0)
 
 
+def _unwritten_restore_attempt(events, action_id):
+    """Only classify pre-write steps; this proves no filesystem fact or authority."""
+    if not events or events[0]['kind'] != 'intent':
+        return False
+    stage = '.historical-restore-' + action_id
+    return all(event['kind'] == 'restore_intent' and
+        (event['body'].get('phase') == 'reservation' or
+         event['body'].get('phase') == 'directory' and event['body'].get('path') == ''
+         and event['body'].get('stage_path') == stage) for event in events[1:])
+
+
+def _unchanged_tombstone(observed, decision):
+    return observed['member_count'] == 1 and observed['members'][0]['path'] == '' \
+        and observed['members'][0]['kind'] == 'directory' \
+        and observed['members'][0]['version'] == decision['tombstone_version'] \
+        and observed['root_version'] == decision['parent_version']
+
+
 def run_restore(worker, roots, monotonic):
     operation = worker.operation
     manifest, decision = worker.selected[2], worker.selected[1]
@@ -241,13 +259,23 @@ def run_restore(worker, roots, monotonic):
         if not any(event['kind'] == 'access_reopened' for event in events):
             return _recover_access(worker, events, roots, monotonic)
         return _completed_restore(worker, events, roots, monotonic)
+    observed, restarted = None, False
     if len(events) != 1 or events[0]['kind'] != 'intent':
-        return _recover_before_final(worker, events, roots, monotonic)
-    observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
-        max_seconds=operation.remaining(), monotonic=monotonic)
-    generation._require(observed['member_count'] == 1 and observed['members'][0]['path'] == ''
-        and observed['members'][0]['version'] == decision['tombstone_version']
-        and observed['root_version'] == decision['parent_version'], 'restore_tombstone_changed')
+        if _unwritten_restore_attempt(events, worker.action_id):
+            observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+                max_seconds=operation.remaining(), monotonic=monotonic)
+            if _unchanged_tombstone(observed, decision):
+                with worker.checkpoint(journal=True) as (_, _, journal):
+                    try:
+                        journal.select_restore_snapshot()
+                    except FileNotFoundError:
+                        restarted = True
+        if not restarted:
+            return _recover_before_final(worker, events, roots, monotonic)
+    if observed is None:
+        observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+            max_seconds=operation.remaining(), monotonic=monotonic)
+    generation._require(_unchanged_tombstone(observed, decision), 'restore_tombstone_changed')
     raw = encoding.encode_validation_report(manifest)
     generation._require(authority._selector(raw) == decision['manifest'], 'restore_manifest_changed')
     with _resources(worker, observed) as (held, reservation):
@@ -270,4 +298,5 @@ def run_restore(worker, roots, monotonic):
         guard()
         worker.record('restore_intent', dict(phase='stage_complete', **extracted))
         tree.publish()
-        return _finish_restore(worker, tree, held, roots, monotonic, extracted)
+        receipt = _finish_restore(worker, tree, held, roots, monotonic, extracted)
+        return dict(receipt, restarted_unwritten=True) if restarted else receipt
