@@ -122,10 +122,12 @@ def worker_main(root, action_id):
     interruption = root / 'interrupt-once'
     if interruption.exists():
         phase = interruption.read_text()
-        if phase in ('fenced', 'removed', 'restore_final'):
+        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
+                if phase == 'before_restore_final' and kind == 'restore_final':
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
                 original_record(self, kind, body)
                 if kind == phase:
                     raise RuntimeError('fixture_interrupted_after_' + phase)
@@ -223,7 +225,8 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     return receipt
 
 
-def connected_delete(interruption=None, *, action='delete', corrupt=False):
+def connected_delete(interruption=None, *, action='delete', corrupt=False,
+                     restore_interruption='restore_final'):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -425,21 +428,24 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
                 else:
                     raise AssertionError('unapproved restore decision published')
                 assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
-            _write(root / 'interrupt-once', b'restore_final')
+            _write(root / 'interrupt-once', restore_interruption.encode())
             interrupted = _launch_worker(entry, restore['action_id'], target, journals,
                                          restore=True, expected='failed')
-            assert interrupted['code'] == 'fixture_interrupted_after_restore_final'
+            assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption
             assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
             assert all((target / name).read_bytes() == value for name, value in original.items())
             interrupted_prefix = {path.name: path.read_bytes() for path in
                                   (journals / restore['action_id']).iterdir()}
             interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
                                   if name.startswith('e-')]
-            assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == 1
+            assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
+                restore_interruption == 'restore_final')
+            assert 'restore.snapshot.json' in interrupted_prefix
             assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
             (root / 'interrupt-once').unlink()
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True)
-            assert restored['recovered_access'] is True
+            assert restored['recovered_access' if restore_interruption == 'restore_final'
+                            else 'recovered_before_final'] is True
             assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
             assert all((journals / restore['action_id'] / name).read_bytes() == raw
                        for name, raw in interrupted_prefix.items())
@@ -482,6 +488,7 @@ def connected_delete_recovery():
         except Exception as error:
             raise AssertionError('connected phase=' + str(phase) + ':' + str(error)) from error
     connected_delete(action='offload')
+    connected_delete(action='offload', restore_interruption='before_restore_final')
     connected_delete(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
                 historical_delete_idempotent=True, original_fence_recovered=True,
