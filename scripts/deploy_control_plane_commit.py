@@ -2320,23 +2320,28 @@ def _install_release_systemd_units(
     return receipts
 
 
-def _systemd_unit_state(unit: str) -> dict[str, str]:
+def _systemd_unit_state(unit: str, *, deadline: float | None = None) -> dict[str, str]:
     """Read enabled/active state without changing the unit."""
 
     states: dict[str, str] = {}
     for probe in ("is-enabled", "is-active"):
+        timeout = 15.0 if deadline is None else min(15.0, deadline - time.monotonic())
+        if timeout <= 0:
+            raise ControlPlaneDeployError(f"deploy_systemd_state_probe_failed:{unit}:{probe}")
         try:
             result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
                 ["systemctl", probe, unit],
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=15,
+                timeout=timeout,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ControlPlaneDeployError(
                 f"deploy_systemd_state_probe_failed:{unit}:{probe}"
             ) from exc
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ControlPlaneDeployError(f"deploy_systemd_state_probe_failed:{unit}:{probe}")
         state = result.stdout.strip() or (
             "disabled" if probe == "is-enabled" else "inactive"
         )
@@ -2436,7 +2441,7 @@ def _active_door_holds(root: str | Path, *, now: float | None = None) -> tuple[d
 
 
 @contextlib.contextmanager
-def _locked_door_holds(root: str | Path):
+def _locked_door_holds(root: str | Path, *, deadline: float | None = None):
     """Keep a matching expiry or new hold from racing the deploy's unit restore."""
 
     directory = Path(root)
@@ -2448,7 +2453,22 @@ def _locked_door_holds(root: str | Path):
         fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(errno.EINVAL, "unsafe hold lock")
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if deadline is None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ControlPlaneDeployError("deploy_door_holds_lock_timeout")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.1, remaining))
+    except ControlPlaneDeployError:
+        if fd is not None:
+            os.close(fd)
+        raise
     except OSError:
         if fd is not None:
             os.close(fd)
@@ -2608,12 +2628,16 @@ def _verify_deferred_path_unit_starts(
     deadline = time.monotonic() + timeout_seconds
     warning = None
     while pending:
-        with _locked_door_holds(door_holds_dir) as (held_units, hold_warning):
+        with _locked_door_holds(door_holds_dir, deadline=deadline) as (held_units, hold_warning):
             warning = warning or hold_warning
             for row in pending[:]:
                 unit = row["unit"]
                 hold = held_units.get(unit)
-                after = _systemd_unit_state(unit)
+                if time.monotonic() >= deadline:
+                    raise ControlPlaneDeployError(f"deploy_path_unit_start_timeout:{unit}")
+                after = _systemd_unit_state(unit, deadline=deadline)
+                if time.monotonic() >= deadline:
+                    raise ControlPlaneDeployError(f"deploy_path_unit_start_timeout:{unit}")
                 if hold is not None:
                     if after["state"] != "inactive":
                         continue

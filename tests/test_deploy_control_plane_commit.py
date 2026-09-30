@@ -1472,7 +1472,7 @@ def test_timer_restore_allows_hold_sweep_to_take_its_lock(tmp_path, monkeypatch,
         timer: {"enabled": "enabled", "state": "active"},
         held: {"enabled": "disabled", "state": "inactive"},
     })
-    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit: dict(states[unit]))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit, **_kwargs: dict(states[unit]))
     monkeypatch.setattr(deploy.subprocess, "run", systemctl)
     monkeypatch.setattr(deploy.time, "sleep", complete_jobs)
     if rollback:
@@ -1507,7 +1507,7 @@ def test_owner_hold_cancels_a_queued_timer_restore(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(deploy.subprocess, "run", systemctl)
-    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(state))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit, **_kwargs: dict(state))
     with deploy._locked_door_holds(root) as (held_units, warning):
         assert warning is None
         restored = deploy._restore_installed_path_units(
@@ -1539,9 +1539,9 @@ def test_queued_timer_start_has_a_bounded_verification_timeout(tmp_path, monkeyp
     unit = "blueprint-pubsub-handoff-listener.timer"
     state = {"enabled": "enabled", "state": "inactive"}
     restored = [{"unit": unit, "after": state, "_start_pending": True}]
-    clock = iter([0.0, 1.0])
+    clock = iter([0.0, *([1.0] * 10)])
     monkeypatch.setattr(deploy.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(state))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit, **_kwargs: dict(state))
     monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host mutation"))
     with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_path_unit_start_timeout:"):
         deploy._verify_deferred_path_unit_starts(
@@ -1553,7 +1553,7 @@ def test_timer_verification_preserves_boot_policy_check(tmp_path, monkeypatch):
     unit = "blueprint-pubsub-handoff-listener.timer"
     restored = [{"unit": unit, "after": {"enabled": "enabled"}, "_start_pending": True}]
     monkeypatch.setattr(deploy, "_systemd_unit_state",
-                        lambda _unit: {"enabled": "disabled", "state": "active"})
+                        lambda _unit, **_kwargs: {"enabled": "disabled", "state": "active"})
     with pytest.raises(deploy.ControlPlaneDeployError, match="enabled_state_mismatch"):
         deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=tmp_path / "absent")
 
@@ -1568,6 +1568,73 @@ def test_timer_verification_state_probe_is_bounded(monkeypatch):
     monkeypatch.setattr(deploy.subprocess, "run", timeout)
     with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_systemd_state_probe_failed:"):
         deploy._systemd_unit_state(unit)
+
+
+def test_timer_verification_bounds_contended_hold_lock(tmp_path, monkeypatch):
+    import fcntl
+
+    root = tmp_path / "holds"
+    root.mkdir()
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    restored = [{"unit": unit, "after": {"enabled": "enabled"}, "_start_pending": True}]
+    clock = [0.0]
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(deploy.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda *_args, **_kwargs: pytest.fail("probe under contended lock"))
+    with (root / ".lock").open("a") as contender:
+        fcntl.flock(contender.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_door_holds_lock_timeout$"):
+            deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=root, timeout_seconds=0.2)
+    # The timed-out reader closes its descriptor rather than retaining the lock.
+    with deploy._locked_door_holds(root):
+        pass
+    assert restored[0]["_start_pending"]
+
+
+def test_timer_verification_rejects_late_final_active_probe(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    restored = [{"unit": unit, "after": {"enabled": "enabled"}, "_start_pending": True}]
+    clock = [0.0]
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+
+    def late_probe(_unit, *, deadline):
+        clock[0] = deadline
+        return {"enabled": "enabled", "state": "active"}
+
+    monkeypatch.setattr(deploy, "_systemd_unit_state", late_probe)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_path_unit_start_timeout:"):
+        deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=tmp_path / "absent", timeout_seconds=0.2)
+    assert restored[0]["_start_pending"]
+
+
+def test_timer_verification_probes_share_the_remaining_budget(monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    clock = [0.0]
+    timeouts = []
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+
+    def probe(argv, *, timeout, **_kwargs):
+        timeouts.append(timeout)
+        clock[0] += 0.1
+        return subprocess.CompletedProcess(argv, 0, stdout="enabled" if argv[1] == "is-enabled" else "active")
+
+    monkeypatch.setattr(deploy.subprocess, "run", probe)
+    assert deploy._systemd_unit_state(unit, deadline=0.3) == {"enabled": "enabled", "state": "active"}
+    assert timeouts == pytest.approx([0.3, 0.2])
+
+
+def test_timer_verification_probe_deadline_prevents_late_success(monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    clock = [0.0]
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+
+    def late_probe(argv, **_kwargs):
+        clock[0] = 0.3
+        return subprocess.CompletedProcess(argv, 0, stdout="enabled")
+
+    monkeypatch.setattr(deploy.subprocess, "run", late_probe)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_systemd_state_probe_failed:"):
+        deploy._systemd_unit_state(unit, deadline=0.3)
 
 
 def test_unreadable_break_glass_notes_never_fail_a_finished_deploy(tmp_path, monkeypatch) -> None:
