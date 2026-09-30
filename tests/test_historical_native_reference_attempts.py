@@ -62,3 +62,24 @@ def test_missing_or_changed_original_intent_never_triggers_a_second_attempt(tmp_
     with pytest.raises((AssertionError, ValueError)):
         native._later_reference_attempts(invoke, tmp_path, ACTION)
     assert calls == [ACTION]
+
+
+@pytest.mark.parametrize('phase', [None, 'recovered_publication', 'recovered_before_final',
+                                  'recovered_access', 'restarted_unwritten'])
+def test_restore_increment_is_bound_to_actual_recovery_phase(phase):
+    original = {'one.log': b'a', 'nested/two.log': b'bc'}
+    receipt = dict(restored_files=2, restored_logical_bytes=3)
+    if phase:
+        receipt[phase] = True
+    if phase and phase != 'restarted_unwritten':
+        receipt.update(restored_files=0, restored_logical_bytes=0)
+    native._assert_restore_increment(receipt, original)
+
+
+@pytest.mark.parametrize('receipt', [dict(restored_files=0, restored_logical_bytes=0),
+    dict(recovered_publication=True, restored_files=2, restored_logical_bytes=3),
+    dict(recovered_access=True, recovered_before_final=True, restored_files=0, restored_logical_bytes=0),
+    dict(recovered_publication='true', restored_files=0, restored_logical_bytes=0)])
+def test_restore_increment_never_counts_recovered_bytes_twice_or_adopts_unproved_zero(receipt):
+    with pytest.raises(AssertionError):
+        native._assert_restore_increment(receipt, {'one.log': b'a', 'nested/two.log': b'bc'})
