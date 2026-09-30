@@ -181,17 +181,20 @@ class _HistoricalGenerationFence:
                     _require(names == self.children[relative], 'fence_changed')
                 guard()
 
-    def revoke(self, *, before_change, record):
+    def revoke(self, *, before_change, record, completed=frozenset(), pending=None):
         """Root first, then every original descendant; never unlink or clear FDs.
 
         A crash leaves a durable intent and remaining bytes. The complete worker
         must reconcile that intent and original hashes before future actions.
         """
         for relative in sorted(self.rows, key=lambda name: (name.count('/') + bool(name), name)):
+            if relative in completed:
+                continue
             with self._opened(relative) as (fd, guard):
                 original = list(self.versions[relative])
                 mode = 0o700 if self.rows[relative]['kind'] == 'directory' else 0o600
-                record('fence_intent', dict(path=relative, version=original, uid=0, gid=0, mode=mode))
+                if relative != pending:
+                    record('fence_intent', dict(path=relative, version=original, uid=0, gid=0, mode=mode))
                 for operation in ('chown', 'chmod'):
                     with before_change():
                         guard()

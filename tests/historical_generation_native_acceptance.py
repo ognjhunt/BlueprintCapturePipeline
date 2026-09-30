@@ -80,6 +80,30 @@ def worker_main(root, action_id):
     root = Path(root)
     _namespace(root)
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
+    # Fault injection interrupts actual completed syscalls/publications. It
+    # never supplies a kernel observation, authority record or success result.
+    interruption = root / 'interrupt-once'
+    if interruption.exists():
+        phase = interruption.read_text()
+        if phase == 'fenced':
+            from blueprint_pipeline.control_plane_lane_historical_action import _Worker
+            original_record = _Worker.record
+            def record(self, kind, body):
+                original_record(self, kind, body)
+                if kind == 'fenced':
+                    raise RuntimeError('fixture_interrupted_after_fenced')
+            _Worker.record = record
+        elif phase == 'chown':
+            original_chown = os.fchown
+            target = (root / 'work/old-owner-diagnostics').stat()
+            def chown(fd, uid, gid):
+                original_chown(fd, uid, gid)
+                observed = os.fstat(fd)
+                if (observed.st_dev, observed.st_ino) == (target.st_dev, target.st_ino):
+                    raise RuntimeError('fixture_interrupted_after_chown')
+            os.fchown = chown
+        else:
+            raise AssertionError('unknown fixture interruption')
     try:
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
@@ -89,7 +113,7 @@ def worker_main(root, action_id):
     print(json.dumps(receipt), flush=True)
 
 
-def _launch_worker(entry, action_id, target, journals):
+def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
     def observations():
@@ -115,11 +139,11 @@ def _launch_worker(entry, action_id, target, journals):
     current = observations()
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
-    assert receipt['status'] == 'completed', receipt
+    assert receipt['status'] == expected, receipt
     return receipt
 
 
-def connected_delete():
+def connected_delete(interruption=None):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -213,6 +237,16 @@ def connected_delete():
             + 'sys.path.insert(0,' + repr(str(root / 'python')) + ')\n'
             + 'from fixture_acceptance import worker_main\nassert len(sys.argv)==2\n'
             + 'worker_main(' + repr(str(root)) + ',sys.argv[1])\n').encode(), 0o755)
+        if interruption:
+            _write(root / 'interrupt-once', interruption.encode())
+            interrupted = _launch_worker(entry, action_id, target, journals, expected='failed')
+            assert interrupted['code'] == 'fixture_interrupted_after_' + interruption
+            assert all((target / path).read_bytes() == raw for path, raw in original.items())
+            assert target.stat().st_uid == 0
+            initial = [path.read_bytes() for path in sorted((journals / action_id).glob('e-*.json'))]
+            head = json.loads(initial[-1])
+            assert head['kind'] == ('fenced' if interruption == 'fenced' else 'fence_intent')
+            (root / 'interrupt-once').unlink()
         receipt = _launch_worker(entry, action_id, target, journals)
         assert receipt['removed_files'] == 2 and receipt['removed_directories'] == 1
         assert receipt['logical_bytes'] == sum(map(len, original.values()))
@@ -223,6 +257,10 @@ def connected_delete():
         assert len([event for event in events if event['kind'] == 'removed']) == 3
         assert all(events[index]['previous_event_digest'] == events[index - 1]['event_digest']
                    for index in range(1, len(events)))
+        if interruption:
+            assert [path.read_bytes() for path in sorted((journals / action_id).glob('e-*.json'))][:len(initial)] == initial
+            assert sum(event['kind'] == 'intent' for event in events) == 1
+            assert sum(event['kind'] == 'fence_intent' and event['body']['path'] == '' for event in events) == 1
         before = {path.name: path.read_bytes() for path in (journals / action_id).iterdir()}
         repeated = _launch_worker(entry, action_id, target, journals)
         assert repeated['idempotent'] is True
@@ -231,8 +269,22 @@ def connected_delete():
         assert repeated['original_final_event_digest'] == events[-1]['event_digest']
         assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
         assert not list(target.iterdir())
+        # A completed receipt never adopts a rewritten or repopulated tombstone.
+        _write(target / 'changed-after-final', b'keep changed bytes')
+        changed = _launch_worker(entry, action_id, target, journals, expected='failed')
+        assert changed['code'].endswith('action_tombstone_changed'), changed
+        assert (target / 'changed-after-final').read_bytes() == b'keep changed bytes'
+        assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
         return dict(actual_owner_approved_delete=True, original_member_journal=True,
                     historical_delete_idempotent=True)
+
+
+def connected_delete_recovery():
+    connected_delete()
+    connected_delete('fenced')
+    connected_delete('chown')
+    return dict(actual_owner_approved_delete=True, original_member_journal=True,
+                historical_delete_idempotent=True, original_fence_recovered=True)
 
 
 if __name__ == '__main__':

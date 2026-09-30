@@ -262,15 +262,15 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
         references_clear=False, future_writes_denied=4, old_fd_retained=True,
         actual_unit_guard_passed=True, all_original_members_fenced=True,
         actual_foreign_channels_observed=True, actual_owner_approved_delete=True,
-        original_member_journal=True, historical_delete_idempotent=True)
+        original_member_journal=True, historical_delete_idempotent=True, original_fence_recovered=True)
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
-    from historical_generation_native_acceptance import connected_delete
+    from historical_generation_native_acceptance import connected_delete_recovery
     # Exercise both independent native boundaries even when the first refuses.
     # Neither failed boundary contributes a receipt or passes this selector.
     results, failures = {}, []
-    for acceptance in (_root_fixture, connected_delete):
+    for acceptance in (_root_fixture, connected_delete_recovery):
         try:
             results.update(acceptance())
         except Exception as error:

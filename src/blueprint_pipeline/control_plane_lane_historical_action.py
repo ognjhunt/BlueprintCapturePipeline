@@ -1,8 +1,8 @@
 """Fixed historical action worker; fresh authority is held around revocation.
 
-Owner decisions alone never clear readers. The worker currently refuses payload
-removal until its connected reference, preservation and recovery gates exist.
-No entrypoint launches this partial worker on an installed host.
+Owner decisions alone never clear readers. Delete holds current authority and
+native reference gates through each original-member removal. Offload and restore
+remain gated; no entrypoint launches this partial worker on an installed host.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from .control_plane_lane_historical_journal import HistoricalActionJournal, jour
 from .control_plane_lane_historical_unit import prove_historical_unit
 from .control_plane_lane_historical_references import historical_reference_fence
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
+from .control_plane_lane_historical_recovery import recover_fence
 
 
 def _require(value, code):
@@ -148,28 +149,34 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
             # new-generation hash preflight. Complete chain and exact current
             # tombstone verification are still required before a cached result.
             prior = True
+    recovered, events = None, None
     if prior:
         events = worker.replay()
         if events[-1]['kind'] == 'final':
             return _completed_replay(worker, events, roots, monotonic)
-        _require(events[-1]['kind'] == 'intent', 'recovery_required')
-    dispatch.select_historical_action(installed_config_path=installed_config_path,
+    else:
+        dispatch.select_historical_action(installed_config_path=installed_config_path,
                                      action_id=action_id, now=operation.moment(), monotonic=monotonic)
     manifest = worker.selected[2]
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
         max_seconds=operation.remaining(), monotonic=monotonic)
-    _require(observed == manifest, 'generation_changed')
+    if events is not None:
+        recovered = recover_fence(manifest, events, observed)
+    else:
+        _require(observed == manifest, 'generation_changed')
     with worker.checkpoint(journal=True) as (_, _, journal):
         head = journal.head
-        _require(head['kind'] == 'intent', 'recovery_required')
+        _require(recovered is not None or head['kind'] == 'intent', 'recovery_required')
         worker.head = head['event_digest']
-    with _HistoricalGenerationFence(manifest, tick=operation.remaining) as held:
+    with _HistoricalGenerationFence(observed, tick=operation.remaining) as held:
         with worker.checkpoint(journal=True) as (_, _, journal):
             private = os.dup(journal.directory)
         try:
             with HistoricalNativeSandbox(held.root, private, manifest, tick=operation.remaining) as sandbox:
                 worker.sandbox = sandbox
-                held.revoke(before_change=worker.mutation_authority, record=worker.record)
+                held.revoke(before_change=worker.mutation_authority, record=worker.record,
+                    completed=recovered['completed'] if recovered else frozenset(),
+                    pending=recovered['pending'] if recovered else None)
                 with worker.mutation_authority(readers=True):
                     held.verify()
                 _require(worker.selected[1]['action'] == 'delete', 'preservation_required')
