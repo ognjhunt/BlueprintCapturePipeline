@@ -752,7 +752,8 @@ def test_v3_resume_pins_saved_policy_and_due_transition_without_source_refresh(r
     row = runner.start_or_resume()
     original_context, original_policy = deepcopy(row["knowledge_context"]), deepcopy(row["refresh_policy"])
     assert original_context["records"][0]["facts"][0]["refresh_due"] is False
-    snapshot_path.unlink(); policy_path.unlink()
+    snapshot_path.unlink()
+    policy_path.unlink()
     api.turn_status = "completed"
     api.raw = json.dumps(v3(original_context)).encode()
     runner.clock = lambda:NOW+timedelta(seconds=120)
@@ -794,7 +795,8 @@ def test_v3_filtering_and_policy_annotations_enforce_context_cap():
     record = value["records"][0]
     record["facts"][0]["statement"] = "S" * 600
     for i in range(19):
-        fact = deepcopy(record["facts"][0]); fact["fact_id"] = f"fact-{i}"
+        fact = deepcopy(record["facts"][0])
+        fact["fact_id"] = f"fact-{i}"
         record["facts"].append(fact)
     value, _raw, policy, ctx = policy_bundle(value)
     assert len(k.canonical(ctx).encode()) < k.MAX_CONTEXT_BYTES
@@ -840,8 +842,10 @@ def test_v3_actual_revalidation_sets_age_without_rewriting_original_check_granul
 
 def test_v3_policy_binds_exact_snapshot_bytes_even_when_json_content_hash_matches(tmp_path):
     value,raw,policy,_ctx=policy_bundle()
-    snapshot_path=tmp_path/"snapshot.json";policy_path=tmp_path/"policy.json"
-    snapshot_path.write_bytes(raw);save_json(policy_path,policy)
+    snapshot_path=tmp_path/"snapshot.json"
+    policy_path=tmp_path/"policy.json"
+    snapshot_path.write_bytes(raw)
+    save_json(policy_path,policy)
     freshness.load(snapshot_path,policy_path,NOW)
     snapshot_path.write_text(k.canonical(value)+"\n")
     assert k.load(snapshot_path,NOW)["content_hash"] == value["content_hash"]
@@ -851,16 +855,20 @@ def test_v3_policy_binds_exact_snapshot_bytes_even_when_json_content_hash_matche
 
 def test_v3_policy_and_output_context_tampering_rejected():
     value,raw,policy,ctx=policy_bundle()
-    corrupt=deepcopy(policy);corrupt["approval_reference"]="rewritten"
+    corrupt=deepcopy(policy)
+    corrupt["approval_reference"]="rewritten"
     with pytest.raises(k.SnapshotError,match="hash_mismatch"):
         freshness.validate(corrupt,value,hashlib.sha256(raw).hexdigest(),NOW)
-    corrupt_context=deepcopy(ctx);corrupt_context["records"][0]["facts"][0]["refresh_class"]="dated_historical_report"
+    corrupt_context=deepcopy(ctx)
+    corrupt_context["records"][0]["facts"][0]["refresh_class"]="dated_historical_report"
     with pytest.raises(Refusal,match="context_binding_invalid"):
         validate_v3(v3(corrupt_context),corrupt_context,policy)
-    result=v3(ctx);result["refresh_policy_hash"]="f"*64
+    result=v3(ctx)
+    result["refresh_policy_hash"]="f"*64
     with pytest.raises(Refusal,match="output_refresh_policy_binding_invalid"):
         validate_v3(result,ctx,policy)
-    result=v3(ctx);result["candidates"][0]["evidence"][1]["assertion_scope"]="current_operational"
+    result=v3(ctx)
+    result["candidates"][0]["evidence"][1]["assertion_scope"]="current_operational"
     with pytest.raises(Refusal,match="cached_operational_assertion_forbidden"):
         validate_v3(result,ctx,policy)
 
@@ -869,11 +877,13 @@ def test_v3_configuration_is_deliberate_and_never_silently_applies_to_v1_v2(runn
     runner,_api,_ledger=runner_fixture
     enable_v3(runner,tmp_path)
     assert configuration(runner.config)["research_contract_version"] == 3
-    missing=deepcopy(runner.config);missing.pop("knowledge_refresh_policy")
+    missing=deepcopy(runner.config)
+    missing.pop("knowledge_refresh_policy")
     with pytest.raises(Refusal,match="refresh_policy_required"):
         configuration(missing)
     for version in (1,2):
-        legacy=deepcopy(runner.config);legacy["research_contract_version"]=version
+        legacy=deepcopy(runner.config)
+        legacy["research_contract_version"]=version
         with pytest.raises(Refusal,match="refresh_policy_requires_v3_contract"):
             configuration(legacy)
 
