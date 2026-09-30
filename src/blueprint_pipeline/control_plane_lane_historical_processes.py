@@ -54,6 +54,7 @@ class _Scan:
         self.started = self.last = time.monotonic()
         self.entries, self.raw_bytes = 0, 0
         self.views = {}
+        self.kernel_views = {}
         self.physical_target = None
 
     def tick(self):
@@ -162,6 +163,26 @@ def _view_routes(raw, physical, device, *, tick=lambda: None):
     return tuple(dict.fromkeys(routes))
 
 
+def _kernel_view_disjoint(raw, devices, *, tick=lambda: None):
+    """A complete isolated kernel filesystem view must exclude every member device."""
+    _require(devices, 'process_view_unknown')
+    return all(device not in devices for device, _, _ in _mount_rows(raw, tick))
+
+
+def _isolated_kernel_view(scan, directory, view, identities, observed_root):
+    raw = scan.read(directory, 'mountinfo')
+    key = (view, observed_root)
+    _require(len(scan.views) + len(scan.kernel_views) < 16 or key in scan.kernel_views,
+             'process_view_unknown')
+    _require(_kernel_view_disjoint(raw, {device for device, _ in identities}, tick=scan.tick),
+             'process_view_unknown')
+    if key in scan.kernel_views:
+        _require(scan.kernel_views[key] == raw, 'process_view_unknown')
+    scan.kernel_views[key] = raw
+    _require(scan.read(directory, 'mountinfo') == raw, 'process_view_unknown')
+    return raw
+
+
 def _known_filesystem_view(scan, directory, view, target, identities, root_identity):
     """Authenticate actual mount routes and rights, not a namespace-name waiver.
 
@@ -219,14 +240,19 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
     kernel = kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid)
     view = _namespace(directory, kernel=kernel)
     _require(view[:2] == namespaces[:2])
-    if kernel:
-        _require(view[2] in (namespaces[2], host_mount, None))
+    observed_root = None
     try:
         info = os.stat('root', dir_fd=directory)
     except FileNotFoundError:
         _require(kernel)
     else:
-        _require((info.st_dev, info.st_ino) == root_identity)
+        observed_root = (info.st_dev, info.st_ino)
+        _require(kernel or observed_root == root_identity)
+    isolated = kernel and (view[2] not in (namespaces[2], host_mount, None)
+                          or observed_root not in (root_identity, None))
+    kernel_mounts = None
+    if isolated:
+        kernel_mounts = _isolated_kernel_view(scan, directory, view[2], identities, observed_root)
     if not kernel:
         _known_filesystem_view(scan, directory, view[2], target, identities, root_identity)
     channels = set()
@@ -273,6 +299,15 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
         _require(scan.read(directory, 'mountinfo') == scan.views[view[2]][0], 'process_view_unknown')
         current_root = os.stat('root', dir_fd=directory)
         _require((current_root.st_dev, current_root.st_ino) == root_identity, 'process_view_unknown')
+    elif isolated:
+        _require(scan.read(directory, 'mountinfo') == kernel_mounts, 'process_view_unknown')
+        try:
+            current_root = os.stat('root', dir_fd=directory)
+        except FileNotFoundError:
+            _require(observed_root is None, 'process_view_unknown')
+        else:
+            _require((current_root.st_dev, current_root.st_ino) == observed_root,
+                     'process_view_unknown')
     return channels
 
 
