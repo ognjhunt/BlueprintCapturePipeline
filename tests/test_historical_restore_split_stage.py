@@ -94,3 +94,125 @@ def test_split_never_adopts_unknown_or_changed_bytes(historical_installation, ch
     observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
     with pytest.raises(ValueError):
         validate(values)
+
+
+def observed_rename(values, *, uncertain):
+    _, observed, _, events, _ = values
+    root, stage, member = observed['members']
+    events.append(dict(kind='restore_intent', body=dict(phase='publish_observed', path=member['path'],
+        stage_version=stage['version'].copy(), target_version=root['version'].copy(),
+        member_version=member['version'].copy(), uncertain=uncertain)))
+
+
+@pytest.mark.parametrize('uncertain', [False, True])
+def test_observed_rename_remains_an_observation_never_a_new_birth(historical_installation, uncertain):
+    values = split(historical_installation, moved=True)
+    observed_rename(values, uncertain=uncertain)
+    before = copy.deepcopy(values)
+    result = validate(values)
+    assert result['pending'] is None and result['uncertain'] is False
+    assert result['published'] == {values[1]['members'][-1]['path']}
+    assert values == before
+
+
+@pytest.mark.parametrize('change', ['duplicate', 'missing_intent', 'extra', 'wrong_path', 'not_bool',
+    'inode', 'member_time', 'stage_inode', 'stage_links', 'root_inode', 'root_links'])
+def test_observation_is_bound_to_exact_intent_and_parent_effects(historical_installation, change):
+    values = split(historical_installation, moved=True)
+    observed_rename(values, uncertain=True)
+    events = values[3]
+    body = events[-1]['body']
+    if change == 'duplicate':
+        events.append(copy.deepcopy(events[-1]))
+    elif change == 'missing_intent':
+        events.pop(-2)
+    elif change == 'extra':
+        body['birth'] = True
+    elif change == 'wrong_path':
+        body['path'] = 'unknown'
+    elif change == 'not_bool':
+        body['uncertain'] = 1
+    else:
+        field, index = {'inode': ('member_version', 1), 'member_time': ('member_version', 7),
+            'stage_inode': ('stage_version', 1), 'stage_links': ('stage_version', 5),
+            'root_inode': ('target_version', 1), 'root_links': ('target_version', 5)}[change]
+        body[field][index] += 1
+    with pytest.raises(ValueError):
+        validate(values)
+
+
+def removed_stage(installed):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    values = split(installed, moved=True)
+    observed_rename(values, uncertain=False)
+    _, observed, _, events, _ = values
+    root, stage, _ = observed['members']
+    events.append(dict(kind='restore_intent', body=dict(phase='stage_remove',
+        stage_version=stage['version'].copy(), target_version=root['version'].copy())))
+    observed['members'].pop(1)
+    root['version'][5] -= 1
+    root['version'][7] += 1
+    root['version'][8] += 1
+    observed['member_count'] -= 1
+    observed['target_version'] = root['version'].copy()
+    observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
+    return values
+
+
+def test_unobserved_stage_removal_requires_original_complete_publish_and_removal_intent(historical_installation):
+    values = removed_stage(historical_installation)
+    before = copy.deepcopy(values)
+    result = validate(values)
+    assert result['stage_absent'] is True and result['stage_removal_pending'] is True
+    assert result['published'] == {values[1]['members'][-1]['path']}
+    assert values == before
+
+
+@pytest.mark.parametrize('change', ['missing_intent', 'missing_observation', 'root_inode', 'root_links',
+    'root_owner', 'root_mode', 'root_mtime', 'root_ctime', 'intent_root', 'intent_stage', 'extra_intent'])
+def test_unobserved_stage_removal_cannot_adopt_unknown_namespace_effect(historical_installation, change):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    values = removed_stage(historical_installation)
+    _, observed, _, events, _ = values
+    root = observed['members'][0]
+    if change == 'missing_intent':
+        events.pop()
+    elif change == 'missing_observation':
+        events.pop(-2)
+    elif change.startswith('root_'):
+        index = {'inode': 1, 'links': 5, 'owner': 3, 'mode': 2, 'mtime': 7, 'ctime': 8}[change[5:]]
+        root['version'][index] += -3 if change in ('root_mtime', 'root_ctime') else 1
+    elif change in ('intent_root', 'intent_stage'):
+        events[-1]['body']['target_version' if change == 'intent_root' else 'stage_version'][1] += 1
+    else:
+        events[-1]['body']['uncertain'] = True
+    observed['target_version'] = root['version'].copy()
+    observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
+    with pytest.raises(ValueError):
+        validate(values)
+
+
+@pytest.mark.parametrize('change', ['none', 'ctime', 'rights_before', 'removal_uncertain'])
+def test_completed_publication_retains_exact_observed_post_rename_version(historical_installation, change):
+    from blueprint_pipeline.control_plane_lane_historical_restore_publication import validate_publication
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    values = removed_stage(historical_installation)
+    original, observed, _, events, _ = values
+    body = dict(phase='stage_removed', target_version=observed['target_version'].copy())
+    if change == 'removal_uncertain':
+        body['uncertain'] = True
+    events.append(dict(kind='restore_intent', body=body))
+    if change == 'ctime':
+        observed['members'][-1]['version'][8] += 1
+    if change == 'rights_before':
+        before = observed['members'][-1]['version'].copy()
+        before[8] += 1
+        owner = original['members'][-1]['version']
+        events.append(dict(kind='restore_intent', body=dict(phase='owner_rights',
+            path=observed['members'][-1]['path'], version=before, uid=owner[3], gid=owner[4], mode=owner[2] & 0o777)))
+    observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
+    if change in ('ctime', 'rights_before'):
+        with pytest.raises(ValueError, match='restore_publication_changed'):
+            validate_publication(*values, pending_owner_rights=True)
+    else:
+        assert validate_publication(*values, pending_owner_rights=True) is None

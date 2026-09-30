@@ -249,13 +249,22 @@ def worker_main(root, action_id):
                     os.link, os.fsync = original_link, original_sync
             journal_code._publish = publish
         elif phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed',
-                     'unwritten_stage', 'access_intent', 'stage_complete', 'restore_directory', 'restore_member'):
+                     'unwritten_stage', 'access_intent', 'stage_complete', 'restore_directory', 'restore_member',
+                     'publish_intent', 'publish_rename', 'publish_observed', 'stage_remove_intent', 'stage_remove_effect'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
+                if phase == 'publish_rename' and kind == 'restore_intent' and body.get('phase') == 'publish_observed':
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
+                if phase == 'stage_remove_effect' and kind == 'restore_intent' and body.get('phase') == 'stage_removed':
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
                 if phase == 'before_restore_final' and kind == 'restore_final':
                     raise RuntimeError('fixture_interrupted_after_' + phase)
                 original_record(self, kind, body)
+                if phase == 'publish_intent' and kind == 'restore_intent' and body.get('phase') == 'publish':
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
+                if phase == 'stage_remove_intent' and kind == 'restore_intent' and body.get('phase') == 'stage_remove':
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
                 if phase == 'unwritten_stage' and kind == 'restore_intent' \
                         and body.get('phase') == 'directory' and body.get('path') == '':
                     from blueprint_pipeline.control_plane_lane_historical_generation import HistoricalGenerationError
@@ -357,7 +366,7 @@ def _assert_restore_increment(receipt, original):
     # Its later recovered receipt credits zero, while the original durable
     # final below still has to account for the full manifest exactly once.
     fields = ('recovered_publication', 'recovered_before_final', 'recovered_access',
-              'restarted_unwritten', 'recovered_stage', 'recovered_prefix')
+              'restarted_unwritten', 'recovered_stage', 'recovered_prefix', 'recovered_split')
     assert all(field not in receipt or type(receipt[field]) is bool for field in fields), receipt
     phases = [field for field in fields if receipt.get(field) is True]
     assert len(phases) <= 1, receipt
@@ -866,6 +875,19 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     retained_stage_root = (stage.stat().st_dev, stage.stat().st_ino)
                     retained_stage_inodes = {path.relative_to(stage).as_posix():
                         (path.stat().st_dev, path.stat().st_ino) for path in stage.rglob('*')}
+                elif restore_interruption in ('publish_intent', 'publish_rename', 'publish_observed',
+                                               'stage_remove_intent', 'stage_remove_effect'):
+                    stage = target / ('.historical-restore-' + restore['action_id'])
+                    moved = restore_interruption != 'publish_intent'
+                    removal = restore_interruption.startswith('stage_remove_')
+                    expected_names = {'nested', 'one.log'} if removal else ({'nested'} if moved else set())
+                    if restore_interruption != 'stage_remove_effect':
+                        expected_names.add(stage.name)
+                    assert {path.name for path in target.iterdir()} == expected_names
+                    assert all((target / name if removal or moved and name.startswith('nested/') else stage / name).read_bytes()
+                               == value for name, value in original.items())
+                    retained_stage_inodes = {name: ((target / name if removal or moved and name.startswith('nested/') else stage / name).stat().st_dev,
+                        (target / name if removal or moved and name.startswith('nested/') else stage / name).stat().st_ino) for name in original}
                 else:
                     assert all((target / name).read_bytes() == value for name, value in original.items())
                 if restore_interruption == 'restore_member_chown':
@@ -893,7 +915,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
                     restore_interruption in ('restore_final', 'access_intent'))
                 assert ('restore.snapshot.json' in interrupted_prefix) == (
-                    restore_interruption not in ('stage_removed', 'unwritten_stage', 'restore_member_chown', 'stage_complete', 'restore_directory', 'restore_member'))
+                    restore_interruption not in ('stage_removed', 'unwritten_stage', 'restore_member_chown', 'stage_complete', 'restore_directory', 'restore_member',
+                                                 'publish_intent', 'publish_rename', 'publish_observed', 'stage_remove_intent', 'stage_remove_effect'))
                 assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
                 (root / 'interrupt-once').unlink()
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
@@ -904,7 +927,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             'stage_removed': 'recovered_publication', 'unwritten_stage': 'restarted_unwritten',
                             'access_intent': 'recovered_access', 'restore_member_chown': 'recovered_publication',
                             'stage_complete': 'recovered_stage',
-                            'restore_directory': 'recovered_prefix', 'restore_member': 'recovered_prefix'}
+                            'restore_directory': 'recovered_prefix', 'restore_member': 'recovered_prefix',
+                            'publish_intent': 'recovered_split', 'publish_rename': 'recovered_split',
+                            'publish_observed': 'recovered_split', 'stage_remove_intent': 'recovered_split',
+                            'stage_remove_effect': 'recovered_split'}
                 assert restored[recovery[restore_interruption]] is True
                 if restore_interruption == 'unwritten_stage':
                     assert restored['restored_files'] == len(original)
@@ -918,6 +944,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                                for name, identity in retained_stage_inodes.items())
                 else:
                     assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
+                if restore_interruption in ('publish_intent', 'publish_rename', 'publish_observed',
+                                           'stage_remove_intent', 'stage_remove_effect'):
+                    assert all(((target / name).stat().st_dev, (target / name).stat().st_ino) == identity
+                               for name, identity in retained_stage_inodes.items())
                 assert all((journals / restore['action_id'] / name).read_bytes() == raw
                            for name, raw in interrupted_prefix.items())
             _assert_restore_increment(restored, original)
@@ -991,6 +1021,11 @@ CONNECTED_CASES = (
     ('stage_complete', dict(action='offload', restore_interruption='stage_complete')),
     ('restore_directory', dict(action='offload', restore_interruption='restore_directory')),
     ('restore_member', dict(action='offload', restore_interruption='restore_member')),
+    ('publish_intent', dict(action='offload', restore_interruption='publish_intent')),
+    ('publish_rename', dict(action='offload', restore_interruption='publish_rename')),
+    ('publish_observed', dict(action='offload', restore_interruption='publish_observed')),
+    ('stage_remove_intent', dict(action='offload', restore_interruption='stage_remove_intent')),
+    ('stage_remove_effect', dict(action='offload', restore_interruption='stage_remove_effect')),
     ('corrupt', dict(action='offload', corrupt=True)),
 )
 
