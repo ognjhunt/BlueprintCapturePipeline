@@ -504,15 +504,23 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
 
 
 def connected_delete_recovery():
-    for phase in (None, 'fenced', 'chown', 'removed', 'unlink'):
+    def run_case(**options):
         try:
-            connected_delete(phase)
+            connected_delete(**options)
         except Exception as error:
-            raise AssertionError('connected phase=' + str(phase) + ':' + str(error)) from error
-    connected_delete(action='offload')
-    connected_delete(action='offload', restore_interruption='before_restore_final')
-    connected_delete(action='offload', restore_interruption='stage_removed')
-    connected_delete(action='offload', corrupt=True)
+            trace, locations = error.__traceback__, []
+            while trace is not None:
+                if trace.tb_frame.f_code.co_filename == __file__:
+                    locations.append(trace.tb_frame.f_code.co_name + ':' + str(trace.tb_lineno))
+                trace = trace.tb_next
+            raise AssertionError('connected case=' + repr(options) + ':'
+                                 + ','.join(locations) + ':' + str(error)) from error
+    for phase in (None, 'fenced', 'chown', 'removed', 'unlink'):
+        run_case(interruption=phase)
+    run_case(action='offload')
+    run_case(action='offload', restore_interruption='before_restore_final')
+    run_case(action='offload', restore_interruption='stage_removed')
+    run_case(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
                 historical_delete_idempotent=True, original_fence_recovered=True,
                 interrupted_removal_recovered=True, uncertain_removal_credit_zero=True,
