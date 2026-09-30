@@ -260,6 +260,12 @@ def _enabled_sdk_native_phase():
             path.mkdir(mode=mode)
             path.chmod(mode)
         os.chown(root/'state',account.pw_uid,account.pw_gid)
+        # ProtectHome remains enforced. Provider coordination belongs in the
+        # disposable service state, where the real ordinary-UID guard creates
+        # and verifies every canonical concurrency slot and deployment gate.
+        lock_root = root/'state/provider-locks'
+        lock_root.mkdir(mode=0o700)
+        os.chown(lock_root,account.pw_uid,account.pw_gid)
         engine = ast.parse((runtime/'src/blueprint_pipeline/task_evaluation_scene_retirement.py').read_bytes())
         catalogue = ast.literal_eval(next(node.value for node in engine.body if isinstance(node,ast.Assign)
             and any(isinstance(target,ast.Name) and target.id=='_COHORT_CALLS' for target in node.targets)))
@@ -288,7 +294,9 @@ def _enabled_sdk_native_phase():
         executable.write_text('#!/bin/sh\nexec /usr/bin/python3 -I -S '+str(guard)+' "$@"\n')
         executable.chmod(0o755)
         environment.write_text('BLUEPRINT_PIPELINE_REPO='+str(runtime)+'\nBLUEPRINT_PIPELINE_PYTHON='+str(executable)
-            +'\nBLUEPRINT_SPEND_AUTHORITY_ROOT='+str(root/'state/spend')+'\nBLUEPRINT_SPEND_AUTHORITY_LEGACY_ROOTS=\nPORT=18765\n')
+            +'\nBLUEPRINT_SPEND_AUTHORITY_ROOT='+str(root/'state/spend')
+            +'\nVAST_LAUNCH_LOCK_FILE='+str(lock_root/'vast_paid_launch.lock')
+            +'\nBLUEPRINT_SPEND_AUTHORITY_LEGACY_ROOTS=\nPORT=18765\n')
         environment.chmod(0o644)
         shutil.copyfile(runtime/'deploy/systemd'/unit,unit_path)
         unit_path.chmod(0o644)
@@ -326,6 +334,15 @@ def _enabled_sdk_native_phase():
         assert boot['target_uid']==account.pw_uid and boot['policy_digest']==policy['policy_digest']
         assert boot['sources'] and all(row['path'].startswith(str(runtime/'src')+'/') for row in boot['sources'].values())
         assert '[production-runtime-env-guard] status=ready' in journal
+        # Observe the default three slots and deployment gate produced by the
+        # genuine service guard; the privileged proof runner stays stdlib-only.
+        locks = list(lock_root.iterdir())
+        assert len(locks) == 4 and lock_root/'vast_paid_launch.lock' in locks
+        for lock in locks:
+            info = lock.lstat()
+            assert info.st_uid == account.pw_uid and info.st_gid == account.pw_gid
+            assert info.st_mode & 0o777 == 0o600 and info.st_nlink == 1
+        assert 'ProtectHome=yes' in _native(['/usr/bin/systemctl','show',unit,'--property=ProtectHome'])
         print(json.dumps(dict(status='passed',actual_systemd=True,actual_system_abi=abi,
             locked_sdk_packages=len(packages),current_selected=True,actual_enabled_imports=True,
             kernel_uid=account.pw_uid,kernel_caps_zero=True,retirement_action_executed=False)),flush=True)

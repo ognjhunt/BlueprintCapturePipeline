@@ -244,7 +244,13 @@ def _check_paid_launch_lock_slots(
     # The deploy gate is provisioned like a slot: a root-owned gate would
     # refuse every launch just as a root-owned slot does.
     slots = [*vast_launch_lock_paths(base), vast_launch_gate_path(base)]
-    if not base.parent.is_dir():
+    try:
+        parent_ready = base.parent.is_dir()
+    except OSError as exc:
+        return ({"status": "unusable_parent", "lock_path": str(base),
+                 "slots_probed": [], "created_slots": [], "unusable_slots": []},
+                [f"paid_launch_lock_parent_unusable:{type(exc).__name__}"])
+    if not parent_ready:
         # No provider-lock tree on this host. Creating one would scatter state
         # into a directory the deployment never provisioned -- on a developer
         # machine the default path resolves under `~/.blueprint-secrets`.
