@@ -1828,7 +1828,8 @@ def test_source_produced_preparation_reaches_local_activation_receipt(short_scen
 
 
 @pytest.mark.slow
-def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, monkeypatch):
+@pytest.mark.parametrize("authority_end", ["revoked", "expired"])
+def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, monkeypatch, authority_end):
     # RED remains an actual feature failure rather than collection loss or xfail.
     # Authenticate the complete planner fixture before importing the engine.
     from blueprint_pipeline import task_evaluation_scene_retirement_access as access
@@ -1839,8 +1840,8 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
 
     base = short_scene_directory.resolve()
     # The website producer has a real running progression, without a task
-    # result. The fixture owner ends future execution with the real intake
-    # revocation writer, then waits its seven-day grace period.
+    # result. Future execution ends through the real revocation writer or the
+    # original execution expiry, followed by the seven-day grace period.
     retirement_epoch = SCENE_SOURCE_EPOCH + 14 * 24 * 60 * 60
     _, policy, placeholder = access_fixture(base, monkeypatch)
     placeholder.rmdir()
@@ -1970,14 +1971,23 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
             'generation_raw_ref': _raw(generation_path),
             'source_raw_ref': generation['source_publication_raw_ref']})
     inventories = _consented_inventories(members, cache_objects)
-    from blueprint_pipeline.task_evaluation_scene_intake import revoke_scene_intent
-    selected_intent = json.loads(Path(main_owner[1]['path']).read_bytes())
-    revoked = revoke_scene_intent(queue_root=Path(context['roots']['intent_root']),
-                                  intent_id=args['intent_id'],
-                                  intent_digest=selected_intent['intent_digest'],
-                                  owner=selected_intent['request']['owner'],
-                                  now=SCENE_SOURCE_EPOCH + 5 * 24 * 60 * 60)
-    assert revoked['status'] == 'revoked' and revoked['provider_mutation_performed'] is False
+    if authority_end == 'revoked':
+        from blueprint_pipeline.task_evaluation_scene_intake import revoke_scene_intent
+        selected_intent = json.loads(Path(main_owner[1]['path']).read_bytes())
+        revoked = revoke_scene_intent(queue_root=Path(context['roots']['intent_root']),
+                                      intent_id=args['intent_id'],
+                                      intent_digest=selected_intent['intent_digest'],
+                                      owner=selected_intent['request']['owner'],
+                                      now=SCENE_SOURCE_EPOCH + 5 * 24 * 60 * 60)
+        assert revoked['status'] == 'revoked' and revoked['provider_mutation_performed'] is False
+    else:
+        # An absent extension directory proves nothing. Observe the exact
+        # selected, empty owner directory before relying on the original expiry.
+        extension_root = Path(context['roots']['intent_root']) / args['intent_id'] / 'execution-window-extensions'
+        extension_root.mkdir(mode=0o700)
+        selected_intent = json.loads(Path(main_owner[1]['path']).read_bytes())
+        assert retirement_epoch >= selected_intent['request']['execution']['expires_at_epoch'] + 7 * 86400
+    closure_blocker = 'scene_owner_revoked' if authority_end == 'revoked' else 'scene_execution_owner_expired'
     from blueprint_pipeline.task_evaluation_scene_construction_queue import finalize_scene_construction
     construction_root = Path(context['scene_construction_queue_root'])
     pending = sorted((construction_root / 'pending').glob('*.json'))
@@ -1992,12 +2002,12 @@ def test_terminal_scene_retires_every_folder_it_wrote(short_scene_directory, mon
                 'configured_scene_revision_digest': None, 'publication_result_digest': None,
                 'full_byte_service_account_readback_passed': False,
                 'continuing_spend_from_this_run': False,
-                'blockers': ['scene_owner_revoked']})
+                'blockers': [closure_blocker]})
         assert final['status'] == 'blocked' and not path.exists()
     plan = build_scene_lifecycle_plan(intent_id=args['intent_id'], context=context,
                                       observed_at_epoch=retirement_epoch)
     assert 'finished_observation' in plan, plan.get('blockers', plan)
-    assert plan['finished_observation']['status'] == 'revoked_grace_elapsed', plan['finished_observation']
+    assert plan['finished_observation']['status'] == authority_end + '_grace_elapsed', plan['finished_observation']
     activation_result = next(json.loads(raw) for _, raw in args['downstream_records']['activation_results'])
     source_inventory = plan['historical_lineage']['source_family_inventory']
     raw_bound = [row for row in source_inventory['lexical_members']
