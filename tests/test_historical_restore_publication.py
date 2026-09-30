@@ -97,3 +97,73 @@ def test_unproven_publication_is_not_recovery_authority(historical_installation,
     observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
     with pytest.raises(ValueError, match='restore_publication_changed'):
         validate(values)
+
+
+def rights_projections(installed):
+    """Pure projections only: actual chown fault belongs in Linux acceptance."""
+    values = projections(installed)
+    original, observed, _, events, _ = values
+    original['members'][1]['version'][3:5] = [123, 456]
+    original['members'][1]['version'][2] = stat.S_IFREG | 0o640
+    before = observed['members'][1]['version'].copy()
+    events.append(dict(kind='restore_intent', body=dict(phase='owner_rights',
+        path=observed['members'][1]['path'], version=before,
+        uid=123, gid=456, mode=stat.S_IMODE(original['members'][1]['version'][2]))))
+    return values
+
+
+@pytest.mark.parametrize('phase', ['intent', 'chown', 'chmod', 'repeat'])
+def test_private_publication_resumes_only_exact_planned_owner_syscalls(historical_installation, phase):
+    from blueprint_pipeline.control_plane_lane_historical_restore_publication import validate_publication
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    values = rights_projections(historical_installation)
+    original, observed, _, events, _ = values
+    row = observed['members'][1]
+    if phase != 'intent':
+        row['version'][3:5] = original['members'][1]['version'][3:5]
+        row['version'][8] += 1
+    if phase in ('chmod', 'repeat'):
+        row['version'][2] = original['members'][1]['version'][2]
+    if phase == 'repeat':
+        repeated = copy.deepcopy(events[-1])
+        repeated['body']['version'] = row['version'].copy()
+        events.append(repeated)
+        row['version'][8] += 1
+    observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
+    saved = copy.deepcopy(values)
+    assert validate_publication(*values, pending_owner_rights=True) is None
+    assert values == saved
+
+
+@pytest.mark.parametrize('change', ['root_access', 'foreign_uid', 'foreign_mode', 'bytes',
+    'inode', 'mtime', 'ctime_backwards', 'intent_uid', 'intent_mode', 'intent_inode',
+    'intent_extra', 'unknown_trailer', 'missing_stage_removed', 'missing_birth'])
+def test_private_permission_recovery_never_adopts_unplanned_change(historical_installation, change):
+    from blueprint_pipeline.control_plane_lane_historical_restore_publication import validate_publication
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    values = rights_projections(historical_installation)
+    _, observed, _, events, _ = values
+    row, body = observed['members'][1], events[-1]['body']
+    if change == 'root_access':
+        observed['members'][0]['version'][3] = 123
+        observed['target_version'] = observed['members'][0]['version'].copy()
+    elif change in ('foreign_uid', 'foreign_mode', 'inode', 'mtime', 'ctime_backwards'):
+        slot = {'foreign_uid': 3, 'foreign_mode': 2, 'inode': 1, 'mtime': 7, 'ctime_backwards': 8}[change]
+        row['version'][slot] += -1 if change == 'ctime_backwards' else 1
+    elif change == 'bytes':
+        row['sha256'] = 'sha256:' + 'f' * 64
+    elif change in ('intent_uid', 'intent_mode'):
+        body[change.removeprefix('intent_')] += 1
+    elif change == 'intent_inode':
+        body['version'][1] += 1
+    elif change == 'intent_extra':
+        body['unapproved'] = True
+    elif change == 'unknown_trailer':
+        events.append(dict(kind='restore_intent', body=dict(phase='unknown')))
+    elif change == 'missing_stage_removed':
+        events.pop(-2)
+    else:
+        events.pop(1)
+    observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
+    with pytest.raises(ValueError, match='restore_publication_changed'):
+        validate_publication(*values, pending_owner_rights=True)

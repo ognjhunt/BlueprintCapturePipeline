@@ -179,6 +179,13 @@ def worker_main(root, action_id):
                 if kind == phase or (kind == 'restore_intent' and body.get('phase') == phase):
                     raise RuntimeError('fixture_interrupted_after_' + phase)
             _Worker.record = record
+        elif phase == 'restore_member_chown':
+            original_chown = os.fchown
+            def restore_member_chown(fd, uid, gid):
+                original_chown(fd, uid, gid)
+                if uid != 0 and stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
+            os.fchown = restore_member_chown
         elif phase == 'chown':
             original_chown = os.fchown
             target = (root / 'work/old-owner-diagnostics').stat()
@@ -705,6 +712,9 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     assert not list(target.iterdir())
                 else:
                     assert all((target / name).read_bytes() == value for name, value in original.items())
+                if restore_interruption == 'restore_member_chown':
+                    assert (target / 'one.log').stat().st_uid == foreign.pw_uid
+                    assert (target / 'two.log').stat().st_uid == 0
                 interrupted_prefix = {path.name: path.read_bytes() for path in
                                       (journals / restore['action_id']).iterdir()}
                 interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
@@ -712,7 +722,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
                     restore_interruption in ('restore_final', 'access_intent'))
                 assert ('restore.snapshot.json' in interrupted_prefix) == (
-                    restore_interruption not in ('stage_removed', 'unwritten_stage'))
+                    restore_interruption not in ('stage_removed', 'unwritten_stage', 'restore_member_chown'))
                 assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
                 (root / 'interrupt-once').unlink()
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
@@ -721,7 +731,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 recovery = {'restore_final': 'recovered_access',
                             'before_restore_final': 'recovered_before_final',
                             'stage_removed': 'recovered_publication', 'unwritten_stage': 'restarted_unwritten',
-                            'access_intent': 'recovered_access'}
+                            'access_intent': 'recovered_access', 'restore_member_chown': 'recovered_publication'}
                 assert restored[recovery[restore_interruption]] is True
                 if restore_interruption == 'unwritten_stage':
                     assert restored['restored_files'] == len(original)
@@ -794,6 +804,7 @@ def connected_delete_recovery():
     run_case(action='offload', restore_interruption='before_restore_final')
     run_case(action='offload', restore_interruption='unwritten_stage')
     run_case(action='offload', restore_interruption='access_intent')
+    run_case(action='offload', restore_interruption='restore_member_chown')
     run_case(action='offload', restore_interruption='stage_removed')
     run_case(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
