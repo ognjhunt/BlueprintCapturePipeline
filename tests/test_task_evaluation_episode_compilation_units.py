@@ -139,7 +139,7 @@ def test_paid_unit_has_no_exists_glob_and_never_compiles() -> None:
     assert f"Unit={PAID}.service" in path and f"Unit={PAID}.service" in timer
     assert "OnUnitInactiveSec=60s" in timer
     assert "-m blueprint_pipeline.task_evaluation_episode_compilation_collector run" in service
-    assert "-m blueprint_pipeline.task_evaluation_episode_compilation_collector should-run" in service
+    assert "-m blueprint_pipeline.task_evaluation_episode_compilation_remote_condition" in service
     assert "task_evaluation_episode_compilation_worker" not in service
     # The collector reaches no compiler: it only dispatches, follows, promotes and lands.
     module = ROOT / "src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py"
@@ -214,9 +214,8 @@ def test_host_mode_is_byte_identical_to_today(tmp_path: Path, monkeypatch) -> No
 
 def test_cloud_run_before_census_support_runs_as_host_and_is_reported(tmp_path: Path, monkeypatch) -> None:
     """Plan 14 task 4.8: until the owner census accepts remote-output pointers, ``cloud_run`` runs as ``host``,
-    the paid unit stays idle and the chain preflight says why."""
+    the paid unit finds nothing to dispatch and the chain preflight says why."""
 
-    from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
     from blueprint_pipeline import task_evaluation_production_chain_preflight as preflight
     from blueprint_pipeline import task_evaluation_scene_compilation_owner_outputs as census
     from tests.remote_cpu_worker_stages import install_compile_stand_ins
@@ -243,7 +242,9 @@ def test_cloud_run_before_census_support_runs_as_host_and_is_reported(tmp_path: 
     assert "mode" not in run and run["processed_count"] == 1
     assert (host.queue / "completed" / eligible).is_file()
     assert not remote.marker_path(host.jobs, "authoritative", eligible).exists()
-    assert collector.should_run(host.jobs, requested) is False
+    # The paid unit's condition reads only the requested mode, so it may start; its effective mode is host, so
+    # it finds no hand-off and dispatches nothing.
+    assert not remote.markers(host.jobs, "authoritative") and not remote.markers(host.jobs, "shadow")
     environment = {**requested, remote.JOBS_ROOT_ENV: str(host.jobs), remote.CONFIG_ENV: str(tmp_path / "absent.json")}
     findings = preflight.remote_execution_checks({preflight.EPISODE_COMPILATION_UNIT: {
         "effective_environment": environment}})
@@ -306,3 +307,42 @@ def test_a_skipped_exec_condition_is_not_a_failed_unit() -> None:
     assert [f["code"] for f in preflight.unit_health_checks({f"{PAID}.service": unit("exec-condition")})] == []
     assert [f["code"] for f in preflight.unit_health_checks({f"{PAID}.service": unit("exit-code", "failed")})] == [
         "unit_failed_state"]
+
+
+def test_the_paid_units_exec_condition_imports_only_the_standard_library(tmp_path: Path) -> None:
+    """Review minor: the ExecCondition runs every 60 s, so it answers from the filesystem with the standard
+    library alone; importing the collector costs about 0.8 s of CPU and 75 MB on each check."""
+
+    import sys
+
+    from blueprint_pipeline import task_evaluation_episode_compilation_remote_condition as condition
+
+    service = _unit(f"{PAID}.service")
+    [line] = [line for line in service.splitlines() if line.startswith("ExecCondition=")]
+    assert "-m blueprint_pipeline.task_evaluation_episode_compilation_remote_condition" in line
+    tree = ast.parse(Path(condition.__file__).read_text(encoding="utf-8"))
+    imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    imported |= {node.module.split(".")[0] for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module}
+    assert not [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.level]
+    assert imported <= set(sys.stdlib_module_names) | {"__future__"}, imported
+    # Its constants are the remote module's own.
+    assert (condition.EXECUTION_ENV, condition.JOBS_ROOT_ENV, condition.DEFAULT_JOBS_ROOT, condition.STAGE) == (
+        remote.EXECUTION_ENV, remote.JOBS_ROOT_ENV, remote.DEFAULT_JOBS_ROOT, remote.STAGE)
+    assert set(condition.REMOTE_MODES) == set(remote.MODES) - {"host"}
+    assert condition.MARKER_DIRECTORIES == (remote.MARKERS["authoritative"], remote.MARKERS["shadow"])
+
+    jobs = tmp_path / "jobs"
+    assert condition.should_run(jobs, {}) is False  # host mode, nothing live: skipped cheaply
+    for mode in ("cloud_run", "cloud_run_shadow"):
+        assert condition.should_run(jobs, {remote.EXECUTION_ENV: mode}) is True
+    assert condition.should_run(jobs, {remote.EXECUTION_ENV: "cloudrun"}) is False  # invalid runs as host
+    handoffs = jobs / "handoffs" / "episode_compilation"
+    handoffs.mkdir(parents=True)
+    (handoffs / ".row.json.0123.tmp").write_text("{}", encoding="utf-8")
+    assert condition.should_run(jobs, {}) is False  # a record still being written is not a hand-off
+    for directory in (handoffs, jobs / "shadow" / "episode_compilation", jobs / "live"):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "row.json").write_text("{}", encoding="utf-8")
+        assert condition.should_run(jobs, {}) is True
+        (directory / "row.json").unlink()

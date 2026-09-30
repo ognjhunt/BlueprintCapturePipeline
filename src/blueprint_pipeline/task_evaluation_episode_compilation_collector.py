@@ -1032,23 +1032,12 @@ def drain_without_provider(c: Collector, blockers: list[str]) -> dict[str, Any]:
     return _write_summary(c)
 
 
-def should_run(jobs_root: str | Path, environ: Mapping[str, str] | None = None) -> bool:
-    """The paid unit's ExecCondition: a remote mode, a live lease, or a marker still to finish (plan 14 §1)."""
-
-    mode, _ = remote.execution_mode(environ)
-    root = Path(jobs_root)
-    return (mode != "host" or any((root / "live").glob("*"))
-            or any(remote.markers(root, kind) for kind in ("authoritative", "shadow")))
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Dispatch and collect remote episode compilations")
-    parser.add_argument("command", choices=("run", "should-run"))
+    parser.add_argument("command", choices=("run",))
     parser.add_argument("--source-commit")
     parser.add_argument("--jobs-root", default=os.getenv(remote.JOBS_ROOT_ENV, remote.DEFAULT_JOBS_ROOT))
     args = parser.parse_args(argv)
-    if args.command == "should-run":
-        return 0 if should_run(args.jobs_root) else 1
     mode, findings = remote.execution_mode()
     config, blockers = allocator.load_remote_cpu_config()
     runtime = allocator.RemoteCpuRuntime()
@@ -1085,7 +1074,6 @@ __all__ = [
     "drain_without_provider",
     "plan_descriptor",
     "run_collector",
-    "should_run",
     "subprocess_allocate",
 ]
 
