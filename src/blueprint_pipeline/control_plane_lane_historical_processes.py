@@ -129,7 +129,7 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
         try:
             raw = scan.read(directory, name)
         except ProcessLookupError:
-            _require(name == 'environ' and kernel
+            _require(name in ('environ', 'maps') and kernel
                 and kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid))
             raw = b''
         if os.fsencode(target) in raw:

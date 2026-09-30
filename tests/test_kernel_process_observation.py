@@ -19,6 +19,18 @@ def test_known_kernel_without_user_memory_requires_observed_empty_channels():
     assert kernel_has_no_user_memory(lambda name, cap: values[name], '2') is True
 
 
+def test_kernel_no_mm_mapping_esrch_is_classified_only_with_all_kernel_evidence():
+    from blueprint_pipeline.control_plane_kernel_process import kernel_has_no_user_memory
+    values = records()
+    def read(name, cap):
+        if name == 'maps':
+            raise ProcessLookupError(3, 'kernel no mm')
+        return values[name]
+    assert kernel_has_no_user_memory(read, '2') is True
+    values['status'] += b'VmSize:\t10 kB\n'
+    assert kernel_has_no_user_memory(read, '2') is False
+
+
 @pytest.mark.parametrize('change', ['user_task', 'cmdline', 'maps', 'memory', 'identity', 'unreadable'])
 def test_flag_alone_or_missing_observations_cannot_classify_kernel_task(change):
     from blueprint_pipeline.control_plane_kernel_process import kernel_has_no_user_memory

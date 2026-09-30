@@ -2,10 +2,12 @@
 
 This does not clear filesystem references. Callers still inspect every available
 FD/cwd/root and retain their namespace, start-identity and complete-scan gates.
-Only the known kernel no-mm environ ESRCH is classified; other errors remain
+Only the known kernel no-mm environ/maps ESRCH is classified; other errors remain
 unknown. PF_KTHREAD is the kernel's 0x00200000 task flag (include/linux/sched.h).
 """
 from __future__ import annotations
+
+import errno
 
 
 def _identity(raw, pid):
@@ -36,7 +38,14 @@ def kernel_has_no_user_memory(read, pid):
                 and all(fields.get(name) == [b'0'] * 4 for name in (b'Uid', b'Gid'))
                 and not any(name.startswith(b'Vm') for name in fields)):
             return False
-        return (read('cmdline', 1024**2) == b'' and read('maps', 1024**2) == b''
-                and _identity(read('stat', 16384), pid) == start)
+        if read('cmdline', 1024**2) != b'':
+            return False
+        try:
+            if read('maps', 1024**2) != b'':
+                return False
+        except ProcessLookupError as error:
+            if error.errno != errno.ESRCH:
+                return False
+        return _identity(read('stat', 16384), pid) == start
     except (OSError, ValueError, IndexError, UnicodeError):
         return False

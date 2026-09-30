@@ -201,7 +201,7 @@ def connected_delete():
             census_sha256='sha256:' + hashlib.sha256(raw).hexdigest(), census_size_bytes=len(raw),
             annotations_sha256='sha256:' + hashlib.sha256(annotations).hexdigest(),
             annotations_size_bytes=len(annotations), principal='operator', selected_paths=(str(target),),
-            expires_at_epoch=clock + 800, installed_config_path=config, now=clock)
+            expires_at_epoch=clock + 800, installed_config_path=config, now=clock, monotonic=time.monotonic)
         consent = next((root / 'state/requests/owner-consents').glob('*.json'))
         selected = authority.issue_historical_packet(installed_config_path=config, selected_path=str(target),
             consent_id=consent.stem, consent_sha256='sha256:' + hashlib.sha256(consent.read_bytes()).hexdigest(),
