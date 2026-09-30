@@ -135,6 +135,39 @@ def test_actual_kept_or_failed_residue_never_supplies_a_forecast(rows):
     assert reasons == [] and ineffective is False
 
 
+_DERIVED = {"status": "applied", "removed_bytes": 0, "retained_by_reason": {}}
+
+
+def test_kept_residue_supplies_no_bytes_but_leaves_the_other_phases_forecast():
+    """Residue offload is on by default, so its steady-state retained rows (a missing dispatch receipt, a hot
+    run, one already offloaded) must not blank every other phase's forecast or silence the reclaim page."""
+
+    summary = _summary([_row(status="retained", retained_reason="pointer_changed")],
+                       derived_directories={**_DERIVED, "candidate_bytes": 5 * 1024**3})
+    outlook, _, ineffective = _outlook(summary)
+    assert outlook["sources"]["result_residue_offload"] is None
+    assert outlook["sources"]["derived_directories"] == 5 * 1024**3
+    assert outlook["reclaimable_bytes"] == 5 * 1024**3 and ineffective is False
+    eta = capacity.capacity_eta(1024**3, summary={"reclaim_outlook": outlook}, now=NOW)
+    assert eta["eta_basis"] == "reclaim_scheduled"
+
+
+def test_kept_residue_that_still_holds_or_moved_bytes_never_pages_ineffective():
+    for row in (_row(status="retained", retained_reason="deferred_tick_cap", evicted=0),
+                _row(status="retained", retained_reason="pointer_changed")):
+        summary = _summary([row], derived_directories={**_DERIVED, "candidate_bytes": 0})
+        outlook, _, ineffective = _outlook(summary)
+        assert outlook["reclaimable_bytes"] == 0 and ineffective is False
+
+
+def test_reclaim_ineffective_pages_once_every_phase_kept_residue_included_is_empty():
+    summary = _summary([_row(status="retained", retained_reason="pointer_changed", candidate=0, evicted=0)],
+                       derived_directories={**_DERIVED, "candidate_bytes": 0})
+    assert summary["phases"]["result_residue_offload"]["retained_by_reason"]
+    outlook, _, ineffective = _outlook(summary)
+    assert outlook["reclaimable_bytes"] == 0 and ineffective is True
+
+
 def test_omitted_residue_errors_make_actual_projected_candidates_unknown():
     summary = _summary([_row()], phase_extra={"omitted_errors_count": 1})
     assert summary["phases"]["result_residue_offload"]["candidate_bytes"] is None

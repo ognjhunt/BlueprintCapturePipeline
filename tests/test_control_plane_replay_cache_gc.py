@@ -1,4 +1,4 @@
-"""Storage GC reclaims the scratch inputs activation lookaheads leaked, only once the owner opts in."""
+"""Storage GC reclaims the scratch inputs activation lookaheads leaked, unless the owner opts out."""
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_replay_cache_gc.py
@@ -422,10 +422,47 @@ def test_replay_cache_setting_parses_like_scene_retirement(value) -> None:
     assert alert == (None if scene_alert is None else "replay_cache_retention_setting_invalid")
 
 
-def test_replay_cache_retention_needs_its_own_opt_in() -> None:
-    others = {gc_module.SCENE_WORKSPACE_RETIREMENT_ENV: "1", gc_module.EVIDENCE_OFFLOAD_ENV: "1"}
-    assert replay_gc.replay_cache_retention_setting(others) == (False, None)
-    assert replay_gc.replay_cache_retention_setting({replay_gc.REPLAY_CACHE_RETENTION_ENV: "1"}) == (True, None)
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, (True, None)), ("", (True, None)), ("  ", (True, None)),
+    ("1", (True, None)), ("true", (True, None)), (" YES ", (True, None)),
+    ("0", (False, None)), ("false", (False, None)), ("No", (False, None)),
+    ("sometimes", (False, "replay_cache_retention_setting_invalid")),
+    ("2", (False, "replay_cache_retention_setting_invalid")),
+])
+def test_replay_cache_retention_is_on_by_default_and_zero_opts_out(value, expected) -> None:
+    """Owner decision 2026-09-30: on unless the operator says ``0``; an invalid value still only plans and alerts."""
+
+    environ = {} if value is None else {replay_gc.REPLAY_CACHE_RETENTION_ENV: value}
+    assert replay_gc.replay_cache_retention_setting(environ) == expected
+
+
+def test_replay_cache_retention_is_its_own_switch() -> None:
+    """No other switch moves it: the others off leave it on, and the others on do not override its own ``0``."""
+
+    others_on = {gc_module.SCENE_WORKSPACE_RETIREMENT_ENV: "1", gc_module.EVIDENCE_OFFLOAD_ENV: "1"}
+    others_off = {gc_module.SCENE_WORKSPACE_RETIREMENT_ENV: "0", gc_module.EVIDENCE_OFFLOAD_ENV: "0"}
+    name = replay_gc.REPLAY_CACHE_RETENTION_ENV
+    assert replay_gc.replay_cache_retention_setting(others_off) == (True, None)
+    assert replay_gc.replay_cache_retention_setting({**others_on, name: "0"}) == (False, None)
+    assert replay_gc.replay_cache_retention_setting({name: "1"}) == (True, None)
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", "1", "TRUE", " yes ", "0", "False", "no", "sometimes", "2", "on"])
+def test_the_shared_parser_default_decides_only_an_unset_or_empty_value(value) -> None:
+    """``default`` answers only for an unset or empty value. Every value that is set parses as it
+    always did, and an invalid one stays off with its alert whatever the default."""
+
+    name, invalid = "BLUEPRINT_EXAMPLE_SWITCH", "example_setting_invalid"
+    environ = {} if value is None else {name: value}
+    off = replay_gc._truthy_setting(environ, name, invalid)
+    on = replay_gc._truthy_setting(environ, name, invalid, default=True)
+
+    if value is None or not value.strip():
+        assert (off, on) == ((False, None), (True, None))
+    else:
+        assert on == off
+    if value is not None and value.strip().lower() not in {"", "1", "true", "yes", "0", "false", "no"}:
+        assert on == off == (False, invalid)
 
 
 def test_an_invalid_replay_cache_setting_only_plans_and_alerts(tmp_path) -> None:
@@ -450,8 +487,9 @@ def test_both_opt_ins_share_one_parser() -> None:
          "scene_workspace_retirement_setting_invalid"),
     )
     for parse, name, invalid in opt_ins:
+        assert parse({}) == replay_gc._truthy_setting({}, name, invalid, default=True) == (True, None)
         for value in ("1", "no", "", "later"):
-            assert parse({name: value}) == replay_gc._truthy_setting({name: value}, name, invalid)
+            assert parse({name: value}) == replay_gc._truthy_setting({name: value}, name, invalid, default=True)
 
 
 def test_the_command_line_reads_replay_roots_and_the_opt_in(tmp_path, monkeypatch, capsys) -> None:
@@ -476,6 +514,14 @@ def test_the_command_line_reads_replay_roots_and_the_opt_in(tmp_path, monkeypatc
     assert seen[1]["replay_parent_roots"] == ["/c/activations"]
     assert (seen[1]["replay_cache_retention_enabled"], seen[1]["replay_cache_retention_alert"]) == (True, None)
 
+    # Unset it is on; the operator's explicit 0 is the only way off.
+    monkeypatch.delenv(replay_gc.REPLAY_CACHE_RETENTION_ENV)
+    assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+    monkeypatch.setenv(replay_gc.REPLAY_CACHE_RETENTION_ENV, "0")
+    assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+    assert [(call["replay_cache_retention_enabled"], call["replay_cache_retention_alert"]) for call in seen[2:]] == [
+        (True, None), (False, None)]
+
 
 def test_gc_unit_can_write_the_replay_parent_roots_it_names() -> None:
     unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-control-plane-storage-gc.service").read_text(
@@ -495,4 +541,5 @@ def test_gc_unit_can_write_the_replay_parent_roots_it_names() -> None:
     assert all(root in writable for root in roots)
     # A read-only entry at or below a writable root would win over it.
     assert not any(path == root or path.startswith(root + "/") for root in roots for path in read_only)
-    assert f"Environment={replay_gc.REPLAY_CACHE_RETENTION_ENV}=" not in unit, "retention stays an operator opt-in"
+    assert f"Environment={replay_gc.REPLAY_CACHE_RETENTION_ENV}=" not in unit, (
+        "retention is on by default in code; only the operator's environment file may opt out")

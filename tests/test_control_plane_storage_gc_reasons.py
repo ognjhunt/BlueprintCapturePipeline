@@ -28,6 +28,15 @@ from tests.test_task_evaluation_configured_scene_object_store import _ContentAdd
 NOW = 30_000_000.0
 # The real sweep, before the fixture below replaces it with an empty process table.
 REAL_PROCESS_REFERENCE = retention.process_reference
+# Every storage GC switch the operator's environment file may set to 0, by its summary opt_in name.
+_SWITCHES = {
+    "BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD": "evidence_offload",
+    "BLUEPRINT_CONTROL_PLANE_SCENE_WORKSPACE_RETIREMENT": "scene_workspace_retirement",
+    "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION": "replay_cache_retention",
+    "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH": "replay_cache_shared_scratch",
+    "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS": "extended_pin_proofs",
+    "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD": "result_residue_offload",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -285,8 +294,9 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
         gc_module.CONTENT_STORE_ROOTS_ENV: "", gc_module.PLAN_ONLY_DERIVED_ROOTS_ENV: "",
         gc_module.SETTLEMENT_ROOTS_ENV: "", gc_module.WORKSPACE_BUNDLE_ROOTS_ENV: "",
         gc_module.SCENE_WORKSPACE_ROOTS_ENV: "", "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_PARENT_ROOTS": "",
-        gc_module.EVIDENCE_OFFLOAD_ENV: "", gc_module.SCENE_WORKSPACE_RETIREMENT_ENV: "",
-        "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION": "", gc_module.EVIDENCE_ABANDONED_AFTER_ENV: "",
+        # Every switch is on by default (owner decision 2026-09-30); this tick opts each one out.
+        **{name: "0" for name in _SWITCHES},
+        gc_module.EVIDENCE_ABANDONED_AFTER_ENV: "",
         gc_module.DERIVED_ROOTS_ENV: str(derived), gc_module.QUEUE_ROOTS_ENV: str(queue),
         gc_module.EVIDENCE_ROOTS_ENV: str(evidence), gc_module.SCRATCH_ROOTS_ENV: str(absent_scratch),
         gc_module.EVIDENCE_HOT_WINDOW_ENV: "172800", gc_module.DERIVED_MINIMUM_AGE_ENV: "3600",
@@ -472,6 +482,39 @@ def _quiet_tick(monkeypatch) -> None:
                  gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_RETENTION"):
         monkeypatch.setenv(name, "")
     monkeypatch.setattr(gc_module, "require_storage_class", _noclass)
+
+
+def test_the_summary_reports_every_switch_on_unless_the_environment_opts_out(tmp_path, monkeypatch, capsys) -> None:
+    """Owner decision 2026-09-30: summary.json, which the door and the capacity controller read,
+    says every finished switch is on when the environment file is silent (unset or empty), and off
+    only where it says 0. Lane scratch stays report-only and off, and so do the registered
+    experiments that follow it."""
+
+    from blueprint_pipeline import control_plane_storage_gc as gc_module
+
+    _quiet_tick(monkeypatch)
+    for name in ("BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH", "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS",
+                 "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD", gc_module.LANE_SCRATCH_ENV,
+                 gc_module.LANE_SCRATCH_ROOTS_ENV):
+        monkeypatch.delenv(name, raising=False)
+    report_dir = tmp_path / "storage-gc"
+    command = ["run", "--apply", "--ack", RUN_ACK, "--pins-root", str(tmp_path / "pins"),
+               "--report-out", str(report_dir / "latest.json")]
+
+    assert gc_module.main(command) == 0
+    silent = json.loads((report_dir / "summary.json").read_text(encoding="utf-8"))
+    for name in _SWITCHES:
+        monkeypatch.setenv(name, "0")
+    assert gc_module.main(command) == 0
+    opted_out = json.loads((report_dir / "summary.json").read_text(encoding="utf-8"))
+
+    assert set(_SWITCHES.values()) | {"lane_scratch"} == set(reasons.OPT_INS)
+    assert silent["opt_in"] == {**{key: True for key in _SWITCHES.values()}, "lane_scratch": False}
+    assert opted_out["opt_in"] == {**{key: False for key in _SWITCHES.values()}, "lane_scratch": False}
+    for summary in (silent, opted_out):
+        assert (summary["status"], summary["alerts"], summary["phase_errors"]) == ("applied", [], [])
+        assert summary["phases"]["registered_experiments"]["enabled"] is False
+    assert "storage_gc_alert" not in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("failure", ["build", "write"])

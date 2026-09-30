@@ -2,9 +2,9 @@
 
 Historical bundle receipts prove what failed; a removed historical ZIP never
 becomes executable input. Every successor still builds and admits a new bundle.
-A ceiling refusal is re-checked against its recorded 5U + 512 MiB; a measured
-one (BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured) through the
-scene_configuration_output ledger projection its hold is admitted by.
+A ceiling refusal (BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=ceiling) is re-checked
+against its recorded 5U + 512 MiB; a measured one (the default output admission) through
+the scene_configuration_output ledger projection its hold is admitted by.
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Three more proofs that a storage pin protects nothing, released only once the owner opts in.
+"""Three more proofs that a storage pin protects nothing, released unless the owner opts out.
 
 On 2026-09-27 the derived phase kept 142 directories only because a pin named
 them: 70 preparation, 58 compilation and 14 activation pins. The original two
@@ -1555,7 +1555,21 @@ def test_extended_pin_proofs_setting_parses_like_the_other_opt_ins(value) -> Non
 
     assert enabled == scene_enabled
     assert alert == (None if scene_alert is None else "extended_pin_proofs_setting_invalid")
-    assert (enabled, alert) == replay_gc._truthy_setting(environ, name, "extended_pin_proofs_setting_invalid")
+    assert (enabled, alert) == replay_gc._truthy_setting(
+        environ, name, "extended_pin_proofs_setting_invalid", default=True)
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, (True, None)), ("", (True, None)), ("1", (True, None)), ("true", (True, None)), (" YES ", (True, None)),
+    ("0", (False, None)), ("false", (False, None)), ("No", (False, None)),
+    ("sometimes", (False, "extended_pin_proofs_setting_invalid")),
+    ("2", (False, "extended_pin_proofs_setting_invalid")),
+])
+def test_extended_pin_proofs_are_on_by_default_and_zero_opts_out(value, expected) -> None:
+    """Owner decision 2026-09-30: on unless the operator says ``0``; an invalid value still only lists and alerts."""
+
+    environ = {} if value is None else {terminal_pins.EXTENDED_PIN_PROOFS_ENV: value}
+    assert terminal_pins.extended_pin_proofs_setting(environ) == expected
 
 
 def test_the_command_line_reads_the_extended_pin_proofs_opt_in(tmp_path, monkeypatch, capsys) -> None:
@@ -1566,18 +1580,22 @@ def test_the_command_line_reads_the_extended_pin_proofs_opt_in(tmp_path, monkeyp
         return {"schema_version": gc_module.RUN_SCHEMA_VERSION, "report_digest": "sha256:0"}
 
     monkeypatch.setattr(gc_module, "run_storage_gc", run)
-    # Every other opt-in on: none of them turns this one on.
-    for other in (gc_module.EVIDENCE_OFFLOAD_ENV, gc_module.SCENE_WORKSPACE_RETIREMENT_ENV,
-                  replay_gc.REPLAY_CACHE_RETENTION_ENV):
-        monkeypatch.setenv(other, "1")
+    others = (gc_module.EVIDENCE_OFFLOAD_ENV, gc_module.SCENE_WORKSPACE_RETIREMENT_ENV, replay_gc.REPLAY_CACHE_RETENTION_ENV)
+    # Every other switch off: none of them turns this one off.
+    for other in others:
+        monkeypatch.setenv(other, "0")
     monkeypatch.delenv(terminal_pins.EXTENDED_PIN_PROOFS_ENV, raising=False)
-    for value in (None, "sometimes", "1"):
+    for value in (None, "sometimes", "1", "0"):
         if value is not None:
             monkeypatch.setenv(terminal_pins.EXTENDED_PIN_PROOFS_ENV, value)
         assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
+    # Every other switch on: none of them overrides this one's own 0.
+    for other in others:
+        monkeypatch.setenv(other, "1")
+    assert gc_module.main(["run", "--pins-root", str(tmp_path / "pins")]) == 0
 
     assert [(call["extended_pin_proofs_enabled"], call["extended_pin_proofs_alert"]) for call in seen] == [
-        (False, None), (False, "extended_pin_proofs_setting_invalid"), (True, None)]
+        (True, None), (False, "extended_pin_proofs_setting_invalid"), (True, None), (False, None), (False, None)]
     assert "storage_gc_alert:extended_pin_proofs_setting_invalid" in capsys.readouterr().err
 
 
@@ -1614,15 +1632,16 @@ def test_a_tick_passes_the_opt_in_and_the_activation_queue_to_the_pin_pass(tmp_p
     assert set(_states(args).values()) == {"released"}
 
 
-def test_extended_pin_proofs_stay_an_operator_opt_in(monkeypatch) -> None:
+def test_extended_pin_proofs_are_on_unless_the_operator_opts_out(monkeypatch) -> None:
     deploy = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
     unit = (deploy / "blueprint-control-plane-storage-gc.service").read_text(encoding="utf-8")
     example = (deploy / "pipeline-control-plane.env.example").read_text(encoding="utf-8").splitlines()
     name = terminal_pins.EXTENDED_PIN_PROOFS_ENV
 
     assert f"Environment={name}=" not in unit
-    assert f"# {name}=1" in example
-    assert not any(line.startswith(f"{name}=") for line in example), "it stays plan-only by default"
+    assert f"# {name}=0" in example
+    assert not any(line.startswith(f"{name}=") for line in example), (
+        "the example documents the opt-out commented, so the code's default (on) applies")
     # The unit's queue roots name the activation queue, so the unlaunched proof finds its results.
     queue_roots = next(line.split("=", 2)[2] for line in unit.splitlines()
                        if line.startswith(f"Environment={gc_module.QUEUE_ROOTS_ENV}="))
