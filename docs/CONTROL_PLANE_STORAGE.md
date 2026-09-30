@@ -1295,7 +1295,10 @@ them as `unsafe`), so it never deletes a pointer, the evidence for the bytes
 that stayed remote; nor does it see the dot-prefixed landing directories.
 
 **The remote job records** live under
-`/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/`, outside the queue:
+`/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/`, outside the queue.
+It is a `ledger` root: a lease holds paid capacity until provider zero, so
+nothing reclaims it, and it stays on the root disk when the work volume moves
+(the paid unit stops for the move with the no-spend unit).
 
 | Path | Written by | What |
 |---|---|---|

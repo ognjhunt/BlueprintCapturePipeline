@@ -86,6 +86,8 @@ WORKER_UNITS=(
   blueprint-task-evaluation-sam31-preparation-execution.path
   blueprint-task-evaluation-sam31-preparation-execution.timer
   blueprint-task-evaluation-episode-compilation.path
+  blueprint-task-evaluation-episode-compilation-remote.path
+  blueprint-task-evaluation-episode-compilation-remote.timer
   blueprint-task-evaluation-launch-activation.path
   blueprint-task-evaluation-launch-dispatcher.path
   blueprint-task-evaluation-policy-canary-dispatcher.path
@@ -110,6 +112,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-launch-preparation.service
   blueprint-task-evaluation-sam31-preparation-execution.service
   blueprint-task-evaluation-episode-compilation.service
+  blueprint-task-evaluation-episode-compilation-remote.service
   blueprint-task-evaluation-launch-activation.service
   blueprint-task-evaluation-launch-dispatcher.service
   blueprint-task-evaluation-policy-canary-dispatcher.service
