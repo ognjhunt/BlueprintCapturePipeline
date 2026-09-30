@@ -111,6 +111,48 @@ def worker_main(root, action_id):
     root = Path(root)
     _namespace(root)
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
+    from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    from blueprint_pipeline.control_plane_kernel_process import kernel_has_no_user_memory
+    inspect_process, read_channel = processes._inspect_process, processes._Scan.read
+    def diagnosed_read(self, directory, name, cap=1024**2):
+        try:
+            return read_channel(self, directory, name, cap)
+        except OSError as error:
+            if not isinstance(error, ProcessLookupError):
+                print('PROCESS_CHANNEL:' + json.dumps(dict(channel=name, errno=error.errno)), flush=True)
+            raise
+    def diagnosed_inspection(scan, directory, pid, target, identities, namespaces, host_mount, root_identity):
+        try:
+            return inspect_process(scan, directory, pid, target, identities, namespaces, host_mount, root_identity)
+        except BaseException:
+            facts = dict(pid=int(pid))
+            def raw(name, cap):
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+                try:
+                    result = os.read(descriptor, cap + 1)
+                    if len(result) > cap:
+                        raise ValueError('diagnostic bounded')
+                    return result
+                finally:
+                    os.close(descriptor)
+            facts['kernel_no_mm_observed'] = kernel_has_no_user_memory(raw, pid)
+            try:
+                view = processes._namespace(directory, kernel=facts['kernel_no_mm_observed'])
+                facts.update(pid_namespace_matches=view[0] == namespaces[0],
+                    user_namespace_matches=view[1] == namespaces[1],
+                    mount_matches_worker=view[2] == namespaces[2], mount_matches_host=view[2] == host_mount,
+                    mount_absent=view[2] is None)
+            except (OSError, ValueError) as error:
+                facts['namespace_error'] = getattr(error, 'errno', None)
+            try:
+                current = os.stat('root', dir_fd=directory)
+                facts['root_identity_matches'] = (current.st_dev, current.st_ino) == root_identity
+            except OSError as error:
+                facts['root_errno'] = error.errno
+            print('PROCESS_GUARD:' + json.dumps(facts), flush=True)
+            raise
+    processes._inspect_process = diagnosed_inspection
+    processes._Scan.read = diagnosed_read
     try:
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
@@ -240,7 +282,8 @@ def connected_delete():
         observations = [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
         assert len(observations) == 1, log.stdout
         receipt = observations[0]
-        assert receipt['status'] == 'completed', receipt
+        diagnostics = [line for line in log.stdout.splitlines() if line.startswith('PROCESS_')]
+        assert receipt['status'] == 'completed', dict(receipt=receipt, diagnostics=diagnostics)
         assert receipt['removed_files'] == 2 and receipt['removed_directories'] == 1
         assert receipt['logical_bytes'] == sum(map(len, original.values()))
         assert receipt['root_directory_retained'] is True and not list(target.iterdir())
