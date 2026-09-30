@@ -770,3 +770,45 @@ def test_a_transient_read_during_the_commit_is_retried_not_abandoned(tmp_path: P
     assert (world.lease()["state"], world.row_state()) == ("completed", "completed")
     assert len(world.executions()) == 1 and failures["left"] == 0
     _assert_torn_down(world)
+
+
+def test_an_allocator_call_reads_only_its_own_result_and_a_lost_dispatch_is_ambiguous(tmp_path: Path,
+                                                                                       monkeypatch) -> None:
+    """Review minor: each allocator call gets a fresh ``--out`` path, so a result an earlier call left can never
+    be read as this one's; a dispatch that timed out or left no result may have started an execution, so it is
+    ambiguous (the hand-off is held for the allocator's reconcile), never a refusal that hands the row back."""
+
+    import subprocess
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    seen: list[str] = []
+    c = world.collector(allocate=lambda argv: seen.append(argv[argv.index("--out") + 1]) or {"status": "blocked"})
+    collector._allocate(c, "sweep", None, "stage")
+    collector._allocate(c, "sweep", None, "stage")
+    assert len(set(seen)) == 2 and not any(Path(path).exists() for path in seen)
+
+    out = tmp_path / "allocator" / "rcj.dispatch.json"
+    out.parent.mkdir()
+    out.write_text(json.dumps({"status": "dispatched", "blockers": []}), encoding="utf-8")  # an earlier call's
+    out.chmod(0o640)
+    argv = ["remote-cpu-job", "--action", "dispatch", "--stage", "episode_compilation", "--lease", str(tmp_path),
+            "--out", str(out), "--execute"]
+    monkeypatch.setattr(collector.subprocess, "run",
+                        lambda command, **kwargs: subprocess.CompletedProcess(command, 1))
+    assert collector.subprocess_allocate(argv) == {
+        "status": "ambiguous_dispatch_unresolved", "blockers": ["remote_cpu_allocator_result_unreadable:exit_1"]}
+
+    def hangs(command, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(collector.subprocess, "run", hangs)
+    assert collector.subprocess_allocate(argv) == {"status": "ambiguous_dispatch_unresolved",
+                                                   "blockers": ["remote_cpu_allocator_timeout"]}
+    reconcile = [("reconcile" if item == "dispatch" else item) for item in argv]
+    assert collector.subprocess_allocate(reconcile)["status"] == "blocked"
+    # Ambiguous is not refused: the hand-off stays for reconcile, and nothing goes back to the host.
+    world.collect(allocate=lambda argv: {"status": "ambiguous_dispatch_unresolved",
+                                         "blockers": ["remote_cpu_allocator_timeout"]}
+                  if "dispatch" in argv else world.allocate(argv))
+    assert remote.marker_path(world.host.jobs, "authoritative", world.name).is_file()
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()

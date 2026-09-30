@@ -204,21 +204,37 @@ def _descriptor(c: Collector, attempt_id: str) -> tuple[dict[str, Any], Path]:
 
 
 def _allocate(c: Collector, action: str, descriptor_path: Path | None, label: str) -> Mapping[str, Any]:
-    out = c.jobs_root / "allocator" / f"{label}.{action}.json"
+    import secrets
+
+    # A fresh result path per call: a result an earlier call left can never be read as this one's.
+    out = c.jobs_root / "allocator" / f"{label}.{action}.{secrets.token_hex(8)}.json"
     argv = ["remote-cpu-job", "--action", action, "--stage", STAGE, "--lease", str(c.jobs_root), "--out", str(out),
             "--execute", *(["--descriptor", str(descriptor_path)] if descriptor_path is not None else [])]
     return c.allocate(argv)
 
 
-def subprocess_allocate(argv: list[str]) -> Mapping[str, Any]:
-    """Run the canonical allocator subcommand (AGENTS.md) and read its door-safe ``--out`` result."""
+def _unknown_outcome(action: str, blocker: str) -> dict[str, Any]:
+    """An allocator call whose outcome is unknown.  A dispatch may have started an execution, so it is held
+    for the allocator's reconcile, never refused (which would hand the row back) and never re-issued while
+    its lease says it may have run."""
 
-    out = Path(argv[argv.index("--out") + 1])
-    completed = subprocess.run([sys.executable, "-m", "blueprint_pipeline.paid_resource_allocator", *argv],
-                               stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=900)
+    return {"status": "ambiguous_dispatch_unresolved" if action == "dispatch" else "blocked", "blockers": [blocker]}
+
+
+def subprocess_allocate(argv: list[str]) -> Mapping[str, Any]:
+    """Run the canonical allocator subcommand (AGENTS.md) and read its door-safe ``--out`` result, once."""
+
+    out, action = Path(argv[argv.index("--out") + 1]), argv[argv.index("--action") + 1]
+    out.unlink(missing_ok=True)
+    try:
+        completed = subprocess.run([sys.executable, "-m", "blueprint_pipeline.paid_resource_allocator", *argv],
+                                   stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=900)
+    except subprocess.TimeoutExpired:  # the child is killed; what it did before is for reconcile to find
+        return _unknown_outcome(action, "remote_cpu_allocator_timeout")
     result = _read_json(out)
+    out.unlink(missing_ok=True)
     if result is None:
-        return {"status": "blocked", "blockers": [f"remote_cpu_allocator_result_unreadable:exit_{completed.returncode}"]}
+        return _unknown_outcome(action, f"remote_cpu_allocator_result_unreadable:exit_{completed.returncode}")
     return result
 
 
