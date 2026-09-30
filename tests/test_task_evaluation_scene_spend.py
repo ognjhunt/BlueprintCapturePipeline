@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -130,3 +131,53 @@ def test_refresh_without_now_still_stamps_wall_clock(tmp_path, monkeypatch):
     before = time.time()
     observed = refresh_configured_scene_project_spend()["pointer"]["observed_at_epoch"]
     assert before <= observed <= time.time()
+
+
+def observed_monitor(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent)
+    prior = seed(tmp_path)
+    args = dict(scene_root=root, seed_reconciliation_path=prior,
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    publication = publish_current_scene_project_spend(**args, now=1000)
+    monitor = {"schema_version": "task_evaluation_scene_project_spend_monitor.v1",
+               **{key: str(value) for key, value in args.items()}}
+    monitor["config_digest"] = canonical_digest(monitor, digest_field="config_digest")
+    config = tmp_path / "monitor.json"
+    config.write_text(json.dumps(monitor))
+    monkeypatch.setenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", str(config))
+    return publication, args
+
+
+def test_capacity_observation_reopens_evidence_without_writes_or_restamping(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_spend as spend
+    publication, args = observed_monitor(tmp_path, monkeypatch)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(spend, "publish_current_scene_project_spend",
+                        lambda **kwargs: pytest.fail("read-only capacity observation tried publication"))
+    observed = spend.observe_configured_scene_project_spend(now=1100)
+    assert observed["total_cost_usd"] == publication["total_cost_usd"]
+    assert observed["pointer"] == publication["pointer"]
+    assert observed["pointer"]["observed_at_epoch"] == 1000
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert args["current_path"].is_file()
+
+
+@pytest.mark.parametrize("now", [999, 1901, float("nan")])
+def test_capacity_observation_refuses_stale_or_future_publication(tmp_path, monkeypatch, now):
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    observed_monitor(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="scene_spend_pointer_invalid_or_stale"):
+        observe_configured_scene_project_spend(now=now)
+
+
+def test_capacity_observation_refuses_source_changed_after_publication(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    publication, _ = observed_monitor(tmp_path, monkeypatch)
+    source = Path(publication["pointer"]["path"])
+    source.chmod(0o640)
+    source.write_text("{}")
+    with pytest.raises(ValueError, match="scene_spend_pointer_source_changed"):
+        observe_configured_scene_project_spend(now=1100)

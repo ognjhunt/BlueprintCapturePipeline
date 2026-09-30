@@ -30,6 +30,26 @@ def test_live_pipeline_manifest_alert_noops_when_manifest_ready(tmp_path: Path) 
     )
 
 
+def test_live_run_projects_setup_blockers_instead_of_generic_status(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    _write_json(manifest, {"status": "blocked", "blockers": [],
+                          "setup_blockers": ["real_arena_execution:missing_simulator_command"]})
+    audit = alert.build_live_pipeline_manifest_alert(
+        manifest_path=manifest, output_path=tmp_path / "alert.json", dry_run=True,
+    )
+    assert audit["alert_required"] is True
+    assert audit["blockers"] == ["real_arena_execution:missing_simulator_command"]
+    assert "real_arena_execution:missing_simulator_command" in audit["message_text"]
+    assert "status contains blocked" not in audit["message_text"]
+
+
+def test_setup_projection_keeps_the_existing_blocker_bound() -> None:
+    assert alert._manifest_blockers({"blockers": [f"blocked-{i}" for i in range(12)],
+                                     "setup_blockers": ["setup"],
+                                     "setup": {"blockers": ["nested"]}}) == [
+                                         f"blocked-{i}" for i in range(12)]
+
+
 def test_live_pipeline_manifest_alert_fails_closed_when_blocked_without_required_webhook(
     tmp_path: Path,
 ) -> None:
