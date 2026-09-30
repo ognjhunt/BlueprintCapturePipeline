@@ -95,6 +95,10 @@ def _root_fixture():
         processes.write_bytes((Path(__file__).parents[1] /
             'src/blueprint_pipeline/control_plane_lane_historical_processes.py').read_bytes())
         processes.chmod(0o644)
+        kernel = root / 'control_plane_kernel_process.py'
+        kernel.write_bytes((Path(__file__).parents[1] /
+            'src/blueprint_pipeline/control_plane_kernel_process.py').read_bytes())
+        kernel.chmod(0o644)
         manifest = inventory_historical_generation(target, allowed_roots=(parent,))
         probe = root / 'probe.py'
         probe.write_text(
@@ -136,7 +140,11 @@ def _root_fixture():
             ' held.revoke(before_change=authority,record=lambda kind,body:events.append((kind,body)))\n'
             'assert len(events)==2*manifest["member_count"]\n'
             'assert all(Path(target,row["path"]).stat().st_uid==0 for row in manifest["members"])\n'
-            'spec=importlib.util.spec_from_file_location("installed_historical_processes",'
+            'import types\n'
+            'package=types.ModuleType("installed_historical")\n'
+            'package.__path__=[' + repr(str(root)) + ']\n'
+            'sys.modules["installed_historical"]=package\n'
+            'spec=importlib.util.spec_from_file_location("installed_historical.processes",'
                 + repr(str(processes)) + ')\n'
             'references=importlib.util.module_from_spec(spec)\n'
             'spec.loader.exec_module(references)\n'

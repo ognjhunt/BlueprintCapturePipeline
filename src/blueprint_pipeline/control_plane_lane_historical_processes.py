@@ -12,6 +12,8 @@ import stat
 import sys
 import time
 
+from .control_plane_kernel_process import kernel_has_no_user_memory
+
 
 class HistoricalProcessError(ValueError):
     """Fixed refusal without foreign process contents."""
@@ -85,29 +87,51 @@ class _Scan:
         return sorted(result)
 
 
-def _namespace(directory):
-    values = tuple(os.readlink('ns/' + kind, dir_fd=directory) for kind in ('pid', 'user', 'mnt'))
-    _require(all(re.fullmatch(kind + r':\[[0-9]+\]', value)
+def _namespace(directory, *, kernel=False):
+    values = []
+    for kind in ('pid', 'user', 'mnt'):
+        try:
+            values.append(os.readlink('ns/' + kind, dir_fd=directory))
+        except FileNotFoundError:
+            _require(kernel and kind == 'mnt')
+            values.append(None)
+    _require(all(value is None and kernel and kind == 'mnt' or
+        isinstance(value, str) and re.fullmatch(kind + r':\[[0-9]+\]', value)
         for kind, value in zip(('pid', 'user', 'mnt'), values, strict=True)))
-    return values
+    return tuple(values)
 
 
 def _inspect_process(scan, directory, pid, target, identities, namespaces, host_mount, root_identity):
     """Private parser seam; native acceptance uses an actual foreign UID PID."""
     started = _process_start(scan.read(directory, 'stat', 16384), pid)
-    view = _namespace(directory)
-    _require(view[:2] == namespaces[:2] and view[2] in (namespaces[2], host_mount))
-    info = os.stat('root', dir_fd=directory)
-    _require((info.st_dev, info.st_ino) == root_identity)
+    kernel = kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid)
+    view = _namespace(directory, kernel=kernel)
+    _require(view[:2] == namespaces[:2]
+        and (view[2] in (namespaces[2], host_mount) or kernel and view[2] is None))
+    try:
+        info = os.stat('root', dir_fd=directory)
+    except FileNotFoundError:
+        _require(kernel)
+    else:
+        _require((info.st_dev, info.st_ino) == root_identity)
     channels = set()
     for name in ('cwd', 'root'):
         scan.tick()
-        info = os.stat(name, dir_fd=directory)
-        path = os.readlink(name, dir_fd=directory)
+        try:
+            info = os.stat(name, dir_fd=directory)
+            path = os.readlink(name, dir_fd=directory)
+        except FileNotFoundError:
+            _require(kernel)
+            continue
         if (info.st_dev, info.st_ino) in identities or os.fsencode(target) in os.fsencode(path):
             channels.add(name)
     for name in ('cmdline', 'environ', 'maps'):
-        raw = scan.read(directory, name)
+        try:
+            raw = scan.read(directory, name)
+        except ProcessLookupError:
+            _require(name == 'environ' and kernel
+                and kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid))
+            raw = b''
         if os.fsencode(target) in raw:
             channels.add(name)
         if name == 'maps' and _mapping_inodes(raw).intersection(identities):
@@ -127,7 +151,9 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
     finally:
         os.close(descriptors)
     _require(_process_start(scan.read(directory, 'stat', 16384), pid) == started
-             and _namespace(directory) == view)
+             and _namespace(directory, kernel=kernel) == view
+             and (not kernel or kernel_has_no_user_memory(
+                 lambda name, cap: scan.read(directory, name, cap), pid)))
     return channels
 
 
