@@ -46,6 +46,7 @@ jobs:
       BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       UV_PROJECT_ENVIRONMENT: /opt/blueprint-native-test-venv
+      BLUEPRINT_RESEARCH_SDK_PYTHON: /opt/blueprint-research-sdk-proof/bin/python
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
@@ -170,9 +171,26 @@ jobs:
           uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
             --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3
           uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
+          # Noneditable policy CLIs resolve retained documents beside their
+          # installed package. Preserve those exact committed bytes outside
+          # runner home, where the different-UID child can read them safely.
+          native_resource_root="$(/opt/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
+          test "$native_resource_root" = /opt/blueprint-native-test-venv/lib/python3.12
+          git archive HEAD docs | tar -x -C "$native_resource_root"
+          diff -rq -- docs "$native_resource_root/docs"
           # The actual different-UID child has ProtectHome=yes. Its interpreter
           # and imported dependencies must be protected outside /home/runner.
           sudo chown -hR root:root /opt/blueprint-native-test-venv
+
+      - name: Install isolated daily research SDK for wire proof
+        if: hashFiles('tools/daily_research/requirements.txt') != ''
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-research-sdk-proof
+          uv venv --python /usr/bin/python3 /opt/blueprint-research-sdk-proof
+          uv pip install --python /opt/blueprint-research-sdk-proof/bin/python \
+            -r tools/daily_research/requirements.txt pytest==9.1.1
+          sudo chown -hR root:root /opt/blueprint-research-sdk-proof
 
       - name: Validate Python interpreter matrix
         run: uv run --no-sync python scripts/validate_python_interpreter_matrix.py --assert-current
