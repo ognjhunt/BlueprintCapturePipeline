@@ -323,16 +323,27 @@ def test_plan_prints_bytes_by_disposition_for_a_retained_archive(tmp_path, capsy
                                                                "vast_provider_runtime_output.zip"]
 
 
+PREFLIGHT = "cell_runs/00/policy_canary_static_startup_preflight.v1.json"
+
+
+def _quick10_members() -> dict[str, bytes]:
+    """A retained Quick-10's identifying members -- the aggregate result, the ten child results and
+    the first cell's static startup preflight -- beside ordinary needed and bulk members."""
+    return {RESULT: b'{"status": "completed"}',
+            **{f"cell_runs/{cell:02d}/{RESULT}": b'{"cell": %d}' % cell for cell in range(10)},
+            PREFLIGHT: b'{"run_id": "run-1"}', RECEIPT: b'{"episode_id": "e0"}',
+            "cell_runs/00/episodes/media/e0/policy-requests/0001.json": b'{"observation": [0]}' * 50,
+            FRAME: FRAME_BYTES, VIDEO: b"\0" * 5000, "cell_runs/00/worker.log": b"step ok\n" * 10}
+
+
 def test_plan_records_the_needed_set_measurement_that_lets_auto_delivery_stream(tmp_path, capsys, monkeypatch):
     """The one host command (review: deploying must not be the flip). ``plan --record`` seals what
     it measured at the fixed record path, the switch that lets auto delivery stream: the record
-    names the contract and its selection version, binds the measured archive's bytes, and is read
-    back exactly as the gate reads it."""
+    names the contract and its selection version, binds the measured archive's bytes and its
+    Quick-10 shape, and is read back exactly as the gate reads it."""
     from blueprint_pipeline import policy_canary_output_members as output_members
 
-    members = {RESULT: b'{"status": "completed"}', RECEIPT: b'{"episode_id": "e0"}',
-               "cell_runs/00/episodes/media/e0/policy-requests/0001.json": b'{"observation": [0]}' * 50,
-               FRAME: FRAME_BYTES, VIDEO: b"\0" * 5000, "cell_runs/00/worker.log": b"step ok\n" * 10}
+    members = _quick10_members()
     archive = _retained_zip(tmp_path / "vast_provider_runtime_output.zip", members)
     fixed = tmp_path / "state" / "policy-canary-output" / "needed-set-measurement.v1.json"
     monkeypatch.setattr(output_members, "MEASUREMENT_PATH", fixed)
@@ -353,6 +364,7 @@ def test_plan_records_the_needed_set_measurement_that_lets_auto_delivery_stream(
     assert record["archive"] == {"name": archive.name, "size_bytes": archive.stat().st_size,
                                  "sha256": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
                                  "members": printed["members"]}
+    assert record["quick10_shape"] == {"aggregate": True, "cell_results": 10, "startup_preflight": True}
     assert record["needed_set_budget_bytes"] == output_members.NEEDED_SET_BUDGET_BYTES
     # Readable by the dispatcher (``blueprint``) whoever wrote it; it holds no secret.
     assert stat.S_IMODE(fixed.stat().st_mode) == 0o644
@@ -378,6 +390,41 @@ def test_plan_records_the_needed_set_measurement_that_lets_auto_delivery_stream(
     assert views.main(["plan", "--archive", str(archive), "--contract", contract,
                        "--record", str(tmp_path / "a-file" / "record.json")]) == 1
     assert "provider_output_member_plan_record_write_failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("archive_shape", ["single_json", "mp4_only", "no_aggregate", "nine_cell_results",
+                                           "no_startup_preflight", "empty_needed_set"])
+def test_plan_refuses_to_record_an_archive_that_is_not_a_quick10(tmp_path, capsys, monkeypatch, archive_shape):
+    """Review: a measurement of the wrong archive would stream every Quick-10 after it. ``--record``
+    seals only an archive with the contract's Quick-10 shape -- the aggregate result, all ten child
+    results and the first cell's static startup preflight -- whose needed set is not empty; any
+    other plan still prints, and nothing is recorded."""
+    from blueprint_pipeline import policy_canary_output_members as output_members
+
+    members = _quick10_members()
+    if archive_shape == "single_json":
+        members = {RESULT: b'{"status": "completed"}'}
+    elif archive_shape == "mp4_only":
+        members = {VIDEO: b"\0" * 5000}
+    elif archive_shape == "no_aggregate":
+        del members[RESULT]
+    elif archive_shape == "nine_cell_results":
+        del members[f"cell_runs/09/{RESULT}"]
+    elif archive_shape == "no_startup_preflight":
+        del members[PREFLIGHT]
+    elif archive_shape == "empty_needed_set":
+        members = {name: (b"" if name.endswith(".json") else data) for name, data in members.items()}
+    archive = _retained_zip(tmp_path / "vast_provider_runtime_output.zip", members)
+    record = tmp_path / "state" / "policy-canary-output" / "needed-set-measurement.v1.json"
+    monkeypatch.setattr(output_members, "MEASUREMENT_PATH", record)
+
+    assert views.main(["plan", "--archive", str(archive), "--contract",
+                       "policy_canary_output_member_contract.v1", "--record"]) == 1
+
+    assert "provider_output_member_plan_record_not_quick10_shaped" in capsys.readouterr().err
+    assert not record.exists() and output_members.needed_set_measurement_refusal() == "auto_needed_set_unmeasured"
+    assert views.main(["plan", "--archive", str(archive), "--contract",
+                       "policy_canary_output_member_contract.v1"]) == 0
 
 
 def test_view_reads_bytes_only_through_an_explicitly_configured_artifact_store(tmp_path, monkeypatch):

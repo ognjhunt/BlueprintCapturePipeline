@@ -155,25 +155,34 @@ def _require_expected_artifact_bucket(bucket: str, *, environ: Mapping[str, str]
 def verify_dedicated_artifact_store(environ: Mapping[str, str] | None = None) -> None:
     """Refuse, as the artifact client would, a dedicated B2 binding it cannot use.
 
-    Exactly the checks ``_artifact_object_store_client`` makes of a dedicated
-    binding before building its client (promotion, ingestion and the member
-    view all read B2 through it), without building one or touching the
-    network: every one of the five ``_ARTIFACT_STORE_FILE_ENV`` settings names
-    a file ``_private_file_value`` accepts -- a regular, non-symlink file of
-    mode within 0640 holding at most 4 KiB of non-empty UTF-8 -- and the bucket
+    Everything ``_artifact_object_store_client`` does with a dedicated binding
+    before its first request (promotion, ingestion and the member view all read
+    B2 through it), and no request: every one of the five
+    ``_ARTIFACT_STORE_FILE_ENV`` settings names a file ``_private_file_value``
+    accepts -- a regular, non-symlink file of mode within 0640 holding at most
+    4 KiB of non-empty UTF-8 -- the client builds from them exactly as there
+    (botocore refuses a malformed endpoint or region only then), and the bucket
     is ``BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET`` when that is
     set. Raises ``TaskEvaluationConfiguredSceneObjectStoreError``.
     """
 
-    values = _file_environment_values(
-        _ARTIFACT_STORE_FILE_ENV, require_endpoint_and_region=True, environ=environ
-    )
-    _require_expected_artifact_bucket(values["bucket"], environ=environ)
+    try:
+        _client, bucket = _client_from_file_environment(
+            _ARTIFACT_STORE_FILE_ENV, require_endpoint_and_region=True, environ=environ
+        )
+    except TaskEvaluationConfiguredSceneObjectStoreError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - whatever stops the build stops promotion after the paid run
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_store_client_invalid"
+        ) from exc
+    _require_expected_artifact_bucket(bucket, environ=environ)
 
 
 def _client_from_file_environment(
     names: Mapping[str, str], *, require_endpoint_and_region: bool = False,
     checksums_when_required: bool = False, path_style: bool = False,
+    environ: Mapping[str, str] | None = None,
 ) -> tuple[Any, str]:
     try:
         import boto3  # type: ignore[import-not-found]
@@ -182,7 +191,9 @@ def _client_from_file_environment(
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_object_store_client_unavailable"
         ) from exc
-    values = _file_environment_values(names, require_endpoint_and_region=require_endpoint_and_region)
+    values = _file_environment_values(
+        names, require_endpoint_and_region=require_endpoint_and_region, environ=environ
+    )
     access_key, secret_key, bucket = values["access_key"], values["secret_key"], values["bucket"]
     endpoint, region = values["endpoint"], values["region"]
     # B2 rejects botocore's default flexible checksums on presigned PUTs;

@@ -6,12 +6,14 @@ auto (the founder's default, 2026-09-30); an explicit ``download`` or
 otherwise downloads, today's path:
 
 - promotion would accept the dedicated B2 artifact store
-  (``artifact_store_configured``: promotion's own private-file reader and
-  bucket identity check, ``verify_dedicated_artifact_store``), and
+  (``artifact_store_configured``: promotion's own private-file reader, client
+  construction and bucket identity check, ``verify_dedicated_artifact_store``), and
 - the host holds a needed-set measurement that fits
   (``needed_set_measurement_refusal``): a sealed record at ``MEASUREMENT_PATH``
-  naming the current contract and selection version, of a run the contract
-  admits (``PolicyCanaryOutputContract.admits``).
+  naming the current contract and selection version, measured on an archive
+  of the full ``QUICK10_SHAPE`` with a needed set, of a run the contract
+  admits within the hold the session takes (``PolicyCanaryOutputContract.admits``,
+  ``forecast_hold_cap_bytes``).
 
 Deploying is therefore never the flip. The switch is the one host command
 that measures a retained Quick-10 and seals the record:
@@ -66,7 +68,7 @@ from __future__ import annotations
 import json
 import os
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -107,12 +109,24 @@ MEASUREMENT_PATH = Path(
 MEASUREMENT_MAXIMUM_BYTES = 64 * 1024
 _MEASUREMENT_FIELDS = frozenset({
     "schema_version", "contract", "selection_version", "needed_set_budget_bytes", "materialized_members",
-    "materialized_bytes", "archive", "measured_at", "record_digest"})
+    "materialized_bytes", "archive", "quick10_shape", "measured_at", "record_digest"})
 _MEASURED_ARCHIVE_FIELDS = frozenset({"name", "size_bytes", "sha256", "members"})
 CONTRACT_VERSION = "policy_canary_output_member_contract.v1"
 # The worker's per-cell child result name (native_task_arena_policy_canary_session.
 # PROVIDER_RESULT_FILENAME, kept equal by a test so this module imports nothing heavy).
+# The session's aggregate result has the same name, at the archive's root.
 CHILD_RESULT_NAME = "native_task_arena_policy_canary_session_result.v1.json"
+# The Quick-10 layout a measurement must come from (review: a record of the wrong
+# archive would stream every Quick-10 after it): the aggregate result, one child
+# result ``cell_runs/NN/<CHILD_RESULT_NAME>`` per cell, and the first cell's
+# static startup preflight, which also binds the streamed native inventory
+# (``arena_provider_output_streaming.IDENTITY_DOCUMENT``). One cell runs per
+# episode of each policy (the session's ``EPISODES_PER_POLICY``, kept equal by a test).
+QUICK10_CELL_COUNT = 10
+STARTUP_PREFLIGHT_MEMBER = "cell_runs/00/policy_canary_static_startup_preflight.v1.json"
+QUICK10_SHAPE = {"aggregate": True, "cell_results": QUICK10_CELL_COUNT, "startup_preflight": True}
+# The disk role whose hold a streamed session takes before its run.
+OUTPUT_ROLE = "policy_canary_output"
 # A streamed output that arrived but was never ingested: the lane's and the dispatcher's media gap.
 NOT_INGESTED_GAP = "provider_output_not_ingested"
 NEEDED_SET_BUDGET_BYTES = 640 * 1024**2
@@ -243,31 +257,56 @@ class PolicyCanaryOutputContract:
         return self.hold_bytes(needed_bytes=self.needed_set_budget_bytes, member_count=FORECAST_MEMBER_COUNT,
                                index_file_bytes=FORECAST_MEMBER_COUNT * FORECAST_INDEX_ROW_BYTES)
 
-    def admits(self, *, needed_bytes: int, member_count: int) -> bool:
-        """Whether a run of this shape only ever shrinks the forecast hold.
+    def admits(self, *, needed_bytes: int, member_count: int, hold_cap_bytes: int | None = None) -> bool:
+        """Whether a run of this shape only ever shrinks the hold taken before it.
 
         Its needed set is within the budget, and its hold -- index rows at the
         forecast's allowance, since only the run's own index would say better
-        -- is within ``forecast_hold_bytes``. A run it does not admit pays and
-        then seals blocked with its archive durable.
+        -- is within ``hold_cap_bytes``: the hold the session takes
+        (``forecast_hold_cap_bytes``), by default the uncapped forecast. A run
+        it does not admit pays and then seals blocked with its archive durable.
         """
+        cap = self.forecast_hold_bytes() if hold_cap_bytes is None else hold_cap_bytes
         return (needed_bytes <= self.needed_set_budget_bytes
                 and self.hold_bytes(needed_bytes=needed_bytes, member_count=member_count,
-                                    index_file_bytes=member_count * FORECAST_INDEX_ROW_BYTES)
-                <= self.forecast_hold_bytes())
+                                    index_file_bytes=member_count * FORECAST_INDEX_ROW_BYTES) <= cap)
 
 
 POLICY_CANARY_OUTPUT_CONTRACT = PolicyCanaryOutputContract()
 
 
+def forecast_hold_cap_bytes(contract: PolicyCanaryOutputContract | None = None) -> int:
+    """The ``OUTPUT_ROLE`` hold a streamed session takes before its run.
+
+    The contract's forecast, capped at the role's declared footprint or the
+    operator's ``BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_POLICY_CANARY_OUTPUT_BYTES``.
+    Raises ``ControlPlaneDiskBudgetError`` when that override is not a byte count.
+    """
+    from .control_plane_disk_ledger import footprint_bytes
+
+    contract = POLICY_CANARY_OUTPUT_CONTRACT if contract is None else contract
+    return min(contract.forecast_hold_bytes(), footprint_bytes(OUTPUT_ROLE))
+
+
+def quick10_shape(member_paths: Iterable[str]) -> dict[str, Any]:
+    """Which of the Quick-10 layout's identifying members ``member_paths`` holds (``QUICK10_SHAPE`` when all)."""
+    paths = set(member_paths)
+    return {"aggregate": CHILD_RESULT_NAME in paths,
+            "cell_results": sum(f"cell_runs/{cell:02d}/{CHILD_RESULT_NAME}" in paths
+                                for cell in range(QUICK10_CELL_COUNT)),
+            "startup_preflight": STARTUP_PREFLIGHT_MEMBER in paths}
+
+
 def seal_needed_set_measurement(*, contract: str, materialized_members: int, materialized_bytes: int,
-                                archive: Mapping[str, Any], measured_at: str) -> dict[str, Any]:
+                                archive: Mapping[str, Any], quick10_shape: Mapping[str, Any],
+                                measured_at: str) -> dict[str, Any]:
     """The sealed record of one retained Quick-10's measured needed set (``MEASUREMENT_SCHEMA``).
 
     ``contract`` is the rule it was measured under; the record also names the
     current contract's selection version and budget. ``archive`` is the
-    measured archive's {name, size_bytes, sha256, members}. ``record_digest``
-    seals every other field.
+    measured archive's {name, size_bytes, sha256, members}, and
+    ``quick10_shape`` the identifying members it held (``quick10_shape()``).
+    ``record_digest`` seals every other field.
     """
     from .decision_evidence_contracts import canonical_digest
 
@@ -275,7 +314,8 @@ def seal_needed_set_measurement(*, contract: str, materialized_members: int, mat
     record = {"schema_version": MEASUREMENT_SCHEMA, "contract": contract, "selection_version": current.version,
               "needed_set_budget_bytes": current.needed_set_budget_bytes,
               "materialized_members": materialized_members, "materialized_bytes": materialized_bytes,
-              "archive": dict(archive), "measured_at": measured_at, "record_digest": ""}
+              "archive": dict(archive), "quick10_shape": dict(quick10_shape), "measured_at": measured_at,
+              "record_digest": ""}
     record["record_digest"] = canonical_digest(record, digest_field="record_digest")
     return record
 
@@ -305,10 +345,12 @@ def needed_set_measurement_refusal(path: str | Path | None = None) -> str | None
     The record at ``path`` (default ``MEASUREMENT_PATH``) must be a regular,
     non-symlink file of at most ``MEASUREMENT_MAXIMUM_BYTES`` holding exactly
     the ``MEASUREMENT_SCHEMA`` fields, sealed by a ``record_digest`` that
-    verifies, and naming the current contract and selection version; else
-    ``auto_needed_set_record_invalid`` (no file at all is
+    verifies, naming the current contract and selection version, and measured
+    on an archive of the full ``QUICK10_SHAPE`` with a needed set that is not
+    empty; else ``auto_needed_set_record_invalid`` (no file at all is
     ``auto_needed_set_unmeasured``). Its run must be one the current contract
-    admits, else ``auto_needed_set_over_budget``. Never raises.
+    admits within the hold the session can take (``forecast_hold_cap_bytes``),
+    else ``auto_needed_set_over_budget``. Never raises.
     """
     target = Path(MEASUREMENT_PATH if path is None else path)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -338,8 +380,13 @@ def needed_set_measurement_refusal(path: str | Path | None = None) -> str | None
         return AUTO_NEEDED_SET_RECORD_INVALID
     if not sealed:
         return AUTO_NEEDED_SET_RECORD_INVALID
-    admitted = POLICY_CANARY_OUTPUT_CONTRACT.admits(needed_bytes=record["materialized_bytes"],
-                                                    member_count=record["archive"]["members"])
+    contract = POLICY_CANARY_OUTPUT_CONTRACT
+    try:
+        cap = forecast_hold_cap_bytes(contract)
+    except RuntimeError:  # an override that is not a byte count: the session could take no hold either
+        return AUTO_NEEDED_SET_OVER_BUDGET
+    admitted = contract.admits(needed_bytes=record["materialized_bytes"], member_count=record["archive"]["members"],
+                               hold_cap_bytes=cap)
     return None if admitted else AUTO_NEEDED_SET_OVER_BUDGET
 
 
@@ -353,14 +400,18 @@ def _sealed_measurement(record: Any) -> bool:
 
     if not isinstance(record, dict) or set(record) != _MEASUREMENT_FIELDS:
         return False
-    archive = record["archive"]
+    archive, shape = record["archive"], record["quick10_shape"]
     return (record["schema_version"] == MEASUREMENT_SCHEMA
             and record["contract"] == CONTRACT_VERSION
             and record["selection_version"] == POLICY_CANARY_OUTPUT_CONTRACT.version
             and all(_count(record[key]) for key in ("needed_set_budget_bytes", "materialized_members",
                                                     "materialized_bytes"))
+            and record["materialized_bytes"] > 0
             and isinstance(archive, dict) and set(archive) == _MEASURED_ARCHIVE_FIELDS
             and _count(archive["size_bytes"]) and _count(archive["members"])
+            # The measured archive was a Quick-10 (review): every identifying member, typed exactly.
+            and isinstance(shape, dict) and shape == QUICK10_SHAPE
+            and all(type(shape[key]) is type(value) for key, value in QUICK10_SHAPE.items())
             and record["record_digest"] == canonical_digest(record, digest_field="record_digest"))
 
 
@@ -386,15 +437,21 @@ __all__ = [
     "MODE_INVALID",
     "NOT_INGESTED_GAP",
     "NEEDED_SET_BUDGET_BYTES",
+    "OUTPUT_ROLE",
     "OutputDelivery",
     "POLICY_CANARY_OUTPUT_CONTRACT",
     "PolicyCanaryOutputContract",
     "PolicyCanaryOutputDeliveryError",
+    "QUICK10_CELL_COUNT",
+    "QUICK10_SHAPE",
     "REASON_MODES",
     "RESOLUTION_FIELD",
+    "STARTUP_PREFLIGHT_MEMBER",
     "STREAM",
     "artifact_store_configured",
+    "forecast_hold_cap_bytes",
     "needed_set_measurement_refusal",
+    "quick10_shape",
     "resolve_output_delivery",
     "seal_needed_set_measurement",
     "write_needed_set_measurement",

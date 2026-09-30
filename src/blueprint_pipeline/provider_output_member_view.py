@@ -42,7 +42,10 @@ results, is materialized; everything else stays remote. It is read-only unless
 archive's sha256, as the host's needed-set record (by default at
 ``policy_canary_output_members.MEASUREMENT_PATH``) -- the switch that lets
 auto delivery stream -- and prints the record with the reason auto delivery
-reads from it. An archive the index would refuse is never recorded.
+reads from it. Only an archive with the contract's Quick-10 shape (the
+aggregate result, the ten child results, the first cell's static startup
+preflight) and a needed set that is not empty is recorded, never one the index
+would refuse.
 
 Scratch copies: ``python -m blueprint_pipeline.provider_output_member_view
 materialize --evidence-root <root> --prefix cell_runs/NN/ --output-root
@@ -84,7 +87,9 @@ from .provider_output_member_index import (
 from .policy_canary_output_members import (
     AUTO_NEEDED_SET_WITHIN_BUDGET,
     POLICY_CANARY_OUTPUT_CONTRACT,
+    QUICK10_SHAPE,
     needed_set_measurement_refusal,
+    quick10_shape,
     seal_needed_set_measurement,
     write_needed_set_measurement,
 )
@@ -548,7 +553,9 @@ def record_plan_measurement(archive_path: str | Path, plan: Mapping[str, Any],
     Writes ``policy_canary_output_members.MEASUREMENT_PATH`` unless ``path``
     names another file. Returns {path, record, needed_set_reason}: the reason
     auto delivery reads back from what was written. Refuses an archive the
-    index would refuse, one it cannot read, and a record it cannot write.
+    index would refuse, one it cannot read, one without the full Quick-10 shape
+    the contract names or with an empty needed set (a measurement of the wrong
+    archive would stream every Quick-10 after it), and a record it cannot write.
     """
     from .common import utc_now_iso
 
@@ -556,15 +563,19 @@ def record_plan_measurement(archive_path: str | Path, plan: Mapping[str, Any],
         raise _refuse("provider_output_member_plan_record_archive_refused")
     digest = hashlib.sha256()
     try:
+        with zipfile.ZipFile(archive_path) as archive:
+            shape = quick10_shape(info.filename for info in archive.infolist() if not info.is_dir())
         with Path(archive_path).open("rb") as stream:
             for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
                 digest.update(chunk)
-    except OSError:
+    except (OSError, zipfile.BadZipFile):
         raise _refuse("provider_output_member_plan_archive_invalid") from None
     materialized = plan["dispositions"]["materialized"]
+    if shape != QUICK10_SHAPE or materialized["bytes"] <= 0:
+        raise _refuse("provider_output_member_plan_record_not_quick10_shaped")
     record = seal_needed_set_measurement(
         contract=plan["contract"], materialized_members=materialized["members"],
-        materialized_bytes=materialized["bytes"], measured_at=utc_now_iso(),
+        materialized_bytes=materialized["bytes"], quick10_shape=shape, measured_at=utc_now_iso(),
         archive={"name": plan["archive"]["name"], "size_bytes": plan["archive"]["size_bytes"],
                  "sha256": "sha256:" + digest.hexdigest(), "members": plan["members"]})
     try:

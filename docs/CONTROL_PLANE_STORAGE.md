@@ -1270,7 +1270,9 @@ streams only when both of these hold, and downloads otherwise.
   check (`verify_dedicated_artifact_store`). All five
   `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings must name regular
   files, not symlinks, of mode within 0640, each holding non-empty UTF-8 of at
-  most 4 KiB. The bucket must be `…_EXPECTED_BUCKET` when that is set. The
+  most 4 KiB. The client must then build from them exactly as promotion builds
+  it, which is when botocore refuses a malformed endpoint or region; no request
+  is made. The bucket must be `…_EXPECTED_BUCKET` when that is set. The
   canary dispatcher and the existing-run continuation units bind the store, as
   the intake unit does. An explicit `stream` and the session's re-check use the
   same check, so a store promotion would refuse never reaches a paid run.
@@ -1279,9 +1281,15 @@ streams only when both of these hold, and downloads otherwise.
   `/var/lib/blueprint/pipeline-control-plane/policy-canary-output/needed-set-measurement.v1.json`,
   a hot-evidence root the dispatcher reads as `blueprint`. It must name the
   current contract and selection version
-  (`policy_canary_output_member_contract.v1`), and describe a run the contract
+  (`policy_canary_output_member_contract.v1`). It must come from a Quick-10:
+  its sealed `quick10_shape` records the aggregate result, all ten
+  `cell_runs/NN/native_task_arena_policy_canary_session_result.v1.json` child
+  results and `cell_runs/00/policy_canary_static_startup_preflight.v1.json`,
+  and its needed set is not empty. And it must describe a run the contract
   admits: materialized bytes within `NEEDED_SET_BUDGET_BYTES`, and a hold,
-  counting its archive's members, within the forecast.
+  counting its archive's members, within the hold the session actually takes
+  (the forecast, capped at the `policy_canary_output` footprint or its
+  override).
 
 Neither check raises. A setting or record that cannot be read is a reason to
 download; below Python 3.13 that includes one under a directory the dispatcher
@@ -1299,8 +1307,8 @@ caller keeps the lane's `download` default.
 | unset or empty | none of the five set | any | `download` | `auto_artifact_store_not_configured` |
 | unset or empty | set, but promotion would refuse it | any | `download` | `auto_artifact_store_invalid` |
 | unset or empty | accepted | absent | `download` | `auto_needed_set_unmeasured` |
-| unset or empty | accepted | unreadable, unsealed, tampered, or another contract or selection version | `download` | `auto_needed_set_record_invalid` |
-| unset or empty | accepted | over the budget, or a hold beyond the forecast | `download` | `auto_needed_set_over_budget` |
+| unset or empty | accepted | unreadable, unsealed, tampered, another contract or selection version, or not of a Quick-10 | `download` | `auto_needed_set_record_invalid` |
+| unset or empty | accepted | over the budget, or a hold beyond what the session can take | `download` | `auto_needed_set_over_budget` |
 | unset or empty | accepted | sealed, current, within budget | `stream` | `auto_needed_set_within_budget` |
 | `download` | any | any | `download` | `explicit` |
 | `stream` | accepted | any | `stream` | `explicit` |
@@ -1326,7 +1334,10 @@ auto reads back from it:
 Until the record exists, auto downloads, so a deploy never starts streaming on
 its own. To hold a measured host on download, set
 `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`. An archive the index would
-refuse is never recorded (`provider_output_member_plan_record_archive_refused`).
+refuse is never recorded (`provider_output_member_plan_record_archive_refused`),
+nor one without the Quick-10 shape or with an empty needed set
+(`provider_output_member_plan_record_not_quick10_shaped`), so a measurement of
+the wrong archive cannot switch a host to streaming.
 Re-measuring replaces the record whole. After a contract or selection-version
 change the old record is invalid, and the host downloads until it is measured
 again.

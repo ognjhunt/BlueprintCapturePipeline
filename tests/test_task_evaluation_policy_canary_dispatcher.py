@@ -2117,13 +2117,18 @@ def test_streamed_canary_reservation_uses_its_own_workload_label(
         monkeypatch.delenv(DELIVERY_ENV, raising=False)
     else:
         monkeypatch.setenv(DELIVERY_ENV, delivery)
+    # Placeholder settings promotion's own client builds from, without any network call.
+    values = {"access_key": "005placeholderkeyid", "secret_key": "K005placeholdersecret",
+              "bucket": "blueprint-task-evaluation-artifacts-dev",
+              "endpoint": "https://s3.us-east-005.backblazeb2.com", "region": "us-east-005"}
     for key, name in _ARTIFACT_STORE_FILE_ENV.items():
         monkeypatch.delenv(name, raising=False)
         if b2_configured:
             (tmp_path / "b2").mkdir(exist_ok=True)
-            (tmp_path / "b2" / key).write_text("configured\n", encoding="utf-8")
+            (tmp_path / "b2" / key).write_text(values[key] + "\n", encoding="utf-8")
             (tmp_path / "b2" / key).chmod(0o600)
             monkeypatch.setenv(name, str(tmp_path / "b2" / key))
+    monkeypatch.delenv("BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET", raising=False)
     record = tmp_path / "policy-canary-output" / "needed-set-measurement.v1.json"
     monkeypatch.setattr(output_members, "MEASUREMENT_PATH", record)
     if measured:
@@ -2131,7 +2136,7 @@ def test_streamed_canary_reservation_uses_its_own_workload_label(
             contract=output_members.CONTRACT_VERSION, materialized_members=1_200, materialized_bytes=436_485_098,
             archive={"name": "vast_provider_runtime_output.zip", "size_bytes": 4_200_000_000,
                      "sha256": "sha256:" + "a" * 64, "members": 6_745},
-            measured_at="2026-09-30T00:00:00+00:00"), record)
+            quick10_shape=output_members.QUICK10_SHAPE, measured_at="2026-09-30T00:00:00+00:00"), record)
     queue, setups = _pending_canary(tmp_path)
     calls: list[dict[str, object]] = []
     real = canary_disk.reserve_control_plane_disk
