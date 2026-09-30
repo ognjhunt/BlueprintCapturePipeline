@@ -60,12 +60,15 @@ def test_staged_runtime_uses_actual_bounded_production_import_closure(tmp_path):
     assert len(list(package.iterdir())) <= 256
 
 
-def test_native_fixture_stages_production_entry_and_rebinds_only_disposable_namespaces(tmp_path):
+@pytest.mark.parametrize('archive', [False, True])
+def test_native_fixture_stages_production_entry_and_rebinds_only_disposable_namespaces(tmp_path, archive):
     from tests.historical_generation_native_acceptance import _installed_entry
     root = tmp_path.resolve()
     (root / 'work').mkdir()
     (root / 'operator').mkdir()
     (root / 'work/adjacent-unselected.log').write_bytes(b'adjacent original bytes\n')
+    if archive:
+        (root / 'cloud-fixture.json').write_bytes(b'{"corrupt":false,"objects":{},"metadata":{}}\n')
     entry_path = root / 'action-entry'
     from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
     original = dispatch._ACTION_EXECUTABLE
@@ -79,6 +82,10 @@ def test_native_fixture_stages_production_entry_and_rebinds_only_disposable_name
         assert 'fixture_controller_startup_not_complete' in boot
         assert 'adjacent denial must be actual EROFS' in boot
         assert 'exec /usr/bin/python3 -I -S' in entry_path.read_text()
+        if archive:
+            assert 'installed_fixture_archive_transport' in boot
+            assert 'import boto3' in boot
+            assert 'sys.path.insert' not in boot
         assert dispatch._ACTION_EXECUTABLE == str(entry_path)
         assert (installed / 'historical-python/blueprint_pipeline/control_plane_lane_historical_action.py').read_bytes() == (
             Path(__file__).parents[1] / 'src/blueprint_pipeline/control_plane_lane_historical_action.py').read_bytes()

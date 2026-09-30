@@ -307,3 +307,26 @@ def test_actual_installed_historical_gc_default_off_delete_and_second_tick():
 if __name__ == '__main__' and sys.argv[1:] == ['--installed-root-fixture']:
     from historical_generation_native_acceptance import connected_delete
     print(json.dumps(connected_delete(installed=True), sort_keys=True))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
+                   reason='actual disposable installed archive/restore required; Mac skip is unmet')
+def test_actual_installed_historical_gc_offload_and_restore():
+    command = [sys.executable, str(Path(__file__).resolve()), '--installed-archive-fixture']
+    if os.geteuid() != 0:
+        command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
+                   'PYTHONDONTWRITEBYTECODE=1', *command]
+    done = subprocess.run(command, capture_output=True, text=True, timeout=150,
+                          cwd=Path(__file__).parents[1],
+                          env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(
+        historical_offload_full_readback=True, historical_restore_decision_bound=True,
+        historical_restored_bytes_and_access=True)
+
+
+if __name__ == '__main__' and sys.argv[1:] == ['--installed-archive-fixture']:
+    from historical_generation_native_acceptance import connected_delete
+    print(json.dumps(connected_delete(installed=True, action='offload',
+                                    restore_interruption=None), sort_keys=True))
