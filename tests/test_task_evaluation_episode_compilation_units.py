@@ -346,3 +346,43 @@ def test_the_paid_units_exec_condition_imports_only_the_standard_library(tmp_pat
         (directory / "row.json").write_text("{}", encoding="utf-8")
         assert condition.should_run(jobs, {}) is True
         (directory / "row.json").unlink()
+
+
+def _handed_back(host: Host, labels: list[str]) -> list[str]:
+    names = []
+    for label in labels:
+        _, name = stage_compile(host, label=label)
+        plan = remote.plan_remote_compilation(
+            host.claim(name), inputs=host.inputs, outputs=host.outputs, source_commit="a" * 40,
+            config=remote_cpu_config(), jobs_root=host.jobs, filesystem_root=host.fs, cache_root=host.cache,
+            host_environment=HOST_RECORD, require_shadow_gate=False)
+        remote.write_fallback(host.jobs, plan.queue_row, reason="remote_cpu_receipt_missing", attempts=2, now=1.0)
+        names.append(name)
+    return sorted(names)
+
+
+def test_fallback_compiles_are_bounded_per_run_by_count_and_time(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: one run compiles at most ``max_messages`` handed-back rows, and starts none once its time
+    budget (well inside the unit's TimeoutStartSec) is spent, though always at least one; the rest wait."""
+
+    from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+    compiler = install_compile_stand_ins(monkeypatch.setattr)
+    host = Host(tmp_path / "count")
+    host.record_worker_environment()
+    names = _handed_back(host, ["back-0", "back-1", "back-2"])
+    run = _run(host, "host", compiler, max_messages=2)
+    assert [row["status"] for row in run["fallback_results"]] == ["compiled_for_production_launch"] * 2
+    assert run["fallback_deferred"] == names[2:]
+    assert (host.queue / "processing" / names[2]).is_file() and remote.marker_path(host.jobs, "fallback", names[2]).is_file()
+    assert remote.FALLBACK_TIME_BUDGET_SECONDS < 15 * 60
+    later = _run(host, "host", compiler, max_messages=2)
+    assert len(later["fallback_results"]) == 1 and "fallback_deferred" not in later
+    assert all((host.queue / "completed" / name).is_file() for name in names)
+
+    monkeypatch.setattr(remote, "FALLBACK_TIME_BUDGET_SECONDS", 0)
+    timed = Host(tmp_path / "time")
+    timed.record_worker_environment()
+    names = _handed_back(timed, ["late-0", "late-1"])
+    run = _run(timed, "cloud_run", compiler, max_messages=8)
+    assert len(run["fallback_results"]) == 1 and run["fallback_deferred"] == names[1:]

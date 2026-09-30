@@ -76,6 +76,8 @@ SHADOW_PASSES_REQUIRED = 3
 # usd-convert-gsplat writes a random temporary PLY path into the converted layer's comment, so an inline NuRec
 # conversion never matches the host's: its shadow comparison could only fail while spending (review I4).
 INLINE_NUREC_CONVERSION_DETERMINISTIC = False
+# A run starts no further handed-back compile past this, well inside the no-spend unit's TimeoutStartSec=15m.
+FALLBACK_TIME_BUDGET_SECONDS = 600
 # Plan 14 §9: the files later host stages read by path; nothing else lands on the host.
 EPISODE_COMPILATION_CONSUMER_SUBSET = ("native-arena-adapter/**", "rigid_destination_native_probe_request.v1.json")
 WORKER_ENVIRONMENT_SCHEMA_VERSION = "remote_cpu_worker_environment.v1"
@@ -552,27 +554,35 @@ def _compile_on_host(queue: Path, name: str, claimed: Path, *, inputs: Path, out
     return result
 
 
-def _compile_fallbacks(queue: Path, jobs_root: Path, now: float, **host: Any) -> list[dict[str, Any]]:
-    """Host-compile every row the paid unit handed back (plan 14 §10); each is already in ``processing/``.
+def _compile_fallbacks(queue: Path, jobs_root: Path, clock: Any, *, limit: int,
+                       **host: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    """Host-compile the rows the paid unit handed back (plan 14 §10); each is already in ``processing/``.
 
     A handed-back row is never requeued, so a compile of it that died is retried here, from a clean
-    output path, until its third interruption (``prepare_fallback_compile``).
+    output path, until its third interruption (``prepare_fallback_compile``).  One run compiles at most
+    ``limit`` of them and starts none once ``FALLBACK_TIME_BUDGET_SECONDS`` have passed, though always
+    at least one; the others keep their markers for a later run.  Returns the results and the deferred.
     """
 
     from .task_evaluation_episode_compilation_claim_recovery import prepare_fallback_compile
 
-    compiled = []
+    compiled: list[dict[str, Any]] = []
+    deferred: list[str] = []
+    deadline = clock() + FALLBACK_TIME_BUDGET_SECONDS
     for path, marker in markers(jobs_root, "fallback"):
         if marker is None:
             continue
         name = marker["queue_row"]["name"]
         claimed = queue / "processing" / name
         if claimed.is_file():
+            if compiled and (len(compiled) >= limit or clock() >= deadline):
+                deferred.append(name)
+                continue
             sealed = prepare_fallback_compile(queue, name, claimed, jobs_root=jobs_root, output_root=host["outputs"],
-                                              source_commit=host["source_commit"], now=now)
+                                              source_commit=host["source_commit"], now=clock())
             compiled.append(sealed or _compile_on_host(queue, name, claimed, **host))
         path.unlink(missing_ok=True)
-    return compiled
+    return compiled, deferred
 
 
 def run_no_spend_unit(
@@ -608,13 +618,14 @@ def run_no_spend_unit(
     queue = Path(queue_root)
     recovered = (recover_interrupted_claims(queue, jobs_root=jobs, output_root=host["outputs"],
                                             source_commit=source_commit, now=clock()) if queue.is_dir() else [])
-    fallbacks = _compile_fallbacks(queue, jobs, clock(), **host) if queue.is_dir() else []
+    fallbacks, deferred = (_compile_fallbacks(queue, jobs, clock, limit=max(1, int(max_messages)), **host)
+                           if queue.is_dir() else ([], []))
     if mode == "host":
         run = process_episode_compilation_queue(
             queue_root=queue_root, input_root=input_root, output_root=output_root, source_commit=source_commit,
             episode_compiler=compiler, max_messages=max_messages, disk_reservation_root=disk_reservation_root,
             storage_pins_root=storage_pins_root)
-        extras = {"recovered_claims": recovered, "fallback_results": fallbacks}
+        extras = {"recovered_claims": recovered, "fallback_results": fallbacks, "fallback_deferred": deferred}
         return {**run, **{key: value for key, value in extras.items() if value}}
     from .task_evaluation_scene_construction_queue import ensure_scene_construction_queue_root
 
@@ -646,7 +657,8 @@ def run_no_spend_unit(
     return {"schema_version": RUN_SCHEMA_VERSION, "status": "processed" if processed or handed else "idle",
             "processed_count": len(processed), "results": processed, "mode": mode, "findings": findings,
             "handoffs" if mode == "cloud_run" else "shadowed": handed, "host_decisions": decisions,
-            "recovered_claims": recovered, "fallback_results": fallbacks, "provider_mutation_performed": False, "paid_execution_requested": False,
+            "recovered_claims": recovered, "fallback_results": fallbacks, "fallback_deferred": deferred,
+            "provider_mutation_performed": False, "paid_execution_requested": False,
             "automatic_retry_performed": False}
 
 
