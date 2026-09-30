@@ -91,7 +91,7 @@ def test_full_lane_has_no_free_form_test_reduction_input() -> None:
     assert "pytest_args" not in workflow
     assert "inputs.pytest" not in workflow
     assert "extra_args" not in workflow
-    assert "uv run scripts/pytest_full.sh" in workflow
+    assert "uv run --no-sync scripts/pytest_full.sh" in workflow
     assert "-n " not in workflow
     assert "--dist" not in workflow
     assert (
@@ -140,7 +140,7 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
     job_budget = int(re.search(r"timeout-minutes: (\d+)", job_block).group(1))
     step_budgets = [
         int(value)
-        for value in re.findall(r"^        timeout-minutes: (\d+)", job_block, re.M)
+        for value in re.findall(r"^        timeout-minutes: (\d+)", job_block, re.MULTILINE)
     ]
     assert step_budgets, "the apt-backed setup step must declare its own bound"
     assert all(budget < job_budget for budget in step_budgets), (

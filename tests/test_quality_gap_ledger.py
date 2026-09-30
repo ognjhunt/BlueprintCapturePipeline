@@ -57,6 +57,7 @@ EVIDENCE_ROOT_FILES = {
 # Contract/mutation tests replay that snapshot at its original review window;
 # the validator itself still defaults to the real clock and refuses expiry.
 HISTORICAL_SNAPSHOT_AS_OF = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+HISTORICAL_SNAPSHOT_COMMIT = "356483c54283d7bfafa2160d98c23154371e327d"
 RECORDED_COMMAND_AUTHORITIES: frozenset[str] = frozenset()
 CLAIM_BOUNDARY_TRUE_FIELDS = {
     "code_change_is_not_external_proof",
@@ -1378,23 +1379,49 @@ def _validate_ledger(ledger: Mapping[str, Any], *, as_of: datetime | None = None
     return sorted(set(errors))
 
 
-def test_historical_gap_ledger_snapshot_maps_all_107_acceptance_criteria_and_derives_status() -> None:
-    ledger = _load_ledger()
-    audit_rows = _audit_rows()
+def test_historical_gap_ledger_snapshot_maps_all_107_acceptance_criteria_and_derives_status(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    # Replay the actual reviewed tree, not September worktree bytes or rebound
+    # hashes. Current validation and all other fail-closed tests stay unchanged.
+    root = ROOT
+    snapshot = tmp_path / "historical-snapshot"
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(snapshot), HISTORICAL_SNAPSHOT_COMMIT],
+        cwd=root, check=True, capture_output=True,
+    )
+    try:
+        with monkeypatch.context() as replay:
+            for name, value in {"ROOT": root, "AUDIT": AUDIT, "LEDGER": LEDGER, "STATUS": STATUS}.items():
+                replay.setitem(globals(), name, snapshot / value.relative_to(root))
+            ledger = _load_ledger()
+            audit_rows = _audit_rows()
 
-    assert len(audit_rows) == 107
-    assert len({row["id"] for row in audit_rows}) == 107
-    assert _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF) == []
-    assert ledger["evidence_mapping_sha256"] == (APPROVED_CRITERION_EVIDENCE_MAP_SHA256)
-    assert ledger["status_counts"] == {
-        "open": 13,
-        "partial": 94,
-        "closed": 0,
-        "reopened": 0,
-        "total": 107,
-    }
-    assert ledger["criteria_counts"] == ledger["status_counts"]
-    assert all(gap["commit"] is None and gap["release_id"] is None for gap in ledger["gaps"])
+            assert _git_head() == HISTORICAL_SNAPSHOT_COMMIT
+            assert _sha256(LEDGER) == "sha256:5be5b835b4050ccbc5d7ea2c6256bf769768f4049a56d5b702b606028911a2c7"
+            assert len(audit_rows) == 107
+            assert len({row["id"] for row in audit_rows}) == 107
+            assert _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF) == []
+            assert ledger["evidence_mapping_sha256"] == APPROVED_CRITERION_EVIDENCE_MAP_SHA256
+            assert ledger["status_counts"] == {
+                "open": 13, "partial": 94, "closed": 0, "reopened": 0, "total": 107,
+            }
+            assert ledger["criteria_counts"] == ledger["status_counts"]
+            assert all(gap["commit"] is None and gap["release_id"] is None for gap in ledger["gaps"])
+
+            artifact = ledger["gaps"][0]["criteria"][0]["evidence_artifacts"][0]
+            source = snapshot / artifact["path"]
+            original = source.read_bytes()
+            try:
+                source.write_bytes(original + b"\nchanged after review\n")
+                errors = _validate_ledger(ledger, as_of=HISTORICAL_SNAPSHOT_AS_OF)
+                assert f"REL-01-AC-01:artifact_digest_mismatch:{artifact['path']}" in errors
+            finally:
+                source.write_bytes(original)
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", str(snapshot)], cwd=root, check=True, capture_output=True,
+        )
 
 
 def test_digest_binding_and_non_circular_status_derivation_fail_closed() -> None:

@@ -109,7 +109,14 @@ def test_one_failed_visual_predicate_prevents_acceptance():
 
 def test_budget_cannot_be_raised_by_caller(tmp_path):
     with pytest.raises(author.AssetAuthoringError, match='budget_invalid'):
-        author.budgeted_invoker(root=tmp_path, run_id='test', maximum_cost_usd=16)
+        author.budgeted_invoker(root=tmp_path, run_id='test', maximum_cost_usd=author.MAX_COST_USD + 1)
+
+
+def test_canonical_authoring_budget_ceiling_is_admitted_without_provider_calls(tmp_path):
+    invoker, audit = author.budgeted_invoker(
+        root=tmp_path, run_id='test', maximum_cost_usd=author.MAX_COST_USD)
+    assert invoker.config.max_inference_cost_usd == author.MAX_COST_USD
+    assert audit.manifest()['reservation_count'] == 0
 
 
 def test_cad_handoff_states_real_evidence_scope_and_preserves_nominal_dimensions():
