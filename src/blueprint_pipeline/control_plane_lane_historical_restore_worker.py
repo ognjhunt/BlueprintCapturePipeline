@@ -211,12 +211,12 @@ def _finish_restore(worker, tree, held, roots, monotonic, extracted):
 
 
 def _recover_publication(worker, events, roots, monotonic):
-    """Actual complete published births, still private; never adopt partial work."""
+    """Actual published births and planned member rights behind a private root."""
     manifest, decision = worker.selected[2], worker.selected[1]
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
         max_seconds=worker.operation.remaining(), monotonic=monotonic)
     validate_publication(manifest, observed, decision, events, worker.action_id,
-                         tick=worker.operation.remaining)
+                         tick=worker.operation.remaining, pending_owner_rights=True)
     _readback(worker, observed, roots, monotonic)
     with _resources(worker, observed) as (held, reservation):
         with worker.mutation_authority(readers=True):
