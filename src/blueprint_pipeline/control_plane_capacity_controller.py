@@ -206,6 +206,7 @@ def _reclaim_outlook(
     # Residue offload needs both owner switches. Older summaries omitted its
     # switch, so an enabled-looking phase is unknown until both are explicit.
     residue_switch = opt_in.get("result_residue_offload")
+    residue_held: Mapping[str, Any] | None = None
     if (opt_in.get("evidence_offload") is not False and residue_switch is not False
             and ("result_residue_offload" in phases or residue_switch is True)):
         residue = phases.get("result_residue_offload")
@@ -214,11 +215,18 @@ def _reclaim_outlook(
             return outlook, [], False
         # The producer's candidate total may include rows retained after a
         # publication or reference recheck. It does not partition those bytes
-        # from actionable rows, so a mixed or unsized result remains unknown.
+        # from actionable rows, so such a phase supplies no forecast bytes. It
+        # no longer blanks the other phases, though: with residue offload on by
+        # default, steady-state retained rows (a missing dispatch receipt, a hot
+        # run, one already offloaded) would otherwise hide every forecast and
+        # silence the reclaim_ineffective page.
         retained = residue.get("retained_by_reason")
-        if not isinstance(retained, Mapping) or retained:
+        if not isinstance(retained, Mapping):
             return outlook, [], False
-        enabled.append("result_residue_offload")
+        if retained:
+            residue_held = residue
+        else:
+            enabled.append("result_residue_offload")
     # Pin releases remove no bytes. Derived-directory candidates already
     # account for any reproducible files they make eligible in this tick.
     if not enabled:
@@ -247,6 +255,15 @@ def _reclaim_outlook(
         total_candidate += candidate
         total_reclaimed += reclaimed
         total_remaining += remaining
+    # A held residue phase forecasts nothing, but bytes it still holds or has
+    # moved mean reclaim is not ineffective.
+    held_bytes = 0
+    if residue_held is not None:
+        for field in ("candidate_bytes", "removed_or_offloaded_bytes"):
+            value = residue_held.get(field)
+            if type(value) is not int or value < 0:
+                return outlook, [], False
+            held_bytes += value
     outlook.update({
         "observed_at_epoch": observed,
         "next_reclaim_epoch": observed + GC_SUMMARY_INTERVAL_SECONDS,
@@ -266,7 +283,7 @@ def _reclaim_outlook(
             return outlook, [], False
         reason_bytes[row["reason"]] = reason_bytes.get(row["reason"], 0) + row["bytes"]
     reasons = sorted(reason_bytes, key=lambda reason: (-reason_bytes[reason], reason))[:3]
-    return outlook, reasons, total_candidate == total_reclaimed == 0
+    return outlook, reasons, total_candidate == total_reclaimed == held_bytes == 0
 
 
 def live_reserved_bytes(

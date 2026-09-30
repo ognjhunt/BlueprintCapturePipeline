@@ -793,8 +793,23 @@ def test_residue_setting_parses_like_other_opt_ins(raw) -> None:
 
     assert ours[0] is theirs[0]
     assert ours[1] == (None if theirs[1] is None else residue.RESIDUE_OFFLOAD_INVALID)
-    # It is its own decision: the evidence offload opt-in never enables it.
-    assert residue.result_residue_offload_setting({"BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD": "1"}) == (False, None)
+    # It is its own decision: the evidence offload switch never moves it, either way.
+    assert residue.result_residue_offload_setting({"BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD": "0"}) == (True, None)
+    assert residue.result_residue_offload_setting(
+        {"BLUEPRINT_CONTROL_PLANE_EVIDENCE_OFFLOAD": "1", residue.RESIDUE_OFFLOAD_ENV: "0"}) == (False, None)
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    (None, (True, None)), ("", (True, None)), ("1", (True, None)), ("true", (True, None)), (" yes ", (True, None)),
+    ("0", (False, None)), ("false", (False, None)), ("NO", (False, None)),
+    ("maybe", (False, "result_residue_offload_setting_invalid")),
+    ("on", (False, "result_residue_offload_setting_invalid")),
+])
+def test_residue_offload_is_on_by_default_and_zero_opts_out(raw, expected) -> None:
+    """Owner decision 2026-09-30: on unless the operator says ``0``; an invalid value still only plans and alerts."""
+
+    environ = {} if raw is None else {residue.RESIDUE_OFFLOAD_ENV: raw}
+    assert residue.result_residue_offload_setting(environ) == expected
 
 
 def _unit_environment(monkeypatch, values: dict[str, str]) -> None:

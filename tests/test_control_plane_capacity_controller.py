@@ -647,13 +647,18 @@ def test_retained_residue_does_not_supply_an_actionable_byte_forecast(reason) ->
     summary["phases"]["result_residue_offload"]["retained_by_reason"] = {
         reason: {"count": 1, "bytes": GIB},
     }
-    outlook, reasons, ineffective = cap._reclaim_outlook(
+    outlook, _reasons, ineffective = cap._reclaim_outlook(
         summary, now=1100.0, volume_growth="not_configured",
     )
-    assert outlook["reclaimable_bytes"] is None
-    assert reasons == [] and ineffective is False
+    # The held residue promises no bytes, but it no longer blanks the other phases' known outlook (residue
+    # offload is on by default, so retained rows are steady state).  Nothing else can cover a GiB here, and
+    # the bytes residue still holds keep reclaim from reading as ineffective.
+    assert outlook["sources"]["result_residue_offload"] is None
+    assert outlook["reclaimable_bytes"] == sum(
+        value for name, value in outlook["sources"].items() if name != "result_residue_offload" and value)
+    assert ineffective is False
     assert cap.capacity_eta(GIB, summary={"reclaim_outlook": outlook}, now=1100.0) == {
-        "eta_epoch": None, "eta_basis": "unknown",
+        "eta_epoch": None, "eta_basis": "operator_action_required",
     }
 
 

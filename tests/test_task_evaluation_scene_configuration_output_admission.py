@@ -682,10 +682,16 @@ def test_scene_configuration_output_role_is_declared_for_a_paid_run() -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [(None, "ceiling"), ("", "ceiling"), ("ceiling", "ceiling"), ("measured", "measured"),
-     ("Measured", None), ("stream", None), (" measured", None)],
+    [(None, "measured"), ("", "measured"), ("ceiling", "ceiling"), ("measured", "measured"),
+     ("0", "ceiling"), ("false", "ceiling"), ("no", "ceiling"),
+     ("Measured", None), ("stream", None), (" measured", None), ("Ceiling", None), (" ", None),
+     ("1", None), ("off", None), ("False", None)],
 )
-def test_admission_mode_defaults_to_ceiling_and_refuses_anything_else(raw, expected) -> None:
+def test_admission_mode_defaults_to_measured_and_refuses_anything_else(raw, expected) -> None:
+    """Owner decision 2026-09-30: unset or empty is ``measured``; ``ceiling`` is the explicit
+    opt-out, and so are ``0``/``false``/``no``, as the other disk switches take them (an operator
+    who writes ``=0`` must not block every run); any other value still refuses before staging."""
+
     environment = {} if raw is None else {admission.OUTPUT_ADMISSION_ENV: raw}
     assert admission.configured_output_admission_mode(environment) == expected
 
@@ -1465,11 +1471,42 @@ def _legacy_passthrough_record(result: dict) -> None:
     assert "provider_output_archive_durable" not in result
 
 
-@pytest.mark.parametrize("mode", [None, "", "ceiling"])
+@pytest.mark.parametrize("mode", [None, ""])
+def test_unset_or_empty_mode_is_the_measured_default(tmp_path, monkeypatch, mode) -> None:
+    """Owner decision 2026-09-30: with nothing set, a production website run is measured. It holds
+    on the ledger, publishes the zip before extracting it, and never reads the ceiling formula."""
+
+    lane = _harness(tmp_path, monkeypatch, mode=mode)
+
+    result = lane.run()
+
+    assert result["status"] == "completed", result["blockers"]
+    assert result["provider_output_admission_mode"] == "measured"
+    assert result["provider_output_archive_durable"] is True
+    record = result["provider_output_disk_capacity"]["before_allocation_and_staging"]
+    assert record["schema_version"] == admission.ADMISSION_SCHEMA_VERSION
+    assert (record["status"], record["hold"], record["hold_bytes"]) == ("ready", "held", SMALL_UPLOAD + RESERVE)
+    assert _event_names(lane.events) == [
+        ("publish", "vast_provider_runtime_output.zip"),
+        ("extract", "vast_provider_runtime_output.zip"),
+    ]
+    assert _ledger_rows(lane.ledger) == []
+
+    gate = admission.open_scene_configuration_output_admission(
+        job=tmp_path / "unit-job", receipt=lane.receipt,
+        read_envelope=lambda _r: {"request": {"scene": {"website_native_inputs": {"x": 1}}}},
+        expected_upload_bytes=SMALL_UPLOAD, diagnostic_only=False, retain_warm_session=False,
+        api_pretraining=False, cpu_prestage=False,
+        environment={} if mode is None else {admission.OUTPUT_ADMISSION_ENV: mode},
+    )
+    assert (gate.mode, gate.measured) == ("measured", True)
+
+
+@pytest.mark.parametrize("mode", ["ceiling"])
 def test_ceiling_mode_is_byte_identical(tmp_path, monkeypatch, mode) -> None:
-    """Unset, empty and ``ceiling`` run today's path: legacy formula, extract then
-    publish, no ledger. The lane tests at test_task_evaluation_scene_configuration_bundle
-    :3248, :3524, :3906 and :4670 pass unedited in this mode."""
+    """``ceiling``, the explicit opt-out, runs the pre-measured path: legacy formula, extract
+    then publish, no ledger. The lane tests at test_task_evaluation_scene_configuration_bundle
+    :3248, :3524, :3906 and :4670 pin this mode and pass unedited in it."""
 
     lane = _harness(tmp_path, monkeypatch, mode=mode)
 
@@ -1493,7 +1530,7 @@ def test_ceiling_mode_is_byte_identical(tmp_path, monkeypatch, mode) -> None:
         read_envelope=lambda _r: pytest.fail("ceiling mode must not read the envelope"),
         expected_upload_bytes=SMALL_UPLOAD, diagnostic_only=False, retain_warm_session=False,
         api_pretraining=False, cpu_prestage=False,
-        environment={} if mode is None else {admission.OUTPUT_ADMISSION_ENV: mode},
+        environment={admission.OUTPUT_ADMISSION_ENV: mode},
     )
     sentinel = object()
     assert gate.before_allocation(lambda **kwargs: (sentinel, kwargs), a=1) == (sentinel, {"a": 1})

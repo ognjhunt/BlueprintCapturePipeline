@@ -466,11 +466,15 @@ variable "allow_empty_monitoring_notification_channels" {
 # =============================================================================
 
 provider "google" {
-  project = var.project_id
+  project               = var.project_id
+  billing_project       = var.project_id
+  user_project_override = true
 }
 
 provider "google-beta" {
-  project = var.project_id
+  project               = var.project_id
+  billing_project       = var.project_id
+  user_project_override = true
 }
 
 # =============================================================================
