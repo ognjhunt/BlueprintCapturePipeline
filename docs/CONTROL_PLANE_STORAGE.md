@@ -1321,9 +1321,9 @@ and GC never selects; the interruption is counted; and the row goes back to
 with `episode_compilation_claim_interrupted:worker_process_terminated`. A
 claim's empty placeholder beside its pending row is dropped, and a row whose
 result was written before it moved is moved as that result says; neither
-counts. A handed-back row is never requeued: a compile of it that died leaves
-its output at `<id>`, which the next fallback compile sets aside and counts
-against the same three.
+counts. A handed-back row is never requeued: if its compile wrote the result
+before dying, the next run moves the row as that result says; otherwise the
+output it left at `<id>` is set aside and counted against the same three.
 
 **Rollback.** Unset the flag. The no-spend unit compiles everything; the paid
 unit's ExecCondition keeps it running only to drain live leases and to hand

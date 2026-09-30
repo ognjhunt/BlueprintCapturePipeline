@@ -130,14 +130,18 @@ def _seal_blocked(queue: Path, name: str, claimed: Path, record: dict[str, Any],
     return result
 
 
-def _finish_recorded(queue: Path, name: str, claimed: Path) -> None:
+def _finish_recorded(queue: Path, name: str, claimed: Path) -> dict[str, Any]:
     """The result was written and the process died before the row moved: move it as the result says."""
 
     try:
-        status = json.loads((queue / "results" / name).read_bytes()).get("status")
-    except (OSError, ValueError, AttributeError):
-        status = None  # as ``record_compilation`` treats a result it did not write: blocked
+        result = json.loads((queue / "results" / name).read_bytes())
+    except (OSError, ValueError):
+        result = None
+    if not isinstance(result, dict):  # as ``record_compilation`` treats a result it did not write: blocked
+        result = {"status": "blocked", "blockers": ["episode_compilation_result_unreadable"]}
+    status = result.get("status")
     os.replace(claimed, queue / ("completed" if status == "compiled_for_production_launch" else "blocked") / name)
+    return result
 
 
 def recover_interrupted_claims(queue_root: str | Path, *, jobs_root: str | Path, output_root: str | Path,
@@ -191,10 +195,16 @@ def _recover(queue: Path, jobs: Path, outputs: Path, claimed: Path, entry: dict[
 
 def prepare_fallback_compile(queue_root: str | Path, name: str, claimed: Path, *, jobs_root: str | Path,
                              output_root: str | Path, source_commit: str, now: float) -> dict[str, Any] | None:
-    """Before a handed-back row compiles on the host: an output already at its path means a compile of it
-    died.  Set that aside and count it; on the third interruption seal the row ``blocked`` instead and
-    return that result, so the caller compiles nothing."""
+    """Before a handed-back row compiles on the host; a returned result means the caller compiles nothing.
 
+    A result already written means the compile finished and the process died before the row moved: the
+    row moves as that result says, and its output stays where it is (review I1).  Otherwise an output
+    already at its path means a compile of it died: that is set aside and counted, and on the third
+    interruption the row is sealed ``blocked`` instead.
+    """
+
+    if (Path(queue_root) / "results" / name).exists():
+        return _finish_recorded(Path(queue_root), name, claimed)
     aside = set_aside(Path(output_root), name, now)
     if aside is None:
         return None

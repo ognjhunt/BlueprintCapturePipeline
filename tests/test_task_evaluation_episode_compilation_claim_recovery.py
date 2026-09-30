@@ -178,3 +178,32 @@ def test_an_interrupted_fallback_compile_sets_its_partial_output_aside_and_count
     aside = host.outputs / f".{envelope['compilation_id']}.interrupted-2000"
     assert (aside / "partial.bin").read_bytes() == b"half"
     assert json.loads(recovery.record_path(host.jobs, name).read_bytes())["interruptions"] == 1
+
+
+def test_a_handed_back_row_whose_result_was_written_is_finished_not_recompiled(tmp_path: Path, monkeypatch) -> None:
+    """Review I1: the fallback compile wrote the result, then died before the row moved.  The next run moves
+    the row as its result says; it never sets the finished output aside, counts it, or compiles it again."""
+
+    host = Host(tmp_path)
+    host.record_worker_environment()
+    envelope, name = stage_compile(host)
+    claimed = host.claim(name)
+    plan = remote.plan_remote_compilation(
+        claimed, inputs=host.inputs, outputs=host.outputs, source_commit=COMMIT, config=remote_cpu_config(),
+        jobs_root=host.jobs, filesystem_root=host.fs, cache_root=host.cache, host_environment=HOST_RECORD,
+        require_shadow_gate=False)
+    remote.write_fallback(host.jobs, plan.queue_row, reason="remote_cpu_receipt_missing", attempts=2, now=1.0)
+    _, result = compile_claimed_envelope(
+        claimed, source_name=name, inputs=host.inputs.resolve(), outputs=host.outputs.resolve(), source_commit=COMMIT,
+        episode_compiler=_stand_ins(monkeypatch), disk_reservation_root=None, storage_pins_root=None)
+    write_launch_preparation_record_exclusive(host.queue / "results" / name, result)  # then the process died
+    output = tree_snapshot(host.outputs / envelope["compilation_id"])
+
+    run = _run(host, _killed, now=2_000.0)  # a compile would crash the run: none may start
+    assert run["fallback_results"][0]["status"] == "compiled_for_production_launch"
+    assert (host.queue / "completed" / name).is_file() and not (host.queue / "processing" / name).exists()
+    assert json.loads((host.queue / "results" / name).read_bytes()) == result
+    assert tree_snapshot(host.outputs / envelope["compilation_id"]) == output
+    assert not list(host.outputs.glob(f".{envelope['compilation_id']}.interrupted-*"))
+    assert not remote.marker_path(host.jobs, "fallback", name).exists()
+    assert not recovery.record_path(host.jobs, name).exists()
