@@ -11,6 +11,7 @@ from . import control_plane_lane_experiment_archive as transport
 from . import control_plane_lane_historical_archive as archive
 from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_fence import _members
+from .control_plane_lane_historical_processes import HistoricalProcessError
 
 
 def _require(value, code):
@@ -104,7 +105,7 @@ def extract_preserved_members(manifest, raw, pointer, client, bucket, stage, gua
         controller.check()
         return dict(archive_sha256=pointer['sha256'], archive_size_bytes=size,
                     restored_files=count, restored_logical_bytes=payload)
-    except generation.HistoricalGenerationError:
+    except (generation.HistoricalGenerationError, HistoricalProcessError):
         raise
     except Exception:
         raise generation.HistoricalGenerationError('historical_generation_restore_archive_extract_failed') from None
