@@ -84,6 +84,14 @@ def _strings(value: str | None) -> list[str]:
     return [json.loads(literal) for literal in re.findall(r'"(?:[^"\\]|\\.)*"', value or "")]
 
 
+def _list(body: str, name: str) -> list[str]:
+    """The strings of the list attribute ``name`` directly inside ``body``."""
+    pattern = re.compile(rf"(?ms)^[ \t]*{re.escape(name)}[ \t]*=[ \t]*\[(.*?)\]")
+    values = [match.group(1) for match in pattern.finditer(body) if _top_level(body, match.start())]
+    assert len(values) == 1, (name, values)
+    return _strings(values[0])
+
+
 def _resources(text: str) -> dict[tuple[str, str], str]:
     return {(kind, name): _terraform_resource_body(text, kind, name)
             for kind, name in re.findall(r'(?m)^resource "([a-z0-9_]+)" "([a-z0-9_]+)" \{$', text)}
@@ -225,3 +233,28 @@ def test_transport_bucket_is_private_and_deletes_objects_after_a_day() -> None:
     assert _attr(bucket, "force_destroy") is None
     for exposure in ("website", "cors", "retention_policy"):
         assert not _children(bucket, exposure), exposure
+
+
+def test_remote_cpu_worker_identity_has_no_project_roles() -> None:
+    main = _main()
+    worker = _terraform_resource_body(main, "google_service_account", "remote_cpu_worker")
+    assert _attr(worker, "account_id") == '"remote-cpu-worker"'
+
+    # It runs the job and may get transport objects. Nothing else names it; no project binding does.
+    holders = {address for address, body in _resources(main).items()
+               if "google_service_account.remote_cpu_worker[" in body}
+    assert holders == {("google_cloud_run_v2_job", "remote_cpu_worker"),
+                       ("google_storage_bucket_iam_member", "remote_cpu_transport_worker")}
+    grant = _terraform_resource_body(main, "google_storage_bucket_iam_member",
+                                     "remote_cpu_transport_worker")
+    assert _attr(grant, "bucket") == "google_storage_bucket.remote_cpu_transport[0].name"
+    assert _attr(grant, "role") == (
+        "google_project_iam_custom_role.remote_cpu_transport_reader[0].name")
+    assert _attr(grant, "member") == (
+        '"serviceAccount:${google_service_account.remote_cpu_worker[0].email}"')
+    reader = _terraform_resource_body(main, "google_project_iam_custom_role",
+                                      "remote_cpu_transport_reader")
+    assert _list(reader, "permissions") == ["storage.objects.get"]
+    # No authoritative project policy exists that could hand it a role either.
+    assert 'resource "google_project_iam_binding"' not in main
+    assert 'resource "google_project_iam_policy"' not in main

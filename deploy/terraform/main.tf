@@ -2063,13 +2063,32 @@ resource "google_storage_bucket" "remote_cpu_transport" {
   }
 }
 
-# The job's own identity. It holds no project role.
+# The job's own identity. It holds no project role: its only grant is get on
+# transport objects, which is how an execution reads its pinned transport.
 resource "google_service_account" "remote_cpu_worker" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
 
   account_id   = "remote-cpu-worker"
   display_name = "Blueprint Remote CPU Worker"
   description  = "Runs remote CPU worker job executions; can only read transport objects"
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_transport_reader" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "remoteCpuTransportReader"
+  title       = "Blueprint Remote CPU Transport Reader"
+  description = "Read one remote CPU transport object at a known generation; bound only on the transport bucket."
+  permissions = ["storage.objects.get"]
+}
+
+resource "google_storage_bucket_iam_member" "remote_cpu_transport_worker" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  bucket = google_storage_bucket.remote_cpu_transport[0].name
+  role   = google_project_iam_custom_role.remote_cpu_transport_reader[0].name
+  member = "serviceAccount:${google_service_account.remote_cpu_worker[0].email}"
 }
 
 resource "google_cloud_run_v2_job" "remote_cpu_worker" {
