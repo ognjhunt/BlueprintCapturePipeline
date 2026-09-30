@@ -19,6 +19,7 @@ from .control_plane_lane_historical_fence import _HistoricalGenerationFence
 from .control_plane_lane_historical_restore_archive import extract_preserved_members
 from .control_plane_lane_historical_restore_tree import RestoreTree
 from .control_plane_lane_historical_restore_snapshot import after_reopen, validate_private
+from .control_plane_lane_historical_restore_publication import validate_publication
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
 
 
@@ -160,7 +161,16 @@ def _recover_before_final(worker, events, roots, monotonic):
         and not any(event['kind'] in ('restore_final', 'access_reopened') for event in events),
         'restore_recovery_required')
     with worker.checkpoint(journal=True) as (_, _, journal):
-        selector, snapshot = journal.select_restore_snapshot()
+        try:
+            os.stat('restore.snapshot.json', dir_fd=journal.directory, follow_symlinks=False)
+        except FileNotFoundError:
+            missing_snapshot = True
+        else:
+            missing_snapshot = False
+        if not missing_snapshot:
+            selector, snapshot = journal.select_restore_snapshot()
+    if missing_snapshot:
+        return _recover_publication(worker, events, roots, monotonic)
     _verify_snapshot(worker, events, snapshot)
     _readback(worker, snapshot, roots, monotonic)
     manifest, decision = worker.selected[2], worker.selected[1]
@@ -186,6 +196,57 @@ def _recover_before_final(worker, events, roots, monotonic):
         return dict(receipt, recovered_before_final=True, owner_access_reopened=True,
             root_version=held.versions[''], original_restore_final_event_digest=final['event_digest'],
             restored_files=0, restored_logical_bytes=0)
+
+
+def _finish_restore(worker, tree, held, roots, monotonic, extracted):
+    """Finish verified publication under the retained original resource gates."""
+    manifest, decision = worker.selected[2], worker.selected[1]
+    tree.owner_rights()
+    tree.verify_bytes(staged=False)
+    with worker.checkpoint(journal=True):
+        held.verify()
+        worker.reservation.renew()
+    snapshot = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+    generation._require(all(row['version'] == held.versions[row['path']]
+        for row in snapshot['members']) and len(snapshot['members']) == len(manifest['members']),
+        'restore_snapshot_changed')
+    validate_private(manifest, snapshot)
+    with worker.checkpoint(journal=True) as (_, _, journal):
+        held.verify()
+        generation.verify_historical_member_versions(snapshot, tick=worker.operation.remaining)
+        selected_snapshot = journal.publish_restore_snapshot(snapshot)
+    receipt = dict(status='completed', action='restore', action_id=worker.action_id,
+        owner=decision['owner'], generation_digest=manifest['generation_digest'],
+        original_manifest=decision['manifest'], original_final_event_digest=decision['final_event_digest'],
+        fresh_disk_reservation=True, **extracted, root_directory_retained=True,
+        protected_root_version=held.versions[''], restored_snapshot=selected_snapshot,
+        owner_access_reopened=False)
+    worker.record('restore_final', receipt)
+    tree.reopen()
+    return dict(receipt, owner_access_reopened=True, root_version=held.versions[''])
+
+
+def _recover_publication(worker, events, roots, monotonic):
+    """Actual complete published births, still private; never adopt partial work."""
+    manifest, decision = worker.selected[2], worker.selected[1]
+    observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+    validate_publication(manifest, observed, decision, events, worker.action_id,
+                         tick=worker.operation.remaining)
+    _readback(worker, observed, roots, monotonic)
+    with _resources(worker, observed) as (held, reservation):
+        with worker.mutation_authority(readers=True):
+            held.verify()
+            reservation.renew()
+        tree = RestoreTree(held, worker, manifest)
+        tree.verify_bytes(staged=False)
+        files = [row for row in manifest['members'] if row['kind'] == 'file']
+        extracted = dict(archive_sha256=decision['archive']['sha256'],
+            archive_size_bytes=decision['archive']['size_bytes'], restored_files=len(files),
+            restored_logical_bytes=sum(row['size_bytes'] for row in files))
+        receipt = _finish_restore(worker, tree, held, roots, monotonic, extracted)
+        return dict(receipt, recovered_publication=True, restored_files=0, restored_logical_bytes=0)
 
 
 def run_restore(worker, roots, monotonic):
@@ -225,24 +286,4 @@ def run_restore(worker, roots, monotonic):
         guard()
         worker.record('restore_intent', dict(phase='stage_complete', **extracted))
         tree.publish()
-        tree.owner_rights()
-        tree.verify_bytes(staged=False)
-        guard()
-        snapshot = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
-            max_seconds=operation.remaining(), monotonic=monotonic)
-        generation._require(all(row['version'] == held.versions[row['path']]
-            for row in snapshot['members']) and len(snapshot['members']) == len(manifest['members']),
-            'restore_snapshot_changed')
-        with worker.checkpoint(journal=True) as (_, _, journal):
-            held.verify()
-            generation.verify_historical_member_versions(snapshot, tick=operation.remaining)
-            selected_snapshot = journal.publish_restore_snapshot(snapshot)
-        receipt = dict(status='completed', action='restore', action_id=worker.action_id,
-            owner=decision['owner'], generation_digest=manifest['generation_digest'],
-            original_manifest=decision['manifest'], original_final_event_digest=decision['final_event_digest'],
-            fresh_disk_reservation=True, **extracted, root_directory_retained=True,
-            protected_root_version=held.versions[''], restored_snapshot=selected_snapshot,
-            owner_access_reopened=False)
-        worker.record('restore_final', receipt)
-        tree.reopen()
-        return dict(receipt, owner_access_reopened=True, root_version=held.versions[''])
+        return _finish_restore(worker, tree, held, roots, monotonic, extracted)

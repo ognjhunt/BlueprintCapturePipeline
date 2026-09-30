@@ -451,7 +451,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             _write(root / 'interrupt-once', restore_interruption.encode())
             interrupted = _launch_worker(entry, restore['action_id'], target, journals,
                                          restore=True, expected='failed')
-            assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption
+            assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption, interrupted
             assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
             assert all((target / name).read_bytes() == value for name, value in original.items())
             interrupted_prefix = {path.name: path.read_bytes() for path in
