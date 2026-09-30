@@ -287,14 +287,21 @@ def test_closure_class_without_three_shadow_passes_stays_on_host(tmp_path: Path)
     assert isinstance(_plan(host, claimed, gate=False), remote.RemotePlan)
     for index in range(2):
         _parity(host, "not_applicable", True, index=index + 1)
-    # Passes for another class, image, host environment or CPU class do not count toward this one.
+    # Passes for another class, image or host environment do not count toward this one.
     _parity(host, "shipped", True, index=3)
     _parity(host, "not_applicable", True, index=4, image=IMAGE.replace("d" * 64, "e" * 64))
     _parity(host, "not_applicable", True, index=5, host_digest="sha256:" + "7" * 64)
-    _parity(host, "not_applicable", True, index=6, cpu_class="sha256:" + "8" * 64)
     assert _plan(host, claimed, gate=True) == unproven
-    _parity(host, "not_applicable", True, index=7)
+    # A pass on another CPU class counts (plan 14 §5): only inline NuRec conversion's passes are per CPU class.
+    _parity(host, "not_applicable", True, index=6, cpu_class="sha256:" + "8" * 64)
     assert isinstance(_plan(host, claimed, gate=True), remote.RemotePlan)
+    inline = {"image": IMAGE, "host_environment_digest": HOST_RECORD["environment_digest"]}
+    for index in (30, 31, 32):
+        _parity(host, "absent_inline_only", True, index=index, cpu_class="sha256:" + "8" * 64)
+    assert remote.shadow_passes(host.jobs, closure_class="absent_inline_only", cpu_class="sha256:" + "8" * 64,
+                                **inline) == 3
+    assert remote.shadow_passes(host.jobs, closure_class="absent_inline_only", cpu_class=HOST_RECORD["cpu_class"],
+                                **inline) == 0
     # A failed comparison restarts the count: three consecutive passes again.
     _parity(host, "not_applicable", False, index=8)
     assert _plan(host, claimed, gate=True) == unproven
@@ -474,3 +481,133 @@ def test_a_worker_compile_loads_no_allocation_or_staging_authority(tmp_path: Pat
     assert authority & loaded == {"blueprint_pipeline.paid_resource_admission"}
     assert not {name for name in loaded if name == "boto3" or name.startswith(("boto3.", "botocore", "google.oauth2",
                                                                                "google.auth"))}
+
+
+def test_an_unset_mode_is_auto_and_a_set_one_keeps_its_name(tmp_path: Path, monkeypatch) -> None:
+    """Owner decision 2026-09-30, everything on by default: unset or empty is auto, ``cloud_run`` with this
+    stage's usable config and ``host`` without it; a set value is explicit and keeps its name; an invalid value
+    runs as host; and the owner census gate holds auto's ``cloud_run`` on the host exactly as an explicit one."""
+
+    from blueprint_pipeline import task_evaluation_scene_compilation_owner_outputs as owner_census
+
+    usable = tmp_path / "remote-cpu-workers.json"
+    usable.write_text(json.dumps(remote_cpu_config()), encoding="utf-8")
+    usable.chmod(0o640)
+    absent = tmp_path / "absent.json"
+    on = {"requested": None, "effective": "cloud_run", "reason": "auto_with_config", "findings": []}
+    off = {"requested": None, "effective": "host", "reason": "auto_without_config", "findings": []}
+    for unset in ({}, {remote.EXECUTION_ENV: ""}, {remote.EXECUTION_ENV: "  "}):
+        assert remote.resolve_execution_mode({**unset, remote.CONFIG_ENV: str(usable)}) == on
+        assert remote.resolve_execution_mode({**unset, remote.CONFIG_ENV: str(absent)}) == off
+    assert remote.execution_mode({remote.CONFIG_ENV: str(usable)}) == ("cloud_run", [])
+    assert remote.execution_mode({remote.CONFIG_ENV: str(absent)}) == ("host", [])
+    for mode in remote.MODES:
+        for config in (usable, absent):
+            assert remote.resolve_execution_mode({remote.EXECUTION_ENV: mode, remote.CONFIG_ENV: str(config)}) == {
+                "requested": mode, "effective": mode, "reason": "explicit", "findings": []}
+    # The requested value is reported only as a known mode: summary.json is door-readable.
+    assert remote.resolve_execution_mode({remote.EXECUTION_ENV: "https://cloudrun", remote.CONFIG_ENV: str(usable)}) == {
+        "requested": "invalid", "effective": "host", "reason": "explicit",
+        "findings": ["episode_compilation_execution_mode_invalid"]}
+    monkeypatch.delattr(owner_census, "REMOTE_OUTPUT_POINTER_SCHEMAS")
+    assert remote.resolve_execution_mode({remote.CONFIG_ENV: str(usable)}) == {
+        **on, "effective": "host", "findings": ["episode_compilation_cloud_run_requires_census_pointer_support"]}
+
+
+def test_cloud_runs_shadow_gate_is_last_and_holds_back_a_whole_plan_to_shadow(tmp_path: Path, monkeypatch) -> None:
+    """Self-progression: the per-class shadow gate is ``cloud_run``'s last check, so a row it holds back passed
+    every other one, and its host decision carries the whole plan a shadow marker names.  No other host decision
+    carries a plan: those rows stay on the host in every mode."""
+
+    host = Host(tmp_path / "host")
+    host.record_worker_environment()
+    _, name = host.stage()
+    claimed = host.claim(name)
+    held = _plan(host, claimed, gate=True)
+    assert held == remote.HostDecision("remote_ineligible:shadow_parity_unproven:not_applicable")
+    ungated = _plan(host, claimed, gate=False)
+    assert isinstance(ungated, remote.RemotePlan) and held.shadow_plan == ungated
+    # Every other refusal holds back nothing to shadow.
+    tight = remote_cpu_config(stages={"episode_compilation": {
+        **remote_cpu_config()["stages"]["episode_compilation"], "ephemeral_bytes": 1}})
+    assert _plan(host, claimed, gate=True, config=tight).shadow_plan is None
+    host.record_worker_environment(image=IMAGE.replace("d" * 64, "e" * 64))
+    assert _plan(host, claimed, gate=True) == remote.HostDecision("remote_ineligible:image_drift")
+    assert _plan(host, claimed, gate=True).shadow_plan is None
+    host.record_worker_environment()
+    monkeypatch.setattr(remote, "MAX_INLINE_NUREC_BYTES", 8192)
+    _, inline = host.stage(label="inline", appearance=nurec_usdz(4096), appearance_name="appearance.usdz")
+    decided = _plan(host, host.claim(inline), gate=True)
+    assert decided == remote.HostDecision("remote_ineligible:inline_nurec_conversion_nondeterministic")
+    assert decided.shadow_plan is None
+    # Once the class has its passes, the gate lets the very same plan through.
+    for index in range(3):
+        _parity(host, "not_applicable", True, index=index + 1)
+    assert _plan(host, claimed, gate=True) == ungated
+
+
+def _outcome(host: Host, klass: str, parity: str, *, index: int, commit: str = COMMIT) -> None:
+    """One sealed shadow outcome for ``klass`` on this image, host environment and ``commit``."""
+
+    remote.record_shadow_parity(host.jobs, {
+        "closure_class": klass, "attempt_id": f"rcj-ec-{'0' * 24}-a1-{index:032x}",
+        "queue_row": {"queue": "task-evaluation-episode-compilations", "name": f"row-{index}.json",
+                      "envelope_digest": "sha256:" + "1" * 64},
+        "image": IMAGE, "host_environment_digest": HOST_RECORD["environment_digest"],
+        "worker_environment_digest": None if parity == "abandoned" else HOST_RECORD["environment_digest"],
+        "cpu_class": HOST_RECORD["cpu_class"], "parity": parity, "mismatches": [], "source_commit": commit,
+        "compared_at_epoch": float(index)})
+
+
+def test_a_class_breaker_opens_after_three_non_passes_on_one_commit(tmp_path: Path) -> None:
+    """Review I2: a class whose shadows keep failing, coming out inconclusive or being given up stops being
+    shadowed on this commit.  After three in a row its rows compile on the host with no plan, in both remote
+    modes; a pass in between closes it, and outcomes on another commit never count toward it."""
+
+    host = Host(tmp_path / "host")
+    host.record_worker_environment()
+    _, name = host.stage()
+    claimed = host.claim(name)
+    open_ = remote.HostDecision("remote_ineligible:shadow_breaker_open:not_applicable")
+    identity = {"closure_class": "not_applicable", "image": IMAGE,
+                "host_environment_digest": HOST_RECORD["environment_digest"], "cpu_class": HOST_RECORD["cpu_class"]}
+    _outcome(host, "not_applicable", "failed", index=1)
+    _outcome(host, "not_applicable", "inconclusive", index=2)
+    assert _plan(host, claimed, gate=True).shadow_plan is not None  # two: still proving
+    # Three on another commit, or for another class, do not count toward this one.
+    for index in (3, 4, 5):
+        _outcome(host, "not_applicable", "failed", index=index, commit="b" * 40)
+        _outcome(host, "shipped", "failed", index=index + 10)
+    assert _plan(host, claimed, gate=True).shadow_plan is not None
+    assert remote.shadow_breaker_open(host.jobs, source_commit="b" * 40, **identity)
+    _outcome(host, "not_applicable", "abandoned", index=6)
+    assert remote.shadow_breaker_open(host.jobs, source_commit=COMMIT, **identity)
+    for gate in (True, False):  # cloud_run and cloud_run_shadow alike: no plan, so no shadow
+        decided = _plan(host, claimed, gate=gate)
+        assert decided == open_ and decided.shadow_plan is None
+    # A pass in between closes it: the trailing run starts again.
+    _outcome(host, "not_applicable", "passed", index=7)
+    assert _plan(host, claimed, gate=True).shadow_plan is not None
+    for index in (8, 9):
+        _outcome(host, "not_applicable", "inconclusive", index=index)
+    # Inconclusive and abandoned outcomes neither count as passes nor reset them; only a failure does.
+    assert remote.shadow_passes(host.jobs, **identity) == 1
+    assert isinstance(_plan(host, claimed, gate=False), remote.RemotePlan)  # two non-passes since the pass
+    _outcome(host, "not_applicable", "failed", index=10)
+    assert _plan(host, claimed, gate=False) == open_ and remote.shadow_passes(host.jobs, **identity) == 0
+
+
+def test_a_probe_record_sealed_under_another_digest_is_no_worker_environment(tmp_path: Path) -> None:
+    """Review I1: the CPU class left the environment digest (plan 14 §5).  A probe recorded before that seals a
+    digest this host no longer computes, and dispatching on it could only fail as an environment mismatch: it is
+    unrecorded until the allocator's preflight probes again."""
+
+    host = Host(tmp_path / "host")
+    _, name = host.stage()
+    claimed = host.claim(name)
+    digested = {field: HOST_RECORD[field] for field in census.DIGESTED_FIELDS}
+    stale = {**HOST_RECORD, "environment_digest": canonical_digest({**digested, "cpu_class": HOST_RECORD["cpu_class"]})}
+    host.record_worker_environment(stale)
+    assert _plan(host, claimed) == remote.HostDecision("remote_ineligible:environment_unrecorded")
+    host.record_worker_environment()
+    assert isinstance(_plan(host, claimed), remote.RemotePlan)

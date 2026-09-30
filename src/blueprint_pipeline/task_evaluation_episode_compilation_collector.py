@@ -12,8 +12,10 @@ teardown and the lease's terminal state, which frees the capacity slot.
 
 An infrastructure failure gets one fresh attempt once the failed one is compute-zero; then, or after a
 refused dispatch, the row goes back to the no-spend unit as a fallback marker.  A shadow attempt compares
-the worker's result and output with the host's, records parity for its closure class and lands nothing.
-In ``host`` mode the unit only drains: it collects what already runs and returns undispatched hand-offs.
+the worker's result and output with the host's, records parity for its closure class and lands nothing;
+it is the same whether ``cloud_run_shadow`` or a self-progressing ``cloud_run`` wrote its marker.  In
+``host`` mode (an unset flag without this stage's config included) the unit only drains: it collects what
+already runs and returns undispatched hand-offs.  ``summary.json`` says which mode a run was in and why.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from .remote_cpu_job_contract import (
     RemoteCpuContractError,
     execution_name_of,
     job_id_for,
+    stage_limits,
     validate_descriptor,
     validate_receipt,
 )
@@ -119,6 +122,8 @@ class Collector:
     disk_reservation_root: Path | None = None
     storage_pins_root: Path | None = None
     summary: dict[str, Any] = field(default_factory=dict)
+    # The resolved mode (``remote.resolve_execution_mode``): what was asked for, and why ``mode`` is what it is.
+    execution: dict[str, Any] = field(default_factory=dict)
 
     @property
     def now(self) -> float:
@@ -256,11 +261,29 @@ def subprocess_allocate(argv: list[str]) -> Mapping[str, Any]:
 # ---------------------------------------------------------------------------------------------- dispatch
 
 
+def _sealed_descriptors(c: Collector, plan: remote.RemotePlan, attempt: int) -> list[Path]:
+    return sorted((c.jobs_root / "descriptors").glob(f"{job_id_for(STAGE, plan.queue_row['name'])}-a{attempt}-*.json"))
+
+
+def _admission_refusal(c: Collector, plan: remote.RemotePlan) -> str | None:
+    """Review I3: what the allocator's admission would refuse, read-only and before anything is staged: the
+    standing authority, then the ledger's caps at this attempt's worst case.  The allocator checks again."""
+
+    try:
+        authority, blockers = allocator.load_standing_authority(stage=STAGE, now=c.now)
+        if authority is not None and not blockers:
+            limits = stage_limits(c.config, STAGE, allowed_cpu_classes=plan.allowed_cpu_classes)
+            blockers = allocator.spend_ledger_blockers(authority=authority, now=c.now, worst_case_usd=(
+                allocator.worst_case_usd(limits=limits, rate_table=c.config["rate_table"])))
+    except Exception as exc:  # noqa: BLE001 - an authority no one can read refuses, typed, before any upload
+        blockers = [f"remote_cpu_standing_authority_invalid:{type(exc).__name__}"]
+    return blockers[0] if blockers else None
+
+
 def _attempt_descriptor(c: Collector, plan: remote.RemotePlan, mode: str, attempt: int) -> tuple[dict[str, Any], Path]:
     """This attempt's sealed descriptor: the one already written, or staged and sealed now (never two)."""
 
-    job_id = job_id_for(STAGE, plan.queue_row["name"])
-    existing = sorted((c.jobs_root / "descriptors").glob(f"{job_id}-a{attempt}-*.json"))
+    existing = _sealed_descriptors(c, plan, attempt)
     if len(existing) > 1:
         raise CollectorError("remote_episode_compilation_descriptor_ambiguous")
     if existing:
@@ -277,15 +300,19 @@ def _attempt_descriptor(c: Collector, plan: remote.RemotePlan, mode: str, attemp
 
 def _dispatch(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.RemotePlan,
               attempt: int) -> dict[str, Any]:
-    descriptor, descriptor_path = _attempt_descriptor(c, plan, marker["mode"], attempt)
-    result = _allocate(c, "dispatch", descriptor_path, descriptor["attempt_id"])
-    status = str(result.get("status") or "blocked")
-    if status in {"dispatched", "already_dispatched", "awaiting_capacity", "ambiguous_dispatch_unresolved",
-                  "teardown_pending"}:
-        return {"status": status, "attempt_id": descriptor["attempt_id"]}
+    # An attempt already staged and sealed goes straight to the allocator; a new one is staged only if admitted.
+    reason = None if _sealed_descriptors(c, plan, attempt) else _admission_refusal(c, plan)
+    if reason is None:
+        descriptor, descriptor_path = _attempt_descriptor(c, plan, marker["mode"], attempt)
+        result = _allocate(c, "dispatch", descriptor_path, descriptor["attempt_id"])
+        status = str(result.get("status") or "blocked")
+        if status in {"dispatched", "already_dispatched", "awaiting_capacity", "ambiguous_dispatch_unresolved",
+                      "teardown_pending"}:
+            return {"status": status, "attempt_id": descriptor["attempt_id"]}
+        reason = next(iter(result.get("blockers") or []), "remote_cpu_dispatch_refused")
     # Refused before anything ran (or, for a failed mint, torn down by the allocator): the host compiles it.
-    reason = next(iter(result.get("blockers") or []), "remote_cpu_dispatch_refused")
-    returned = _hand_back(c, path, marker, _lease(c, descriptor["job_id"]), reason, attempts=attempt - 1)
+    returned = _hand_back(c, path, marker, _lease(c, job_id_for(STAGE, plan.queue_row["name"])), reason,
+                          attempts=attempt - 1)
     return {**returned, "status": "dispatch_refused", "blocker": reason}
 
 
@@ -349,6 +376,20 @@ def _handed_back(c: Collector, marker: Mapping[str, Any]) -> str | None:
 
 def _dispatchable(c: Collector, marker: Mapping[str, Any]) -> bool:
     return c.mode == "cloud_run" if marker["mode"] == "authoritative" else c.mode in {"cloud_run", "cloud_run_shadow"}
+
+
+def _shadow_unwanted(c: Collector, marker: Mapping[str, Any], plan: remote.RemotePlan) -> str | None:
+    """Why a shadow must not be dispatched (review I1, I2): its class's breaker is open on its commit, or, in
+    ``cloud_run``, its class already has its passes.  A hand-off is never retired here."""
+
+    if marker["mode"] != "shadow":
+        return None
+    key = remote.shadow_class(plan)
+    if remote.shadow_breaker_open(c.jobs_root, source_commit=plan.source_commit, **key):
+        return "remote_cpu_shadow_breaker_open"
+    if c.mode == "cloud_run" and remote.shadow_passes(c.jobs_root, **key) >= remote.SHADOW_PASSES_REQUIRED:
+        return "remote_cpu_shadow_class_proven"
+    return None
 
 
 # ---------------------------------------------------------------------------------------------- follow
@@ -793,7 +834,7 @@ def _compare_shadow(c: Collector, path: Path, marker: Mapping[str, Any], plan: r
         "image": plan.image, "host_environment_digest": plan.host_environment_digest,
         "worker_environment_digest": receipt["environment"]["environment_digest"],
         "cpu_class": receipt["environment"]["cpu_class"], "parity": parity, "mismatches": mismatches[:16],
-        "compared_at_epoch": c.now})
+        "source_commit": plan.source_commit, "compared_at_epoch": c.now})
     return _close(c, path, marker, lease, terminal="shadow_compared", outcome=f"shadow_parity_{parity}")
 
 
@@ -987,8 +1028,25 @@ def _finish(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str
 
     if lease["state"] in {"fallback_host", "abandoned_dispatch"}:
         _give_up(c, marker, reason=lease["outcome"] or lease["state"], attempts=lease["attempt"])
+    if marker["mode"] == "shadow" and lease["state"] != "shadow_compared":
+        _record_abandoned(c, marker, lease)
     path.unlink(missing_ok=True)
     return {"status": lease["state"], "attempt_id": lease["attempt_id"]}
+
+
+def _record_abandoned(c: Collector, marker: Mapping[str, Any], lease: Mapping[str, Any]) -> None:
+    """Review I2: a shadow that ran but was never compared is an outcome of its class on its commit, for the
+    breaker to count; one that never ran spent nothing and is none."""
+
+    record = c.jobs_root / "parity" / STAGE / f"{lease['attempt_id']}.json"
+    if record.exists() or not any(attempt["dispatch_started"] for attempt in [*lease["prior_attempts"], lease]):
+        return
+    plan = remote.RemotePlan.from_record(marker["plan"])
+    remote.record_shadow_parity(c.jobs_root, {
+        **remote.shadow_class(plan), "attempt_id": lease["attempt_id"], "queue_row": dict(plan.queue_row),
+        "worker_environment_digest": None, "parity": "abandoned", "mismatches": [],
+        "outcome": _outcome(lease["outcome"] or lease["state"]), "source_commit": plan.source_commit,
+        "compared_at_epoch": c.now})
 
 
 def _after_expiry(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.RemotePlan,
@@ -999,7 +1057,7 @@ def _after_expiry(c: Collector, path: Path, marker: Mapping[str, Any], plan: rem
         return {"status": "expired", "blocker": "remote_cpu_compute_zero_unproven"}
     lease = _lease(c, lease["job_id"])
     if (_handed_back(c, marker) is None and _dispatchable(c, marker) and lease["attempt"] < c.config["max_attempts"]
-            and plan.source_commit == c.source_commit):
+            and plan.source_commit == c.source_commit and _shadow_unwanted(c, marker, plan) is None):
         return _dispatch(c, path, marker, plan, lease["attempt"] + 1)
     _give_up(c, marker, reason=lease["outcome"] or "remote_cpu_attempts_exhausted", attempts=lease["attempt"])
     return _close(c, path, marker, lease, terminal="fallback_host")
@@ -1015,6 +1073,7 @@ def _advance(c: Collector, path: Path, marker: Mapping[str, Any]) -> dict[str, A
             retired = "remote_cpu_mode_rolled_back"
         if retired is None and plan.source_commit != c.source_commit:
             retired = "remote_cpu_release_changed"
+        retired = retired or _shadow_unwanted(c, marker, plan)
         if retired is not None:
             prior = 0 if lease is None else sum(attempt["dispatch_started"] for attempt in lease["prior_attempts"])
             return _hand_back(c, path, marker, lease, retired, attempts=prior)
@@ -1065,10 +1124,11 @@ def _typed(exc: BaseException) -> str:
 
 def _parity_counts(c: Collector) -> dict[str, dict[str, int]]:
     counts: dict[str, dict[str, int]] = {}
+    outcomes = ("passed", "failed", "inconclusive", "abandoned")
     for record_path in sorted((c.jobs_root / "parity" / STAGE).glob("*.json")):
         record = _read_json(record_path) or {}
-        klass = counts.setdefault(str(record.get("closure_class")), {"passed": 0, "failed": 0, "inconclusive": 0})
-        klass[record["parity"] if record.get("parity") in {"passed", "inconclusive"} else "failed"] += 1
+        klass = counts.setdefault(str(record.get("closure_class")), dict.fromkeys(outcomes, 0))
+        klass[record["parity"] if record.get("parity") in outcomes else "failed"] += 1
     return counts
 
 
@@ -1085,8 +1145,11 @@ def _each_marker(c: Collector, step: Callable[[Path, Mapping[str, Any]], dict[st
 
 
 def _start_summary(c: Collector, blockers: list[str]) -> None:
+    execution = {"requested": c.execution.get("requested"), "effective": c.mode, "reason": c.execution.get("reason"),
+                 "findings": list(c.execution.get("findings") or [])}
     c.summary = {"schema_version": SUMMARY_SCHEMA_VERSION, "stage": STAGE, "mode": c.mode, "observed_at_epoch": c.now,
-                 "rows": {}, "drift": 0, "teardown_unproven": 0, "orphans_cancelled": 0, "blockers": list(blockers)}
+                 "execution_mode": execution, "rows": {}, "drift": 0, "teardown_unproven": 0, "orphans_cancelled": 0,
+                 "blockers": list(blockers)}
 
 
 def _write_summary(c: Collector) -> dict[str, Any]:
@@ -1145,8 +1208,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-commit")
     parser.add_argument("--jobs-root", default=os.getenv(remote.JOBS_ROOT_ENV, remote.DEFAULT_JOBS_ROOT))
     args = parser.parse_args(argv)
-    mode, findings = remote.execution_mode()
-    config, blockers = allocator.load_remote_cpu_config()
+    execution = remote.resolve_execution_mode()
+    mode, findings = execution["effective"], execution["findings"]
+    try:
+        config, blockers = allocator.load_remote_cpu_config()
+    except Exception as exc:  # noqa: BLE001 - verdict 7: a config no loader can validate is no provider: drain
+        config, blockers = {}, [f"remote_cpu_config_invalid:{type(exc).__name__}"]
     runtime = allocator.RemoteCpuRuntime()
     blockers = blockers or allocator._connect(runtime, config)
     if not args.source_commit:
@@ -1155,7 +1222,7 @@ def main(argv: list[str] | None = None) -> int:
     collector = Collector(
         runtime=runtime, config=config, jobs_root=Path(args.jobs_root),
         queue_root=Path(os.environ[QUEUE_ROOT_ENV]), outputs_root=Path(os.environ[OUTPUT_ROOT_ENV]),
-        source_commit=args.source_commit or "", mode=mode, allocate=subprocess_allocate,
+        source_commit=args.source_commit or "", mode=mode, execution=execution, allocate=subprocess_allocate,
         stage_release=lambda store, commit: publish_release_source(repository=repository, source_commit=commit,
                                                                    client=store[0], bucket=store[1]),
         disk_reservation_root=Path(os.environ["BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"])

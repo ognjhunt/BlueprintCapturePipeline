@@ -698,8 +698,10 @@ def test_preflight_probe_is_a_granted_leased_and_torn_down_attempt(tmp_path: Pat
     recorded = json.loads((world.root / "environment" / "episode_compilation.json").read_text(encoding="utf-8"))
     assert (recorded["environment_digest"], recorded["image"], recorded["probe_attempt_id"]) == (
         worker["environment_digest"], IMAGE, probe["attempt_id"])
+    # The CPU class is recorded, and compared by nothing but an inline NuRec descriptor (plan 14 §5).
     assert recorded["parity"] == {"python_version_info": True, "golden_deflate": True, "golden_simd": True,
-                                  "distributions": True, "cpu_class": False}
+                                  "distributions": True}
+    assert recorded["cpu_class"] == worker["cpu_class"] != HOST_RECORD["cpu_class"]
     dispatched = world.run("dispatch", descriptor=world.descriptor(environment_digest=worker["environment_digest"]))
     assert dispatched["status"] == "dispatched"
 
