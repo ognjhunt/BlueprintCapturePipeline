@@ -10,32 +10,35 @@ from pathlib import Path
 import pytest
 
 from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
-from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_birth import birth
+from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_offload import expired_completed_evidence  # noqa: F401
 from tests.test_registered_experiment_retirement_flow import (  # noqa: F401
-    retirement_installation,
-    _issue_action,
-    _gc,
     _current_entry,
+    _gc,
+    _issue_action,
+    retirement_installation,
 )
 
 
 @pytest.mark.slow
-def test_actual_4096_member_expiry_reaches_gc_without_widening_native_budget(
+def test_actual_4096_member_unsealed_expiry_is_kept_without_widening_native_budget(
     retirement_installation, monkeypatch
 ):
     from blueprint_pipeline import control_plane_lane_experiment_work as work
-    from blueprint_pipeline import control_plane_lane_scratch as scratch
+    from tests.test_registered_experiment_retirement_flow import _payload_snapshot
 
     setup = retirement_installation
     grant = issue(setup)
     born = birth(setup, grant)
     target = Path(born["path"])
-    lease = (target / scratch.LEASE_FILE).read_bytes()
-    inode = target.stat().st_ino
     for number in range(4096):
         (target / f"m-{number:04d}").write_bytes(b"")
+    before = _payload_snapshot(target)
+    entry = _current_entry(setup, grant["intent_id"])
+    assert entry["state"] == "active" and entry["completion"] is None
+    records = {path.relative_to(setup[2]): path.read_bytes()
+               for path in setup[2].rglob("*") if path.is_file()}
     peaks = []
     original = work._ActionFiles.slot
 
@@ -44,18 +47,18 @@ def test_actual_4096_member_expiry_reaches_gc_without_widening_native_budget(
         return original(self)
 
     monkeypatch.setattr(work._ActionFiles, "slot", observed)
-    action = _issue_action(setup, grant)
-    report = _gc(setup)
-    outcome = next(
-        value
-        for value in report["registered_experiments"]["outcomes"]
-        if value["action_id"] == action["action_id"]
-    )
-    assert outcome["decision"] == "retired", outcome
-    assert len(list(target.iterdir())) == 2
-    assert target.stat().st_ino == inode
-    assert (target / scratch.LEASE_FILE).read_bytes() == lease
-    assert _current_entry(setup, grant["intent_id"])["state"] == "retired"
+    # Expiry and a large member inventory do not supply a producer seal. This
+    # exercises refusal with native budgets, not positive deletion throughput.
+    with pytest.raises(ValueError, match="^experiment_producer_completion_missing$"):
+        _issue_action(setup, grant)
+    assert {path.relative_to(setup[2]): path.read_bytes()
+            for path in setup[2].rglob("*") if path.is_file()} == records
+    phase = _gc(setup)["registered_experiments"]
+    assert phase["enabled"] is True and phase["outcomes"] == []
+    assert len(list(target.iterdir())) == 4098
+    assert _payload_snapshot(target) == before
+    assert _current_entry(setup, grant["intent_id"]) == entry
+    assert entry["generation"] == born["generation"]
     assert peaks and max(peaks) < 128
 
 
@@ -94,6 +97,7 @@ def test_actual_4096_evidence_offload_restores_under_same_store_and_fd_limits(
     monkeypatch.setattr(work._ActionFiles, "slot", observed)
     from functools import partial
     from types import SimpleNamespace
+
     from blueprint_pipeline import control_plane_disk_budget as disk
     from blueprint_pipeline import control_plane_lane_experiment_restore as restoration
 
