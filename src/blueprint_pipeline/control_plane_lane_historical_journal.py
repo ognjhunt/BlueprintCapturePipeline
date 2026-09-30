@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import stat
 from pathlib import Path
 
 from . import control_plane_lane_historical_authority as authority
@@ -97,6 +98,14 @@ class HistoricalActionJournal:
             for entry in stream:
                 self.files.budget.charge('entries')
                 match = _EVENT_NAME.fullmatch(entry.name)
+                if entry.name == 'restore.snapshot.json':
+                    _require(self.scope['action'] == 'restore', 'store_unsafe')
+                    info = os.stat(entry.name, dir_fd=self.directory, follow_symlinks=False)
+                    owners._protected(info, mode=0o600)
+                    _require(0 < info.st_size <= generation.MAX_MANIFEST_BYTES, 'store_unsafe')
+                    size += info.st_size
+                    _require(size <= MAX_JOURNAL_BYTES, 'store_full')
+                    continue
                 _require(match and count < MAX_EVENTS, 'store_unsafe')
                 info = os.stat(entry.name, dir_fd=self.directory, follow_symlinks=False)
                 owners._protected(info, mode=0o600)
@@ -213,6 +222,38 @@ class HistoricalActionJournal:
         count, size = self._count, self._size
         _require(count < MAX_EVENTS and size <= MAX_JOURNAL_BYTES - MAX_EVENT_BYTES, 'store_full')
         return self._publish(kind, body, count, previous)
+
+    def publish_restore_snapshot(self, snapshot):
+        """Retain an actual private restored inventory; this grants no access."""
+        self._load()
+        _require(self.scope['action'] == 'restore' and type(snapshot) is dict
+            and snapshot.get('schema_version') == 'control_plane_historical_generation.v1'
+            and snapshot.get('target_path') == self.scope['target_path']
+            and snapshot.get('execution_authorized') is False
+            and snapshot.get('generation_digest') == canonical_digest(snapshot, digest_field='generation_digest')
+            and snapshot['members'][0]['version'][2:5] == [stat.S_IFDIR | 0o700, 0, 0], 'snapshot_invalid')
+        raw = owners._encoded(snapshot, self.files.budget, cap=generation.MAX_MANIFEST_BYTES)
+        _require(self._size + len(raw) <= MAX_JOURNAL_BYTES, 'store_full')
+        _publish(self.files, self.directory, 'restore.snapshot.json', raw, kind='historical_restore_snapshot')
+        self._namespace = owners._metadata(os.fstat(self.directory))
+        self._size += len(raw)
+        selector = authority._selector(raw)
+        _require(self.read_restore_snapshot(selector) == snapshot, 'changed')
+        return selector
+
+    def read_restore_snapshot(self, selector):
+        self._load()
+        _require(self.scope['action'] == 'restore', 'snapshot_invalid')
+        raw, record = self.files.read(self.root / 'restore.snapshot.json',
+            cap=generation.MAX_MANIFEST_BYTES, protected=True, mode=0o600)
+        _require(authority._selector(raw) == selector, 'snapshot_changed')
+        value = retained._document(raw, generation.MAX_MANIFEST_BYTES, _work_budget=self.files.budget)
+        _require(type(value) is dict and value.get('execution_authorized') is False
+            and value.get('target_path') == self.scope['target_path']
+            and value.get('generation_digest') == canonical_digest(value, digest_field='generation_digest'),
+            'snapshot_changed')
+        self.files.verify_record(record)
+        return value
 
 
 class HistoricalJournalObservation:

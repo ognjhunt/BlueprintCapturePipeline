@@ -11,18 +11,74 @@ from . import control_plane_disk_ledger as ledger
 from . import control_plane_lane_experiment_archive as transport
 from . import control_plane_lane_historical_authority as authority
 from . import control_plane_lane_historical_generation as generation
+from . import control_plane_lane_historical_archive as archive
 from . import control_plane_lane_scratch_decisions as encoding
 from .control_plane_disk_budget import reserve_control_plane_disk
 from .control_plane_lane_historical_fence import _HistoricalGenerationFence
 from .control_plane_lane_historical_restore_archive import extract_preserved_members
 from .control_plane_lane_historical_restore_tree import RestoreTree
+from .control_plane_lane_historical_restore_snapshot import after_reopen
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
+
+
+def _completed_restore(worker, events, roots, monotonic):
+    """Fresh full readback; no publication, reservation or incremental credit."""
+    manifest, decision = worker.selected[2], worker.selected[1]
+    finals = [event for event in events if event['kind'] == 'restore_final']
+    accesses = [event for event in events if event['kind'] == 'access_reopened']
+    generation._require(len(finals) == len(accesses) == 1 and accesses[0] == events[-1]
+        and finals[0]['sequence'] < accesses[0]['sequence'], 'restore_incomplete')
+    receipt, access = finals[0]['body'], accesses[0]['body']
+    files = [row for row in manifest['members'] if row['kind'] == 'file']
+    generation._require(receipt.get('status') == 'completed' and receipt.get('action') == 'restore'
+        and receipt.get('action_id') == worker.action_id and receipt.get('owner') == decision['owner']
+        and receipt.get('generation_digest') == manifest['generation_digest']
+        and receipt.get('original_manifest') == decision['manifest']
+        and receipt.get('original_final_event_digest') == decision['final_event_digest']
+        and receipt.get('archive_sha256') == decision['archive']['sha256']
+        and receipt.get('archive_size_bytes') == decision['archive']['size_bytes']
+        and receipt.get('restored_files') == len(files)
+        and receipt.get('restored_logical_bytes') == sum(row['size_bytes'] for row in files)
+        and receipt.get('fresh_disk_reservation') is True
+        and receipt.get('owner_access_reopened') is False
+        and access.get('phase') == 'owner_rights_observed' and access.get('path') == '', 'restore_final_invalid')
+    members = [event['body'] for event in events if event['kind'] == 'restore_member']
+    by_path = {row['path']: row for row in members}
+    generation._require(len(members) == len(files)
+        and set(by_path) == {row['path'] for row in files}
+        and all(by_path[row['path']]['sha256'] == row['sha256']
+                    and by_path[row['path']]['size_bytes'] == row['size_bytes'] for row in files),
+        'restore_final_invalid')
+    with worker.checkpoint(journal=True) as (_, _, journal):
+        snapshot = journal.read_restore_snapshot(receipt.get('restored_snapshot'))
+        generation._require(snapshot['members'][0]['version'] == receipt.get('protected_root_version')
+            and snapshot['root_version'] == decision['parent_version']
+            and all(row['version'][:2] == by_path[row['path']]['version'][:2]
+                    for row in snapshot['members'] if row['kind'] == 'file'), 'restore_snapshot_changed')
+    expected = after_reopen(manifest, snapshot, access.get('version'))
+    def guard():
+        with worker.checkpoint(journal=True):
+            generation.verify_historical_member_versions(expected, tick=worker.operation.remaining)
+    guard()
+    with worker.checkpoint(journal=True) as (files, config, _):
+        client, bucket = transport._client(files, config)
+    archive.verify_preservation(decision['archive'], client, bucket, guard, origin=worker.operation.started)
+    observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+    generation._require(observed == expected, 'restore_snapshot_changed')
+    guard()
+    return dict(status='completed', action='restore', action_id=worker.action_id, owner=decision['owner'],
+        generation_digest=manifest['generation_digest'], idempotent=True, owner_access_reopened=True,
+        original_restore_final_event_digest=finals[0]['event_digest'], root_version=access['version'],
+        restored_files=0, restored_logical_bytes=0, root_directory_retained=True)
 
 
 def run_restore(worker, roots, monotonic):
     operation = worker.operation
     manifest, decision = worker.selected[2], worker.selected[1]
     events = worker.replay()
+    if any(event['kind'] == 'restore_final' for event in events):
+        return _completed_restore(worker, events, roots, monotonic)
     generation._require(len(events) == 1 and events[0]['kind'] == 'intent', 'restore_recovery_required')
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
         max_seconds=operation.remaining(), monotonic=monotonic)
@@ -75,11 +131,21 @@ def run_restore(worker, roots, monotonic):
                 tree.owner_rights()
                 tree.verify_bytes(staged=False)
                 guard()
+                snapshot = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+                    max_seconds=operation.remaining(), monotonic=monotonic)
+                generation._require(all(row['version'] == held.versions[row['path']]
+                    for row in snapshot['members']) and len(snapshot['members']) == len(manifest['members']),
+                    'restore_snapshot_changed')
+                with worker.checkpoint(journal=True) as (_, _, journal):
+                    held.verify()
+                    generation.verify_historical_member_versions(snapshot, tick=operation.remaining)
+                    selected_snapshot = journal.publish_restore_snapshot(snapshot)
                 receipt = dict(status='completed', action='restore', action_id=worker.action_id,
                     owner=decision['owner'], generation_digest=manifest['generation_digest'],
                     original_manifest=decision['manifest'], original_final_event_digest=decision['final_event_digest'],
                     fresh_disk_reservation=True, **extracted, root_directory_retained=True,
-                    protected_root_version=held.versions[''], owner_access_reopened=False)
+                    protected_root_version=held.versions[''], restored_snapshot=selected_snapshot,
+                    owner_access_reopened=False)
                 worker.record('restore_final', receipt)
                 tree.reopen()
                 outcome = 'completed'

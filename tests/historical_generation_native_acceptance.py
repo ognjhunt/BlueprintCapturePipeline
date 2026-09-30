@@ -434,6 +434,12 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
             kinds = [event['kind'] for event in restore_events]
             assert kinds.index('restore_final') < kinds.index('access_reopened')
             assert sum(kind == 'restore_member' for kind in kinds) == len(original)
+            restore_before = {path.name: path.read_bytes() for path in (journals / restore['action_id']).iterdir()}
+            restore_again = _launch_worker(entry, restore['action_id'], target, journals, restore=True)
+            assert restore_again['idempotent'] is True and restore_again['owner_access_reopened'] is True
+            assert restore_again['restored_files'] == 0 and restore_again['restored_logical_bytes'] == 0
+            assert {path.name: path.read_bytes() for path in (journals / restore['action_id']).iterdir()} == restore_before
+            assert all((target / name).read_bytes() == value for name, value in original.items())
         # A completed receipt never adopts a rewritten or repopulated tombstone.
         _write(target / 'changed-after-final', b'keep changed bytes')
         changed = _launch_worker(entry, action_id, target, journals, expected='failed')

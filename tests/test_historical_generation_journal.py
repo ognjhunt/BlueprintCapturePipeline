@@ -217,3 +217,39 @@ def test_past_journal_observation_cannot_create_missing_history(historical_insta
         with pytest.raises((ValueError, OSError)):
             HistoricalJournalObservation(files, config, selected, operation)
     assert not (provision(historical_installation) / approved['action_id']).exists()
+
+
+def test_restore_snapshot_is_private_immutable_metadata_not_an_extra_event(historical_installation):
+    from blueprint_pipeline import control_plane_lane_historical_generation as generation
+    historical_installation[1].chmod(0o700)
+    approved = decision(historical_installation, packet(historical_installation))
+    snapshot = generation.inventory_historical_generation(historical_installation[1],
+        allowed_roots=(historical_installation[1].parent,))
+    def publish(journal):
+        # Exercise only the metadata protocol. This local scope projection is
+        # not a protected restore decision and grants no worker execution.
+        journal.scope = dict(journal.scope, action='restore')
+        head = journal.head
+        selected = journal.publish_restore_snapshot(snapshot)
+        assert journal.read_restore_snapshot(selected) == snapshot
+        assert journal.head == head
+        count, _ = journal._scan()
+        assert count == 1
+        before = (journal.root / 'restore.snapshot.json').read_bytes()
+        with pytest.raises(ValueError):
+            journal.publish_restore_snapshot(snapshot)
+        assert (journal.root / 'restore.snapshot.json').read_bytes() == before
+        return selected
+    selected = journal_call(historical_installation, approved, publish)
+    assert selected['size_bytes'] > 0
+
+
+def test_snapshot_cannot_be_inserted_in_a_delete_journal(historical_installation):
+    from blueprint_pipeline import control_plane_lane_historical_generation as generation
+    approved = decision(historical_installation, packet(historical_installation))
+    snapshot = generation.inventory_historical_generation(historical_installation[1],
+        allowed_roots=(historical_installation[1].parent,))
+    with pytest.raises(ValueError, match='journal_snapshot_invalid'):
+        journal_call(historical_installation, approved, lambda journal: journal.publish_restore_snapshot(snapshot))
+    directory = provision(historical_installation) / approved['action_id']
+    assert not (directory / 'restore.snapshot.json').exists()
