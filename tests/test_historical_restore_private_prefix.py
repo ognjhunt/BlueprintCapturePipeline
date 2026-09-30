@@ -92,3 +92,19 @@ def test_partial_or_unlogged_kernel_effects_cannot_be_adopted(historical_install
     observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
     with pytest.raises(ValueError, match='restore_stage_changed'):
         validate(values)
+
+
+def test_unwritten_retry_reservation_does_not_turn_old_absent_root_intent_into_birth(historical_installation):
+    values = prefix(historical_installation, member=True)
+    events, action_id = values[3], values[4]
+    pending = dict(kind='restore_intent', body=dict(phase='directory', path='',
+        stage_path='.historical-restore-' + action_id))
+    events[:0] = [pending, dict(kind='restore_intent', body=dict(phase='reservation')), copy.deepcopy(pending)]
+    before = copy.deepcopy(values)
+    assert validate(values) == {'', values[0]['members'][1]['path']}
+    assert values == before
+    # Removing the actual later root birth still leaves an unlogged root;
+    # reservation and repeated old intent do not prove it was created by us.
+    events.pop(3)
+    with pytest.raises(ValueError, match='restore_stage_changed'):
+        validate(values)
