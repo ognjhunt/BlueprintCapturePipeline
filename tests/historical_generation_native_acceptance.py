@@ -85,13 +85,13 @@ def worker_main(root, action_id):
     interruption = root / 'interrupt-once'
     if interruption.exists():
         phase = interruption.read_text()
-        if phase == 'fenced':
+        if phase in ('fenced', 'removed'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
                 original_record(self, kind, body)
-                if kind == 'fenced':
-                    raise RuntimeError('fixture_interrupted_after_fenced')
+                if kind == phase:
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
             _Worker.record = record
         elif phase == 'chown':
             original_chown = os.fchown
@@ -102,6 +102,13 @@ def worker_main(root, action_id):
                 if (observed.st_dev, observed.st_ino) == (target.st_dev, target.st_ino):
                     raise RuntimeError('fixture_interrupted_after_chown')
             os.fchown = chown
+        elif phase == 'unlink':
+            original_unlink = os.unlink
+            def unlink(name, *, dir_fd=None):
+                original_unlink(name, dir_fd=dir_fd)
+                if name == 'two.log':
+                    raise RuntimeError('fixture_interrupted_after_unlink')
+            os.unlink = unlink
         else:
             raise AssertionError('unknown fixture interruption')
     try:
@@ -241,20 +248,31 @@ def connected_delete(interruption=None):
             _write(root / 'interrupt-once', interruption.encode())
             interrupted = _launch_worker(entry, action_id, target, journals, expected='failed')
             assert interrupted['code'] == 'fixture_interrupted_after_' + interruption
-            assert all((target / path).read_bytes() == raw for path, raw in original.items())
+            expected_paths = set(original) - ({'nested/two.log'} if interruption in ('removed', 'unlink') else set())
+            assert all((target / path).read_bytes() == original[path] for path in expected_paths)
+            if interruption in ('removed', 'unlink'):
+                assert not (target / 'nested/two.log').exists()
             assert target.stat().st_uid == 0
             initial = [path.read_bytes() for path in sorted((journals / action_id).glob('e-*.json'))]
             head = json.loads(initial[-1])
-            assert head['kind'] == ('fenced' if interruption == 'fenced' else 'fence_intent')
+            assert head['kind'] == {'fenced': 'fenced', 'chown': 'fence_intent',
+                                   'removed': 'removed', 'unlink': 'removal_intent'}[interruption]
             (root / 'interrupt-once').unlink()
         receipt = _launch_worker(entry, action_id, target, journals)
-        assert receipt['removed_files'] == 2 and receipt['removed_directories'] == 1
-        assert receipt['logical_bytes'] == sum(map(len, original.values()))
+        assert receipt['removed_files'] == (1 if interruption == 'unlink' else 2) and receipt['removed_directories'] == 1
+        assert receipt['logical_bytes'] == sum(map(len, original.values())) - (len(original['nested/two.log']) if interruption == 'unlink' else 0)
+        assert receipt['uncertain_removed_allocated_bytes'] == 0
+        if interruption:
+            assert receipt['uncertain_removed_members'] == int(interruption == 'unlink')
         assert receipt['root_directory_retained'] is True and not list(target.iterdir())
         assert target.stat().st_uid == 0 and target.stat().st_mode & 0o777 == 0o700
         events = [json.loads(path.read_bytes()) for path in sorted((journals / action_id).glob('e-*.json'))]
         assert events[-1]['kind'] == 'final' and events[-1]['body'] == receipt
-        assert len([event for event in events if event['kind'] == 'removed']) == 3
+        assert len([event for event in events if event['kind'] == 'removed']) == (2 if interruption == 'unlink' else 3)
+        uncertain = [event for event in events if event['kind'] == 'removal_uncertain']
+        assert len(uncertain) == int(interruption == 'unlink')
+        assert all(event['body']['observed_removed_allocated_bytes'] == 0 for event in uncertain)
+        assert receipt['observed_removed_allocated_bytes'] == sum(event['body']['observed_removed_allocated_bytes'] for event in events if event['kind'] == 'removed')
         assert all(events[index]['previous_event_digest'] == events[index - 1]['event_digest']
                    for index in range(1, len(events)))
         if interruption:
@@ -283,8 +301,11 @@ def connected_delete_recovery():
     connected_delete()
     connected_delete('fenced')
     connected_delete('chown')
+    connected_delete('removed')
+    connected_delete('unlink')
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
-                historical_delete_idempotent=True, original_fence_recovered=True)
+                historical_delete_idempotent=True, original_fence_recovered=True,
+                interrupted_removal_recovered=True, uncertain_removal_credit_zero=True)
 
 
 if __name__ == '__main__':

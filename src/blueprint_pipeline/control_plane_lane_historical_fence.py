@@ -181,6 +181,14 @@ class _HistoricalGenerationFence:
                     _require(names == self.children[relative], 'fence_changed')
                 guard()
 
+    def sync_directory(self, relative):
+        """Durably reconcile the last uncertain dentry without payload effects."""
+        _require(relative in self.rows and self.rows[relative]['kind'] == 'directory', 'fence_changed')
+        with self._opened(relative) as (fd, guard):
+            guard()
+            os.fsync(fd)
+            guard()
+
     def revoke(self, *, before_change, record, completed=frozenset(), pending=None):
         """Root first, then every original descendant; never unlink or clear FDs.
 
@@ -217,7 +225,7 @@ class _HistoricalGenerationFence:
                 record('fenced', dict(path=relative, version=list(self.versions[relative])))
         self.verify()
 
-    def remove_members(self, *, before_change, record):
+    def remove_members(self, *, before_change, record, pending=None):
         """Internal delete: fresh caller-held authority, intent, exact unlink.
 
         Preserve the named root as a protected tombstone. Every completed row
@@ -250,8 +258,9 @@ class _HistoricalGenerationFence:
                 else:
                     with os.scandir(fd) as entries:
                         _require(next(entries, None) is None, 'fence_changed')
-                record('removal_intent', dict(path=relative, kind=row['kind'], version=original,
-                    sha256=row['sha256'], size_bytes=row['size_bytes']))
+                if relative != pending:
+                    record('removal_intent', dict(path=relative, kind=row['kind'], version=original,
+                        sha256=row['sha256'], size_bytes=row['size_bytes']))
                 with self._opened(parent_path) as (parent, parent_guard):
                     with before_change():
                         guard()

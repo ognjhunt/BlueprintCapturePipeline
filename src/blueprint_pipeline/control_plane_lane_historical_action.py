@@ -20,7 +20,7 @@ from .control_plane_lane_historical_journal import HistoricalActionJournal, jour
 from .control_plane_lane_historical_unit import prove_historical_unit
 from .control_plane_lane_historical_references import historical_reference_fence
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
-from .control_plane_lane_historical_recovery import recover_fence
+from .control_plane_lane_historical_recovery import recover_action
 
 
 def _require(value, code):
@@ -161,7 +161,7 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
         max_seconds=operation.remaining(), monotonic=monotonic)
     if events is not None:
-        recovered = recover_fence(manifest, events, observed)
+        recovered = recover_action(manifest, events, observed)
     else:
         _require(observed == manifest, 'generation_changed')
     with worker.checkpoint(journal=True) as (_, _, journal):
@@ -179,10 +179,28 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
                     pending=recovered['pending'] if recovered else None)
                 with worker.mutation_authority(readers=True):
                     held.verify()
+                if recovered and recovered['reconcile'] is not None:
+                    # The exact last intent names an absent original member.
+                    # Record that uncertainty durably under fresh gates without
+                    # claiming freed bytes or performing another payload effect.
+                    with worker.mutation_authority(readers=True):
+                        held.verify()
+                        held.sync_directory(recovered['reconcile']['parent_path'])
+                    worker.record('removal_uncertain', recovered['reconcile'])
                 _require(worker.selected[1]['action'] == 'delete', 'preservation_required')
                 def removal_authority():
                     return worker.mutation_authority(readers=True)
-                outcome = held.remove_members(before_change=removal_authority, record=worker.record)
+                outcome = held.remove_members(before_change=removal_authority, record=worker.record,
+                    pending=recovered['pending_removal'] if recovered else None)
+                if recovered:
+                    original = {row['path']: row for row in manifest['members']}
+                    for name in recovered['removed']:
+                        row = original[name]
+                        outcome['removed_files'] += int(row['kind'] == 'file')
+                        outcome['removed_directories'] += int(row['kind'] == 'directory')
+                        outcome['logical_bytes'] += row['size_bytes']
+                    outcome['observed_removed_allocated_bytes'] += recovered['prior_observed_removed_allocated_bytes']
+                    outcome['uncertain_removed_members'] = len(recovered['uncertain'])
                 receipt = dict(status='completed', action='delete', action_id=action_id,
                     owner=worker.selected[1]['owner'], generation_digest=manifest['generation_digest'],
                     original_manifest=worker.selected[1]['manifest'], **outcome)
