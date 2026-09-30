@@ -11,11 +11,14 @@ output pointer, the pin, the result, the row move; then staging deletion and pro
 teardown and the lease's terminal state, which frees the capacity slot.
 
 An infrastructure failure gets one fresh attempt once the failed one is compute-zero; then, or after a
-refused dispatch, the row goes back to the no-spend unit as a fallback marker.  A shadow attempt compares
-the worker's result and output with the host's, records parity for its closure class and lands nothing;
-it is the same whether ``cloud_run_shadow`` or a self-progressing ``cloud_run`` wrote its marker.  In
-``host`` mode (an unset flag without this stage's config included) the unit only drains: it collects what
-already runs and returns undispatched hand-offs.  ``summary.json`` says which mode a run was in and why.
+refused dispatch, the row goes back to the no-spend unit as a fallback marker.  So does a hand-off whose
+class the planner's own gates now refuse (its breaker open on its commit, or its passes gone), asked again
+before the first dispatch and before a retry; an attempt already started runs on to its teardown.  A
+shadow attempt compares the worker's result and output with the host's, records parity for its closure
+class and lands nothing; it is the same whether ``cloud_run_shadow`` or a self-progressing ``cloud_run``
+wrote its marker.  In ``host`` mode (an unset flag without this stage's config included) the unit only
+drains: it collects what already runs and returns undispatched hand-offs.  ``summary.json`` says which
+mode a run was in and why.
 """
 
 from __future__ import annotations
@@ -378,16 +381,19 @@ def _dispatchable(c: Collector, marker: Mapping[str, Any]) -> bool:
     return c.mode == "cloud_run" if marker["mode"] == "authoritative" else c.mode in {"cloud_run", "cloud_run_shadow"}
 
 
-def _shadow_unwanted(c: Collector, marker: Mapping[str, Any], plan: remote.RemotePlan) -> str | None:
-    """Why a shadow must not be dispatched (review I1, I2): its class's breaker is open on its commit, or, in
-    ``cloud_run``, its class already has its passes.  A hand-off is never retired here."""
+def _class_refusal(c: Collector, marker: Mapping[str, Any], plan: remote.RemotePlan) -> str | None:
+    """Why a waiting marker must not be dispatched now (review I1, I2): the planner's own class gates, asked again
+    before a first dispatch and before a retry, since a class's outcomes can move while its markers wait.  Its
+    class's breaker is open on its commit; a hand-off's class is no longer proven, so the planner would not hand
+    it off now; or, in ``cloud_run``, a shadow's class already has its passes.  A started attempt is never asked."""
 
-    if marker["mode"] != "shadow":
-        return None
     key = remote.shadow_class(plan)
     if remote.shadow_breaker_open(c.jobs_root, source_commit=plan.source_commit, **key):
         return "remote_cpu_shadow_breaker_open"
-    if c.mode == "cloud_run" and remote.shadow_passes(c.jobs_root, **key) >= remote.SHADOW_PASSES_REQUIRED:
+    proven = remote.shadow_passes(c.jobs_root, **key) >= remote.SHADOW_PASSES_REQUIRED
+    if marker["mode"] == "authoritative" and not proven:
+        return "remote_cpu_shadow_parity_unproven"
+    if marker["mode"] == "shadow" and c.mode == "cloud_run" and proven:
         return "remote_cpu_shadow_class_proven"
     return None
 
@@ -1051,15 +1057,21 @@ def _record_abandoned(c: Collector, marker: Mapping[str, Any], lease: Mapping[st
 
 def _after_expiry(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.RemotePlan,
                   lease: dict[str, Any], descriptor: dict[str, Any]) -> dict[str, Any]:
-    """Compute-zero first; then one fresh attempt, or the host (plan 14 §10)."""
+    """Compute-zero first; then one fresh attempt, or the host (plan 14 §10).  A retry is gated as a first dispatch
+    is: when its class now refuses it, the row goes back for that reason, and the expired attempt keeps its own
+    outcome and is torn down as before."""
 
     if not _compute_zero(c, lease, descriptor):
         return {"status": "expired", "blocker": "remote_cpu_compute_zero_unproven"}
     lease = _lease(c, lease["job_id"])
+    refused = None
     if (_handed_back(c, marker) is None and _dispatchable(c, marker) and lease["attempt"] < c.config["max_attempts"]
-            and plan.source_commit == c.source_commit and _shadow_unwanted(c, marker, plan) is None):
-        return _dispatch(c, path, marker, plan, lease["attempt"] + 1)
-    _give_up(c, marker, reason=lease["outcome"] or "remote_cpu_attempts_exhausted", attempts=lease["attempt"])
+            and plan.source_commit == c.source_commit):
+        refused = _class_refusal(c, marker, plan)
+        if refused is None:
+            return _dispatch(c, path, marker, plan, lease["attempt"] + 1)
+    _give_up(c, marker, reason=refused or lease["outcome"] or "remote_cpu_attempts_exhausted",
+             attempts=lease["attempt"])
     return _close(c, path, marker, lease, terminal="fallback_host")
 
 
@@ -1073,7 +1085,7 @@ def _advance(c: Collector, path: Path, marker: Mapping[str, Any]) -> dict[str, A
             retired = "remote_cpu_mode_rolled_back"
         if retired is None and plan.source_commit != c.source_commit:
             retired = "remote_cpu_release_changed"
-        retired = retired or _shadow_unwanted(c, marker, plan)
+        retired = retired or _class_refusal(c, marker, plan)
         if retired is not None:
             prior = 0 if lease is None else sum(attempt["dispatch_started"] for attempt in lease["prior_attempts"])
             return _hand_back(c, path, marker, lease, retired, attempts=prior)

@@ -1490,7 +1490,14 @@ that are not passes, on one class and one `source_commit`, open the class's
 breaker in both remote modes: its rows compile on the host with no plan
 (`remote_ineligible:shadow_breaker_open:<class>`), and the paid unit retires any
 waiting shadow of it, undispatched. A pass in between, or a new commit, closes
-it. A shadow that never ran spent nothing and is no outcome.
+it. A shadow that never ran spent nothing and is no outcome. A hand-off can wait
+while its class's outcomes move (a shadow already running fails, say), so the
+paid unit asks the planner's gates again before its first dispatch and before a
+retry: a hand-off whose class's breaker is open on its commit
+(`remote_cpu_shadow_breaker_open`) or whose class no longer has its three
+passes (`remote_cpu_shadow_parity_unproven`) goes back to the host as a refused
+dispatch does, and no new attempt of it is staged or run. An attempt already
+started is never stopped for this: it runs on to its teardown.
 
 Rows never leave the four queue states. The paid unit
 (`blueprint-task-evaluation-episode-compilation-remote`) never compiles: it

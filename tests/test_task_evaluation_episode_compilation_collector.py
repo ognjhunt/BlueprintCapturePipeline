@@ -1251,6 +1251,137 @@ def test_an_undispatched_shadow_is_retired_once_its_class_needs_no_more(tmp_path
         assert len(list((world.host.jobs / "parity" / "episode_compilation").glob("*.json"))) == 3, label
 
 
+# The class's outcomes after the three passes its hand-off was planned on, and why the paid unit then refuses it.
+CLASS_REFUSALS = {
+    # Review of #2489: three failures on this commit, so no passes left and the breaker open.
+    "failed": (("failed",) * 3, "remote_cpu_shadow_breaker_open"),
+    # Neither kind breaks the passes, so the class is still proven, but three of them open the breaker.
+    "not_passed": (("inconclusive", "abandoned", "inconclusive"), "remote_cpu_shadow_breaker_open"),
+    # One failure: the breaker is closed, but the class no longer has its passes.
+    "unproven": (("failed",), "remote_cpu_shadow_parity_unproven"),
+}
+
+
+@pytest.mark.parametrize("history", sorted(CLASS_REFUSALS))
+def test_a_queued_hand_off_goes_back_once_its_class_breaks_or_loses_its_proof(tmp_path: Path, monkeypatch,
+                                                                              history: str) -> None:
+    """A hand-off waits between the no-spend unit's plan and the paid unit's dispatch, and its class's outcomes can
+    move meanwhile (a shadow of it already running fails, say).  Before the first dispatch the paid unit asks the
+    planner's own gates again: a hand-off whose class's breaker is now open on this commit, or whose class is no
+    longer proven, goes back to the host as a refused dispatch does, with nothing staged, leased, consumed or run."""
+
+    outcomes, reason = CLASS_REFUSALS[history]
+    world = CollectorWorld(tmp_path, monkeypatch)
+    _shadow_outcomes(world, *outcomes, first=4)
+    before = set(world.store.buckets[B2_BUCKET])
+    world.collect()
+    assert world.results[-1]["rows"][world.name] == {"status": "returned_to_host", "reason": reason}
+    assert not remote.marker_path(world.host.jobs, "authoritative", world.name).exists()
+    fallback = remote.read_marker(remote.marker_path(world.host.jobs, "fallback", world.name))
+    assert (fallback["reason"], fallback["attempts"]) == (reason, 0)
+    assert (world.executions(), _consumed(world), world.lease()) == ([], [], None)
+    assert set(world.store.buckets[B2_BUCKET]) == before
+    assert not list((world.host.jobs / "descriptors").glob("*.json"))
+    assert world.row_state() == "processing"  # still claimed: the no-spend unit compiles it from the fallback
+    world.advance(120)
+    world.collect()
+    assert world.name not in world.results[-1]["rows"] and world.executions() == []
+
+
+def test_a_hand_off_whose_class_is_proven_with_its_breaker_closed_dispatches_as_before(tmp_path: Path,
+                                                                                      monkeypatch) -> None:
+    """The gates let through exactly what the planner lets through.  A class whose breaker opened on this commit,
+    closed on a pass, and which has earned its three passes again is dispatched, collected and landed as before."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    _shadow_outcomes(world, "failed", "failed", "failed", "passed", "passed", "passed", first=4)
+    world.collect()
+    assert world.results[-1]["rows"][world.name]["status"] == "dispatched"
+    _complete(world)
+    assert (world.lease()["state"], world.lease()["attempt"], world.row_state()) == ("completed", 1, "completed")
+    assert (world.host.outputs / f"{world.plan.compilation_id}.remote-output.v1.json").is_file()
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    assert len(world.executions()) == 1
+    _assert_torn_down(world)
+
+
+def test_an_attempt_already_started_when_its_class_breaks_runs_on_unaffected(tmp_path: Path, monkeypatch) -> None:
+    """Only a dispatch that has not happened is withheld.  An attempt already running when its class's breaker
+    opens and its proof goes is followed, collected, landed and torn down byte for byte as it would have been."""
+
+    root = tmp_path / "run"
+    clean = CollectorWorld(root, monkeypatch)
+    _complete(clean)
+    compilation, name = clean.plan.compilation_id, clean.name
+    expected_result = (clean.host.queue / "results" / name).read_bytes()
+    expected_tree = tree_snapshot(clean.host.outputs / compilation)
+    shutil.rmtree(root)
+    world = CollectorWorld(root, monkeypatch)
+    world.collect()
+    assert world.lease()["dispatch_started"] and world.lease()["state"] in leases.LIVE_STATES
+    _shadow_outcomes(world, "failed", "failed", "failed", first=4)
+    world.advance(60)
+    _complete(world)
+    assert (world.lease()["state"], world.lease()["attempt"], world.row_state()) == ("completed", 1, "completed")
+    assert (world.host.queue / "results" / name).read_bytes() == expected_result
+    assert tree_snapshot(world.host.outputs / compilation) == expected_tree
+    assert (world.host.outputs / f"{compilation}.remote-output.v1.json").is_file()
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    assert len(world.executions()) == 1 and len(_consumed(world)) == 1
+    _assert_torn_down(world)
+
+
+def test_a_hand_off_waiting_for_capacity_goes_back_while_its_running_class_mates_finish(tmp_path: Path,
+                                                                                       monkeypatch) -> None:
+    """A hand-off in ``awaiting_capacity`` has claimed its lease but consumed and started nothing, so it is still
+    queued: once its class breaks it goes back and its lease closes ``fallback_host`` with nothing run, while the
+    two attempts of the same class already running are followed to completion."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    running = world.add_row(label="aaa-running", marker="authoritative")
+    waiting = world.add_row(label="zzz-waiting", marker="authoritative")
+    world.collect()
+    assert [_lease_of(world, plan)["state"] in leases.LIVE_STATES for plan in (running, world.plan)] == [True, True]
+    assert _lease_of(world, waiting)["state"] == "awaiting_capacity"
+    _shadow_outcomes(world, "failed", "failed", "failed", first=4)
+    world.advance(60)
+    world.collect()
+    lease, name = _lease_of(world, waiting), waiting.queue_row["name"]
+    assert (lease["state"], lease["outcome"], lease["dispatch_started"], lease["prior_attempts"]) == (
+        "fallback_host", "remote_cpu_shadow_breaker_open", False, [])
+    assert not remote.marker_path(world.host.jobs, "authoritative", name).exists()
+    fallback = remote.read_marker(remote.marker_path(world.host.jobs, "fallback", name))
+    assert (fallback["reason"], fallback["attempts"]) == ("remote_cpu_shadow_breaker_open", 0)
+    assert (world.host.queue / "processing" / name).is_file()
+    world.drive(until=lambda: [(_lease_of(world, plan) or {}).get("state") for plan in (running, world.plan)]
+                == ["completed", "completed"], step=60)
+    assert len(world.executions()) == 2 and len(_consumed(world)) == 2 and leases.slots_in_use(world.host.jobs) == 0
+
+
+@pytest.mark.parametrize("history", ["failed", "unproven"])
+def test_a_retry_is_withheld_once_its_class_breaks_and_the_expired_attempt_is_still_torn_down(
+        tmp_path: Path, monkeypatch, history: str) -> None:
+    """A retry is a dispatch like the first.  Attempt 1 crashed, and by the time it is compute-zero its class's
+    breaker has opened or its proof has gone, so attempt 2 is never staged or run: the row goes back to the host
+    saying why, and attempt 1, which keeps its own outcome, is torn down to provider-zero and settled as before."""
+
+    outcomes, reason = CLASS_REFUSALS[history]
+    world = CollectorWorld(tmp_path, monkeypatch)
+    world.remote.jobs.script("crash")
+    world.drive(until=lambda: (world.lease() or {}).get("state") == "expired", step=30)
+    crashed = world.lease()["outcome"]
+    _shadow_outcomes(world, *outcomes, first=4)
+    _complete(world, step=300)
+    lease = world.lease()
+    assert (lease["state"], lease["attempt"], lease["outcome"]) == ("fallback_host", 1, crashed)
+    assert len(world.executions()) == 1 and len(_consumed(world)) == 1
+    assert len(list((world.host.jobs / "descriptors").glob("*.json"))) == 1
+    fallback = remote.read_marker(remote.marker_path(world.host.jobs, "fallback", world.name))
+    assert (fallback["reason"], fallback["attempts"]) == (reason, 1)
+    assert world.row_state() == "processing"
+    _assert_torn_down(world)
+
+
 def test_a_shadow_given_up_after_it_ran_is_recorded_as_abandoned(tmp_path: Path, monkeypatch) -> None:
     """Review I2: a shadow that ran but was never compared (both attempts crashed) is an outcome of its class on
     this commit, so the breaker can count it; one that never ran is not."""
