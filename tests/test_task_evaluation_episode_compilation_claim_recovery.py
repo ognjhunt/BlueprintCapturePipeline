@@ -207,3 +207,26 @@ def test_a_handed_back_row_whose_result_was_written_is_finished_not_recompiled(t
     assert not list(host.outputs.glob(f".{envelope['compilation_id']}.interrupted-*"))
     assert not remote.marker_path(host.jobs, "fallback", name).exists()
     assert not recovery.record_path(host.jobs, name).exists()
+
+
+def test_a_second_no_spend_run_never_recovers_the_first_runs_live_claim(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: recovery trusts that one run holds the queue.  A run takes the queue's lock, and another
+    run started meanwhile (a manual one, say) skips with a note rather than recover the live claim."""
+
+    import fcntl
+    import os
+
+    host = Host(tmp_path)
+    _, name = stage_compile(host)
+    host.claim(name)  # the running instance's claim, mid-compile
+    held = os.open(host.queue, os.O_RDONLY)
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        run = _run(host, _killed, now=2_000.0)
+    finally:
+        os.close(held)
+    assert (run["status"], run["reason"]) == ("skipped", "episode_compilation_no_spend_run_in_progress")
+    assert (host.queue / "processing" / name).is_file() and not recovery.record_path(host.jobs, name).exists()
+    # Once that run is gone, its claim is an orphan like any other.
+    run = _run(host, _stand_ins(monkeypatch), now=3_000.0)
+    assert run["recovered_claims"][0]["action"] == "requeued" and (host.queue / "completed" / name).is_file()

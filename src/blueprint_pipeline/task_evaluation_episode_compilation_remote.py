@@ -585,7 +585,39 @@ def _compile_fallbacks(queue: Path, jobs_root: Path, clock: Any, *, limit: int,
     return compiled, deferred
 
 
-def run_no_spend_unit(
+def run_no_spend_unit(**arguments: Any) -> dict[str, Any]:
+    """One run of the no-spend unit, which owns ``pending/`` in every mode (plan 14 §1).
+
+    It first recovers the claims a dead run left (plan 14 §10), then compiles the rows the paid unit handed
+    back; then it claims pending rows as today.  In ``host`` mode that is exactly today's queue run.  In
+    ``cloud_run`` an eligible row gets a hand-off and stays in ``processing/``, and any other compiles here;
+    in ``cloud_run_shadow`` every row compiles here and an eligible one also gets a shadow marker.  Every
+    run empties ``pending/``, so its ``PathExistsGlob`` cannot loop, and no row ever leaves the four queue
+    states.
+
+    Recovery treats every unmarked claim as a dead run's, so one run at a time holds the queue: a
+    non-blocking ``flock`` on the queue directory itself, which adds no file to the queue.  A run that
+    finds it held (a manual run beside the unit, say) skips with a note and touches nothing.
+    """
+
+    import fcntl
+
+    from .task_evaluation_scene_construction_queue import ensure_scene_construction_queue_root
+
+    held = os.open(ensure_scene_construction_queue_root(arguments["queue_root"]), os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"schema_version": RUN_SCHEMA_VERSION, "status": "skipped",
+                    "reason": "episode_compilation_no_spend_run_in_progress", "processed_count": 0, "results": [],
+                    "provider_mutation_performed": False, "paid_execution_requested": False}
+        return _no_spend_run(**arguments)
+    finally:
+        os.close(held)
+
+
+def _no_spend_run(
     *, queue_root: str | Path, input_root: str | Path, output_root: str | Path, source_commit: str,
     max_messages: int = 1, disk_reservation_root: str | Path | None = None,
     storage_pins_root: str | Path | None = None, jobs_root: str | Path = DEFAULT_JOBS_ROOT,
@@ -593,15 +625,6 @@ def run_no_spend_unit(
     cache_root: str | Path | None = None, config: Mapping[str, Any] | None = None,
     host_environment: Mapping[str, Any] | None = None, now: Any = None,
 ) -> dict[str, Any]:
-    """One run of the no-spend unit, which owns ``pending/`` in every mode (plan 14 §1).
-
-    It first recovers the claims a dead run left (plan 14 §10), then compiles the rows the paid unit handed
-    back; then it claims pending rows as today.  In ``host`` mode that is exactly today's queue run.  In ``cloud_run`` an eligible row gets a hand-off and stays in
-    ``processing/``, and any other compiles here; in ``cloud_run_shadow`` every row compiles here and an
-    eligible one also gets a shadow marker.  Every run empties ``pending/``, so its ``PathExistsGlob`` cannot
-    loop, and no row ever leaves the four queue states.
-    """
-
     import time
 
     from .task_evaluation_episode_compilation_claim_recovery import recover_interrupted_claims
