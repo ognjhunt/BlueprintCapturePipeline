@@ -15,9 +15,15 @@ from .controlled_policy_configuration import canonical_request_digest
 
 
 class CheckpointPolicyCredentialClient:
-    def __init__(self, *, request: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
+    def __init__(self, *, request: Mapping[str, Any], payload: Mapping[str, Any],
+                 pipeline_run_id: str | None = None) -> None:
         from .agent_run_executor import AgentRunWebAppClient
 
+        # This is the accepted dispatch owner, carried separately from the frozen
+        # request. Never replace it with a job ID or create a new attempt here.
+        if (not isinstance(pipeline_run_id, str) or not 1 <= len(pipeline_run_id) <= 200
+                or pipeline_run_id != pipeline_run_id.strip()):
+            raise ValueError("checkpoint_policy_credential_claim_invalid")
         self.reference = payload.get("credential_ref")
         self.kind = payload.get("credential_kind")
         if (not isinstance(self.reference, str)
@@ -40,12 +46,18 @@ class CheckpointPolicyCredentialClient:
             raise ValueError("checkpoint_policy_credential_service_not_configured")
         self.client = AgentRunWebAppClient(base_url=endpoint, token=token, timeout_seconds=60)
         self.binding = {"job_id": request["job_id"],
+            "pipeline_run_id": pipeline_run_id,
             "canonical_request_digest": canonical_request_digest(request)}
 
     def _request(self, action: str, **values: Any) -> dict[str, Any]:
-        row = self.client._json(
-            "/api/internal/pipeline/checkpoint-policy-credentials/" + self.reference,
-            method="POST", payload={**self.binding, "action": action, **values})
+        try:
+            row = self.client._json(
+                "/api/internal/pipeline/checkpoint-policy-credentials/" + self.reference,
+                method="POST", payload={**self.binding, "action": action, **values})
+        except (OSError, ValueError):
+            # The native failure receipt persists exception text. Keep transport
+            # errors and response bodies out of that receipt and worker logs.
+            raise ValueError("checkpoint_policy_credential_delivery_unavailable") from None
         if row.get("ok") is not True:
             raise ValueError("checkpoint_policy_credential_delivery_rejected")
         if action != "bind_admission" and any(row.get(k) != v for k, v in self.binding.items()):
