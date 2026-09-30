@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 
@@ -160,6 +161,12 @@ def worker_main(root, action_id):
     except BaseException as error:
         for label, facts in diagnostics[:16]:
             print(label + ':' + json.dumps(facts), flush=True)
+        frames = [dict(module=Path(frame.filename).name, function=frame.name, line=frame.lineno)
+                  for frame in traceback.extract_tb(error.__traceback__)[-8:]]
+        cause = error.__context__
+        print('ACTION_FAILURE:' + json.dumps(dict(frames=frames,
+            cause_type=type(cause).__name__ if cause is not None else None,
+            cause_errno=getattr(cause, 'errno', None))), flush=True)
         print(json.dumps(dict(status='failed', error_type=type(error).__name__, code=str(error))), flush=True)
         raise
     print(json.dumps(receipt), flush=True)

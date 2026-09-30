@@ -189,6 +189,7 @@ def _root_fixture():
             'private_fd=os.open(private,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\n'
             'native_sandbox=HistoricalNativeSandbox(target_fd,private_fd,manifest,tick=tick)\n'
             'os.close(target_fd);os.close(private_fd)\n'
+            'unit_guard.prove_historical_unit(action_id,target,private)\n'
             '# Probe open rights only: no truncation or byte mutation of the canary.\n'
             'try:\n'
             ' escaped=os.open("/proc/1/root"+neighbor,os.O_WRONLY|os.O_CLOEXEC)\n'
