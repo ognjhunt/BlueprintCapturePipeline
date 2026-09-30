@@ -11,8 +11,9 @@
 #   tests/provider_output_fixtures.py
 """Stream Quick-10 provider output behind BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY (plan 15, 15.C3).
 
-Unset, the setting means auto: stream exactly when the dedicated B2 store is configured, else
-download, with the lane result recording which and why.
+Unset, the setting means auto: stream only when promotion would accept the dedicated B2 store and
+the host has recorded a needed-set measurement within budget, else download, with the lane result
+recording which and why.
 
 The lane runs for real: staging, the Vast adapter and the watchdog are the only
 doubles. Spaces (staging) and B2 (the artifact store) are served over the real
@@ -34,6 +35,7 @@ from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
 from blueprint_pipeline import arena_provider_output_streaming as streaming
 from blueprint_pipeline import native_task_arena_paired_witness_staging as paired
 from blueprint_pipeline import native_task_arena_vast as native
+from blueprint_pipeline import policy_canary_output_members as output_members
 from blueprint_pipeline import provider_output_promotion_records as records
 from blueprint_pipeline import provider_output_range_transport as transport
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as scene_store
@@ -111,6 +113,9 @@ class Lane:
         self.events: list[str] = []
         self.adapter_calls: list[dict] = []
         self.adapter_phase_ranges: list = []
+        # The host's needed-set measurement record, redirected; none is written until a test measures.
+        self.measurement = tmp_path / "policy-canary-output" / "needed-set-measurement.v1.json"
+        monkeypatch.setattr(output_members, "MEASUREMENT_PATH", self.measurement)
         monkeypatch.setenv(streaming.RESERVATION_ROOT_ENV, str(self.ledger))
         monkeypatch.setattr(scene_store, "_artifact_object_store_client", lambda: (self.world.cas, self.world.cas.bucket))
         monkeypatch.setattr(transport, "_open_with_policy", self._route)
@@ -715,6 +720,7 @@ def test_every_lane_result_records_the_resolution_it_is_given(tmp_path, monkeypa
 @pytest.mark.parametrize("resolution", [
     {"mode": "stream", "reason": "explicit"},  # not the mode the lane runs
     {"mode": "download", "reason": "auto"},  # not a reason
+    {"mode": "download", "reason": "auto_needed_set_within_budget"},  # a reason that only explains a stream
     {"mode": "download", "reason": "explicit", "setting": "download"},  # not the record's shape
 ])
 def test_the_lane_refuses_a_resolution_that_does_not_describe_its_mode(tmp_path, monkeypatch, resolution):
@@ -726,21 +732,44 @@ def test_the_lane_refuses_a_resolution_that_does_not_describe_its_mode(tmp_path,
     assert not (tmp_path / "job").exists()
 
 
-# -- The default is auto: unset streams exactly when the B2 store is configured ------------
+# -- The default is auto: the host's measurement record, not the deploy, is the switch --------
 
 
-def test_unset_delivery_streams_when_the_b2_store_is_configured(lane):
-    """The default since 2026-09-30. The lane fixture's world configures the dedicated B2 store, so
-    a Quick-10 with the setting unset streams, exactly as an explicit ``stream`` does, and every
-    record of the run says it streamed because the store was configured."""
+def test_unset_delivery_downloads_until_the_host_records_its_needed_set(lane):
+    """Review: deploying must not be the flip. The world binds the dedicated B2 store, as the
+    production dispatcher unit does, but no measurement is recorded: an unset setting downloads,
+    exactly as today, and its lane result says why."""
+    archive, payloads = _small_archive()
+
+    result = lane.run_session(lane.adapter(archive), delivery=None)
+
+    assert result["status"] == "completed", result["blockers"]
+    assert result[RESOLUTION] == {"mode": "download", "reason": "auto_needed_set_unmeasured"}
+    assert lane.staged == [False] and "provider_output_collector" not in lane.adapter_calls[0]
+    assert set(payloads) <= set(_members(Path(result["attempt_root"]) / "immutable_execution"))
+    assert lane.history() == [] and not lane.measurement.exists()
+
+
+def test_unset_delivery_streams_once_the_host_records_its_needed_set_within_budget(lane, tmp_path, capsys):
+    """The one host command measures a retained Quick-10 and seals the record at the fixed path;
+    from then on a Quick-10 with the setting unset streams, exactly as an explicit ``stream`` does,
+    and every record of the run says it streamed because the needed set was measured within budget."""
+    from blueprint_pipeline import provider_output_member_view as views
+
     archive, _ = _small_archive()
+    retained = tmp_path / "retained" / "vast_provider_runtime_output.zip"
+    retained.parent.mkdir()
+    retained.write_bytes(archive.to_bytes())
+    assert views.main(["plan", "--archive", str(retained), "--contract", output_members.CONTRACT_VERSION,
+                       "--record"]) == 0
+    assert json.loads(capsys.readouterr().out)["needed_set_measurement"]["path"] == str(lane.measurement)
 
     result = lane.run_session(lane.adapter(archive), delivery=None)
 
     assert result["status"] == "completed", result["blockers"]
     assert result["provider_output_delivery"] == "stream" and result["archive_durable"] is True
     assert lane.staged == [True] and "provider_output_collector" in lane.adapter_calls[0]
-    why = {"mode": "stream", "reason": "auto_artifact_store_configured"}
+    why = {"mode": "stream", "reason": "auto_needed_set_within_budget"}
     assert result[RESOLUTION] == why
     attempt = Path(result["attempt_root"])
     for path in (attempt / "adp_arena_vast_result.json", lane.tmp_path / "job" / "adp_arena_vast_result.json"):

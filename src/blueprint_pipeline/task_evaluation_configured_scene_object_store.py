@@ -64,8 +64,9 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
     return "sha256:" + digest.hexdigest(), size
 
 
-def _private_file_value(environment_name: str, *, required: bool) -> str:
-    raw_path = str(os.getenv(environment_name) or "").strip()
+def _private_file_value(environment_name: str, *, required: bool,
+                        environ: Mapping[str, str] | None = None) -> str:
+    raw_path = str((os.environ if environ is None else environ).get(environment_name) or "").strip()
     if not raw_path:
         if required:
             raise TaskEvaluationConfiguredSceneObjectStoreError(
@@ -123,6 +124,53 @@ def _private_file_value(environment_name: str, *, required: bool) -> str:
     return value
 
 
+def _file_environment_values(
+    names: Mapping[str, str], *, require_endpoint_and_region: bool,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """The five values a client is built from, each read by ``_private_file_value``."""
+
+    return {
+        key: _private_file_value(
+            names[key],
+            required=key in {"access_key", "secret_key", "bucket"} or require_endpoint_and_region,
+            environ=environ,
+        )
+        for key in ("access_key", "secret_key", "bucket", "endpoint", "region")
+    }
+
+
+def _require_expected_artifact_bucket(bucket: str, *, environ: Mapping[str, str] | None = None) -> None:
+    """Refuse a dedicated bucket other than the one ``..._EXPECTED_BUCKET`` names, when it names one."""
+
+    expected = str(
+        (os.environ if environ is None else environ).get(_EXPECTED_ARTIFACT_BUCKET_ENV) or ""
+    ).strip()
+    if expected and bucket != expected:
+        raise TaskEvaluationConfiguredSceneObjectStoreError(
+            "configured_scene_artifact_store_bucket_identity_mismatch"
+        )
+
+
+def verify_dedicated_artifact_store(environ: Mapping[str, str] | None = None) -> None:
+    """Refuse, as the artifact client would, a dedicated B2 binding it cannot use.
+
+    Exactly the checks ``_artifact_object_store_client`` makes of a dedicated
+    binding before building its client (promotion, ingestion and the member
+    view all read B2 through it), without building one or touching the
+    network: every one of the five ``_ARTIFACT_STORE_FILE_ENV`` settings names
+    a file ``_private_file_value`` accepts -- a regular, non-symlink file of
+    mode within 0640 holding at most 4 KiB of non-empty UTF-8 -- and the bucket
+    is ``BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET`` when that is
+    set. Raises ``TaskEvaluationConfiguredSceneObjectStoreError``.
+    """
+
+    values = _file_environment_values(
+        _ARTIFACT_STORE_FILE_ENV, require_endpoint_and_region=True, environ=environ
+    )
+    _require_expected_artifact_bucket(values["bucket"], environ=environ)
+
+
 def _client_from_file_environment(
     names: Mapping[str, str], *, require_endpoint_and_region: bool = False,
     checksums_when_required: bool = False, path_style: bool = False,
@@ -134,15 +182,9 @@ def _client_from_file_environment(
         raise TaskEvaluationConfiguredSceneObjectStoreError(
             "configured_scene_object_store_client_unavailable"
         ) from exc
-    access_key = _private_file_value(names["access_key"], required=True)
-    secret_key = _private_file_value(names["secret_key"], required=True)
-    bucket = _private_file_value(names["bucket"], required=True)
-    endpoint = _private_file_value(
-        names["endpoint"], required=require_endpoint_and_region
-    )
-    region = _private_file_value(
-        names["region"], required=require_endpoint_and_region
-    )
+    values = _file_environment_values(names, require_endpoint_and_region=require_endpoint_and_region)
+    access_key, secret_key, bucket = values["access_key"], values["secret_key"], values["bucket"]
+    endpoint, region = values["endpoint"], values["region"]
     # B2 rejects botocore's default flexible checksums on presigned PUTs;
     # remote-CPU clients send and validate them only when an API requires it.
     checksums = (
@@ -187,11 +229,7 @@ def _artifact_object_store_client() -> tuple[Any, str]:
     client, bucket = _client_from_file_environment(
         names, require_endpoint_and_region=dedicated
     )
-    expected_bucket = str(os.getenv(_EXPECTED_ARTIFACT_BUCKET_ENV) or "").strip()
-    if expected_bucket and bucket != expected_bucket:
-        raise TaskEvaluationConfiguredSceneObjectStoreError(
-            "configured_scene_artifact_store_bucket_identity_mismatch"
-        )
+    _require_expected_artifact_bucket(bucket)
     return client, bucket
 
 
@@ -210,11 +248,7 @@ def remote_cpu_object_store() -> tuple[Any, str, str]:
         _ARTIFACT_STORE_FILE_ENV, require_endpoint_and_region=True, checksums_when_required=True,
         path_style=True,
     )
-    expected_bucket = str(os.getenv(_EXPECTED_ARTIFACT_BUCKET_ENV) or "").strip()
-    if expected_bucket and bucket != expected_bucket:
-        raise TaskEvaluationConfiguredSceneObjectStoreError(
-            "configured_scene_artifact_store_bucket_identity_mismatch"
-        )
+    _require_expected_artifact_bucket(bucket)
     # The admitted data location is the region the endpoint serves, not a self-declared one.
     region = _private_file_value(_ARTIFACT_STORE_FILE_ENV["region"], required=True)
     endpoint = urlsplit(_private_file_value(_ARTIFACT_STORE_FILE_ENV["endpoint"], required=True))
@@ -1349,6 +1383,7 @@ __all__ = [
     "remote_cpu_object_store",
     "remote_cpu_object_store_sentinel",
     "validate_configured_scene_object_store_configuration",
+    "verify_dedicated_artifact_store",
 ]
 
 

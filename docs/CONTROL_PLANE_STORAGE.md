@@ -49,7 +49,7 @@ and never a host path.
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
 | `scene_configuration_output` | 2 GiB | only with `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`, for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix leaves archives in the job directory, estimated at one unpacked bundle (an estimate, not a proven bound). When it shares the volume, admission checks the larger of its own need and the hold plus those archives up front, and the hold is taken after the prefix releases; otherwise one reservation holds both. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
-| `policy_canary_output` | 1 GiB | only when the Quick-10 streams (`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`, or unset with the B2 store configured): a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
+| `policy_canary_output` | 1 GiB | only when the Quick-10 streams (`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`, or unset with the B2 store configured and the host's needed-set measurement recorded within budget): a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
 
 A measured output hold refused after the CPU prefix is sealed like one refused
 before staging: exactly `scene_configuration_provider_output_disk_budget_exceeded`,
@@ -1238,7 +1238,7 @@ path it reads; without one (download mode) it runs exactly its old code.
 
 **Rollback rule.** Once any streamed run exists, roll back only by setting
 `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download` (unset is auto, which streams
-wherever the B2 store is configured). Never revert these
+while the host's needed-set measurement fits). Never revert these
 readers: a streamed run's registry, downloads, interpretation, rescoring,
 adoption, closeout and billing all depend on them for as long as the run is
 retained, and without them its members that stay in the archive read as
@@ -1262,28 +1262,74 @@ Two stream-mode records look alarming and are not:
 ## Streamed provider output: the Quick-10 lane (2026-09-29)
 
 `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` selects how a Quick-10's provider
-archive reaches the host. **The default is auto** (2026-09-30): unset or empty
-streams when the dedicated B2 artifact store is configured, meaning all five
-`BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings name readable
-regular files (the same check an explicit `stream` must pass), and downloads
-otherwise. The canary dispatcher and the existing-run continuation units bind
-the B2 store explicitly, as the intake unit does, so a production host whose
-B2 files are in place streams by default. An explicit value overrides auto: `download` always downloads, and
-`stream` streams or, without the store, refuses. Only the Quick-10 session
-resolves the setting, before its authority is consumed; any other value
-(`auto` included), or `stream` without the store, refuses there with zero
-provider mutations (`policy_canary_output_delivery_mode_invalid`,
+archive reaches the host. **The default is auto** (2026-09-30), and **the
+host's needed-set measurement is the switch, not the deploy**: unset or empty
+streams only when both of these hold, and downloads otherwise.
+
+- **Promotion would accept the dedicated B2 store.** This is promotion's own
+  check (`verify_dedicated_artifact_store`). All five
+  `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings must name regular
+  files, not symlinks, of mode within 0640, each holding non-empty UTF-8 of at
+  most 4 KiB. The bucket must be `…_EXPECTED_BUCKET` when that is set. The
+  canary dispatcher and the existing-run continuation units bind the store, as
+  the intake unit does. An explicit `stream` and the session's re-check use the
+  same check, so a store promotion would refuse never reaches a paid run.
+- **The host has recorded a needed set that fits.** This is a sealed
+  `policy_canary_output_needed_set_measurement.v1` record at
+  `/var/lib/blueprint/pipeline-control-plane/policy-canary-output/needed-set-measurement.v1.json`,
+  a hot-evidence root the dispatcher reads as `blueprint`. It must name the
+  current contract and selection version
+  (`policy_canary_output_member_contract.v1`), and describe a run the contract
+  admits: materialized bytes within `NEEDED_SET_BUDGET_BYTES`, and a hold,
+  counting its archive's members, within the forecast.
+
+Neither check raises. A setting or record that cannot be read is a reason to
+download; below Python 3.13 that includes one under a directory the dispatcher
+cannot traverse. An explicit value overrides auto: `download` always
+downloads. `stream` is the owner's override: it needs no record, and it streams
+or, without the store, refuses. Only the Quick-10 session resolves the
+setting, before its authority is consumed. Any other value (`auto` included),
+or `stream` without the store, refuses there with zero provider mutations
+(`policy_canary_output_delivery_mode_invalid`,
 `policy_canary_output_stream_artifact_store_not_configured`). Every other arena
 caller keeps the lane's `download` default.
 
-| Setting | B2 store | Effective mode | Recorded `reason` |
-|---|---|---|---|
-| unset or empty | configured | `stream` | `auto_artifact_store_configured` |
-| unset or empty | not configured | `download` | `auto_artifact_store_not_configured` |
-| `download` | either | `download` | `explicit` |
-| `stream` | configured | `stream` | `explicit` |
-| `stream` | not configured | refused, zero mutations | `explicit` |
-| anything else | either | refused, zero mutations | none (nothing resolved) |
+| Setting | B2 store | Needed-set record | Effective mode | Recorded `reason` |
+|---|---|---|---|---|
+| unset or empty | none of the five set | any | `download` | `auto_artifact_store_not_configured` |
+| unset or empty | set, but promotion would refuse it | any | `download` | `auto_artifact_store_invalid` |
+| unset or empty | accepted | absent | `download` | `auto_needed_set_unmeasured` |
+| unset or empty | accepted | unreadable, unsealed, tampered, or another contract or selection version | `download` | `auto_needed_set_record_invalid` |
+| unset or empty | accepted | over the budget, or a hold beyond the forecast | `download` | `auto_needed_set_over_budget` |
+| unset or empty | accepted | sealed, current, within budget | `stream` | `auto_needed_set_within_budget` |
+| `download` | any | any | `download` | `explicit` |
+| `stream` | accepted | any | `stream` | `explicit` |
+| `stream` | not accepted | any | refused, zero mutations | `explicit` |
+| anything else | any | any | refused, zero mutations | none (nothing resolved) |
+
+**The switch: measure one retained Quick-10 on the host.** As `blueprint`,
+with `<zip>` a retained `vast_provider_runtime_output.zip`, run:
+
+```bash
+python -m blueprint_pipeline.provider_output_member_view plan --archive <zip> --contract policy_canary_output_member_contract.v1 --record
+```
+
+It prints the plan: members, bytes by class, and bytes by disposition. It then
+seals the measurement, with the archive's sha256, at the fixed path above;
+`--record <path>` writes elsewhere. Finally it prints the record and the reason
+auto reads back from it:
+
+- `auto_needed_set_within_budget`: the next Quick-10 streams.
+- `auto_needed_set_over_budget`: Quick-10s keep downloading until the budget is
+  raised or a selection v2 lands.
+
+Until the record exists, auto downloads, so a deploy never starts streaming on
+its own. To hold a measured host on download, set
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`. An archive the index would
+refuse is never recorded (`provider_output_member_plan_record_archive_refused`).
+Re-measuring replaces the record whole. After a contract or selection-version
+change the old record is invalid, and the host downloads until it is measured
+again.
 
 **Why a run streamed or downloaded** is on its records. Every result the
 session returns once the mode is resolved records
@@ -1298,12 +1344,6 @@ path, byte for byte: a test pins the lane result and artifact manifest to
 digests taken before the stream path existed, and another pins the session's
 download result, with the setting unset and no store, to one taken before auto
 (that lane result gains only this record; its artifact manifest is unchanged).
-
-**Before the host streams its first run, measure one retained Quick-10** (see
-*Budget and measurement* below). With the default, the first streamed run is
-the host's first Quick-10 once its units bind the B2 store; to keep a host
-downloading until the measurement is done, set
-`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`.
 
 **What a streamed run does.**
 
@@ -1339,12 +1379,12 @@ downloading until the measurement is done, set
 a Quick-10-shaped fixture: the lifecycle rehearsal's real worker output, whose
 needed set is 2.29 times its aggregate, scaled to production's measured
 190,573,875-byte aggregate. The children would have added 191,208,330 bytes.
-**Before the host streams its first run, measure one retained Quick-10**:
-`python -m blueprint_pipeline.provider_output_member_view plan --archive <zip> --contract policy_canary_output_member_contract.v1`,
-where `<zip>` is a retained `vast_provider_runtime_output.zip`, prints
-`dispositions.materialized.bytes`. If it is over the budget, streamed runs
-would block after the run with their archive durable; keep the host on
-`download` and raise the budget or move to a selection v2 first.
+That is an estimate, which is why auto streams only on the host's own
+measurement of a retained Quick-10 (*The switch*, above). The measurement is
+checked against this budget every time auto resolves. A needed set over it
+would block after the paid run with its archive durable, so auto keeps
+downloading (`auto_needed_set_over_budget`) until the budget is raised or a
+selection v2 lands.
 
 **After-run outcomes.** Each seals `blocked` like a failed download, with
 `archive_durable` saying whether B2 holds the output:
@@ -1397,8 +1437,9 @@ re-binds the durable receipt for the same output key and observed (size, ETag)
 (`rebound_from_staging_manifest_sha256`), and a durable receipt it cannot
 re-bind is renamed aside, never overwritten.
 
-**Owner rehearsal (no provider, no spend).** Before the host streams its first
-run, promote and ingest one retained Quick-10 into the dev bucket on the host:
+**Owner rehearsal (no provider, no spend).** Before recording the measurement
+that lets the host stream, promote and ingest one retained Quick-10 into the
+dev bucket on the host:
 
 1. As `blueprint` with umask 0077, lay out a scratch attempt:
    `<scratch>/attempt_001/vast_provider_run/vast_provider_runtime_output.zip`, a
@@ -1433,7 +1474,7 @@ receipts, the billing verdict, teardown, provider-zero and the cleanup rows are
 the same (`tests/test_policy_canary_output_streaming.py`).
 
 **Rollback.** Set `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`. Unsetting
-it is not a rollback: auto streams again wherever the B2 store is configured.
+it is not a rollback: auto streams again while the host's measurement fits.
 Never revert the readers of the section above while a streamed run is
 retained.
 

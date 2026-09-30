@@ -31,13 +31,18 @@ root, so a resumed ingestion never finds a file it did not write there.
 B2 must be explicitly configured for the default presign, exactly as for
 promotion: the view never borrows the staging store's credentials.
 
-CLI (read-only): ``python -m blueprint_pipeline.provider_output_member_view
-plan --archive <zip> --contract policy_canary_output_member_contract.v1``
-prints members, bytes by class and bytes by disposition under the contract,
-and any entry-rule refusal the index would raise, from the central directory
-alone, under the lane's own rule (``policy_canary_output_members``): every
-``.json`` file outside a ``policy-requests`` directory, except the ten per-cell
-child results, is materialized; everything else stays remote.
+CLI: ``python -m blueprint_pipeline.provider_output_member_view plan --archive
+<zip> --contract policy_canary_output_member_contract.v1`` prints members,
+bytes by class and bytes by disposition under the contract, and any
+entry-rule refusal the index would raise, from the central directory alone,
+under the lane's own rule (``policy_canary_output_members``): every ``.json``
+file outside a ``policy-requests`` directory, except the ten per-cell child
+results, is materialized; everything else stays remote. It is read-only unless
+``--record [PATH]`` is given: then it also seals that measurement, with the
+archive's sha256, as the host's needed-set record (by default at
+``policy_canary_output_members.MEASUREMENT_PATH``) -- the switch that lets
+auto delivery stream -- and prints the record with the reason auto delivery
+reads from it. An archive the index would refuse is never recorded.
 
 Scratch copies: ``python -m blueprint_pipeline.provider_output_member_view
 materialize --evidence-root <root> --prefix cell_runs/NN/ --output-root
@@ -76,7 +81,13 @@ from .provider_output_member_index import (
     read_indexed_member,
     validate_member_index,
 )
-from .policy_canary_output_members import POLICY_CANARY_OUTPUT_CONTRACT
+from .policy_canary_output_members import (
+    AUTO_NEEDED_SET_WITHIN_BUDGET,
+    POLICY_CANARY_OUTPUT_CONTRACT,
+    needed_set_measurement_refusal,
+    seal_needed_set_measurement,
+    write_needed_set_measurement,
+)
 from .provider_output_native_inventory import ProviderOutputInventoryError, safe_member_name
 from .provider_output_range_ingestion import CasArchiveSource, ProviderOutputIngestionError
 from .provider_output_range_transport import ProviderOutputTransportError
@@ -530,6 +541,40 @@ def plan_member_dispositions(archive_path: str | Path, contract: str) -> dict:
     }
 
 
+def record_plan_measurement(archive_path: str | Path, plan: Mapping[str, Any],
+                            path: str | Path | None = None) -> dict[str, Any]:
+    """Seal ``plan`` of ``archive_path`` as the host's needed-set measurement (``plan --record``).
+
+    Writes ``policy_canary_output_members.MEASUREMENT_PATH`` unless ``path``
+    names another file. Returns {path, record, needed_set_reason}: the reason
+    auto delivery reads back from what was written. Refuses an archive the
+    index would refuse, one it cannot read, and a record it cannot write.
+    """
+    from .common import utc_now_iso
+
+    if plan["entry_rule_refusal"] is not None:
+        raise _refuse("provider_output_member_plan_record_archive_refused")
+    digest = hashlib.sha256()
+    try:
+        with Path(archive_path).open("rb") as stream:
+            for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        raise _refuse("provider_output_member_plan_archive_invalid") from None
+    materialized = plan["dispositions"]["materialized"]
+    record = seal_needed_set_measurement(
+        contract=plan["contract"], materialized_members=materialized["members"],
+        materialized_bytes=materialized["bytes"], measured_at=utc_now_iso(),
+        archive={"name": plan["archive"]["name"], "size_bytes": plan["archive"]["size_bytes"],
+                 "sha256": "sha256:" + digest.hexdigest(), "members": plan["members"]})
+    try:
+        target = write_needed_set_measurement(record, path)
+    except OSError:
+        raise _refuse("provider_output_member_plan_record_write_failed") from None
+    return {"path": str(target), "record": record,
+            "needed_set_reason": needed_set_measurement_refusal(target) or AUTO_NEEDED_SET_WITHIN_BUDGET}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Plan a provider archive's member dispositions, or copy members to a scratch root.")
@@ -537,6 +582,9 @@ def main(argv: list[str] | None = None) -> int:
     plan = commands.add_parser("plan")
     plan.add_argument("--archive", required=True, type=Path)
     plan.add_argument("--contract", required=True, choices=sorted(CONTRACTS))
+    plan.add_argument("--record", nargs="?", const="", default=None, metavar="PATH",
+                      help="also seal this measurement as the host's needed-set record, the switch that "
+                           "lets auto delivery stream (default: the fixed host path)")
     materialize = commands.add_parser("materialize")
     materialize.add_argument("--evidence-root", required=True, type=Path)
     materialize.add_argument("--prefix", required=True)
@@ -559,6 +607,12 @@ def main(argv: list[str] | None = None) -> int:
         print("provider_output_member_view refused: provider_output_member_plan_archive_invalid",
               file=sys.stderr)
         return 1
+    if args.record is not None:
+        try:
+            summary["needed_set_measurement"] = record_plan_measurement(args.archive, summary, args.record or None)
+        except ProviderOutputMemberViewError as exc:
+            print(f"provider_output_member_view refused: {exc}", file=sys.stderr)
+            return 1
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 

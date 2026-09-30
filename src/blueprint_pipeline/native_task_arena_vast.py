@@ -589,8 +589,9 @@ def run_native_task_arena_policy_canary_session_vast(
     witness_capacity = witness_binding['maximum_archive_bytes']
     # The output delivery mode is settled before the authority is consumed:
     # an invalid mode, or streaming without the B2 store, allocates nothing.
-    # Unset is auto (stream exactly when the B2 store is configured), and every
-    # result from here on records the mode and why.
+    # Unset is auto (stream only with a store promotion accepts and the host's
+    # needed-set measurement within budget), and every result from here on
+    # records the mode and why.
     from . import policy_canary_output_members as output_members
     try:
         resolved = output_members.resolve_output_delivery()

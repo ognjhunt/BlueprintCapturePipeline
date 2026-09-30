@@ -2,6 +2,7 @@
 #   src/blueprint_pipeline/provider_output_member_view.py
 #   src/blueprint_pipeline/provider_output_member_index.py
 #   src/blueprint_pipeline/provider_output_range_ingestion.py
+#   src/blueprint_pipeline/policy_canary_output_members.py
 #   tests/provider_output_fixtures.py
 """A streamed attempt answers member digests from its index and bytes from the durable archive."""
 
@@ -317,6 +318,66 @@ def test_plan_prints_bytes_by_disposition_for_a_retained_archive(tmp_path, capsy
                        "policy_canary_output_member_contract.v1"]) == 1
     with pytest.raises(SystemExit):
         views.main(["plan", "--archive", str(archive), "--contract", "unknown.v1"])
+    # Without --record the planner stays read-only.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["not.zip", "refused.zip",
+                                                               "vast_provider_runtime_output.zip"]
+
+
+def test_plan_records_the_needed_set_measurement_that_lets_auto_delivery_stream(tmp_path, capsys, monkeypatch):
+    """The one host command (review: deploying must not be the flip). ``plan --record`` seals what
+    it measured at the fixed record path, the switch that lets auto delivery stream: the record
+    names the contract and its selection version, binds the measured archive's bytes, and is read
+    back exactly as the gate reads it."""
+    from blueprint_pipeline import policy_canary_output_members as output_members
+
+    members = {RESULT: b'{"status": "completed"}', RECEIPT: b'{"episode_id": "e0"}',
+               "cell_runs/00/episodes/media/e0/policy-requests/0001.json": b'{"observation": [0]}' * 50,
+               FRAME: FRAME_BYTES, VIDEO: b"\0" * 5000, "cell_runs/00/worker.log": b"step ok\n" * 10}
+    archive = _retained_zip(tmp_path / "vast_provider_runtime_output.zip", members)
+    fixed = tmp_path / "state" / "policy-canary-output" / "needed-set-measurement.v1.json"
+    monkeypatch.setattr(output_members, "MEASUREMENT_PATH", fixed)
+    contract = "policy_canary_output_member_contract.v1"
+    assert output_members.needed_set_measurement_refusal() == "auto_needed_set_unmeasured"
+
+    assert views.main(["plan", "--archive", str(archive), "--contract", contract, "--record"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    record = json.loads(fixed.read_text(encoding="utf-8"))
+    assert printed["needed_set_measurement"] == {"path": str(fixed), "record": record,
+                                                 "needed_set_reason": "auto_needed_set_within_budget"}
+    assert record["schema_version"] == "policy_canary_output_needed_set_measurement.v1"
+    assert record["record_digest"] == canonical_digest(record, digest_field="record_digest")
+    assert (record["contract"], record["selection_version"]) == (contract, contract)
+    assert (record["materialized_members"], record["materialized_bytes"]) == (
+        printed["dispositions"]["materialized"]["members"], printed["dispositions"]["materialized"]["bytes"])
+    assert record["archive"] == {"name": archive.name, "size_bytes": archive.stat().st_size,
+                                 "sha256": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
+                                 "members": printed["members"]}
+    assert record["needed_set_budget_bytes"] == output_members.NEEDED_SET_BUDGET_BYTES
+    # Readable by the dispatcher (``blueprint``) whoever wrote it; it holds no secret.
+    assert stat.S_IMODE(fixed.stat().st_mode) == 0o644
+    assert output_members.needed_set_measurement_refusal() is None
+
+    # An explicit path. A needed set over the budget is recorded as measured, and the gate downloads.
+    explicit = tmp_path / "elsewhere" / "record.json"
+    monkeypatch.setattr(output_members, "POLICY_CANARY_OUTPUT_CONTRACT",
+                        output_members.PolicyCanaryOutputContract(needed_set_budget_bytes=8))
+    assert views.main(["plan", "--archive", str(archive), "--contract", contract, "--record", str(explicit)]) == 0
+    assert json.loads(capsys.readouterr().out)["needed_set_measurement"]["needed_set_reason"] == (
+        "auto_needed_set_over_budget")
+    assert output_members.needed_set_measurement_refusal(explicit) == "auto_needed_set_over_budget"
+
+    # An archive the index would refuse records nothing and leaves the host's record untouched.
+    refused = _retained_zip(tmp_path / "refused.zip", {**members, "a\\b.json": b"{}"})
+    before = fixed.read_bytes()
+    assert views.main(["plan", "--archive", str(refused), "--contract", contract, "--record"]) == 1
+    assert "provider_output_member_plan_record_archive_refused" in capsys.readouterr().err
+    assert fixed.read_bytes() == before
+    # A record the host cannot write fails the command, typed.
+    (tmp_path / "a-file").write_text("", encoding="utf-8")
+    assert views.main(["plan", "--archive", str(archive), "--contract", contract,
+                       "--record", str(tmp_path / "a-file" / "record.json")]) == 1
+    assert "provider_output_member_plan_record_write_failed" in capsys.readouterr().err
 
 
 def test_view_reads_bytes_only_through_an_explicitly_configured_artifact_store(tmp_path, monkeypatch):

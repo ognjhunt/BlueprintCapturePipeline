@@ -24,9 +24,10 @@ def canary_workload(environ: Mapping[str, str] | None = None) -> str:
     """The footprint label for a run the unit's delivery mode will launch.
 
     The dispatcher launches the allocator with its own environment, so the mode
-    it resolves is the one the Quick-10 session resolves: unset streams exactly
-    when the dedicated B2 store is configured. An invalid mode is refused by the
-    session before any spend and is labelled as download.
+    it resolves is the one the Quick-10 session resolves: unset streams only
+    with the dedicated B2 store configured and the host's needed-set
+    measurement within budget. An invalid mode is refused by the session
+    before any spend and is labelled as download.
     """
     from .policy_canary_output_members import (
         STREAM,

@@ -2,8 +2,9 @@
 
 The arena lane's ``stream`` path, which only the Quick-10 session takes: with
 ``BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream``, or with the setting unset
-and the dedicated B2 store configured (auto, the default;
-``policy_canary_output_members``). Download mode never reaches this module.
+(auto, the default), the dedicated B2 store configured and the host's
+needed-set measurement recorded within budget (``policy_canary_output_members``).
+Download mode never reaches this module.
 
 1. Before the session authority is consumed, ``reserve_forecast_hold`` takes
    a ``policy_canary_output`` hold of the contract's forecast (review I3 and

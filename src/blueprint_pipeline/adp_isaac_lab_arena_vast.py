@@ -482,12 +482,14 @@ def run_arena_native_control_vast(
     streaming = provider_output_delivery == "stream"
     delivery_record: dict[str, Any] = {}
     if provider_output_delivery_resolution is not None:
-        from .policy_canary_output_members import DELIVERY_REASONS, RESOLUTION_FIELD
+        from .policy_canary_output_members import REASON_MODES, RESOLUTION_FIELD
 
         resolution = (dict(provider_output_delivery_resolution)
                       if isinstance(provider_output_delivery_resolution, Mapping) else {})
+        # The record names this lane's mode, and a reason that can explain that mode.
         if (set(resolution) != {"mode", "reason"} or resolution["mode"] != provider_output_delivery
-                or resolution["reason"] not in DELIVERY_REASONS):
+                or not isinstance(resolution["reason"], str)
+                or provider_output_delivery not in REASON_MODES.get(resolution["reason"], ())):
             raise ValueError("adp_arena_provider_output_delivery_resolution_invalid")
         delivery_record[RESOLUTION_FIELD] = resolution
 
