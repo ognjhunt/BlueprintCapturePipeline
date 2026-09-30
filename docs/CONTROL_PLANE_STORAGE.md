@@ -1413,7 +1413,8 @@ chain preflight warns `episode_compilation_execution_mode_invalid` or
 **Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
 owns `pending/` in every mode and empties it each run: it recovers the claims
 a dead run left, compiles the rows the paid unit handed back (at most
-`--max-messages` a run, and none started once ten minutes have passed; the rest
+`--max-messages` a run, and none started ten minutes after the run began, a wait
+for the queue lock included; the rest
 wait for the next run, which the unit's five-minute timer backstops), then
 claims pending rows.
 An eligible row in `cloud_run` gets a hand-off and stays in `processing/`; any

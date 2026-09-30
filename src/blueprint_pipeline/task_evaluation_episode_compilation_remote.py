@@ -557,21 +557,21 @@ def _compile_on_host(queue: Path, name: str, claimed: Path, *, inputs: Path, out
     return result
 
 
-def _compile_fallbacks(queue: Path, jobs_root: Path, clock: Any, *, limit: int,
+def _compile_fallbacks(queue: Path, jobs_root: Path, clock: Any, *, limit: int, deadline: float,
                        **host: Any) -> tuple[list[dict[str, Any]], list[str]]:
     """Host-compile the rows the paid unit handed back (plan 14 §10); each is already in ``processing/``.
 
     A handed-back row is never requeued, so a compile of it that died is retried here, from a clean
     output path, until its third interruption (``prepare_fallback_compile``).  One run compiles at most
-    ``limit`` of them and starts none once ``FALLBACK_TIME_BUDGET_SECONDS`` have passed, though always
-    at least one; the others keep their markers for a later run.  Returns the results and the deferred.
+    ``limit`` of them and starts none past ``deadline`` (``FALLBACK_TIME_BUDGET_SECONDS`` after the run
+    started, before any wait for the queue), though always at least one; the others keep their markers for
+    a later run.  Returns the results and the deferred.
     """
 
     from .task_evaluation_episode_compilation_claim_recovery import prepare_fallback_compile
 
     compiled: list[dict[str, Any]] = []
     deferred: list[str] = []
-    deadline = clock() + FALLBACK_TIME_BUDGET_SECONDS
     for path, marker in markers(jobs_root, "fallback"):
         if marker is None:
             continue
@@ -604,8 +604,11 @@ def run_no_spend_unit(**arguments: Any) -> dict[str, Any]:
     a note, touching nothing.
     """
 
+    import time
+
     from .task_evaluation_scene_construction_queue import ensure_scene_construction_queue_root
 
+    started_at = float((arguments.get("now") or time.time)())  # the budgets run from here, not from the lock
     held = os.open(ensure_scene_construction_queue_root(arguments["queue_root"]), os.O_RDONLY)
     try:
         if not _hold_queue(held):
@@ -613,7 +616,7 @@ def run_no_spend_unit(**arguments: Any) -> dict[str, Any]:
                     "reason": "episode_compilation_no_spend_run_in_progress", "processed_count": 0, "results": [],
                     "waited_seconds": QUEUE_LOCK_WAIT_SECONDS, "provider_mutation_performed": False,
                     "paid_execution_requested": False}
-        return _no_spend_run(**arguments)
+        return _no_spend_run(**arguments, started_at=started_at)
     finally:
         os.close(held)
 
@@ -642,7 +645,7 @@ def _no_spend_run(
     storage_pins_root: str | Path | None = None, jobs_root: str | Path = DEFAULT_JOBS_ROOT,
     environ: Mapping[str, str] | None = None, episode_compiler: Any = None, filesystem_root: str | Path = "/",
     cache_root: str | Path | None = None, config: Mapping[str, Any] | None = None,
-    host_environment: Mapping[str, Any] | None = None, now: Any = None,
+    host_environment: Mapping[str, Any] | None = None, now: Any = None, started_at: float | None = None,
 ) -> dict[str, Any]:
     import time
 
@@ -660,8 +663,9 @@ def _no_spend_run(
     queue = Path(queue_root)
     recovered = (recover_interrupted_claims(queue, jobs_root=jobs, output_root=host["outputs"],
                                             source_commit=source_commit, now=clock()) if queue.is_dir() else [])
-    fallbacks, deferred = (_compile_fallbacks(queue, jobs, clock, limit=max(1, int(max_messages)), **host)
-                           if queue.is_dir() else ([], []))
+    deadline = (clock() if started_at is None else started_at) + FALLBACK_TIME_BUDGET_SECONDS
+    fallbacks, deferred = (_compile_fallbacks(queue, jobs, clock, limit=max(1, int(max_messages)), deadline=deadline,
+                                              **host) if queue.is_dir() else ([], []))
     if mode == "host":
         run = process_episode_compilation_queue(
             queue_root=queue_root, input_root=input_root, output_root=output_root, source_commit=source_commit,

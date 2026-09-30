@@ -410,3 +410,26 @@ def test_the_no_spend_unit_has_a_timer_backstop_and_deploy_creates_its_marker_di
     installer = (ROOT / "scripts" / "install_live_pipeline_control_plane.sh").read_text(encoding="utf-8")
     assert f"systemctl enable --now {NO_SPEND}.timer" in installer
     assert f"deploy/systemd/{NO_SPEND}.timer" in installer
+
+
+def test_the_fallback_time_budget_starts_before_the_queue_wait(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: the fallback budget started after the queue lock was taken, so a run that waited could
+    start its last handed-back compile up to twelve minutes into TimeoutStartSec=15m.  It starts with the run."""
+
+    from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+    compiler = install_compile_stand_ins(monkeypatch.setattr)
+    host = Host(tmp_path)
+    host.record_worker_environment()
+    names = _handed_back(host, ["waited-0", "waited-1"])
+    ticks = iter([1_000.0])
+
+    def clock() -> float:  # the run starts at 1000; by the time it holds the queue the whole budget is gone
+        return next(ticks, 1_000.0 + remote.FALLBACK_TIME_BUDGET_SECONDS + 1)
+
+    run = remote.run_no_spend_unit(
+        queue_root=host.queue, input_root=host.inputs, output_root=host.outputs, source_commit="a" * 40,
+        max_messages=8, jobs_root=host.jobs, environ={remote.EXECUTION_ENV: "host"}, episode_compiler=compiler,
+        filesystem_root=host.fs, cache_root=host.cache, config=remote_cpu_config(), host_environment=HOST_RECORD,
+        now=clock)
+    assert len(run["fallback_results"]) == 1 and run["fallback_deferred"] == names[1:]
