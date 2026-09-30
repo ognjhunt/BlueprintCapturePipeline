@@ -748,3 +748,25 @@ def test_a_failed_readback_discards_only_the_version_this_attempt_created(tmp_pa
                 if row["Key"] == key]
     assert len(versions) == 1  # the other promotion's object is still there, untouched
     _assert_torn_down(world)
+
+
+@pytest.mark.parametrize("reads", [1, 3])
+def test_a_transient_read_during_the_commit_is_retried_not_abandoned(tmp_path: Path, monkeypatch, reads: int) -> None:
+    """Review I3 follow-up: only a commit that cannot finish is abandoned.  A CAS read that fails a few times
+    (in the readback, the validation or the landing) counts against the collection budget and is retried
+    from staging; the compile still lands, from the one execution."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    get, failures = world.store.get_object, {"left": reads}
+
+    def flaky(**kwargs):
+        if failures["left"] and "/remote-cpu-output/" in kwargs["Key"]:
+            failures["left"] -= 1
+            raise FakeGcsError(500, "InternalError")
+        return get(**kwargs)
+
+    monkeypatch.setattr(world.store, "get_object", flaky)
+    _complete(world)
+    assert (world.lease()["state"], world.row_state()) == ("completed", "completed")
+    assert len(world.executions()) == 1 and failures["left"] == 0
+    _assert_torn_down(world)

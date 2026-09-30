@@ -368,6 +368,16 @@ def _compute_zero(c: Collector, lease: dict[str, Any], descriptor: dict[str, Any
 # ---------------------------------------------------------------------------------------------- commit
 
 
+def _failure(exc: BaseException, default: str) -> str:
+    """A retryable step failure as a typed code, never a provider's message (which may name a URL)."""
+
+    if isinstance(exc, (CollectorError, TaskEvaluationConfiguredSceneObjectStoreError, RemoteCpuArchiveError)):
+        return str(exc).split(" ")[0] or default
+    if isinstance(exc, OSError):
+        return f"{default}:OSError:errno_{exc.errno}"
+    return f"{default}:{type(exc).__name__}"
+
+
 def _record_failure(c: Collector, row: dict[str, Any], code: str) -> dict[str, Any]:
     """Count one promotion or landing failure; past the budget the attempt itself fails (plan 14 §9)."""
 
@@ -417,11 +427,13 @@ def _promote(c: Collector, descriptor: dict[str, Any], output: Mapping[str, Any]
         index = json.loads(_read_cas(c, promoted["index"], MAX_INDEX_BYTES))
         body = client.get_object(Bucket=bucket, Key=promoted["archive"]["uri"].removeprefix(f"s3://{bucket}/"))["Body"]
         verify_blobs_stream(body, index, expected_digest=promoted["archive"]["digest"])
-    except (CollectorError, RemoteCpuArchiveError, ValueError) as exc:
+    except (CollectorError, RemoteCpuArchiveError, ValueError) as exc:  # the promoted bytes are not their key's
         for label in ("archive", "index"):
             discard_remote_cpu_output_object(uri=promoted[label]["uri"], digest=promoted[label]["digest"],
                                              client=client, bucket=bucket, version_id=created[label])
         raise CollectorError(f"remote_cpu_promotion_readback_failed:{type(exc).__name__}") from None
+    except Exception as exc:  # noqa: BLE001 - the read itself failed, which says nothing about the bytes
+        raise _ReadFailed(f"remote_cpu_promotion_readback_unavailable:{type(exc).__name__}") from None
     return promoted
 
 
@@ -433,8 +445,8 @@ def _promotion(c: Collector, row: dict[str, Any], descriptor: dict[str, Any],
         return row["promoted"], row
     try:
         promoted = _promote(c, descriptor, output)
-    except (CollectorError, TaskEvaluationConfiguredSceneObjectStoreError, RemoteCpuArchiveError) as exc:
-        return None, _record_failure(c, row, str(exc).split(" ")[0] or "remote_cpu_promotion_failed")
+    except Exception as exc:  # noqa: BLE001 - a failed copy or readback retries from staging, within the budget
+        return None, _record_failure(c, row, _failure(exc, "remote_cpu_promotion_failed"))
     return promoted, _save_row(c, row, promoted=promoted)
 
 
@@ -647,16 +659,16 @@ def _commit(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.Re
         try:
             index = json.loads(_read_cas(c, promoted["index"], MAX_INDEX_BYTES))
             reasons = _validate(c, envelope, descriptor, result, index, promoted["archive"])
-        except (_ReadFailed, CollectorError, TaskEvaluationConfiguredSceneObjectStoreError, OSError) as exc:
-            row = _record_failure(c, row, str(exc).split(" ")[0] or "remote_cpu_output_read_failed")
+        except Exception as exc:  # noqa: BLE001 - a read that failed says nothing about the output: retry it
+            row = _record_failure(c, row, _failure(exc, "remote_cpu_output_read_failed"))
             return {"status": "collecting", "blocker": row["last_failure"]}
         if reasons:
             raise _AttemptFailed(f"remote_cpu_output_invalid:{reasons[0]}")
         _after_step("validation", attempt_id)
         try:
             landed = _land(c, plan, descriptor, index, promoted["archive"])
-        except (RemoteCpuArchiveError, TaskEvaluationConfiguredSceneObjectStoreError, OSError) as exc:
-            row = _record_failure(c, row, str(exc).split(" ")[0] or "remote_cpu_landing_failed")
+        except Exception as exc:  # noqa: BLE001 - a landing that failed is assembled aside and retried
+            row = _record_failure(c, row, _failure(exc, "remote_cpu_landing_failed"))
             return {"status": "collecting", "blocker": row["last_failure"]}
         _after_step("landing", attempt_id)
         _write_pointer(c, plan, lease, descriptor, receipt, promoted, index, landed)
