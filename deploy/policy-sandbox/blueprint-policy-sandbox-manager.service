@@ -1,0 +1,22 @@
+[Unit]
+Description=Blueprint private policy sandbox manager
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+WorkingDirectory=/opt/blueprint-policy-manager-current
+EnvironmentFile=/etc/blueprint/company-policy/manager.env
+ExecStart=/opt/blueprint-policy/.venv/bin/python /opt/blueprint-policy-manager-current/scripts/serve_company_policy_sandbox_manager.py --config /etc/blueprint/company-policy/manager.json --ack trusted-policy-sandbox-manager
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=45
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

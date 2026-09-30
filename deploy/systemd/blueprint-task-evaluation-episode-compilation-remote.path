@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-episode-compilation-remote.path.json
+Description=Watch remote episode-compilation hand-offs and shadow markers
+
+[Path]
+# Plan 14 §1: PathChanged only.  The no-spend unit owns pending/; this unit is woken by new hand-offs, and its
+# timer carries every attempt forward, so a run that finds nothing to do can never re-trigger itself.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/handoffs/episode_compilation
+PathChanged=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/shadow/episode_compilation
+Unit=blueprint-task-evaluation-episode-compilation-remote.service
+
+[Install]
+WantedBy=multi-user.target

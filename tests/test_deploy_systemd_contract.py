@@ -198,6 +198,21 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock",
                 }
             continue
+        if unit.name == "blueprint-task-evaluation-episode-compilation-remote.service":
+            # Plan 14 §1: the paid remote-compilation unit.  The no-spend compile unit's hardening, but narrow
+            # writes instead of /var/lib/blueprint, the dispatcher key through LoadCredential= and a read-only
+            # standing authority; it never compiles, so 2G bounds its readback and landing.
+            text = unit.read_text(encoding="utf-8")
+            for control in required_controls:
+                if not control.startswith("ReadWritePaths="):
+                    assert control in text, (unit.name, control)
+            assert "ReadWritePaths=/var/lib/blueprint " not in text and "ReadWritePaths=/var/lib/blueprint\n" not in text
+            writable = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+            assert "/var/lib/blueprint" not in writable and all(path.startswith("/var/lib/blueprint/") for path in writable)
+            assert "ReadOnlyPaths=/var/lib/blueprint/spend-authority/authorizations\n" in text
+            assert "LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispatcher.json" in text
+            assert "TasksMax=512" in text and "MemoryMax=2G" in text
+            continue
         if unit.name == "blueprint-operator-door.service":
             # Cloud agents' HTTPS window onto this host (deploy/operator-door). It
             # reads as the service account, with journal access, in a read-only,

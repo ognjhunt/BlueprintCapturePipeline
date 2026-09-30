@@ -9,6 +9,7 @@ credential-shaped content.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -57,6 +58,9 @@ from .remote_cpu_job_contract import (
 TEARDOWN_SCHEMA_VERSION = "remote_cpu_job_teardown.v1"
 POINTER_SCHEMA_VERSION = "remote_cpu_output_pointer.v1"
 POINTER_STATES = ("landed", "restored_full")
+# The result's references to bytes that stayed remote (the packet), each by path, digest and size, so that
+# a reader such as the owner census can let the pointer stand for them.
+MAX_POINTER_RAW_REFERENCES = 64
 _MAX_RECORD_BYTES = 1024 * 1024
 _TRANSPORT_OBJECT = re.compile(r"gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]/transport/[a-z0-9-]+/[a-z0-9-]+\.json")
 
@@ -96,17 +100,31 @@ def write_remote_cpu_record(path: str | Path, value: Mapping[str, Any]) -> bool:
     raise RemoteCpuContractError(f"remote_cpu_record_conflict:{destination.name}")
 
 
+# What opening a record path answers when a symlink (O_NOFOLLOW), a directory or a special file is there.
+_NOT_A_RECORD = frozenset({errno.ELOOP, errno.EMLINK, errno.EISDIR, errno.ENXIO, errno.ENODEV})
+
+
 def _existing_record_bytes(path: Path) -> bytes | None:
-    """The bytes of a regular record file, or ``None`` when absent; a link or special file conflicts."""
+    """The bytes of a regular record file, or ``None`` when absent.  A symlink or a special file at the path
+    conflicts; any other failure to open or read it (EMFILE, EIO, EACCES) is raised as it is, for the caller
+    to retry, never taken for a conflict."""
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}") from exc
+        if exc.errno in _NOT_A_RECORD:
+            raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}") from exc
+        raise
+    try:
+        regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if not regular:
+        os.close(descriptor)
+        raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}")
     with os.fdopen(descriptor, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}")
         return stream.read(_MAX_RECORD_BYTES + 1)
 
 
@@ -188,6 +206,7 @@ _POINTER_SPEC = {
     "output_root": _text, "paths_total": _is_count, "bytes_total": _is_count,
     "host_known": {"count": _is_count, "bytes": _is_count},
     "landed": {"subset": _matches(_OUTCOME), "paths": _is_count, "bytes": _is_count},
+    "raw_references": [{"path": _text, "digest": _is_digest, "size_bytes": _positive}],
     "state": _one_of(*POINTER_STATES), "teardown_receipt_digest": _optional_digest,
     "provider_zero_proven": _flag, "pointer_digest": _is_digest,
 }
@@ -261,14 +280,19 @@ def validate_teardown(value: Mapping[str, Any]) -> dict[str, Any]:
     return record
 
 
-def _pointer_reasons(pointer: Mapping[str, Any]) -> list[str]:
+def _pointer_reasons(pointer: Mapping[str, Any], *, output_roots: tuple[str, ...] = PERMITTED_PATH_ROOTS) -> list[str]:
     reasons = forbidden_record_content(pointer)
     _check(pointer, _POINTER_SPEC, "", reasons)
     if reasons:
         return reasons
     row, stage, execution = pointer["queue_row"], pointer["stage"], pointer["execution"]
     paths, total, known, landed = pointer["paths_total"], pointer["bytes_total"], pointer["host_known"], pointer["landed"]
-    reasons.extend(_path_reasons(pointer["output_root"], "output_root", PERMITTED_PATH_ROOTS))
+    reasons.extend(_path_reasons(pointer["output_root"], "output_root", output_roots))
+    references = pointer["raw_references"]
+    for index, reference in enumerate(references):
+        reasons.extend(_path_reasons(reference["path"], f"raw_references[{index}].path", (pointer["output_root"] + "/",)))
+    if len(references) > MAX_POINTER_RAW_REFERENCES or len({row["path"] for row in references}) != len(references):
+        reasons.append("remote_cpu_pointer_raw_references_invalid")
     for name in ("archive", "index"):
         reasons.extend(_cas_uri_reasons(pointer[name]["uri"], pointer[name]["digest"], f"{name}.uri"))
     reasons.extend(f"remote_cpu_pointer_{name}" for name, failed in {
@@ -282,6 +306,20 @@ def _pointer_reasons(pointer: Mapping[str, Any]) -> list[str]:
         "provider_zero_unbound": pointer["provider_zero_proven"] is not (pointer["teardown_receipt_digest"] is not None),
     }.items() if failed)
     return reasons
+
+
+def validate_pointer(value: Mapping[str, Any], *, output_roots: tuple[str, ...] = PERMITTED_PATH_ROOTS) -> dict[str, Any]:
+    """A sealed ``remote_cpu_output_pointer.v1`` exactly as the collector writes it, or a typed refusal.
+
+    ``output_roots`` names where its output may lie: a reader of retained records, such as the owner census,
+    checks the pointer against its own compiled-episodes root rather than this host's.
+    """
+    pointer = _clone(value, "pointer")
+    reasons = _pointer_reasons(pointer, output_roots=tuple(output_roots))
+    if pointer.get("pointer_digest") != canonical_digest(pointer, digest_field="pointer_digest"):
+        reasons.append("remote_cpu_pointer_digest_mismatch")
+    _raise_if(reasons)
+    return pointer
 
 
 def pointer_record(fields: Mapping[str, Any], *, previous: Mapping[str, Any] | None = None,

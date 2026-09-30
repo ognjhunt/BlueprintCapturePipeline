@@ -297,6 +297,231 @@ def _expected_compilation_bytes(
     return total
 
 
+@scene_participant('claimed', 'inputs', 'outputs')
+def compile_claimed_envelope(
+    claimed: Path,
+    *,
+    source_name: str,
+    inputs: Path,
+    outputs: Path,
+    source_commit: str,
+    episode_compiler: EpisodeCompiler,
+    disk_reservation_root: str | Path | None,
+    storage_pins_root: str | Path | None,
+) -> tuple[str, dict[str, Any]]:
+    """Compile one claimed envelope into ``outputs/<compilation_id>`` and seal its result.
+
+    Returns ``(terminal_state, result)``: the caller records the result and moves the
+    row.  The host queue loop and the remote worker (plan 14 §13) run this same code.
+    """
+
+    terminal_state = "completed"
+    owned_output: Path | None = None
+    disk_reservation: DiskReservation | None = None
+    try:
+        envelope = _load_envelope(claimed)
+        if envelope["expected_production_commit"] != source_commit:
+            raise TaskEvaluationEpisodeCompilationWorkerError(
+                "episode_compilation_source_commit_mismatch"
+            )
+        references = _verified_references(envelope, input_root=inputs)
+        if disk_reservation_root is not None:
+            expected_bytes = _expected_compilation_bytes(
+                references,
+                content_store_root=(
+                    outputs / "content-addressed" / "adapter-members" / "sha256"
+                ),
+            )
+            for check in range(COMPILATION_DISK_RECHECKS + 1):
+                try:
+                    disk_reservation = reserve_control_plane_disk(
+                        "episode_compilation",
+                        target_root=outputs,
+                        expected_bytes=expected_bytes,
+                        reservation_root=disk_reservation_root,
+                        # The owned output does not exist yet, so its
+                        # baseline is zero and the sample is its growth.
+                        workspace=outputs / envelope["compilation_id"],
+                        workload="compiled_episode",
+                    )
+                    break
+                except ControlPlaneDiskBudgetError as exc:
+                    if (not str(exc).startswith(
+                        "control_plane_disk_budget_exceeded:episode_compilation:"
+                    ) or check == COMPILATION_DISK_RECHECKS):
+                        raise TaskEvaluationEpisodeCompilationWorkerError(str(exc)) from exc
+                    time.sleep(COMPILATION_DISK_RECHECK_SECONDS)
+        # Owned only once this mkdir creates it: the failure path must never remove an output directory
+        # that was already there, whoever made it.
+        target = outputs / envelope["compilation_id"]
+        from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
+        generation = enroll_preparation_child(target,
+            preparation_root=inputs / envelope['request']['preparation_id'],
+            request=envelope['request'],
+            verified_paths=[row['materialized_path'] for row in references.values()])
+        if generation is None:
+            target.mkdir(mode=0o750, exist_ok=False)
+        owned_output = target
+        compiler_output = _validated_compiler_output(
+            episode_compiler(
+                envelope=envelope,
+                materialized_references=references,
+                output_root=owned_output,
+            ),
+            envelope=envelope,
+            output_root=owned_output,
+        )
+        packet = compiler_output["compiled_episode_packet"]
+        result: dict[str, Any] = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "compiled_for_production_launch",
+            "compilation_id": envelope["compilation_id"],
+            "run_id": envelope["run_id"],
+            "team_namespace": envelope["team_namespace"],
+            "source_commit": source_commit,
+            "configured_scene_revision_digest": envelope[
+                "configured_scene_revision_digest"
+            ],
+            "compiled_episode_packet_digest": packet["digest"],
+            "compiled_episode_packet_size_bytes": packet["size_bytes"],
+            "compiled_episode_packet_path": packet["path"],
+            "adapter_result_path": compiler_output["adapter_result"]["path"],
+            "adapter_result_digest": compiler_output["adapter_result"][
+                "digest"
+            ],
+            "compiler_output_digest": compiler_output[
+                "compiler_output_digest"
+            ],
+            **(
+                {
+                    "destination_native_probe_request_path": compiler_output[
+                        "destination_native_probe_request"
+                    ]["path"],
+                    "destination_native_probe_request_digest": compiler_output[
+                        "destination_native_probe_request"
+                    ]["digest"],
+                    "destination_native_probe_request_document_digest": compiler_output[
+                        "destination_native_probe_request"
+                    ]["request_digest"],
+                }
+                if "destination_native_probe_request" in compiler_output
+                else {}
+            ),
+            "customer_supplied_prebuilt_episode_packet": False,
+            "compiled_by_production": True,
+            "provider_mutation_performed": False,
+            "paid_execution_requested": False,
+            "automatic_progression_required": True,
+            "blockers": [],
+            "result_digest": "",
+        }
+    except Exception as exc:
+        terminal_state = "blocked"
+        cleanup_blockers: list[str] = []
+        if owned_output is not None and owned_output.exists():
+            try:
+                shutil.rmtree(owned_output)
+            except OSError as cleanup_exc:
+                cleanup_errno = (
+                    cleanup_exc.errno
+                    if isinstance(cleanup_exc.errno, int)
+                    else "unknown"
+                )
+                cleanup_blockers.append(
+                    "episode_compilation_partial_cleanup_failed:"
+                    f"errno_{cleanup_errno}"
+                )
+        if isinstance(
+            exc,
+            (
+                TaskEvaluationEpisodeCompilationWorkerError,
+                TaskEvaluationNativeArenaEpisodeCompilerError,
+                TaskEvaluationNativeArenaAdapterError,
+            ),
+        ):
+            primary_blocker = str(exc)
+        elif isinstance(exc, OSError):
+            error_number = exc.errno if isinstance(exc.errno, int) else "unknown"
+            primary_blocker = (
+                f"episode_compilation_failed:OSError:errno_{error_number}"
+            )
+        else:
+            primary_blocker = f"episode_compilation_failed:{type(exc).__name__}"
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "status": "blocked",
+            "compilation_id": re.sub(
+                r"-[0-9a-f]{64}\.json$", "", source_name
+            ),
+            "source_commit": source_commit,
+            "provider_mutation_performed": False,
+            "paid_execution_requested": False,
+            "automatic_retry_performed": False,
+            "blockers": [primary_blocker, *cleanup_blockers],
+            "result_digest": "",
+        }
+    if disk_reservation is not None:
+        # A compile that raised removed its partial output; its sample must
+        # not count as a completed footprint.
+        disk_reservation.release(
+            outcome="completed" if terminal_state == "completed" else "failed"
+        )
+    if (
+        storage_pins_root is not None
+        and owned_output is not None
+        and result.get("status") == "compiled_for_production_launch"
+    ):
+        try:
+            write_storage_pin(
+                pins_root=storage_pins_root,
+                kind="compilation",
+                owner_id=str(result["compilation_id"]),
+                paths=[owned_output],
+                depends_on=[
+                    {"kind": "preparation", "owner_id": str(envelope["preparation_id"])}
+                ],
+            )
+        except (ControlPlaneStoragePinError, OSError, KeyError):
+            pass
+    result["result_digest"] = canonical_digest(
+        result, digest_field="result_digest"
+    )
+    return terminal_state, result
+
+
+def claim_pending_row(queue: Path, source: Path) -> Path | None:
+    """Claim ``pending/<name>`` as ``processing/<name>``: an exclusive placeholder, then an atomic replace."""
+
+    claimed = queue / "processing" / source.name
+    try:
+        descriptor = os.open(
+            claimed, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+        )
+    except FileExistsError:
+        return None
+    else:
+        os.close(descriptor)
+    try:
+        os.replace(source, claimed)
+    except FileNotFoundError:
+        claimed.unlink(missing_ok=True)
+        return None
+    return claimed
+
+
+def record_compilation(
+    queue: Path, name: str, claimed: Path, terminal_state: str, result: Mapping[str, Any]
+) -> str:
+    """Write ``results/<name>`` once, then move the row to its terminal state."""
+
+    try:
+        write_launch_preparation_record_exclusive(queue / "results" / name, result)
+    except FileExistsError:
+        terminal_state = "blocked"
+    os.replace(claimed, queue / terminal_state / name)
+    return terminal_state
+
+
 @scene_participant('queue_root', 'input_root', 'output_root')
 def process_episode_compilation_queue(
     *,
@@ -332,195 +557,20 @@ def process_episode_compilation_queue(
     results_root.mkdir(mode=0o750, exist_ok=True)
     processed: list[dict[str, Any]] = []
     for source in sorted((queue / "pending").glob("*.json"))[:max_messages]:
-        claimed = queue / "processing" / source.name
-        try:
-            descriptor = os.open(
-                claimed, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
-            )
-        except FileExistsError:
+        claimed = claim_pending_row(queue, source)
+        if claimed is None:
             continue
-        else:
-            os.close(descriptor)
-        try:
-            os.replace(source, claimed)
-        except FileNotFoundError:
-            claimed.unlink(missing_ok=True)
-            continue
-        terminal_state = "completed"
-        owned_output: Path | None = None
-        disk_reservation: DiskReservation | None = None
-        try:
-            envelope = _load_envelope(claimed)
-            if envelope["expected_production_commit"] != source_commit:
-                raise TaskEvaluationEpisodeCompilationWorkerError(
-                    "episode_compilation_source_commit_mismatch"
-                )
-            references = _verified_references(envelope, input_root=inputs)
-            if disk_reservation_root is not None:
-                expected_bytes = _expected_compilation_bytes(
-                    references,
-                    content_store_root=(
-                        outputs / "content-addressed" / "adapter-members" / "sha256"
-                    ),
-                )
-                for check in range(COMPILATION_DISK_RECHECKS + 1):
-                    try:
-                        disk_reservation = reserve_control_plane_disk(
-                            "episode_compilation",
-                            target_root=outputs,
-                            expected_bytes=expected_bytes,
-                            reservation_root=disk_reservation_root,
-                            # The owned output does not exist yet, so its
-                            # baseline is zero and the sample is its growth.
-                            workspace=outputs / envelope["compilation_id"],
-                            workload="compiled_episode",
-                        )
-                        break
-                    except ControlPlaneDiskBudgetError as exc:
-                        if (not str(exc).startswith(
-                            "control_plane_disk_budget_exceeded:episode_compilation:"
-                        ) or check == COMPILATION_DISK_RECHECKS):
-                            raise TaskEvaluationEpisodeCompilationWorkerError(str(exc)) from exc
-                        time.sleep(COMPILATION_DISK_RECHECK_SECONDS)
-            owned_output = outputs / envelope["compilation_id"]
-            from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
-            generation = enroll_preparation_child(owned_output,
-                preparation_root=inputs / envelope['request']['preparation_id'],
-                request=envelope['request'],
-                verified_paths=[row['materialized_path'] for row in references.values()])
-            if generation is None:
-                owned_output.mkdir(mode=0o750, exist_ok=False)
-            compiler_output = _validated_compiler_output(
-                episode_compiler(
-                    envelope=envelope,
-                    materialized_references=references,
-                    output_root=owned_output,
-                ),
-                envelope=envelope,
-                output_root=owned_output,
-            )
-            packet = compiler_output["compiled_episode_packet"]
-            result: dict[str, Any] = {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "compiled_for_production_launch",
-                "compilation_id": envelope["compilation_id"],
-                "run_id": envelope["run_id"],
-                "team_namespace": envelope["team_namespace"],
-                "source_commit": source_commit,
-                "configured_scene_revision_digest": envelope[
-                    "configured_scene_revision_digest"
-                ],
-                "compiled_episode_packet_digest": packet["digest"],
-                "compiled_episode_packet_size_bytes": packet["size_bytes"],
-                "compiled_episode_packet_path": packet["path"],
-                "adapter_result_path": compiler_output["adapter_result"]["path"],
-                "adapter_result_digest": compiler_output["adapter_result"][
-                    "digest"
-                ],
-                "compiler_output_digest": compiler_output[
-                    "compiler_output_digest"
-                ],
-                **(
-                    {
-                        "destination_native_probe_request_path": compiler_output[
-                            "destination_native_probe_request"
-                        ]["path"],
-                        "destination_native_probe_request_digest": compiler_output[
-                            "destination_native_probe_request"
-                        ]["digest"],
-                        "destination_native_probe_request_document_digest": compiler_output[
-                            "destination_native_probe_request"
-                        ]["request_digest"],
-                    }
-                    if "destination_native_probe_request" in compiler_output
-                    else {}
-                ),
-                "customer_supplied_prebuilt_episode_packet": False,
-                "compiled_by_production": True,
-                "provider_mutation_performed": False,
-                "paid_execution_requested": False,
-                "automatic_progression_required": True,
-                "blockers": [],
-                "result_digest": "",
-            }
-        except Exception as exc:
-            terminal_state = "blocked"
-            cleanup_blockers: list[str] = []
-            if owned_output is not None and owned_output.exists():
-                try:
-                    shutil.rmtree(owned_output)
-                except OSError as cleanup_exc:
-                    cleanup_errno = (
-                        cleanup_exc.errno
-                        if isinstance(cleanup_exc.errno, int)
-                        else "unknown"
-                    )
-                    cleanup_blockers.append(
-                        "episode_compilation_partial_cleanup_failed:"
-                        f"errno_{cleanup_errno}"
-                    )
-            if isinstance(
-                exc,
-                (
-                    TaskEvaluationEpisodeCompilationWorkerError,
-                    TaskEvaluationNativeArenaEpisodeCompilerError,
-                    TaskEvaluationNativeArenaAdapterError,
-                ),
-            ):
-                primary_blocker = str(exc)
-            elif isinstance(exc, OSError):
-                error_number = exc.errno if isinstance(exc.errno, int) else "unknown"
-                primary_blocker = (
-                    f"episode_compilation_failed:OSError:errno_{error_number}"
-                )
-            else:
-                primary_blocker = f"episode_compilation_failed:{type(exc).__name__}"
-            result = {
-                "schema_version": RESULT_SCHEMA_VERSION,
-                "status": "blocked",
-                "compilation_id": re.sub(
-                    r"-[0-9a-f]{64}\.json$", "", source.name
-                ),
-                "source_commit": source_commit,
-                "provider_mutation_performed": False,
-                "paid_execution_requested": False,
-                "automatic_retry_performed": False,
-                "blockers": [primary_blocker, *cleanup_blockers],
-                "result_digest": "",
-            }
-        if disk_reservation is not None:
-            # A compile that raised removed its partial output; its sample must
-            # not count as a completed footprint.
-            disk_reservation.release(
-                outcome="completed" if terminal_state == "completed" else "failed"
-            )
-        if (
-            storage_pins_root is not None
-            and owned_output is not None
-            and result.get("status") == "compiled_for_production_launch"
-        ):
-            try:
-                write_storage_pin(
-                    pins_root=storage_pins_root,
-                    kind="compilation",
-                    owner_id=str(result["compilation_id"]),
-                    paths=[owned_output],
-                    depends_on=[
-                        {"kind": "preparation", "owner_id": str(envelope["preparation_id"])}
-                    ],
-                )
-            except (ControlPlaneStoragePinError, OSError, KeyError):
-                pass
-        result["result_digest"] = canonical_digest(
-            result, digest_field="result_digest"
+        terminal_state, result = compile_claimed_envelope(
+            claimed,
+            source_name=source.name,
+            inputs=inputs,
+            outputs=outputs,
+            source_commit=source_commit,
+            episode_compiler=episode_compiler,
+            disk_reservation_root=disk_reservation_root,
+            storage_pins_root=storage_pins_root,
         )
-        try:
-            write_launch_preparation_record_exclusive(
-                results_root / source.name, result
-            )
-        except FileExistsError:
-            terminal_state = "blocked"
-        os.replace(claimed, queue / terminal_state / source.name)
+        record_compilation(queue, source.name, claimed, terminal_state, result)
         processed.append(result)
     return {
         "schema_version": "task_evaluation_episode_compilation_queue_run.v1",
@@ -549,7 +599,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if not args.queue_root or not args.input_root or not args.output_root:
         raise SystemExit("episode compilation roots are required")
-    result = process_episode_compilation_queue(
+    # The no-spend unit (plan 14 §1): in ``host`` mode, the default, exactly this queue run.
+    from . import task_evaluation_episode_compilation_remote as remote
+
+    result = remote.run_no_spend_unit(
         queue_root=args.queue_root,
         input_root=args.input_root,
         output_root=args.output_root,
@@ -559,6 +612,7 @@ def main(argv: list[str] | None = None) -> int:
             "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
         ),
         storage_pins_root=os.getenv(PINS_ROOT_ENV),
+        jobs_root=os.getenv(remote.JOBS_ROOT_ENV) or remote.DEFAULT_JOBS_ROOT,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
@@ -568,8 +622,11 @@ __all__ = [
     "COMPILER_OUTPUT_SCHEMA_VERSION",
     "RESULT_SCHEMA_VERSION",
     "TaskEvaluationEpisodeCompilationWorkerError",
+    "claim_pending_row",
+    "compile_claimed_envelope",
     "main",
     "process_episode_compilation_queue",
+    "record_compilation",
 ]
 
 

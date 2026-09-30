@@ -9,13 +9,14 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
 from .controlled_native_policy_bundle import build_controlled_native_policy_bundle, PROBE_KIND
 from .controlled_policy_outcome import validate_controlled_outcome
-from .controlled_policy_configuration import canonical_request_digest
+from .controlled_policy_configuration import canonical_request_digest, validate_native_configuration
 from .common import utc_now_iso
 
 REGISTRY_ENV = "BLUEPRINT_CONTROLLED_NATIVE_REGISTRY"
@@ -52,11 +53,16 @@ def configured_profile(request: Mapping[str, Any]) -> dict[str, Any] | None:
     tasks = request.get("requested_tasks") or []
     if len(tasks) != 1 or len(tasks[0].get("scenario_ids") or []) != 1:
         return None
-    matches = [row for row in registry.get("profiles", []) if row.get("capture_root") == request.get("capture_root")
+    candidates = [row for row in registry.get("profiles", []) if row.get("capture_root") == request.get("capture_root")
         and row.get("task_id") == tasks[0].get("task_id")
         and row.get("scenario_id") == tasks[0]["scenario_ids"][0]
-        and request.get("customer", {}).get("id") in row.get("allowed_team_ids", [])
-        and request.get("robot_profile", {}).get("robot_profile_id") in row.get("allowed_checkpoint_ids", [])]
+        and request.get("customer", {}).get("id") in row.get("allowed_team_ids", [])]
+    checkpoint = request.get("robot_profile", {}).get("robot_profile_id")
+    exact = [row for row in candidates if checkpoint in row.get("allowed_checkpoint_ids", [])]
+    wildcard = [row for row in candidates if row.get("allowed_checkpoint_ids") == ["*"]
+        and isinstance(row.get("sandbox_manager"), Mapping)
+        and len(row.get("allowed_team_ids", [])) == 1]
+    matches = exact or wildcard
     if len(matches) > 1:
         raise ValueError("controlled_native_profile_ambiguous")
     return matches[0] if matches else None
@@ -95,11 +101,16 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
 
         from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
         from .native_task_arena_paid_authority import materialize_native_task_arena_paid_attempt_authority
-        config = _read(Path(profile["configuration_path"]))
+        config = validate_native_configuration(_read(Path(profile["configuration_path"])))
         if modalities[0] == "policy_api_endpoint":
             from urllib.parse import urlsplit
             from .controlled_policy_session import customer_hosted_client
             endpoint = request["policy_package"]["policy_api_endpoint"]["endpoint_url"]
+            if isinstance(profile.get("sandbox_manager"), Mapping):
+                parsed = urlsplit(endpoint)
+                config = {**config, "allowed_origins": [f"{parsed.scheme}://{parsed.netloc}"]}
+                config["configuration_digest"] = canonical_digest(config, digest_field="configuration_digest")
+                config = validate_native_configuration(config)
             customer_hosted_client(endpoint=endpoint, allowed_origins=tuple(config["allowed_origins"]),
                 contract=config["contract"])
             parsed = urlsplit(endpoint)
@@ -116,28 +127,74 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
         observation = {"observation_id": request["job_id"] + "-native-0", "task_id": profile["task_id"],
             "scenario_id": profile["scenario_id"], "scenario_eval_run_id": request["job_id"] + "-native-0"}
         credential = None
+        payload = request["policy_package"][modalities[0]]
+        access_client = None
+        if payload.get("credential_ref"):
+            from .checkpoint_policy_credentials import CheckpointPolicyCredentialClient
+            access_client = CheckpointPolicyCredentialClient(request=request, payload=payload)
+            access = access_client.access()
+            if modalities[0] == "policy_api_endpoint":
+                if access.get("kind") != "bearer" or not isinstance(access.get("credential"), Mapping):
+                    raise ValueError("controlled_native_bearer_credential_required")
+                credential = dict(access["credential"])
+            elif access.get("kind") != "registry":
+                raise ValueError("controlled_native_registry_credential_required")
         credential_path = profile.get("policy_credential_path")
-        if credential_path and modalities[0] == "policy_api_endpoint":
+        if credential_path and modalities[0] == "policy_api_endpoint" and access_client is None:
             credential_file = Path(credential_path)
             if credential_file.is_symlink() or credential_file.stat().st_mode & 0o077:
                 raise ValueError("controlled_native_policy_credential_not_private")
             credential = {**_read(credential_file), "job_id": request["job_id"]}
         bridge = None
+        runtime_config = config
         bridge_path = profile.get("qualified_sandbox_bridge_path")
         if modalities[0] != "policy_api_endpoint":
-            if not bridge_path:
-                raise ValueError("controlled_native_qualified_sandbox_not_configured")
-            bridge_file = Path(bridge_path)
-            if (not bridge_file.is_absolute() or bridge_file.is_symlink()
-                    or bridge_file.stat().st_mode & 0o077):
-                raise ValueError("controlled_native_qualified_sandbox_bridge_not_private")
             from .controlled_policy_remote_sandbox import RemoteQualifiedSandboxFactory, validate_remote_sandbox_bridge
             from .company_policy_container_contract_v2 import validate_company_policy_container_contract_v2
-            bridge = validate_remote_sandbox_bridge(_read(bridge_file))
+            manager_profile = profile.get("sandbox_manager")
+            if isinstance(manager_profile, Mapping):
+                from .company_policy_sandbox_manager_client import SandboxManagerClient
+                from .company_policy_session_admission import (
+                    materialize_company_policy_contract, stage_company_policy_session_admission,
+                )
+                contract = materialize_company_policy_contract(job_request=request,
+                    template=config["contract"],
+                    approved_model_runner_image=str(manager_profile["approved_model_runner_image"]),
+                    registry_credential_available=access_client is not None)
+                tenant_id = str(manager_profile["tenant_id"])
+                lease_id = (access_client.registry_lease(contract=contract, tenant_id=tenant_id)
+                    if access_client is not None else payload.get("registry_credential_lease_id"))
+                admission = stage_company_policy_session_admission(job_request=request,
+                    contract=contract, tenant_id=tenant_id,
+                    root=job_dir / "sandbox_admissions",
+                    allowed_registry_hosts=list(manager_profile["allowed_registry_hosts"]),
+                    registry_credential_lease_id=lease_id)
+                if access_client is not None:
+                    access_client.bind_admission(contract=contract, tenant_id=tenant_id,
+                        admission=admission, lease_id=lease_id)
+                manager = SandboxManagerClient(endpoint_url=str(manager_profile["endpoint_url"]),
+                    token_file=Path(str(manager_profile["token_file"])),
+                    certificate_file=Path(str(manager_profile["certificate_file"])))
+                bridge = manager.prepare(job_request=request, contract=contract,
+                    admission_receipt=admission)
+                bridge_file = job_dir / "qualified_sandbox_bridge.json"
+                _write(bridge_file, bridge)
+                runtime_config = {**config, "contract": contract}
+                runtime_config["configuration_digest"] = canonical_digest(runtime_config,
+                    digest_field="configuration_digest")
+                runtime_config = validate_native_configuration(runtime_config)
+            else:
+                if not bridge_path:
+                    raise ValueError("controlled_native_qualified_sandbox_not_configured")
+                bridge_file = Path(bridge_path)
+                if (not bridge_file.is_absolute() or bridge_file.is_symlink()
+                        or bridge_file.stat().st_mode & 0o077):
+                    raise ValueError("controlled_native_qualified_sandbox_bridge_not_private")
+                bridge = validate_remote_sandbox_bridge(_read(bridge_file))
             if (bridge["job_id"] != request["job_id"]
                     or bridge["canonical_request_digest"] != canonical_request_digest(request)):
                 raise ValueError("controlled_native_bridge_request_binding_mismatch")
-            offered_contract = dict(config["contract"])
+            offered_contract = dict(runtime_config["contract"])
             offered_contract.pop("contract_digest", None)
             container = dict(offered_contract["container"])
             container["image"] = bridge["image_ref"]
@@ -151,7 +208,7 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
             RemoteQualifiedSandboxFactory(bridge).preflight(contract=expected_contract, job_request=request)
         bundle = build_controlled_native_policy_bundle(job_dir=job_dir / "native_bundle",
             packet_dir=Path(profile["packet_dir"]), runtime_source_packet_receipt=Path(profile["runtime_source_packet_receipt"]),
-            implementation_commit=commit, configuration=config, job_request=request, observations=[observation],
+            implementation_commit=commit, configuration=runtime_config, job_request=request, observations=[observation],
             policy_credential=credential, qualified_sandbox_bridge=bridge)
         zero = collect_vast_provider_zero_receipt()
         zero_path = job_dir / "initial_provider_zero.json"
@@ -183,10 +240,23 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
             raise ValueError("controlled_native_machine_allowlist_invalid")
         for machine_id in sorted(set(machine_ids)):
             argv.extend(["--adp-allowed-vast-machine-id", str(machine_id)])
+        allocator_environment = os.environ.copy()
+        if bridge is not None and isinstance(profile.get("sandbox_manager"), Mapping):
+            from .company_policy_network_lease import CONTEXT_ENV
+            manager_profile = profile["sandbox_manager"]
+            context_path = job_dir / "sandbox_network_context.json"
+            _write(context_path, {
+                "job_id": request["job_id"],
+                "endpoint_url": manager_profile["endpoint_url"],
+                "token_file": manager_profile["token_file"],
+                "certificate_file": manager_profile["certificate_file"],
+            })
+            allocator_environment[CONTEXT_ENV] = str(context_path)
         with (job_dir / "native_allocator.log").open("x") as stream:
             stream_path = job_dir / "native_allocator.log"
             stream_path.chmod(0o600)
-            subprocess.run(argv, cwd=code_root, stdout=stream, stderr=subprocess.STDOUT,
+            subprocess.run(argv, cwd=code_root, env=allocator_environment,
+                stdout=stream, stderr=subprocess.STDOUT,
                 timeout=profile["hard_ttl_seconds"] + 900, check=False)
         seal_native_terminal(request=request, job_dir=job_dir, source_commit=commit)
 
@@ -198,11 +268,24 @@ def execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Pa
         _execute_staged_controlled_request(request=request, job_dir=job_dir)
     except Exception as exc:
         from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
+        blockers = [str(exc)[:300]]
+        if (job_dir / "qualified_sandbox_bridge.json").is_file():
+            try:
+                profile = configured_profile(request)
+                manager_profile = profile.get("sandbox_manager") if profile else None
+                if isinstance(manager_profile, Mapping):
+                    from .company_policy_sandbox_manager_client import SandboxManagerClient
+                    SandboxManagerClient(endpoint_url=str(manager_profile["endpoint_url"]),
+                        token_file=Path(str(manager_profile["token_file"])),
+                        certificate_file=Path(str(manager_profile["certificate_file"]))).close_network(
+                            job_id=str(request["job_id"]))
+            except Exception as close_exc:
+                blockers.append("policy_sandbox_close_unverified:" + type(close_exc).__name__)
         failure = job_dir / "controlled_native_failure.json"
         if not failure.exists():
             _write(failure, {"schema_version": "blueprint.controlled_native_failure.v1",
                 "job_id": request["job_id"], "error_class": type(exc).__name__,
-                "blockers": [str(exc)[:300]], "observed_at_iso": utc_now_iso()})
+                "blockers": blockers, "observed_at_iso": utc_now_iso()})
         try:
             zero = collect_vast_provider_zero_receipt()
         except Exception:
@@ -231,8 +314,17 @@ def seal_native_terminal(*, request: Mapping[str, Any], job_dir: Path, source_co
         raise ValueError("controlled_native_terminal_request_binding_mismatch")
     episode = native["attempts"][0]["metrics"]
     outcome = validate_controlled_outcome(episode["independent_outcome"], executed_motor_steps=episode["executed_motor_steps"])
-    from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
-    zero = collect_vast_provider_zero_receipt()
+    from .adp_task_evaluation_abstention import (
+        TaskEvaluationAbstentionError, collect_vast_provider_zero_receipt,
+    )
+    for attempt in range(3):
+        try:
+            zero = collect_vast_provider_zero_receipt()
+            break
+        except TaskEvaluationAbstentionError as exc:
+            if str(exc) != "provider_zero_api_query_failed" or attempt == 2:
+                raise
+            time.sleep(10)
     if zero.get("provider_zero") is not True or adapter.get("continuing_spend_from_this_run") is not False:
         raise ValueError("controlled_native_provider_zero_not_verified")
     _write(job_dir / "completed_provider_zero.json", zero)

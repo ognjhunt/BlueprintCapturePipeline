@@ -80,5 +80,28 @@ billing_account_id                    = ""
 gpu_fleet_billing_budget_usd          = 5000
 gpu_fleet_billing_budget_thresholds   = [0.5, 0.8, 1.0]
 
+# Remote CPU workers (plan 14, phase 3b). Off by default: nothing is created
+# until the owner commits the REMOTE_CPU_WORKERS_ENABLED default flip in
+# deploy/scripts/deploy.sh. The object prefix is the path-style US B2 endpoint,
+# bucket and configured-scene key prefix that every presigned URL handed to a
+# worker must stay under, for example
+# https://s3.us-<region>.backblazeb2.com/<bucket>/blueprint/arm-decision-proof-v1/configured-scenes/
+# The budget alerts on spend labeled cost-center=remote-cpu-workers and needs
+# billing_account_id once the workers are enabled.
+# deploy.sh exports the flag and the prefix. A value in terraform.tfvars
+# overrides that export, so a copy of this file must not set them:
+# remote_cpu_workers_enabled      = false
+# remote_cpu_worker_object_prefix = ""
+remote_cpu_workers_budget_usd        = 25
+remote_cpu_workers_budget_thresholds = [0.5, 0.9, 1.0]
+remote_cpu_worker_stages = {
+  episode-compilation = {
+    cpu                  = "4"
+    memory               = "16Gi"
+    timeout_seconds      = 1800
+    ephemeral_size_limit = "10Gi"
+  }
+}
+
 # Enable push notifications via Firebase Cloud Messaging
 enable_notifications = true

@@ -7,6 +7,9 @@ Description=Watch the Blueprint Task Evaluation episode compilation queue
 [Path]
 PathChanged=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending
 PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/pending/*.json
+# Plan 14 §1: rows the paid unit hands back.  No glob, so a marker can never loop the unit; a run defers
+# what its bound leaves, and the unit's timer picks those up.
+PathChanged=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/fallback/episode_compilation
 Unit=blueprint-task-evaluation-episode-compilation.service
 
 [Install]

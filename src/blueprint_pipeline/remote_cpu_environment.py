@@ -33,11 +33,14 @@ from .decision_evidence_contracts import canonical_digest
 ENVIRONMENT_SCHEMA_VERSION = "remote_cpu_environment.v1"
 CPUINFO_PATH = Path("/proc/cpuinfo")
 # The distributions a compile loads, measured on 2026-09-28 by running the compiler and worker
-# tests under an audit hook (plan 14, Facts).  pxr and msgpack load lazily, so plan 14 task 4.2
-# re-derives this set from a real fixture compile.
+# tests under an audit hook (plan 14, Facts), then re-derived from real fixture compiles in a fresh
+# interpreter (plan 14 task 4.2: ``test_parity_set_covers_every_distribution_a_fixture_compile_loads``),
+# which added pydantic's own dependencies, jsonschema's specifications and idna, and the upstream
+# NuRec converter an inline conversion runs.
 COMPILE_DISTRIBUTIONS = (
-    "attrs", "defusedxml", "jsonschema", "msgpack", "numpy", "packaging", "pillow", "pydantic",
-    "pydantic-core", "referencing", "rpds-py", "usd-core", "webcolors",
+    "annotated-types", "attrs", "defusedxml", "idna", "jsonschema", "jsonschema-specifications", "msgpack",
+    "numpy", "packaging", "pillow", "pydantic", "pydantic-core", "referencing", "rpds-py", "typing-extensions",
+    "typing-inspection", "usd-convert-gsplat", "usd-core", "webcolors",
 )
 DIGESTED_FIELDS = ("python_version_info", "golden_deflate", "golden_simd", "distributions", "cpu_class")
 

@@ -959,10 +959,12 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
     assert worker.main(["environment", "--extra"]) == worker.EXIT_REFUSED
     assert os.umask(umask) == umask  # a mode other than bootstrap leaves the process's umask alone
 
-    # The environment probe, the stage the allocator's preflight runs, is this PR's one registered stage; its
-    # receipt carries that record.
+    # The environment probe, the stage the allocator's preflight runs, carries that record in its receipt;
+    # PR 4 registers episode compilation beside it.
     assert worker.STAGE_HANDLERS == {
-        "environment_probe": "blueprint_pipeline.remote_cpu_worker_stage:run_environment_probe"}
+        "environment_probe": "blueprint_pipeline.remote_cpu_worker_stage:run_environment_probe",
+        "episode_compilation": "blueprint_pipeline.task_evaluation_episode_compilation_remote:"
+                               "run_episode_compilation_in_worker"}
     probe = WorkerWorld(tmp_path / "probe", stage=contract.PROBE_STAGE, environment_digest=host["environment_digest"])
     runtime = probe.runtime(measure=census.environment_record, run_stage=_registered)
     assert worker.bootstrap(["bootstrap"], probe.runtime(
@@ -1054,6 +1056,11 @@ def test_the_allocators_preflight_completes_against_the_real_worker(tmp_path: Pa
     assert recorded["environment_digest"] == census.environment_record()["environment_digest"]
 
 
+# Plan 14 PR 4: a stage whose handler runs the host's compiler, and the test that proves what it loads.
+COMPILER_STAGES = {"episode_compilation": "tests/test_task_evaluation_episode_compilation_remote.py::"
+                                          "test_a_worker_compile_loads_no_allocation_or_staging_authority"}
+
+
 def test_the_worker_holds_no_allocation_authority() -> None:
     """Review M3: the worker runs inside the paid execution, so nothing it, or a stage it runs, imports may admit,
     mint write authority or dispatch.  A handler is imported by name, which no closure follows, so every
@@ -1065,7 +1072,11 @@ def test_the_worker_holds_no_allocation_authority() -> None:
 
     src = Path(worker.__file__).resolve().parents[1]
     closure = import_closure(src, "blueprint_pipeline.remote_cpu_worker")
-    for handler in worker.STAGE_HANDLERS.values():
+    for stage, handler in worker.STAGE_HANDLERS.items():
+        if stage in COMPILER_STAGES:
+            # A compile stage's static closure is the compiler's own, through its lazy imports; its proof is what a
+            # real compile in a fresh interpreter loads (COMPILER_STAGES names that test).
+            continue
         closure.update(import_closure(src, handler.partition(":")[0]))
     assert {"blueprint_pipeline.remote_cpu_worker", "blueprint_pipeline.remote_cpu_worker_stage",
             "blueprint_pipeline.remote_cpu_job_contract", "blueprint_pipeline.remote_cpu_output_archive"} <= set(
@@ -1108,3 +1119,13 @@ def test_an_unexpected_error_is_typed_never_printed(tmp_path: Path, monkeypatch,
     out, err = capsys.readouterr()
     assert json.loads(err) == {"mode": "worker", "status": "failed", "code": "ValueError"} and out == ""
     assert "X-Amz-" not in "\n".join(world.logs)
+
+
+def test_every_compiler_stage_names_its_runtime_closure_proof() -> None:
+    """A stage excused from the static closure proof above must be registered and carry its runtime proof."""
+
+    root = Path(worker.__file__).resolve().parents[2]
+    assert set(COMPILER_STAGES) <= set(worker.STAGE_HANDLERS)
+    for proof in COMPILER_STAGES.values():
+        path, _, name = proof.partition("::")
+        assert f"def {name}(" in (root / path).read_text(encoding="utf-8"), proof

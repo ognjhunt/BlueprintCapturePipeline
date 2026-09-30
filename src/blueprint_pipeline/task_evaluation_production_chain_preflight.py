@@ -73,6 +73,8 @@ CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-launch-preparation.service",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-task-evaluation-episode-compilation.service",
+    # Plan 14 §1: the paid remote-compilation unit (skipped by its ExecCondition while the flag is unset).
+    "blueprint-task-evaluation-episode-compilation-remote.service",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-configured-controls-progression.service",
     "blueprint-task-evaluation-launch-dispatcher.service",
@@ -100,6 +102,8 @@ OWNER_AUTHORITY_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-configured-controls-progression.service",
 )
 CONTROLS_PROGRESSION_UNIT = "blueprint-task-evaluation-configured-controls-progression.service"
+EPISODE_COMPILATION_UNIT = "blueprint-task-evaluation-episode-compilation.service"
+PAID_EPISODE_COMPILATION_UNIT = "blueprint-task-evaluation-episode-compilation-remote.service"
 SCENE_PROGRESSION_UNIT = "blueprint-task-evaluation-scene-progression.service"
 SCENE_PROGRESSION_CONFIG_PATH = Path("/etc/blueprint/task-evaluation-scene-progression.json")
 PROJECT_SPEND_CONFIG_ENV = "BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG"
@@ -1597,7 +1601,8 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, An
         props = unit["properties"]
         state = _first(props, "ActiveState")
         result = _first(props, "Result")
-        if state == "failed" or result not in {"success", ""}:
+        # A skipped ExecCondition (``exec-condition``) is a condition unit working as designed, not a failure.
+        if state == "failed" or result not in {"success", "", "exec-condition"}:
             findings.append(_finding("warning", "unit_failed_state", unit=unit_name, active_state=state, result=result, exec_main_status=_first(props, "ExecMainStatus")))
         if _first(props, "LoadState") != "loaded":
             findings.append(_finding("blocker", "unit_not_loaded", unit=unit_name, load_state=_first(props, "LoadState")))
@@ -1646,6 +1651,29 @@ def append_history(path: Path, report: Mapping[str, Any], *, blockers: Sequence[
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(row, sort_keys=True) + "\n")
     return row
+
+
+def remote_execution_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Plan 14 §1, §15: a mode that runs as ``host`` instead of what was asked, and image drift, as warnings.
+
+    Drift is the configured image differing from the image the preflight probe measured or from the job
+    template's last observed image; eligibility then keeps every row on the host, so it never pages.
+    """
+
+    from . import task_evaluation_episode_compilation_remote as remote
+
+    environment = units.get(EPISODE_COMPILATION_UNIT, {}).get("effective_environment") or {}
+    _, reasons = remote.execution_mode(environment)
+    findings = [_finding("warning", reason, unit=EPISODE_COMPILATION_UNIT,
+                         requested=str(environment.get(remote.EXECUTION_ENV))[:64]) for reason in reasons]
+    config = remote.load_config(environ=environment)
+    jobs_root = environment.get(remote.JOBS_ROOT_ENV) or remote.DEFAULT_JOBS_ROOT
+    if config is not None and remote.STAGE in config["stages"]:
+        image = config["stages"][remote.STAGE]["image"]
+        if remote.image_drift(jobs_root, config_image=image):
+            findings.append(_finding("warning", "remote_cpu_image_drift", unit=PAID_EPISODE_COMPILATION_UNIT,
+                                     config_image=image))
+    return findings
 
 
 def interpreter_environment() -> dict[str, Any]:
@@ -1733,6 +1761,7 @@ def run_chain(args: argparse.Namespace) -> int:
     report["host_findings"].extend(provider_credit_check(units))
     report["host_findings"].extend(disk_admission_check(units))
     report["host_findings"].extend(unit_health_checks(units))
+    report["host_findings"].extend(remote_execution_checks(units))
     report["host_findings"].extend(intake_check(units, ids))
 
     # Effective environments carry secrets by reference only, but strip values

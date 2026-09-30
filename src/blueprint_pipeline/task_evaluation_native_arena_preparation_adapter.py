@@ -44,7 +44,7 @@ from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
 )
-from .task_evaluation_configured_scene_object_store import (
+from .task_evaluation_configured_scene_object_keys import (
     EXTERNAL_LAYER_ARTIFACT_KIND,
     LARGE_ARTIFACT_KEY_PREFIX,
 )

@@ -125,6 +125,8 @@ CONTROL_PLANE_ENTRYPOINTS = (
     "blueprint_pipeline.scene_object_discovery_worker",
     "blueprint_pipeline.task_evaluation_launch_activation_worker",
     "blueprint_pipeline.task_evaluation_episode_compilation_worker",
+    "blueprint_pipeline.task_evaluation_episode_compilation_collector",
+    "blueprint_pipeline.task_evaluation_episode_compilation_remote_condition",
     "blueprint_pipeline.task_evaluation_launch_reconciler",
     "blueprint_pipeline.task_evaluation_launch_supervisor",
     "blueprint_pipeline.task_evaluation_scene_retirement_supervisor",

@@ -415,10 +415,13 @@ def test_remote_cpu_object_store_writers_have_only_approved_callers() -> None:
     }
     writers = verifier.REMOTE_CPU_OBJECT_STORE_WRITERS
     assert writers == {"presign_remote_cpu_put", "copy_remote_cpu_staging_to_cas",
-                       "delete_remote_cpu_staging_versions", "remote_cpu_object_store_sentinel"}
+                       "delete_remote_cpu_staging_versions", "discard_remote_cpu_output_object",
+                       "remote_cpu_object_store_sentinel"}
     approved = verifier.APPROVED_REMOTE_CPU_OBJECT_STORE_CALLERS
     assert verifier._s3_transport_capability_callers(production, writers) == approved
-    assert {path for path, _ in approved} == {REMOTE_CPU_ALLOCATOR, CONFIGURED_SCENE_OBJECT_STORE}
+    # Plan 14 PR 4: the episode-compilation collector promotes (and discards a failed readback) in one function.
+    assert {path for path, _ in approved} == {REMOTE_CPU_ALLOCATOR, CONFIGURED_SCENE_OBJECT_STORE,
+                                              "src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py"}
     wrapper = (
         "from .task_evaluation_configured_scene_object_store import (\n"
         "    copy_remote_cpu_staging_to_cas, delete_remote_cpu_staging_versions as purge,\n"
