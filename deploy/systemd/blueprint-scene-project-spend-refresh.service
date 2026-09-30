@@ -23,7 +23,9 @@ SystemCallFilter=~ptrace process_vm_readv process_vm_writev
 TasksMax=32
 MemoryMax=512M
 CPUQuota=100%
-TimeoutStartSec=180
+# Retained cancellation closure took 174 seconds on the four-vCPU host after
+# scoped digest reuse. Leave bounded headroom for evidence growth and I/O jitter.
+TimeoutStartSec=360
 CapabilityBoundingSet=
 AmbientCapabilities=
 # Publishing an exposure snapshot takes the existing intake reservation lock.
