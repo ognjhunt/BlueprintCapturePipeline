@@ -47,13 +47,18 @@ def test_non_linux_or_ordinary_uid_never_reads_claimed_unit(monkeypatch):
         prove_historical_unit('a' * 32, '/work/selected', '/private/journals')
 
 
-@pytest.mark.skipif(sys.platform == 'linux', reason='Mac refusal is separate from actual Linux proof')
-def test_mac_root_metadata_is_still_not_linux_unit_proof(monkeypatch):
-    from blueprint_pipeline.control_plane_lane_historical_unit import prove_historical_unit
-    import os
+@pytest.mark.parametrize('platform', ['darwin', 'win32', 'freebsd13'])
+def test_non_linux_classifier_refuses_before_observing_claimed_root_unit(monkeypatch, platform):
+    from blueprint_pipeline import control_plane_lane_historical_unit as unit
+    # Parser-only platform/UID inputs exercise the early rejection classifier
+    # on every runner. This never supplies native observations or positive proof.
+    monkeypatch.setattr(unit.sys, 'platform', platform)
     monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    def unexpected(*_):
+        raise AssertionError('non-Linux classifier reached native observations')
+    monkeypatch.setattr(unit, '_manager_fields', unexpected)
     with pytest.raises(ValueError, match='native_unavailable'):
-        prove_historical_unit('a' * 32, '/work/selected', '/private/journals')
+        unit.prove_historical_unit('a' * 32, '/work/selected', '/private/journals')
 
 
 @pytest.mark.parametrize('changed', ['uid', 'caps', 'pid', 'mount', 'command', 'readonly', 'namespace', 'bootstrap'])
