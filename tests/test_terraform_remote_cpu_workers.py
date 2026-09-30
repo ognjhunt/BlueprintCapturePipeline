@@ -23,6 +23,7 @@ from tests.test_deploy_systemd_contract import _terraform_resource_body, _terraf
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
 TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
+DEPLOY_SCRIPT = REPO_ROOT / "deploy" / "scripts" / "deploy.sh"
 GIB = 1024**3
 IMAGE = "gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:" + "d" * 64
 # Plan 14 §14: run with overrides and read or cancel executions; nothing that operates on the project.
@@ -312,3 +313,16 @@ def test_dispatcher_roles_are_custom_minimal_and_resource_scoped() -> None:
         ("google_storage_bucket_iam_member", "remote_cpu_transport_worker"):
             ["remote_cpu_transport_reader"],
     }
+
+
+def test_no_service_account_key_is_managed_by_terraform() -> None:
+    """The owner creates the dispatcher's key, and only the paid unit loads it (LoadCredential=).
+
+    A key managed here would sit in Terraform state and could reach its outputs.
+    """
+    terraform = "\n".join(path.read_text(encoding="utf-8")
+                          for path in sorted(TERRAFORM_MAIN.parent.glob("*.tf")))
+    assert 'resource "google_service_account" "remote_cpu_dispatcher"' in terraform
+    assert "google_service_account_key" not in terraform
+    assert "private_key" not in terraform
+    assert "keys create" not in DEPLOY_SCRIPT.read_text(encoding="utf-8")
