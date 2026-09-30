@@ -204,6 +204,20 @@ for path, directory, mode in zip(sys.argv[1:], (True, False), (0o700, 0o600)):
         raise SystemExit("historical_generation_provisioning_unsafe")
 PYHISTORICALGENERATION
 
+# Journal writes stay separate from immutable owner decision/packet records.
+# Provisioning does not start an action or grant any historical target mount.
+historical_journal_store="$state_root/requests/historical-generation-journals"
+if [ ! -e "$historical_journal_store" ] && [ ! -L "$historical_journal_store" ]; then
+  install -d -o root -g root -m 0700 "$historical_journal_store"
+fi
+python3 - "$historical_journal_store" <<'PYHISTORICALJOURNAL'
+import os, stat, sys
+value = os.lstat(sys.argv[1])
+if (not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or value.st_gid != 0
+        or stat.S_IMODE(value.st_mode) != 0o700):
+    raise SystemExit("historical_journal_provisioning_unsafe")
+PYHISTORICALJOURNAL
+
 # 3b. The repository is private and the host has no other GitHub credential, so
 #     deploys fetch with a read-only deploy key. It is generated once, never
 #     replaced (its public half is registered on GitHub), and kept in a root-only

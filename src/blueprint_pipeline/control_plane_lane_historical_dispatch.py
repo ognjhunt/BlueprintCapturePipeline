@@ -13,6 +13,7 @@ from pathlib import Path
 
 from . import control_plane_lane_historical_authority as authority
 from . import control_plane_lane_historical_generation as generation
+from .control_plane_lane_historical_journal import journal_root
 from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_owner_consents as owners
 from .decision_evidence_contracts import canonical_digest
@@ -122,7 +123,9 @@ def select_historical_action(*, installed_config_path, action_id, now, monotonic
             and legacy._directory_identity(parent_info) == manifest['root_identity'], 'parent_unsafe')
         named = os.stat(name, dir_fd=parent, follow_symlinks=False)
         _require(legacy._directory_identity(named) == manifest['target_identity'], 'target_changed')
-        private_store = str(store.root)
+        private_store = str(journal_root(config))
+        private, _ = files.parent(Path(private_store) / '.journal-probe', protected=True)
+        owners._protected(os.fstat(private), directory=True, mode=0o700)
     observed = generation.inventory_historical_generation(target, allowed_roots=roots,
         max_seconds=operation.remaining(), monotonic=monotonic)
     _require(observed == manifest, 'generation_changed')
@@ -132,7 +135,9 @@ def select_historical_action(*, installed_config_path, action_id, now, monotonic
         parent, name = files.parent(target, protected=True)
         _require(legacy._directory_identity(os.fstat(parent)) == manifest['root_identity']
             and legacy._directory_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
-            == manifest['target_identity'] and str(store.root) == private_store, 'target_changed')
+            == manifest['target_identity'] and str(journal_root(config)) == private_store, 'target_changed')
+        private, _ = files.parent(Path(private_store) / '.journal-probe', protected=True)
+        owners._protected(os.fstat(private), directory=True, mode=0o700)
         generation.verify_historical_member_versions(manifest, tick=files.budget.tick)
         assignments = _unit_property_assignments(target, private_store)
         value = dict(schema_version='control_plane_historical_action_selection.v1', action_id=action_id,

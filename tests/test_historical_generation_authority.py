@@ -40,6 +40,7 @@ def historical_installation(installation):  # noqa: F811
         directory.mkdir(mode=0o700)
         (directory / lock).write_bytes(b'')
         (directory / lock).chmod(0o600)
+    (state / 'historical-generation-journals').mkdir(mode=0o700)
     row = dict(path=str(target), family='other', owner_guess='unowned',
         owner_guess_basis='no_owner_evidence', allocated_bytes=target.stat().st_blocks * 512,
         newest_mtime_epoch=None, age_seconds=None, unreadable=0, shared_names=0,

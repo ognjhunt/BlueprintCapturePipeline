@@ -27,7 +27,8 @@ def test_dispatch_derives_exact_target_and_private_store_from_approved_id(histor
     assert selected['generation_digest'] == approved['generation_digest']
     assert selected['target_path'] == str(historical_installation[1])
     assert selected['read_write_paths'] == [str(historical_installation[1]),
-                                           str(historical_installation[3])]
+        str(historical_installation[3].parent / 'historical-generation-journals')]
+    assert str(historical_installation[3]) not in selected['read_write_paths']
     assert str(historical_installation[1].parent) not in selected['read_write_paths']
     assert selected['execution_authorized'] is False
     assert selected['action_unit_started'] is False
