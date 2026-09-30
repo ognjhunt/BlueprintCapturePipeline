@@ -49,6 +49,7 @@ and never a host path.
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
 | `scene_configuration_output` | 2 GiB | only with `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`, for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix leaves archives in the job directory, estimated at one unpacked bundle (an estimate, not a proven bound). When it shares the volume, admission checks the larger of its own need and the hold plus those archives up front, and the hold is taken after the prefix releases; otherwise one reservation holds both. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
+| `policy_canary_output` | 1 GiB | only with `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`: a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
 
 A measured output hold refused after the CPU prefix is sealed like one refused
 before staging: exactly `scene_configuration_provider_output_disk_budget_exceeded`,
@@ -157,7 +158,7 @@ Pid liveness is the primary liveness signal and the TTL only a backstop for a
 recycled pid. A job holds its reservation for at most its systemd unit's
 `TimeoutStartSec`, so each role's TTL outlives that timeout (a test pins this
 against `deploy/systemd`): `cpu_prestage` and `semantic_pretraining` 12 h,
-`stage_replay`, `policy_canary_dispatch`, `launch_dispatch` and
+`stage_replay`, `policy_canary_dispatch`, `policy_canary_output`, `launch_dispatch` and
 `scene_configuration_output` 6 h,
 `control_plane_deploy` and `evidence_offload` 4 h, every other role 2 h.
 
@@ -1221,9 +1222,17 @@ path it reads; without one (download mode) it runs exactly its old code.
   for a run that has none; otherwise it seals the run blocked with
   `policy_canary_provider_output_not_durable`. While the staging dir's current
   promotion receipt is a checkpoint (witness `pending`), neither accepts the
-  proof (`policy_canary_provider_output_promotion_not_final`).
+  proof (`policy_canary_provider_output_promotion_not_final`). A proof answers
+  only for the promotion receipt it was sealed with: once a later promotion has
+  written the staging dir's receipt, neither accepts it
+  (`staged_object_absence_proof_receipt_not_current`) until the next cleanup
+  that proves absence seals a fresh one; the stale proof is renamed aside
+  (`.superseded-<uuid>`), never deleted.
 - **The existing-run continuation** promotes a gated staging's output under the
-  per-staging lock (10 s wait) before its gated cleanup.
+  per-staging lock (10 s wait) before its gated cleanup. Without the dedicated
+  B2 store it refuses first and the tick names
+  `continuation_output_promotion_artifact_store_not_configured`; its unit binds
+  the store explicitly.
 - **Offline tools** that need a scratch copy of one cell run
   `python -m blueprint_pipeline.provider_output_member_view materialize --evidence-root <attempt>/immutable_execution --prefix cell_runs/NN/ --output-root <scratch>`.
 
@@ -1248,3 +1257,146 @@ Two stream-mode records look alarming and are not:
   `mp4_validation.blockers` means no MP4 was copied out for ffprobe, by design.
   The Quick-10 bundle kind expects no inspection video smoke, so the run is
   not blocked by it; video smoke is simply not proven by the inspection.
+
+## Streamed provider output: the Quick-10 lane (2026-09-29)
+
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` selects how a Quick-10's provider
+archive reaches the host. Unset, empty or `download` is today's path, byte for
+byte (a test pins the lane result and artifact manifest to digests taken before
+the stream path existed). `stream` is read only by the Quick-10 session, before
+its authority is consumed; any other value, or `stream` unless all five
+dedicated B2 settings name readable regular files, refuses there with zero
+provider mutations
+(`policy_canary_output_delivery_mode_invalid`,
+`policy_canary_output_stream_artifact_store_not_configured`). Every other arena
+caller keeps the lane's `download` default. The canary dispatcher and the
+existing-run continuation units bind the B2 store explicitly, as the intake
+unit does.
+
+**What a streamed run does.**
+
+1. The session takes a `policy_canary_output` forecast hold before consuming
+   its authority: the needed-set budget's hold for up to 20,000 archive members
+   (`forecast_hold_bytes`, about 695 MiB; a production Quick-10 has 6,745),
+   never more than the role's declared 1 GiB footprint. A host without room
+   refuses with `policy_canary_output_disk_admission_refused` before any spend.
+   The hold is released with the lane's outcome.
+2. In the paid window the adapter observes the staged output by range (the
+   end records, the central directory, the result record): no ZIP and no MP4
+   copy. A 404 or any transport refusal falls back to pinned SSH recovery,
+   which still lands a whole ZIP.
+3. After teardown the lane promotes the staged object (or the SSH ZIP) to B2
+   with a full readback and indexes it, then runs the gated cleanup. The SSH
+   ZIP is removed behind its pointer.
+4. The member contract (`policy_canary_output_member_contract.v1`: JSON outside
+   `policy-requests`, less the ten `cell_runs/NN/…result.v1.json` children,
+   which adoption and partial recovery read through the view) selects the
+   needed set from the sealed index. The hold then shrinks in place to the
+   needed set plus 1 KiB per archive member, the index and 16 MiB, and the
+   members are ingested from B2 by range, each checked against the index. The
+   native inventory is then checked against the index, digests without bytes
+   (the first cell's static startup preflight bound to the bundle's run and
+   runtime inputs, every inventory row by digest), and the outcome sealed into
+   the ingestion receipt as `native_inventory`, never as a blocker; a resume
+   reads the binding from the sealed lane result. The native result path, the
+   view descriptor and the manifest's archive rows exist only once ingestion is
+   materialized.
+
+**Budget and measurement.** The contract materializes at most 640 MiB
+(`NEEDED_SET_BUDGET_BYTES`). That is 1.5 times the 436,485,098 bytes measured on
+a Quick-10-shaped fixture: the lifecycle rehearsal's real worker output, whose
+needed set is 2.29 times its aggregate, scaled to production's measured
+190,573,875-byte aggregate. The children would have added 191,208,330 bytes.
+**Before flipping the flag, measure one retained Quick-10**:
+`python -m blueprint_pipeline.provider_output_member_view plan --archive <retained vast_provider_runtime_output.zip> --contract policy_canary_output_member_contract.v1`
+prints `dispositions.materialized.bytes`. If it is over the budget, streamed
+runs would block after the run with their archive durable; raise the budget
+or move to a selection v2 before flipping.
+
+**After-run outcomes.** Each seals `blocked` like a failed download, with
+`archive_durable` saying whether B2 holds the output:
+
+| Blocker (`native_task_arena_policy_canary_session_…`) | Archive durable | Recovery |
+|---|---|---|
+| `…_provider_output_promotion_failed` (plus the receipt's code) | no; the staged output stays, the gate defers it | door resume |
+| `…_provider_output_zip_missing` | nothing was staged | none needed |
+| `…_provider_output_not_indexed` (plus `provider_output_index_refused:<code>`) | yes | none: the index refused the archive |
+| `…_provider_output_needed_set_over_budget` | yes | raise the budget, then door resume with `ingest` |
+| `…_provider_output_disk_budget_exceeded_after_run` (plus the ledger's code) | yes | door resume with `ingest` |
+| `…_provider_output_ingestion_blocked` (plus the ingester's code) | yes | door resume with `ingest` |
+| `…_provider_output_ingestion_failed:<Type>` (any other failure after the run, such as an `OSError` from the hold or the view descriptor) | as promotion left it | door resume with `ingest` |
+
+None of these is "before first observation" once the output arrived (observed
+in the paid window, promoted, or recovered over SSH) but was not ingested: the
+lane result carries a `provider_output_not_ingested` media gap whose reason is
+the stream blocker, and makes no policy claim (`candidate_policy_queried`,
+`first_observation_reached` and `scientific_attempt_started` are absent). The
+dispatcher seals that gap (`preprovider_evidence/typed_media_gap.json`, with
+`archive_durable`) and twenty episodes typed `provider_output_not_ingested`
+whose `candidate_policy_queried`, `actions_reached_robot` and `arm_moved` are
+null.
+
+Resume never rewrites the sealed lane result, so a run that blocked after the
+run stays blocked; its members become readable, its staged objects provably
+gone. Redelivering such a run is out of scope. A resume that changes nothing
+(the door run again on a completed attempt) leaves the promotion receipt byte
+for byte as it was: the sealed artifact manifest binds it by sha256 and the
+absence proof by digest.
+
+**Door resume.** `python3 scripts/operator_door.py provider-output-resume <run>
+<attempt> [--ingest] --wait` runs the active release's
+`provider_output_promotion resume` as `blueprint` with umask 0077, never as root
+(the attempt tree is the service user's). It refuses, touching nothing, until
+the attempt's `vast_provider_run/vast_teardown_manifest.json` records
+`continuing_spend_from_this_run: false`
+(`provider_output_resume_attempt_not_torn_down`): while the paid window may be
+open the provider can still read the bundle or upload its output, and the gated
+cleanup and the write-once absence proof must not run before it closes.
+`--ingest` takes an exact
+`policy_canary_output` hold and ingests once: an ingestion already materialized
+for the index short-circuits, because readers (partial recovery,
+interpretation) write into the evidence root afterwards and a second pass would
+refuse the tree.
+
+**Staging-manifest rewrites.** A rewrite that keeps the staged keys
+(`--refresh-output-get-url`) no longer demotes a promoted output: resume
+re-binds the durable receipt for the same output key and observed (size, ETag)
+(`rebound_from_staging_manifest_sha256`), and a durable receipt it cannot
+re-bind is renamed aside, never overwritten.
+
+**Owner rehearsal (no provider, no spend).** Before flipping the flag, promote
+and ingest one retained Quick-10 into the dev bucket on the host:
+
+1. As `blueprint` with umask 0077, lay out a scratch attempt:
+   `<scratch>/attempt_001/vast_provider_run/vast_provider_runtime_output.zip`, a
+   **copy** of a retained ZIP (promotion removes it behind its pointer), and
+   `<scratch>/attempt_001/object_store_staging/wam_provider_object_store_staging_manifest.json`
+   with `schema_version` `wam_provider_object_store_staging.v1`, `status`
+   `completed`, an `object_store` prefix, a `bundle_key` and an `output_key`
+   that name no object, and `"output_promotion_required": true`, plus
+   `<scratch>/attempt_001/vast_provider_run/vast_teardown_manifest.json` with
+   `"continuing_spend_from_this_run": false` (resume refuses without it).
+2. Point the five `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings and
+   `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET` at the dev bucket.
+3. Run `python -m blueprint_pipeline.provider_output_promotion resume
+   --attempt-root <scratch>/attempt_001 --ingest`. Expect promotion `promoted`
+   from `ssh_local_zip`, a CAS key under
+   `policy-canary-provider-output/sha256/…`, the cleanup proving both staged keys
+   absent, and `immutable_execution/` holding exactly the needed set. Run it
+   again: the ingestion short-circuits.
+
+**Documented differences from download mode.** `artifact_manifest.json` (archive
+rows and the streamed roles), and with it the records billing's terminal
+evidence binds for the manifest and the lane result;
+`provider_runtime_output_zip_inspection` (`zip_path`, no ffprobe rows); the
+stream-only lane-result fields (`provider_output_*`, `archive_durable`,
+`provider_output_host_bytes` = M1); `provider_runtime_output_zip_path` naming no
+file; and host bytes. The native result and its digest, the joined terminal
+result, the registry rows, the public delivery and projection, the strict
+controls' cell archives (`result_delivery/controls/cell-NN.zip`, whose frames
+and videos a streamed run reads through the member view), the interpretation
+receipts, the billing verdict, teardown, provider-zero and the cleanup rows are
+the same (`tests/test_policy_canary_output_streaming.py`).
+
+**Rollback.** Unset the flag or set `download`. Never revert the readers of
+the section above while a streamed run is retained.

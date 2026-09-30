@@ -19,6 +19,10 @@ branches (canary deploys) and candidate-code stage replays are deliberately not
 offered, because either would run unreviewed code as root. ``retire-scene-workspace``
 (``operate``) runs the active release's own retention module for one scene: a plan,
 or with ``apply`` a retirement that deletes nothing it cannot restore.
+``provider-output-resume`` (``operate``) runs the active release's
+``provider_output_promotion resume`` for one streamed policy-canary attempt,
+as the service user: promotion, the gated cleanup, the absence proof and, with
+``ingest``, the needed members' ingestion. It runs no new code.
 """
 
 from __future__ import annotations
@@ -57,6 +61,8 @@ _SCOPES = {
     "retire-scene": "operate",
     "restore-scene": "operate",
     "legacy-owner-census": "operate",
+    # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
+    "provider-output-resume": "operate",
 }
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
@@ -70,6 +76,8 @@ _TRIGGER_ONLY_ACTIONS = ("stop", "restart")
 _HOLD_OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}\Z")
 _LANE_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _LEASE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
+# A policy-canary dispatch directory name (the activation id).
+_CANARY_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 # Timers that protect money or cleanup are never paused through the door.
 _SAFETY_CRITICAL = re.compile(
     r"spend-guard|watchdog|teardown|reaper|provider-zero|"
@@ -243,6 +251,16 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 raise RequestRefused("bucket_invalid")
             normalized["bucket"] = bucket
         return normalized
+    if kind == "provider-output-resume":
+        _only(body, ("kind", "run", "attempt", "ingest"))
+        run, attempt, ingest = body.get("run"), body.get("attempt"), body.get("ingest", False)
+        if not isinstance(run, str) or not _CANARY_RUN.fullmatch(run) or run in {".", ".."}:
+            raise RequestRefused("provider_output_resume_run_invalid")
+        if type(attempt) is not int or not 1 <= attempt <= 999:
+            raise RequestRefused("provider_output_resume_attempt_invalid")
+        if not isinstance(ingest, bool):
+            raise RequestRefused("provider_output_resume_ingest_invalid")
+        return {"kind": kind, "run": run, "attempt": attempt, "ingest": ingest}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")

@@ -391,7 +391,7 @@ def execute_asset_authoring(*, request_value: dict, output_root: Path, invoker,
                     raise AssetAuthoringError('authoring_source_evidence_alias_changed')
                 original_phase = json.loads(aliased.read_text())
                 selected_model = getattr(invoker, 'model', MODEL)
-                allowed_models = ({'gpt-6-astra', 'gpt-6-sol'} if selected_model != 'claude-opus-5-5'
+                allowed_models = ({'gpt-6-astra', 'gpt-6.1-sol'} if selected_model != 'claude-opus-5-5'
                                   else {'claude-opus-5-5'})
                 selected_provider = 'anthropic' if selected_model == 'claude-opus-5-5' else 'openai'
                 if (original_phase.get('model') not in allowed_models

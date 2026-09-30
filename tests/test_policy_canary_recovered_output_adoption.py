@@ -7,9 +7,11 @@
 """A complete SSH-recovered canary is adopted by its member index when no local archive remains.
 
 In stream mode the recovered ZIP is published to B2 and removed behind its
-pointer; only the contract's JSON is on the host. Adoption then checks the
-archive by its member index and aggregates the ten cells into the same result
-download mode produces from the whole extracted tree.
+pointer; only the contract's JSON is on the host, and the contract leaves the
+ten per-cell child results in the archive (review I7). Adoption then checks the
+archive by its member index, reads the ten children through the member view
+(PR B review M7), and aggregates them into the same result download mode
+produces from the whole extracted tree.
 """
 
 from __future__ import annotations
@@ -136,9 +138,15 @@ def _cases(tmp_path: Path, monkeypatch, *, mp4_count: int = 120):
     return inputs, archive_bytes, (download_root, download_attempt), (stream_root, streamed)
 
 
+def _children(streamed) -> list[str]:
+    return [f"cell_runs/{index:02d}/{PROVIDER_RESULT_FILENAME}" for index in range(10)]
+
+
 def test_streamed_ssh_recovery_adopts_ten_cells_by_index_digest(tmp_path, monkeypatch):
     inputs, archive_bytes, (download_root, download_attempt), (stream_root, streamed) = _cases(tmp_path, monkeypatch)
     _command(streamed.attempt, archive_bytes, local_archive=False)  # removed after its verified promotion
+    # The contract keeps the ten children in the archive: nothing but the view can supply them.
+    assert all(path in streamed.remote() for path in _children(streamed))
     evidence_before = _listing(streamed.evidence)
 
     downloaded, _ = _adopt(download_root, download_attempt, inputs)
@@ -158,10 +166,11 @@ def test_streamed_ssh_recovery_adopts_ten_cells_by_index_digest(tmp_path, monkey
                                    (download_root / "recovered_provider_output_adoption",
                                     download_attempt / "immutable_execution")):
         child = root / "cell_runs/00" / PROVIDER_RESULT_FILENAME
-        original = attempt_evidence / "cell_runs/00" / PROVIDER_RESULT_FILENAME
+        original = download_attempt / "immutable_execution" / "cell_runs/00" / PROVIDER_RESULT_FILENAME
         assert child.read_bytes() == original.read_bytes()
         assert os.stat(child).st_ino != os.stat(original).st_ino and os.stat(child).st_nlink == 1
         assert stat.S_IMODE(os.stat(child).st_mode) & stat.S_IWUSR
+        assert root == adoption or (attempt_evidence / "cell_runs/00" / PROVIDER_RESULT_FILENAME).is_file()
     # Readers of the adoption root find its members through a sibling descriptor.
     view = open_member_view(adoption / video)
     assert view.evidence_root == adoption.resolve() and view.digest(video) == streamed.rows[video]["sha256"]
@@ -173,11 +182,36 @@ def test_streamed_ssh_recovery_adopts_ten_cells_by_index_digest(tmp_path, monkey
         "durable_reference": streamed.index["archive"]["durable_reference"],
         "member_index_digest": streamed.index["index_digest"]}
     assert receipt["adoption_digest"] == canonical_digest(receipt, digest_field="adoption_digest")
-    # Children were compared by digest: no member byte came from B2, nothing was written to the evidence root.
-    assert streamed.data_ranges() == []
+    # Each child was one range request for exactly its record's data, checked against the index;
+    # no other member byte came from B2, and nothing was written to the evidence root.
+    expected = sorted((streamed.rows[path]["data_offset"],
+                       streamed.rows[path]["data_offset"] + streamed.rows[path]["compressed_size"] - 1)
+                      for path in _children(streamed))
+    assert sorted(streamed.data_ranges()) == expected
     assert _listing(streamed.evidence) == evidence_before
-    # A second pass returns the sealed aggregate.
+    # A second pass returns the sealed aggregate without reading B2 again.
+    streamed.store.requests.clear()
     assert _adopt(stream_root, streamed.attempt, inputs) == (adopted, adopted_path)
+    assert streamed.data_ranges() == []
+
+
+def test_streamed_recovery_whose_ssh_zip_survived_adopts_through_the_view(tmp_path, monkeypatch):
+    """Review minor 9: a streamed attempt can keep its SSH ZIP (its removal failed, or a crash came
+    between the promotion receipt and the unlink). Its evidence root still holds only the contract's
+    JSON, so whenever a member view descriptor exists adoption reads through the view."""
+    inputs, archive_bytes, (download_root, download_attempt), (stream_root, streamed) = _cases(tmp_path, monkeypatch)
+    _command(streamed.attempt, archive_bytes, local_archive=True)  # the ZIP survived its promotion
+    assert (streamed.attempt / "immutable_execution.member_view.v1.json").is_file()
+
+    downloaded, _ = _adopt(download_root, download_attempt, inputs)
+    adopted = _adopt(stream_root, streamed.attempt, inputs)
+
+    assert adopted is not None and adopted[0] == downloaded
+    receipt = json.loads((stream_root / "recovered_provider_output_adoption.json").read_text())
+    assert receipt["archive"]["location"] == "durable_archive"
+    assert sorted(streamed.data_ranges()) == sorted(
+        (streamed.rows[path]["data_offset"], streamed.rows[path]["data_offset"] + streamed.rows[path]["compressed_size"] - 1)
+        for path in _children(streamed))
 
 
 @pytest.mark.parametrize("mismatch", ["archive_sha256", "archive_size", "mp4_count", "child_digest", "no_view"])
@@ -188,9 +222,9 @@ def test_reference_adoption_refuses_a_mismatched_archive_or_mp4_count(tmp_path, 
              recovered_sha256="sha256:" + "0" * 64 if mismatch == "archive_sha256" else None,
              recovered_size=len(archive_bytes) + 1 if mismatch == "archive_size" else None)
     if mismatch == "child_digest":
-        child = streamed.evidence / "cell_runs/03" / PROVIDER_RESULT_FILENAME
-        os.chmod(child, 0o640)
-        child.write_bytes(child.read_bytes() + b" ")
+        # B2 serves bytes for cell 03's child that are not the indexed member (same ETag).
+        row = streamed.rows["cell_runs/03/" + PROVIDER_RESULT_FILENAME]
+        streamed.store.object = streamed.store.object.patched(row["data_offset"], b"\x00" * 8)
     if mismatch == "no_view":
         (streamed.attempt / "immutable_execution.member_view.v1.json").unlink()
 
@@ -257,3 +291,19 @@ def test_reference_adoption_fails_closed_on_a_view_it_cannot_bind_or_trust(tmp_p
                        match="^policy_canary_recovered_output_member_view_invalid$"):
         _adopt(stream_root, streamed.attempt, inputs)
     assert not (stream_root / "recovered_provider_output_adoption").exists()
+
+
+def test_reference_adoption_names_a_child_it_could_not_read(tmp_path, monkeypatch):
+    """A transport failure reading a child through the view is typed and leaves nothing
+    behind: never an adoption, and never the silent ``None`` that would seal the run as a gap."""
+    from blueprint_pipeline.task_evaluation_policy_canary_dispatcher import TaskEvaluationPolicyCanaryDispatchError
+
+    inputs, archive_bytes, _, (stream_root, streamed) = _cases(tmp_path, monkeypatch)
+    _command(streamed.attempt, archive_bytes, local_archive=False)
+    streamed.store.absent = True  # B2 answers 404 for the durable copy
+
+    with pytest.raises(TaskEvaluationPolicyCanaryDispatchError,
+                       match="^policy_canary_recovered_output_member_read_failed$"):
+        _adopt(stream_root, streamed.attempt, inputs)
+    assert not (stream_root / "recovered_provider_output_adoption").exists()
+    assert not (stream_root / "recovered_provider_output_adoption.json").exists()

@@ -3683,7 +3683,7 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
             "kind": "ai",
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
         },
         "receipt_digest": "",
     }
@@ -5435,7 +5435,7 @@ def test_agents_api_project_guard_refuses_before_paid_allocation(tmp_path, monke
     monkeypatch.setattr(scene_vast, "_collect_openai_cost_snapshot", lambda **kw:
                         observed.append((kw["project_id"], kw["api_key_id"])) or {"total_cost_usd": 0})
     receipt = {"replacement_authoring_agent_runtime": "openai_agents_api",
-        "replacement_authoring_model": "gpt-6-sol",
+        "replacement_authoring_model": "gpt-6.1-sol",
         "replacement_authoring_agents_api_policy": {"project_guard_receipt_digest": digest(guard),
             "ttl_seconds": 900}}
     paths, environment = scene_vast._provider_runtime_inputs(authority, receipt)

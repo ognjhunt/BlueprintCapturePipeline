@@ -292,7 +292,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         request["replacement_authoring_model_provider"] = "anthropic"
     if construction["configurations"][2].get("authoring_agent_runtime") == "openai_agents_api":
         request["replacement_authoring_agent_runtime"] = "openai_agents_api"
-        request["replacement_authoring_model"] = "gpt-6-sol"
+        request["replacement_authoring_model"] = "gpt-6.1-sol"
     require(request["spend"]["hard_cap_usd"] <= intent["request"]["execution"]["max_total_spend_usd"],
             "website_native_construction_budget_exceeds_authority")
     validate_launch_preparation_request(request)

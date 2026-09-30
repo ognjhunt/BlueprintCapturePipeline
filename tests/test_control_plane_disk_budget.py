@@ -240,6 +240,7 @@ def test_headroom_projects_refused_roles_without_paths(tmp_path) -> None:
         "scene_configuration_output",
         "g1_checkpoint_cache",
         "experiment_restore",
+        "policy_canary_output",
     }
     assert next(row for row in report["targets"] if row["role"] == "control_plane_deploy")["refused"] is False
     assert str(tmp_path) not in json.dumps(report)
@@ -690,6 +691,9 @@ ROLE_WORKER_UNITS = {
     # Held from before the paid scene-configuration allocation until its
     # result is sealed, inside the dispatcher's allocator child.
     "scene_configuration_output": ("blueprint-task-evaluation-launch-dispatcher.service",),
+    # Held from before the Quick-10 session's authority is consumed until its lane
+    # seals, inside the canary dispatcher's allocator child (plan 15, review I3).
+    "policy_canary_output": ("blueprint-task-evaluation-policy-canary-dispatcher.service",),
 }
 
 
@@ -873,3 +877,31 @@ def test_scan_budget_exhaustion_cannot_complete_a_footprint(tmp_path, monkeypatc
     history = ledger / "history" / "launch_activation.jsonl"
     [sample] = [json.loads(line) for line in history.read_text().splitlines()]
     assert sample["outcome"] == "incomplete"
+
+
+def test_a_reservation_shrinks_in_place_and_never_grows_without_admission(tmp_path):
+    """Review I3: a forecast hold taken before the paid run is resized after indexing. A shrink
+    needs no admission; growth would be admitted against space other holds already reduced,
+    so it is refused and the hold stands as it was."""
+    ledger = tmp_path / "ledger"
+    usage = lambda _path: Usage(100 * GIB, 0, 20 * GIB)  # noqa: E731
+    hold = reserve_control_plane_disk("policy_canary_output", target_root=tmp_path, expected_bytes=GIB,
+                                      reservation_root=ledger, disk_usage=usage, now=lambda: 100.0,
+                                      pid_alive=lambda _pid: True, workload="quick10_needed_members")
+    assert disk_budget.ROLE_FOOTPRINT_BYTES["policy_canary_output"] == GIB
+    assert disk_budget.ROLE_TTL_SECONDS["policy_canary_output"] == 6 * 3600
+
+    hold.resize(300 * 1024**2)
+
+    assert hold.expected_bytes == 300 * 1024**2
+    entry = json.loads(hold.path.read_text())
+    assert entry["expected_bytes"] == 300 * 1024**2 and entry["token"] == hold.token
+    reserved, count = disk_budget.live_reservations(ledger, device=hold.device, now=100.0,
+                                                    pid_alive=lambda _pid: True)
+    assert (reserved, count) == (300 * 1024**2, 1)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="^control_plane_disk_budget_resize_growth_refused$"):
+        hold.resize(300 * 1024**2 + 1)
+    assert json.loads(hold.path.read_text())["expected_bytes"] == 300 * 1024**2
+    hold.release(outcome="completed")
+    with pytest.raises(ControlPlaneDiskBudgetError, match="^control_plane_disk_budget_reservation_released$"):
+        hold.resize(1)

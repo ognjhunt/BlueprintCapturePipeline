@@ -200,6 +200,29 @@ def _retire_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[st
             f"ReadWritePaths={_PUBSUB_HANDOFFS} {reservations} {pins} {results}")
 
 
+def _canary_root(config: DoorConfig) -> str:
+    return str(Path(config.control_plane_state) / "task-evaluation-policy-canaries")
+
+
+def _output_resume_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+              "DOOR_CANARY_ROOT": _canary_root(config), "DOOR_RUN": request["run"],
+              "DOOR_ATTEMPT": str(request["attempt"]), "DOOR_SERVICE_USER": "blueprint"}
+    if request["ingest"]:
+        values["DOOR_INGEST"] = "1"
+    return values
+
+
+def _output_resume_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """The canary tree, the disk ledger (ingestion's hold) and the result; nothing else is writable."""
+
+    results = str(Path(config.spool_root) / "results")
+    reservations = str(Path(config.control_plane_state) / "disk-reservations")
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
+            f"ReadWritePaths={_canary_root(config)} {reservations} {results}")
+
+
 @dataclass(frozen=True)
 class _LaunchSpec:
     """How one request kind becomes one transient ``.service`` unit running one installed script."""
@@ -238,6 +261,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "restore-scene-workspace": _LaunchSpec("blueprint-operator-door-restore", "door-restore-scene-workspace.sh", "2h",
                                            lambda request: hashlib.sha256(request["scene_id"].encode("utf-8"))
                                            .hexdigest()[:12], _restore_environment, _retire_properties),
+    # Promotion reads and writes up to one archive's bytes to B2 and back: at most 2 h.
+    "provider-output-resume": _LaunchSpec("blueprint-operator-door-output-resume", "door-provider-output-resume.sh",
+                                          "2h", lambda request: hashlib.sha256(
+                                              f"{request['run']}/{request['attempt']}".encode("utf-8"))
+                                          .hexdigest()[:12], _output_resume_environment, _output_resume_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],

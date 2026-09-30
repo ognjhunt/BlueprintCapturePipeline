@@ -86,7 +86,7 @@ def _backend(tmp_path: Path, backend_id: str) -> dict:
         "model_id": (
             "codex_gpt_6_luna"
             if backend_id == "earthtojake_text_to_cad"
-            else "gpt-6-sol"
+            else "gpt-6.1-sol"
         ),
     }
 

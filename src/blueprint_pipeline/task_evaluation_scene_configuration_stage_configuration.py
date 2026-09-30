@@ -424,7 +424,7 @@ def _stage_three_refusal(
         if authoring_runtime != "openai_agents_api":
             return "authoring_agent_runtime"
         if (authoring_provider != "openai"
-                or configuration.get("authoring_model") != "gpt-6-sol"
+                or configuration.get("authoring_model") != "gpt-6.1-sol"
                 or configuration.get("authoring_backend") != "astra_cad_blender_v1"
                 or configuration.get("source_observation_kind") != "website_capture_frames"):
             return "agents_api_authoring_scope"

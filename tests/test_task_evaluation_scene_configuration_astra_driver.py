@@ -940,7 +940,7 @@ def test_completed_articulated_successor_bypasses_model_and_cad_runtime(componen
     def prepare(**kwargs):
         observed["prepared"] = kwargs
         return {"source_part_requests": kwargs["part_requests"],
-                "authored": {"model": "gpt-6-sol", "parts": {}},
+                "authored": {"model": "gpt-6.1-sol", "parts": {}},
                 "lineage": {"new_provider_calls": 0}}
 
     def finish(**kwargs):

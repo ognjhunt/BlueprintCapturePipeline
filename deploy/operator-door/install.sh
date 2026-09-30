@@ -50,7 +50,7 @@ rm -rf "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
-  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh \
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh \
   "$source_dir"/install.sh "$stage/"
 git -C "$repo_root" rev-parse HEAD >"$stage/INSTALLED_COMMIT" 2>/dev/null || echo unknown >"$stage/INSTALLED_COMMIT"
 find "$stage" -name '__pycache__' -prune -exec rm -rf {} +

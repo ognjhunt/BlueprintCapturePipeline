@@ -158,7 +158,7 @@ def verify_source_analysis_adoption(*, prior_root: Path, request_value: dict,
     phase = prior_root / 'source_analysis.json'
     record = json.loads(phase.read_text())
     if (record.get('request_digest') != prior_request['request_digest']
-            or record.get('model') not in {'gpt-6-astra', 'gpt-6-sol'}):
+            or record.get('model') not in {'gpt-6-astra', 'gpt-6.1-sol'}):
         raise AssetAuthoringError('authoring_adoption_phase_binding_invalid')
     output = VisualBrief.model_validate(record['output'])
     output_digest = canonical_digest(output.model_dump(mode='json'))
@@ -192,7 +192,7 @@ def verify_physical_review_adoption(*, prior_root: Path, request_value: dict, bu
     phase = prior_root / 'physical_property_review.json'
     record = json.loads(phase.read_text())
     if (record.get('request_digest') != prior_request['request_digest']
-            or record.get('model') not in {'gpt-6-astra', 'gpt-6-sol'}):
+            or record.get('model') not in {'gpt-6-astra', 'gpt-6.1-sol'}):
         raise AssetAuthoringError('authoring_physical_adoption_phase_binding_invalid')
     output = PhysicalPropertyReviewProposal.model_validate(record['output'])
     output_digest = canonical_digest(output.model_dump(mode='json'))
@@ -231,7 +231,7 @@ def verify_blender_program_adoption(*, prior_root: Path, request_value: dict, bu
     phase = prior_root / f'appearance-{round_index:02d}/blender_author_{round_index}.json'
     record = json.loads(phase.read_text())
     if (record.get('request_digest') != prior_request['request_digest']
-            or record.get('model') not in {'gpt-6-astra', 'gpt-6-sol'} or record.get('provider') != 'openai'
+            or record.get('model') not in {'gpt-6-astra', 'gpt-6.1-sol'} or record.get('provider') != 'openai'
             or record.get('references') != prior_request['source_frames']):
         raise AssetAuthoringError('authoring_blender_adoption_phase_binding_invalid')
     output = BlenderProgram.model_validate(record['output'])

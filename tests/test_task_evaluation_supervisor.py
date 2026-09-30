@@ -291,7 +291,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(_fake_run_sync))
     invoker = OpenAIAgentsSDKInvoker(
         OpenAIAgentsSDKConfig(
-            model="gpt-6-sol",
+            model="gpt-6.1-sol",
             allow_live_invocation=True,
             tracing_disabled=True,
             max_inference_cost_usd=2.0,
@@ -303,7 +303,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
             name="Blueprint Claim Interpreter",
             instructions="Return a typed proposal only.",
-            model="gpt-6-sol",
+            model="gpt-6.1-sol",
             max_turns=2,
             max_output_tokens=1_000,
             max_input_tokens=100_000,
@@ -369,7 +369,7 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
             capability="fixture_multimodal_review",
             name="Blueprint fixture visual reviewer",
             instructions="Return a typed fixture result only.",
-            model="gpt-6-sol",
+            model="gpt-6.1-sol",
             max_turns=1,
             max_output_tokens=1_000,
             max_input_tokens=250_000,
@@ -386,7 +386,7 @@ def test_live_sdk_refuses_unbounded_multi_turn_context(
     monkeypatch.setenv("BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS", "true")
     invoker = OpenAIAgentsSDKInvoker(
         OpenAIAgentsSDKConfig(
-            model="gpt-6-sol",
+            model="gpt-6.1-sol",
             allow_live_invocation=True,
             max_inference_cost_usd=5.0,
         )
@@ -396,7 +396,7 @@ def test_live_sdk_refuses_unbounded_multi_turn_context(
         capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
         name="Unbounded multi-turn",
         instructions="Return a typed proposal only.",
-        model="gpt-6-sol",
+        model="gpt-6.1-sol",
         max_turns=2,
         max_output_tokens=1_000,
     )
@@ -427,7 +427,7 @@ def test_multimodal_sdk_invocation_requires_explicit_input_token_ceiling(
                 capability="fixture_multimodal_review",
                 name="Blueprint fixture visual reviewer",
                 instructions="No provider call should occur.",
-                model="gpt-6-sol",
+                model="gpt-6.1-sol",
                 max_turns=1,
                 max_output_tokens=1_000,
             ),
@@ -520,7 +520,7 @@ def test_live_sdk_requires_and_enforces_inference_budget(
                 capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
                 name="Budget test",
                 instructions="No live call should occur.",
-                model="gpt-6-sol",
+                model="gpt-6.1-sol",
                 max_turns=1,
                 max_output_tokens=1_000,
             ),
@@ -593,7 +593,7 @@ def test_inference_completion_is_bound_to_reserved_identity_and_release(
     identity = {
         "run_id": "bound-run",
         "capability": "claim_task_interpreter",
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "input_digest": "sha256:" + "b" * 64,
         "max_turns": 1,
         "max_output_tokens": 1_000,
@@ -623,7 +623,7 @@ def test_inference_completion_is_bound_to_reserved_identity_and_release(
         "run_id": "bound-run",
         "capability": "claim_task_interpreter",
         "provider": "openai",
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "cache_policy": reservation["cache_policy"],
         "breakpoint_digests": reservation["breakpoint_digests"],
         "projected_max_cost_usd": 0.5,
@@ -6331,7 +6331,7 @@ def _invalid_structured_sdk_fixture(tmp_path, monkeypatch, *, token_usage=True, 
     invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
         record_completion=audit.record_completion, restored_reserved_cost_usd=0.)
     spec = AgentsSDKAgentSpec(run_id="invalid-structured", capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
-        name="Invalid structured output accounting", instructions="Typed output", model="gpt-6-sol",
+        name="Invalid structured output accounting", instructions="Typed output", model="gpt-6.1-sol",
         max_turns=1, max_output_tokens=1000)
     return invoker, audit, spec, error, run_data, calls
 
