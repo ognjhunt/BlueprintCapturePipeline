@@ -115,6 +115,13 @@ def export_snapshot(bridge, day, destination):
     files = {kind: base64.b64decode(raw, validate=True) for kind, raw in snapshot["files"].items()}
     if "artifact" in files and hashlib.sha256(files["artifact"]).hexdigest() != row.get("raw_output_digest"):
         raise Refusal("artifact_not_downloaded_or_digest_mismatch")
+    if "output" in files:
+        try:
+            matches = "artifact" in files and canonical(json.loads(files["output"])) == canonical(json.loads(files["artifact"]))
+        except (ValueError, UnicodeError):
+            matches = False
+        if not matches:
+            raise Refusal("output_artifact_binding_mismatch")
     if "evidence" in files and digest(json.loads(files["evidence"])) != row.get("evidence_digest"):
         raise Refusal("evidence_digest_mismatch")
     if "review" in files:

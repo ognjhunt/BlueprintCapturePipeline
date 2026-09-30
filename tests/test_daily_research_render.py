@@ -89,6 +89,11 @@ def test_export_verifies_all_run_bindings_and_rejects_replacement(fixture, tmp_p
     with pytest.raises(Refusal, match="digest_mismatch"):
         render.export_snapshot(Changed(), DAY, tmp_path / "rejected")
     assert not (tmp_path / "rejected").exists()
+    snapshot = bridge.call("snapshot", day=DAY)
+    snapshot["files"]["output"] = base64.b64encode(b'{"different":"findings"}').decode()
+    with pytest.raises(Refusal, match="output_artifact_binding_mismatch"):
+        render.export_snapshot(Changed(), DAY, tmp_path / "rejected-output")
+    assert not (tmp_path / "rejected-output").exists()
 
 
 def test_timeout_poisons_pipe_and_cannot_accept_a_late_reply(fixture, monkeypatch):
