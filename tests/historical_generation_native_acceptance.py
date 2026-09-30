@@ -92,6 +92,25 @@ def worker_main(root, action_id):
     root = Path(root)
     _namespace(root)
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
+    from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    original_inspect = processes._inspect_process
+    scan_failure = {}
+    def inspect(*args, **kwargs):
+        try:
+            return original_inspect(*args, **kwargs)
+        except Exception as error:
+            # Keep only code locations/class/errno, never foreign process data.
+            trace = error.__traceback__
+            frames = []
+            while trace is not None:
+                if trace.tb_frame.f_code.co_filename == processes.__file__:
+                    frames.append(dict(function=trace.tb_frame.f_code.co_name,
+                                       line=trace.tb_lineno))
+                trace = trace.tb_next
+            scan_failure.update(error_type=type(error).__name__,
+                                errno=getattr(error, 'errno', None), frames=frames)
+            raise
+    processes._inspect_process = inspect
     cloud = None
     cloud_fixture = root / 'cloud-fixture.json'
     if cloud_fixture.exists():
@@ -122,14 +141,14 @@ def worker_main(root, action_id):
     interruption = root / 'interrupt-once'
     if interruption.exists():
         phase = interruption.read_text()
-        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final'):
+        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
                 if phase == 'before_restore_final' and kind == 'restore_final':
                     raise RuntimeError('fixture_interrupted_after_' + phase)
                 original_record(self, kind, body)
-                if kind == phase:
+                if kind == phase or (kind == 'restore_intent' and body.get('phase') == phase):
                     raise RuntimeError('fixture_interrupted_after_' + phase)
             _Worker.record = record
         elif phase == 'chown':
@@ -154,7 +173,8 @@ def worker_main(root, action_id):
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
     except BaseException as error:
-        emit(dict(status='failed', error_type=type(error).__name__, code=str(error)))
+        emit(dict(status='failed', error_type=type(error).__name__, code=str(error),
+                  **({'_fixture_scan_failure': scan_failure} if scan_failure else {})))
         raise
     emit(receipt)
 
@@ -440,12 +460,14 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                                   if name.startswith('e-')]
             assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
                 restore_interruption == 'restore_final')
-            assert 'restore.snapshot.json' in interrupted_prefix
+            assert ('restore.snapshot.json' in interrupted_prefix) == (restore_interruption != 'stage_removed')
             assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
             (root / 'interrupt-once').unlink()
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True)
-            assert restored['recovered_access' if restore_interruption == 'restore_final'
-                            else 'recovered_before_final'] is True
+            recovery = {'restore_final': 'recovered_access',
+                        'before_restore_final': 'recovered_before_final',
+                        'stage_removed': 'recovered_publication'}
+            assert restored[recovery[restore_interruption]] is True
             assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
             assert all((journals / restore['action_id'] / name).read_bytes() == raw
                        for name, raw in interrupted_prefix.items())
@@ -489,6 +511,7 @@ def connected_delete_recovery():
             raise AssertionError('connected phase=' + str(phase) + ':' + str(error)) from error
     connected_delete(action='offload')
     connected_delete(action='offload', restore_interruption='before_restore_final')
+    connected_delete(action='offload', restore_interruption='stage_removed')
     connected_delete(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
                 historical_delete_idempotent=True, original_fence_recovered=True,
