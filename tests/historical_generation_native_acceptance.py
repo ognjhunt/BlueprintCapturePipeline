@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import traceback
 from pathlib import Path
 
 
@@ -77,112 +76,47 @@ def _namespace(root):
     unit._EXECUTABLE = str(root / 'action-entry')
 
 
-def _unreadable_process_channels():
-    """Bounded metadata diagnostics; never expose command/environment bytes."""
-    blocked = []
-    for process in Path('/proc').iterdir():
-        if not process.name.isdigit() or int(process.name) == os.getpid():
-            continue
-        try:
-            fields = (process / 'stat').read_bytes().rpartition(b') ')[2].split()
-            kernel_thread = bool(int(fields[6]) & 0x00200000)
-        except (OSError, ValueError, IndexError):
-            kernel_thread = None
-        for channel in ('cmdline', 'environ', 'cwd', 'fd'):
-            try:
-                if channel in ('cmdline', 'environ'):
-                    with (process / channel).open('rb') as stream:
-                        stream.read(1)
-                elif channel == 'cwd':
-                    os.readlink(process / channel)
-                else:
-                    for descriptor in (process / 'fd').iterdir():
-                        os.readlink(descriptor)
-            except FileNotFoundError:
-                continue
-            except OSError as error:
-                blocked.append(dict(pid=int(process.name), channel=channel,
-                                    errno=error.errno, kernel_thread=kernel_thread))
-                if len(blocked) == 16:
-                    return blocked
-    return blocked
-
-
 def worker_main(root, action_id):
     root = Path(root)
     _namespace(root)
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
-    from blueprint_pipeline import control_plane_lane_historical_processes as processes
-    from blueprint_pipeline import control_plane_lane_historical_references as references
-    from blueprint_pipeline.control_plane_kernel_process import kernel_has_no_user_memory
-    inspect_process, read_channel = processes._inspect_process, processes._Scan.read
-    diagnostics = []
-    observe_pins = references.observe_storage_pins
-    def diagnosed_pins(*args, **kwargs):
-        result = observe_pins(*args, **kwargs)
-        if not result.complete:
-            budget = kwargs['budget']
-            diagnostics.append(('PIN_GUARD', dict(blockers=result.blockers,
-                root_identity=result.root_identity, budget_failure=budget.failure,
-                remaining_seconds=budget.deadline - time.monotonic()
-                    if budget.deadline is not None else None,
-                counts=dict(budget.counts))))
-        return result
-    references.observe_storage_pins = diagnosed_pins
-    def diagnosed_read(self, directory, name, cap=1024**2):
-        try:
-            return read_channel(self, directory, name, cap)
-        except OSError as error:
-            if not isinstance(error, ProcessLookupError):
-                diagnostics.append(('PROCESS_CHANNEL', dict(channel=name, errno=error.errno)))
-            raise
-    def diagnosed_inspection(scan, directory, pid, target, identities, namespaces, host_mount, root_identity):
-        try:
-            return inspect_process(scan, directory, pid, target, identities, namespaces, host_mount, root_identity)
-        except BaseException:
-            facts = dict(pid=int(pid))
-            def raw(name, cap):
-                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
-                try:
-                    result = os.read(descriptor, cap + 1)
-                    if len(result) > cap:
-                        raise ValueError('diagnostic bounded')
-                    return result
-                finally:
-                    os.close(descriptor)
-            facts['kernel_no_mm_observed'] = kernel_has_no_user_memory(raw, pid)
-            try:
-                view = processes._namespace(directory, kernel=facts['kernel_no_mm_observed'])
-                facts.update(pid_namespace_matches=view[0] == namespaces[0],
-                    user_namespace_matches=view[1] == namespaces[1],
-                    mount_matches_worker=view[2] == namespaces[2], mount_matches_host=view[2] == host_mount,
-                    mount_absent=view[2] is None)
-            except (OSError, ValueError) as error:
-                facts['namespace_error'] = getattr(error, 'errno', None)
-            try:
-                current = os.stat('root', dir_fd=directory)
-                facts['root_identity_matches'] = (current.st_dev, current.st_ino) == root_identity
-            except OSError as error:
-                facts['root_errno'] = error.errno
-            diagnostics.append(('PROCESS_GUARD', facts))
-            raise
-    processes._inspect_process = diagnosed_inspection
-    processes._Scan.read = diagnosed_read
     try:
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
     except BaseException as error:
-        for label, facts in diagnostics[:16]:
-            print(label + ':' + json.dumps(facts), flush=True)
-        frames = [dict(module=Path(frame.filename).name, function=frame.name, line=frame.lineno)
-                  for frame in traceback.extract_tb(error.__traceback__)[-8:]]
-        cause = error.__context__
-        print('ACTION_FAILURE:' + json.dumps(dict(frames=frames,
-            cause_type=type(cause).__name__ if cause is not None else None,
-            cause_errno=getattr(cause, 'errno', None))), flush=True)
         print(json.dumps(dict(status='failed', error_type=type(error).__name__, code=str(error))), flush=True)
         raise
     print(json.dumps(receipt), flush=True)
+
+
+def _launch_worker(entry, action_id, target, journals):
+    from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
+    unit = 'blueprint-historical-generation-' + action_id
+    def observations():
+        log = subprocess.run(['/usr/bin/journalctl', '--unit=' + unit, '--output=cat',
+            '--no-pager', '--lines=64'], capture_output=True, text=True, timeout=5)
+        assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
+        return [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
+    previous = observations()
+    done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
+        *('--property=' + value for value in _unit_property_assignments(target, journals)),
+        '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
+    assert done.returncode == 0, done.stdout + done.stderr
+    deadline = time.monotonic() + 60
+    time.sleep(0.5)
+    while time.monotonic() < deadline:
+        observed = subprocess.run(['/usr/bin/systemctl', 'show', unit,
+            '--property=ActiveState', '--value'], capture_output=True, text=True, timeout=5)
+        if observed.stdout.strip() in ('inactive', 'failed'):
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError('actual worker did not reach terminal state')
+    current = observations()
+    assert current[:-1] == previous and len(current) == len(previous) + 1, current
+    receipt = current[-1]
+    assert receipt['status'] == 'completed', receipt
+    return receipt
 
 
 def connected_delete():
@@ -196,7 +130,6 @@ def connected_delete():
         _namespace(root)
         from blueprint_pipeline import control_plane_lane_owner_consents as owners
         from blueprint_pipeline import control_plane_lane_historical_authority as authority
-        from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
         from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
         from blueprint_pipeline.control_plane_lane_scratch_census import build_census
         from blueprint_pipeline.control_plane_storage_pins import PIN_KINDS
@@ -252,8 +185,7 @@ def connected_delete():
         census = build_census(work_root=root / 'work', inputs_root=root / 'inputs',
             process_root=Path('/proc'), pins_root=root / 'pins', queue_roots=[root / 'queues'],
             active_run_roots=[root / 'evidence', root / 'settlement'], release_link=root / 'active', now=clock)
-        assert census['status'] == 'complete', dict(errors=census['scan_errors'],
-            unreadable=_unreadable_process_channels())
+        assert census['status'] == 'complete', census['scan_errors']
         raw = _encoded(census)
         annotations = _encoded(dict(schema_version='control_plane_lane_scratch_annotations.v1',
             census_digest='sha256:' + hashlib.sha256(raw).hexdigest(), decisions=[dict(path=str(target),
@@ -281,33 +213,7 @@ def connected_delete():
             + 'sys.path.insert(0,' + repr(str(root / 'python')) + ')\n'
             + 'from fixture_acceptance import worker_main\nassert len(sys.argv)==2\n'
             + 'worker_main(' + repr(str(root)) + ',sys.argv[1])\n').encode(), 0o755)
-        unit = 'blueprint-historical-generation-' + action_id
-        done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
-            *('--property=' + value for value in _unit_property_assignments(target, journals)),
-            '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
-        assert done.returncode == 0, done.stdout + done.stderr
-        deadline = time.monotonic() + 60
-        # Wait through the real manager, not a file that would contaminate the
-        # protected immutable journal namespace. Terminal observations are in
-        # the actual service journal, outside its target-only write mount.
-        time.sleep(0.5)
-        while time.monotonic() < deadline:
-            observed = subprocess.run(['/usr/bin/systemctl', 'show', unit,
-                '--property=ActiveState', '--value'], capture_output=True, text=True, timeout=5)
-            if observed.stdout.strip() in ('inactive', 'failed'):
-                break
-            time.sleep(0.5)
-        else:
-            raise AssertionError('actual worker did not reach terminal state')
-        log = subprocess.run(['/usr/bin/journalctl', '--unit=' + unit, '--output=cat',
-            '--no-pager', '--lines=64'], capture_output=True, text=True, timeout=5)
-        assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
-        observations = [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
-        assert len(observations) == 1, log.stdout
-        receipt = observations[0]
-        diagnostics = [line for line in log.stdout.splitlines()
-                       if line.startswith(('PROCESS_', 'PIN_GUARD:', 'ACTION_FAILURE:'))]
-        assert receipt['status'] == 'completed', dict(receipt=receipt, diagnostics=diagnostics)
+        receipt = _launch_worker(entry, action_id, target, journals)
         assert receipt['removed_files'] == 2 and receipt['removed_directories'] == 1
         assert receipt['logical_bytes'] == sum(map(len, original.values()))
         assert receipt['root_directory_retained'] is True and not list(target.iterdir())
@@ -317,7 +223,16 @@ def connected_delete():
         assert len([event for event in events if event['kind'] == 'removed']) == 3
         assert all(events[index]['previous_event_digest'] == events[index - 1]['event_digest']
                    for index in range(1, len(events)))
-        return dict(actual_owner_approved_delete=True, original_member_journal=True)
+        before = {path.name: path.read_bytes() for path in (journals / action_id).iterdir()}
+        repeated = _launch_worker(entry, action_id, target, journals)
+        assert repeated['idempotent'] is True
+        assert repeated['observed_removed_allocated_bytes'] == 0
+        assert repeated['removed_files'] == repeated['removed_directories'] == 0
+        assert repeated['original_final_event_digest'] == events[-1]['event_digest']
+        assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+        assert not list(target.iterdir())
+        return dict(actual_owner_approved_delete=True, original_member_journal=True,
+                    historical_delete_idempotent=True)
 
 
 if __name__ == '__main__':
