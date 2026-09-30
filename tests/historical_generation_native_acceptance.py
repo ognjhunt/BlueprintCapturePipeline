@@ -310,7 +310,7 @@ def _installed_entry(root, entry):
     boot = boot.replace("_ROOT = Path('/opt/blueprint/operator-door')", '_ROOT = Path(' + repr(str(installed)) + ')')
     boot = boot.replace("_CONFIG = '/etc/blueprint-operator-door/door.json'", '_CONFIG = ' + repr(str(root / 'door.json')))
     adjacent = root / 'work/adjacent-unselected.log'
-    _write(adjacent, b'adjacent original bytes\n')
+    assert adjacent.read_bytes() == b'adjacent original bytes\n'
     # A fixture-only synchronization/challenge; original source loader and
     # production worker remain unchanged after these actual observations.
     barrier = """        ready = Path(READY_PARENT) / ('.fixture-unit-ready-' + arguments[0])
@@ -401,6 +401,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             _write(target / relative, raw)
         for path in (target, target / 'nested', *(target / name for name in original)):
             os.chown(path, foreign.pw_uid, foreign.pw_gid)
+        if installed:
+            # This sibling exists before the real parent-generation packet;
+            # adding it after approval would truthfully invalidate that packet.
+            _write(root / 'work/adjacent-unselected.log', b'adjacent original bytes\n')
         # Default-off refuses before an ID can confer authority or create state.
         try:
             run_historical_action(installed_config_path=config, action_id='a' * 32, now=time.time())

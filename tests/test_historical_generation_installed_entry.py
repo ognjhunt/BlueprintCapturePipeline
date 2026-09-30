@@ -65,6 +65,7 @@ def test_native_fixture_stages_production_entry_and_rebinds_only_disposable_name
     root = tmp_path.resolve()
     (root / 'work').mkdir()
     (root / 'operator').mkdir()
+    (root / 'work/adjacent-unselected.log').write_bytes(b'adjacent original bytes\n')
     entry_path = root / 'action-entry'
     from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
     original = dispatch._ACTION_EXECUTABLE
