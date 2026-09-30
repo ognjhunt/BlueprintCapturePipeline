@@ -1477,9 +1477,9 @@ marker directories below it for the service account.
 **Claim recovery.** At the start of each run, a `processing/` row with no
 hand-off, shadow or fallback marker and no lease record was left by a run that
 died, since every run otherwise finishes or hands off what it claims. That
-holds because one run at a time holds the queue, by a non-blocking `flock` on
-the queue directory itself; a run that finds it held (a manual run beside the
-unit) skips with a note and touches nothing. Its
+holds because one run at a time holds the queue, by a `flock` on the queue
+directory itself; a run that finds it held (a manual run beside the unit) waits
+up to two minutes, and only then skips, with a note, touching nothing. Its
 partial output is renamed to `.<id>.interrupted-<epoch>`, which nothing deletes
 and GC never selects; the interruption is counted; and the row goes back to
 `pending/` by link, then unlink. The third interruption seals the row `blocked`

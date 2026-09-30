@@ -78,6 +78,9 @@ SHADOW_PASSES_REQUIRED = 3
 INLINE_NUREC_CONVERSION_DETERMINISTIC = False
 # A run starts no further handed-back compile past this, well inside the no-spend unit's TimeoutStartSec=15m.
 FALLBACK_TIME_BUDGET_SECONDS = 600
+# A run waits this long for another run to let go of the queue before it skips, also well inside that limit,
+# so a PathExistsGlob trigger during a manual run waits rather than restarting the unit into its start limit.
+QUEUE_LOCK_WAIT_SECONDS = 120.0
 # Plan 14 §9: the files later host stages read by path; nothing else lands on the host.
 EPISODE_COMPILATION_CONSUMER_SUBSET = ("native-arena-adapter/**", "rigid_destination_native_probe_request.v1.json")
 WORKER_ENVIRONMENT_SCHEMA_VERSION = "remote_cpu_worker_environment.v1"
@@ -595,26 +598,42 @@ def run_no_spend_unit(**arguments: Any) -> dict[str, Any]:
     run empties ``pending/``, so its ``PathExistsGlob`` cannot loop, and no row ever leaves the four queue
     states.
 
-    Recovery treats every unmarked claim as a dead run's, so one run at a time holds the queue: a
-    non-blocking ``flock`` on the queue directory itself, which adds no file to the queue.  A run that
-    finds it held (a manual run beside the unit, say) skips with a note and touches nothing.
+    Recovery treats every unmarked claim as a dead run's, so one run at a time holds the queue: an
+    ``flock`` on the queue directory itself, which adds no file to the queue.  A run that finds it held (a
+    manual run beside the unit, say) waits up to ``QUEUE_LOCK_WAIT_SECONDS``; only then does it skip, with
+    a note, touching nothing.
     """
-
-    import fcntl
 
     from .task_evaluation_scene_construction_queue import ensure_scene_construction_queue_root
 
     held = os.open(ensure_scene_construction_queue_root(arguments["queue_root"]), os.O_RDONLY)
     try:
-        try:
-            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+        if not _hold_queue(held):
             return {"schema_version": RUN_SCHEMA_VERSION, "status": "skipped",
                     "reason": "episode_compilation_no_spend_run_in_progress", "processed_count": 0, "results": [],
-                    "provider_mutation_performed": False, "paid_execution_requested": False}
+                    "waited_seconds": QUEUE_LOCK_WAIT_SECONDS, "provider_mutation_performed": False,
+                    "paid_execution_requested": False}
         return _no_spend_run(**arguments)
     finally:
         os.close(held)
+
+
+def _hold_queue(descriptor: int) -> bool:
+    """Take the queue's lock, waiting up to ``QUEUE_LOCK_WAIT_SECONDS`` for another run to let it go."""
+
+    import fcntl
+    import time
+
+    deadline = time.monotonic() + QUEUE_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.25, remaining))
 
 
 def _no_spend_run(

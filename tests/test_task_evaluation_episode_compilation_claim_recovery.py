@@ -216,6 +216,7 @@ def test_a_second_no_spend_run_never_recovers_the_first_runs_live_claim(tmp_path
     import fcntl
     import os
 
+    monkeypatch.setattr(remote, "QUEUE_LOCK_WAIT_SECONDS", 0.2)
     host = Host(tmp_path)
     _, name = stage_compile(host)
     host.claim(name)  # the running instance's claim, mid-compile
@@ -226,6 +227,7 @@ def test_a_second_no_spend_run_never_recovers_the_first_runs_live_claim(tmp_path
     finally:
         os.close(held)
     assert (run["status"], run["reason"]) == ("skipped", "episode_compilation_no_spend_run_in_progress")
+    assert run["waited_seconds"] == 0.2
     assert (host.queue / "processing" / name).is_file() and not recovery.record_path(host.jobs, name).exists()
     # Once that run is gone, its claim is an orphan like any other.
     run = _run(host, _stand_ins(monkeypatch), now=3_000.0)
@@ -247,3 +249,26 @@ def test_a_compile_never_removes_an_output_directory_it_did_not_create(tmp_path:
         episode_compiler=_stand_ins(monkeypatch), disk_reservation_root=None, storage_pins_root=None)
     assert state == "blocked" and result["blockers"] == ["episode_compilation_failed:OSError:errno_17"]
     assert (existing / "someone-elses.bin").read_bytes() == b"keep"
+
+
+def test_a_run_waits_briefly_for_the_queue_rather_than_skip(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: a run that found the queue held skipped at once, so while a manual run held it the
+    ``PathExistsGlob`` trigger restarted the unit into its start limit.  A run now waits (bounded, well
+    inside TimeoutStartSec) and proceeds once the other run lets go."""
+
+    import fcntl
+    import os
+    import threading
+
+    assert remote.QUEUE_LOCK_WAIT_SECONDS <= 5 * 60
+    host = Host(tmp_path)
+    _, name = stage_compile(host)
+    held = os.open(host.queue, os.O_RDONLY)
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    release = threading.Timer(0.5, lambda: os.close(held))
+    release.start()
+    try:
+        run = _run(host, _stand_ins(monkeypatch), now=2_000.0)
+    finally:
+        release.join()
+    assert run["status"] == "processed" and (host.queue / "completed" / name).is_file()
