@@ -9,6 +9,7 @@ import stat
 
 from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_fence import _members
+from .control_plane_lane_historical_restore_reconciliation_replay import binding, parent_observation
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -27,7 +28,7 @@ def stage_birth_versions(original, decision, events, action_id, *, complete, tic
             and events[-1]['body'] == dict(phase='stage_complete',
                 archive_sha256=decision['archive']['sha256'], archive_size_bytes=decision['archive']['size_bytes'],
                 restored_files=len(files), restored_logical_bytes=original['logical_payload_bytes']))
-    pending = None
+    pending, reconciliation = None, None
     versions = {'': decision['tombstone_version']}
     births = set()
     for event in events[:-1] if complete else events:
@@ -38,8 +39,20 @@ def stage_birth_versions(original, decision, events, action_id, *, complete, tic
             continue
         if kind == 'restore_intent':
             phase = body.get('phase')
-            _require(phase in ('reservation', 'directory', 'member'))
-            if not complete:
+            _require(phase in ('reservation', 'directory', 'member', 'reconcile_intent', 'reconciled'))
+            if phase == 'reconcile_intent':
+                _require(pending is not None and reconciliation is None)
+                reconciliation = binding(body)
+                _require(body == dict(phase=phase, **reconciliation))
+                continue
+            if phase == 'reconciled':
+                _require(pending is not None and reconciliation is not None)
+                parent, version = parent_observation(body, pending, reconciliation, stage, versions)
+                versions[parent] = version
+                pending, reconciliation = None, None
+                continue
+            _require(reconciliation is None)
+            if not complete or phase in ('directory', 'member'):
                 if phase == 'reservation':
                     _require(not births and (pending is None or pending == dict(
                         phase='directory', path='', stage_path=stage)))
@@ -54,7 +67,7 @@ def stage_birth_versions(original, decision, events, action_id, *, complete, tic
                     _require(body == expected and (pending is None or pending == expected))
                     pending = expected
             continue
-        _require(kind in ('restore_directory', 'restore_member'))
+        _require(kind in ('restore_directory', 'restore_member') and reconciliation is None)
         path = body.get('path')
         _require(type(path) is str and path in originals and path not in births)
         if not complete and pending is not None:
@@ -100,7 +113,9 @@ def _validate_stage(original, observed, decision, events, action_id, *, complete
         and all(observed[key] == original[key] for key in ('target_path', 'parent_path'))
         and observed['root_version'] == decision['parent_version']
         and rows['']['version'] == observed['target_version'])
-    _require('' in births and rows['']['version'] == versions['']
+    _require(('' in births or not births and any(event['kind'] == 'restore_intent'
+        and event['body'].get('phase') == 'reconciled' for event in events))
+        and rows['']['version'] == versions['']
         and set(rows) == {''} | {stage + ('/' + path if path else '') for path in births}
         and observed['member_count'] == len(births) + 1
         and observed['logical_payload_bytes'] == sum(originals[path]['size_bytes']

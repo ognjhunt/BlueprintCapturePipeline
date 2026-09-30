@@ -38,6 +38,8 @@ class _Worker:
         self.head = None
         self.sandbox = None
         self.reservation = None
+        self.reconciliations = []
+        self.reconciliation_selected = []
 
     @contextmanager
     def checkpoint(self, *, journal=False):
@@ -49,6 +51,12 @@ class _Worker:
                 self.selected = current
             else:
                 _require(current == self.selected, 'authority_changed')
+            if self.reconciliations:
+                from .control_plane_lane_historical_restore_reconciliation_authority import select_reconciliation
+                self.reconciliation_selected = []
+                for events, identifier, selector, consumed in self.reconciliations:
+                    self.reconciliation_selected.append(select_reconciliation(files, config, store,
+                        self.config_path, current, events, identifier, selector, self.operation.moment(), consumed=consumed))
             target = current[2]['target_path']
             restore = current[1]['action'] == 'restore'
             prove_historical_unit(self.action_id, target, str(journal_root(config)), restore=restore)
@@ -103,7 +111,13 @@ class _Worker:
                 events.extend(batch['events'])
                 start, previous, observed_at = batch['next_start'], batch['previous'], batch['observed_at']
                 if batch['complete']:
-                    return events
+                    break
+        if self.selected[1]['action'] == 'restore':
+            from .control_plane_lane_historical_restore_reconciliation_replay import reconciliation_bindings
+            self.reconciliations = reconciliation_bindings(events)
+            with self.checkpoint(journal=True):
+                pass
+        return events
 
 
 def _preservation_record(worker, event):

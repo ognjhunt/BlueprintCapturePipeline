@@ -67,8 +67,14 @@ def recover_private_prefix(worker, events, roots, monotonic):
     manifest, decision = worker.selected[2], worker.selected[1]
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
         max_seconds=worker.operation.remaining(), monotonic=monotonic)
-    births = validate_private_prefix(manifest, observed, decision, events, worker.action_id,
-                                     tick=worker.operation.remaining)
+    try:
+        births = validate_private_prefix(manifest, observed, decision, events, worker.action_id,
+                                         tick=worker.operation.remaining)
+    except generation.HistoricalGenerationError:
+        from .control_plane_lane_historical_restore_reconciliation_worker import reconcile_unlogged_creation
+        events, observed = reconcile_unlogged_creation(worker, events, observed, roots, monotonic)
+        births = validate_private_prefix(manifest, observed, decision, events, worker.action_id,
+                                         tick=worker.operation.remaining)
     raw = encoding.encode_validation_report(manifest)
     generation._require(authority._selector(raw) == decision['manifest'], 'restore_manifest_changed')
     _readback(worker, observed, roots, monotonic)
