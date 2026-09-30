@@ -542,6 +542,11 @@ def _write_pointer(c: Collector, plan: remote.RemotePlan, lease: Mapping[str, An
                    receipt: Mapping[str, Any], promoted: Mapping[str, Any], index: Mapping[str, Any],
                    landed: Mapping[str, Any]) -> dict[str, Any]:
     consumption = _consumption(lease["attempt_id"])
+    # The packet the result names, which did not land, as a host path under the output root: validation has
+    # placed it there, and the worker compiled at the host's own paths, so this is the result's path.
+    output_root = descriptor["outputs"]["output_root"]
+    packet = os.path.realpath(str(receipt["result"]["compiled_episode_packet_path"]))
+    packet = output_root + packet[len(os.path.realpath(c.host(output_root))):]
     fields = {
         "stage": STAGE, "compilation_id": plan.compilation_id, "queue_row": dict(plan.queue_row),
         "attempt_id": lease["attempt_id"], "descriptor_digest": descriptor["descriptor_digest"],
@@ -554,9 +559,13 @@ def _write_pointer(c: Collector, plan: remote.RemotePlan, lease: Mapping[str, An
                  "source_archive_digest": descriptor["code"]["source_archive"]["digest"],
                  "image": descriptor["code"]["image"], "environment_digest": descriptor["code"]["environment_digest"]},
         "archive": dict(promoted["archive"]), "index": dict(promoted["index"]),
-        "output_root": descriptor["outputs"]["output_root"], "paths_total": index["paths_total"],
+        "output_root": output_root, "paths_total": index["paths_total"],
         "bytes_total": index["bytes_total"], "host_known": dict(index["host_known"]),
-        "landed": {"subset": CONSUMER_SUBSET, "paths": landed["paths"], "bytes": landed["bytes"]}, "state": "landed",
+        "landed": {"subset": CONSUMER_SUBSET, "paths": landed["paths"], "bytes": landed["bytes"]},
+        # What the result names that did not land: the packet, validated against the index above (§16).
+        "raw_references": [{"path": packet, "digest": receipt["result"]["compiled_episode_packet_digest"],
+                            "size_bytes": receipt["result"]["compiled_episode_packet_size_bytes"]}],
+        "state": "landed",
     }
     pointer = pointer_record(fields)
     path = _pointer_path(c, plan.compilation_id)

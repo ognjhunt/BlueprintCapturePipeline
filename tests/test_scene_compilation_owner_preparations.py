@@ -14,7 +14,7 @@ from tests.test_scene_source_family_website import fixture as base_fixture, pair
 
 ROLES = ('native_preparation_envelopes', 'native_preparation_results', 'native_activation_envelopes',
     'native_activation_results', 'configured_revisions', 'compilation_intake_receipts', 'compiler_outputs',
-    'compilation_adapter_results', 'native_owner_records')
+    'compilation_adapter_results', 'native_owner_records', 'compilation_remote_output_pointers')
 
 
 def api():

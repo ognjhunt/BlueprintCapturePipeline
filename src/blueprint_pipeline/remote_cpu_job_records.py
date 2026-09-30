@@ -57,6 +57,9 @@ from .remote_cpu_job_contract import (
 TEARDOWN_SCHEMA_VERSION = "remote_cpu_job_teardown.v1"
 POINTER_SCHEMA_VERSION = "remote_cpu_output_pointer.v1"
 POINTER_STATES = ("landed", "restored_full")
+# The result's references to bytes that stayed remote (the packet), each by path, digest and size, so that
+# a reader such as the owner census can let the pointer stand for them.
+MAX_POINTER_RAW_REFERENCES = 64
 _MAX_RECORD_BYTES = 1024 * 1024
 _TRANSPORT_OBJECT = re.compile(r"gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]/transport/[a-z0-9-]+/[a-z0-9-]+\.json")
 
@@ -188,6 +191,7 @@ _POINTER_SPEC = {
     "output_root": _text, "paths_total": _is_count, "bytes_total": _is_count,
     "host_known": {"count": _is_count, "bytes": _is_count},
     "landed": {"subset": _matches(_OUTCOME), "paths": _is_count, "bytes": _is_count},
+    "raw_references": [{"path": _text, "digest": _is_digest, "size_bytes": _positive}],
     "state": _one_of(*POINTER_STATES), "teardown_receipt_digest": _optional_digest,
     "provider_zero_proven": _flag, "pointer_digest": _is_digest,
 }
@@ -269,6 +273,11 @@ def _pointer_reasons(pointer: Mapping[str, Any]) -> list[str]:
     row, stage, execution = pointer["queue_row"], pointer["stage"], pointer["execution"]
     paths, total, known, landed = pointer["paths_total"], pointer["bytes_total"], pointer["host_known"], pointer["landed"]
     reasons.extend(_path_reasons(pointer["output_root"], "output_root", PERMITTED_PATH_ROOTS))
+    references = pointer["raw_references"]
+    for index, reference in enumerate(references):
+        reasons.extend(_path_reasons(reference["path"], f"raw_references[{index}].path", (pointer["output_root"] + "/",)))
+    if len(references) > MAX_POINTER_RAW_REFERENCES or len({row["path"] for row in references}) != len(references):
+        reasons.append("remote_cpu_pointer_raw_references_invalid")
     for name in ("archive", "index"):
         reasons.extend(_cas_uri_reasons(pointer[name]["uri"], pointer[name]["digest"], f"{name}.uri"))
     reasons.extend(f"remote_cpu_pointer_{name}" for name, failed in {

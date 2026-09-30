@@ -41,7 +41,7 @@ from .remote_cpu_job_contract import (
     RemoteCpuContractError,
     config_blockers,
 )
-from .remote_cpu_job_records import write_remote_cpu_record
+from .remote_cpu_job_records import POINTER_SCHEMA_VERSION, write_remote_cpu_record
 from .task_evaluation_episode_compilation_worker import (
     TaskEvaluationEpisodeCompilationWorkerError,
     _load_envelope,
@@ -130,12 +130,24 @@ class RemotePlan:
         return cls(**fields)
 
 
+def census_accepts_remote_output_pointers() -> bool:
+    """Whether the owner census accepts this pointer schema for the packet it stands for (plan 14 task 4.8)."""
+
+    from . import task_evaluation_scene_compilation_owner_outputs as census
+
+    return POINTER_SCHEMA_VERSION in getattr(census, "REMOTE_OUTPUT_POINTER_SCHEMAS", ())
+
+
 def execution_mode(environ: Mapping[str, str] | None = None) -> tuple[str, list[str]]:
-    """The effective mode and why it differs from the requested one: an invalid value runs as ``host``."""
+    """The effective mode and why it differs from the requested one.  An invalid value runs as ``host``, and so
+    does ``cloud_run`` until the owner census accepts the remote-output pointer that stands for a remote
+    compile's packet: its result's lineage would otherwise name bytes nothing on the host accounts for."""
 
     requested = str((os.environ if environ is None else environ).get(EXECUTION_ENV) or "host").strip() or "host"
     if requested not in MODES:
         return "host", ["episode_compilation_execution_mode_invalid"]
+    if requested == "cloud_run" and not census_accepts_remote_output_pointers():
+        return "host", ["episode_compilation_cloud_run_requires_census_pointer_support"]
     return requested, []
 
 

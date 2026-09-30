@@ -682,6 +682,8 @@ def _pointer_fields(descriptor: dict) -> dict:
         "bytes_total": 50000,
         "host_known": {"count": 8, "bytes": 40000},
         "landed": {"subset": "episode_compilation_consumer.v1", "paths": 3, "bytes": 2000},
+        "raw_references": [{"path": descriptor["outputs"]["output_root"] + "/native-task-packet/bundle.zip",
+                            "digest": "sha256:" + "5" * 64, "size_bytes": 4096}],
         "state": "landed",
     }
 
@@ -777,6 +779,24 @@ def test_pointer_record_is_resealed_on_state_change_and_never_drops_fields() -> 
     assert "remote_cpu_pointer_teardown_attempt_mismatch" in _reasons(
         lambda: records.pointer_record({}, previous=landed, teardown=foreign)
     )
+
+
+def test_pointer_lists_remote_raw_references_only_under_its_own_output_root() -> None:
+    """Plan 14 task 4.8: the owner census lets a pointer stand for the bytes it lists, so each must be its output's."""
+    descriptor = _descriptor()
+    fields = _pointer_fields(descriptor)
+    root = descriptor["outputs"]["output_root"]
+    [packet] = fields["raw_references"]
+    assert records.pointer_record(fields)["raw_references"] == [packet]
+    for path, reason in ((root + "-other/bundle.zip", "remote_cpu_path_outside_allowed_roots"),
+                         (root, "remote_cpu_path_outside_allowed_roots"),
+                         (root + "/../bundle.zip", "remote_cpu_path_not_normalized")):
+        listed = {**fields, "raw_references": [dict(packet, path=path)]}
+        assert f"{reason}:raw_references[0].path" in _reasons(lambda listed=listed: records.pointer_record(listed))
+    assert "remote_cpu_pointer_raw_references_invalid" in _reasons(
+        lambda: records.pointer_record({**fields, "raw_references": [packet, packet]}))
+    assert "remote_cpu_field_missing:raw_references" in _reasons(
+        lambda: records.pointer_record({key: value for key, value in fields.items() if key != "raw_references"}))
 
 
 def test_pointer_reseal_replaces_only_the_record_it_read(tmp_path: Path) -> None:

@@ -196,6 +196,45 @@ def test_host_mode_is_byte_identical_to_today(tmp_path: Path, monkeypatch) -> No
         "host", ["episode_compilation_execution_mode_invalid"])
 
 
+def test_cloud_run_before_census_support_runs_as_host_and_is_reported(tmp_path: Path, monkeypatch) -> None:
+    """Plan 14 task 4.8: until the owner census accepts remote-output pointers, ``cloud_run`` runs as ``host``,
+    the paid unit stays idle and the chain preflight says why."""
+
+    from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
+    from blueprint_pipeline import task_evaluation_production_chain_preflight as preflight
+    from blueprint_pipeline import task_evaluation_scene_compilation_owner_outputs as census
+    from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+    requested = {remote.EXECUTION_ENV: "cloud_run"}
+    assert remote.execution_mode(requested) == ("cloud_run", [])
+    monkeypatch.delattr(census, "REMOTE_OUTPUT_POINTER_SCHEMAS")
+    assert remote.execution_mode(requested) == (
+        "host", ["episode_compilation_cloud_run_requires_census_pointer_support"])
+
+    compiler = install_compile_stand_ins(monkeypatch.setattr)
+    host = Host(tmp_path)
+    host.record_worker_environment()
+    for index in range(3):  # the row's class has its shadow passes: only the census gate keeps it home
+        remote.record_shadow_parity(host.jobs, {
+            "closure_class": "not_applicable", "attempt_id": f"rcj-ec-{'0' * 24}-a1-{index:032x}",
+            "queue_row": {"queue": remote.QUEUE, "name": f"row-{index}.json", "envelope_digest": "sha256:" + "1" * 64},
+            "image": IMAGE, "host_environment_digest": HOST_RECORD["environment_digest"],
+            "worker_environment_digest": HOST_RECORD["environment_digest"], "cpu_class": HOST_RECORD["cpu_class"],
+            "parity": "passed", "mismatches": [], "compared_at_epoch": float(index)})
+    _, eligible = stage_compile(host, label="eligible")
+    run = _run(host, "cloud_run", compiler)
+    # Exactly the host run: the eligible row compiled here, and nothing was handed off.
+    assert "mode" not in run and run["processed_count"] == 1
+    assert (host.queue / "completed" / eligible).is_file()
+    assert not remote.marker_path(host.jobs, "authoritative", eligible).exists()
+    assert collector.should_run(host.jobs, requested) is False
+    environment = {**requested, remote.JOBS_ROOT_ENV: str(host.jobs), remote.CONFIG_ENV: str(tmp_path / "absent.json")}
+    findings = preflight.remote_execution_checks({preflight.EPISODE_COMPILATION_UNIT: {
+        "effective_environment": environment}})
+    assert [(finding["severity"], finding["code"]) for finding in findings] == [
+        ("warning", "episode_compilation_cloud_run_requires_census_pointer_support")]
+
+
 def test_worker_entry_point_runs_the_no_spend_unit(tmp_path: Path, monkeypatch, capsys) -> None:
     """The unit's ExecStart is unchanged; its entry point now runs the no-spend unit, which in host mode
     prints exactly today's run record."""

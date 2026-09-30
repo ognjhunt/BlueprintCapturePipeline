@@ -10,7 +10,7 @@ ID, COMMIT = retained.ID, retained.COMMIT
 OWNER_ID = retained.c.ID
 ROLES = {'native_preparation_envelopes', 'native_preparation_results', 'native_activation_envelopes',
     'native_activation_results', 'configured_revisions', 'compilation_intake_receipts', 'compiler_outputs',
-    'compilation_adapter_results', 'native_owner_records'}
+    'compilation_adapter_results', 'native_owner_records', 'compilation_remote_output_pointers'}
 SCHEMAS = {
     'native_preparation_envelopes': ('task_evaluation_launch_preparation_envelope.v1', 'envelope_digest'),
     'native_preparation_results': ('task_evaluation_launch_preparation_result.v1', 'result_digest'),
@@ -21,6 +21,8 @@ SCHEMAS = {
     'compiler_outputs': ('task_evaluation_episode_compiler_output.v1', 'compiler_output_digest'),
     'compilation_adapter_results': ('task_evaluation_native_arena_adapter_result.v1', 'result_digest'),
     'native_owner_records': ('task_evaluation_scene_owner_attempt.v1', 'owner_attempt_digest'),
+    # Plan 14 §16: beside a remote compile's output, standing for the bytes that stayed remote.
+    'compilation_remote_output_pointers': ('remote_cpu_output_pointer.v1', 'pointer_digest'),
 }
 # Finite producer OUTER wrappers only. Embedded request/source/appearance
 # dictionaries retain their existing source-defined open contracts.
@@ -140,6 +142,18 @@ class Context(retained.Context):
 
     def canonical(self, role, digest, source, expected=None):
         self.missing(role, 'canonical_selector_bytes_unavailable', [source], expected, {'canonical_digest': digest})
+
+    def pointed_raw_ref(self, ref, proof, pointer):
+        """Raw bytes that stayed remote, resolved by the remote-output pointer that lists their path, digest and
+        size (plan 14 §16).  Retained bytes, when supplied, still resolve the reference themselves."""
+        key = tuple(ref[k] for k in ('path', 'sha256', 'size_bytes'))
+        if self.index.get(key) is not None:
+            return self.raw_ref(ref, proof)
+        self.consume()
+        self.size(ref['sha256'], ref['size_bytes'])
+        self.obligations.append({**dict(zip(('path', 'sha256', 'size_bytes'), key)), 'status': 'matched_remote_output_pointer',
+            'reason': None, 'source_provenance': [proof], 'matched_provenance': pointer[1]})
+        return pointer[1]
 
 
 def translate(exc):

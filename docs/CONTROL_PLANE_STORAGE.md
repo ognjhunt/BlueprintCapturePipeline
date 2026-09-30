@@ -1253,8 +1253,10 @@ Two stream-mode records look alarming and are not:
 
 `BLUEPRINT_EPISODE_COMPILATION_EXECUTION` picks where an episode compiles: `host`
 (the default, today's path), `cloud_run_shadow` or `cloud_run`. An unset or
-invalid value runs as `host`, and the chain preflight warns
-`episode_compilation_execution_mode_invalid`.
+invalid value runs as `host`, and so does `cloud_run` until the owner census
+accepts the output pointer (it exports `REMOTE_OUTPUT_POINTER_SCHEMAS`); the
+chain preflight warns `episode_compilation_execution_mode_invalid` or
+`episode_compilation_cloud_run_requires_census_pointer_support`.
 
 **Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
 owns `pending/` in every mode and empties it each run: it recovers the claims
@@ -1282,7 +1284,11 @@ copy plus 16 MiB.
 **The output pointer.** `compiled-episodes/<id>.remote-output.v1.json`
 (`remote_cpu_output_pointer.v1`, mode 0440) names the CAS archive and index of
 the whole output, the attempt, the execution and its spend consumption, the
-code identity and the landed subset. It is resealed, never trimmed, when its
+code identity and the landed subset, and lists under `raw_references` the path,
+digest and size of what the result names that stayed remote: the packet. The
+owner census lets the pointer stand for those bytes
+(`matched_remote_output_pointer`) where it would otherwise keep the packet
+reference unresolved. The pointer is resealed, never trimmed, when its
 teardown is proven. The compilation pin covers both `<id>` and the pointer.
 Storage GC's derived phase keeps every file child of a derived root (it counts
 them as `unsafe`), so it never deletes a pointer, the evidence for the bytes

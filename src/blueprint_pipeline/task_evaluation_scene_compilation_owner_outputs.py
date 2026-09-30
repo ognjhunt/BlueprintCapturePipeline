@@ -1,4 +1,8 @@
-"""Supplied compiler/adapter metadata edges; never reads packet bytes."""
+"""Supplied compiler/adapter metadata edges; never reads packet bytes.
+
+A remote compile (plan 14) lands only what later stages read, so its packet's bytes stay remote; the
+remote-output pointer beside its output lists the packet's path, digest and size and stands for them.
+"""
 from __future__ import annotations
 
 from pathlib import PurePosixPath
@@ -15,6 +19,10 @@ OUTPUT_FIELDS = {'schema_version', 'status', 'run_id', 'configured_scene_revisio
     'compiled_episode_packet', 'adapter_result', 'native_scene_appearance', 'compiled_by_production',
     'customer_supplied_prebuilt_episode_packet', 'provider_mutation_performed', 'paid_execution_requested',
     'raw_secret_values_recorded', 'compiler_output_digest'}
+# The remote-output pointer schemas this census accepts; ``cloud_run`` compiles only once the pointer's is here.
+REMOTE_OUTPUT_POINTER_SCHEMAS = frozenset({'remote_cpu_output_pointer.v1'})
+POINTER_ROLE, POINTER_SUFFIX = 'compilation_remote_output_pointers', '.remote-output.v1.json'
+MAX_POINTER_REFERENCES = 64
 
 
 def _raw(context, artifact, proof, root):
@@ -22,8 +30,32 @@ def _raw(context, artifact, proof, root):
         and type(artifact.get('size_bytes')) is int and artifact['size_bytes'] > 0, 'artifact_invalid')
     c.path(artifact.get('path'))
     c.require(c.under(artifact['path'], root), 'artifact_path_invalid')
-    context.raw_ref({'path': artifact['path'], 'sha256': artifact['digest'], 'size_bytes': artifact['size_bytes']}, proof)
+    ref = {'path': artifact['path'], 'sha256': artifact['digest'], 'size_bytes': artifact['size_bytes']}
+    pointer = getattr(context, 'remote_pointers', {}).get((artifact['path'], artifact['digest'], artifact['size_bytes']))
+    context.pointed_raw_ref(ref, proof, pointer) if pointer else context.raw_ref(ref, proof)
     return {k: artifact[k] for k in ('path', 'digest', 'size_bytes')}
+
+
+def _pointers(context):
+    """Each supplied remote-output pointer by the (path, digest, size) it lists.  A pointer sits beside the
+    output it stands for, is bound to that output and its queue row, and lists only bytes under it; one that
+    contradicts itself refuses.  The remote bytes themselves are never read."""
+    index, root = {}, context.roots['compilation_output_root']
+    for row in context.known(POINTER_ROLE):
+        value, proof = row
+        comp_id, queue_row, refs = value.get('compilation_id'), value.get('queue_row'), value.get('raw_references')
+        c.require(c.matches(comp_id, c.ID) and value.get('stage') == 'episode_compilation'
+            and value['schema_version'] in REMOTE_OUTPUT_POINTER_SCHEMAS and proof['path'] == c.child(root, comp_id+POINTER_SUFFIX)
+            and value.get('output_root') == c.child(root, comp_id) and value.get('state') in ('landed', 'restored_full')
+            and isinstance(queue_row, dict) and c.matches(queue_row.get('envelope_digest'))
+            and queue_row.get('name') == comp_id+'-'+queue_row['envelope_digest'][7:]+'.json'
+            and isinstance(refs, list) and len(refs) <= MAX_POINTER_REFERENCES, 'remote_pointer_invalid')
+        for ref in refs:
+            c.require(isinstance(ref, dict) and set(ref) == {'path', 'digest', 'size_bytes'} and c.matches(ref['digest'])
+                and type(ref['size_bytes']) is int and ref['size_bytes'] > 0 and c.under(ref['path'], value['output_root']),
+                'remote_pointer_invalid')
+            index.setdefault((ref['path'], ref['digest'], ref['size_bytes']), row)
+    return index
 
 
 def _adapter_selector(context, value):
@@ -116,6 +148,7 @@ def _outputs(context, adapters):
 
 
 def inventory(context):
+    context.remote_pointers = _pointers(context)
     adapters = _adapters(context)
     outputs = _outputs(context, adapters)
     envelopes = {}

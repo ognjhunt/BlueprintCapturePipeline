@@ -105,6 +105,13 @@ def test_remote_stage_writes_only_the_consumer_subset_on_the_host(tmp_path: Path
                                  "bytes": sum(landed.values())}
     assert pointer["provider_zero_proven"] and pointer["state"] == "landed"
     assert (compiled / f"{compilation}.remote-output.v1.json").stat().st_mode & 0o777 == 0o440
+    # It lists what the result names that stayed remote, the packet, so the owner census can let it stand for it.
+    result = json.loads((world.host.queue / "results" / world.name).read_text(encoding="utf-8"))
+    packet = Path(result["compiled_episode_packet_path"]).resolve().relative_to((compiled / compilation).resolve())
+    assert pointer["raw_references"] == [{"path": f"{OUTPUTS}/{compilation}/{packet.as_posix()}",
+                                          "digest": result["compiled_episode_packet_digest"],
+                                          "size_bytes": result["compiled_episode_packet_size_bytes"]}]
+    assert packet.as_posix() not in landed and not (compiled / compilation / packet).exists()
 
 
 def test_landed_subset_passes_launch_activation_and_canary_handoff(tmp_path: Path, monkeypatch) -> None:
