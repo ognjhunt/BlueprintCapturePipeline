@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import VERSION
+from .admitted_controls import DISPATCHER_HOLD_ONLY
+from .requests import _SCOPES
 from . import holds as hold_records
 from .config import DoorConfig
 from .hostinfo import HostInfo
@@ -165,7 +167,9 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
     return {
         "schema": SCHEMA,
         "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
-        "door": {"version": VERSION, "caller": caller},
+        "door": {"version": VERSION, "caller": caller,
+                 "request_kinds": sorted(_SCOPES),
+                 "hold_target": "blueprint-agent-run-dispatcher.timer" if DISPATCHER_HOLD_ONLY else None},
         "deployed": _deployed(host),
         "active_release": _section(lambda: _active_release(config), "active_release_unavailable"),
         "deploys": {
