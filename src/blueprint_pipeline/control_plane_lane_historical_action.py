@@ -15,6 +15,10 @@ from pathlib import Path
 from . import control_plane_lane_historical_authority as authority
 from . import control_plane_lane_historical_dispatch as dispatch
 from . import control_plane_lane_historical_generation as generation
+from . import control_plane_lane_historical_archive as archive
+from . import control_plane_lane_experiment_archive as transport
+from . import control_plane_lane_scratch_decisions as encoding
+from .decision_evidence_contracts import canonical_digest
 from .control_plane_lane_historical_fence import _HistoricalGenerationFence
 from .control_plane_lane_historical_journal import HistoricalActionJournal, journal_root
 from .control_plane_lane_historical_unit import prove_historical_unit
@@ -79,6 +83,7 @@ class _Worker:
             head = journal.head
             event = journal.append(kind, body, previous=head['event_digest'])
             self.head = event['event_digest']
+            return event
 
     def replay(self):
         """Authenticate every original journal link across bounded acquisitions."""
@@ -95,13 +100,60 @@ class _Worker:
                     return events
 
 
+def _preservation_record(worker, event):
+    body = event['body']
+    _require(worker.selected[1]['action'] == 'offload' and event['kind'] == 'preservation'
+        and type(body) is dict and set(body) == {'schema_version', 'action_id', 'generation_digest',
+            'manifest', 'archive', 'pointer_digest'}
+        and body['schema_version'] == 'control_plane_historical_preservation.v1'
+        and body['action_id'] == worker.action_id
+        and body['generation_digest'] == worker.selected[2]['generation_digest']
+        and body['manifest'] == worker.selected[1]['manifest']
+        and body['pointer_digest'] == canonical_digest(body, digest_field='pointer_digest'), 'preservation_invalid')
+    return body['archive']
+
+
+def _archive_guard(worker, held=None):
+    with worker.checkpoint(journal=True):
+        if held is not None:
+            held.verify()
+
+
+def _readback_preservation(worker, event, held=None):
+    pointer = _preservation_record(worker, event)
+    with worker.checkpoint(journal=True) as (files, config, _):
+        client, bucket = transport._client(files, config)
+    archive.verify_preservation(pointer, client, bucket, lambda: _archive_guard(worker, held),
+                                origin=worker.operation.started)
+    return pointer
+
+
+def _preserve(worker, held, recovered):
+    previous = recovered['preservation'] if recovered else None
+    if previous is not None:
+        return _readback_preservation(worker, previous, held), previous['event_digest']
+    _require(not recovered or not (recovered['removed'] or recovered['uncertain']), 'preservation_required')
+    raw = encoding.encode_validation_report(worker.selected[2])
+    _require(authority._selector(raw) == worker.selected[1]['manifest'], 'manifest_changed')
+    with worker.checkpoint(journal=True) as (files, config, _):
+        client, bucket = transport._client(files, config)
+    pointer = archive.preserve(held, worker.selected[2], raw, client, bucket,
+        lambda: _archive_guard(worker, held), origin=worker.operation.started)
+    body = dict(schema_version='control_plane_historical_preservation.v1', action_id=worker.action_id,
+        generation_digest=worker.selected[2]['generation_digest'], manifest=worker.selected[1]['manifest'],
+        archive=pointer)
+    body['pointer_digest'] = canonical_digest(body, digest_field='pointer_digest')
+    event = worker.record('preservation', body)
+    return pointer, event['event_digest']
+
+
 def _completed_replay(worker, events, roots, monotonic):
     """Read an exact completed tombstone; never credit its removals twice."""
     manifest, decision = worker.selected[2], worker.selected[1]
     final = events[-1]
     receipt = final['body']
     _require(final['kind'] == 'final' and receipt.get('status') == 'completed'
-        and receipt.get('action') == decision['action'] == 'delete'
+        and receipt.get('action') == decision['action'] and decision['action'] in ('delete', 'offload')
         and receipt.get('action_id') == worker.action_id and receipt.get('owner') == decision['owner']
         and receipt.get('generation_digest') == manifest['generation_digest']
         and receipt.get('original_manifest') == decision['manifest']
@@ -118,7 +170,13 @@ def _completed_replay(worker, events, roots, monotonic):
         and observed['root_version'] == manifest['root_version'], 'tombstone_changed')
     with worker.checkpoint(journal=True):
         generation.verify_historical_member_versions(observed, tick=worker.operation.remaining)
-    return dict(status='completed', action='delete', action_id=worker.action_id, owner=decision['owner'],
+    if decision['action'] == 'offload':
+        preservation = [event for event in events if event['kind'] == 'preservation']
+        _require(len(preservation) == 1 and receipt.get('preservation_event_digest') == preservation[0]['event_digest']
+            and receipt.get('preservation') == _readback_preservation(worker, preservation[0]), 'preservation_invalid')
+        with worker.checkpoint(journal=True):
+            generation.verify_historical_member_versions(observed, tick=worker.operation.remaining)
+    return dict(status='completed', action=decision['action'], action_id=worker.action_id, owner=decision['owner'],
         generation_digest=manifest['generation_digest'], idempotent=True,
         original_final_event_digest=final['event_digest'], removed_files=0, removed_directories=0,
         logical_bytes=0, observed_removed_allocated_bytes=0, uncertain_removed_allocated_bytes=0,
@@ -187,7 +245,11 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
                         held.verify()
                         held.sync_directory(recovered['reconcile']['parent_path'])
                     worker.record('removal_uncertain', recovered['reconcile'])
-                _require(worker.selected[1]['action'] == 'delete', 'preservation_required')
+                preservation, preservation_event = None, None
+                if worker.selected[1]['action'] == 'offload':
+                    preservation, preservation_event = _preserve(worker, held, recovered)
+                else:
+                    _require(not recovered or recovered['preservation'] is None, 'preservation_invalid')
                 def removal_authority():
                     return worker.mutation_authority(readers=True)
                 outcome = held.remove_members(before_change=removal_authority, record=worker.record,
@@ -201,9 +263,11 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
                         outcome['logical_bytes'] += row['size_bytes']
                     outcome['observed_removed_allocated_bytes'] += recovered['prior_observed_removed_allocated_bytes']
                     outcome['uncertain_removed_members'] = len(recovered['uncertain'])
-                receipt = dict(status='completed', action='delete', action_id=action_id,
+                receipt = dict(status='completed', action=worker.selected[1]['action'], action_id=action_id,
                     owner=worker.selected[1]['owner'], generation_digest=manifest['generation_digest'],
                     original_manifest=worker.selected[1]['manifest'], **outcome)
+                if preservation is not None:
+                    receipt.update(preservation=preservation, preservation_event_digest=preservation_event)
                 worker.record('final', receipt)
                 return receipt
         finally:

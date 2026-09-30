@@ -89,3 +89,23 @@ def test_authority_refusal_closes_transport_and_preserves_local_members(source):
         preserve(held, manifest, raw, cloud, 'development-only', refused)
     assert cloud.calls == ['client_closed']
     assert all((held.target / name).read_bytes() == value for name, value in original.items())
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_pointer_recovery_rechecks_full_remote_bytes_without_republishing_source(source, changed):
+    from blueprint_pipeline.control_plane_lane_historical_archive import preserve, verify_preservation
+    held, manifest, raw, original = source
+    first = Cloud()
+    pointer = preserve(held, manifest, raw, first, 'development-only', lambda: None)
+    resumed = Cloud()
+    resumed.objects, resumed.metadata = dict(first.objects), dict(first.metadata)
+    if changed:
+        key = next(iter(resumed.objects))
+        resumed.objects[key] = b'x' * len(resumed.objects[key])
+        with pytest.raises(ValueError, match='preservation_failed'):
+            verify_preservation(pointer, resumed, 'development-only', lambda: None)
+    else:
+        verify_preservation(pointer, resumed, 'development-only', lambda: None)
+    assert 'part' not in resumed.calls and resumed.calls.count('readback') == 1
+    assert resumed.calls[-1] == 'client_closed'
+    assert all((held.target / name).read_bytes() == value for name, value in original.items())

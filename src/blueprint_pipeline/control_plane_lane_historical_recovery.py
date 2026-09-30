@@ -104,8 +104,12 @@ def recover_action(manifest, events, observed):
     if not rest:
         result = recover_fence(manifest, events, observed)
         return dict(**result, removed=set(), uncertain=set(), pending_removal=None, reconcile=None,
-                    prior_observed_removed_allocated_bytes=0)
+                    prior_observed_removed_allocated_bytes=0, preservation=None)
     require(len(completed) == len(rows) and pending_fence is None)
+    preservation = None
+    if rest[0]['kind'] == 'preservation':
+        require(type(rest[0]['body']) is dict)
+        preservation, rest = rest[0], rest[1:]
     order = sorted((name for name in rows if name), key=lambda name: (name.count('/'), name), reverse=True)
     removed, uncertain, pending, allocated = set(), set(), None, 0
     for event in rest:
@@ -150,4 +154,4 @@ def recover_action(manifest, events, observed):
     require(all(row['version'] == versions[name] for name, row in current.items()))
     return dict(manifest=observed, completed=completed, pending=None, removed=removed,
                 uncertain=uncertain, pending_removal=pending, reconcile=reconcile,
-                prior_observed_removed_allocated_bytes=allocated)
+                prior_observed_removed_allocated_bytes=allocated, preservation=preservation)
