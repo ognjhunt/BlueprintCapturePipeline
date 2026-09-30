@@ -72,14 +72,15 @@
     },
     {
       "path": "scripts/install_live_pipeline_control_plane.sh",
-      "sha256": "cff5057cc177070bb8211377633218727043335e6904362cc66d1764538899ff",
+      "sha256": "05b8303e47907fc7da0f63bb5118726218d4b7ef5afdb06aa0095af218f43d39",
       "responsibility": "parent_provisioning",
       "output_class": "container",
       "admission_method": "mounted volume preflight then bounded install -d",
       "characterization_tests": [
-        "tests/test_lane_scratch_install_wiring.py"
+        "tests/test_lane_scratch_install_wiring.py",
+        "tests/test_production_compile_runtime_pins.py"
       ],
-      "review_reference": "2026-09-30: independent combined review of Phase 3b PR 4 approved the installer's remote episode-compilation lines at 422890429 (sha256 563866c85bc6358b2aad3eefaab6f123683d2635819cf6da12c3539e46656b84); the four backstop-timer lines added after it are listed for that review's re-check. Lane-parent provisioning is unchanged since the 2026-09-27 independent spec and code-quality review at 030f9f30cd34b11878707c16722a970111e0923c; re-checked at 70b0b4f9e",
+      "review_reference": "2026-09-30 PR #2501: independent survey_spec_review SPEC (GPT-6.1 Sol), then survey_quality_review QUALITY (GPT-6 Astra), approved runtime-pin synchronization at 5f7fe42f335f940087f34c40d18b2bce1d0e4cc8, source sha256 05b8303e47907fc7da0f63bb5118726218d4b7ef5afdb06aa0095af218f43d39. Lane-parent provisioning is unchanged. Prior reference retained: 2026-09-30: independent combined review of Phase 3b PR 4 approved the installer's remote episode-compilation lines at 422890429 (sha256 563866c85bc6358b2aad3eefaab6f123683d2635819cf6da12c3539e46656b84); the four backstop-timer lines added after it are listed for that review's re-check. Lane-parent provisioning is unchanged since the 2026-09-27 independent spec and code-quality review at 030f9f30cd34b11878707c16722a970111e0923c; re-checked at 70b0b4f9e",
       "historical_exceptions": [
         "Provisioning lane parents does not register or authorize historical scratch."
       ]
