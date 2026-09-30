@@ -2031,6 +2031,38 @@ variable "remote_cpu_worker_object_prefix" {
   }
 }
 
+# Each attempt's transport (its descriptor and presigned links) is one object
+# written with if_generation_match=0 and read at that generation. The host
+# deletes it at teardown; the one-day rule is the backstop. Nothing is kept:
+# no versions and no soft delete.
+resource "google_storage_bucket" "remote_cpu_transport" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  name     = "${var.project_id}-remote-cpu-transport"
+  location = var.primary_region
+  labels   = merge(local.common_labels, { cost-center = "remote-cpu-workers" })
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = false
+  }
+
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+
+  lifecycle_rule {
+    condition {
+      age = 1
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
 # The job's own identity. It holds no project role.
 resource "google_service_account" "remote_cpu_worker" {
   count = var.remote_cpu_workers_enabled ? 1 : 0

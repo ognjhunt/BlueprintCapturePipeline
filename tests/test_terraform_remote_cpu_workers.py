@@ -14,6 +14,7 @@ import json
 import re
 from pathlib import Path
 
+from blueprint_pipeline import cloud_run_jobs_client
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline.cloud_run_jobs_client import BOOTSTRAP_COMMAND, job_definition_blockers
 from blueprint_pipeline.remote_cpu_worker import PREFIX_VARIABLE, STAGE_VARIABLE, _object_prefix
@@ -202,3 +203,25 @@ def test_remote_cpu_job_command_is_the_bootstrap_with_zero_retries_and_bounded_t
                                    memory_bytes=16 * GIB) == []
     # No new image and no new registry: the image variables are the existing five.
     assert set(re.findall(r'(?m)^variable "([a-z0-9_]*image[a-z0-9_]*)" \{$', main)) == IMAGE_VARIABLES
+
+
+def test_transport_bucket_is_private_and_deletes_objects_after_a_day() -> None:
+    """The transport bucket holds live presigned links: private, unversioned, gone within a day."""
+    main = _main()
+    bucket = _terraform_resource_body(main, "google_storage_bucket", "remote_cpu_transport")
+
+    assert _attr(bucket, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
+    assert _attr(bucket, "name") == '"${var.project_id}-remote-cpu-transport"'
+    project = _strings(_attr(_terraform_variable_body(main, "project_id"), "default"))[0]
+    assert re.fullmatch(cloud_run_jobs_client._BUCKET, f"{project}-remote-cpu-transport")
+    assert _attr(bucket, "location") == "var.primary_region"
+    assert _attr(bucket, "uniform_bucket_level_access") == "true"
+    assert _attr(bucket, "public_access_prevention") == '"enforced"'
+    assert _attr(_child(bucket, "versioning"), "enabled") == "false"
+    assert _attr(_child(bucket, "soft_delete_policy"), "retention_duration_seconds") == "0"
+    (rule,) = _children(bucket, "lifecycle_rule")
+    assert _attr(_child(rule, "condition"), "age") == "1"
+    assert _attr(_child(rule, "action"), "type") == '"Delete"'
+    assert _attr(bucket, "force_destroy") is None
+    for exposure in ("website", "cors", "retention_policy"):
+        assert not _children(bucket, exposure), exposure
