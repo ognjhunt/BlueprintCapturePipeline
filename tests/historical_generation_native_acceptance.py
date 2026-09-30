@@ -89,12 +89,21 @@ def worker_main(root, action_id):
     cloud_fixture = root / 'cloud-fixture.json'
     if cloud_fixture.exists():
         from historical_generation_fake_cloud import Cloud
-        from blueprint_pipeline import control_plane_lane_experiment_archive as transport
+        import boto3
         seed = json.loads(cloud_fixture.read_bytes())
         cloud = Cloud(corrupt=seed['corrupt'])
         cloud.objects = {key: base64.b64decode(raw) for key, raw in seed['objects'].items()}
         cloud.metadata = seed['metadata']
-        transport._client = lambda _files, _config: (cloud, 'development-only')
+        def object_client(service, **options):
+            assert service == 's3'
+            assert options['endpoint_url'] == 'https://development-only.invalid'
+            assert options['aws_access_key_id'] == 'development-only-access'
+            assert options['aws_secret_access_key'] == 'development-only-secret'
+            assert options['region_name'] == 'us-east-1'
+            return cloud
+        # Keep the real protected environment/credential acquisition and SDK
+        # selection. Replace only the object transport; never contact a provider.
+        boto3.client = object_client
     def emit(receipt):
         if cloud is not None:
             receipt = dict(receipt, _fixture_remote=dict(corrupt=cloud.corrupt,
@@ -242,6 +251,16 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
             ('BLUEPRINT_CONTROL_PLANE_GC_EVIDENCE_ROOTS', 'evidence'),
             ('BLUEPRINT_CONTROL_PLANE_GC_SETTLEMENT_ROOTS', 'settlement'),
             ('BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT', 'pins')))
+        if action == 'offload':
+            from blueprint_pipeline.task_evaluation_configured_scene_object_store import _ARTIFACT_STORE_FILE_ENV
+            directory = root / 'cloud-config'
+            directory.mkdir(mode=0o700)
+            values = dict(access_key='development-only-access', secret_key='development-only-secret',
+                          bucket='development-only', endpoint='https://development-only.invalid', region='us-east-1')
+            for role, name in _ARTIFACT_STORE_FILE_ENV.items():
+                path = directory / role
+                _write(path, values[role].encode() + b'\n')
+                environment += '\n' + name + '=' + str(path)
         _write(root / 'gc.env', environment.encode() + b'\n')
         policy = dict(schema_version=owners.POLICY_SCHEMA, enabled=True, principals=[dict(
             principal='operator', owners=['owner'], allowed_actions=['register', 'delete', 'offload'],
