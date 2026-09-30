@@ -1,24 +1,42 @@
-The requested private provider comparison lacked a runnable execution path. This
-isolated recovery supplies a guarded live pilot CLI for20 frozen provider-safe
-cases across Parallel Fast/Advanced and Perplexity Fast/standard, with identical
-Sol synthesis, provider-supported exact counting, immutable evidence/latency/cost
-receipts and cumulative $10 / pilot$1 admission. Remaining18 requires a complete
-untampered pilot; resume adopts accepted calls and never retries uncertain ones.
+The private diagnostic comparison sent long Parallel keyword strings that were
+truncated before the company name. This isolated recovery now supplies a separate
+`bounded_adaptive_v1` protocol: short entity-first native requests, trusted
+2026-09-30 controller date, relevance/coverage triage, at most one rewritten
+search, then evidence-only synthesis. It retains the earlier 37 answers as
+diagnostics; protocol scores must not be mixed. Parallel objective and keywords
+are separate; Perplexity receives the same case-specific goal through its native
+query field. Warnings stop a cell before interpreting provider quality.
 
-Actual public bytes match the original SHA256. The Library ZIP transfer remains
-blocked; its real oracle/spec stay parent-side for isolated semantic grading.
-The runner pins `gpt-6.1-sol` and the existing Default OpenAI project. No provider
-call, credential change, subscription, top-up, deployment or schedule change was
-performed. Counting fees use a disclosed allowance because official docs do not
-state a tariff. No provider winner or actual billing guarantee is claimed.
+All 20 frozen public cases run across Parallel Fast/Advanced and Perplexity
+Fast/standard with `gpt-6.1-sol` only and the existing Default project. Exact
+provider-supported input counting, bounded output, immutable request/response
+latency receipts, canonical paid admission and the existing $10 aggregate journal
+guard every dispatch. No retries, recounts, third searches, model/provider
+fallbacks or unverified direct page-fetch route are introduced. Accepted steps
+resume without another reservation; uncertain submissions retain full holds.
 
-Case10's retained HTTP200 BMW citation was blocked by a public language query.
-The narrow locale-query exception preserves credential/userinfo/redirect guards.
-Offline reconciliation adopts the verified retained envelope under its original
-scope/grant/attempt, with no new search or reservation; a pinned patch receipt
-permits this reviewed code update while preserving the existing cumulative ledger.
+Independent grading is a separate readonly-research process with 20 anonymous
+four-arm reviews and the parent's actual frozen oracle/spec. The controller and
+raw providers cannot receive that oracle. Unknowns and partial-excerpt limits
+remain explicit; model grading requires parent adjudication. The Library ZIP
+transfer remains unresolved, while supplied public bytes match their original
+SHA256. No synthetic fixture may substitute for a paid case or oracle.
 
-Validation:58 hermetic tests, including mocked end-to-end pilot+remaining/resume,
-Ruff and diff checks; nine repository sentinel checks; independent GPT6.1Sol
-review. No production files changed. This draft remains separate from runner
-#2486 and snapshot#2487; no merge is requested.
+The new full-matrix-plus-review reservation ceiling is $7.572000, including all
+Sol input at the cache-write rate, output, count-fee and search-extra allowances.
+Adding the parent's $2.285510 diagnostic hold gives $9.857510. Each dispatch
+preserves the complete matrix/review headroom and rejects increased other spend;
+it never resets earlier exposure or silently reduces the matrix. Count fees are
+not published, and invoices/taxes remain unreconciled, so no billing guarantee
+or provider winner is claimed.
+
+The earlier narrow BMW locale-query fix and offline adoption remain intact,
+preserving their original scope/grant/journal with no repeated search.
+Independent Sol review verified fixes for followup-evidence crowd-out, malformed
+assessment JSON, and preservation of the existing secure-access receipt gate.
+All 12 adaptive hermetic tests pass, with 11 focused checks independently replayed;
+Ruff and diff checks pass. Verification covers the whole adaptive matrix and review,
+resume/uncertainty/budget/round/privacy boundaries and native query contracts.
+No live calls or credential/subscription/top-up/deployment/schedule changes were
+performed by this implementation task. No production files changed. This draft
+remains separate from runner #2486 and snapshot #2487; no merge is requested.
