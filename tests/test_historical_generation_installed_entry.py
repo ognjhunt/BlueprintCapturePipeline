@@ -58,3 +58,28 @@ def test_staged_runtime_uses_actual_bounded_production_import_closure(tmp_path):
     assert (package / 'control_plane_lane_historical_gc.py').is_file()
     assert not (package / 'live_pipeline_intake_service.py').exists()
     assert len(list(package.iterdir())) <= 256
+
+
+def test_native_fixture_stages_production_entry_and_rebinds_only_disposable_namespaces(tmp_path):
+    from tests.historical_generation_native_acceptance import _installed_entry
+    root = tmp_path.resolve()
+    (root / 'work').mkdir()
+    (root / 'operator').mkdir()
+    entry_path = root / 'action-entry'
+    from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
+    original = dispatch._ACTION_EXECUTABLE
+    try:
+        _installed_entry(root, entry_path)
+        installed = root / 'operator'
+        boot = (installed / 'historical-generation-entry.py').read_text()
+        compile(boot, 'installed-disposable-entry', 'exec')
+        assert 'from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action' in boot
+        assert 'sys.flags.isolated == 1 and sys.flags.no_site == 1' in boot
+        assert 'fixture_controller_startup_not_complete' in boot
+        assert 'adjacent denial must be actual EROFS' in boot
+        assert 'exec /usr/bin/python3 -I -S' in entry_path.read_text()
+        assert dispatch._ACTION_EXECUTABLE == str(entry_path)
+        assert (installed / 'historical-python/blueprint_pipeline/control_plane_lane_historical_action.py').read_bytes() == (
+            Path(__file__).parents[1] / 'src/blueprint_pipeline/control_plane_lane_historical_action.py').read_bytes()
+    finally:
+        dispatch._ACTION_EXECUTABLE = original

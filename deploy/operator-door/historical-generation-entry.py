@@ -162,5 +162,10 @@ if __name__ == '__main__':
     try:
         raise SystemExit(main())
     except (OSError, ValueError) as error:
-        print(json.dumps(dict(status='kept', code=getattr(error, 'code', _ERROR))), file=sys.stderr)
+        code = getattr(error, 'code', None)
+        if code is None and re.fullmatch(r'historical_generation_[a-z_]{1,128}', str(error)):
+            code = str(error)
+        if type(code) is not str or not re.fullmatch(r'[a-z_]{1,160}', code):
+            code = _ERROR
+        print(json.dumps(dict(status='kept', code=code, error_type=type(error).__name__)), file=sys.stderr)
         raise SystemExit(1) from None

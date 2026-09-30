@@ -278,7 +278,62 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
 
 
 def _installed_entry(root, entry):
-    raise AssertionError('fixture_installed_historical_entry_not_staged')
+    """Stage production entry/closure; repin only disposable compiled namespaces.
+
+    The fixture startup barrier settles actual controller descriptors before
+    real scans. It supplies no reader/clock/owner/unit proof. The adjacent write
+    challenge runs under the actual installed service properties before the
+    production worker; no native observation or mutation guard is replaced.
+    """
+    import importlib.util
+    source = Path(__file__).parents[1]
+    stage_path = source / 'deploy/operator-door/stage-historical-runtime.py'
+    spec = importlib.util.spec_from_file_location('historical_runtime_stage_fixture', stage_path)
+    stager = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stager)
+    installed = root / 'operator'
+    stager.stage(source / 'src/blueprint_pipeline', installed / 'historical-python')
+    package = installed / 'historical-python/blueprint_pipeline'
+    bindings = {
+        'control_plane_lane_owner_consents': 'INSTALLED_PACKAGE_ROOT = Path(' + repr(str(installed)) + ')',
+        'control_plane_scratch_lifetime': 'LANE_ROOTS = (' + ','.join(
+            'Path(' + repr(str(root / name)) + ')' for name in ('work/lanes', 'inputs/lanes')) + ')',
+        'control_plane_lane_legacy_owner': '_GC_UNIT = Path(' + repr(str(root / 'gc.service')) + ')',
+        'control_plane_lane_historical_unit': '_EXECUTABLE = ' + repr(str(entry)),
+        'control_plane_lane_historical_dispatch': '_ACTION_EXECUTABLE = ' + repr(str(entry)),
+        'control_plane_disk_ledger': 'DEFAULT_RESERVATION_ROOT = Path(' + repr(str(root / 'disk-reservations')) + ')',
+    }
+    for name, binding in bindings.items():
+        path = package / (name + '.py')
+        _write(path, path.read_bytes() + ('\n# Fixed disposable installed namespace.\n' + binding + '\n').encode(), 0o644)
+    boot = (source / 'deploy/operator-door/historical-generation-entry.py').read_text()
+    boot = boot.replace("_ROOT = Path('/opt/blueprint/operator-door')", '_ROOT = Path(' + repr(str(installed)) + ')')
+    boot = boot.replace("_CONFIG = '/etc/blueprint-operator-door/door.json'", '_CONFIG = ' + repr(str(root / 'door.json')))
+    adjacent = root / 'work/adjacent-unselected.log'
+    _write(adjacent, b'adjacent original bytes\n')
+    # A fixture-only synchronization/challenge; original source loader and
+    # production worker remain unchanged after these actual observations.
+    barrier = """        ready = Path(READY_PARENT) / ('.fixture-unit-ready-' + arguments[0])
+        deadline = time.monotonic() + 10
+        while ready.read_bytes() != b'ready\\n':
+            assert time.monotonic() < deadline, 'fixture_controller_startup_not_complete'
+            time.sleep(0.01)
+        try:
+            descriptor = os.open(ADJACENT, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError as error:
+            assert error.errno == 30, 'adjacent denial must be actual EROFS'
+        else:
+            os.close(descriptor)
+            raise AssertionError('installed action can write adjacent target')
+""".replace('READY_PARENT', repr(str(root))).replace('ADJACENT', repr(str(adjacent)))
+    needle = '        from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action\n'
+    assert boot.count(needle) == 1
+    boot = boot.replace(needle, barrier + needle)
+    _write(installed / 'historical-generation-entry.py', boot.encode(), 0o644)
+    _write(entry, ('#!/bin/sh\nexec /usr/bin/python3 -I -S '
+                   + str(installed / 'historical-generation-entry.py') + ' "$@"\n').encode(), 0o755)
+    from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
+    dispatch._ACTION_EXECUTABLE = str(entry)
 
 
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
@@ -537,7 +592,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             assert all((target / name).read_bytes() == value for name, value in original.items())
         # A completed receipt never adopts a rewritten or repopulated tombstone.
         _write(target / 'changed-after-final', b'keep changed bytes')
-        changed = _launch_worker(entry, action_id, target, journals, expected='failed')
+        changed = _launch_worker(entry, action_id, target, journals,
+                                 expected='kept' if installed else 'failed')
         # Offload restore approval above rotated the current policy. The old
         # offload action must refuse that earlier authority gate; all five
         # unchanged-policy delete cases independently exercise tombstone drift.
