@@ -54,9 +54,10 @@ BLUEPRINT_LAUNCH_PROOF_MODE="${BLUEPRINT_LAUNCH_PROOF_MODE:-production}"
 PRIVACY_PIPELINE_ENABLED="${PRIVACY_PIPELINE_ENABLED:-true}"
 PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"
 # Remote CPU workers (plan 14). Opt in with a reviewed commit that flips this
-# default to true and sets the object prefix default below (the US B2 endpoint,
-# bucket and key prefix; not a secret), never with an environment override:
-# a later deploy without it would destroy the jobs, identities and bucket.
+# default to true and sets the object prefix default below (the US B2
+# endpoint, bucket and key prefix; not a secret). Never opt in with an
+# environment override: the next deploy without it would destroy the jobs,
+# identities and transport bucket.
 REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-false}"
 REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-}"
 PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"
