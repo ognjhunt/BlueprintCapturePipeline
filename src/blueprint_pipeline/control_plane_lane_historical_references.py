@@ -18,6 +18,7 @@ from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_experiment_actions as experiments
 from .control_plane_lane_historical_fence import _version
+from .control_plane_storage_pin_observation import observe_storage_pins
 
 
 def _require(value, code):
@@ -129,7 +130,7 @@ def historical_reference_fence(files, config, target, *, observed_at):
     state, _ = files.parent(Path(config.control_plane_state) / '.historical-reference-probe')
     files.location(state)
     fcntl.flock(state, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    experiments._pin_fence(files, config, selected['pins_root'], target, observed_at)
+    pins, pin_directory = experiments._pin_fence(files, config, selected['pins_root'], target, observed_at)
     roots = tuple(dict.fromkeys((*selected['queue_roots'], *selected['active_run_roots'])))
     _require(0 < len(roots) <= 16, 'table_unknown')
     baseline = {str(root): _table(root, target, files.budget) for root in roots}
@@ -146,6 +147,16 @@ def historical_reference_fence(files, config, target, *, observed_at):
     def guard():
         files.location(state)
         _require(legacy._reference_settings(files, config) == selected, 'table_unknown')
+        files.location(pin_directory)
+        _require(experiments._reference_configuration(files, config, selected['pins_root'])
+                 == pins['configuration'], 'table_unknown')
+        current = observe_storage_pins(str(selected['pins_root']), observed_at_epoch=observed_at,
+                                      budget=files.budget, _held_root_fd=pin_directory)
+        _require(current.complete and current.root_identity
+            == (pins['identity']['dev'], pins['identity']['ino']), 'table_unknown')
+        for row in current.rows:
+            _require(not any(Path(path) == target or target in Path(path).parents
+                or Path(path) in target.parents for path in row.paths), 'pin_reference')
         for root in roots:
             _require(_table(root, target, files.budget) == baseline[str(root)], 'table_unknown')
         files.location(parent)
