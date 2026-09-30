@@ -271,8 +271,11 @@ def test_capacity_observes_accounting_without_publishing_in_its_sandbox(tmp_path
         raise PermissionError("accounting paths are read-only in capacity's service")
 
     monkeypatch.setattr(spend, "refresh_configured_scene_project_spend", refuse_publication)
-    monkeypatch.setattr(spend, "observe_configured_scene_project_spend",
-                        lambda: {"status": "published_project_exposure_observed", "total_cost_usd": 50})
+    def observe(*, now):
+        assert now == 1000
+        return {"status": "published_project_exposure_observed", "total_cost_usd": 50}
+
+    monkeypatch.setattr(spend, "observe_configured_scene_project_spend", observe)
     report = cap.run_controller(
         mounts=[str(tmp_path)], report_root=tmp_path / "capacity",
         reservation_root=tmp_path / "ledger", webhook_url="https://alerts.example/hook",
@@ -1040,7 +1043,7 @@ def test_orphan_scratch_page_reaches_the_controller_poster(tmp_path, monkeypatch
 def _no_project_spend(monkeypatch, value=None):
     monkeypatch.setattr(
         "blueprint_pipeline.task_evaluation_scene_spend.observe_configured_scene_project_spend",
-        lambda: value,
+        lambda **_kwargs: value,
     )
 
 

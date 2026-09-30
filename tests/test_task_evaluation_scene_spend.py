@@ -181,3 +181,78 @@ def test_capacity_observation_refuses_source_changed_after_publication(tmp_path,
     source.write_text("{}")
     with pytest.raises(ValueError, match="scene_spend_pointer_source_changed"):
         observe_configured_scene_project_spend(now=1100)
+
+
+@pytest.mark.parametrize("escape", ["traversal", "symlink"])
+def test_capacity_observation_rejects_resealed_pointer_escape(tmp_path, monkeypatch, escape):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    publication, args = observed_monitor(tmp_path, monkeypatch)
+    outside = tmp_path / "project_spend_reconciliation.json"
+    outside.write_bytes(Path(publication["pointer"]["path"]).read_bytes())
+    if escape == "traversal":
+        candidate = args["output_root"] / ".." / outside.name
+    else:
+        link = args["output_root"] / "linked"
+        link.symlink_to(tmp_path, target_is_directory=True)
+        candidate = link / outside.name
+    pointer = {**publication["pointer"], "path": str(candidate)}
+    pointer["receipt_digest"] = canonical_digest(pointer, digest_field="receipt_digest")
+    args["current_path"].chmod(0o640)
+    args["current_path"].write_text(json.dumps(pointer))
+    with pytest.raises(ValueError, match="scene_spend_pointer_outside_output_root"):
+        observe_configured_scene_project_spend(now=1100)
+
+
+def test_capacity_observation_rejects_nonobject_monitor_and_reopens_baseline(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    observed_monitor(tmp_path, monkeypatch)
+    baseline = tmp_path / "baseline.json"
+    baseline.chmod(0o640)
+    baseline.write_text("{}")
+    with pytest.raises(ValueError):
+        observe_configured_scene_project_spend(now=1100)
+    (tmp_path / "monitor.json").write_text("[]")
+    with pytest.raises(ValueError, match="scene_spend_monitor_config_invalid"):
+        observe_configured_scene_project_spend(now=1100)
+
+
+def test_monitor_rejects_present_null_seed_reference(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    observed_monitor(tmp_path, monkeypatch)
+    path = tmp_path / "monitor.json"
+    monitor = json.loads(path.read_text())
+    monitor["seed_reconciliation_reference"] = None
+    monitor["config_digest"] = canonical_digest(monitor, digest_field="config_digest")
+    path.write_text(json.dumps(monitor))
+    with pytest.raises(ValueError, match="scene_spend_monitor_seed_reference_invalid"):
+        observe_configured_scene_project_spend(now=1100)
+
+
+def test_publisher_reuses_large_artifact_hashes_only_within_one_pass(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_retained_controls_evidence as retained
+    from blueprint_pipeline import task_evaluation_configured_controls_autostart_support as support
+    from blueprint_pipeline import validation_file_digests as digests
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent, "first")
+    attempt(root, intent, "second")
+    robot = tmp_path / "robot.usd"
+    robot.write_bytes(b"a" * digests.MINIMUM_BYTES)
+    observations = []
+
+    def cancellation(_directory, _attempt):
+        support._sha256(robot)
+        observations.append(digests.digest_scope_stats())
+        return None
+
+    monkeypatch.setattr(retained, "validated_cancellation", cancellation)
+    args = dict(scene_root=root, seed_reconciliation_path=seed(tmp_path),
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    for now in (1000, 1100):
+        result = publish_current_scene_project_spend(**args, now=now)
+        assert result["scene_reservation_count"] == 2
+        assert digests.digest_scope_stats() is None
+    assert [row["bytes_hashed"] for row in observations] == [robot.stat().st_size] * 4
+    assert [row["cache_hits"] for row in observations] == [0, 1, 0, 1]
