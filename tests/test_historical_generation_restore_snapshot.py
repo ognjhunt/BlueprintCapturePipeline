@@ -42,6 +42,34 @@ def test_projects_only_exact_durable_root_access_transition(historical_installat
     assert expected['target_version'] == reopened
 
 
+def test_private_snapshot_validation_does_not_invent_an_access_transition(historical_installation):
+    from blueprint_pipeline.control_plane_lane_historical_restore_snapshot import validate_private
+    original, private, _ = observations(historical_installation)
+    saved = copy.deepcopy(private)
+    assert validate_private(original, private) is None
+    assert private == saved and private['target_version'][3:5] == [0, 0]
+
+
+@pytest.mark.parametrize('change', ['root_inode', 'root_owner', 'file_owner', 'file_digest'])
+def test_private_snapshot_cannot_adopt_changed_generation_before_access(historical_installation, change):
+    from blueprint_pipeline.control_plane_lane_historical_restore_snapshot import validate_private
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    original, private, _ = observations(historical_installation)
+    if change == 'root_inode':
+        private['members'][0]['version'][1] += 1
+        private['target_version'] = private['members'][0]['version'].copy()
+    elif change == 'root_owner':
+        private['members'][0]['version'][3] += 1
+        private['target_version'] = private['members'][0]['version'].copy()
+    elif change == 'file_owner':
+        private['members'][1]['version'][3] += 1
+    else:
+        private['members'][1]['sha256'] = 'sha256:' + 'f' * 64
+    private['generation_digest'] = canonical_digest(private, digest_field='generation_digest')
+    with pytest.raises(ValueError, match='restore_snapshot_changed'):
+        validate_private(original, private)
+
+
 def test_freshly_bound_parent_observation_is_preserved(historical_installation):
     from blueprint_pipeline.control_plane_lane_historical_restore_snapshot import after_reopen
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest

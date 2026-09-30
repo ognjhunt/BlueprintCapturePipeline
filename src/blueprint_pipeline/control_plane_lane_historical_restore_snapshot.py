@@ -1,4 +1,4 @@
-"""Bound restored physical observations for read-only retry, never authority."""
+"""Bound restored physical observations for recovery/retry, never authority."""
 from __future__ import annotations
 
 import copy
@@ -12,13 +12,12 @@ def _require(value):
     generation._require(value, 'restore_snapshot_changed')
 
 
-def after_reopen(original, private, reopened):
-    """Project only the journaled final root permission transition.
+def validate_private(original, private):
+    """Validate a protected observation without inventing reopened metadata.
 
-    The caller separately authenticates the complete protected snapshot and
-    access event, then compares this projection with a fresh full inventory.
-    Non-root inode versions and every original byte remain exact. This function
-    observes no filesystem and cannot grant execution or reopen access.
+    This pure check grants no authority and observes no filesystem. The worker
+    must authenticate the snapshot, current decision, original journal and real
+    member creation records, then perform fresh full cloud/local readback.
     """
     _require(type(private) is dict and set(private) == set(original)
         and private.get('schema_version') == 'control_plane_historical_generation.v1'
@@ -41,10 +40,22 @@ def after_reopen(original, private, reopened):
             and row['version'][0] == originals[0]['version'][0]
             and (row['version'][2:5] == old['version'][2:5] if row['path'] else
                  row['version'][2:5] == [stat.S_IFDIR | 0o700, 0, 0]))
-    before, owner = rows[0]['version'], originals[0]['version']
     _require(rows[0]['path'] == '' and rows[0]['kind'] == 'directory'
-        and before[:2] == owner[:2] and private['target_version'] == before
-        and type(reopened) is list and len(reopened) == 10
+        and rows[0]['version'][:2] == originals[0]['version'][:2]
+        and private['target_version'] == rows[0]['version'])
+
+
+def after_reopen(original, private, reopened):
+    """Project only the journaled final root permission transition.
+
+    The caller separately authenticates the complete protected snapshot and
+    access event, then compares this projection with a fresh full inventory.
+    Non-root inode versions and every original byte remain exact. This function
+    observes no filesystem and cannot grant execution or reopen access.
+    """
+    validate_private(original, private)
+    before, owner = private['members'][0]['version'], original['members'][0]['version']
+    _require(type(reopened) is list and len(reopened) == 10
         and all(type(value) is int and value >= 0 for value in reopened)
         and reopened[:2] == before[:2] and reopened[2:5] == owner[2:5]
         and reopened[5:8] == before[5:8] and reopened[9] == before[9]
