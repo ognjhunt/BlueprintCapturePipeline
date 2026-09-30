@@ -14,7 +14,7 @@ from blueprint_pipeline.paid_resource_admission import (
 )
 
 from .adapters import MODEL, request
-from .harness import ROOT, Ledger, digest, load_frozen
+from .harness import ROOT, Ledger, digest, load_frozen, read_json
 from .live_http import (HTTPTransport, LiveBlocked, NoRedirect, PROJECT, existing_key,
                         openai_envelope)
 
@@ -224,6 +224,49 @@ class MockHTTPContracts(unittest.TestCase):
         transport.send("parallel", envelope, **kwargs)
         self.assertEqual(len(self.opener.requests), 1)
         self.assertFalse((replacement / "live_journal.jsonl").exists())
+
+    def held_response(self, url):
+        self.opener.raw["results"][0]["url"] = url
+        with patch("experiments.provider_eval_recovery.live_http.normalize", side_effect=ValueError("old parser")):
+            with self.assertRaises(LiveBlocked):
+                self.parallel()
+        ledger = Ledger(self.output / "live_journal.jsonl", "10")
+        key = next(key for key, state in ledger.states.items() if state == "uncertain")
+        path = self.output / "live_raw" / (key + ".json")
+        return key, path, digest(read_json(path))
+
+    def test_retained_search_adoption_refuses_wrong_grant_request_or_tampered_envelope(self):
+        url = ("https://www.press.bmwgroup.com/global/article/detail/T0458778EN/"
+               "bmw-group-advances-the-use-of-physical-ai-in-production-with-figure-03-project-in-spartanburg?language=en")
+        key, path, sha = self.held_response(url)
+        kwargs = {"cell": "01_parallel_fast", "retained_sha256": sha, "grant": self.grant("parallel")}
+        with self.assertRaises(RuntimeError):
+            self.transport.reconcile_retained_search("parallel_fast", self.case, **{**kwargs, "grant": None})
+        with self.assertRaises(LiveBlocked):
+            self.transport.reconcile_retained_search("parallel_fast", {**self.case, "prompt": "changed"}, **kwargs)
+        with self.assertRaises(LiveBlocked):
+            self.transport.reconcile_retained_search("parallel_fast", self.case, **{**kwargs, "cell": "02_parallel_fast"})
+        retained = read_json(path)
+        retained["raw"]["results"][0]["title"] = "tampered"
+        path.write_text(json.dumps(retained))
+        with self.assertRaisesRegex(LiveBlocked, "digest_mismatch"):
+            self.transport.reconcile_retained_search("parallel_fast", self.case, **kwargs)
+        self.assertEqual(len(self.opener.requests), 1)
+        self.assertEqual(Ledger(self.output / "live_journal.jsonl", "10").states[key], "uncertain")
+        self.assertEqual(Ledger(self.output / "live_journal.jsonl", "10").exposure, Decimal("0.004125"))
+
+    def test_missing_or_still_private_query_response_remains_held(self):
+        key, path, sha = self.held_response("https://example.com/public?token=PRIVATE")
+        kwargs = {"cell": "01_parallel_fast", "retained_sha256": sha, "grant": self.grant("parallel")}
+        with self.assertRaises(ValueError):
+            self.transport.reconcile_retained_search("parallel_fast", self.case, **kwargs)
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.transport.reconcile_retained_search("parallel_fast", self.case, **kwargs)
+        ledger = Ledger(self.output / "live_journal.jsonl", "10")
+        self.assertEqual(ledger.states[key], "uncertain")
+        self.assertEqual(ledger.exposure, Decimal("0.004125"))
+        self.assertEqual(len(self.opener.requests), 1)
 
 
 if __name__ == "__main__":

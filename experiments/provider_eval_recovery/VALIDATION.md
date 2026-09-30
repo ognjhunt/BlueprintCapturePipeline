@@ -69,3 +69,29 @@ $0.49284; full80 cells:$4.92840. Real provider behavior/billing and count endpoi
 pricing remain unverified; actual semantic grades await isolated parent oracle.
 The optional admitted pilot header probe adds no unmetered auth request or proxy
 bypass and preserves a known-unsupported header capability refusal.
+
+## Case10 retained public-query recovery
+
+Parent reports37 live results and a held Parallel Advanced case10 HTTP200 response
+at$2.28551 reserved exposure. This implementation task has no access to the fresh
+executor's live artifacts; it received the sanitized public BMW article URL and
+language parameter/ten-result shape through the parent. No live calls were made.
+
+The query exception is limited to a public BMW article locale parameter, with
+unknown query keys/credential values/userinfo/fragments/redirects still refused.
+Offline reconciliation verifies the whole retained envelope digest supplied by
+the sole owner, original frozen request and binding grant, scope, reservation and
+uncertain state before appending completion. The pinned recovery receipt records
+the original d12d1ab8 code fingerprint and exact patched fingerprint; it permits
+only that code change, preserving original request keys and cumulative exposure.
+
+58 focused hermetic tests pass, including a reproduced37-cell pause at$2.285510,
+zero-call/idempotent adoption with no secret reads or new reservations, and mocked
+completion to80 cells with exactly240 total dispatches and$4.92840 reservation.
+Wrong owner/hash/request/cell/grant, missing or tampered raw responses, credential
+query values, altered scope and subsequent code changes fail closed. Ruff and
+diff checks pass. Independent GPT6.1Sol review reports no must-fix findings in
+the recovery implementation; all28 then-current runner/HTTP tests passed.
+Two additional negative reconciliation regressions cover tamper/binding and
+missing/private-query evidence. Paid resume awaits the parent's separate pilot
+evidence audit, not this implementation task.

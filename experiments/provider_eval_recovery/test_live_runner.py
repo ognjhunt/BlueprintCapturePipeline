@@ -9,10 +9,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from .adapters import MODEL
-from .harness import ROOT, Ledger, read_json
+from .adapters import MODEL, normalize
+from .harness import ROOT, Ledger, digest, read_json
 from .live_http import COUNT_ENDPOINT, COUNT_METHOD, LiveBlocked, PROJECT
-from .live_runner import APPROVAL, CATALOG, OWNER, run
+from .live_runner import (APPROVAL, CATALOG, OWNER, QUERY_PATCH_BASE_CODE, QUERY_RECOVERY_CELL,
+                          reconcile_query, run)
+
+BMW_ARTICLE = ("https://www.press.bmwgroup.com/global/article/detail/T0458778EN/"
+               "bmw-group-advances-the-use-of-physical-ai-in-production-with-figure-03-project-in-spartanburg")
+BMW_LANGUAGE_CITATION = BMW_ARTICLE + "?language=en"
 
 
 class Response(io.BytesIO):
@@ -24,6 +29,7 @@ class MockProviders:
         self.requests = []
         self.count = 500
         self.fail = False
+        self.bmw_query_case10 = False
 
     def open(self, req, timeout):
         self.requests.append(req)
@@ -43,7 +49,11 @@ class MockProviders:
             text = "Primary vendor claim; no site qualification established."
             result = {"url": "https://example.com/vendor", "title": "Vendor source"}
             result.update({"excerpts": [text]} if "mode" in body else {"snippet": text})
-            raw = {"results": [result]}
+            results = [result]
+            if self.bmw_query_case10 and body.get("mode") == "advanced" and "Entity: Figure AI" in body.get("objective", ""):
+                results = [dict(result) for _ in range(10)]
+                results[-1]["url"] = BMW_LANGUAGE_CITATION
+            raw = {"results": results}
         return Response(json.dumps(raw).encode())
 
 
@@ -168,6 +178,90 @@ class LivePilotCommandTests(unittest.TestCase):
         self.assertEqual(self.invoke(execute=True)["cells"], 8)
         self.assertEqual(len(self.opener.requests), 24)
         self.assertEqual(dict(self.opener.requests[0].header_items())["X-api-key"], "mock-only")
+
+    def paused_original_run(self):
+        self.opener.bmw_query_case10 = True
+
+        def old_normalize(mode, raw):
+            if any("?" in result["url"] for result in raw["results"]):
+                raise ValueError("original normalizer rejected query")
+            return normalize(mode, raw)
+
+        with patch("experiments.provider_eval_recovery.live_runner.code_hash", return_value=QUERY_PATCH_BASE_CODE), \
+                patch("experiments.provider_eval_recovery.live_http.normalize", side_effect=old_normalize):
+            self.invoke(execute=True)
+            with self.assertRaisesRegex(LiveBlocked, "uncertain_submission"):
+                self.invoke("remaining", execute=True)
+        ledger = Ledger(self.output / "live_journal.jsonl", "10.00")
+        self.assertEqual(len(list((self.output / "live_receipts").glob("*.json"))), 37)
+        self.assertEqual(ledger.exposure, Decimal("2.285510"))
+        uncertain = [key for key, state in ledger.states.items() if state == "uncertain"]
+        self.assertEqual(len(uncertain), 1)
+        key = uncertain[0]
+        return key, digest(read_json(self.output / "live_raw" / (key + ".json")))
+
+    def recover(self, retained_sha256):
+        return reconcile_query(self.input, self.output, self.access, "remaining",
+                               cell=QUERY_RECOVERY_CELL, retained_sha256=retained_sha256,
+                               owner_task_id=OWNER)
+
+    def test_original_37_cell_run_adopts_bmw_query_without_search_or_extra_cost(self):
+        key, sha = self.paused_original_run()
+        scope_before = (self.output / "live_scope.json").read_bytes()
+        reservations_before = Ledger(self.output / "live_journal.jsonl", "10.00").reservations
+        self.assertEqual(len(self.opener.requests), 112)
+        with patch("experiments.provider_eval_recovery.live_http.existing_key", side_effect=AssertionError("no secret reads")):
+            recovered = self.recover(sha)
+            self.assertEqual(self.recover(sha), recovered)
+        self.assertEqual(recovered["provider_calls"], 0)
+        self.assertEqual(recovered["attempt_id"], key)
+        self.assertEqual(len(self.opener.requests), 112)
+        adopted = Ledger(self.output / "live_journal.jsonl", "10.00")
+        self.assertEqual(adopted.reservations, reservations_before)
+        self.assertEqual(adopted.exposure, Decimal("2.285510"))
+        self.assertEqual(adopted.states[key], "completed")
+        self.assertEqual((self.output / "live_scope.json").read_bytes(), scope_before)
+        final = self.invoke("remaining", execute=True)
+        self.assertEqual(len(self.opener.requests), 240)
+        self.assertEqual(Decimal(final["cumulative_reserved_usd"]), Decimal("4.92840"))
+        receipt = read_json(self.output / "live_receipts" / (QUERY_RECOVERY_CELL + ".json"))
+        self.assertEqual(len(receipt["sources"]), 10)
+        self.assertEqual(receipt["sources"][-1]["url"], BMW_LANGUAGE_CITATION)
+
+    def test_query_recovery_refuses_wrong_owner_digest_or_further_code_change(self):
+        key, sha = self.paused_original_run()
+        with self.assertRaisesRegex(LiveBlocked, "digest_mismatch"):
+            self.recover("0" * 64)
+        with self.assertRaisesRegex(LiveBlocked, "single_owner"):
+            reconcile_query(self.input, self.output, self.access, "remaining",
+                            cell=QUERY_RECOVERY_CELL, retained_sha256=sha, owner_task_id="old-task")
+        self.assertEqual(Ledger(self.output / "live_journal.jsonl", "10.00").states[key], "uncertain")
+        self.recover(sha)
+        with patch("experiments.provider_eval_recovery.live_runner.code_hash", return_value="changed-again"):
+            with self.assertRaisesRegex(LiveBlocked, "patch_receipt"):
+                self.invoke("remaining", execute=True)
+        self.assertEqual(len(self.opener.requests), 112)
+
+    def test_query_patch_cannot_change_other_scope_fields(self):
+        _, sha = self.paused_original_run()
+        self.access["verified_model"] = "another-model"
+        with self.assertRaises(LiveBlocked):
+            self.recover(sha)
+        self.assertEqual(len(self.opener.requests), 112)
+
+    def test_bmw_locale_query_preserved_but_credentials_redirects_and_userinfo_refused(self):
+        raw = {"results": [{"url": BMW_LANGUAGE_CITATION, "title": "BMW release",
+                            "excerpts": ["Public article"]}]}
+        self.assertEqual(normalize("parallel_advanced", raw)[0]["url"], BMW_LANGUAGE_CITATION)
+        for url in (BMW_ARTICLE + "?token=PRIVATE", BMW_ARTICLE + "?language=PRIVATE_TOKEN",
+                    BMW_ARTICLE + "?language=en&token=PRIVATE", BMW_ARTICLE + "?language=en&language=de",
+                    BMW_ARTICLE + "?redirect=https://private.invalid", BMW_ARTICLE + "?language=en#PRIVATE",
+                    BMW_ARTICLE.replace("https://", "https://user:password@") + "?language=en",
+                    BMW_ARTICLE.replace("www.press.bmwgroup.com", "www.press.bmwgroup.com.evil") + "?language=en"):
+            with self.subTest(url=url):
+                raw["results"][0]["url"] = url
+                with self.assertRaises(ValueError):
+                    normalize("parallel_advanced", raw)
 
 
 if __name__ == "__main__":

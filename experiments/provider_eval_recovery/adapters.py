@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 import re
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 MODEL = "gpt-6.1-sol"
 MODES = ("parallel_fast", "parallel_advanced", "perplexity_fast", "perplexity_standard")
@@ -81,8 +81,18 @@ def normalize(mode, raw, limits=Limits()):
         parsed = urlsplit(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username:
             raise ValueError("invalid citation URL")
-        if parsed.password or parsed.query or parsed.fragment:
+        if parsed.password or parsed.fragment:
             raise ValueError("credential-bearing or noncanonical URL")
+        if parsed.query:
+            # Confirmed public BMW article locale selector. Do not admit arbitrary
+            # query keys/values, signed links, redirect targets or personal IDs.
+            parameters = parse_qsl(parsed.query, keep_blank_values=True,
+                                   strict_parsing=True, max_num_fields=1)
+            if (parsed.scheme != "https" or parsed.hostname != "www.press.bmwgroup.com"
+                    or not re.fullmatch(r"/global/article/detail/T[0-9]+[A-Z]{2}/[A-Za-z0-9-]+", parsed.path)
+                    or len(parameters) != 1 or parameters[0][0] != "language"
+                    or not re.fullmatch(r"[a-z]{2}(?:-[A-Z]{2})?", parameters[0][1])):
+                raise ValueError("credential-bearing or unsupported citation query")
         text = ("\n".join(result.get("excerpts", [])) if mode.startswith("parallel_")
                 else result.get("snippet", ""))
         if not isinstance(text, str):

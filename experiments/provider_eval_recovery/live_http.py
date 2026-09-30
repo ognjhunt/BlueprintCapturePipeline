@@ -143,6 +143,59 @@ class HTTPTransport:
                 content["rubric_sha256"] = self.plan["reviewer_spec_sha256"]
         return json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
+    def reconcile_retained_search(self, mode, public_input, *, cell, retained_sha256, grant):
+        """Offline owner-directed adoption of an exact retained HTTP200 response.
+
+        The owner supplies the canonical digest of the complete retained envelope.
+        Never create a reservation, read credentials, send, or release held spend.
+        """
+        from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
+
+        public_case(public_input)
+        provider = mode.split("_", 1)[0]
+        if (mode not in MODES or cell not in {f"{i:02d}_{mode}" for i in range(1, 21)}
+                or digest(public_input) != self.plan["case_hashes"].get(cell[:2])
+                or (self.plan["phase"] == "pilot") != (int(cell[:2]) <= 2)
+                or not isinstance(retained_sha256, str) or len(retained_sha256) != 64):
+            raise LiveBlocked("exact_retained_search_identity_required")
+        envelope = request(mode, public_input, 0)
+        binding = digest(self.plan)
+        require_paid_resource_admission_grant(grant, resource_class="evaluator_api",
+                                             allocation_binding_digest=binding,
+                                             require_allocation_binding=True)
+        key = digest({"plan": binding, "provider": provider, "cell": cell, "role": "search",
+                      "attempt": 1, "request": envelope})
+        with exclusive(self.output):
+            scope = {k: v for k, v in self.plan.items() if k != "phase"}
+            if read_json(self.output / "live_scope.json") != scope:
+                raise LiveBlocked("retained_search_scope_mismatch")
+            ledger = Ledger(self.output / "live_journal.jsonl", "10.00")
+            reservation = next((e for e in ledger.events if e["kind"] == "reserved"
+                                and e["attempt_id"] == key), None)
+            if (reservation is None or reservation.get("cell") != cell
+                    or reservation.get("provider") != provider or reservation.get("role") != "search"
+                    or reservation.get("request_sha256") != digest(envelope)
+                    or ledger.states.get(key) not in ("uncertain", "completed")
+                    or not any(e["kind"] == "uncertain" and e["attempt_id"] == key for e in ledger.events)):
+                raise LiveBlocked("exact_held_search_reservation_required")
+            retained = read_json(self.output / "live_raw" / (key + ".json"))
+            if digest(retained) != retained_sha256 or retained.get("request_sha256") != digest(envelope):
+                raise LiveBlocked("owner_retained_search_digest_mismatch")
+            # A missing response or still-invalid URL remains uncertain, with its
+            # original charge held. Only verified retained evidence can complete.
+            normalize(mode, retained["raw"])
+            if ledger.states[key] == "completed":
+                completed = next(e for e in ledger.events if e["kind"] == "completed"
+                                 and e["attempt_id"] == key)
+                if (completed["raw_sha256"] != retained_sha256
+                        or completed.get("reconciliation") != "retained_public_query_response"):
+                    raise LiveBlocked("exact_recovery_completion_required")
+            else:
+                ledger.append("completed", key, raw_sha256=retained_sha256,
+                              reconciliation="retained_public_query_response")
+            return {"attempt_id": key, "retained_sha256": retained_sha256,
+                    "reserved_usd": str(ledger.exposure), "provider_calls": 0}
+
     def send(self, provider, envelope, *, cell, role, attempt, grant,
              input_token_count=None, public_input=None, reviewer_oracle_bytes=None):
         counting = provider == "openai" and role in ("count_synthesis", "count_reviewer")

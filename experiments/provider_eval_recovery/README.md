@@ -117,7 +117,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m experiments.provider_eval_recovery.harness 
 PYTHONDONTWRITEBYTECODE=1 python3 -m experiments.provider_eval_recovery.reviewer --output /workspace/provider-eval-offline-example
 ```
 
-52 tests include the full mocked live pilot+remaining80cells, no redispatch on
+58 tests include the full mocked live pilot+remaining80cells, no redispatch on
 resume, uncertain spend holds, exact frozen inputs, counted token refusal, forged
 pilot receipt refusal, oracle isolation and budget/account/model guards. Independent
 Sol review and repository sentinel results are recorded in `VALIDATION.md`.
@@ -131,3 +131,34 @@ Official sources checked2026-09-30:
 [OpenAI input count](https://developers.openai.com/api/reference/resources/responses/subresources/input_tokens/methods/count),
 [OpenAI counting guide](https://developers.openai.com/api/docs/guides/token-counting).
 No obsolete Sonar async route is used.
+
+## Recover the retained case10 BMW response offline
+
+Case10 Parallel Advanced returned HTTP200 but the original normalizer rejected
+a public BMW citation solely for its locale query. The fix accepts only
+`https://www.press.bmwgroup.com/global/article/detail/T.../article-slug?language=...`
+with one bounded locale value. Userinfo, fragments, other parameters, credentials,
+redirect targets and other query-bearing hosts remain refused. URLs are preserved
+verbatim; the normalizer does not fetch or redirect citations.
+
+The owner must verify the **canonical digest of the entire retained envelope**
+(`harness.digest(read_json(live_raw/<attempt_id>.json))`, not just `raw` or the
+physical JSON file bytes) against the retained HTTP200 artifact. Then:
+
+```bash
+PYTHONPATH=src python3 -m experiments.provider_eval_recovery.live_runner --phase remaining --output EXISTING_JOURNAL_ROOT --access-receipt EXISTING_ACCESS_RECEIPT --reconcile-retained-search 10_parallel_advanced --retained-sha256 OWNER_VERIFIED_ENVELOPE_SHA256 --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
+```
+
+This command is **offline**; do not add `--execute`. It verifies the original
+grant binding, frozen request, public case, held reservation and retained digest,
+then appends completion for the original attempt. It performs no secret reads,
+provider calls, new reservation, release or cost reset. `normalizer_recovery.json`
+binds the original scope/code, exact patched code and retained response. The
+original scope and attempt keys remain unchanged; all other plan changes are
+refused. Further code edits invalidate this recovery receipt.
+
+The regression reproduces37 completed cells plus the held search at$2.285510,
+adopts it without changing exposure or dispatch count, and completes the mocked
+80-cell matrix without repeating that search. Missing/tampered/private-query
+responses remain held. Paid resume is separately on hold for the parent's
+offline pilot audit of query, raw response, normalized evidence and Sol input.

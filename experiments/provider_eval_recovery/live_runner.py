@@ -21,6 +21,8 @@ from .public_inputs import DECLARED_ORIGINAL_SHA256, load_public
 OWNER = "01a0f3b8-6abe-775b-bfea-5102185b80ce"
 CATALOG = "6abd5bd3b9f081a18f7946316d12ad95"
 APPROVAL = "Sentinel_741e7736ff8c8191a085c8e2ece40576: yes i approve"
+QUERY_PATCH_BASE_CODE = "d71e6ed0af44c1c661a21280e4fc0824d930c9e37946b2b2a12e4e577896f7c4"
+QUERY_RECOVERY_CELL = "10_parallel_advanced"
 
 
 def code_hash():
@@ -28,7 +30,16 @@ def code_hash():
     return digest({path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in paths})
 
 
-def preflight(inputs, output, access, phase):
+def query_patch_receipt(plan, attempt_id, retained_sha256):
+    return {"schema": "retained_public_query_recovery.v1",
+            "purpose": "adopt_held_bmw_public_language_query_response",
+            "cell": QUERY_RECOVERY_CELL, "attempt_id": attempt_id,
+            "retained_sha256": retained_sha256,
+            "original_scope_sha256": digest({k: v for k, v in plan.items() if k != "phase"}),
+            "original_code_sha256": QUERY_PATCH_BASE_CODE, "patched_code_sha256": code_hash()}
+
+
+def preflight(inputs, output, access, phase, *, recovering_query=False):
     """Validate all deterministic execute gates without contacting any provider."""
     output = Path(output).resolve()
     _, cases, provenance = load_public(inputs)
@@ -53,8 +64,34 @@ def preflight(inputs, output, access, phase):
             "access_receipt_sha256": digest(access), "execution_owner_task_id": OWNER,
             "case_hashes": {f"{i:02d}": digest(case) for i, case in enumerate(cases, 1)},
             "inference_roles": ["synthesis"], "count_allowance_usd_per_request": str(COUNT_ALLOWANCE)}
-    HTTPTransport(output, plan, access, token_counter=lambda _: None)
     with exclusive(output):
+        previous = read_json(output / "live_scope.json") if (output / "live_scope.json").exists() else None
+        expected_scope = {k: v for k, v in plan.items() if k != "phase"}
+        patched_scope = {**expected_scope, "code_sha256": QUERY_PATCH_BASE_CODE}
+        if previous is not None and previous != expected_scope:
+            if previous != patched_scope:
+                raise LiveBlocked("frozen_scope_change_outside_reviewed_query_patch")
+            plan["code_sha256"] = QUERY_PATCH_BASE_CODE
+            if not recovering_query:
+                patch_receipt = read_json(output / "normalizer_recovery.json")
+                recovery_plan = {**plan, "phase": "remaining"}
+                envelope = request("parallel_advanced", cases[9], 0)
+                key = digest({"plan": digest(recovery_plan), "provider": "parallel",
+                              "cell": QUERY_RECOVERY_CELL, "role": "search", "attempt": 1,
+                              "request": envelope})
+                retained = read_json(output / "live_raw" / (key + ".json"))
+                if patch_receipt != query_patch_receipt(plan, key, digest(retained)):
+                    raise LiveBlocked("exact_reviewed_query_patch_receipt_required")
+                ledger = Ledger(output / "live_journal.jsonl", "10.00")
+                completion = next((e for e in ledger.events if e["attempt_id"] == key
+                                   and e["kind"] == "completed"), {})
+                if (ledger.states.get(key) != "completed" or completion.get("raw_sha256") != digest(retained)
+                        or completion.get("reconciliation") != "retained_public_query_response"
+                        or retained.get("request_sha256") != digest(envelope)):
+                    raise LiveBlocked("query_patch_reconciled_evidence_required")
+        if recovering_query and (previous is None or previous != patched_scope):
+            raise LiveBlocked("original_reviewed_scope_required_for_query_recovery")
+        HTTPTransport(output, plan, access, token_counter=lambda _: None)
         write_once(output / "live_access.json", access)
         write_once(output / "public_provenance.json", provenance)
         write_once(output / "live_scope.json", {k: v for k, v in plan.items() if k != "phase"})
@@ -68,6 +105,22 @@ def preflight(inputs, output, access, phase):
                     verify_receipt(output, read_json(receipt_path), ledger,
                                    f"{index:02d}_{mode}", cases[index - 1])
     return plan, cases, provenance
+
+
+def reconcile_query(inputs, output, access, phase, *, cell, retained_sha256, owner_task_id):
+    """Recover this confirmed normalizer failure offline; preserve the frozen plan."""
+    if owner_task_id != OWNER or phase != "remaining" or cell != QUERY_RECOVERY_CELL:
+        raise LiveBlocked("exact_single_owner_case10_query_recovery_required")
+    plan, cases, _ = preflight(inputs, output, access, phase, recovering_query=True)
+    output = Path(plan["journal_root"])
+    transport = HTTPTransport(output, plan, access)
+    recovered = transport.reconcile_retained_search(
+        "parallel_advanced", cases[9], cell=cell, retained_sha256=retained_sha256,
+        grant=grant(plan, "parallel"))
+    with exclusive(output):
+        write_once(output / "normalizer_recovery.json",
+                   query_patch_receipt(plan, recovered["attempt_id"], recovered["retained_sha256"]))
+    return {"status": "retained_search_reconciled_no_provider_calls", **recovered}
 
 
 def grant(plan, provider):
@@ -178,10 +231,20 @@ def main():
     parser.add_argument("--phase", choices=("pilot", "remaining"), required=True)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--execution-owner-task-id")
+    parser.add_argument("--reconcile-retained-search", choices=(QUERY_RECOVERY_CELL,))
+    parser.add_argument("--retained-sha256", help="owner-verified canonical digest of the entire retained envelope")
     args = parser.parse_args()
     try:
-        result = run(args.input, args.output, read_json(args.access_receipt), args.phase,
-                     execute=args.execute, owner_task_id=args.execution_owner_task_id)
+        if args.reconcile_retained_search:
+            if args.execute or not args.retained_sha256:
+                raise LiveBlocked("offline_reconciliation_requires_owner_digest_and_no_execute")
+            result = reconcile_query(args.input, args.output, read_json(args.access_receipt), args.phase,
+                                     cell=args.reconcile_retained_search,
+                                     retained_sha256=args.retained_sha256,
+                                     owner_task_id=args.execution_owner_task_id)
+        else:
+            result = run(args.input, args.output, read_json(args.access_receipt), args.phase,
+                         execute=args.execute, owner_task_id=args.execution_owner_task_id)
     except LiveBlocked as exc:
         # LiveBlocked contains only the transport's fixed, sanitized identifiers.
         print(json.dumps({"status": "blocked", "reason": str(exc),

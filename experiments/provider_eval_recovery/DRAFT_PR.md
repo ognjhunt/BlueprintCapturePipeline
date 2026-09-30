@@ -12,7 +12,13 @@ call, credential change, subscription, top-up, deployment or schedule change was
 performed. Counting fees use a disclosed allowance because official docs do not
 state a tariff. No provider winner or actual billing guarantee is claimed.
 
-Validation:52 hermetic tests, including mocked end-to-end pilot+remaining/resume,
+Case10's retained HTTP200 BMW citation was blocked by a public language query.
+The narrow locale-query exception preserves credential/userinfo/redirect guards.
+Offline reconciliation adopts the verified retained envelope under its original
+scope/grant/attempt, with no new search or reservation; a pinned patch receipt
+permits this reviewed code update while preserving the existing cumulative ledger.
+
+Validation:58 hermetic tests, including mocked end-to-end pilot+remaining/resume,
 Ruff and diff checks; nine repository sentinel checks; independent GPT6.1Sol
 review. No production files changed. This draft remains separate from runner
 #2486 and snapshot#2487; no merge is requested.
