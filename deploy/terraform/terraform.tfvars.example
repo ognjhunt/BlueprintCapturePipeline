@@ -88,8 +88,10 @@ gpu_fleet_billing_budget_thresholds   = [0.5, 0.8, 1.0]
 # https://s3.us-<region>.backblazeb2.com/<bucket>/blueprint/arm-decision-proof-v1/configured-scenes/
 # The budget alerts on spend labeled cost-center=remote-cpu-workers and needs
 # billing_account_id once the workers are enabled.
-remote_cpu_workers_enabled           = false
-remote_cpu_worker_object_prefix      = ""
+# deploy.sh exports the flag and the prefix. A value in terraform.tfvars
+# overrides that export, so a copy of this file must not set them:
+# remote_cpu_workers_enabled      = false
+# remote_cpu_worker_object_prefix = ""
 remote_cpu_workers_budget_usd        = 25
 remote_cpu_workers_budget_thresholds = [0.5, 0.9, 1.0]
 remote_cpu_worker_stages = {

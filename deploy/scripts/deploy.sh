@@ -55,9 +55,11 @@ PRIVACY_PIPELINE_ENABLED="${PRIVACY_PIPELINE_ENABLED:-true}"
 PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"
 # Remote CPU workers (plan 14). Opt in with a reviewed commit that flips this
 # default to true and sets the object prefix default below (the US B2
-# endpoint, bucket and key prefix; not a secret). Never opt in with an
-# environment override: the next deploy without it would destroy the jobs,
-# identities and transport bucket.
+# endpoint, bucket and key prefix; not a secret). The opt-in also needs
+# billing_account_id in terraform.tfvars, which this script never exports: the
+# workers' budget requires it, and setting it also creates the GPU fleet beta
+# budget. Never opt in with an environment override: the next deploy without
+# it would destroy the jobs, identities and transport bucket.
 REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-false}"
 REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-}"
 PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"
@@ -925,6 +927,14 @@ create_pubsub_topics() {
 }
 
 setup_iam() {
+    # Not part of the deploy flow: Terraform owns IAM. Its unconditional
+    # project grants would replace the conditions that keep existing
+    # identities away from the remote CPU jobs and transport (plan 14 C2).
+    if [[ "$REMOTE_CPU_WORKERS_ENABLED" == "true" ]]; then
+        log_error "setup_iam would undo the remote CPU workers' IAM conditions; Terraform owns IAM"
+        return 1
+    fi
+
     log_info "Setting up IAM permissions..."
 
     if [[ "$DRY_RUN" == "true" ]]; then

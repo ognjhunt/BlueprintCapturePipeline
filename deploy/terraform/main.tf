@@ -722,7 +722,11 @@ resource "google_project_iam_member" "pipeline_runner_storage" {
   }
 
   # Adding or removing the condition replaces the binding; create the new one
-  # before removing the old so the grant never lapses.
+  # before removing the old so the grant never lapses. Terraform extends this
+  # to what a conditioned grant depends on, so forcing the replacement of its
+  # service account under the same account_id (-replace) would collide with
+  # the old account: remove that account in a separate apply first. The same
+  # holds for every conditioned grant below.
   lifecycle {
     create_before_destroy = true
   }
@@ -2134,6 +2138,19 @@ variable "remote_cpu_worker_stages" {
     ])
     error_message = "remote_cpu_worker_stages memory must be whole Gi, at most 32Gi, with ephemeral_size_limit (in-memory) below it."
   }
+
+  # Cloud Run's per-CPU memory range; outside it a plan passes and the apply fails.
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages : try(
+        tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) <= 4 * tonumber(limits.cpu) &&
+        (tonumber(limits.cpu) < 4 || tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) >= 2) &&
+        (tonumber(limits.cpu) < 6 || tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) >= 4),
+        false
+      )
+    ])
+    error_message = "remote_cpu_worker_stages memory must fit Cloud Run's range for its cpu: at most 4Gi per CPU, and at least 2Gi at 4 CPU and 4Gi at 6 or 8 CPU."
+  }
 }
 
 variable "remote_cpu_worker_object_prefix" {
@@ -2228,14 +2245,6 @@ resource "google_project_iam_custom_role" "remote_cpu_transport_reader" {
   permissions = ["storage.objects.get"]
 }
 
-resource "google_storage_bucket_iam_member" "remote_cpu_transport_worker" {
-  count = var.remote_cpu_workers_enabled ? 1 : 0
-
-  bucket = google_storage_bucket.remote_cpu_transport[0].name
-  role   = google_project_iam_custom_role.remote_cpu_transport_reader[0].name
-  member = "serviceAccount:${google_service_account.remote_cpu_worker[0].email}"
-}
-
 # The host's paid unit dispatches as this identity. Its roles are custom and
 # bound only on the stage jobs and the transport bucket. Its key is created by
 # the owner and loaded into that unit alone with LoadCredential=; Terraform
@@ -2260,6 +2269,7 @@ resource "google_project_iam_custom_role" "remote_cpu_dispatcher" {
     "run.executions.get",
     "run.executions.list",
     "run.jobs.get",
+    "run.jobs.run",
     "run.jobs.runWithOverrides",
   ]
 }
@@ -2278,12 +2288,36 @@ resource "google_project_iam_custom_role" "remote_cpu_transport_writer" {
   ]
 }
 
-resource "google_storage_bucket_iam_member" "remote_cpu_transport_dispatcher" {
+# The transport bucket's whole IAM policy, set authoritatively. A new bucket
+# starts with the project convenience bindings: Viewers read every object, and
+# Editors (default service accounts among them) and Owners own them. Additive
+# members would leave those in place, so any of them could read or replace
+# live presigned links. Here only the worker reads and only the dispatcher
+# writes; project Owners keep bucket management, which reads no object.
+data "google_iam_policy" "remote_cpu_transport" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
 
-  bucket = google_storage_bucket.remote_cpu_transport[0].name
-  role   = google_project_iam_custom_role.remote_cpu_transport_writer[0].name
-  member = "serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"
+  binding {
+    role    = google_project_iam_custom_role.remote_cpu_transport_reader[0].name
+    members = ["serviceAccount:${google_service_account.remote_cpu_worker[0].email}"]
+  }
+
+  binding {
+    role    = google_project_iam_custom_role.remote_cpu_transport_writer[0].name
+    members = ["serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"]
+  }
+
+  binding {
+    role    = "roles/storage.legacyBucketOwner"
+    members = ["projectOwner:${var.project_id}"]
+  }
+}
+
+resource "google_storage_bucket_iam_policy" "remote_cpu_transport" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  bucket      = google_storage_bucket.remote_cpu_transport[0].name
+  policy_data = data.google_iam_policy.remote_cpu_transport[0].policy_data
 }
 
 resource "google_cloud_run_v2_job" "remote_cpu_worker" {

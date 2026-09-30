@@ -31,11 +31,13 @@ TERRAFORM_STATIC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "terraform-sta
 GIB = 1024**3
 IMAGE = "gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:" + "d" * 64
 # Plan 14 §14: run with overrides and read or cancel executions; nothing that operates on the project.
+# jobs.run is authorized on run.jobs.run, with runWithOverrides checked on top when overrides are sent.
 DISPATCHER_PERMISSIONS = [
     "run.executions.cancel",
     "run.executions.get",
     "run.executions.list",
     "run.jobs.get",
+    "run.jobs.run",
     "run.jobs.runWithOverrides",
 ]
 TRANSPORT_WRITER_PERMISSIONS = ["storage.objects.create", "storage.objects.delete", "storage.objects.get"]
@@ -107,8 +109,13 @@ def _list(body: str, name: str) -> list[str]:
 
 
 def _resources(text: str) -> dict[tuple[str, str], str]:
-    return {(kind, name): _terraform_resource_body(text, kind, name)
-            for kind, name in re.findall(r'(?m)^resource "([a-z0-9_]+)" "([a-z0-9_]+)" \{$', text)}
+    """Every resource by ``(kind, name)``, and every data source by ``("data.<kind>", name)``."""
+    blocks = {(kind, name): _terraform_resource_body(text, kind, name)
+              for kind, name in re.findall(r'(?m)^resource "([a-z0-9_]+)" "([a-z0-9_]+)" \{$', text)}
+    for kind, name in re.findall(r'(?m)^data "([a-z0-9_]+)" "([a-z0-9_]+)" \{$', text):
+        header = f'data "{kind}" "{name}" {{'
+        blocks[(f"data.{kind}", name)] = _braced(text, text.index(header) + len(header) - 1)
+    return blocks
 
 
 def _hcl_regex(body: str, variable: str) -> re.Pattern[str]:
@@ -141,8 +148,12 @@ def test_remote_cpu_jobs_are_off_by_default_and_us_only() -> None:
     flag = _terraform_variable_body(main, "remote_cpu_workers_enabled")
     assert (_attr(flag, "type"), _attr(flag, "default"), _attr(flag, "nullable")) == (
         "bool", "false", "false")
+    # deploy.sh exports the flag and the prefix, and a terraform.tfvars value overrides an export:
+    # the example shows them commented out, so a copy of it cannot pin either.
     example = TFVARS_EXAMPLE.read_text(encoding="utf-8")
-    assert re.findall(r"(?m)^remote_cpu_workers_enabled\s*=\s*(\S+)\s*$", example) == ["false"]
+    for name in ("remote_cpu_workers_enabled", "remote_cpu_worker_object_prefix"):
+        assert not re.search(rf"(?m)^{name}\s*=", example), name
+        assert re.search(rf"(?m)^# {name}\s*=", example), name
 
     # Every remote CPU resource exists only while the flag is on: off, its count is 0 or its map
     # empty. Anything with a location sits in the primary region, which must be a US region.
@@ -228,6 +239,15 @@ def test_remote_cpu_job_command_is_the_bootstrap_with_zero_retries_and_bounded_t
     assert sum(contract.STAGE_LIMITS["phase_seconds"].values()) + contract.PHASE_MARGIN_SECONDS == 1800
     assert f"<= {contract.MAX_TASK_TIMEOUT_SECONDS}" in stages
     assert f"<= {contract.MAX_MEMORY_BYTES // GIB}" in stages
+    # Cloud Run's per-CPU memory range is checked at plan time, not first met at apply
+    # (cpu "1" with 32Gi would pass a plan); the default stage sits inside it.
+    per_cpu = [check for check in _children(stages, "validation") if "4 * tonumber(limits.cpu)" in check]
+    assert len(per_cpu) == 1
+    for bound in ('<= 4 * tonumber(limits.cpu)', '(tonumber(limits.cpu) < 4 ||', '>= 2)',
+                  '(tonumber(limits.cpu) < 6 ||', '>= 4)'):
+        assert bound in per_cpu[0], bound
+    cpu, memory_gi = int(_strings(values["cpu"])[0]), int(_strings(values["memory"])[0].removesuffix("Gi"))
+    assert memory_gi <= 4 * cpu and (cpu < 4 or memory_gi >= 2) and (cpu < 6 or memory_gi >= 4)
     assert "episode-compilation".replace("-", "_") in contract.STAGES
     assert contract._JOB.fullmatch("blueprint-remote-cpu-episode-compilation")
     # What jobs.get returns for this definition passes the dispatcher's own job check.
@@ -272,18 +292,12 @@ def test_remote_cpu_worker_identity_has_no_project_roles() -> None:
     worker = _terraform_resource_body(main, "google_service_account", "remote_cpu_worker")
     assert _attr(worker, "account_id") == '"remote-cpu-worker"'
 
-    # It runs the job and may get transport objects. Nothing else names it; no project binding does.
+    # It runs the job and may get transport objects (the bucket policy's reader binding). Nothing
+    # else names it; no project binding does.
     holders = {address for address, body in _resources(main).items()
                if "google_service_account.remote_cpu_worker[" in body}
     assert holders == {("google_cloud_run_v2_job", "remote_cpu_worker"),
-                       ("google_storage_bucket_iam_member", "remote_cpu_transport_worker")}
-    grant = _terraform_resource_body(main, "google_storage_bucket_iam_member",
-                                     "remote_cpu_transport_worker")
-    assert _attr(grant, "bucket") == "google_storage_bucket.remote_cpu_transport[0].name"
-    assert _attr(grant, "role") == (
-        "google_project_iam_custom_role.remote_cpu_transport_reader[0].name")
-    assert _attr(grant, "member") == (
-        '"serviceAccount:${google_service_account.remote_cpu_worker[0].email}"')
+                       ("data.google_iam_policy", "remote_cpu_transport")}
     reader = _terraform_resource_body(main, "google_project_iam_custom_role",
                                       "remote_cpu_transport_reader")
     assert _list(reader, "permissions") == ["storage.objects.get"]
@@ -310,7 +324,7 @@ def test_dispatcher_roles_are_custom_minimal_and_resource_scoped() -> None:
     holders = {address for address, body in resources.items()
                if "google_service_account.remote_cpu_dispatcher[" in body}
     assert holders == {("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher"),
-                       ("google_storage_bucket_iam_member", "remote_cpu_transport_dispatcher")}
+                       ("data.google_iam_policy", "remote_cpu_transport")}
     member = '"serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"'
     job = resources[("google_cloud_run_v2_job", "remote_cpu_worker")]
     on_job = resources[("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher")]
@@ -319,22 +333,50 @@ def test_dispatcher_roles_are_custom_minimal_and_resource_scoped() -> None:
     assert _attr(on_job, "location") == _attr(job, "location")
     assert _attr(on_job, "role") == "google_project_iam_custom_role.remote_cpu_dispatcher[0].name"
     assert _attr(on_job, "member") == member
-    on_bucket = resources[("google_storage_bucket_iam_member", "remote_cpu_transport_dispatcher")]
-    assert _attr(on_bucket, "bucket") == "google_storage_bucket.remote_cpu_transport[0].name"
-    assert _attr(on_bucket, "role") == (
-        "google_project_iam_custom_role.remote_cpu_transport_writer[0].name")
-    assert _attr(on_bucket, "member") == member
 
     # Each custom role is bound exactly where it belongs and nowhere else.
     bindings = {address: re.findall(r"google_project_iam_custom_role\.(remote_cpu_[a-z_]+)\[", body)
                 for address, body in resources.items()}
     assert {address: roles for address, roles in bindings.items() if roles} == {
         ("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher"): ["remote_cpu_dispatcher"],
-        ("google_storage_bucket_iam_member", "remote_cpu_transport_dispatcher"):
-            ["remote_cpu_transport_writer"],
-        ("google_storage_bucket_iam_member", "remote_cpu_transport_worker"):
-            ["remote_cpu_transport_reader"],
+        ("data.google_iam_policy", "remote_cpu_transport"):
+            ["remote_cpu_transport_reader", "remote_cpu_transport_writer"],
     }
+
+
+def test_transport_bucket_policy_is_authoritative_and_exact() -> None:
+    """Only the worker reads transport objects and only the dispatcher writes them.
+
+    A new bucket starts with the project convenience bindings: Viewers read every object, and
+    Editors (default service accounts among them) and Owners own them. Additive members would
+    leave those in place, so the bucket's whole policy is set, and Owners keep only bucket
+    management, which reads no object.
+    """
+    main = _main()
+    resources = _resources(main)
+    policy = resources[("google_storage_bucket_iam_policy", "remote_cpu_transport")]
+    assert _attr(policy, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
+    assert _attr(policy, "bucket") == "google_storage_bucket.remote_cpu_transport[0].name"
+    assert _attr(policy, "policy_data") == (
+        "data.google_iam_policy.remote_cpu_transport[0].policy_data")
+    document = resources[("data.google_iam_policy", "remote_cpu_transport")]
+    assert _attr(document, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
+    bindings = _children(document, "binding")
+    assert len(bindings) == 3
+    # Raw HCL: each binding names one member.
+    assert {_attr(binding, "role"): _attr(binding, "members") for binding in bindings} == {
+        "google_project_iam_custom_role.remote_cpu_transport_reader[0].name":
+            '["serviceAccount:${google_service_account.remote_cpu_worker[0].email}"]',
+        "google_project_iam_custom_role.remote_cpu_transport_writer[0].name":
+            '["serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"]',
+        '"roles/storage.legacyBucketOwner"': '["projectOwner:${var.project_id}"]',
+    }
+    # The policy is the bucket's only binding: an additive member or binding would fight it.
+    on_bucket = {address for address, body in resources.items()
+                 if "google_storage_bucket.remote_cpu_transport[" in body}
+    assert on_bucket == {("google_storage_bucket_iam_policy", "remote_cpu_transport")}
+    assert "google_storage_bucket_iam_member" not in "".join(
+        body for (kind, name), body in resources.items() if name.startswith("remote_cpu"))
 
 
 def test_no_service_account_key_is_managed_by_terraform() -> None:
@@ -477,6 +519,11 @@ def test_deploy_script_defaults_remote_cpu_workers_off_and_exports_the_flag() ->
         'PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"')
     assert 'REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-}"' in configuration
     assert "REMOTE_CPU_WORKERS_ENABLED:-true" not in deploy
+    # setup_iam is outside the deploy flow, and its unconditional project grants would undo plan 14
+    # C2's conditions: it refuses before any grant once the workers are enabled.
+    setup_iam = deploy[deploy.index("setup_iam() {"):]
+    refusal = setup_iam.index('if [[ "$REMOTE_CPU_WORKERS_ENABLED" == "true" ]]; then')
+    assert refusal < setup_iam.index("gcloud ") and "return 1" in setup_iam[refusal:setup_iam.index("fi\n", refusal)]
 
     # Exported with the rest of the fixed TF_VAR set, before the backend is touched or any plan.
     start = deploy.index("apply_terraform() {")
@@ -507,6 +554,7 @@ def test_terraform_static_workflow_pins_setup_terraform_and_never_plans() -> Non
     steps = job["steps"]
     checkout = [step for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
     assert len(checkout) == 1 and checkout[0]["with"]["persist-credentials"] is False
+    assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout[0]["uses"])
     setup = [step for step in steps
              if str(step.get("uses", "")).startswith("hashicorp/setup-terraform@")]
     assert len(setup) == 1
