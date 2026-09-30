@@ -525,6 +525,31 @@ class VirtualCasClient:
         self.objects[key] = (obj, dict(metadata), f'"b2-{digest[7:23]}"')
         self.uploads += 1
 
+    # Presigned GETs served over the real range transport (``opener``), as B2's S3 endpoint would.
+    def generate_presigned_url(self, operation, *, Params, ExpiresIn, HttpMethod):
+        assert (operation, HttpMethod, Params["Bucket"]) == ("get_object", "GET", self.bucket)
+        return f"https://b2.example.invalid/{self.bucket}/{Params['Key']}?X-Amz-Signature={SECRET}"
+
+    def opener(self, request, timeout, policy):
+        from urllib.parse import urlparse
+
+        key = urlparse(request.full_url).path.split("/", 2)[2]
+        if key not in self.objects:
+            raise urllib.error.HTTPError("redacted", 404, "Not Found", {}, None)
+        obj, _, etag = self.objects[key]
+        served = getattr(self, "served", None)
+        if served is None:
+            served = self.served = {}
+        if key not in served or served[key].object is not obj:
+            served[key] = RangeStore(obj, etag=etag, url=self.generate_presigned_url(
+                "get_object", Params={"Bucket": self.bucket, "Key": key}, ExpiresIn=1, HttpMethod="GET"))
+        return served[key].opener(request, timeout, policy)
+
+    def ranged_requests(self) -> list[tuple[str, tuple[int, int]]]:
+        """Every presigned range request served, as (key, (first, last)), less ETag probes."""
+        return [(key, row["range"]) for key, store in (getattr(self, "served", None) or {}).items()
+                for row in store.requests if row["range"] not in (None, (0, 0))]
+
     def get_object(self, *, Bucket, Key, Range=None, IfMatch=None):
         self._log("get_object", Key, Range)
         obj, _, etag = self.objects[Key]
@@ -677,15 +702,18 @@ class StreamedAttempt:
 
 
 def _contract_v1_needed(path: str) -> bool:
-    return PurePosixPath(path).suffix.lower() == ".json" and "policy-requests" not in PurePosixPath(path).parts
+    """The lane's contract rule (JSON outside policy-requests, less the ten child results)."""
+    from blueprint_pipeline.policy_canary_output_members import POLICY_CANARY_OUTPUT_CONTRACT
+
+    return POLICY_CANARY_OUTPUT_CONTRACT.needed(path)
 
 
 def stream_evidence_tree(source, attempt, *, needed=None, block_bytes=128 * 1024) -> StreamedAttempt:
     """Stream ``source``'s files into ``attempt``: index, seal, ingest ``needed``, write the view.
 
-    ``needed`` decides which archive paths are materialized (contract v1 --
-    JSON outside ``policy-requests`` -- by default). Nothing is written under
-    ``source``.
+    ``needed`` decides which archive paths are materialized (the lane's contract
+    v1 by default: JSON outside ``policy-requests``, less the ten per-cell child
+    results). Nothing is written under ``source``.
     """
     from pathlib import Path
     from types import SimpleNamespace
@@ -739,8 +767,9 @@ def serve_member_views(monkeypatch, store: RangeStore) -> None:
 def write_staged_absence_proof(attempt, *, promotion_status: str = "promoted", gated: bool = True):
     """A staging dir under ``attempt`` whose objects a completed cleanup proved absent, plus its sealed proof.
 
-    Returns the proof path. ``gated=False`` writes a manifest without
-    ``output_promotion_required`` (download mode's).
+    A gated staging dir also gets the final promotion receipt the proof is
+    sealed with. Returns the proof path. ``gated=False`` writes a manifest
+    without ``output_promotion_required`` (download mode's).
     """
     from pathlib import Path
 
@@ -756,12 +785,98 @@ def write_staged_absence_proof(attempt, *, promotion_status: str = "promoted", g
                 **({"output_promotion_required": True} if gated else {})}
     (staging / records.STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     keys = records.staged_object_keys(manifest)
+    promotion = None
+    if gated:  # the staging dir's current, final promotion receipt, which the proof is sealed with
+        output = records.key_sha256(manifest["output_key"])
+        promotion = records.write_promotion_receipt(staging, {
+            "schema_version": records.RECEIPT_SCHEMA, "status": promotion_status,
+            "staging_manifest_sha256": records.staging_manifest_sha256(staging), "output_key_sha256": output,
+            "staged_objects": {"output": {"key_sha256": output, "state": promotion_status, "versions": []}},
+            "witness": {"disposition": "not_staged", "reference": None, "redundancy": None},
+            "blockers": [], "private_url_recorded": False, "raw_secret_values_recorded": False})
     cleanup = {"schema_version": records.CLEANUP_SCHEMA,
                "staging_manifest_sha256": records.staging_manifest_sha256(staging), "status": "completed",
                "blockers": [], "all_objects_absent": True, "all_ephemeral_objects_absent": True,
                "exact_object_count": len(keys),
                "objects": [{"key_sha256": records.key_sha256(key), "absence": {"absence_confirmed": True}}
                            for _, key in keys]}
-    promotion = {"receipt_digest": "sha256:" + "1" * 64, "status": promotion_status} if gated else None
     records.write_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=promotion)
     return staging / records.ABSENCE_PROOF_FILENAME
+
+
+# -- A production-scaled Quick-10 shape, for measuring the member contract ----------------
+# Bytes of each JSON member of one cell of the lifecycle rehearsal's real Quick-10 worker
+# output (tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py: the real
+# orchestration, episode runner and policy clients over a fake Isaac), measured 2026-09-29.
+# Per-episode rows are (pi05_droid, groot_n17_droid). The rehearsal's aggregate result is
+# 4,407,038 bytes; production's is 190,573,875 (provider_output_native_inventory.py), so
+# every JSON row but the policy requests is scaled by that ratio: the receipts the aggregate
+# embeds are the ones the per-episode files and the child results repeat (review I7).
+QUICK10_REHEARSAL_AGGREGATE_BYTES = 4_407_038
+QUICK10_PRODUCTION_AGGREGATE_BYTES = 190_573_875
+_REHEARSAL_CELL_JSON_BYTES = {
+    QUICK10_RESULT: 442_171,  # the per-cell child result
+    "policy_canary_static_startup_preflight.v1.json": 7_165,
+    "policy_canary_telemetry_index.json": 953,
+    "policy_canary_telemetry_schema.json": 239,
+    "prepolicy_dependency_matrix.v1.json": 67,
+    "prepolicy_observation_gate/post_gate_rtx_streaming_guard.v1.json": 547,
+}
+_REHEARSAL_EPISODE_JSON_BYTES = {
+    "action_delivery_readback": (662, 662), "action_sequence": (9_938, 9_938),
+    "contact_force_trace": (2_639, 2_639), "embodiment_parity_diagnostic": (687, 687),
+    "episode_receipt": (122_115, 182_824), "policy_query_receipt": (20_578, 81_553),
+    "reset_state": (5_277, 5_282), "score_receipt": (5_428, 5_428), "state_trace": (14_872, 14_872),
+    "task_object_trajectory": (2_327, 2_327),
+}
+_REHEARSAL_FRAME_MANIFEST_BYTES = {"--prestart-readiness": (13_936, 13_976), "": (20_402, 20_457)}
+_REHEARSAL_TOP_JSON_BYTES = {"policy_canary_telemetry_index.json": 1_136, "policy_canary_telemetry_schema.json": 239,
+                             "adp009d_groot_worker_identity.groot_n17_droid.json": 578}
+_REHEARSAL_POLICY_REQUEST_BYTES = (403_106, 462_852)
+
+
+def quick10_production_shape(*, frames_per_camera: int = 45, png_bytes: int = 400_000, mp4_bytes: int = 12_000_000,
+                             policy_requests_per_episode: int = 45) -> dict[str, int]:
+    """Member path -> size of a production-scaled Quick-10 output (see the table above).
+
+    The layout is the worker's: ten ``cell_runs/NN`` trees, each with two candidates' episode
+    JSON and, per candidate, an episode and a prestart-readiness media directory holding three
+    camera MP4s (120 in all), PNG frames per camera, a frame manifest, and policy requests.
+    Bulk sizes only shape the archive; the contract never selects them.
+    """
+    from fractions import Fraction
+
+    scale = Fraction(QUICK10_PRODUCTION_AGGREGATE_BYTES, QUICK10_REHEARSAL_AGGREGATE_BYTES)
+
+    def scaled(size: int) -> int:
+        return int(size * scale)
+
+    files: dict[str, int] = {}
+    for cell in range(10):
+        root = f"cell_runs/{cell:02d}"
+        files.update({f"{root}/{name}": scaled(size) for name, size in _REHEARSAL_CELL_JSON_BYTES.items()})
+        files[f"{root}/policy_canary_telemetry.jsonl"] = scaled(1_273)
+        files[f"{root}/cell_progress.log"] = 524
+        for position, candidate in enumerate(QUICK10_CANDIDATES):
+            episode = f"scene-839873-quick10--cell-{cell}--{candidate}"
+            files.update({f"{root}/episodes/{episode}.{role}.json": scaled(sizes[position])
+                          for role, sizes in _REHEARSAL_EPISODE_JSON_BYTES.items()})
+            for suffix, sizes in _REHEARSAL_FRAME_MANIFEST_BYTES.items():
+                media = f"{root}/episodes/media/{episode}{suffix}"
+                files[f"{media}/multicamera_frame_manifest.json"] = scaled(sizes[position])
+                for camera in QUICK10_CAMERAS:
+                    files[f"{media}/{camera}.mp4"] = mp4_bytes
+                    for frame in range(frames_per_camera):
+                        files[f"{media}/frames/{camera}/{frame:06d}.png"] = png_bytes
+                if not suffix:
+                    for request in range(policy_requests_per_episode):
+                        files[f"{media}/policy-requests/{request:06d}.json"] = _REHEARSAL_POLICY_REQUEST_BYTES[position]
+    files[QUICK10_RESULT] = QUICK10_PRODUCTION_AGGREGATE_BYTES
+    files.update({name: scaled(size) for name, size in _REHEARSAL_TOP_JSON_BYTES.items()})
+    files["policy_canary_telemetry.jsonl"] = scaled(12_730)
+    return dict(sorted(files.items(), key=lambda item: PurePosixPath(item[0]).parts))
+
+
+def quick10_production_shaped_archive(**options) -> VirtualObject:
+    """``quick10_production_shape`` as a stored ZIP of zero runs: only its directory is real."""
+    return build_zip([Entry(name, Zeros(size)) for name, size in quick10_production_shape(**options).items()])

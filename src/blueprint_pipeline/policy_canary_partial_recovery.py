@@ -2,6 +2,12 @@
 
 The dispatcher supplies its existing readers, writers and error class so its
 public test/operational seams continue to apply to this recovery boundary.
+
+A streamed attempt keeps the ten per-cell child results in its promoted archive
+(the member contract, review I7). Recovery then reads each child that is not on
+disk through the evidence root's member view: one range request, checked
+against the index. Download mode has no view and globs the extracted tree as
+always.
 """
 from __future__ import annotations
 
@@ -10,6 +16,46 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
+
+CHILD_RESULT_NAME = "native_task_arena_policy_canary_session_result.v1.json"
+MAXIMUM_CHILD_RESULT_BYTES = 128 * 1024**2
+
+
+def _child_sources(evidence_root: Path, error_factory: Callable[[str], Exception]) -> list[tuple[str, Any]]:
+    """(cell directory name, local path or archive member) for every child result, in path order."""
+    from .provider_output_member_view import ProviderOutputMemberViewError, open_member_view
+
+    local = {path.parent.name: path for path in evidence_root.glob(f"cell_runs/*/{CHILD_RESULT_NAME}")}
+    try:
+        view = open_member_view(evidence_root)
+    except ProviderOutputMemberViewError:
+        raise error_factory("policy_canary_partial_cell_member_view_invalid") from None
+    remote = {}
+    for row in view.members("cell_runs/") if view is not None else []:
+        parts = row["path"].split("/")
+        if len(parts) == 3 and parts[2] == CHILD_RESULT_NAME and parts[1] not in local:
+            remote[parts[1]] = (view, row["path"])
+    return sorted({**remote, **local}.items())
+
+
+def _child_record(source: Any, read_record: Callable[..., dict[str, Any]],
+                  error_factory: Callable[[str], Exception]) -> dict[str, Any]:
+    if isinstance(source, Path):
+        return read_record(source, code="policy_canary_partial_cell_result_invalid")
+    from .provider_output_member_view import CONTENT_MISMATCH_CODES, ProviderOutputMemberViewError
+
+    view, member = source
+    try:
+        value = json.loads(view.read_member(member, maximum_bytes=MAXIMUM_CHILD_RESULT_BYTES))
+    except ProviderOutputMemberViewError as exc:
+        if str(exc) not in CONTENT_MISMATCH_CODES:
+            raise error_factory("policy_canary_partial_cell_result_read_failed") from None
+        value = None
+    except (UnicodeError, ValueError):
+        value = None
+    if not isinstance(value, dict):
+        raise error_factory("policy_canary_partial_cell_result_invalid")
+    return value
 
 
 def recover_partial_policy_canary_result(
@@ -49,18 +95,14 @@ def recover_partial_policy_canary_result(
     partial_artifacts: list[dict[str, Any]] = []
     completed_indices: set[int] = set()
     observed_indices: set[int] = set()
-    for path in sorted(
-        evidence_root.glob(
-            "cell_runs/*/native_task_arena_policy_canary_session_result.v1.json"
-        )
-    ):
+    for name, source in _child_sources(evidence_root, error_factory):
         try:
-            index = int(path.parent.name)
+            index = int(name)
         except ValueError:
             continue
         if index < 0 or index >= len(cells):
             continue
-        child = read_record(path, code="policy_canary_partial_cell_result_invalid")
+        child = _child_record(source, read_record, error_factory)
         episodes = child.get("episodes")
         if (
             child.get("selected_cell_index") != index

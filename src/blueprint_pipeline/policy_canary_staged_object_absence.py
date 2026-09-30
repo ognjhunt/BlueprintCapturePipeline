@@ -26,6 +26,15 @@ checkpoint, a promotion is running or was cut short, so neither billing nor
 closeout accepts the proof yet (``policy_canary_provider_output_promotion_not_final``
 names why): the run waits rather than sealing on a promotion that has not
 finished.
+
+Bound to the current receipt (review critical 1). A proof answers only for the
+promotion receipt it was sealed with (``promotion_receipt_digest``). A later
+promotion that wrote the staging dir's receipt -- say one that found an output
+staged after the proof and failed to make it durable -- leaves that proof
+saying nothing about what it found, so a proof whose receipt is not the current
+one proves nothing (``staged_object_absence_proof_receipt_not_current``). The
+next cleanup that proves absence seals a fresh proof for its own receipt and
+sets the stale one aside.
 """
 
 from __future__ import annotations
@@ -52,11 +61,8 @@ def _sealed_absent(lane_result: Mapping[str, Any]) -> bool:
     return isinstance(closeout, Mapping) and closeout.get("all_staged_objects_absent") is True
 
 
-def _promotion_in_progress(staging: Path, proof: Mapping[str, Any]) -> bool:
-    """Whether the staging dir's current promotion receipt is a checkpoint (witness pending)."""
-    receipt = load_promotion_receipt(staging, staging_manifest_sha256=proof.get("staging_manifest_sha256"))
-    if receipt is None:
-        return False
+def _checkpoint(receipt: Mapping[str, Any]) -> bool:
+    """Whether a promotion receipt is a checkpoint (witness pending): a promotion mid-run."""
     section = (receipt.get("staged_objects") or {}).get("paired_witness") or {}
     return (receipt.get("witness") or {}).get("disposition") == "pending" or section.get("state") == "pending"
 
@@ -65,7 +71,8 @@ def staged_object_absence_proof(lane_result: Mapping[str, Any]) -> tuple[dict, P
     """The attempt's validated absence proof, its path and whether promotion is final; else None.
 
     Only a proof for a staging manifest that required promotion counts. A
-    proof file that does not validate raises
+    proof file that does not validate, or that is bound to a promotion receipt
+    other than the staging dir's current, final one, raises
     ``ProviderOutputPromotionRecordError``.
     """
     attempt = str(lane_result.get("attempt_root") or "").strip()
@@ -75,7 +82,13 @@ def staged_object_absence_proof(lane_result: Mapping[str, Any]) -> tuple[dict, P
     proof = load_staged_object_absence_proof(staging)
     if proof is None or proof.get("output_promotion_required") is not True:
         return None
-    return proof, staging / ABSENCE_PROOF_FILENAME, not _promotion_in_progress(staging, proof)
+    path = staging / ABSENCE_PROOF_FILENAME
+    receipt = load_promotion_receipt(staging, staging_manifest_sha256=proof.get("staging_manifest_sha256"))
+    if receipt is not None and _checkpoint(receipt):
+        return proof, path, False
+    if receipt is None or receipt.get("receipt_digest") != proof.get("promotion_receipt_digest"):
+        raise ProviderOutputPromotionRecordError("staged_object_absence_proof_receipt_not_current")
+    return proof, path, True
 
 
 def billing_staged_objects_absent(lane_result: Mapping[str, Any]) -> tuple[bool, Path | None]:

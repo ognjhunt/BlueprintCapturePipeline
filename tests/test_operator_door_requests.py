@@ -197,6 +197,33 @@ def test_restore_requires_an_exact_scene_and_bucket() -> None:
             validate_request(body)
 
 
+def test_provider_output_resume_names_one_canary_attempt() -> None:
+    """One canary dispatch directory and one attempt number select exactly one attempt tree."""
+    assert validate_request({"kind": "provider-output-resume", "run": "activation-1", "attempt": 1}) == {
+        "kind": "provider-output-resume", "run": "activation-1", "attempt": 1, "ingest": False}
+    assert validate_request({"kind": "provider-output-resume", "run": "scene-839873.r4_a", "attempt": 12,
+                             "ingest": True})["ingest"] is True
+    assert required_scope("provider-output-resume") == "operate"
+    for body, code in (
+            ({"kind": "provider-output-resume", "run": "../activation-1", "attempt": 1}, "provider_output_resume_run_invalid"),
+            ({"kind": "provider-output-resume", "run": "..", "attempt": 1}, "provider_output_resume_run_invalid"),
+            ({"kind": "provider-output-resume", "run": "a/b", "attempt": 1}, "provider_output_resume_run_invalid"),
+            ({"kind": "provider-output-resume", "run": "activation-1", "attempt": 0}, "provider_output_resume_attempt_invalid"),
+            ({"kind": "provider-output-resume", "run": "activation-1", "attempt": 1000},
+             "provider_output_resume_attempt_invalid"),
+            ({"kind": "provider-output-resume", "run": "activation-1", "attempt": True},
+             "provider_output_resume_attempt_invalid"),
+            ({"kind": "provider-output-resume", "run": "activation-1", "attempt": "1"},
+             "provider_output_resume_attempt_invalid"),
+            ({"kind": "provider-output-resume", "run": "activation-1", "attempt": 1, "ingest": "yes"},
+             "provider_output_resume_ingest_invalid"),
+            ({"kind": "provider-output-resume", "run": "activation-1", "attempt": 1, "path": "/etc"},
+             "request_key_unknown:path")):
+        with pytest.raises(RequestRefused) as caught:
+            validate_request(body)
+        assert caught.value.code == code
+
+
 def test_door_upgrade_needs_a_commit() -> None:
     assert validate_request({"kind": "door-upgrade", "commit": SHA}) == {"kind": "door-upgrade", "commit": SHA}
     assert required_scope("door-upgrade") == "deploy"

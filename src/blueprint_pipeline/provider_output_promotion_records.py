@@ -10,7 +10,9 @@ carries ``staged_objects[role]`` = {``key_sha256``, ``state``, ``versions``}:
 ``role`` is ``output`` or ``paired_witness``; ``state`` is durable
 (``promoted``, ``redundant_with_promoted_output``) or not (``absent_confirmed``,
 ``deferred``, ``failed``); each version is the {``size_bytes``, ``etag``} of
-one staged object promotion made durable or proved redundant.
+one staged object promotion made durable or proved redundant. A receipt bound
+to an earlier version of the same manifest (a rewrite that kept the staged
+keys) is carried forward only through ``rebindable_promotion_receipt``.
 
 Deletion rule (``staged_deletion_allowed``). The cleanup gate HEADs a present
 output or witness and deletes it only when a receipt bound to this manifest
@@ -145,6 +147,69 @@ def load_promotion_receipt(staging_dir: str | Path, *, staging_manifest_sha256: 
             or not all(_section_valid(section) for section in objects.values())):
         return None
     return value
+
+
+def _sealed_receipt(staging_dir: str | Path) -> dict | None:
+    """The staging dir's receipt when it is sealed and well formed, whatever manifest it binds."""
+    value = _regular_json(Path(staging_dir) / RECEIPT_FILENAME)
+    objects = value.get("staged_objects") if value else None
+    if (value is None or value.get("schema_version") != RECEIPT_SCHEMA
+            or value.get("private_url_recorded") is not False
+            or value.get("receipt_digest") != _digest_or_none(value, "receipt_digest")
+            or not _HEX64.fullmatch(str(value.get("staging_manifest_sha256")))
+            or not isinstance(objects, Mapping) or not set(objects) <= set(ROLES)
+            or not all(_section_valid(section) for section in objects.values())):
+        return None
+    return value
+
+
+def _same_observation(recorded: Any, current: Mapping | None) -> bool:
+    if recorded is None or current is None:
+        return recorded is None and current is None
+    return (isinstance(recorded, Mapping) and recorded.get("size_bytes") == current.get("size_bytes")
+            and normalized_etag(recorded.get("etag")) == normalized_etag(current.get("etag")))
+
+
+def rebindable_promotion_receipt(staging_dir: str | Path, *, staging_manifest_sha256: str, output_key: str,
+                                 witness_key: str | None, observation: Mapping | None) -> dict | None:
+    """A durable receipt an earlier version of this staging manifest bound, or None.
+
+    A manifest rewrite that keeps the staged keys (``--refresh-output-get-url``
+    adds URL metadata) changes the manifest digest a receipt binds, so the
+    receipt no longer loads. It is carried forward only when it is sealed,
+    ``promoted``, bound to another digest, names this output key (and this
+    witness key, when it has a witness section), and recorded the same observed
+    (size, ETag): the same staged object identity. Anything else is None.
+    """
+    value = _sealed_receipt(staging_dir)
+    if (value is None or value.get("status") != "promoted"
+            or value.get("staging_manifest_sha256") == staging_manifest_sha256):
+        return None
+    objects = value["staged_objects"]
+    output, witness = objects.get("output"), objects.get("paired_witness")
+    if (value.get("output_key_sha256") != key_sha256(output_key) or not isinstance(output, Mapping)
+            or output.get("key_sha256") != key_sha256(output_key)
+            or (witness is not None and (witness_key is None or witness.get("key_sha256") != key_sha256(witness_key)))
+            or not _same_observation(value.get("observation"), observation)):
+        return None
+    return value
+
+
+def set_aside_unbound_durable_receipt(staging_dir: str | Path, *, staging_manifest_sha256: str) -> dict | None:
+    """Rename a durable receipt bound to another manifest out of the way; never delete it.
+
+    Returns {path, receipt_digest, staging_manifest_sha256} of the renamed
+    receipt, or None when there is no such receipt.
+    """
+    value = _sealed_receipt(staging_dir)
+    if (value is None or value.get("status") != "promoted"
+            or value.get("staging_manifest_sha256") == staging_manifest_sha256):
+        return None
+    staging = Path(staging_dir)
+    aside = staging / f"{RECEIPT_FILENAME}.superseded-{uuid.uuid4().hex}"
+    os.rename(staging / RECEIPT_FILENAME, aside)
+    return {"path": aside.name, "receipt_digest": value["receipt_digest"],
+            "staging_manifest_sha256": value["staging_manifest_sha256"]}
 
 
 def staged_deletion_allowed(receipt: Mapping | None, *, role: str, key: str, size_bytes: int,
@@ -293,16 +358,21 @@ def load_staged_object_absence_proof(staging_dir: str | Path) -> dict | None:
 
 def write_staged_object_absence_proof(*, staging_dir: str | Path, cleanup: Mapping,
                                       promotion: Mapping | None) -> dict:
-    """Write the absence proof once; an existing valid proof stands and is returned.
+    """Write the absence proof once per promotion receipt; an existing valid proof for it stands.
 
     The file is published by hard link from a fully written temporary, so a
-    proof is never replaced and never seen half-written. An existing file that
-    does not validate is refused, not overwritten.
+    proof is never overwritten in place and never seen half-written. An
+    existing file that does not validate is refused, not overwritten. A valid
+    proof sealed with another promotion receipt than ``promotion`` answers only
+    for that earlier receipt (review critical 1): it is renamed aside
+    (``.superseded-<uuid>``), never deleted, and this proof is written.
     """
     staging = Path(staging_dir)
     existing = load_staged_object_absence_proof(staging)
     if existing is not None:
-        return existing
+        if existing.get("promotion_receipt_digest") == ((promotion or {}).get("receipt_digest") if promotion else None):
+            return existing
+        os.rename(staging / ABSENCE_PROOF_FILENAME, staging / f"{ABSENCE_PROOF_FILENAME}.superseded-{uuid.uuid4().hex}")
     proof = build_staged_object_absence_proof(staging_dir=staging, cleanup=cleanup, promotion=promotion)
     path = staging / ABSENCE_PROOF_FILENAME
     temporary = staging / f".{ABSENCE_PROOF_FILENAME}.{uuid.uuid4().hex}.tmp"
@@ -336,6 +406,8 @@ __all__ = [
     "load_staged_object_absence_proof",
     "normalized_etag",
     "promotion_gate_decision",
+    "rebindable_promotion_receipt",
+    "set_aside_unbound_durable_receipt",
     "staged_deletion_allowed",
     "staged_object_keys",
     "staging_manifest_sha256",

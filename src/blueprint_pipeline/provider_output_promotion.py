@@ -29,7 +29,15 @@ again from what is still there, or the run fails
 (``provider_output_durable_copy_missing``). Only that proof downgrades a
 durable receipt: any other failure, a HEAD that errs say, rewrites the prior
 record as it was, with the blocker. A present object that matches no
-recorded version is promoted.
+recorded version is promoted. Versions whose durable copies still answer are
+kept whatever a later run concludes (Probe A3).
+
+A staging-manifest rewrite that keeps the staged keys
+(``--refresh-output-get-url``) changes the digest a receipt binds. A durable
+receipt for the same output key and observed (size, ETag) is then re-bound
+(``rebound_from_staging_manifest_sha256``) rather than replaced, so a
+rewrite never demotes a proven-durable output; a durable receipt that cannot
+be re-bound is renamed aside (``superseded_receipt``), never overwritten.
 
 Steps for the archive a consumer reads (the primary): one index pass
 (``build_member_index`` under the fixed ``INDEX_LIMITS``, so an index never
@@ -107,6 +115,8 @@ from .provider_output_promotion_records import (
     load_promotion_receipt,
     load_staged_object_absence_proof,
     normalized_etag,
+    rebindable_promotion_receipt,
+    set_aside_unbound_durable_receipt,
     staging_manifest_sha256,
     write_promotion_receipt,
     write_staged_object_absence_proof,
@@ -141,6 +151,7 @@ WITNESS_MANIFEST_MEMBER = "paired_witness_manifest.v1.json"
 STAGING_DIRNAME = "object_store_staging"
 PROVIDER_RUN_DIRNAME = "vast_provider_run"
 COMMAND_RESULT_NAME = "vast_provider_command_result.json"
+TEARDOWN_MANIFEST_NAME = "vast_teardown_manifest.json"
 MAXIMUM_MANIFEST_BYTES = 64 * 1024**2
 DEFAULT_MAXIMUM_ARCHIVE_BYTES = 64 * 1024**3
 # Fixed, so the index a lane writes and the one a resume rebuilds are the same
@@ -231,6 +242,30 @@ def _observation(value: Any) -> dict[str, Any] | None:
     return {"size_bytes": value["size_bytes"], "etag": value["etag"]}
 
 
+# A run's own facts, not the output's: every run records its own.
+_RUN_FIELDS = frozenset({"generated_at", "attempts", "maximum_archive_bytes", "receipt_digest"})
+
+
+def _restates(receipt: Mapping[str, Any], prior: Mapping[str, Any] | None) -> bool:
+    """Whether ``receipt`` says nothing the bound ``prior`` receipt does not.
+
+    A checkpoint's witness is ``pending`` but carries the witness versions that
+    stand; with the same versions it restates a prior whose witness step decided.
+    """
+    if prior is None:
+        return False
+    value = dict(receipt)
+    section = (value.get("staged_objects") or {}).get("paired_witness")
+    if isinstance(section, Mapping) and section.get("state") == "pending":
+        recorded = (prior.get("staged_objects") or {}).get("paired_witness")
+        if not isinstance(recorded, Mapping) or recorded.get("versions") != section.get("versions"):
+            return False
+        value["staged_objects"] = {**value["staged_objects"], "paired_witness": recorded}
+        value["witness"] = prior.get("witness")
+    return ({key: item for key, item in value.items() if key not in _RUN_FIELDS}
+            == {key: item for key, item in prior.items() if key not in _RUN_FIELDS})
+
+
 def _json_or_none(data: bytes) -> Any:
     try:
         return json.loads(data)
@@ -269,6 +304,11 @@ class _Promotion:
         self.staged_reader = None
         self.output_reused = False
         self.prior_copy_missing = False
+        self.carried_versions: list[dict] = []
+        self.rebound_from: str | None = None
+        self.superseded: dict | None = None
+        self.prior_bound: dict | None = None
+        self.written = False
         self.witness_carried: list[dict] = []
         self.local_verified: Path | None = None
         self.local_removed_before = False
@@ -480,23 +520,28 @@ class _Promotion:
                 return primary, versions
             # The durable copy the receipt names is gone: promote again from what is there.
             copy_missing = self.prior_copy_missing = True
+        # Every version a prior receipt made durable whose copy still answers is
+        # kept, whatever this run concludes (Probe A3).
+        self.carried_versions = [row for row in ((prior or {}).get("staged_objects") or {})
+                                 .get("output", {}).get("versions", [])
+                                 if row.get("durable_reference") and self._still_durable(row["durable_reference"])]
         observation = self.observation_argument
         if observation is not None and local_present:
             raise ProviderOutputPromotionError("provider_output_promotion_sources_ambiguous")
         if local_present:
-            return self._local_primary(local), []
+            return self._local_primary(local), list(self.carried_versions)
         reader = self._open("output", self.maximum)
         if reader is None:
             if copy_missing:
                 raise ProviderOutputPromotionError("provider_output_durable_copy_missing")
             if observation is not None:
                 raise ProviderOutputPromotionError("provider_output_observed_object_missing")
-            return None, []
+            return None, list(self.carried_versions)
         if observation is not None and not _same(observation, _identity(reader)):
             raise ProviderOutputPromotionError("provider_output_remote_version_changed")
         primary, version = self._remote_primary(
             reader, "remote_observation" if observation is not None else "remote_present")
-        return primary, [version]
+        return primary, [*(row for row in self.carried_versions if not _same(row, version)), version]
 
     # -- phase 2: any other staged object ---------------------------------------
     def _staged_versions(self) -> list[dict]:
@@ -634,7 +679,7 @@ class _Promotion:
             manifest_sha256 = self._staging()
             _require_artifact_store()
             self.manifest_sha256 = manifest_sha256
-            prior = load_promotion_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
+            prior = self._prior(manifest_sha256)
             try:
                 self.primary, self.versions = _retrying(lambda: self._establish(prior), self.attempts, "output")
                 self.status = "promoted" if self.primary else "absent_confirmed"
@@ -643,6 +688,7 @@ class _Promotion:
                 if prior and prior.get("status") == "promoted" and not self.prior_copy_missing:
                     # Only provider_output_durable_copy_missing proves the durable copy gone.
                     return self._restore(prior)
+                self.versions = list(self.carried_versions)
             self.witness_carried = self._carried_witness_versions(prior)
             self._checkpoint()
             if self.status == "promoted":
@@ -666,9 +712,47 @@ class _Promotion:
                 close()
         return self._receipt(final=True)
 
+    def _prior(self, manifest_sha256: str) -> dict | None:
+        """The receipt this run builds on: bound here, or carried across a manifest rewrite.
+
+        A durable receipt an earlier version of this manifest bound, for the same
+        staged object, is re-bound (the next write names this manifest and
+        ``rebound_from_staging_manifest_sha256``); a proven-durable output is
+        never demoted by a rewrite. A durable receipt that cannot be re-bound is
+        renamed aside (``superseded_receipt``) before anything overwrites it.
+        """
+        prior = load_promotion_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
+        if prior is not None:
+            # Bound here already: its lineage stands, and a run that changes nothing keeps it.
+            self.prior_bound = prior
+            self.rebound_from = prior.get("rebound_from_staging_manifest_sha256")
+            self.superseded = prior.get("superseded_receipt")
+            return prior
+        prior = rebindable_promotion_receipt(
+            self.staging, staging_manifest_sha256=manifest_sha256, output_key=self.output_key,
+            witness_key=self.witness_key, observation=self.observation_argument)
+        if prior is not None:
+            self.rebound_from = prior["staging_manifest_sha256"]
+            return prior
+        self.superseded = set_aside_unbound_durable_receipt(self.staging, staging_manifest_sha256=manifest_sha256)
+        return None
+
     def _checkpoint(self) -> None:
         """Write the receipt as it stands, the witness still pending, before any later step."""
         self._receipt(final=False)
+
+    def _write(self, receipt: dict) -> dict:
+        """Write ``receipt`` unless it only restates the receipt bound here (review minor 4).
+
+        The sealed artifact manifest binds the receipt file by sha256 and the
+        absence proof binds it by digest, so a run that changes nothing -- the
+        door's resume of a completed attempt -- keeps the file as it is and
+        returns it. Once this run has written, every later write goes through.
+        """
+        if not self.written and _restates(receipt, self.prior_bound):
+            return dict(self.prior_bound)
+        self.written = True
+        return write_promotion_receipt(self.staging, receipt)
 
     def _receipt(self, *, final: bool) -> dict:
         staged = {}
@@ -712,6 +796,8 @@ class _Promotion:
                                                     if primary.get("index_refusal") else set())),
             "private_url_recorded": False,
             "raw_secret_values_recorded": False,
+            **({"rebound_from_staging_manifest_sha256": self.rebound_from} if self.rebound_from else {}),
+            **({"superseded_receipt": self.superseded} if self.superseded else {}),
         }
         if self.manifest_sha256 is None or not self.staging.is_dir():
             receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -720,15 +806,15 @@ class _Promotion:
             # The receipt names the durable copy before the local one goes, so a
             # crash in between leaves a pointer and a ZIP a resume can verify.
             receipt["local_copy_removed_after_verified_promotion"] = True
-            written = write_promotion_receipt(self.staging, receipt)
+            written = self._write(receipt)
             try:
                 self.local_verified.unlink()
             except OSError:
                 receipt["local_copy_removed_after_verified_promotion"] = False
                 receipt["blockers"] = sorted({*receipt["blockers"], "provider_output_local_copy_removal_failed"})
-                written = write_promotion_receipt(self.staging, receipt)
+                written = self._write(receipt)
             return written
-        return write_promotion_receipt(self.staging, receipt)
+        return self._write(receipt)
 
 
 def _witness_state(versions: list[dict]) -> str | None:
@@ -875,6 +961,24 @@ def _promotion_refusal(staging: Path) -> str | None:
     return None
 
 
+def _teardown_refusal(run: Path) -> str | None:
+    """Why the attempt's paid window may still be open, or None once its teardown records no spend.
+
+    Resume deletes staged objects and seals a write-once absence proof. Until
+    the adapter's teardown manifest records ``continuing_spend_from_this_run:
+    false`` the provider may still read the bundle or upload its output, so
+    resume must neither delete nor prove anything (review critical 1).
+    """
+    path = run / TEARDOWN_MANIFEST_NAME
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")) if not path.is_symlink() else None
+    except (OSError, UnicodeError, ValueError):
+        value = None
+    if not isinstance(value, dict) or value.get("continuing_spend_from_this_run") is not False:
+        return "provider_output_resume_attempt_not_torn_down"
+    return None
+
+
 def _quarantine_invalid_proof(staging: Path) -> dict | None:
     """Move aside an absence proof that no longer validates, so a fresh one can be written.
 
@@ -901,22 +1005,31 @@ def resume_provider_output_promotion(
     maximum_archive_bytes: int | None = None,
     cleanup: Callable[[], Mapping[str, Any]] | None = None,
     lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+    ingest: bool = False,
     **dependencies: Any,
 ) -> dict:
     """Rerun promotion, the gated cleanup and the absence proof for one attempt.
+
+    With ``ingest`` the promoted archive's needed members are then ingested
+    (``arena_provider_output_streaming.resume_ingestion``), which
+    short-circuits on an ingestion already materialized.
 
     Reads the arena lane's layout: ``object_store_staging/``, the adapter's
     recorded ``provider_output_remote_observation``, and an SSH-recovered ZIP
     still in ``vast_provider_run/``. Writes ``provider_output_resume.v1.json``
     beside them and never rewrites the sealed lane result. An attempt whose
     staging manifest did not require promotion is refused before anything is
-    read, published, removed or cleaned up.
+    read, published, removed or cleaned up; so is one whose
+    ``vast_teardown_manifest.json`` does not record
+    ``continuing_spend_from_this_run: false``
+    (``provider_output_resume_attempt_not_torn_down``), whose provider may
+    still read the bundle or upload its output.
     """
     attempt = Path(attempt_root).expanduser().resolve()
     staging = attempt / STAGING_DIRNAME
     run = attempt / PROVIDER_RUN_DIRNAME
     local = run / OUTPUT_FILENAME
-    refusal = _promotion_refusal(staging)
+    refusal = _promotion_refusal(staging) or _teardown_refusal(run)
     quarantined = None
     if refusal is not None:
         receipt, cleaned = _unwritten_failure(staging, artifact_kind, refusal), None
@@ -937,6 +1050,12 @@ def resume_provider_output_promotion(
             blockers.append(str(exc))
     if proof is None and not blockers:
         blockers.append("staged_object_absence_not_proven")
+    ingestion = None
+    if ingest and refusal is None:
+        from .arena_provider_output_streaming import resume_ingestion
+
+        ingestion = resume_ingestion(attempt)
+        blockers.extend(ingestion["blockers"])
     result = {
         "schema_version": RESUME_SCHEMA,
         "generated_at": utc_now_iso(),
@@ -949,6 +1068,8 @@ def resume_provider_output_promotion(
                           if proof is not None else None),
         "lane_result_rewritten": False,
         **({"quarantined_absence_proof": quarantined} if quarantined is not None else {}),
+        **({"ingestion": {key: ingestion.get(key) for key in ("status", "short_circuited", "ingestion", "needed_set")}}
+           if ingestion is not None else {}),
         "blockers": sorted(set(blockers)),
         "private_url_recorded": False,
         "raw_secret_values_recorded": False,
@@ -966,18 +1087,20 @@ def main(argv: list[str] | None = None) -> int:
 
     ``python -m blueprint_pipeline.provider_output_promotion resume --attempt-root <attempt>
     [--artifact-kind policy-canary-provider-output] [--maximum-archive-bytes N]
-    [--lock-timeout-seconds S]``
+    [--lock-timeout-seconds S] [--ingest]``
 
     Run it as the ``blueprint`` service user with ``UMask=0077``, never as
     root (review I5). It writes the promotion receipt, the member index, the
     absence proof and ``provider_output_resume.v1.json`` into the attempt tree
     that the lane, the dispatcher and billing read later: files there owned by
     root would break those readers, and files readable by other users would
-    expose run evidence. The operator door kind that launches it this way
-    (``provider-output-resume``) comes with the lane wiring, as does ingestion
-    on resume. It never rewrites the sealed lane result. Exit status 0 means
-    the attempt's staged objects are proven absent with the output promoted or
-    confirmed absent; 1 means the resume receipt names what is still blocked.
+    expose run evidence. The operator door's ``provider-output-resume`` kind
+    launches it exactly so (``door-provider-output-resume.sh``). ``--ingest``
+    also ingests the promoted archive's needed members, once. It never
+    rewrites the sealed lane result. Exit status 0 means the attempt's staged
+    objects are proven absent with the output promoted or confirmed absent
+    (and, with ``--ingest``, its members materialized); 1 means the resume
+    receipt names what is still blocked.
     """
     parser = argparse.ArgumentParser(description="Resume a streamed provider output's promotion.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -986,12 +1109,15 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("--artifact-kind", default=OUTPUT_ARTIFACT_KIND)
     resume.add_argument("--maximum-archive-bytes", type=int, default=DEFAULT_MAXIMUM_ARCHIVE_BYTES)
     resume.add_argument("--lock-timeout-seconds", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
+    resume.add_argument("--ingest", action="store_true")
     args = parser.parse_args(argv)
     result = resume_provider_output_promotion(args.attempt_root, artifact_kind=args.artifact_kind,
                                               maximum_archive_bytes=args.maximum_archive_bytes,
-                                              lock_timeout_seconds=args.lock_timeout_seconds)
+                                              lock_timeout_seconds=args.lock_timeout_seconds,
+                                              **({"ingest": True} if args.ingest else {}))
     print(json.dumps({key: result.get(key) for key in ("status", "blockers", "promotion", "cleanup",
-                                                       "absence_proof")}, sort_keys=True))
+                                                       "absence_proof", "ingestion") if key in result},
+                     sort_keys=True))
     return 0 if result.get("status") == "completed" else 1
 
 

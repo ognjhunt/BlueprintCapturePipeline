@@ -577,6 +577,14 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     _add_wait(restore, 2 * 3600 + 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
+    resume = commands.add_parser(
+        "provider-output-resume",
+        help="resume one streamed policy-canary attempt's promotion, cleanup and (--ingest) ingestion",
+    )
+    resume.add_argument("run", help="the canary dispatch directory (activation id)")
+    resume.add_argument("attempt", type=int)
+    resume.add_argument("--ingest", action="store_true")
+    _add_wait(resume, 2 * 3600 + 600)
     scratch = commands.add_parser("lane-scratch", help="inspect or end an owned lane scratch lease")
     scratch_actions = scratch.add_subparsers(dest="scratch_action", required=True)
     for action in ("ls", "renew", "release"):
@@ -655,6 +663,9 @@ def run(args: argparse.Namespace) -> int:
                         "bucket": args.bucket}, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
+    elif command == "provider-output-resume":
+        return _submit({"kind": "provider-output-resume", "run": args.run, "attempt": args.attempt,
+                        "ingest": args.ingest}, args)
     elif command == "lane-scratch":
         body = {"kind": "lane-scratch", "action": args.scratch_action, "root": args.root, "lane": args.lane}
         if args.scratch_action == "ls":
