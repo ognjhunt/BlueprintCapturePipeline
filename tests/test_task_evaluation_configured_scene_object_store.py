@@ -52,6 +52,17 @@ class _ContentAddressedClient(_Client):
         }
 
 
+def test_key_names_live_in_a_leaf_module_a_compile_can_load() -> None:
+    """Plan 14 review M3: the native-Arena adapter binds layer URIs by these names without importing the store."""
+    from blueprint_pipeline import task_evaluation_configured_scene_object_keys as keys
+    from blueprint_pipeline import task_evaluation_native_arena_preparation_adapter as adapter
+
+    names = ("DEFAULT_KEY_PREFIX", "LARGE_ARTIFACT_KEY_PREFIX", "EXTERNAL_LAYER_ARTIFACT_KIND")
+    assert [getattr(store, name) for name in names] == [getattr(keys, name) for name in names]
+    assert (adapter.LARGE_ARTIFACT_KEY_PREFIX, adapter.EXTERNAL_LAYER_ARTIFACT_KIND) == (
+        keys.LARGE_ARTIFACT_KEY_PREFIX, keys.EXTERNAL_LAYER_ARTIFACT_KIND)
+
+
 def test_local_readiness_constructs_client_without_object_store_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
