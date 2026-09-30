@@ -154,18 +154,33 @@ def _measure(value, limit, *, reserve_proofs=False, work_budget=None):
             size += 2 + max(0, len(item) - 1)
             pending.append(iter(item))
         elif isinstance(item, str):
-            _require(len(item) <= limit - size)
+            _require(len(item) + 2 <= limit - size)
             size += 2
-            # Check the same original deadline around bounded pure character
-            # work. Every character still contributes its exact byte/cap check.
-            for offset, char in enumerate(item):
-                if work_budget is not None and offset % 1024 == 0:
+            if type(item) is str and work_budget is not None:
+                # Native encoding is limited to a finite fragment, admitted by
+                # its minimum size first. Check the original clock on BOTH
+                # sides; never allocate an encoded whole string/document.
+                for offset in range(0, len(item), 1024):
                     work_budget.tick()
-                code = ord(char)
-                _require(not 0xD800 <= code <= 0xDFFF)
-                size += (2 if char in '"\\\b\f\n\r\t' else 6 if code < 32 else
-                         1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
-                _require(size <= limit)
+                    try:
+                        fragment = json.dumps(item[offset:offset + 1024], ensure_ascii=False,
+                                              allow_nan=False).encode('utf-8')
+                    except (ValueError, UnicodeError):
+                        _require(False)
+                    work_budget.tick()
+                    size += len(fragment) - 2
+                    _require(size <= limit)
+            else:
+                # Preserve the legacy/subclass iterator path. Exact native
+                # strings above cannot override slicing or encoding callbacks.
+                for offset, char in enumerate(item):
+                    if work_budget is not None and offset % 1024 == 0:
+                        work_budget.tick()
+                    code = ord(char)
+                    _require(not 0xD800 <= code <= 0xDFFF)
+                    size += (2 if char in '"\\\b\f\n\r\t' else 6 if code < 32 else
+                             1 if code < 128 else 2 if code < 2048 else 3 if code < 65536 else 4)
+                    _require(size <= limit)
             if work_budget is not None:
                 work_budget.tick()
         elif item is None:

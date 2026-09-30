@@ -1190,6 +1190,10 @@ def _authentic_connected_graph(base, monkeypatch, policy, *, activation=True, we
         except (ValueError, UnicodeError):
             pass
         for value in values:
+            # Current producer selectors already name real files. A temporary
+            # anchor containing an old scene ID is not historical fixture data.
+            if value.startswith('/') and not value.startswith('/retained/'):
+                continue
             old_scene = old_preparation['scene']['identity']['id']
             new_scene = source['request']['scene']['identity']['id']
             revised = value.replace(old_id, accepted['intent_id'])

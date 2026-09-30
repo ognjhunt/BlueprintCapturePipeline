@@ -194,14 +194,40 @@ def test_private_retained_measurement_refuses_elapsed_original_deadline(monkeypa
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
     c = budget_api()
     elapsed = [0]
-    original_ord = ord
-    def work(character):
+    original_encode = json.dumps
+    def work(fragment, **kwargs):
         elapsed[0] = 30
-        return original_ord(character)
-    monkeypatch.setattr(c, 'ord', work, raising=False)
+        return original_encode(fragment, **kwargs)
+    monkeypatch.setattr(c.json, 'dumps', work)
     budget = ReferenceCollectionBudget._for_scene_lifecycle_plan(monotonic=lambda: elapsed[0])
     with pytest.raises(ValueError, match='reference_deadline_exceeded'):
         c._measure(value, 4096, work_budget=budget)
+
+
+def test_private_retained_measurement_encodes_only_finite_string_fragments(monkeypatch):
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    c = budget_api()
+    original = json.dumps
+    value = 'é€😀\x00\\"' * 600
+    exact = len(original(value, ensure_ascii=False).encode('utf-8'))
+    seen = []
+    def encode(fragment, **kwargs):
+        assert type(fragment) is str and len(fragment) <= 1024
+        seen.append(len(fragment))
+        return original(fragment, **kwargs)
+    monkeypatch.setattr(c.json, 'dumps', encode)
+    budget = ReferenceCollectionBudget()
+    assert c._measure(value, exact, work_budget=budget) == exact
+    assert sum(seen) == len(value) and len(seen) == 4
+    assert budget.counts['values'] == 1
+
+
+def test_private_retained_measurement_rejects_minimum_size_before_encoding(monkeypatch):
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    c = budget_api()
+    monkeypatch.setattr(c.json, 'dumps', lambda *a, **k: pytest.fail('encode before minimum-size admission'))
+    with pytest.raises(c.RetainedEmissionBudgetError):
+        c._measure('x' * 1024, 1025, work_budget=ReferenceCollectionBudget())
 
 
 def test_private_retained_measurement_keeps_surrogate_refusal():

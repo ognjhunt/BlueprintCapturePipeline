@@ -48,7 +48,7 @@ _COHORT_CALLS={
     'task_evaluation_scene_progression':'process_scene_intents',
     'task_evaluation_launch_preparation_worker':'materialize_preparation_references materialize_recipe_configuration_references materialize_recipe_supplemental_destination_references process_launch_preparation_queue',
     'task_evaluation_launch_activation_worker':'process_launch_activation_queue',
-    'task_evaluation_episode_compilation_worker':'process_episode_compilation_queue',
+    'task_evaluation_episode_compilation_worker':'compile_claimed_envelope process_episode_compilation_queue',
     'task_evaluation_sam31_prefix_adoption':'materialize_completed_prefix_adoption publish_adoption_release_binding validate_completed_prefix_adoption',
     'task_evaluation_sam31_preparation_execution':'process_sam31_phase_queue',
     'task_evaluation_scene_configuration_sam31_preparation_driver':'advance_sam31_preparation',

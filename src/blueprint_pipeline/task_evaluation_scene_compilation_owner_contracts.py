@@ -173,10 +173,14 @@ class Context(retained.Context):
             _work(work_budget)
         self.missing(role, 'canonical_selector_bytes_unavailable', [source], expected, {'canonical_digest': digest})
 
-    def pointed_raw_ref(self, ref, proof, pointer):
+    def pointed_raw_ref(self, ref, proof, pointer, *, work_budget=None):
         """Raw bytes that stayed remote, resolved by the remote-output pointer that lists their path, digest and
         size (plan 14 §16).  Retained bytes, when supplied, still resolve the reference themselves."""
-        key = tuple(ref[k] for k in ('path', 'sha256', 'size_bytes'))
+        if work_budget is None:
+            work_budget = getattr(self, 'work_budget', None)
+        _work(work_budget)
+        keys = ('path', 'sha256', 'size_bytes')
+        key = tuple(ref[k] for k in (_work_items(keys, work_budget) if work_budget is not None else keys))
         if self.index.get(key) is not None:
             return self.raw_ref(ref, proof)
         self.consume()
