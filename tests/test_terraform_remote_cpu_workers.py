@@ -16,11 +16,12 @@ from pathlib import Path
 
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline.cloud_run_jobs_client import BOOTSTRAP_COMMAND, job_definition_blockers
-from blueprint_pipeline.remote_cpu_worker import PREFIX_VARIABLE, STAGE_VARIABLE
+from blueprint_pipeline.remote_cpu_worker import PREFIX_VARIABLE, STAGE_VARIABLE, _object_prefix
 from tests.test_deploy_systemd_contract import _terraform_resource_body, _terraform_variable_body
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_MAIN = REPO_ROOT / "deploy" / "terraform" / "main.tf"
+TFVARS_EXAMPLE = REPO_ROOT / "deploy" / "terraform" / "terraform.tfvars.example"
 GIB = 1024**3
 IMAGE = "gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:" + "d" * 64
 IMAGE_VARIABLES = {
@@ -80,6 +81,57 @@ def _attr(body: str, name: str) -> str | None:
 def _strings(value: str | None) -> list[str]:
     """The decoded string literals in an HCL expression, in order."""
     return [json.loads(literal) for literal in re.findall(r'"(?:[^"\\]|\\.)*"', value or "")]
+
+
+def _resources(text: str) -> dict[tuple[str, str], str]:
+    return {(kind, name): _terraform_resource_body(text, kind, name)
+            for kind, name in re.findall(r'(?m)^resource "([a-z0-9_]+)" "([a-z0-9_]+)" \{$', text)}
+
+
+def _hcl_regex(body: str, variable: str) -> re.Pattern[str]:
+    """The pattern a validation passes to ``regex(..., var.<variable>)``; RE2 and ``re`` agree on it."""
+    match = re.search(rf'regex\(("(?:[^"\\]|\\.)*"), var\.{variable}\)', body)
+    assert match is not None, variable
+    return re.compile(json.loads(match.group(1)))
+
+
+def test_remote_cpu_jobs_are_off_by_default_and_us_only() -> None:
+    main = _main()
+    flag = _terraform_variable_body(main, "remote_cpu_workers_enabled")
+    assert (_attr(flag, "type"), _attr(flag, "default"), _attr(flag, "nullable")) == (
+        "bool", "false", "false")
+    example = TFVARS_EXAMPLE.read_text(encoding="utf-8")
+    assert re.findall(r"(?m)^remote_cpu_workers_enabled\s*=\s*(\S+)\s*$", example) == ["false"]
+
+    # Every remote CPU resource exists only while the flag is on: off, its count is 0 or its map
+    # empty. Anything with a location sits in the primary region, which must be a US region.
+    remote = {address: body for address, body in _resources(main).items()
+              if address[1].startswith("remote_cpu")}
+    assert ("google_cloud_run_v2_job", "remote_cpu_worker") in remote
+    for address, body in sorted(remote.items()):
+        gate = _attr(body, "count") or _attr(body, "for_each") or ""
+        assert re.fullmatch(r"var\.remote_cpu_workers_enabled \? \S+ : (?:0|\{\})", gate), address
+        assert _attr(body, "location") in (None, "var.primary_region"), address
+    assert 'startswith(var.primary_region, "us-")' in _terraform_variable_body(main, "primary_region")
+
+    # The object prefix, which bounds every presigned URL a worker may use, is a US B2 endpoint.
+    prefix = _terraform_variable_body(main, "remote_cpu_worker_object_prefix")
+    assert _attr(prefix, "default") == '""'
+    pattern = _hcl_regex(prefix, "remote_cpu_worker_object_prefix")
+    accepted = ("https://s3.us-west-004.backblazeb2.com/b2-bucket/"
+                "blueprint/arm-decision-proof-v1/configured-scenes/")
+    assert pattern.fullmatch(accepted) and _object_prefix(accepted)
+    for refused in (
+        "https://s3.eu-central-003.backblazeb2.com/b2-bucket/prefix/",
+        "http://s3.us-west-004.backblazeb2.com/b2-bucket/prefix/",
+        "https://s3.us-west-004.backblazeb2.com.example.com/b2-bucket/prefix/",
+        "https://user@s3.us-west-004.backblazeb2.com/b2-bucket/prefix/",
+        "https://s3.us-west-004.backblazeb2.com/b2-bucket/prefix",
+        "https://s3.us-west-004.backblazeb2.com/b2-bucket/../prefix/",
+        "https://s3.us-west-004.backblazeb2.com/b2-bucket//prefix/",
+        "https://s3.us-west-004.backblazeb2.com/b2-bucket/prefix/?x=1",
+    ):
+        assert not pattern.fullmatch(refused), refused
 
 
 def test_remote_cpu_job_command_is_the_bootstrap_with_zero_retries_and_bounded_timeout() -> None:
