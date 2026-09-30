@@ -83,3 +83,28 @@ def test_restore_increment_is_bound_to_actual_recovery_phase(phase):
 def test_restore_increment_never_counts_recovered_bytes_twice_or_adopts_unproved_zero(receipt):
     with pytest.raises(AssertionError):
         native._assert_restore_increment(receipt, {'one.log': b'a', 'nested/two.log': b'bc'})
+
+
+@pytest.mark.parametrize('reused_files,reused_bytes', [(0, 0), (1, 2), (2, 3)])
+def test_partial_prefix_counts_only_missing_bytes(reused_files, reused_bytes):
+    native._assert_restore_increment(dict(recovered_prefix=True, reused_files=reused_files,
+        reused_logical_bytes=reused_bytes, restored_files=2-reused_files,
+        restored_logical_bytes=3-reused_bytes), {'one.log': b'a', 'nested/two.log': b'bc'})
+
+
+@pytest.mark.parametrize('change', ['double_count', 'negative', 'bool', 'unknown_subset', 'missing'])
+def test_prefix_accounting_refuses_unproven_or_repeated_credit(change):
+    receipt = dict(recovered_prefix=True, reused_files=1, reused_logical_bytes=2,
+                   restored_files=1, restored_logical_bytes=1)
+    if change == 'double_count':
+        receipt['restored_logical_bytes'] = 3
+    elif change == 'negative':
+        receipt['reused_files'] = -1
+    elif change == 'bool':
+        receipt['reused_files'] = True
+    elif change == 'unknown_subset':
+        receipt.update(reused_files=2, reused_logical_bytes=2, restored_files=0)
+    else:
+        receipt.pop('reused_files')
+    with pytest.raises(AssertionError):
+        native._assert_restore_increment(receipt, {'one.log': b'a', 'nested/two.log': b'bc'})
