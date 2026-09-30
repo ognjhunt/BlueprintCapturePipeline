@@ -153,6 +153,12 @@ def test_episode_compiler_has_hardened_no_network_service_and_path_unit() -> Non
     assert "task-evaluation-episode-compilations/pending" in path
     assert "blueprint-task-evaluation-episode-compilation.service" in path
     assert "compiled-episodes" in service
+    # Plan 14 §1: the no-spend unit also compiles rows handed back to it, and never holds a credential.
+    assert (
+        "PathChanged=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/fallback/episode_compilation"
+    ) in path
+    assert "Environment=BLUEPRINT_REMOTE_CPU_JOBS_ROOT=" in service
+    assert "LoadCredential" not in service and "remote-cpu-dispatcher" not in service
 
 
 def test_every_disk_reservation_worker_has_exact_systemd_write_access() -> None:
@@ -163,6 +169,10 @@ def test_every_disk_reservation_worker_has_exact_systemd_write_access() -> None:
         ),
         "blueprint-task-evaluation-episode-compilation.service": (
             "src/blueprint_pipeline/task_evaluation_episode_compilation_worker.py"
+        ),
+        # Plan 14 §9: the paid unit reserves disk to land a remote compile's consumer subset.
+        "blueprint-task-evaluation-episode-compilation-remote.service": (
+            "src/blueprint_pipeline/task_evaluation_episode_compilation_collector.py"
         ),
         "blueprint-task-evaluation-launch-activation.service": (
             "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py"
@@ -206,6 +216,19 @@ def test_canonical_installer_installs_and_enables_episode_compilation_pair() -> 
         "systemctl enable --now "
         "blueprint-task-evaluation-episode-compilation.path"
     ) in installer
+    # Plan 14 §1: the paid unit's trio is installed and its triggers armed; its ExecCondition skips it
+    # while the flag is unset.  Its remote job directories exist before any trigger watches them.
+    for unit in (
+        "blueprint-task-evaluation-episode-compilation-remote.service",
+        "blueprint-task-evaluation-episode-compilation-remote.timer",
+        "blueprint-task-evaluation-episode-compilation-remote.path",
+    ):
+        assert f'"${{REPO_ROOT}}/deploy/systemd/{unit}"' in installer
+        assert f'"${{SYSTEMD_DIR}}/{unit}"' in installer
+    for trigger in ("timer", "path"):
+        assert f"systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.{trigger}" in installer
+    for directory in ("handoffs", "shadow", "fallback"):
+        assert f'"${{STATE_DIR}}/remote-cpu-jobs/{directory}/episode_compilation"' in installer
 
 
 def test_exact_sha_deployer_installs_and_arms_all_no_spend_intake_paths() -> None:

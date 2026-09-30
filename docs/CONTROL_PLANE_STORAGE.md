@@ -1400,3 +1400,101 @@ the same (`tests/test_policy_canary_output_streaming.py`).
 
 **Rollback.** Unset the flag or set `download`. Never revert the readers of
 the section above while a streamed run is retained.
+
+## Remote episode compilation (plan 14, 2026-09-29)
+
+`BLUEPRINT_EPISODE_COMPILATION_EXECUTION` picks where an episode compiles: `host`
+(the default, today's path), `cloud_run_shadow` or `cloud_run`. An unset or
+invalid value runs as `host`, and so does `cloud_run` until the owner census
+accepts the output pointer (it exports `REMOTE_OUTPUT_POINTER_SCHEMAS`); the
+chain preflight warns `episode_compilation_execution_mode_invalid` or
+`episode_compilation_cloud_run_requires_census_pointer_support`.
+
+**Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
+owns `pending/` in every mode and empties it each run: it recovers the claims
+a dead run left, compiles the rows the paid unit handed back (at most
+`--max-messages` a run, and none started ten minutes after the run began, a wait
+for the queue lock included; the rest
+wait for the next run, which the unit's five-minute timer backstops), then
+claims pending rows.
+An eligible row in `cloud_run` gets a hand-off and stays in `processing/`; any
+other row compiles on the host. In `cloud_run_shadow` every row compiles on the
+host and an eligible one also gets a shadow marker. Rows never leave the four
+queue states. The paid unit (`blueprint-task-evaluation-episode-compilation-remote`)
+never compiles: it dispatches through `paid_resource_allocator remote-cpu-job`,
+follows, collects and tears down. A refused dispatch writes the fallback, then
+drops the hand-off, and a hand-off whose row was given up, handed back or moved
+on is never dispatched again. A commit that cannot finish after compute-zero (a
+result or pointer already there that is not this attempt's, or the row gone)
+hands the row back and still tears the attempt down to provider-zero; its lease
+ends `blocked`. Any other error before the result is written (a failed write
+or read) is retried within the collection budget, six runs or an hour, then
+abandoned the same way, never with a second paid attempt; once the result is
+written, the next run resumes the teardown and settlement where they stopped.
+
+**What lands on the host.** A remote compile writes its whole tree in the
+worker. The host gains only what later stages read by path, the consumer
+subset `<id>/native-arena-adapter/**` and, for a destination qualification,
+`<id>/rigid_destination_native_probe_request.v1.json`, plus a little metadata.
+Nothing of `configured-scene/`, `native-task-packet/`, `native-appearance/` or
+the packet zip lands. The subset is assembled in `.<id>.landing-<nonce>/` and
+renamed to `<id>` only when complete, so a crash never leaves a partial `<id>`
+that would break a later host compile; the paid unit removes a partial landing
+when it hands a row back. The landing holds an `episode_compilation`
+reservation, workload `compiled_episode_landing`, sized as the bytes it must
+copy plus 16 MiB.
+
+**The output pointer.** `compiled-episodes/<id>.remote-output.v1.json`
+(`remote_cpu_output_pointer.v1`, mode 0440) names the CAS archive and index of
+the whole output, the attempt, the execution and its spend consumption, the
+code identity and the landed subset, and lists under `raw_references` the path,
+digest and size of what the result names that stayed remote: the packet. The
+owner census lets the pointer stand for those bytes
+(`matched_remote_output_pointer`) where it would otherwise keep the packet
+reference unresolved. The pointer is resealed, never trimmed, when its
+teardown is proven. The compilation pin covers both `<id>` and the pointer.
+Storage GC's derived phase keeps every file child of a derived root (it counts
+them as `unsafe`), so it never deletes a pointer, the evidence for the bytes
+that stayed remote; nor does it see the dot-prefixed landing directories.
+
+**The remote job records** live under
+`/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/`, outside the queue.
+It is a `ledger` root: a lease holds paid capacity until provider zero, so
+nothing reclaims it, and it stays on the root disk when the work volume moves
+(the paid unit stops for the move with the no-spend unit). Deploy creates the
+marker directories below it for the service account.
+
+| Path | Written by | What |
+|---|---|---|
+| `handoffs/episode_compilation/<row>`, `shadow/episode_compilation/<row>` | no-spend unit | a row's plan, created once |
+| `fallback/episode_compilation/<row>` | paid unit | a row handed back; the no-spend unit compiles it and removes the marker |
+| `recovery/episode_compilation/<row>` | no-spend unit | the row's interruptions; the third blocks it |
+| `descriptors/`, `leases/`, `live/`, `teardowns/` | paid unit, allocator | plan 14 §3, §7, §11 |
+| `receipts/<attempt>.json` | paid unit | the fenced receipt, kept because provider-zero deletes staging early |
+| `rows/episode_compilation/<row>` | paid unit | promotion and landing retries, and a row given up |
+| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class: `passed` only when both sides compiled and match byte for byte; two blocked compiles are `inconclusive`, which neither counts toward nor breaks a class's three passes |
+| `environment/`, `drift/episode_compilation.json` | allocator, paid unit | the probed worker environment and the job template's image |
+| `summary.json` (0644) | paid unit | door-readable counts: drift, unproven teardowns, orphans cancelled, parity |
+
+**Claim recovery.** At the start of each run, a `processing/` row with no
+hand-off, shadow or fallback marker and no lease record was left by a run that
+died, since every run otherwise finishes or hands off what it claims. That
+holds because one run at a time holds the queue, by a `flock` on the queue
+directory itself; a run that finds it held (a manual run beside the unit) waits
+up to two minutes, and only then skips, with a note, touching nothing. Its
+partial output is renamed to `.<id>.interrupted-<epoch>`, which nothing deletes
+and GC never selects; the interruption is counted; and the row goes back to
+`pending/` by link, then unlink. The third interruption seals the row `blocked`
+with `episode_compilation_claim_interrupted:worker_process_terminated`. A
+claim's empty placeholder beside its pending row is dropped, and a row whose
+result was written before it moved is moved as that result says; neither
+counts. A handed-back row is never requeued: if its compile wrote the result
+before dying, the next run moves the row as that result says; otherwise the
+output it left at `<id>` is set aside and counted against the same three.
+
+**Rollback.** Unset the flag. The no-spend unit compiles everything; the paid
+unit's ExecCondition keeps it running only to drain live leases and to hand
+undispatched rows back. Without a provider connection (an unusable config or
+dispatcher credential) the paid unit still hands back every hand-off that never
+dispatched and writes `summary.json`; a started attempt keeps its hand-off
+until a connected run tears it down.

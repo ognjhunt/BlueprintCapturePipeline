@@ -27,7 +27,8 @@ def _policy_payload(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
 
 def materialize_company_policy_contract(*, job_request: Mapping[str, Any],
                                         template: Mapping[str, Any],
-                                        approved_model_runner_image: str) -> dict[str, Any]:
+                                        approved_model_runner_image: str,
+                                        registry_credential_available: bool = False) -> dict[str, Any]:
     """Bind an operator-approved team/task template to one immutable artifact."""
     request = json.loads(json.dumps(job_request, allow_nan=False))
     candidate = json.loads(json.dumps(template, allow_nan=False))
@@ -58,7 +59,7 @@ def materialize_company_policy_contract(*, job_request: Mapping[str, Any],
         repository, digest = match.groups()
         revision = digest
         candidate["container"]["visibility"] = (
-            "private" if payload.get("registry_credential_lease_id")
+            "private" if registry_credential_available or payload.get("registry_credential_lease_id")
             or image.startswith("us-central1-docker.pkg.dev/blueprint-8c1ca/pipeline-jobs/")
             else "public"
         )
