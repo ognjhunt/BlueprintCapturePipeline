@@ -30,7 +30,7 @@ concurrency:
 jobs:
   full-pytest-shard:
     name: Full pytest shard ${{ matrix.shard_index }} of 4
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -41,6 +41,12 @@ jobs:
       # uploaded with the workflow's explicit retention policy.
       BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
       BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
+      # The full collection includes the mandatory real root/UID/systemd proofs.
+      # Reuse their disposable Linux installation rather than recording skips.
+      BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      UV_PROJECT_ENVIRONMENT: /opt/blueprint-native-test-venv
+      BLUEPRINT_RESEARCH_SDK_PYTHON: /opt/blueprint-research-sdk-proof/bin/python
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
@@ -58,6 +64,9 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The historical evidence test replays an exact retained commit.
+          fetch-depth: 0
 
       - name: Checkout BlueprintContracts
         shell: bash
@@ -148,19 +157,47 @@ jobs:
           echo "playwright chromium install did not finish in 3 bounded attempts"
           exit 1
 
-      - name: Install Python dependencies
+      - name: Install and protect system-Python dependencies for full Linux proof
         run: |
+          set -euo pipefail
+          sudo --non-interactive true
+          manager="$(sudo --non-interactive readlink -f /proc/1/exe)"
+          printf 'PID 1 executable: %s\n' "$manager"
+          test "$manager" = /usr/lib/systemd/systemd
+          test -f /sys/fs/cgroup/cgroup.controllers
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-native-test-venv
+          uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv
           uv lock --check
-          uv sync --frozen --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
-            --extra sapien-development --extra exact-geometry-development
-          uv pip install -e BlueprintContracts
+          uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
+            --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3
+          uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
+          # Noneditable policy CLIs resolve retained documents beside their
+          # installed package. Preserve those exact committed bytes outside
+          # runner home, where the different-UID child can read them safely.
+          native_resource_root="$(/opt/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
+          test "$native_resource_root" = /opt/blueprint-native-test-venv/lib/python3.12
+          git archive HEAD docs | tar -x -C "$native_resource_root"
+          diff -rq -- docs "$native_resource_root/docs"
+          # The actual different-UID child has ProtectHome=yes. Its interpreter
+          # and imported dependencies must be protected outside /home/runner.
+          sudo chown -hR root:root /opt/blueprint-native-test-venv
+
+      - name: Install isolated daily research SDK for wire proof
+        if: hashFiles('tools/daily_research/requirements.txt') != ''
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-research-sdk-proof
+          uv venv --python /usr/bin/python3 /opt/blueprint-research-sdk-proof
+          uv pip install --python /opt/blueprint-research-sdk-proof/bin/python \
+            -r tools/daily_research/requirements.txt pytest==9.1.1
+          sudo chown -hR root:root /opt/blueprint-research-sdk-proof
 
       - name: Validate Python interpreter matrix
-        run: uv run python scripts/validate_python_interpreter_matrix.py --assert-current
+        run: uv run --no-sync python scripts/validate_python_interpreter_matrix.py --assert-current
 
       - name: Verify shared robot-eval request contract
         run: |
-          uv run python scripts/verify_robot_eval_job_request_contract.py \
+          uv run --no-sync python scripts/verify_robot_eval_job_request_contract.py \
             --contracts-repo BlueprintContracts
 
       - name: Verify production fail-closed posture
@@ -171,7 +208,7 @@ jobs:
           PIPELINE_SYNC_REQUIRED: "true"
           RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO: "true"
         run: |
-          uv run python -m pytest -q \
+          uv run --no-sync python -m pytest -q \
             tests/test_launch_proof_policy.py \
             tests/test_production_runtime_env_guard.py \
             tests/test_deploy_systemd_contract.py \
@@ -188,7 +225,7 @@ jobs:
           # are separately provisioned by their evidence lanes. Keep those
           # unavailable inputs out of this hermetic CPU lane instead of
           # converting their honest absence into a skip blocker.
-          uv run python -m pytest \
+          uv run --no-sync python -m pytest \
             -p blueprint_pipeline.pytest_full_lane_evidence \
             -m "not external_runtime and not external_data" --collect-only -q \
             > "${{ runner.temp }}/blueprint-ci/full-test-lane-collection.txt"
@@ -198,7 +235,7 @@ jobs:
           set -euo pipefail
           cp .github/full-test-lane-duration-baseline.json \
             "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json"
-          uv run python scripts/full_lane_sharding.py plan \
+          uv run --no-sync python scripts/full_lane_sharding.py plan \
             --planned "${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json" \
             --duration-baseline "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json" \
             --repository-sha '${{ github.sha }}' \
@@ -219,7 +256,7 @@ jobs:
             echo "::error::Deterministic shard ${FULL_TEST_LANE_SHARD_INDEX} has no assigned files."
             exit 1
           fi
-          uv run scripts/pytest_full.sh \
+          uv run --no-sync scripts/pytest_full.sh \
             -p blueprint_pipeline.pytest_full_lane_evidence \
             --junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml" \
             -m "not external_runtime and not external_data" \
@@ -228,7 +265,7 @@ jobs:
       - name: Verify exact full-lane shard
         if: always()
         run: |
-          uv run python scripts/full_lane_sharding.py verify-shard \
+          uv run --no-sync python scripts/full_lane_sharding.py verify-shard \
             --planned "${{ runner.temp }}/blueprint-ci/full-test-lane-planned.json" \
             --duration-baseline "${{ runner.temp }}/blueprint-ci/full-test-lane-duration-baseline.json" \
             --plan "${{ runner.temp }}/blueprint-ci/full-test-lane-shard-plan.json" \

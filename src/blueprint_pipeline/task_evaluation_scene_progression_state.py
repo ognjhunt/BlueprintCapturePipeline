@@ -8,19 +8,17 @@ from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 
+from .task_evaluation_scene_progression_contracts import (
+    require,
+    safe_path,
+)
+
 from . import task_evaluation_scene_intake as intake
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 
 
-def require(condition, code):
-    if not condition:
-        raise ValueError("scene_progression_" + code)
 
 
-def safe_path(path):
-    path = Path(path)
-    require(path.is_absolute() and not any(p.is_symlink() for p in (path, *path.parents)), "path_unsafe")
-    return path
 
 
 @contextmanager

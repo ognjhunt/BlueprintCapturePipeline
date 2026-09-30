@@ -1,0 +1,17 @@
+[Unit]
+Description=Blueprint daily business research at 7 AM Central
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-researcher-daily.timer.json
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 America/Chicago
+# Recover unfinished work on boot; latest eligible date only, no backlog replay.
+OnBootSec=2min
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=blueprint-researcher-daily.service
+
+[Install]
+WantedBy=timers.target

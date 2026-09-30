@@ -823,7 +823,7 @@ def main() -> int:
     args = parser.parse_args()
     from .completed_replay_cache_retention import active_reference
     from .control_plane_storage_roots import require_storage_class
-    from .control_plane_storage_gc import _queue_reference_text
+    from .control_plane_storage_references import queue_reference_text as _queue_reference_text
     from .control_plane_storage_pins import live_pinned_paths
 
     require_storage_class(

@@ -18,7 +18,7 @@ from .native_task_isaaclab_launch import (
     NATIVE_TASK_ARENA_IMAGE as SCENE_CONFIGURATION_PROVIDER_IMAGE,
 )
 from .project_spend_reconciliation import validate_project_spend_reconciliation
-from .task_evaluation_scene_configuration_bundle import (
+from .task_evaluation_scene_configuration_bundle_evidence import (
     load_scene_configuration_provider_bundle_receipt,
     bundle_requires_artifixer,
 )

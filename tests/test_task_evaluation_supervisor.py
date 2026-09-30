@@ -377,7 +377,8 @@ def test_production_invoker_constructs_openai_agents_sdk_agent_without_network(
         multimodal_input,
     )
     assert captured["input"] == multimodal_input
-    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(1.02)
+    # Standard GPT-6.1 Sol: 250k input at $2/M plus 1k output at $10/M.
+    assert multimodal.usage["projected_max_cost_usd"] == pytest.approx(.51)
 
 
 def test_live_sdk_refuses_unbounded_multi_turn_context(
@@ -6294,7 +6295,7 @@ def test_agents_cannot_assert_measurement_admission_or_execution_controls() -> N
             _reject_protected_fields({field: False})
 
 
-def _invalid_structured_sdk_fixture(tmp_path, monkeypatch, *, token_usage=True, mode="sdk"):
+def _invalid_structured_sdk_fixture(tmp_path, monkeypatch, *, token_usage=True, mode="sdk", maximum_cost_usd=.03):
     import agents
     from agents.exceptions import ModelBehaviorError, RunErrorDetails
     from agents.items import ModelResponse
@@ -6327,7 +6328,7 @@ def _invalid_structured_sdk_fixture(tmp_path, monkeypatch, *, token_usage=True, 
     monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
     monkeypatch.setattr(agents.Runner, "run_sync", staticmethod(fake_run))
     audit = InferenceReservationAudit(run_root=tmp_path, run_id="invalid-structured")
-    invoker = OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(allow_live_invocation=True, max_inference_cost_usd=.03))
+    invoker = OpenAIAgentsSDKInvoker(OpenAIAgentsSDKConfig(allow_live_invocation=True, max_inference_cost_usd=maximum_cost_usd))
     invoker.configure_reservation_audit(record_reservation=audit.record_reservation,
         record_completion=audit.record_completion, restored_reserved_cost_usd=0.)
     spec = AgentsSDKAgentSpec(run_id="invalid-structured", capability=CapabilityKind.CLAIM_TASK_INTERPRETER,
@@ -6347,7 +6348,8 @@ def test_invalid_structured_provider_response_records_cost_without_output_claim(
     assert manifest["in_flight_unknown_count"] == 0
     completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
     assert completion["status"] == completion["provider_outcome"] == "invalid_structured_output"
-    assert completion["reconciled_actual_cost_usd"] == pytest.approx(.000112)
+    # Standard GPT-6.1 Sol: 8 input at $2/M plus 4 output at $10/M.
+    assert completion["reconciled_actual_cost_usd"] == pytest.approx(.000056)
     assert completion["released_reservation_usd"] > 0
     assert completion["cost_basis"] == "actual_token_usage"
     assert completion["usage"]["cost_is_actual"] is True
@@ -6364,7 +6366,9 @@ def test_invalid_structured_provider_response_records_cost_without_output_claim(
 
 def test_invalid_structured_response_unknown_usage_is_charged_full_upper_bound(tmp_path, monkeypatch):
     from agents.exceptions import ModelBehaviorError
-    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(tmp_path, monkeypatch, token_usage=False)
+    # One reservation fits at current rates; two cannot fit this fixture cap.
+    invoker, audit, spec, error, run_data, calls = _invalid_structured_sdk_fixture(
+        tmp_path, monkeypatch, token_usage=False, maximum_cost_usd=.015)
     with pytest.raises(ModelBehaviorError):
         invoker.invoke(spec, "fixture")
     completion = json.loads(next(audit.completed_root.glob("*.json")).read_text())
@@ -6373,6 +6377,10 @@ def test_invalid_structured_response_unknown_usage_is_charged_full_upper_bound(t
     assert completion["released_reservation_usd"] == 0
     assert completion["cost_basis"] == "reserved_upper_bound"
     assert completion["usage"]["cost_is_actual"] is False
+    held = completion["projected_max_cost_usd"]
+    assert held <= invoker.config.max_inference_cost_usd < 2 * held
+    assert invoker._reserved_cost_usd == held
+    assert audit.manifest()["reserved_max_cost_usd"] == held
     with pytest.raises(AgentsSDKInvocationBlocked, match="budget_ceiling_exceeded"):
         invoker.invoke(spec, "distinct bounded repair")
     assert len(calls) == 1

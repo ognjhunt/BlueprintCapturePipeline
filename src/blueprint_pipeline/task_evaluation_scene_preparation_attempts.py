@@ -4,12 +4,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 
+from .task_evaluation_scene_preparation_identity import (
+    SCHEMA,
+    preparation_attempt_path,
+)
+
 from . import task_evaluation_scene_intake as intake
 from .task_evaluation_scene_owner_authority import reopen_scene_intent
 from .task_evaluation_public_scene_attempt_factory import record
 from .task_evaluation_scene_progression_state import require, safe_path
 
-SCHEMA = "task_evaluation_scene_preparation_attempt.v1"
 
 
 @contextmanager
@@ -51,13 +55,6 @@ def settle_preparation_storage(reservation, factory):
         reservation.release(outcome="blocked")
 
 
-def preparation_attempt_path(directory, attempt_id):
-    require(intake._identifier(attempt_id), "preparation_attempt_id_invalid")
-    directory = safe_path(directory)
-    paths = [directory / name / (attempt_id + ".json") for name in ("preparation-attempts", "attempts")]
-    found = [path for path in paths if path.exists()]
-    require(len(found) <= 1, "preparation_attempt_identity_ambiguous")
-    return found[0] if found else paths[0]
 
 
 def create_preparation_attempt(*, directory, attempt_id, source_commit, runtime_digest, input_digest, now=None):

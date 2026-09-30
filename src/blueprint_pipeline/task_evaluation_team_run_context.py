@@ -6,7 +6,7 @@ No authority, reservation, assignment, or provider operation is created here.
 import os
 from pathlib import Path
 
-from . import task_evaluation_scene_intake as intake
+from . import task_evaluation_scene_intent_contracts as intake
 
 
 def configuration_binding_digest(binding):
@@ -17,8 +17,10 @@ def configuration_binding_digest(binding):
 
 
 def evaluation_context(*, source_launch_id, owner, config=None):
-    from . import task_evaluation_controls_autoprovision as worker
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from . import task_evaluation_controls_context_contracts as worker
+    from .task_evaluation_configured_controls_source_evidence import (
+        validate_source as _validate_source,
+    )
     from .task_evaluation_scene_policy_capability import supported_policy_candidates
 
     worker._require(intake._identifier(source_launch_id) and isinstance(owner, dict)

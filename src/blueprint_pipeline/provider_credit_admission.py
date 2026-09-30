@@ -33,10 +33,10 @@ def observe_vast_credit(
 ) -> dict[str, Any]:
     """Retain only credit and HTTP status, never the account response or error text."""
     if api_key is None:
-        from .gpu_render_providers import VastRenderProvider
-        api_key = VastRenderProvider()._key()
+        from .provider_credentials import _read_secret
+        api_key = _read_secret("vast_api_key")
     if request is None:
-        from .vast_provider_adapter import _api_json
+        from .vast_api_transport import _api_json
         request = _api_json
     status, credit, blocker = None, None, "provider_credit_credentials_missing"
     if api_key:

@@ -165,6 +165,14 @@ jobs:
           # runner. Keep the CUDA runtime out of the ordinary PR dependency set.
           uv pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
 
+      - name: Install isolated daily research SDK for wire proof
+        if: hashFiles('tools/daily_research/requirements.txt') != ''
+        run: |
+          uv venv "${RUNNER_TEMP}/daily-research-sdk-proof" --python 3.12
+          uv pip install --python "${RUNNER_TEMP}/daily-research-sdk-proof/bin/python" \
+            -r tools/daily_research/requirements.txt pytest==9.1.1
+          printf '%s\n' "BLUEPRINT_RESEARCH_SDK_PYTHON=${RUNNER_TEMP}/daily-research-sdk-proof/bin/python" >> "${GITHUB_ENV}"
+
       - name: Verify approved CPU model runner with real inference
         run: |
           uv run --no-sync python -c 'import onnx, onnxruntime; assert onnx.__version__ == "1.23.0"; assert onnxruntime.__version__ == "1.30.0"'

@@ -4,11 +4,14 @@ from pathlib import Path
 import json
 import shutil
 
+from .website_scene_publication_contracts import (
+    STATUS,
+    WARNING,
+    TRUTH_SOURCE,  # noqa: F401 - compatibility re-export
+)
+
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
-STATUS = "prepared_scene_ungraded"
-WARNING = "Generated task-object preview; scene appearance ungraded"
-TRUTH_SOURCE = "website_prepared_background_with_generated_task_object"
 
 
 def publication_inputs(*, envelope, stage_results, output_root):
