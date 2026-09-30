@@ -80,9 +80,10 @@ def _original(files, config, store, action_id, operation):
     _require(config.historical_generation_actions_enabled is True, 'disabled')
     value, _ = store.read(action_id)
     if value.get('schema_version') == 'control_plane_historical_restore_decision.v1':
-        # Restore observation needs its separately authenticated snapshot/access
-        # chain. Never mistake restore_final alone for reopened owner access.
-        return None
+        from .control_plane_lane_historical_restore_authority import original_restore_selection
+        selected = original_restore_selection(store, action_id)
+        _require(selected[1]['issued_at_epoch'] <= operation.moment(), 'invalid')
+        return selected
     selected = dispatch._original_selection(store, action_id)
     packet, decision = selected[:2]
     _require(all(owners._number(value) for value in (packet.get('observed_at_epoch'),
@@ -113,7 +114,8 @@ def observe_historical_action(*, installed_config_path, action_id, now, monotoni
             _require(original == selected, 'changed')
             journal = HistoricalJournalObservation(files, config, selected, operation)
             if head is None:
-                if journal.head['kind'] != 'final':
+                terminal = 'access_reopened' if selected[1]['action'] == 'restore' else 'final'
+                if journal.head['kind'] != terminal:
                     return None
                 head = journal.head['event_digest']
             batch = journal.replay_batch(start, previous=previous, observed_at=observed_at, expected_head=head)
@@ -122,6 +124,8 @@ def observe_historical_action(*, installed_config_path, action_id, now, monotoni
             if batch['complete']:
                 roots = owners._roots(config, files.budget)
                 break
+    if original[1]['action'] == 'restore':
+        return _observe_restore(installed_config_path, original, events, head, roots, operation, monotonic)
     completed = validate_historical_final(original, events)
     manifest, receipt = original[2], completed['final']['body']
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
@@ -145,3 +149,46 @@ def observe_historical_action(*, installed_config_path, action_id, now, monotoni
             observed_removed_allocated_bytes=0, uncertain_removed_allocated_bytes=0,
             observed_at_epoch=operation.moment())
         return result
+
+
+def _observe_restore(config_path, original, events, head, roots, operation, monotonic):
+    """Authenticate both past chains and fresh local bytes; never call a provider."""
+    from .control_plane_lane_historical_restore_authority import observe_preserved_generation
+    from .control_plane_lane_historical_restore_receipts import validate_restored_receipt
+
+    decision, manifest = original[1:3]
+    source, preservation = observe_preserved_generation(installed_config_path=config_path,
+        offload_action_id=decision['offload_action_id'], operation=operation)
+    source_final = preservation['final']
+    _require(source[1]['owner'] == decision['owner'] and source[2] == manifest
+        and source[3] == decision['source_records']
+        and source_final['event_digest'] == decision['final_event_digest']
+        and source_final['body'].get('preservation_event_digest') == decision['preservation_event_digest']
+        and source_final['body'].get('preservation') == decision['archive']
+        and source_final['body'].get('tombstone_version') == decision['tombstone_version'], 'changed')
+    finals = [event for event in events if event['kind'] == 'restore_final']
+    _require(len(finals) == 1, 'invalid')
+    selector = finals[0]['body'].get('restored_snapshot')
+    with authority._session(config_path, operation) as (files, config, store):
+        _require(_original(files, config, store, decision['action_id'], operation) == original, 'changed')
+        journal = HistoricalJournalObservation(files, config, original, operation)
+        _require(journal.head['event_digest'] == head, 'changed')
+        snapshot = journal.read_restore_snapshot(selector)
+    final, expected = validate_restored_receipt(original, events, snapshot)
+    observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+        max_seconds=operation.remaining(), monotonic=monotonic)
+    _require(observed == expected, 'restore_changed')
+    with authority._session(config_path, operation) as (files, config, store):
+        _require(_original(files, config, store, decision['action_id'], operation) == original
+            and dispatch._original_selection(store, decision['offload_action_id']) == source, 'changed')
+        journal = HistoricalJournalObservation(files, config, original, operation)
+        _require(journal.head['event_digest'] == head and journal.read_restore_snapshot(selector) == snapshot
+            and HistoricalJournalObservation(files, config, source, operation).head == source_final, 'changed')
+        generation.verify_historical_member_versions(observed, tick=files.budget.tick)
+        return dict(status='completed', action='restore', action_id=decision['action_id'],
+            owner=decision['owner'], generation_digest=manifest['generation_digest'],
+            original_restore_final_event_digest=final['event_digest'], idempotent=True,
+            observation_only=True, execution_authorized=False, action_unit_started=False,
+            owner_access_reopened=True, root_directory_retained=True,
+            root_version=observed['members'][0]['version'], restored_files=0, restored_logical_bytes=0,
+            mutations=0, removed_bytes=0, observed_at_epoch=operation.moment())

@@ -39,6 +39,17 @@ def recorded_observations(installed):
     return ({}, decision, original, {}), events, private
 
 
+def test_exact_recorded_projection_preserves_every_byte_and_inode_selector(historical_installation):
+    from blueprint_pipeline.control_plane_lane_historical_restore_receipts import validate_restored_receipt
+    selected, events, snapshot = recorded_observations(historical_installation)
+    before = deepcopy(snapshot)
+    final, expected = validate_restored_receipt(selected, events, snapshot)
+    assert final == events[-2] and snapshot == before
+    assert expected['execution_authorized'] is False
+    assert expected['members'][1:] == snapshot['members'][1:]
+    assert expected['members'][0]['version'] == events[-1]['body']['version']
+
+
 @pytest.mark.parametrize('change', ['missing_final', 'missing_access', 'access_before_final',
     'duplicate_birth', 'wrong_birth', 'changed_byte', 'wrong_owner', 'late_final', 'false_count'])
 def test_invalid_restore_history_cannot_be_observed_as_completed(historical_installation, change):

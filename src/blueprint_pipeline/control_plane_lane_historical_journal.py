@@ -316,3 +316,19 @@ class HistoricalJournalObservation:
         head = self._read(self._count - 1) if self._count > 1 else intent
         _require(intent['observed_at_epoch'] <= head['observed_at_epoch'] <= self.operation.moment(), 'changed')
         return head
+
+    def read_restore_snapshot(self, selector):
+        """Read protected bytes without loading or adopting a mutation clock."""
+        self.head
+        _require(self.scope['action'] == 'restore', 'snapshot_invalid')
+        raw, record = self.files.read(self.root / 'restore.snapshot.json',
+            cap=generation.MAX_MANIFEST_BYTES, protected=True, mode=0o600)
+        _require(authority._selector(raw) == selector, 'snapshot_changed')
+        value = retained._document(raw, generation.MAX_MANIFEST_BYTES, _work_budget=self.files.budget)
+        _require(type(value) is dict and value.get('execution_authorized') is False
+            and value.get('target_path') == self.scope['target_path']
+            and value.get('generation_digest') == canonical_digest(value, digest_field='generation_digest'),
+            'snapshot_changed')
+        self.files.verify_record(record)
+        self.head
+        return value

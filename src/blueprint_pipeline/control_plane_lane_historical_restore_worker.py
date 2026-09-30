@@ -20,34 +20,18 @@ from .control_plane_lane_historical_restore_archive import extract_preserved_mem
 from .control_plane_lane_historical_restore_tree import RestoreTree
 from .control_plane_lane_historical_restore_snapshot import after_reopen, validate_private
 from .control_plane_lane_historical_restore_publication import validate_publication
+from .control_plane_lane_historical_restore_receipts import validate_restore_final
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
 
 
 def _restored_snapshot(worker, events):
     """Authenticate actual durable final and protected physical observations."""
-    manifest, decision = worker.selected[2], worker.selected[1]
     finals = [event for event in events if event['kind'] == 'restore_final']
     generation._require(len(finals) == 1, 'restore_incomplete')
     receipt = finals[0]['body']
-    files = [row for row in manifest['members'] if row['kind'] == 'file']
-    generation._require(receipt.get('status') == 'completed' and receipt.get('action') == 'restore'
-        and receipt.get('action_id') == worker.action_id and receipt.get('owner') == decision['owner']
-        and receipt.get('generation_digest') == manifest['generation_digest']
-        and receipt.get('original_manifest') == decision['manifest']
-        and receipt.get('original_final_event_digest') == decision['final_event_digest']
-        and receipt.get('archive_sha256') == decision['archive']['sha256']
-        and receipt.get('archive_size_bytes') == decision['archive']['size_bytes']
-        and receipt.get('restored_files') == len(files)
-        and receipt.get('restored_logical_bytes') == sum(row['size_bytes'] for row in files)
-        and receipt.get('fresh_disk_reservation') is True
-        and receipt.get('root_directory_retained') is True
-        and receipt.get('owner_access_reopened') is False, 'restore_final_invalid')
     with worker.checkpoint(journal=True) as (_, _, journal):
         snapshot = journal.read_restore_snapshot(receipt.get('restored_snapshot'))
-        generation._require(snapshot['members'][0]['version'] == receipt.get('protected_root_version'),
-                            'restore_snapshot_changed')
-    _verify_snapshot(worker, events, snapshot)
-    return finals[0], snapshot
+    return validate_restore_final(worker.selected, events, snapshot), snapshot
 
 
 def _verify_snapshot(worker, events, snapshot):

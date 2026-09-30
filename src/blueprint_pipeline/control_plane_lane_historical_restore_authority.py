@@ -74,28 +74,34 @@ def _current_authority(files, config, config_path, principal, owner, now, expiry
     return authority._selector(config_raw), authority._selector(raw)
 
 
-def select_restore(files, config, store, config_path, action_id, moment):
-    """Fresh protected decision, current owner/policy and exact past pointers.
-
-    This selection does not adopt the old journal's mutation timer or clear
-    target writers. The worker still verifies its new operation and native unit.
-    """
+def original_restore_selection(store, action_id):
+    """Authenticate immutable restore records; no current execution permission."""
     decision, raw = store.read(action_id)
     _require(set(decision) == _FIELDS and decision['schema_version'] == SCHEMA
         and decision['action_id'] == action_id and decision['action'] == 'restore'
         and decision['restore_approved'] is True and decision['execution_authorized'] is False
         and decision['decision_digest'] == canonical_digest(decision, digest_field='decision_digest')
-        and decision['issued_at_epoch'] <= moment < decision['expires_at_epoch']
+        and all(owners._number(decision[key]) for key in ('issued_at_epoch', 'expires_at_epoch'))
+        and decision['issued_at_epoch'] < decision['expires_at_epoch']
         <= decision['issued_at_epoch'] + 900, 'approval_invalid')
-    _require(_current_authority(files, config, config_path, decision['principal'], decision['owner'],
-        moment, decision['expires_at_epoch']) == (decision['installed_config'], decision['policy']),
-        'authority_changed')
     original = dispatch._original_selection(store, decision['offload_action_id'])
     packet, old, manifest, records = original
     _require(old['action'] == 'offload' and old['owner'] == decision['owner']
         and decision['source_records'] == records and decision['packet_id'] == packet['packet_id']
         and all(decision[key] == old[key] for key in ('generation_digest', 'manifest'))
         and decision['target_path'] == manifest['target_path'], 'source_changed')
+    return packet, decision, manifest, dict(packet=records['packet'], decision=authority._selector(raw))
+
+
+def select_restore(files, config, store, config_path, action_id, moment):
+    """Fresh owner/policy/expiry gates over the immutable original records."""
+    selected = original_restore_selection(store, action_id)
+    _, decision, _, _ = selected
+    _require(decision['issued_at_epoch'] <= moment < decision['expires_at_epoch'], 'approval_invalid')
+    _require(_current_authority(files, config, config_path, decision['principal'], decision['owner'],
+        moment, decision['expires_at_epoch']) == (decision['installed_config'], decision['policy']),
+        'authority_changed')
+    original = dispatch._original_selection(store, decision['offload_action_id'])
     observer = authority._Operation(moment, time.monotonic)
     final = HistoricalJournalObservation(files, config, original, observer).head
     _require(final['kind'] == 'final' and final['event_digest'] == decision['final_event_digest']
@@ -103,7 +109,7 @@ def select_restore(files, config, store, config_path, action_id, moment):
         and final['body'].get('preservation') == decision['archive']
         and final['body'].get('preservation_event_digest') == decision['preservation_event_digest']
         and final['body'].get('tombstone_version') == decision['tombstone_version'], 'source_changed')
-    return packet, decision, manifest, dict(packet=records['packet'], decision=authority._selector(raw))
+    return selected
 
 
 def approve_historical_restore(*, installed_config_path, offload_action_id, ack_final_event_digest,
