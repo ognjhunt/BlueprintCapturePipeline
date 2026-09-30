@@ -41,7 +41,8 @@ def stage_birth_versions(original, decision, events, action_id, *, complete, tic
             _require(phase in ('reservation', 'directory', 'member'))
             if not complete:
                 if phase == 'reservation':
-                    _require(not births and pending is None)
+                    _require(not births and (pending is None or pending == dict(
+                        phase='directory', path='', stage_path=stage)))
                 else:
                     path = body.get('path')
                     _require(type(path) is str and path in originals and path not in births)

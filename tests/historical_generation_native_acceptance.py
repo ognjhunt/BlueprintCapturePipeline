@@ -319,13 +319,14 @@ def worker_main(root, action_id):
 def _launch_worker(entry, action_id, target, journals, *, expected='completed', restore=False, launch=None):
     # Each invocation reaches a real terminal unit before another GC tick is
     # considered. Never overlap handles, change an ID or mint a new deadline.
+    observations = []
     receipt = _later_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
-        restore=restore, launch=launch), journals, action_id)
+        restore=restore, launch=launch), journals, action_id, observations=observations)
     assert receipt['status'] == expected, receipt
-    return receipt
+    return dict(receipt, _fixture_reference_refusals=observations) if observations else receipt
 
 
-def _later_reference_attempts(invoke, journals, action_id):
+def _later_reference_attempts(invoke, journals, action_id, *, observations=None):
     """Keep genuine unknowns; at most three later SAME-operation attempts.
 
     This is fixture cadence, not reader clearance or worker recovery. Every
@@ -354,6 +355,9 @@ def _later_reference_attempts(invoke, journals, action_id):
         # Evidence of the real refusal is retained, not relabeled completion.
         print(json.dumps(dict(fixture_reference_refusal=receipt, action_id=action_id,
             attempt=attempt + 1, original_intent_sha256=hashlib.sha256(raw).hexdigest())), flush=True)
+        if observations is not None:
+            observations.append(dict(action_id=action_id, code=receipt['code'],
+                original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=attempt + 1))
         if attempt == 2:
             return receipt
         original = current
@@ -366,7 +370,7 @@ def _assert_restore_increment(receipt, original):
     # Its later recovered receipt credits zero, while the original durable
     # final below still has to account for the full manifest exactly once.
     fields = ('recovered_publication', 'recovered_before_final', 'recovered_access',
-              'restarted_unwritten', 'recovered_stage', 'recovered_prefix', 'recovered_split')
+              'restarted_unwritten', 'recovered_stage', 'recovered_prefix', 'recovered_split', 'idempotent')
     assert all(field not in receipt or type(receipt[field]) is bool for field in fields), receipt
     phases = [field for field in fields if receipt.get(field) is True]
     assert len(phases) <= 1, receipt
@@ -382,6 +386,26 @@ def _assert_restore_increment(receipt, original):
         assert reuse in allowed, receipt
         expected = (len(original)-reuse[0], sum(map(len, original.values()))-reuse[1])
     assert (receipt['restored_files'], receipt['restored_logical_bytes']) == expected, receipt
+
+
+def _assert_boundary_recovery(receipt, expected, observations, action_id, original_intent):
+    """A later refused unit can advance the same already interrupted operation.
+
+    This only checks fixture cadence after the genuine boundary/state assertion.
+    Full original journal, birth inodes, final bytes and rights are checked below.
+    It creates no success receipt, clock, birth or native clearance observation.
+    """
+    assert receipt.get('status') == 'completed'
+    assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
+    if receipt.get(expected) is True:
+        return
+    assert expected == 'recovered_split'
+    assert any(receipt.get(field) is True for field in (
+        'recovered_publication', 'recovered_before_final', 'recovered_access', 'idempotent'))
+    assert 0 < len(observations) <= 3
+    assert all(row == dict(action_id=action_id, code='historical_generation_process_unknown',
+        original_intent_sha256=hashlib.sha256(original_intent).hexdigest(), attempt=index + 1)
+        for index, row in enumerate(observations))
 
 
 def _launch_worker_once(entry, action_id, target, journals, *, restore=False, launch=None, process_death=False):
@@ -931,7 +955,12 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             'publish_intent': 'recovered_split', 'publish_rename': 'recovered_split',
                             'publish_observed': 'recovered_split', 'stage_remove_intent': 'recovered_split',
                             'stage_remove_effect': 'recovered_split'}
-                assert restored[recovery[restore_interruption]] is True
+                if recovery[restore_interruption] == 'recovered_split':
+                    _assert_boundary_recovery(restored, 'recovered_split',
+                        restored.get('_fixture_reference_refusals', []), restore['action_id'],
+                        interrupted_prefix['e-00000.json'])
+                else:
+                    assert restored[recovery[restore_interruption]] is True
                 if restore_interruption == 'unwritten_stage':
                     assert restored['restored_files'] == len(original)
                     assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
