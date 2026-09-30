@@ -37,6 +37,7 @@ class _Worker:
         self.selected = None
         self.head = None
         self.sandbox = None
+        self.reservation = None
 
     @contextmanager
     def checkpoint(self, *, journal=False):
@@ -68,6 +69,8 @@ class _Worker:
     @contextmanager
     def mutation_authority(self, *, readers=False):
         with self.checkpoint(journal=True) as (files, config, _):
+            if self.reservation is not None:
+                self.reservation.renew()
             if readers:
                 with historical_reference_fence(files, config,
                         Path(self.selected[2]['target_path']), observed_at=self.operation.moment()) as guard:
@@ -78,6 +81,8 @@ class _Worker:
                     guard()
             else:
                 yield
+            if self.reservation is not None:
+                self.reservation.renew()
 
     def record(self, kind, body):
         with self.checkpoint(journal=True) as (_, _, journal):

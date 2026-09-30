@@ -209,22 +209,38 @@ class RestoreTree:
         self.worker.record('restore_intent', dict(phase='owner_rights', path=relative,
             version=self.held.versions[relative], uid=version[3], gid=version[4], mode=stat.S_IMODE(version[2])))
         with self.held._opened(relative) as (fd, guard):
-            for operation in ('chown', 'chmod'):
+            def effect(operation):
+                _require(self.worker.operation.moment() < self.worker.selected[1]['expires_at_epoch'],
+                         'restore_approval_expired')
+                guard()
+                before = self.held.versions[relative]
+                if operation == 'chown':
+                    os.fchown(fd, version[3], version[4])
+                    expected = before[:3] + version[3:5]
+                else:
+                    os.fchmod(fd, stat.S_IMODE(version[2]))
+                    expected = before[:2] + [version[2]] + before[3:5]
+                after = _version(os.fstat(fd))
+                _require(after[:5] == expected and after[5:8] == before[5:8]
+                    and after[9] == before[9] and after[8] >= before[8], 'restore_tree_changed')
+                self.held.versions[relative] = after
+                if relative == '':
+                    parent, leaf, root, _ = self.held.chain[-1]
+                    self.held.chain[-1] = (parent, leaf, root, after)
+                guard()
+            if relative == '':
+                # Durable restore_final already precedes this transaction.
+                # Prove the private tree before granting access; after chown,
+                # owner readers are expected and the private-view predicate
+                # no longer applies. Keep the current authority lock and exact
+                # retained root across both planned permission syscalls.
                 with self.worker.mutation_authority(readers=True):
-                    guard()
-                    before = self.held.versions[relative]
-                    if operation == 'chown':
-                        os.fchown(fd, version[3], version[4])
-                    else:
-                        os.fchmod(fd, stat.S_IMODE(version[2]))
-                    after = _version(os.fstat(fd))
-                    _require(after[:2] == before[:2] and after[5:8] == before[5:8]
-                        and after[9] == before[9] and after[8] >= before[8], 'restore_tree_changed')
-                    self.held.versions[relative] = after
-                    if relative == '':
-                        parent, leaf, root, _ = self.held.chain[-1]
-                        self.held.chain[-1] = (parent, leaf, root, after)
-                    guard()
+                    effect('chown')
+                    effect('chmod')
+            else:
+                for operation in ('chown', 'chmod'):
+                    with self.worker.mutation_authority(readers=True):
+                        effect(operation)
             os.fsync(fd)
         if relative == '':
             self.worker.record('access_reopened',

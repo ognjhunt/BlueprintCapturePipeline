@@ -43,6 +43,7 @@ def run_restore(worker, roots, monotonic):
             reservation = reserve_control_plane_disk('experiment_restore', target_root=held.target,
                 expected_bytes=need, minimum_bytes=need, reservation_root=ledger.DEFAULT_RESERVATION_ROOT,
                 fresh=True, evictor=None, lock_nonblocking=True)
+        worker.reservation = reservation
         private = resource = None
         try:
             with worker.checkpoint(journal=True) as (_, _, journal):
@@ -84,6 +85,7 @@ def run_restore(worker, roots, monotonic):
                 outcome = 'completed'
                 return dict(receipt, owner_access_reopened=True, root_version=held.versions[''])
         finally:
+            worker.reservation = None
             for descriptor in (private, resource):
                 if descriptor is not None:
                     os.close(descriptor)
