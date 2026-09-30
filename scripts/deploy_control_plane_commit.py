@@ -161,6 +161,8 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-episode-compilation.service",
     "blueprint-task-evaluation-episode-compilation.path",
+    # Plan 14 §1: backstops the path unit for fallback markers and deferred handed-back rows.
+    "blueprint-task-evaluation-episode-compilation.timer",
     # Plan 14 §1: the paid remote-compilation unit, woken by its timer and by hand-offs.
     "blueprint-task-evaluation-episode-compilation-remote.service",
     "blueprint-task-evaluation-episode-compilation-remote.timer",
@@ -248,6 +250,7 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-agent-stage-replay.timer",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
+    "blueprint-task-evaluation-episode-compilation.timer",
     "blueprint-task-evaluation-episode-compilation-remote.timer",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
@@ -300,12 +303,18 @@ DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT = (
 DEFAULT_POLICY_DISPATCH_QUEUE_ROOT = (
     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canary-dispatches"
 )
+DEFAULT_REMOTE_CPU_JOBS_ROOT = "/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs"
 DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES = (
     DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT,
     *(
         f"{DEFAULT_EPISODE_COMPILATION_QUEUE_ROOT}/{name}"
         for name in ("pending", "processing", "completed", "blocked")
     ),
+    # Plan 14 §1: the remote episode-compilation markers, so a host set up
+    # before PR 4 has them owned by the service before any path unit watches.
+    DEFAULT_REMOTE_CPU_JOBS_ROOT,
+    *(f"{DEFAULT_REMOTE_CPU_JOBS_ROOT}/{kind}{stage}" for kind in
+      ("handoffs", "shadow", "fallback", "recovery") for stage in ("", "/episode_compilation")),
     # Older root-run GC created stranded/ under umask 0077. The owning
     # dispatcher must be able to discover and resume its sealed deliveries.
     DEFAULT_POLICY_DISPATCH_QUEUE_ROOT,

@@ -86,6 +86,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-sam31-preparation-execution.path
   blueprint-task-evaluation-sam31-preparation-execution.timer
   blueprint-task-evaluation-episode-compilation.path
+  blueprint-task-evaluation-episode-compilation.timer
   blueprint-task-evaluation-episode-compilation-remote.path
   blueprint-task-evaluation-episode-compilation-remote.timer
   blueprint-task-evaluation-launch-activation.path

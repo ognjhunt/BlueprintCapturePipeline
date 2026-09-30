@@ -347,6 +347,9 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.path" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.path"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation.timer" \
+  "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation.timer"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-task-evaluation-episode-compilation-remote.service" \
   "${SYSTEMD_DIR}/blueprint-task-evaluation-episode-compilation-remote.service"
 run install -m 0644 \
@@ -619,6 +622,7 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-task-evaluation-launch-preparation.timer
   systemctl enable --now blueprint-scene-object-discovery.path
   systemctl enable --now blueprint-task-evaluation-episode-compilation.path
+  systemctl enable --now blueprint-task-evaluation-episode-compilation.timer
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.timer
   systemctl enable --now blueprint-task-evaluation-episode-compilation-remote.path
   systemctl enable --now blueprint-task-evaluation-launch-activation.path

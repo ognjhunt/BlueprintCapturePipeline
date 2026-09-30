@@ -1414,7 +1414,8 @@ chain preflight warns `episode_compilation_execution_mode_invalid` or
 owns `pending/` in every mode and empties it each run: it recovers the claims
 a dead run left, compiles the rows the paid unit handed back (at most
 `--max-messages` a run, and none started once ten minutes have passed; the rest
-wait for the next run), then claims pending rows.
+wait for the next run, which the unit's five-minute timer backstops), then
+claims pending rows.
 An eligible row in `cloud_run` gets a hand-off and stays in `processing/`; any
 other row compiles on the host. In `cloud_run_shadow` every row compiles on the
 host and an eligible one also gets a shadow marker. Rows never leave the four
@@ -1455,7 +1456,8 @@ that stayed remote; nor does it see the dot-prefixed landing directories.
 `/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/`, outside the queue.
 It is a `ledger` root: a lease holds paid capacity until provider zero, so
 nothing reclaims it, and it stays on the root disk when the work volume moves
-(the paid unit stops for the move with the no-spend unit).
+(the paid unit stops for the move with the no-spend unit). Deploy creates the
+marker directories below it for the service account.
 
 | Path | Written by | What |
 |---|---|---|

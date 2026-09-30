@@ -521,6 +521,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/episode-compilations/pending/*.json\n",
         encoding="utf-8",
     )
+    compilation_timer = unit_dir / "blueprint-task-evaluation-episode-compilation.timer"
+    compilation_timer.write_text("[Timer]\nOnUnitInactiveSec=5min\n", encoding="utf-8")
     remote_units = []
     for suffix, body in (
         (".service", "[Service]\nExecStart=/usr/bin/blueprint-collect-remote-episodes\n"),
@@ -688,6 +690,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         sam31_timer,
         compilation_service,
         compilation_path,
+        compilation_timer,
         *remote_units,
         activation_service,
         activation_path,
@@ -754,6 +757,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
         "blueprint-task-evaluation-episode-compilation.service",
         "blueprint-task-evaluation-episode-compilation.path",
+        "blueprint-task-evaluation-episode-compilation.timer",
         # Plan 14 §1: the paid remote-compilation unit, woken by its timer and by hand-offs.
         "blueprint-task-evaluation-episode-compilation-remote.service",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
@@ -809,6 +813,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-agent-stage-replay.timer",
         "blueprint-task-evaluation-scene-progression.timer",
         "blueprint-task-evaluation-sam31-preparation-execution.timer",
+        "blueprint-task-evaluation-episode-compilation.timer",
         "blueprint-task-evaluation-episode-compilation-remote.timer",
         "blueprint-task-evaluation-configured-controls-progression.timer",
         "blueprint-task-evaluation-configured-controls-progression.path",

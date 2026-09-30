@@ -386,3 +386,27 @@ def test_fallback_compiles_are_bounded_per_run_by_count_and_time(tmp_path: Path,
     names = _handed_back(timed, ["late-0", "late-1"])
     run = _run(timed, "cloud_run", compiler, max_messages=8)
     assert len(run["fallback_results"]) == 1 and run["fallback_deferred"] == names[1:]
+
+
+def test_the_no_spend_unit_has_a_timer_backstop_and_deploy_creates_its_marker_directories() -> None:
+    """Review minor: on a host set up before PR 4 no deploy created the hand-off and fallback directories, and
+    the no-spend unit had no timer, so a first fallback event (or a deferred handed-back row) could wait forever.
+    Deploy now creates every marker directory for the service account, and a timer backstops the path unit."""
+
+    import importlib.util
+
+    timer = _unit(f"{NO_SPEND}.timer")
+    assert f"Unit={NO_SPEND}.service" in timer and "OnUnitInactiveSec=" in timer and "OnBootSec=" in timer
+    spec = importlib.util.spec_from_file_location("deploy_control_plane_commit",
+                                                  ROOT / "scripts" / "deploy_control_plane_commit.py")
+    deploy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deploy)
+    assert f"{NO_SPEND}.timer" in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+    assert f"{NO_SPEND}.timer" in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    directories = set(deploy.DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES)
+    for kind in ("handoffs", "shadow", "fallback", "recovery"):
+        assert {f"{JOBS}/{kind}", f"{JOBS}/{kind}/episode_compilation"} <= directories, kind
+    assert JOBS in directories
+    installer = (ROOT / "scripts" / "install_live_pipeline_control_plane.sh").read_text(encoding="utf-8")
+    assert f"systemctl enable --now {NO_SPEND}.timer" in installer
+    assert f"deploy/systemd/{NO_SPEND}.timer" in installer

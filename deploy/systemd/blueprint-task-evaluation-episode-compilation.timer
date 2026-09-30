@@ -1,0 +1,14 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-episode-compilation.timer.json
+Description=Backstop the episode compilation queue for fallback markers and deferred rows no path event reached
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+AccuracySec=30s
+Unit=blueprint-task-evaluation-episode-compilation.service
+
+[Install]
+WantedBy=timers.target
