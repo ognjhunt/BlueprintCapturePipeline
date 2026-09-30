@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -295,8 +296,17 @@ def seal_native_terminal(*, request: Mapping[str, Any], job_dir: Path, source_co
         raise ValueError("controlled_native_terminal_request_binding_mismatch")
     episode = native["attempts"][0]["metrics"]
     outcome = validate_controlled_outcome(episode["independent_outcome"], executed_motor_steps=episode["executed_motor_steps"])
-    from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
-    zero = collect_vast_provider_zero_receipt()
+    from .adp_task_evaluation_abstention import (
+        TaskEvaluationAbstentionError, collect_vast_provider_zero_receipt,
+    )
+    for attempt in range(3):
+        try:
+            zero = collect_vast_provider_zero_receipt()
+            break
+        except TaskEvaluationAbstentionError as exc:
+            if str(exc) != "provider_zero_api_query_failed" or attempt == 2:
+                raise
+            time.sleep(10)
     if zero.get("provider_zero") is not True or adapter.get("continuing_spend_from_this_run") is not False:
         raise ValueError("controlled_native_provider_zero_not_verified")
     _write(job_dir / "completed_provider_zero.json", zero)
