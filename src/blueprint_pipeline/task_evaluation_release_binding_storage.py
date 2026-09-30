@@ -38,4 +38,3 @@ def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
         raise ReleaseRetentionError(
             f"release_retention_receipt_conflict:{path.name}"
         ) from exc
-

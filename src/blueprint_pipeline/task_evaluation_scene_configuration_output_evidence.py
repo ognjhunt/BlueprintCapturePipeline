@@ -205,4 +205,3 @@ def output_role_projection(
             projection["floor_bytes"] + projection["reserved_bytes"] + required_available_bytes
         ),
     }
-

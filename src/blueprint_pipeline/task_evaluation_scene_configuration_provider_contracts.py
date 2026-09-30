@@ -91,4 +91,3 @@ def _provider_transfer_byte_budget(
         ),
         error_factory=TaskEvaluationSceneConfigurationVastError,
     )
-

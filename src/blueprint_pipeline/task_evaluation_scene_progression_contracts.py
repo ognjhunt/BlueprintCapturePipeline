@@ -13,4 +13,3 @@ def safe_path(path):
     path = Path(path)
     require(path.is_absolute() and not any(p.is_symlink() for p in (path, *path.parents)), "path_unsafe")
     return path
-
