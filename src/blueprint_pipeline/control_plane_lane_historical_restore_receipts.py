@@ -5,6 +5,8 @@ agree. The caller authenticates the protected chain and performs fresh readback.
 """
 from __future__ import annotations
 
+import stat
+
 from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_restore_snapshot import validate_private, after_reopen
 
@@ -58,3 +60,15 @@ def validate_restored_receipt(selected, events, snapshot):
         and access['body'].get('phase') == 'owner_rights_observed'
         and access['body'].get('path') == '', 'restore_final_invalid')
     return final, after_reopen(selected[2], snapshot, access['body'].get('version'))
+
+
+def validate_pending_owner_access(selected, events, snapshot, final):
+    """Only exact root permission intents after the final; no physical inference."""
+    generation._require(not any(event['kind'] == 'access_reopened' for event in events),
+                        'restore_incomplete')
+    owner = selected[2]['members'][0]['version']
+    expected = dict(phase='owner_rights', path='', version=snapshot['members'][0]['version'],
+                    uid=owner[3], gid=owner[4], mode=stat.S_IMODE(owner[2]))
+    pending = [event for event in events if event['sequence'] > final['sequence']]
+    generation._require(all(event['kind'] == 'restore_intent' and event['body'] == expected
+                            for event in pending), 'restore_incomplete')

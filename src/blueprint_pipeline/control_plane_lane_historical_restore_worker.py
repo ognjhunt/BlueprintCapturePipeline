@@ -20,7 +20,7 @@ from .control_plane_lane_historical_restore_archive import extract_preserved_mem
 from .control_plane_lane_historical_restore_tree import RestoreTree
 from .control_plane_lane_historical_restore_snapshot import after_reopen, validate_private
 from .control_plane_lane_historical_restore_publication import validate_publication
-from .control_plane_lane_historical_restore_receipts import validate_restore_final
+from .control_plane_lane_historical_restore_receipts import validate_restore_final, validate_pending_owner_access
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
 
 
@@ -120,9 +120,8 @@ def _resources(worker, observed):
 
 def _recover_access(worker, events, roots, monotonic):
     """Only a complete untouched private tree may finish its owner transition."""
-    generation._require(events[-1]['kind'] == 'restore_final'
-        and not any(event['kind'] == 'access_reopened' for event in events), 'restore_incomplete')
     final, snapshot = _restored_snapshot(worker, events)
+    validate_pending_owner_access(worker.selected, events, snapshot, final)
     _readback(worker, snapshot, roots, monotonic)
     with _resources(worker, snapshot) as (held, reservation):
         with worker.mutation_authority(readers=True):
