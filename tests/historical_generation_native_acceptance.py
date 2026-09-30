@@ -375,33 +375,6 @@ def _installed_entry(root, entry):
 """
         boot = boot.replace('        print(json.dumps(receipt, sort_keys=True, separators=',
                             emit + '        print(json.dumps(receipt, sort_keys=True, separators=')
-        # Safe disposable-loader diagnostics: retain the original refusal,
-        # exposing only own code locations, never import paths or secret bytes.
-        diagnostic = """
-_fixture_entry_failure = []
-_fixture_original_require = _require
-def _require(value):
-    if not value:
-        frame, locations = sys._getframe(1), []
-        while frame is not None:
-            if frame.f_code.co_filename == __file__:
-                location = dict(function=frame.f_code.co_name, line=frame.f_lineno)
-                if frame.f_code.co_name == 'find_spec':
-                    location['module'] = frame.f_locals['fullname']
-                if frame.f_code.co_name == '_open' and 'before' in frame.f_locals:
-                    observed = frame.f_locals['before']
-                    location['entry_metadata'] = dict(mode=observed.st_mode,
-                        uid=observed.st_uid, gid=observed.st_gid, links=observed.st_nlink)
-                locations.append(location)
-            frame = frame.f_back
-        _fixture_entry_failure[:] = locations
-    return _fixture_original_require(value)
-
-"""
-        boot = boot.replace('\ndef main(argv=None):\n', diagnostic + '\ndef main(argv=None):\n')
-        boot = boot.replace("dict(status='kept', code=code, error_type=type(error).__name__)",
-                            "dict(status='kept', code=code, error_type=type(error).__name__, "
-                            "_fixture_entry_failure=_fixture_entry_failure)")
     _write(installed / 'historical-generation-entry.py', boot.encode(), 0o644)
     _write(entry, ('#!/bin/sh\nexec /usr/bin/python3 -I -S '
                    + str(installed / 'historical-generation-entry.py') + ' "$@"\n').encode(), 0o755)
