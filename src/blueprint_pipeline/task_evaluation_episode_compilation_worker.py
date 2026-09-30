@@ -349,8 +349,11 @@ def compile_claimed_envelope(
                     ) or check == COMPILATION_DISK_RECHECKS):
                         raise TaskEvaluationEpisodeCompilationWorkerError(str(exc)) from exc
                     time.sleep(COMPILATION_DISK_RECHECK_SECONDS)
-        owned_output = outputs / envelope["compilation_id"]
-        owned_output.mkdir(mode=0o750, exist_ok=False)
+        # Owned only once this mkdir creates it: the failure path must never remove an output directory
+        # that was already there, whoever made it.
+        target = outputs / envelope["compilation_id"]
+        target.mkdir(mode=0o750, exist_ok=False)
+        owned_output = target
         compiler_output = _validated_compiler_output(
             episode_compiler(
                 envelope=envelope,

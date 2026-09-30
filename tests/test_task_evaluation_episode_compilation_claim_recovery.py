@@ -230,3 +230,20 @@ def test_a_second_no_spend_run_never_recovers_the_first_runs_live_claim(tmp_path
     # Once that run is gone, its claim is an orphan like any other.
     run = _run(host, _stand_ins(monkeypatch), now=3_000.0)
     assert run["recovered_claims"][0]["action"] == "requeued" and (host.queue / "completed" / name).is_file()
+
+
+def test_a_compile_never_removes_an_output_directory_it_did_not_create(tmp_path: Path, monkeypatch) -> None:
+    """Review minor (pre-existing, moved verbatim in 4.1): when the compile's exclusive ``mkdir`` finds the
+    output already there, its failure path removed that directory.  It now blocks and leaves it untouched."""
+
+    host = Host(tmp_path)
+    envelope, name = stage_compile(host)
+    claimed = host.claim(name)
+    existing = host.outputs / envelope["compilation_id"]
+    existing.mkdir()
+    (existing / "someone-elses.bin").write_bytes(b"keep")
+    state, result = compile_claimed_envelope(
+        claimed, source_name=name, inputs=host.inputs.resolve(), outputs=host.outputs.resolve(), source_commit=COMMIT,
+        episode_compiler=_stand_ins(monkeypatch), disk_reservation_root=None, storage_pins_root=None)
+    assert state == "blocked" and result["blockers"] == ["episode_compilation_failed:OSError:errno_17"]
+    assert (existing / "someone-elses.bin").read_bytes() == b"keep"
