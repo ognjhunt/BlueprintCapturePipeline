@@ -81,3 +81,20 @@ def test_existing_private_member_is_never_overwritten(source, tmp_path):  # noqa
     with pytest.raises((ValueError, OSError)):
         extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', stage, lambda: None)
     assert sentinel.read_bytes() == b'keep existing destination' and cloud.calls[-1] == 'client_closed'
+
+
+@pytest.mark.parametrize('code', ['process_unknown', 'process_reference'])
+def test_native_reference_refusal_keeps_its_type_and_closes_archive(source, tmp_path, code):  # noqa: F811
+    from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
+    from blueprint_pipeline.control_plane_lane_historical_processes import HistoricalProcessError
+    manifest, raw, _, pointer, cloud = prepared(source)
+    refusal = HistoricalProcessError('historical_generation_' + code)
+    class RefusedStage(PrivateStage):
+        def directory(self, row):
+            raise refusal
+    stage = RefusedStage(tmp_path / 'stage')
+    with pytest.raises(HistoricalProcessError) as caught:
+        extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', stage, lambda: None)
+    assert caught.value is refusal
+    assert list(stage.root.iterdir()) == []
+    assert cloud.calls[-1] == 'client_closed' and all(body.closed for body in cloud.bodies)
