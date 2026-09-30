@@ -30,6 +30,26 @@ import pytest
 _RUNTIME = Path('/mnt/blueprint-work/scene-retirement-runtime')
 _BOOT = Path('/usr/lib/blueprint/scene-retirement-runtime')
 _POLICY = Path('/etc/blueprint/scene-retirement-policy.json')
+_SYSTEMD_PATH = Path('/etc/systemd/system')
+_CONTINUOUS_UNIT_NAMES = ('blueprint-pipeline-intake.service', 'blueprint-agent-execution.service')
+
+
+def _install_continuous_units(runtime, *, installed=None):
+    # Both consumers must be genuinely loaded for the fixed native query. Keep
+    # the second consumer inactive; never manufacture a successful show row.
+    paths = [_SYSTEMD_PATH / name for name in _CONTINUOUS_UNIT_NAMES]
+    assert all(not path.exists() and not path.is_symlink() for path in paths), \
+        'preserve pre-existing native installations'
+    sources = [(runtime / 'deploy/systemd' / path.name).read_bytes() for path in paths]
+    assert all(0 < len(raw) <= 16384 for raw in sources)
+    installed = {} if installed is None else installed
+    for path, raw in zip(paths, sources, strict=True):
+        with path.open('xb') as stream:
+            info = os.fstat(stream.fileno())
+            installed[path] = (info.st_dev, info.st_ino)
+            stream.write(raw)
+            os.fchmod(stream.fileno(), 0o644)
+    return installed
 
 
 def _native(command, *, timeout=30):
@@ -219,6 +239,7 @@ def _enabled_sdk_native_phase():
     root.chmod(0o755)
     original = (root.stat().st_dev,root.stat().st_ino)
     installed = {}
+    installed_units = {}
     try:
         # The private checkout token exists only in the preceding CI checkout
         # step. Root receives protected Git object data, with no token/env/key.
@@ -298,8 +319,7 @@ def _enabled_sdk_native_phase():
             +'\nVAST_LAUNCH_LOCK_FILE='+str(lock_root/'vast_paid_launch.lock')
             +'\nBLUEPRINT_SPEND_AUTHORITY_LEGACY_ROOTS=\nPORT=18765\n')
         environment.chmod(0o644)
-        shutil.copyfile(runtime/'deploy/systemd'/unit,unit_path)
-        unit_path.chmod(0o644)
+        _install_continuous_units(runtime, installed=installed_units)
         _native(['/usr/bin/systemctl','daemon-reload'])
         try:
             _native(['/usr/bin/systemctl','start',unit],timeout=90)
@@ -347,9 +367,12 @@ def _enabled_sdk_native_phase():
             locked_sdk_packages=len(packages),current_selected=True,actual_enabled_imports=True,
             kernel_uid=account.pw_uid,kernel_caps_zero=True,retirement_action_executed=False)),flush=True)
     finally:
-        if unit_path.exists():
+        if unit_path in installed_units:
             _native(['/usr/bin/systemctl','stop',unit])
-            unit_path.unlink()
+        for path, identity in installed_units.items():
+            assert (path.lstat().st_dev, path.lstat().st_ino) == identity
+            path.unlink()
+        if installed_units:
             _native(['/usr/bin/systemctl','daemon-reload'])
         for path in (_POLICY,environment):
             if path.exists():
@@ -403,3 +426,28 @@ def test_native_fixture_git_access_is_scoped_to_exact_checkout(tmp_path):
         "safe.directory=" + str(source.resolve()), "-C", str(source.resolve()),
         "cat-file", "blob", "a" * 40 + ":installer.py"]
     assert "safe.directory=*" not in command
+
+
+@pytest.mark.parametrize('existing', [None, 'blueprint-agent-execution.service'])
+def test_enabled_native_fixture_installs_entire_fixed_continuous_cohort(tmp_path, monkeypatch, existing):
+    # ADP-009D/day28: the native startup query observes both installed consumers.
+    # A missing second service is not an authenticated inactive consumer.
+    import tests.test_scene_retirement_linux as fixture
+    from blueprint_pipeline.task_evaluation_scene_retirement_supervisor import _CONTINUOUS
+    native_units = tmp_path / 'systemd'
+    native_units.mkdir()
+    monkeypatch.setattr(fixture, '_SYSTEMD_PATH', native_units, raising=False)
+    source = Path(__file__).resolve().parents[1]
+    if existing:
+        (native_units / existing).write_bytes(b'pre-existing native unit')
+        with pytest.raises(AssertionError, match='pre-existing native installations'):
+            fixture._install_continuous_units(source)
+        assert list(native_units.iterdir()) == [native_units / existing]
+        assert (native_units / existing).read_bytes() == b'pre-existing native unit'
+        return
+    installed = fixture._install_continuous_units(source)
+    assert {path.name for path in installed} == set(_CONTINUOUS.values())
+    for path, identity in installed.items():
+        assert path.read_bytes() == (source / 'deploy/systemd' / path.name).read_bytes()
+        assert path.stat().st_mode & 0o777 == 0o644
+        assert (path.stat().st_dev, path.stat().st_ino) == identity
