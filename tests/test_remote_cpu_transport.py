@@ -422,10 +422,14 @@ def test_release_source_archive_contains_every_repo_root_read_of_the_compile(tmp
 
     # The reference: the compile run from the checkout, as the host runs it.  The repo-root files its release
     # code reads are what the archive must hold; files the tests open themselves are fixture inputs.
+    # The interpreter's own environment is not release source, even where it sits inside the checkout as CI's .venv
+    # does: the compile's imports from it are dependencies, which the worker image provides.
+    environment = tuple(f"{prefix.relative_to(ROOT).as_posix()}/" for prefix in
+                        {Path(sys.prefix), Path(sys.exec_prefix), Path(sys.base_prefix)} if prefix.is_relative_to(ROOT))
     checkout = _compile_from(ROOT, tmp_path)
     fixtures = {path for path, _, origin in checkout["reads"] if (origin or "").startswith("tests/")}
     code_reads = {path for path, _, origin in checkout["reads"] if (origin or "").startswith("src/")
-                  and not path.startswith(("src/", "tests/", ".git")) and path not in fixtures}
+                  and not path.startswith(("src/", "tests/", ".git", *environment)) and path not in fixtures}
     assert "docs/schemas/task_evaluation_launch_preparation_request.v1.schema.json" in code_reads
     assert sorted(code_reads - members) == []
     # Recipe v1 (src and pyproject.toml alone) would have shipped a tree that cannot compile (plan 14 C1).
