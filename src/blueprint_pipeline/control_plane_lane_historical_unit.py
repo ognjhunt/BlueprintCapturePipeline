@@ -71,8 +71,11 @@ def _manager_fields(unit):
     environment = dict(PATH='/usr/bin:/bin', LANG='C', LC_ALL='C',
         DBUS_SYSTEM_BUS_ADDRESS='unix:path=/run/dbus/system_bus_socket', SYSTEMD_BUS_TIMEOUT='5s')
     started = time.monotonic()
-    process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, env=environment, close_fds=True)
+    # DEVNULL makes Python open /dev/null O_RDWR even for stdin. An empty
+    # pipe gives the fixed read-only query EOF without widening write rights.
+    process.stdin.close()
     data = bytearray()
     try:
         os.set_blocking(process.stdout.fileno(), False)

@@ -2,8 +2,28 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_historical_unit.py
 import sys
+import os
+import subprocess
 
 import pytest
+
+
+def test_bounded_manager_readback_needs_no_writable_device_open(monkeypatch):
+    from blueprint_pipeline import control_plane_lane_historical_unit as unit
+    # Exercise the actual Popen pipe/read lifecycle under denied writable
+    # device opens. The child only supplies parser bytes; it proves no unit.
+    popen, open_file = subprocess.Popen, os.open
+    fields = {name: 'parser-only' for name in unit._FIELDS}
+    raw = ''.join(name + '=' + value + '\n' for name, value in fields.items())
+    def parser_child(argv, **kwargs):
+        return popen([sys.executable, '-c', 'import sys;sys.stdout.write(' + repr(raw) + ')'], **kwargs)
+    def read_only_device(path, flags, *args, **kwargs):
+        if path == os.devnull and flags & os.O_ACCMODE != os.O_RDONLY:
+            raise PermissionError('writable device denied')
+        return open_file(path, flags, *args, **kwargs)
+    monkeypatch.setattr(unit.subprocess, 'Popen', parser_child)
+    monkeypatch.setattr(os, 'open', read_only_device)
+    assert unit._manager_fields('parser-only.service') == fields
 
 
 def test_non_linux_or_ordinary_uid_never_reads_claimed_unit(monkeypatch):
