@@ -7,6 +7,7 @@ No entrypoint launches this partial worker on an installed host.
 from __future__ import annotations
 
 import os
+import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -78,6 +79,50 @@ class _Worker:
             event = journal.append(kind, body, previous=head['event_digest'])
             self.head = event['event_digest']
 
+    def replay(self):
+        """Authenticate every original journal link across bounded acquisitions."""
+        start, previous, observed_at, events = 0, None, None, []
+        while True:
+            with self.checkpoint(journal=True) as (_, _, journal):
+                if self.head is None:
+                    self.head = journal.head['event_digest']
+                batch = journal.replay_batch(start, previous=previous,
+                    observed_at=observed_at, expected_head=self.head)
+                events.extend(batch['events'])
+                start, previous, observed_at = batch['next_start'], batch['previous'], batch['observed_at']
+                if batch['complete']:
+                    return events
+
+
+def _completed_replay(worker, events, roots, monotonic):
+    """Read an exact completed tombstone; never credit its removals twice."""
+    manifest, decision = worker.selected[2], worker.selected[1]
+    final = events[-1]
+    receipt = final['body']
+    _require(final['kind'] == 'final' and receipt.get('status') == 'completed'
+        and receipt.get('action') == decision['action'] == 'delete'
+        and receipt.get('action_id') == worker.action_id and receipt.get('owner') == decision['owner']
+        and receipt.get('generation_digest') == manifest['generation_digest']
+        and receipt.get('original_manifest') == decision['manifest']
+        and receipt.get('root_directory_retained') is True
+        and receipt.get('uncertain_removed_allocated_bytes') == 0, 'final_invalid')
+    observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+    _require(observed['member_count'] == 1 and observed['members'][0]['path'] == ''
+        and observed['members'][0]['kind'] == 'directory'
+        and observed['members'][0]['version'] == receipt.get('tombstone_version')
+        and observed['members'][0]['version'][:2] == manifest['members'][0]['version'][:2]
+        and observed['members'][0]['version'][3:5] == [0, 0]
+        and observed['members'][0]['version'][2] == stat.S_IFDIR | 0o700
+        and observed['root_version'] == manifest['root_version'], 'tombstone_changed')
+    with worker.checkpoint(journal=True):
+        generation.verify_historical_member_versions(observed, tick=worker.operation.remaining)
+    return dict(status='completed', action='delete', action_id=worker.action_id, owner=decision['owner'],
+        generation_digest=manifest['generation_digest'], idempotent=True,
+        original_final_event_digest=final['event_digest'], removed_files=0, removed_directories=0,
+        logical_bytes=0, observed_removed_allocated_bytes=0, uncertain_removed_allocated_bytes=0,
+        tombstone_version=receipt['tombstone_version'], root_directory_retained=True)
+
 
 def run_historical_action(*, installed_config_path, action_id, now, monotonic=time.monotonic):
     """Internal worker seam: authenticate exact ID, native unit, journal and tree.
@@ -89,11 +134,27 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
     # Disabled configurations refuse before native probes or journal creation.
     with authority._session(installed_config_path, operation) as (_, config, _):
         _require(config.historical_generation_actions_enabled is True, 'disabled')
-    dispatch.select_historical_action(installed_config_path=installed_config_path,
-                                     action_id=action_id, now=operation.moment(), monotonic=monotonic)
     worker = _Worker(installed_config_path, action_id, operation)
+    prior = None
     with worker.checkpoint() as (files, config, _):
         roots = authority.owners._roots(config, files.budget)
+        parent, name = files.parent(journal_root(config) / action_id, protected=True)
+        try:
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            # Only an already protected original operation can bypass the
+            # new-generation hash preflight. Complete chain and exact current
+            # tombstone verification are still required before a cached result.
+            prior = True
+    if prior:
+        events = worker.replay()
+        if events[-1]['kind'] == 'final':
+            return _completed_replay(worker, events, roots, monotonic)
+        _require(events[-1]['kind'] == 'intent', 'recovery_required')
+    dispatch.select_historical_action(installed_config_path=installed_config_path,
+                                     action_id=action_id, now=operation.moment(), monotonic=monotonic)
     manifest = worker.selected[2]
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
         max_seconds=operation.remaining(), monotonic=monotonic)
