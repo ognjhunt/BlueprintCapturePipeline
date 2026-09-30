@@ -17,6 +17,7 @@ from .control_plane_lane_historical_journal import journal_root
 from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_owner_consents as owners
 from .decision_evidence_contracts import canonical_digest
+from .control_plane_disk_ledger import DEFAULT_RESERVATION_ROOT
 
 _DECISION_FIELDS = frozenset({'schema_version', 'action_id', 'packet_id', 'packet_digest',
     'generation_digest', 'manifest', 'principal', 'owner', 'action', 'finished_run_ref',
@@ -25,8 +26,9 @@ _DECISION_FIELDS = frozenset({'schema_version', 'action_id', 'packet_id', 'packe
 _ACTION_EXECUTABLE = '/opt/blueprint/operator-door/bin/blueprint-historical-generation-action'
 
 
-def _unit_properties(target, private_store):
+def _unit_properties(target, private_store, *, restore=False):
     """No parent write mount, private PID view, arbitrary command or privilege gain."""
+    _require(type(restore) is bool, 'unit_path_unsupported')
     return dict(Type='oneshot', User='root', Group='root', UMask='0077',
         NoNewPrivileges=True, PrivateTmp=True, PrivateDevices=True, PrivateUsers=False,
         ProtectSystem='strict', ProtectHome=True, ProtectHostname=True, ProtectClock=True,
@@ -39,7 +41,8 @@ def _unit_properties(target, private_store):
         SystemCallArchitectures='native',
         SystemCallFilter=['@system-service seccomp landlock_create_ruleset landlock_add_rule landlock_restrict_self',
                           '~ptrace process_vm_readv process_vm_writev'],
-        ReadWritePaths=[str(target), private_store], TasksMax=64, LimitNOFILE=512,
+        ReadWritePaths=[str(target), private_store] + ([str(DEFAULT_RESERVATION_ROOT)] if restore else []),
+        TasksMax=64, LimitNOFILE=512,
         MemoryMax=512 * 1024**2, TimeoutStartSec=generation.MAX_SECONDS, Restart='no',
         WorkingDirectory='/')
 
@@ -48,17 +51,19 @@ def _require(value, code):
     generation._require(value, 'dispatch_' + code)
 
 
-def _unit_property_assignments(target, private_store):
+def _unit_property_assignments(target, private_store, *, restore=False):
     """Finite first scope refuses unit specifiers/escaping instead of expanding them."""
-    for path in (target, private_store):
+    _require(type(restore) is bool, 'unit_path_unsupported')
+    paths = (target, private_store) + ((DEFAULT_RESERVATION_ROOT,) if restore else ())
+    for path in paths:
         _require(isinstance(path, (str, Path)) and re.fullmatch(r'/[A-Za-z0-9_./-]+', str(path))
                  and len(os.fsencode(path)) <= 4096, 'unit_path_unsupported')
         legacy._absolute(Path(path))
-    _require(Path(target) != Path(private_store)
-             and not Path(target).is_relative_to(private_store)
-             and not Path(private_store).is_relative_to(target), 'unit_path_unsupported')
+    _require(all(Path(left) != Path(right) and not Path(left).is_relative_to(right)
+                 and not Path(right).is_relative_to(left)
+                 for index, left in enumerate(paths) for right in paths[index + 1:]), 'unit_path_unsupported')
     assignments = []
-    for key, value in _unit_properties(target, str(private_store)).items():
+    for key, value in _unit_properties(target, str(private_store), restore=restore).items():
         if key == 'SystemCallFilter':
             assignments.extend(key + '=' + part for part in value)
         else:

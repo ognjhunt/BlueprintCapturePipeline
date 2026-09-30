@@ -8,6 +8,19 @@ import subprocess
 import pytest
 
 
+def test_restore_mounts_only_the_fixed_shared_reservation_ledger():
+    from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
+    from blueprint_pipeline.control_plane_disk_ledger import DEFAULT_RESERVATION_ROOT
+    normal = dispatch._unit_properties('/work/selected', '/private/journals')
+    restore = dispatch._unit_properties('/work/selected', '/private/journals', restore=True)
+    assert normal['ReadWritePaths'] == ['/work/selected', '/private/journals']
+    assert restore['ReadWritePaths'] == ['/work/selected', '/private/journals', str(DEFAULT_RESERVATION_ROOT)]
+    assert {key: value for key, value in restore.items() if key != 'ReadWritePaths'} == {
+        key: value for key, value in normal.items() if key != 'ReadWritePaths'}
+    with pytest.raises(ValueError):
+        dispatch._unit_property_assignments('/work/selected', '/private/journals', restore='/work')
+
+
 def test_bounded_manager_readback_needs_no_writable_device_open(monkeypatch):
     from blueprint_pipeline import control_plane_lane_historical_unit as unit
     # Exercise the actual Popen pipe/read lifecycle under denied writable

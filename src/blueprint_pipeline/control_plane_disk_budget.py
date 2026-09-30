@@ -102,6 +102,14 @@ def floor_bytes(total_bytes: int, *, role: str | None = None) -> int:
     )
 
 
+def _admission_lock(descriptor: int, nonblocking: bool) -> None:
+    """Strict fenced workers must refuse contention without holding authority."""
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+    except BlockingIOError:
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_lock_busy") from None
+
+
 def parse_role_targets(raw: str | None) -> dict[str, Path]:
     """Parse role-specific absolute roots from a comma-separated unit setting."""
 
@@ -282,6 +290,7 @@ class DiskReservation:
     started_at_epoch: float = 0.0
     ttl_seconds: int = DEFAULT_TTL_SECONDS
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
+    lock_nonblocking: bool = False
 
     def renew(self) -> None:
         """Extend a live reservation under the admission lock without changing its bytes."""
@@ -289,7 +298,7 @@ class DiskReservation:
         if self.released or self.reservation_root is None:
             raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_released")
         with os.fdopen(open_ledger_lock(self.reservation_root, require_mode=True), "a+b") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            _admission_lock(lock.fileno(), self.lock_nonblocking)
             moment = self.clock()
             payload = self._owned_entry(moment)
             payload["expires_at_epoch"] = moment + self.ttl_seconds
@@ -311,7 +320,7 @@ class DiskReservation:
         if expected_bytes > self.expected_bytes:
             raise ControlPlaneDiskBudgetError("control_plane_disk_budget_resize_growth_refused")
         with os.fdopen(open_ledger_lock(self.reservation_root, require_mode=True), "a+b") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            _admission_lock(lock.fileno(), self.lock_nonblocking)
             payload = self._owned_entry(self.clock())
             payload["expected_bytes"] = expected_bytes
             self._replace_entry(payload)
@@ -515,6 +524,7 @@ def reserve_control_plane_disk(
     fresh: bool | None = None,
     minimum_bytes: int | None = None,
     device_of: Callable[[Path], int] = target_device,
+    lock_nonblocking: bool = False,
 ) -> DiskReservation:
     """Atomically reserve disk headroom or raise a typed refusal.
 
@@ -529,6 +539,8 @@ def reserve_control_plane_disk(
     reserves less.
     """
 
+    if type(lock_nonblocking) is not bool:
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_reservation_invalid")
     if not _ROLE_RE.fullmatch(role) or role not in ROLE_FOOTPRINT_BYTES:
         raise ControlPlaneDiskBudgetError(
             f"control_plane_disk_budget_role_invalid:{role}"
@@ -577,7 +589,7 @@ def reserve_control_plane_disk(
     # The lock is opened without following a symlink and must be a 0660 regular
     # file; only its owner repairs the mode, through the descriptor.
     with os.fdopen(open_ledger_lock(ledger, require_mode=True), "a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _admission_lock(lock.fileno(), lock_nonblocking)
         ledger, usage, device, reserved, stale = _snapshot(
             target_root=target_root,
             reservation_root=ledger,
@@ -649,6 +661,7 @@ def reserve_control_plane_disk(
         measurement_incomplete=not baseline_complete,
         started_at_epoch=float(started),
         ttl_seconds=ttl_seconds,
+        lock_nonblocking=lock_nonblocking,
         clock=now,
     )
 

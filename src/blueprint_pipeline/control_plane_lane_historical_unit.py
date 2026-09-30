@@ -36,7 +36,7 @@ def _require(value, code):
         raise HistoricalUnitError('historical_generation_' + code)
 
 
-def _validate_unit_observation(action_id, target, private_store, fields, status, cgroup, *, pid):
+def _validate_unit_observation(action_id, target, private_store, fields, status, cgroup, *, pid, restore=False):
     """Private parser; production supplies freshly observed kernel/manager bytes."""
     code = 'unit_rights_unknown'
     unit = 'blueprint-historical-generation-' + action_id + '.service'
@@ -50,8 +50,13 @@ def _validate_unit_observation(action_id, target, private_store, fields, status,
         and {'seccomp', 'landlock_create_ruleset', 'landlock_add_rule', 'landlock_restrict_self'}
             .issubset(syscall_filter.split())
         and not {'ptrace', 'process_vm_readv', 'process_vm_writev'}.intersection(syscall_filter.split()), code)
+    _require(type(restore) is bool, code)
+    paths = [str(target), str(private_store)]
+    if restore:
+        from blueprint_pipeline.control_plane_disk_ledger import DEFAULT_RESERVATION_ROOT
+        paths.append(str(DEFAULT_RESERVATION_ROOT))
     _require(set(str(fields.get('CapabilityBoundingSet', '')).lower().split()) == _CAPS
-        and fields.get('ReadWritePaths', '').split() == [str(target), str(private_store)], code)
+        and fields.get('ReadWritePaths', '').split() == paths, code)
     command = fields.get('ExecStart', '')
     _require(isinstance(command, str) and command.count('{') == command.count('}') == 1
         and command.startswith('{ path=' + _EXECUTABLE + ' ; argv[]=' + _EXECUTABLE
@@ -126,7 +131,7 @@ def _proc_record(pid, name, cap):
         os.close(fd)
 
 
-def prove_historical_unit(action_id, target, private_store):
+def prove_historical_unit(action_id, target, private_store, *, restore=False):
     """Current main PID, real cgroup, real root/cap/seccomp status and manager mounts."""
     _require(sys.platform == 'linux' and os.geteuid() == 0, 'native_unavailable')
     _require(isinstance(action_id, str) and re.fullmatch('[0-9a-f]{32}', action_id), 'unit_rights_unknown')
@@ -140,7 +145,7 @@ def prove_historical_unit(action_id, target, private_store):
             _require(colon and name not in status, 'unit_rights_unknown')
             status[name] = value.strip()
         cgroup = _proc_record(pid, 'cgroup', 4096)
-        _validate_unit_observation(action_id, target, private_store, fields, status, cgroup, pid=pid)
+        _validate_unit_observation(action_id, target, private_store, fields, status, cgroup, pid=pid, restore=restore)
         return dict(unit=unit, pid=pid, actual_kernel_and_manager_observed=True,
                     references_clear=False, execution_authorized=False)
     except (OSError, UnicodeError, subprocess.SubprocessError):
