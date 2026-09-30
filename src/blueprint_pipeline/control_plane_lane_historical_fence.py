@@ -180,23 +180,23 @@ class _HistoricalGenerationFence:
                 mode = 0o700 if self.rows[relative]['kind'] == 'directory' else 0o600
                 record('fence_intent', dict(path=relative, version=original, uid=0, gid=0, mode=mode))
                 for operation in ('chown', 'chmod'):
-                    before_change()
-                    guard()
-                    if operation == 'chown':
-                        os.fchown(fd, 0, 0)
-                    else:
-                        os.fchmod(fd, mode)
-                    observed = _version(os.fstat(fd))
-                    expected = list(original)
-                    expected[3:5] = [0, 0]
-                    if operation == 'chmod':
-                        expected[2] = stat.S_IFMT(original[2]) | mode
-                    _require(observed[:8] == expected[:8] and observed[9] == expected[9], 'fence_changed')
-                    self.versions[relative] = observed
-                    if relative == '':
-                        parent, name, held, _ = self.chain[-1]
-                        self.chain[-1] = (parent, name, held, observed)
-                    guard()
+                    with before_change():
+                        guard()
+                        if operation == 'chown':
+                            os.fchown(fd, 0, 0)
+                        else:
+                            os.fchmod(fd, mode)
+                        observed = _version(os.fstat(fd))
+                        expected = list(original)
+                        expected[3:5] = [0, 0]
+                        if operation == 'chmod':
+                            expected[2] = stat.S_IFMT(original[2]) | mode
+                        _require(observed[:8] == expected[:8] and observed[9] == expected[9], 'fence_changed')
+                        self.versions[relative] = observed
+                        if relative == '':
+                            parent, name, held, _ = self.chain[-1]
+                            self.chain[-1] = (parent, name, held, observed)
+                        guard()
                 os.fsync(fd)
                 record('fenced', dict(path=relative, version=list(self.versions[relative])))
         self.verify()

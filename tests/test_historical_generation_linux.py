@@ -6,6 +6,7 @@ not a historical owner decision, a deletion receipt or a cleared reference set.
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_historical_dispatch.py
 #   src/blueprint_pipeline/control_plane_lane_historical_fence.py
+#   src/blueprint_pipeline/control_plane_lane_historical_processes.py
 import json
 import os
 import pwd
@@ -87,10 +88,14 @@ def _root_fixture():
         fence.write_bytes((Path(__file__).parents[1] /
             'src/blueprint_pipeline/control_plane_lane_historical_fence.py').read_bytes())
         fence.chmod(0o644)
+        processes = root / 'historical_processes.py'
+        processes.write_bytes((Path(__file__).parents[1] /
+            'src/blueprint_pipeline/control_plane_lane_historical_processes.py').read_bytes())
+        processes.chmod(0o644)
         manifest = inventory_historical_generation(target, allowed_roots=(parent,))
         probe = root / 'probe.py'
         probe.write_text(
-            'import importlib.util,json,os,sys,time\nfrom pathlib import Path\n'
+            'import importlib.util,json,os,sys,time\nfrom pathlib import Path\nfrom contextlib import contextmanager\n'
             'action_id=sys.argv[1]\n'
             'target,original,neighbor,private,pid,foreign_fd=' + repr(tuple(map(str,
                 (target, original, neighbor, private, child.pid, fd)))) + '\n'
@@ -119,12 +124,32 @@ def _root_fixture():
             'def tick():\n'
             ' assert time.monotonic()-started<15\n'
             'events=[]\n'
+            '@contextmanager\n'
             'def authority():\n'
+            ' unit_guard.prove_historical_unit(action_id,target,private)\n'
+            ' yield\n'
             ' unit_guard.prove_historical_unit(action_id,target,private)\n'
             'with generation_fence._HistoricalGenerationFence(manifest,tick=tick) as held:\n'
             ' held.revoke(before_change=authority,record=lambda kind,body:events.append((kind,body)))\n'
             'assert len(events)==2*manifest["member_count"]\n'
             'assert all(Path(target,row["path"]).stat().st_uid==0 for row in manifest["members"])\n'
+            'spec=importlib.util.spec_from_file_location("installed_historical_processes",'
+                + repr(str(processes)) + ')\n'
+            'references=importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(references)\n'
+            'process=os.open("/proc/"+pid,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\n'
+            'own=os.open("/proc/"+str(os.getpid()),os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\n'
+            'host=os.open("/proc/1",os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\n'
+            'try:\n'
+            ' namespaces=references._namespace(own)\n'
+            ' host_namespace=references._namespace(host)\n'
+            ' root_info=os.stat("root",dir_fd=own)\n'
+            ' identities={(row["version"][0],row["version"][1]) for row in manifest["members"]}\n'
+            ' channels=references._inspect_process(references._Scan(tick),process,pid,target,identities,'
+                'namespaces,host_namespace[2],(root_info.st_dev,root_info.st_ino))\n'
+            ' assert {"fd","cwd","maps","cmdline"}.issubset(channels)\n'
+            'finally:\n'
+            ' for descriptor in (process,own,host):os.close(descriptor)\n'
             'created=Path(target)/"exact-write-probe"\n'
             'created.write_bytes(b"only selected target writable")\n'
             'created.unlink()\n'
@@ -137,7 +162,8 @@ def _root_fixture():
             'assert original in Path("/proc/"+pid+"/maps").read_text()\n'
             'Path(private,"receipt.json").write_text(json.dumps({"target_writable":True,'
             '"adjacent_and_parent_denied":2,"foreign_fd_cwd_mapping_visible":True,'
-            '"references_clear":False,"actual_unit_guard_passed":True,"all_original_members_fenced":True}))\n'
+            '"references_clear":False,"actual_unit_guard_passed":True,"all_original_members_fenced":True,'
+            '"actual_foreign_channels_observed":True}))\n'
         )
         probe.chmod(0o644)
         entry.write_text('#!/bin/sh\nset -eu\ntest "$#" = 1\nexec /usr/bin/python3 '
@@ -181,7 +207,8 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
     assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(target_writable=True,
         adjacent_and_parent_denied=2, foreign_fd_cwd_mapping_visible=True,
         references_clear=False, future_writes_denied=4, old_fd_retained=True,
-        actual_unit_guard_passed=True, all_original_members_fenced=True)
+        actual_unit_guard_passed=True, all_original_members_fenced=True,
+        actual_foreign_channels_observed=True)
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
