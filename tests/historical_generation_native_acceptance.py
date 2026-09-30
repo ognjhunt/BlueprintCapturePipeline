@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import pwd
+import stat
 import subprocess
 import sys
 import tempfile
@@ -121,7 +122,7 @@ def worker_main(root, action_id):
     interruption = root / 'interrupt-once'
     if interruption.exists():
         phase = interruption.read_text()
-        if phase in ('fenced', 'removed'):
+        if phase in ('fenced', 'removed', 'restore_final'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
@@ -424,7 +425,24 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
                 else:
                     raise AssertionError('unapproved restore decision published')
                 assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
+            _write(root / 'interrupt-once', b'restore_final')
+            interrupted = _launch_worker(entry, restore['action_id'], target, journals,
+                                         restore=True, expected='failed')
+            assert interrupted['code'] == 'fixture_interrupted_after_restore_final'
+            assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
+            assert all((target / name).read_bytes() == value for name, value in original.items())
+            interrupted_prefix = {path.name: path.read_bytes() for path in
+                                  (journals / restore['action_id']).iterdir()}
+            interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
+                                  if name.startswith('e-')]
+            assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == 1
+            assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
+            (root / 'interrupt-once').unlink()
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True)
+            assert restored['recovered_access'] is True
+            assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
+            assert all((journals / restore['action_id'] / name).read_bytes() == raw
+                       for name, raw in interrupted_prefix.items())
             assert restored['action'] == 'restore' and restored['owner_access_reopened'] is True
             assert restored['fresh_disk_reservation'] is True
             assert all((target / name).read_bytes() == value for name, value in original.items())
