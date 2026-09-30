@@ -115,7 +115,18 @@ def worker_main(root, action_id):
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
     except BaseException as error:
-        print(json.dumps(dict(status='failed', error_type=type(error).__name__, code=str(error))), flush=True)
+        frames, cause = [], error
+        for _ in range(4):
+            if cause is None:
+                break
+            trace = cause.__traceback__
+            while trace is not None and len(frames) < 32:
+                frames.append(dict(module=Path(trace.tb_frame.f_code.co_filename).name,
+                    function=trace.tb_frame.f_code.co_name, line=trace.tb_lineno,
+                    error_type=type(cause).__name__, errno=getattr(cause, 'errno', None)))
+                trace = trace.tb_next
+            cause = cause.__context__
+        print(json.dumps(dict(status='failed', error_type=type(error).__name__, code=str(error), frames=frames)), flush=True)
         raise
     print(json.dumps(receipt), flush=True)
 
@@ -129,20 +140,12 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
         assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
         return [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
     previous = observations()
-    done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
+    # One persistent manager waiter: spawning systemctl every half-second
+    # changes the very process/FD namespace the worker must prove stable.
+    done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--wait', '--collect',
         *('--property=' + value for value in _unit_property_assignments(target, journals)),
-        '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
-    assert done.returncode == 0, done.stdout + done.stderr
-    deadline = time.monotonic() + 60
-    time.sleep(0.5)
-    while time.monotonic() < deadline:
-        observed = subprocess.run(['/usr/bin/systemctl', 'show', unit,
-            '--property=ActiveState', '--value'], capture_output=True, text=True, timeout=5)
-        if observed.stdout.strip() in ('inactive', 'failed'):
-            break
-        time.sleep(0.5)
-    else:
-        raise AssertionError('actual worker did not reach terminal state')
+        '--', str(entry), action_id], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0 or expected == 'failed', done.stdout + done.stderr
     current = observations()
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
@@ -298,11 +301,11 @@ def connected_delete(interruption=None):
 
 
 def connected_delete_recovery():
-    connected_delete()
-    connected_delete('fenced')
-    connected_delete('chown')
-    connected_delete('removed')
-    connected_delete('unlink')
+    for phase in (None, 'fenced', 'chown', 'removed', 'unlink'):
+        try:
+            connected_delete(phase)
+        except Exception as error:
+            raise AssertionError('connected phase=' + str(phase) + ':' + str(error)) from error
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
                 historical_delete_idempotent=True, original_fence_recovered=True,
                 interrupted_removal_recovered=True, uncertain_removal_credit_zero=True)
