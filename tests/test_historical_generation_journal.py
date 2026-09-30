@@ -173,3 +173,47 @@ def test_reboot_or_current_namespace_change_cannot_adopt_old_journal(historical_
 
     with pytest.raises(ValueError, match='journal_changed'):
         journal_call(historical_installation, approved, changed)
+
+
+def test_past_journal_observation_never_renews_mutation_authority(historical_installation):
+    from blueprint_pipeline import control_plane_lane_historical_authority as authority
+    from blueprint_pipeline.control_plane_lane_historical_dispatch import _selection
+    from blueprint_pipeline.control_plane_lane_historical_journal import HistoricalJournalObservation
+    approved = decision(historical_installation, packet(historical_installation))
+    intent = journal_call(historical_installation, approved, lambda journal: journal.head,
+                          monotonic=lambda: 100)
+    original = authority._Operation(1030, lambda: 100)
+    with authority._session(historical_installation[0], original) as (files, config, store):
+        selected = _selection(files, config, store, historical_installation[0],
+                              approved['action_id'], original.moment())
+    directory = provision(historical_installation) / approved['action_id']
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    # Read old facts after both approval and original operation have expired.
+    # This observation has its own bounded read timer and has no write API.
+    observer = authority._Operation(100000, lambda: 50000)
+    with authority._session(historical_installation[0], observer) as (files, config, _):
+        journal = HistoricalJournalObservation(files, config, selected, observer)
+        assert journal.head == intent
+        batch = journal.replay_batch(0, previous=None, observed_at=None,
+                                    expected_head=intent['event_digest'])
+        assert batch['events'] == [intent] and batch['complete'] is True
+        assert not hasattr(journal, 'append') and not hasattr(journal, '_publish')
+        assert observer.started == 50000 and observer.moment() == 100000
+    assert before == {path.name: path.read_bytes() for path in directory.iterdir()}
+    with pytest.raises(ValueError):
+        journal_call(historical_installation, approved, lambda journal: journal.head,
+                     now=100000, monotonic=lambda: 50000)
+
+
+def test_past_journal_observation_cannot_create_missing_history(historical_installation):
+    from blueprint_pipeline import control_plane_lane_historical_authority as authority
+    from blueprint_pipeline.control_plane_lane_historical_dispatch import _selection
+    from blueprint_pipeline.control_plane_lane_historical_journal import HistoricalJournalObservation
+    approved = decision(historical_installation, packet(historical_installation))
+    operation = authority._Operation(1030, lambda: 100)
+    with authority._session(historical_installation[0], operation) as (files, config, store):
+        selected = _selection(files, config, store, historical_installation[0],
+                              approved['action_id'], operation.moment())
+        with pytest.raises((ValueError, OSError)):
+            HistoricalJournalObservation(files, config, selected, operation)
+    assert not (provision(historical_installation) / approved['action_id']).exists()

@@ -39,6 +39,15 @@ def journal_root(config):
     return Path(config.owner_consent_store).parent / 'historical-generation-journals'
 
 
+def _scope(selected):
+    packet, decision, manifest, records = selected
+    return dict(action_id=decision['action_id'], action=decision['action'], owner=decision['owner'],
+        packet=records['packet'], decision=records['decision'], manifest=decision['manifest'],
+        generation_digest=manifest['generation_digest'], target_path=manifest['target_path'],
+        policy=decision['policy'], installed_config=packet['installed_config'],
+        expires_at_epoch=decision['expires_at_epoch'])
+
+
 class HistoricalActionJournal:
     """One fixed protected action ID; append-only no-replace records and deadline."""
 
@@ -47,11 +56,7 @@ class HistoricalActionJournal:
         packet, decision, manifest, records = selected
         self.action_id = decision['action_id']
         _require(authority._ID.fullmatch(self.action_id), 'invalid')
-        self.scope = dict(action_id=self.action_id, action=decision['action'], owner=decision['owner'],
-            packet=records['packet'], decision=records['decision'], manifest=decision['manifest'],
-            generation_digest=manifest['generation_digest'], target_path=manifest['target_path'],
-            policy=decision['policy'], installed_config=packet['installed_config'],
-            expires_at_epoch=decision['expires_at_epoch'])
+        self.scope = _scope(selected)
         self.scope_digest = canonical_digest(self.scope)
         root = journal_root(config)
         parent, _ = files.parent(root / self.action_id, protected=True)
@@ -207,3 +212,48 @@ class HistoricalActionJournal:
         count, size = self._count, self._size
         _require(count < MAX_EVENTS and size <= MAX_JOURNAL_BYTES - MAX_EVENT_BYTES, 'store_full')
         return self._publish(kind, body, count, previous)
+
+
+class HistoricalJournalObservation:
+    """Read past immutable facts without adopting their expired write authority.
+
+    The caller authenticates the original selected records under the current
+    protected-store lock. This object cannot create, append or resume an old
+    operation. Restore must obtain a distinct current owner approval and fence.
+    Every batch uses the new observer's original bounded read deadline.
+    """
+
+    _scan = HistoricalActionJournal._scan
+    _read = HistoricalActionJournal._read
+    replay_batch = HistoricalActionJournal.replay_batch
+
+    def __init__(self, files, config, selected, operation):
+        self.files, self.operation = files, operation
+        self.action_id = selected[1]['action_id']
+        _require(isinstance(self.action_id, str) and authority._ID.fullmatch(self.action_id), 'invalid')
+        self.scope = _scope(selected)
+        self.scope_digest = canonical_digest(self.scope)
+        self.root = journal_root(config) / self.action_id
+        self.directory, _ = files.parent(self.root / 'e-00000.json', protected=True)
+        owners._protected(os.fstat(self.directory), directory=True, mode=0o700)
+        self._count, self._size = self._scan()
+        _require(self._count > 0, 'changed')
+        self.head
+
+    @property
+    def head(self):
+        self.operation.remaining()
+        self.files.location(self.directory)
+        _require(owners._metadata(os.fstat(self.directory)) == self._namespace, 'changed')
+        intent = self._read(0)
+        seed = intent['body']
+        _require(intent['kind'] == 'intent' and intent['previous_event_digest'] is None
+            and set(seed) == {'started_at_epoch', 'started_monotonic', 'boot_id'}
+            and all(type(seed[key]) in (int, float) and math.isfinite(seed[key]) and seed[key] >= 0
+                    for key in ('started_at_epoch', 'started_monotonic'))
+            and isinstance(seed['boot_id'], str) and re.fullmatch(
+                r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', seed['boot_id'])
+            and seed['started_at_epoch'] <= intent['observed_at_epoch'] <= self.operation.moment(), 'changed')
+        head = self._read(self._count - 1) if self._count > 1 else intent
+        _require(intent['observed_at_epoch'] <= head['observed_at_epoch'] <= self.operation.moment(), 'changed')
+        return head
