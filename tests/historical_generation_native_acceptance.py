@@ -316,6 +316,15 @@ def _installed_entry(root, entry):
     boot = (source / 'deploy/operator-door/historical-generation-entry.py').read_text()
     boot = boot.replace("_ROOT = Path('/opt/blueprint/operator-door')", '_ROOT = Path(' + repr(str(installed)) + ')')
     boot = boot.replace("_CONFIG = '/etc/blueprint-operator-door/door.json'", '_CONFIG = ' + repr(str(root / 'door.json')))
+    if (root / 'cloud-fixture.json').exists():
+        import boto3
+        # Repin the fixed SDK distribution to CI's sealed disposable root
+        # installation. The production source loader still verifies every
+        # actual import's ancestry/owner/mode/single-link identity. This is
+        # not a service venv fallback or proof of a live host SDK installation.
+        distribution = Path(boto3.__file__).parent.parent
+        boot = boot.replace("_SYSTEM_PACKAGES = Path('/usr/lib/python3/dist-packages')",
+                            '_SYSTEM_PACKAGES = Path(' + repr(str(distribution)) + ')')
     adjacent = root / 'work/adjacent-unselected.log'
     assert adjacent.read_bytes() == b'adjacent original bytes\n'
     # A fixture-only synchronization/challenge; original source loader and
@@ -336,6 +345,33 @@ def _installed_entry(root, entry):
     needle = '        from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action\n'
     assert boot.count(needle) == 1
     boot = boot.replace(needle, barrier + needle)
+    if (root / 'cloud-fixture.json').exists():
+        transport = """        # installed_fixture_archive_transport: only the object transport is replaced.
+        import base64
+        import boto3
+        fixture_namespace = {}
+        exec(compile(_read_source(Path(FAKE_CLOUD)), FAKE_CLOUD, 'exec'), fixture_namespace)
+        seed = json.loads(_read_source(Path(CLOUD_STATE)))
+        cloud = fixture_namespace['Cloud'](corrupt=seed['corrupt'])
+        cloud.objects = {key: base64.b64decode(raw) for key, raw in seed['objects'].items()}
+        cloud.metadata = seed['metadata']
+        def object_client(service, **options):
+            assert service == 's3'
+            assert options['endpoint_url'] == 'https://development-only.invalid'
+            assert options['aws_access_key_id'] == 'development-only-access'
+            assert options['aws_secret_access_key'] == 'development-only-secret'
+            assert options['region_name'] == 'us-east-1'
+            return cloud
+        boto3.client = object_client
+""".replace('FAKE_CLOUD', repr(str(root / 'python/historical_generation_fake_cloud.py'))).replace(
+            'CLOUD_STATE', repr(str(root / 'cloud-fixture.json')))
+        boot = boot.replace(needle, transport + needle)
+        emit = """        receipt = dict(receipt, _fixture_remote=dict(corrupt=cloud.corrupt,
+            objects={key: base64.b64encode(raw).decode() for key, raw in cloud.objects.items()},
+            metadata=cloud.metadata, calls=cloud.calls))
+"""
+        boot = boot.replace('        print(json.dumps(receipt, sort_keys=True, separators=',
+                            emit + '        print(json.dumps(receipt, sort_keys=True, separators=')
     _write(installed / 'historical-generation-entry.py', boot.encode(), 0o644)
     _write(entry, ('#!/bin/sh\nexec /usr/bin/python3 -I -S '
                    + str(installed / 'historical-generation-entry.py') + ' "$@"\n').encode(), 0o755)
@@ -574,29 +610,35 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 else:
                     raise AssertionError('unapproved restore decision published')
                 assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
-            _write(root / 'interrupt-once', restore_interruption.encode())
-            interrupted = _launch_worker(entry, restore['action_id'], target, journals,
-                                         restore=True, expected='failed')
-            assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption, interrupted
-            assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
-            assert all((target / name).read_bytes() == value for name, value in original.items())
-            interrupted_prefix = {path.name: path.read_bytes() for path in
-                                  (journals / restore['action_id']).iterdir()}
-            interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
-                                  if name.startswith('e-')]
-            assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
-                restore_interruption == 'restore_final')
-            assert ('restore.snapshot.json' in interrupted_prefix) == (restore_interruption != 'stage_removed')
-            assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
-            (root / 'interrupt-once').unlink()
-            restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True)
-            recovery = {'restore_final': 'recovered_access',
-                        'before_restore_final': 'recovered_before_final',
-                        'stage_removed': 'recovered_publication'}
-            assert restored[recovery[restore_interruption]] is True
-            assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
-            assert all((journals / restore['action_id'] / name).read_bytes() == raw
-                       for name, raw in interrupted_prefix.items())
+            if restore_interruption is not None:
+                _write(root / 'interrupt-once', restore_interruption.encode())
+                interrupted = _launch_worker(entry, restore['action_id'], target, journals,
+                                             restore=True, expected='failed')
+                assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption, interrupted
+                assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
+                assert all((target / name).read_bytes() == value for name, value in original.items())
+                interrupted_prefix = {path.name: path.read_bytes() for path in
+                                      (journals / restore['action_id']).iterdir()}
+                interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
+                                      if name.startswith('e-')]
+                assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
+                    restore_interruption == 'restore_final')
+                assert ('restore.snapshot.json' in interrupted_prefix) == (restore_interruption != 'stage_removed')
+                assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
+                (root / 'interrupt-once').unlink()
+            restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
+                                      launch=gc_tick if installed else None)
+            if restore_interruption is not None:
+                recovery = {'restore_final': 'recovered_access',
+                            'before_restore_final': 'recovered_before_final',
+                            'stage_removed': 'recovered_publication'}
+                assert restored[recovery[restore_interruption]] is True
+                assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
+                assert all((journals / restore['action_id'] / name).read_bytes() == raw
+                           for name, raw in interrupted_prefix.items())
+            else:
+                assert restored['restored_files'] == len(original)
+                assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
             assert restored['action'] == 'restore' and restored['owner_access_reopened'] is True
             assert restored['fresh_disk_reservation'] is True
             assert all((target / name).read_bytes() == value for name, value in original.items())

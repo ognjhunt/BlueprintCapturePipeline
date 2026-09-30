@@ -275,9 +275,11 @@ jobs:
           sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-native-test-venv
           uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv
           uv lock --check
-          uv sync --frozen --extra dev --python /usr/bin/python3
-          uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
-          uv pip install --python /opt/blueprint-native-test-venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
+          # Privileged SDK imports reject aliases to a user-owned package cache.
+          # Give this root-sealed disposable distribution independent inodes.
+          uv sync --frozen --extra dev --python /usr/bin/python3 --link-mode copy
+          uv pip install --python /opt/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts
+          uv pip install --python /opt/blueprint-native-test-venv/bin/python --link-mode copy --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
           # ProtectHome hides /home/runner from the actual different-UID child.
           # Seal only this new disposable interpreter, with a root-owned base.
           sudo chown -hR root:root /opt/blueprint-native-test-venv
