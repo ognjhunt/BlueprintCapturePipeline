@@ -811,6 +811,34 @@ def test_validate_pointer_accepts_what_the_collector_seals_and_names_every_other
         lambda: records.validate_pointer(landed, output_roots=("/retained/compiled/",)))
 
 
+def test_only_a_link_or_a_special_file_at_a_record_path_is_a_conflict(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: a record path that cannot be opened for an ordinary reason (EMFILE, EIO) is that error,
+    retried by its caller; only a symlink or a non-regular file at the path is a conflict."""
+    import errno
+    import os
+
+    value = _seal({"schema_version": "x.v1", "value": 1, "digest": ""}, "digest")
+    link = tmp_path / "link.json"
+    link.symlink_to(tmp_path / "elsewhere.json")
+    assert f"remote_cpu_record_conflict:{link.name}" in _reasons(
+        lambda: records.replace_remote_cpu_record(link, value, previous_digest=None, digest_field="digest"))
+    (tmp_path / "folder.json").mkdir()
+    assert "remote_cpu_record_conflict:folder.json" in _reasons(
+        lambda: records.replace_remote_cpu_record(tmp_path / "folder.json", value, previous_digest=None,
+                                                  digest_field="digest"))
+    real_open = os.open
+
+    def exhausted(path, flags, *args, **kwargs):
+        if str(path).endswith("busy.json"):
+            raise OSError(errno.EMFILE, "Too many open files")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(records.os, "open", exhausted)
+    with pytest.raises(OSError) as raised:
+        records.replace_remote_cpu_record(tmp_path / "busy.json", value, previous_digest=None, digest_field="digest")
+    assert raised.value.errno == errno.EMFILE and not isinstance(raised.value, contract.RemoteCpuContractError)
+
+
 def test_pointer_reseal_replaces_only_the_record_it_read(tmp_path: Path) -> None:
     descriptor = _descriptor()
     identity = contract.worker_identity_for(descriptor["execution"], EXECUTION)

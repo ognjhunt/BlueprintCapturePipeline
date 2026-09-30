@@ -9,6 +9,7 @@ credential-shaped content.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -99,17 +100,31 @@ def write_remote_cpu_record(path: str | Path, value: Mapping[str, Any]) -> bool:
     raise RemoteCpuContractError(f"remote_cpu_record_conflict:{destination.name}")
 
 
+# What opening a record path answers when a symlink (O_NOFOLLOW), a directory or a special file is there.
+_NOT_A_RECORD = frozenset({errno.ELOOP, errno.EMLINK, errno.EISDIR, errno.ENXIO, errno.ENODEV})
+
+
 def _existing_record_bytes(path: Path) -> bytes | None:
-    """The bytes of a regular record file, or ``None`` when absent; a link or special file conflicts."""
+    """The bytes of a regular record file, or ``None`` when absent.  A symlink or a special file at the path
+    conflicts; any other failure to open or read it (EMFILE, EIO, EACCES) is raised as it is, for the caller
+    to retry, never taken for a conflict."""
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}") from exc
+        if exc.errno in _NOT_A_RECORD:
+            raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}") from exc
+        raise
+    try:
+        regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if not regular:
+        os.close(descriptor)
+        raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}")
     with os.fdopen(descriptor, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise RemoteCpuContractError(f"remote_cpu_record_conflict:{path.name}")
         return stream.read(_MAX_RECORD_BYTES + 1)
 
 

@@ -982,3 +982,29 @@ def test_a_row_gone_after_its_result_was_written_still_reaches_teardown(tmp_path
     assert world.lease()["state"] == "completed" and world.row_state() is None
     assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
     _assert_torn_down(world)
+
+
+def test_a_transient_open_error_on_the_pointer_is_not_a_conflict(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: one EMFILE opening the pointer was reported as a pointer conflict, which abandons a good
+    compile.  It is an ordinary failure now: counted, retried, and the compile lands."""
+
+    import errno
+    import os
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    # Two: the pointer step's plain read of an existing pointer swallows the first; the record writer's own
+    # open, which decides conflicts, meets the second.
+    real_open, failures = os.open, {"left": 2}
+
+    def exhausted(path, flags, *args, **kwargs):
+        if failures["left"] and str(path).endswith(".remote-output.v1.json"):
+            failures["left"] -= 1
+            raise OSError(errno.EMFILE, "Too many open files")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(records.os, "open", exhausted)
+    _complete(world)
+    assert failures["left"] == 0
+    assert (world.lease()["state"], world.row_state()) == ("completed", "completed")
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    _assert_torn_down(world)
