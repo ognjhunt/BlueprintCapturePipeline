@@ -293,11 +293,16 @@ def test_artifact_wait_is_bounded(fixture):
 def test_invalid_output_never_reaches_review(fixture, mutation):
     runner, api, _ = fixture
     o = output()
-    if mutation == "wrong_date": o["checked_date"] = "2026-09-29"
-    if mutation == "qualified": o["candidates"][0]["qualification_status"] = "qualified"
-    if mutation == "missing_source": o["candidates"][0]["evidence"][0]["url"] = ""
-    if mutation == "vendor_fact": o["candidates"][0]["evidence"][0]["classification"] = "vendor"
-    if mutation == "unknown_field": o["candidates"][0]["email_to_send"] = "no"
+    if mutation == "wrong_date":
+        o["checked_date"] = "2026-09-29"
+    if mutation == "qualified":
+        o["candidates"][0]["qualification_status"] = "qualified"
+    if mutation == "missing_source":
+        o["candidates"][0]["evidence"][0]["url"] = ""
+    if mutation == "vendor_fact":
+        o["candidates"][0]["evidence"][0]["classification"] = "vendor"
+    if mutation == "unknown_field":
+        o["candidates"][0]["email_to_send"] = "no"
     api.raw = b"not json" if mutation == "bad_json" else json.dumps(o).encode()
     row = runner.start_or_resume()
     assert row["state"] == "failed"
@@ -352,7 +357,8 @@ def test_review_binding_source_support_and_partial_delivery(fixture):
         row = runner.receipt(DAY, receipt)
         assert row["delivery"][dest]["state"] == "acknowledged"
         assert runner.receipt(DAY, receipt) == row
-        if dest != "parent_status": assert row["state"] == "reviewed"
+        if dest != "parent_status":
+            assert row["state"] == "reviewed"
     assert row["state"] == "completed"
     wrong = {**receipt, "payload_digest": "wrong"}
     with pytest.raises(Refusal, match="binding"):
@@ -377,7 +383,8 @@ def test_cleanup_requires_approval_and_verified_absence(fixture):
 def _competing_process(root, queue):
     ledger = Ledger(root)
     try:
-        with ledger.lock(): queue.put("acquired")
+        with ledger.lock():
+            queue.put("acquired")
     except Refusal as exc:
         queue.put(str(exc))
     finally:
