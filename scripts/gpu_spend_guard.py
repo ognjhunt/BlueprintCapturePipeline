@@ -1455,7 +1455,7 @@ def _task_evaluation_watchdog_owned_ids(
                     or value.get("pre_deadline_provider_mutation_allowed") is not False
                     or value.get("provider_mutation_trigger") != "hard_deadline_only"
                     or value.get("watchdog_out_dir") != str(path.parent.resolve())
-                    or type(deadline) not in (int, float) or not now < deadline < now + 86400
+                    or not (type(deadline) is int or type(deadline) is float) or not now < deadline < now + 86400
                     or not isinstance(prefix, str) or not prefix.startswith("blueprint-task-evaluation-")
                     or value.get("name_prefix") != prefix
                     or (path.parent / "groot_oscar_runpod_canary_watchdog_cancel.json").exists()):
