@@ -94,7 +94,18 @@ def worker_main(root, action_id):
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
     from blueprint_pipeline import control_plane_lane_historical_processes as processes
     original_inspect = processes._inspect_process
+    original_require = processes._require
     scan_failure = {}
+    def require(value, code='process_unknown'):
+        if not value:
+            frame, frames = sys._getframe(1), []
+            while frame is not None:
+                if frame.f_code.co_filename == processes.__file__:
+                    frames.append(dict(function=frame.f_code.co_name, line=frame.f_lineno))
+                frame = frame.f_back
+            scan_failure.update(error_type='HistoricalProcessError', errno=None, frames=frames)
+        return original_require(value, code)
+    processes._require = require
     def inspect(*args, **kwargs):
         try:
             return original_inspect(*args, **kwargs)
