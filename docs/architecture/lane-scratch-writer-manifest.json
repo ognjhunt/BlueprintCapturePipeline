@@ -79,7 +79,7 @@
       "characterization_tests": [
         "tests/test_lane_scratch_install_wiring.py"
       ],
-      "review_reference": "2026-09-30: independent combined review of Phase 3b PR 4 approved the installer's remote episode-compilation lines at 422890429 (sha256 563866c85bc6358b2aad3eefaab6f123683d2635819cf6da12c3539e46656b84); the four backstop-timer lines added after it are listed for that review's re-check. Lane-parent provisioning is unchanged since the 2026-09-27 independent spec and code-quality review at 030f9f30cd34b11878707c16722a970111e0923c",
+      "review_reference": "2026-09-30: independent combined review of Phase 3b PR 4 approved the installer's remote episode-compilation lines at 422890429 (sha256 563866c85bc6358b2aad3eefaab6f123683d2635819cf6da12c3539e46656b84); the four backstop-timer lines added after it are listed for that review's re-check. Lane-parent provisioning is unchanged since the 2026-09-27 independent spec and code-quality review at 030f9f30cd34b11878707c16722a970111e0923c; re-checked at 70b0b4f9e",
       "historical_exceptions": [
         "Provisioning lane parents does not register or authorize historical scratch."
       ]
