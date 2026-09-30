@@ -684,3 +684,39 @@ def test_the_shadow_tree_comparison_hashes_files_as_a_stream(tmp_path: Path, mon
 
     monkeypatch.setattr(Path, "read_bytes", whole_file)
     assert collector._tree_mismatches(root, index) == []
+
+
+def test_without_a_provider_connection_undispatched_hand_offs_still_go_back(tmp_path: Path, monkeypatch) -> None:
+    """Review I5: a rotated or revoked key must not strand every hand-off in processing/.  With no provider
+    connection the unit still hands back each hand-off that never dispatched and writes its summary; an attempt
+    that may have started keeps its hand-off, since it is never handed back without its teardown."""
+
+    import functools
+
+    from blueprint_pipeline import remote_cpu_job_allocator as allocator
+    from blueprint_pipeline.task_evaluation_episode_compilation_worker import OUTPUT_ROOT_ENV, QUEUE_ROOT_ENV
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    world.drive(until=lambda: (world.lease() or {}).get("state") in {"dispatched", "running"}, step=30)
+    started = world.lease()
+    waiting = world.add_row(label="waiting", marker="authoritative")
+    name = waiting.queue_row["name"]
+    monkeypatch.setenv(remote.EXECUTION_ENV, "cloud_run")
+    monkeypatch.setenv(QUEUE_ROOT_ENV, str(world.host.queue))
+    monkeypatch.setenv(OUTPUT_ROOT_ENV, str(world.host.outputs))
+    monkeypatch.setattr(allocator, "load_remote_cpu_config", lambda path=None: (world.remote.config, []))
+    monkeypatch.setattr(allocator, "_connect", lambda runtime, config: ["remote_cpu_dispatcher_unavailable:KeyError"])
+    monkeypatch.setattr(allocator, "RemoteCpuRuntime", functools.partial(allocator.RemoteCpuRuntime, clock=world.clock))
+
+    assert collector.main(["run", "--source-commit", world.plan.source_commit, "--jobs-root", str(world.host.jobs)]) == 0
+    assert remote.marker_path(world.host.jobs, "fallback", name).is_file()
+    assert not remote.marker_path(world.host.jobs, "authoritative", name).exists()
+    assert (world.host.queue / "processing" / name).is_file()
+    # The started attempt keeps its hand-off and its lease, untouched, until a connected run tears it down.
+    assert remote.marker_path(world.host.jobs, "authoritative", world.name).is_file()
+    assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
+    assert world.lease() == started
+    summary = json.loads((world.host.jobs / "summary.json").read_text(encoding="utf-8"))
+    assert summary["blockers"] == ["remote_cpu_dispatcher_unavailable:KeyError"]
+    assert summary["rows"][name]["status"] == "returned_to_host"
+    assert summary["rows"][world.name]["status"] == "held_for_provider"

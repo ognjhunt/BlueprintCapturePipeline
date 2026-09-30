@@ -1483,4 +1483,7 @@ output it left at `<id>` is set aside and counted against the same three.
 
 **Rollback.** Unset the flag. The no-spend unit compiles everything; the paid
 unit's ExecCondition keeps it running only to drain live leases and to hand
-undispatched rows back.
+undispatched rows back. Without a provider connection (an unusable config or
+dispatcher credential) the paid unit still hands back every hand-off that never
+dispatched and writes `summary.json`; a started attempt keeps its hand-off
+until a connected run tears it down.

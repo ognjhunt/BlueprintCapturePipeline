@@ -965,25 +965,24 @@ def _parity_counts(c: Collector) -> dict[str, dict[str, int]]:
     return counts
 
 
-def run_collector(c: Collector) -> dict[str, Any]:
-    """One paid-unit run: every hand-off and shadow marker advanced one step, then a sweep and the summary."""
-
-    c.summary = {"schema_version": SUMMARY_SCHEMA_VERSION, "stage": STAGE, "mode": c.mode, "observed_at_epoch": c.now,
-                 "rows": {}, "drift": 0, "teardown_unproven": 0, "orphans_cancelled": 0, "blockers": []}
-    _observe_job_image(c)
+def _each_marker(c: Collector, step: Callable[[Path, Mapping[str, Any]], dict[str, Any]]) -> None:
     for kind in ("authoritative", "shadow"):
         for path, marker in remote.markers(c.jobs_root, kind):
             if marker is None or marker.get("schema_version") != remote.HANDOFF_SCHEMA_VERSION:
                 c.summary["blockers"].append(f"remote_episode_compilation_marker_unreadable:{path.name}")
                 continue
             try:
-                c.summary["rows"][path.name] = _advance(c, path, marker)
+                c.summary["rows"][path.name] = step(path, marker)
             except Exception as exc:  # noqa: BLE001 - one row's failure never stops the others; its cause stays typed
                 c.summary["rows"][path.name] = {"status": "blocked", "blocker": _typed(exc)}
-    # After every row was followed, so a finished execution is collected rather than expired.
-    c.summary["expired"] = leases.expire_stale(c.jobs_root, now=c.now)
-    swept = _allocate(c, "sweep", None, "stage")
-    c.summary["orphans_cancelled"] = len(swept.get("cancelled") or [])
+
+
+def _start_summary(c: Collector, blockers: list[str]) -> None:
+    c.summary = {"schema_version": SUMMARY_SCHEMA_VERSION, "stage": STAGE, "mode": c.mode, "observed_at_epoch": c.now,
+                 "rows": {}, "drift": 0, "teardown_unproven": 0, "orphans_cancelled": 0, "blockers": list(blockers)}
+
+
+def _write_summary(c: Collector) -> dict[str, Any]:
     census = leases.slot_census(c.jobs_root)
     c.summary.update(slots_in_use=census["slots_in_use"], unreadable_leases=census["unreadable"],
                      parity=_parity_counts(c))
@@ -993,6 +992,44 @@ def run_collector(c: Collector) -> dict[str, Any]:
     temporary.chmod(0o644)
     os.replace(temporary, summary_path)
     return c.summary
+
+
+def run_collector(c: Collector) -> dict[str, Any]:
+    """One paid-unit run: every hand-off and shadow marker advanced one step, then a sweep and the summary."""
+
+    _start_summary(c, [])
+    _observe_job_image(c)
+    _each_marker(c, lambda path, marker: _advance(c, path, marker))
+    # After every row was followed, so a finished execution is collected rather than expired.
+    c.summary["expired"] = leases.expire_stale(c.jobs_root, now=c.now)
+    swept = _allocate(c, "sweep", None, "stage")
+    c.summary["orphans_cancelled"] = len(swept.get("cancelled") or [])
+    return _write_summary(c)
+
+
+def drain_without_provider(c: Collector, blockers: list[str]) -> dict[str, Any]:
+    """Review I5: with no provider connection (the config or the dispatcher credential is unusable), every
+    hand-off that never dispatched, consumed nothing and owes no teardown still goes back, and the summary is
+    still written.  Anything that may have started keeps its hand-off for a connected run's teardown."""
+
+    _start_summary(c, blockers)
+    reason = _outcome(f"remote_cpu_provider_unavailable:{blockers[0]}")
+
+    def untouched(path: Path, marker: Mapping[str, Any]) -> dict[str, Any]:
+        lease = _lease(c, job_id_for(STAGE, marker["queue_row"]["name"]))
+        if lease is not None and (lease["state"] not in {"claimed", "awaiting_capacity"} or lease["prior_attempts"]
+                                  or allocator._consumption_path(lease["attempt_id"]).exists()):
+            return {"status": "held_for_provider", "lease_state": lease["state"]}
+        if lease is not None:
+            leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"], to_state="fallback_host",
+                              now=c.now, updates={"outcome": reason})
+        _give_up(c, marker, reason=reason, attempts=0)
+        path.unlink(missing_ok=True)
+        return {"status": "returned_to_host", "reason": reason}
+
+    _each_marker(c, untouched)
+    c.summary["expired"] = leases.expire_stale(c.jobs_root, now=c.now)
+    return _write_summary(c)
 
 
 def should_run(jobs_root: str | Path, environ: Mapping[str, str] | None = None) -> bool:
@@ -1016,21 +1053,24 @@ def main(argv: list[str] | None = None) -> int:
     config, blockers = allocator.load_remote_cpu_config()
     runtime = allocator.RemoteCpuRuntime()
     blockers = blockers or allocator._connect(runtime, config)
-    if blockers or not args.source_commit:
-        print(json.dumps({"status": "blocked", "blockers": blockers or ["remote_episode_compilation_commit_missing"],
-                          "findings": findings}, sort_keys=True))
-        return 0
+    if not args.source_commit:
+        blockers = [*blockers, "remote_episode_compilation_commit_missing"]
     repository = Path(__file__).resolve().parents[2]
     collector = Collector(
         runtime=runtime, config=config, jobs_root=Path(args.jobs_root),
         queue_root=Path(os.environ[QUEUE_ROOT_ENV]), outputs_root=Path(os.environ[OUTPUT_ROOT_ENV]),
-        source_commit=args.source_commit, mode=mode, allocate=subprocess_allocate,
+        source_commit=args.source_commit or "", mode=mode, allocate=subprocess_allocate,
         stage_release=lambda store, commit: publish_release_source(repository=repository, source_commit=commit,
                                                                    client=store[0], bucket=store[1]),
         disk_reservation_root=Path(os.environ["BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"])
         if os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") else None,
         storage_pins_root=Path(os.environ["BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT"])
         if os.getenv("BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT") else None)
+    if blockers:
+        summary = drain_without_provider(collector, blockers)
+        print(json.dumps({"status": "blocked", "blockers": blockers, "rows": len(summary["rows"]),
+                          "findings": findings}, sort_keys=True))
+        return 0
     summary = run_collector(collector)
     print(json.dumps({"status": "collected", "rows": len(summary["rows"]), "findings": findings}, sort_keys=True))
     return 0
@@ -1042,6 +1082,7 @@ __all__ = [
     "INPUT_ROOT_ENV",
     "RemoteCpuContractError",
     "main",
+    "drain_without_provider",
     "plan_descriptor",
     "run_collector",
     "should_run",
