@@ -788,6 +788,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
 
 def connected_delete_recovery():
     def run_case(**options):
+        started = time.monotonic()
+        print(json.dumps({'fixture_case_started': options}), flush=True)
         try:
             connected_delete(**options)
         except Exception as error:
@@ -798,13 +800,14 @@ def connected_delete_recovery():
                 trace = trace.tb_next
             raise AssertionError('connected case=' + repr(options) + ':'
                                  + ','.join(locations) + ':' + str(error)) from error
+        print(json.dumps({'fixture_case_completed': options,
+                          'elapsed_seconds': time.monotonic() - started}), flush=True)
     for phase in (None, 'fenced', 'chown', 'removed', 'unlink'):
         run_case(interruption=phase)
     run_case(action='offload')
     run_case(action='offload', restore_interruption='before_restore_final')
     run_case(action='offload', restore_interruption='unwritten_stage')
     run_case(action='offload', restore_interruption='access_intent')
-    run_case(action='offload', restore_interruption='restore_member_chown')
     run_case(action='offload', restore_interruption='stage_removed')
     run_case(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,

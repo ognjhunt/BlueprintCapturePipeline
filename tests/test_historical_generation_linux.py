@@ -259,9 +259,17 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility(re
     if os.geteuid() != 0:
         command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
                    'PYTHONDONTWRITEBYTECODE=1', *command]
-    done = subprocess.run(command, capture_output=True, text=True, timeout=150,
-                          cwd=Path(__file__).parents[1],
-                          env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=150,
+                              cwd=Path(__file__).parents[1],
+                              env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    except subprocess.TimeoutExpired as error:
+        # Retain actual bounded case progress on timeout, without renewing any
+        # operation or treating a subprocess observation timeout as completion.
+        output = (error.stdout or b'').decode() if isinstance(error.stdout, bytes) else error.stdout or ''
+        _record_reference_refusals(output, record_property)
+        print(output)
+        raise
     _record_reference_refusals(done.stdout, record_property)
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(target_writable=True,
@@ -287,6 +295,30 @@ if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
             failures.append(acceptance.__name__ + ':' + type(error).__name__ + ':' + str(error))
     assert not failures, '\n'.join(failures)
     print(json.dumps(results, sort_keys=True))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
+                   reason='actual disposable Linux private member recovery required; Mac skip is unmet')
+def test_actual_private_restore_member_permission_interruption(record_property):
+    command = [sys.executable, str(Path(__file__).resolve()), '--private-permission-fixture']
+    if os.geteuid() != 0:
+        command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
+                   'PYTHONDONTWRITEBYTECODE=1', *command]
+    done = subprocess.run(command, capture_output=True, text=True, timeout=60,
+                          cwd=Path(__file__).parents[1],
+                          env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    _record_reference_refusals(done.stdout, record_property)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(
+        historical_offload_full_readback=True, historical_restore_decision_bound=True,
+        historical_restored_bytes_and_access=True)
+
+
+if __name__ == '__main__' and sys.argv[1:] == ['--private-permission-fixture']:
+    from historical_generation_native_acceptance import connected_delete
+    print(json.dumps(connected_delete(action='offload', restore_interruption='restore_member_chown'),
+                     sort_keys=True))
 
 
 @pytest.mark.slow
