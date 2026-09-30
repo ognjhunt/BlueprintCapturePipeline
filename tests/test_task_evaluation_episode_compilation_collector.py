@@ -527,7 +527,8 @@ def test_shadow_keeps_host_authoritative_and_counts_parity_per_closure_class(tmp
     assert parity[world.name]["parity"] == parity[shipped.queue_row["name"]]["parity"] == "passed"
     assert parity[drifted.queue_row["name"]]["parity"] == "failed"
     assert parity[drifted.queue_row["name"]]["mismatches"] == ["native-task-packet/native_task_arena_packet_request.v1.json"]
-    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 1}, "shipped": {"passed": 1, "failed": 0}}
+    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 1, "inconclusive": 0},
+                                           "shipped": {"passed": 1, "failed": 0, "inconclusive": 0}}
     identity = {"image": world.plan.image, "host_environment_digest": HOST_RECORD["environment_digest"],
                 "cpu_class": HOST_RECORD["cpu_class"]}
     # Consecutive passes since the class's last failure: the pass counts only if it was compared after it.
@@ -609,3 +610,32 @@ def test_a_refused_second_attempt_hands_back_and_keeps_following_the_first_to_pr
     assert world.lease()["state"] == "fallback_host" and world.lease()["attempt"] == 1
     assert len(world.executions()) == 1 and len(_consumed(world)) == 1
     _assert_torn_down(world)
+
+
+def test_a_shadow_comparison_of_two_blocked_compiles_is_inconclusive(tmp_path: Path, monkeypatch) -> None:
+    """Review I2: a pass needs both sides compiled and their trees compared byte for byte.  Two blocked
+    compiles compare nothing, so they neither advance a class toward ``cloud_run`` nor reset it."""
+
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
+        TaskEvaluationNativeArenaEpisodeCompilerError,
+    )
+
+    world = CollectorWorld(tmp_path, monkeypatch, mode="cloud_run_shadow", marker="shadow")
+    world.drive(until=lambda: not remote.markers(world.host.jobs, "shadow"), step=120)  # a real pass first
+
+    def refuses(**_kwargs):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError("episode_compiler_destination_usd_format_unrecognized")
+
+    world.compiler = refuses  # the host and the worker both refuse the next rows
+    blocked = [world.add_row(label=f"refused-{index}") for index in range(3)]
+    assert all((world.host.queue / "blocked" / plan.queue_row["name"]).is_file() for plan in blocked)
+    world.drive(until=lambda: not remote.markers(world.host.jobs, "shadow"), step=120)
+
+    parity = {record["queue_row"]["name"]: record["parity"] for record in (
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (world.host.jobs / "parity" / "episode_compilation").glob("*.json"))}
+    assert parity == {world.name: "passed", **{plan.queue_row["name"]: "inconclusive" for plan in blocked}}
+    identity = {"image": world.plan.image, "host_environment_digest": HOST_RECORD["environment_digest"],
+                "cpu_class": HOST_RECORD["cpu_class"]}
+    assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", **identity) == 1
+    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 0, "inconclusive": 3}}

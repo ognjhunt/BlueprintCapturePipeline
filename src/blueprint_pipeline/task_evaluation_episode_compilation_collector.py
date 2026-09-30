@@ -698,9 +698,12 @@ def _compare_shadow(c: Collector, path: Path, marker: Mapping[str, Any], plan: r
     if recorded is not None:  # compared already: only the teardown is left
         return _close(c, path, marker, lease, terminal="shadow_compared", outcome=f"shadow_parity_{recorded['parity']}")
     name = plan.queue_row["name"]
-    host = _read_json(c.queue_root / "results" / name)
-    mismatches = [] if host == receipt["result"] else ["result"]
-    if host is not None and receipt["status"] == "succeeded" and host.get("status") == receipt["result"]["status"]:
+    host, worker = _read_json(c.queue_root / "results" / name), receipt["result"]
+    compiled = "compiled_for_production_launch"
+    mismatches: list[str] = []
+    if host is not None and receipt["status"] == "succeeded" and host.get("status") == compiled == worker.get("status"):
+        # Both sides compiled: results and output trees are compared byte for byte, the only way to a pass.
+        mismatches = [] if host == worker else ["result"]
         client, bucket, _ = c.runtime.object_store
         raw = read_remote_cpu_staging_object(staging_uri=descriptor["outputs"]["staging_prefix"] + "index.json",
                                              maximum_size_bytes=MAX_INDEX_BYTES, client=client, bucket=bucket)
@@ -712,7 +715,11 @@ def _compare_shadow(c: Collector, path: Path, marker: Mapping[str, Any], plan: r
             mismatches.append("index")
         else:
             mismatches += _tree_mismatches(c.host(descriptor["outputs"]["output_root"]), json.loads(raw))
-    parity = "passed" if not mismatches else "failed"
+        parity = "passed" if not mismatches else "failed"
+    elif host is not None and host.get("status") != worker.get("status"):
+        parity, mismatches = "failed", ["status"]  # one side compiled and the other did not
+    else:
+        parity = "inconclusive"  # nothing compiled on both sides to compare (review I2): no pass, no reset
     remote.record_shadow_parity(c.jobs_root, {
         "closure_class": plan.closure["class"], "attempt_id": lease["attempt_id"], "queue_row": dict(plan.queue_row),
         "image": plan.image, "host_environment_digest": plan.host_environment_digest,
@@ -922,8 +929,8 @@ def _parity_counts(c: Collector) -> dict[str, dict[str, int]]:
     counts: dict[str, dict[str, int]] = {}
     for record_path in sorted((c.jobs_root / "parity" / STAGE).glob("*.json")):
         record = _read_json(record_path) or {}
-        klass = counts.setdefault(str(record.get("closure_class")), {"passed": 0, "failed": 0})
-        klass["passed" if record.get("parity") == "passed" else "failed"] += 1
+        klass = counts.setdefault(str(record.get("closure_class")), {"passed": 0, "failed": 0, "inconclusive": 0})
+        klass[record["parity"] if record.get("parity") in {"passed", "inconclusive"} else "failed"] += 1
     return counts
 
 

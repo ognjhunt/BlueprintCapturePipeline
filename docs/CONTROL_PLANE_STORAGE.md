@@ -1460,7 +1460,7 @@ nothing reclaims it, and it stays on the root disk when the work volume moves
 | `descriptors/`, `leases/`, `live/`, `teardowns/` | paid unit, allocator | plan 14 §3, §7, §11 |
 | `receipts/<attempt>.json` | paid unit | the fenced receipt, kept because provider-zero deletes staging early |
 | `rows/episode_compilation/<row>` | paid unit | promotion and landing retries, and a row given up |
-| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class |
+| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class: `passed` only when both sides compiled and match byte for byte; two blocked compiles are `inconclusive`, which neither counts toward nor breaks a class's three passes |
 | `environment/`, `drift/episode_compilation.json` | allocator, paid unit | the probed worker environment and the job template's image |
 | `summary.json` (0644) | paid unit | door-readable counts: drift, unproven teardowns, orphans cancelled, parity |
 

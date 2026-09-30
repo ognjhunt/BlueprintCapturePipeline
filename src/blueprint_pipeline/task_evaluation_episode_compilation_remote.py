@@ -321,13 +321,16 @@ def record_shadow_parity(jobs_root: str | Path, fields: Mapping[str, Any]) -> di
 
 def shadow_passes(jobs_root: str | Path, *, closure_class: str, image: str, host_environment_digest: str,
                   cpu_class: str | None) -> int:
-    """Consecutive trailing parity passes for one class on this image, host environment and CPU class."""
+    """Consecutive trailing parity passes for one class on this image, host environment and CPU class.
+
+    An ``inconclusive`` comparison (nothing compiled on both sides) neither counts nor breaks the run."""
 
     rows = []
     for path in sorted((Path(jobs_root) / "parity" / STAGE).glob("*.json")):
         record = _read_record(path)
         if (record is not None and record.get("schema_version") == PARITY_SCHEMA_VERSION
                 and record.get("record_digest") == canonical_digest(record, digest_field="record_digest")
+                and record.get("parity") != "inconclusive"
                 and (record.get("closure_class"), record.get("image"), record.get("host_environment_digest"),
                      record.get("cpu_class")) == (closure_class, image, host_environment_digest, cpu_class)):
             rows.append((float(record.get("compared_at_epoch") or 0.0), record.get("parity") != "passed"))
