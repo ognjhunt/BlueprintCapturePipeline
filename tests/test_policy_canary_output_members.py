@@ -3,7 +3,11 @@
 #   src/blueprint_pipeline/native_task_arena_vast.py
 #   src/blueprint_pipeline/adp_isaac_lab_arena_vast.py
 #   src/blueprint_pipeline/provider_output_member_view.py
-"""The Quick-10 output delivery mode is resolved before any paid mutation (plan 15, PR C, 15.C1)."""
+"""The Quick-10 output delivery mode is resolved before any paid mutation (plan 15, PR C, 15.C1).
+
+Unset or empty means auto (2026-09-30): stream when the dedicated B2 store is configured, else
+download. The session records the effective mode and why as ``provider_output_delivery_resolution``.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +41,31 @@ from tests.test_native_task_arena_paired_witness_staging import context as conte
 SRC = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
 SMALL = {"cells": 10, "frames_per_camera": 2, "png_bytes": 8 * 1024, "mp4_bytes": 64 * 1024,
          "policy_request_bytes": 4 * 1024}
+RESOLUTION = "provider_output_delivery_resolution"
+AUTO_STREAM = {"mode": "stream", "reason": "auto_artifact_store_configured"}
+AUTO_DOWNLOAD = {"mode": "download", "reason": "auto_artifact_store_not_configured"}
+
+
+def _b2_store(root: Path, *, configured: bool) -> dict[str, str]:
+    """The five dedicated B2 settings, each naming a readable file; none when not configured."""
+    if not configured:
+        return {}
+    root.mkdir(parents=True, exist_ok=True)
+    for key in _ARTIFACT_STORE_FILE_ENV:
+        (root / key).write_text("configured\n", encoding="utf-8")
+    return {name: str(root / key) for key, name in _ARTIFACT_STORE_FILE_ENV.items()}
+
+
+def _set_delivery(monkeypatch, tmp_path: Path, setting: str | None, *, configured: bool) -> None:
+    """The environment the session reads: the setting (None leaves it unset) and the B2 store."""
+    for name in _ARTIFACT_STORE_FILE_ENV.values():
+        monkeypatch.delenv(name, raising=False)
+    for name, value in _b2_store(tmp_path / "b2", configured=configured).items():
+        monkeypatch.setenv(name, value)
+    if setting is None:
+        monkeypatch.delenv(members.DELIVERY_ENV, raising=False)
+    else:
+        monkeypatch.setenv(members.DELIVERY_ENV, setting)
 
 
 def _run_session(context, tmp_path, monkeypatch, *, execute=True, lane=None):
@@ -61,9 +90,11 @@ def _forbidden(*_args, **_kwargs):
     raise AssertionError("the session authority was consumed or the lane ran before the mode was resolved")
 
 
-@pytest.mark.parametrize("value", ["STREAM", "stream ", "upload", "1"])
+@pytest.mark.parametrize("value", ["STREAM", "stream ", "upload", "1", "auto", "Download"])
 def test_invalid_delivery_mode_refuses_before_consumption_with_zero_mutations(context, tmp_path, monkeypatch, value):
-    monkeypatch.setenv(members.DELIVERY_ENV, value)
+    """Auto is what an unset setting means, not a value: ``auto`` refuses like any other typo, and a
+    configured B2 store never turns a value that is not a mode into a stream."""
+    _set_delivery(monkeypatch, tmp_path, value, configured=True)
     monkeypatch.setattr(native, "consume_session_authority_once", _forbidden)
 
     result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
@@ -77,16 +108,60 @@ def test_invalid_delivery_mode_refuses_before_consumption_with_zero_mutations(co
 
 
 def test_download_mode_forwards_exactly_today_s_lane_arguments(context, tmp_path, monkeypatch):
-    monkeypatch.delenv(members.DELIVERY_ENV, raising=False)
+    """Without the B2 store (the CI condition), unset and empty download exactly as ``download``
+    does: each forwards the lane's own defaults, plus only the record of why it downloaded."""
+    _set_delivery(monkeypatch, tmp_path, None, configured=False)
     unset = _run_session(context, tmp_path / "unset", monkeypatch, execute=False)
+    records = {}
     for value in ("", "download"):
         monkeypatch.setenv(members.DELIVERY_ENV, value)
         forwarded = _run_session(context, tmp_path / "unset", monkeypatch, execute=False)
-        assert forwarded == unset
+        records[value] = forwarded.pop(RESOLUTION)
+        assert forwarded == {key: item for key, item in unset.items() if key != RESOLUTION}
+    assert unset[RESOLUTION] == records[""] == AUTO_DOWNLOAD
+    assert records["download"] == {"mode": "download", "reason": "explicit"}
     # The lane's own defaults: nothing streams.
     assert (unset["provider_output_delivery"], unset["provider_output_member_contract"]) == ("download", None)
     defaults = inspect.signature(arena.run_arena_native_control_vast).parameters
-    assert all(defaults[key].default == unset[key] for key in unset if key.startswith("provider_output_"))
+    assert defaults[RESOLUTION].default is None  # every other arena caller records nothing
+    assert all(defaults[key].default == unset[key] for key in unset
+               if key.startswith("provider_output_") and key != RESOLUTION)
+
+
+@pytest.mark.parametrize(("setting", "configured", "expected"), [
+    (None, True, AUTO_STREAM),
+    ("", True, AUTO_STREAM),
+    (None, False, AUTO_DOWNLOAD),
+    ("download", True, {"mode": "download", "reason": "explicit"}),
+    ("stream", True, {"mode": "stream", "reason": "explicit"}),
+])
+def test_the_session_forwards_the_resolved_mode_and_why(context, tmp_path, monkeypatch, setting, configured,
+                                                         expected):
+    """Unset streams exactly when the B2 store is configured; an explicit value means what it says
+    whatever the store. The lane is handed the mode, the contract that goes with it, and the record."""
+    _set_delivery(monkeypatch, tmp_path, setting, configured=configured)
+
+    forwarded = _run_session(context, tmp_path, monkeypatch, execute=False)
+
+    assert forwarded["provider_output_delivery"] == expected["mode"]
+    assert forwarded[RESOLUTION] == expected
+    streams = expected["mode"] == "stream"
+    assert forwarded["provider_output_member_contract"] is (members.POLICY_CANARY_OUTPUT_CONTRACT if streams else None)
+    assert forwarded["provider_output_reservation"] is None  # a dry run takes no hold
+
+
+def test_a_run_refused_at_consumption_records_its_resolution(context, tmp_path, monkeypatch):
+    """Resolved before the authority is consumed, so even a run the consumption refuses says which
+    mode it would have used and why."""
+    _set_delivery(monkeypatch, tmp_path, None, configured=False)
+    monkeypatch.setattr(native, "consume_session_authority_once", lambda *_args, **_kwargs: {
+        "status": "blocked", "blockers": ["policy_canary_session_authority_already_consumed"]})
+
+    result = _run_session(context, tmp_path, monkeypatch, lane=_forbidden)
+
+    assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
+    assert result["blockers"] == ["policy_canary_session_authority_already_consumed"]
+    assert result[RESOLUTION] == AUTO_DOWNLOAD
 
 
 def test_stream_refuses_before_consumption_without_the_b2_artifact_store(context, tmp_path, monkeypatch):
@@ -101,6 +176,11 @@ def test_stream_refuses_before_consumption_without_the_b2_artifact_store(context
 
     assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
     assert result["blockers"] == ["policy_canary_output_stream_artifact_store_not_configured"]
+    assert result[RESOLUTION] == {"mode": "stream", "reason": "explicit"}
+    assert proves_no_provider_allocation(result)
+    # Auto applies the very same check: with this store, an unset setting downloads.
+    monkeypatch.delenv(members.DELIVERY_ENV)
+    assert _run_session(context, tmp_path, monkeypatch, execute=False)[RESOLUTION] == AUTO_DOWNLOAD
 
 
 @pytest.mark.parametrize("defect", ["missing", "directory", "unreadable"])
@@ -132,6 +212,10 @@ def test_stream_refuses_before_consumption_unless_every_b2_setting_is_a_readable
 
     assert result["status"] == "blocked" and result["provider_mutations_performed"] == 0
     assert result["blockers"] == ["policy_canary_output_stream_artifact_store_not_configured"]
+    assert result[RESOLUTION] == {"mode": "stream", "reason": "explicit"}
+    # Auto applies the very same check: the store this ``stream`` was refused over sends unset to download.
+    monkeypatch.delenv(members.DELIVERY_ENV)
+    assert _run_session(context, tmp_path, monkeypatch, execute=False)[RESOLUTION] == AUTO_DOWNLOAD
 
 
 def test_contract_materializes_json_outside_policy_requests_only():
@@ -249,10 +333,32 @@ def test_other_arena_callers_never_stream():
     assert readers == ["policy_canary_output_members.py"]
 
 
-def test_resolve_output_delivery_defaults_to_download():
-    assert members.resolve_output_delivery({}) == "download"
-    assert members.resolve_output_delivery({members.DELIVERY_ENV: ""}) == "download"
-    assert members.resolve_output_delivery({members.DELIVERY_ENV: "download"}) == "download"
-    assert members.resolve_output_delivery({members.DELIVERY_ENV: "stream"}) == "stream"
+@pytest.mark.parametrize(("setting", "configured", "mode", "reason"), [
+    (None, True, "stream", "auto_artifact_store_configured"),
+    ("", True, "stream", "auto_artifact_store_configured"),
+    (None, False, "download", "auto_artifact_store_not_configured"),
+    ("", False, "download", "auto_artifact_store_not_configured"),
+    ("download", True, "download", "explicit"),
+    ("download", False, "download", "explicit"),
+    ("stream", True, "stream", "explicit"),
+    # Resolution says what was asked for; the session refuses to stream without the store.
+    ("stream", False, "stream", "explicit"),
+])
+def test_resolve_output_delivery_is_auto_when_unset(tmp_path, setting, configured, mode, reason):
+    environ = _b2_store(tmp_path / "b2", configured=configured)
+    if setting is not None:
+        environ[members.DELIVERY_ENV] = setting
+
+    resolved = members.resolve_output_delivery(environ)
+
+    assert (resolved.mode, resolved.reason) == (mode, reason)
+    assert resolved.record() == {"mode": mode, "reason": reason}
+    assert resolved.reason in members.DELIVERY_REASONS and resolved.mode in members.DELIVERY_MODES
+
+
+@pytest.mark.parametrize("value", ["Stream", "auto", " download"])
+def test_resolve_output_delivery_refuses_a_value_that_is_not_a_mode(tmp_path, value):
+    environ = {**_b2_store(tmp_path / "b2", configured=True), members.DELIVERY_ENV: value}
+
     with pytest.raises(members.PolicyCanaryOutputDeliveryError, match="^policy_canary_output_delivery_mode_invalid$"):
-        members.resolve_output_delivery({members.DELIVERY_ENV: "Stream"})
+        members.resolve_output_delivery(environ)

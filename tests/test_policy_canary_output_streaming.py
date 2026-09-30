@@ -11,6 +11,9 @@
 #   tests/provider_output_fixtures.py
 """Stream Quick-10 provider output behind BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY (plan 15, 15.C3).
 
+Unset, the setting means auto: stream exactly when the dedicated B2 store is configured, else
+download, with the lane result recording which and why.
+
 The lane runs for real: staging, the Vast adapter and the watchdog are the only
 doubles. Spaces (staging) and B2 (the artifact store) are served over the real
 range transport by ``StagedSpaces`` and ``VirtualCasClient``; the fake adapter
@@ -53,6 +56,8 @@ from tests.test_provider_output_promotion import World
 
 RESULT = PROVIDER_RESULT_FILENAME
 PREFIX = "native_task_arena_policy_canary_session"
+# The lane-result field recording the effective delivery mode and why it was chosen.
+RESOLUTION = "provider_output_delivery_resolution"
 INSTANCE = 49_247_792
 CHUNK = 1024**2
 
@@ -199,13 +204,17 @@ class Lane:
 
         return fake
 
-    def run_session(self, adapter, *, stream=True, job_dir=None):
-        """The real Quick-10 session and lane, its authority, bundle and witness checks stubbed."""
+    def run_session(self, adapter, *, delivery: str | None = "stream", job_dir=None):
+        """The real Quick-10 session and lane, its authority, bundle and witness checks stubbed.
+
+        ``delivery`` is the setting's value, or None to leave it unset. The world configures the
+        dedicated B2 store, so unset streams (auto) and downloading takes an explicit ``download``.
+        """
         monkeypatch = self.monkeypatch
-        if stream:
-            monkeypatch.setenv(DELIVERY_ENV, "stream")
-        else:
+        if delivery is None:
             monkeypatch.delenv(DELIVERY_ENV, raising=False)
+        else:
+            monkeypatch.setenv(DELIVERY_ENV, delivery)
         monkeypatch.setattr(arena, "run_vast_provider_adapter", adapter)
         monkeypatch.setattr(native, "validate_policy_canary_session_authority", lambda value: value)
         monkeypatch.setattr(native, "validate_policy_canary_provider_bundle", lambda *_args, **_kwargs: self.bundle)
@@ -503,6 +512,8 @@ def test_forecast_hold_is_taken_before_consumption_and_refused_without_room(lane
     assert refused["provider_mutations_performed"] == 0
     assert refused["provider_output_admission"]["reason"].startswith(
         "control_plane_disk_budget_exceeded:policy_canary_output:")
+    # The refusal names the mode it could not hold room for, and why that mode was chosen.
+    assert refused[RESOLUTION] == {"mode": "stream", "reason": "explicit"}
     assert list(lane.ledger.glob("*.json")) == []
 
 
@@ -510,6 +521,9 @@ def test_forecast_hold_is_taken_before_consumption_and_refused_without_room(lane
 
 GOLDEN_LANE_RESULT_SHA256 = "ba00b7bbcfa3f4a9e6ee522767d9ddef64af4d99e81b3071b4dcd1ffabc96d76"
 GOLDEN_ARTIFACT_MANIFEST_SHA256 = "3eeb482399c882929c5cb4fad547fe36f9f5875f48df4fc7e1574c33e4379afa"
+# The same doubles through the real Quick-10 session (setting unset, no B2 store), taken from main
+# at 2812a2720 before unset meant auto: the session's own lane arguments make it differ from the above.
+GOLDEN_SESSION_LANE_RESULT_SHA256 = "6752a164c166408b4c25bca8172bd33fbe8d95c7358a26663539410060f23d10"
 
 
 def _golden_zip() -> bytes:
@@ -533,9 +547,9 @@ def _golden_zip() -> bytes:
     return buffer.getvalue()
 
 
-@pytest.mark.parametrize("explicit", [False, True])
-def test_download_mode_lane_result_and_manifest_are_byte_identical(tmp_path, monkeypatch, explicit):
-    """The golden digests were taken from PR B's head (87ec78833) before this lane changed."""
+def _golden_doubles(tmp_path, monkeypatch) -> tuple[dict, dict]:
+    """The byte-identity tests' seams (staging, the adapter landing the golden ZIP, the watchdog), and
+    their prepared bundle. Returns ``(calls, bundle)``; ``calls`` collects the staging and adapter kwargs."""
     archive = _golden_zip()
     calls = {}
 
@@ -570,15 +584,62 @@ def test_download_mode_lane_result_and_manifest_are_byte_identical(tmp_path, mon
     monkeypatch.setattr(streaming, "promote", lambda **_kwargs: pytest.fail("download mode promoted"))
     bundle_path = tmp_path / "bundle.zip"
     bundle_path.write_bytes(b"bundle")
-    result = arena.run_arena_native_control_vast(
-        approval_path=".", job_dir=tmp_path / "job", paid_resource_admission_grant=object(), execute=True,
-        prepared_bundle={"status": "ready", "bundle_path": str(bundle_path),
-                         "bundle_sha256": arena._file_sha256(bundle_path), "protocol_digest": "sha256:" + "b" * 64},
-        hard_cap_usd=4.0, hard_ttl_seconds=14_400, expected_output_filename=RESULT,
+    return calls, {"status": "ready", "bundle_path": str(bundle_path),
+                   "bundle_sha256": arena._file_sha256(bundle_path), "protocol_digest": "sha256:" + "b" * 64}
+
+
+def _golden_lane(tmp_path, bundle, *, execute=True, **delivery) -> dict:
+    """The arena lane called directly, as the golden digests were taken."""
+    return arena.run_arena_native_control_vast(
+        approval_path=".", job_dir=tmp_path / "job", paid_resource_admission_grant=object(), execute=execute,
+        prepared_bundle=bundle, hard_cap_usd=4.0, hard_ttl_seconds=14_400, expected_output_filename=RESULT,
         provider_bundle_kind=PREFIX, result_schema_version="native_task_arena_policy_canary_session_result.v1",
         blocker_prefix=PREFIX, candidate_policy_query_expected=True, require_independent_watchdog=True,
-        **({"provider_output_delivery": "download", "provider_output_member_contract": None,
-            "provider_output_reservation": None} if explicit else {}))
+        **delivery)
+
+
+def _golden_session(tmp_path, monkeypatch, bundle) -> tuple[dict, dict]:
+    """The real Quick-10 session over the golden doubles, its authority, bundle and witness checks
+    stubbed and its lane call spied on. Returns ``(result, lane_kwargs)``."""
+    lane_kwargs = {}
+    real_lane = native.run_arena_native_control_vast
+
+    def spy(**kwargs):
+        lane_kwargs.update(kwargs)
+        return real_lane(**kwargs)
+
+    monkeypatch.setattr(native, "run_arena_native_control_vast", spy)
+    monkeypatch.setattr(native, "validate_policy_canary_session_authority", lambda value: value)
+    monkeypatch.setattr(native, "validate_policy_canary_provider_bundle", lambda *_args, **_kwargs: bundle)
+    monkeypatch.setattr(native, "consume_session_authority_once",
+                        lambda *_args, **_kwargs: {"status": "consumed", "blockers": []})
+    monkeypatch.setattr(native, "_policy_provider_transfer_byte_budget", lambda _candidate: (100, 20))
+    monkeypatch.setattr(paired, "build_paired_witness_binding",
+                        lambda *_args, **_kwargs: {"maximum_archive_bytes": 1_000_000})
+    monkeypatch.setattr(paired, "paired_witness_secret_paths", lambda *_args, **_kwargs: {})
+    authority = {"hard_cap_usd": 4.0, "hard_ttl_seconds": 14_400, "authority_digest": "sha256:" + "a" * 64,
+                 "resource_name": "blueprint-native-task-policy-canary-" + "a" * 32}
+    result = native.run_native_task_arena_policy_canary_session_vast(
+        job_dir=tmp_path / "job", prepared_bundle={**bundle, "container_image": "immutable-image"},
+        session_authority=authority, paid_resource_admission_grant=object(), execute=True, hard_cap_usd=4.0,
+        hard_ttl_seconds=14_400, provider_runtime_environment={"BLUEPRINT_ADP009D_CAMERA_RESOLUTION": "640x360"})
+    return result, lane_kwargs
+
+
+def _lane_bytes(value: dict, tmp_path) -> bytes:
+    """A lane result's bytes as ``write_json`` seals them, with the run's temporary root elided."""
+    return json.dumps(value, indent=2).encode().replace(str(tmp_path).encode(), b"<tmp>")
+
+
+EXPLICIT_DOWNLOAD = {"provider_output_delivery": "download", "provider_output_member_contract": None,
+                     "provider_output_reservation": None}
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_download_mode_lane_result_and_manifest_are_byte_identical(tmp_path, monkeypatch, explicit):
+    """The golden digests were taken from PR B's head (87ec78833) before this lane changed."""
+    calls, bundle = _golden_doubles(tmp_path, monkeypatch)
+    result = _golden_lane(tmp_path, bundle, **(EXPLICIT_DOWNLOAD if explicit else {}))
 
     assert result["status"] == "completed", result["blockers"]
     attempt = Path(result["attempt_root"])
@@ -590,6 +651,118 @@ def test_download_mode_lane_result_and_manifest_are_byte_identical(tmp_path, mon
     assert not any(key.startswith(("provider_output_", "archive_durable")) for key in result)
     # The whole archive was extracted, as always.
     assert (attempt / "immutable_execution/cell_runs/00/episodes/media/e/external.mp4").is_file()
+
+
+def test_unset_without_the_b2_store_is_today_s_download_session_byte_for_byte(tmp_path, monkeypatch):
+    """The CI condition: the setting unset and no B2 store. The real session resolves download and
+    calls the lane with today's delivery arguments. Its lane result is today's, byte for byte, plus
+    one field, the record of why; its artifact manifest is the golden, unchanged."""
+    monkeypatch.delenv(DELIVERY_ENV, raising=False)
+    for name in scene_store._ARTIFACT_STORE_FILE_ENV.values():
+        monkeypatch.delenv(name, raising=False)
+    calls, bundle = _golden_doubles(tmp_path, monkeypatch)
+
+    result, lane_kwargs = _golden_session(tmp_path, monkeypatch, bundle)
+
+    assert result["status"] == "completed", result["blockers"]
+    assert {key: lane_kwargs[key] for key in EXPLICIT_DOWNLOAD} == EXPLICIT_DOWNLOAD
+    why = {"mode": "download", "reason": "auto_artifact_store_not_configured"}
+    assert result[RESOLUTION] == lane_kwargs[RESOLUTION] == why
+    attempt = Path(result["attempt_root"])
+    for path in (attempt / "adp_arena_vast_result.json", tmp_path / "job" / "adp_arena_vast_result.json"):
+        sealed = json.loads(path.read_text())
+        assert sealed.pop(RESOLUTION) == why
+        assert hashlib.sha256(_lane_bytes(sealed, tmp_path)).hexdigest() == GOLDEN_SESSION_LANE_RESULT_SHA256
+    assert hashlib.sha256((attempt / "artifact_manifest.json").read_bytes()).hexdigest() == (
+        GOLDEN_ARTIFACT_MANIFEST_SHA256)
+    assert "output_promotion_required" not in calls["stage"] and "provider_output_collector" not in calls["adapter"]
+    assert (attempt / "immutable_execution/cell_runs/00/episodes/media/e/external.mp4").is_file()
+
+
+@pytest.mark.parametrize("sink", ["dry_run", "live_window_below_minimum", "pre_spend_preflight_blocked",
+                                  "staging_blocked", "runtime_dependency_blocked", "watchdog_not_armed",
+                                  "completed"])
+def test_every_lane_result_records_the_resolution_it_is_given(tmp_path, monkeypatch, sink):
+    """Whichever result the lane seals, before the paid window or after it, carries the record."""
+    _, bundle = _golden_doubles(tmp_path, monkeypatch)
+    if sink == "live_window_below_minimum":
+        monkeypatch.setattr(arena, "_remaining_session_live_minutes", lambda **_kwargs: 10)
+    elif sink == "pre_spend_preflight_blocked":
+        def closed(**_kwargs):
+            raise arena.PreSpendPreflightBlocked({"status": "BLOCKED", "blockers": ["spend_gate_closed"]})
+
+        monkeypatch.setattr(arena, "require_pre_spend_preflight", closed)
+    elif sink == "staging_blocked":
+        monkeypatch.setattr(arena, "stage_wam_provider_bundle_object_store",
+                            lambda **_kwargs: {"status": "blocked", "blockers": ["staging_refused"]})
+    elif sink == "runtime_dependency_blocked":
+        bundle = {**bundle, "runtime_source_packet": {"transport": "content_addressed_external_layer.v1"}}
+        monkeypatch.setattr(arena, "stage_cached_runtime_dependency_object_store",
+                            lambda **_kwargs: {"status": "blocked", "blockers": ["runtime_layer_refused"]})
+        monkeypatch.setattr(arena, "close_cached_runtime_dependency_staging", lambda _path: {"status": "closed"})
+    elif sink == "watchdog_not_armed":
+        monkeypatch.setattr(arena, "arm_independent_vast_watchdog", lambda **_kwargs: ({"status": "refused"}, None))
+    why = {"mode": "download", "reason": "explicit"}
+
+    result = _golden_lane(tmp_path, bundle, execute=sink != "dry_run", **EXPLICIT_DOWNLOAD,
+                          provider_output_delivery_resolution=why)
+
+    assert result["status"] == {"dry_run": "dry_run_ready", "completed": "completed"}.get(sink, "blocked")
+    assert result[RESOLUTION] == why
+    assert json.loads((tmp_path / "job" / "adp_arena_vast_result.json").read_text())[RESOLUTION] == why
+
+
+@pytest.mark.parametrize("resolution", [
+    {"mode": "stream", "reason": "explicit"},  # not the mode the lane runs
+    {"mode": "download", "reason": "auto"},  # not a reason
+    {"mode": "download", "reason": "explicit", "setting": "download"},  # not the record's shape
+])
+def test_the_lane_refuses_a_resolution_that_does_not_describe_its_mode(tmp_path, monkeypatch, resolution):
+    _, bundle = _golden_doubles(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="^adp_arena_provider_output_delivery_resolution_invalid$"):
+        _golden_lane(tmp_path, bundle, **EXPLICIT_DOWNLOAD, provider_output_delivery_resolution=resolution)
+
+    assert not (tmp_path / "job").exists()
+
+
+# -- The default is auto: unset streams exactly when the B2 store is configured ------------
+
+
+def test_unset_delivery_streams_when_the_b2_store_is_configured(lane):
+    """The default since 2026-09-30. The lane fixture's world configures the dedicated B2 store, so
+    a Quick-10 with the setting unset streams, exactly as an explicit ``stream`` does, and every
+    record of the run says it streamed because the store was configured."""
+    archive, _ = _small_archive()
+
+    result = lane.run_session(lane.adapter(archive), delivery=None)
+
+    assert result["status"] == "completed", result["blockers"]
+    assert result["provider_output_delivery"] == "stream" and result["archive_durable"] is True
+    assert lane.staged == [True] and "provider_output_collector" in lane.adapter_calls[0]
+    why = {"mode": "stream", "reason": "auto_artifact_store_configured"}
+    assert result[RESOLUTION] == why
+    attempt = Path(result["attempt_root"])
+    for path in (attempt / "adp_arena_vast_result.json", lane.tmp_path / "job" / "adp_arena_vast_result.json"):
+        assert json.loads(path.read_text())[RESOLUTION] == why
+    # The forecast hold was taken before the run and released with its outcome.
+    [sample] = lane.history()
+    assert (sample["workload"], sample["outcome"]) == ("quick10_needed_members", "completed")
+
+
+def test_explicit_download_downloads_even_with_the_b2_store_configured(lane):
+    archive, payloads = _small_archive()
+
+    result = lane.run_session(lane.adapter(archive), delivery="download")
+
+    assert result["status"] == "completed", result["blockers"]
+    assert lane.staged == [False] and "provider_output_collector" not in lane.adapter_calls[0]
+    assert result[RESOLUTION] == {"mode": "download", "reason": "explicit"}
+    assert [key for key in result if key.startswith(("provider_output_", "archive_durable"))] == [RESOLUTION]
+    # The whole archive was extracted, as always, and no output hold was taken.
+    attempt = Path(result["attempt_root"])
+    assert set(payloads) <= set(_members(attempt / "immutable_execution"))
+    assert lane.history() == [] and list(lane.ledger.glob("*.json")) == []
 
 
 # -- Parity through the dispatcher (plan 15, design 7) --------------------------------------
@@ -713,7 +886,8 @@ def _dispatch(root: Path, monkeypatch, *, archive, data, rights, stream: bool, p
     output = root / "dispatch"
 
     def allocator(argv):
-        lane_result = lane.run_session(lane.adapter(archive), stream=stream,
+        # The world configures the B2 store, so downloading is asked for explicitly (unset would stream).
+        lane_result = lane.run_session(lane.adapter(archive), delivery="stream" if stream else "download",
                                        job_dir=Path(argv[argv.index("--adp-job-dir") + 1]))
         write_json(Path(argv[argv.index("--adapter-output") + 1]), lane_result)
         return 0
@@ -770,6 +944,9 @@ def test_streamed_and_downloaded_quick10_seal_identical_evidence(tmp_path, monke
     assert download["receipt"]["status"] == stream["receipt"]["status"] == "completed_unqualified", (
         download["receipt"], stream["receipt"])
     assert stream["lane"]["provider_output_delivery"] == "stream" and "provider_output_delivery" not in download["lane"]
+    # Each run's allocator result, as the dispatcher kept it, says which mode ran and why.
+    assert {mode: value["lane"][RESOLUTION] for mode, value in sealed.items()} == {
+        "download": {"mode": "download", "reason": "explicit"}, "stream": {"mode": "stream", "reason": "explicit"}}
     # The native result and its digest.
     assert download["lane"]["native_control_result_digest"] == stream["lane"]["native_control_result_digest"]
     assert Path(download["lane"]["native_control_result_path"]).read_bytes() == (

@@ -2089,13 +2089,17 @@ def test_canary_reservation_measures_its_own_dispatch_directory(
     assert sample["observed_bytes"] >= 50_000
 
 
-@pytest.mark.parametrize(("delivery", "workload"), [
-    (None, "policy_canary"), ("download", "policy_canary"), ("stream", "policy_canary_streamed"),
+@pytest.mark.parametrize(("delivery", "b2_configured", "workload"), [
+    # Unset is auto: the label follows the B2 store exactly as the session's mode does.
+    (None, False, "policy_canary"), (None, True, "policy_canary_streamed"),
+    ("download", True, "policy_canary"), ("stream", True, "policy_canary_streamed"),
+    # Explicit values mean what they say (the session then refuses a stream without the store).
+    ("stream", False, "policy_canary_streamed"),
     # An invalid mode is refused by the session before any spend; the run is labelled as download.
-    ("Stream", "policy_canary"),
+    ("Stream", True, "policy_canary"),
 ])
 def test_streamed_canary_reservation_uses_its_own_workload_label(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delivery: str | None, workload: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delivery: str | None, b2_configured: bool, workload: str
 ) -> None:
     """A streamed run directory is about 1.1 GB against download mode's 7.75 GB: its samples
     form their own measured group instead of hiding under download mode's."""
@@ -2104,11 +2108,18 @@ def test_streamed_canary_reservation_uses_its_own_workload_label(
     from blueprint_pipeline import task_evaluation_policy_canary_disk as canary_disk
     from blueprint_pipeline import task_evaluation_policy_canary_dispatcher as dispatcher
     from blueprint_pipeline.policy_canary_output_members import DELIVERY_ENV
+    from blueprint_pipeline.task_evaluation_configured_scene_object_store import _ARTIFACT_STORE_FILE_ENV
 
     if delivery is None:
         monkeypatch.delenv(DELIVERY_ENV, raising=False)
     else:
         monkeypatch.setenv(DELIVERY_ENV, delivery)
+    for key, name in _ARTIFACT_STORE_FILE_ENV.items():
+        monkeypatch.delenv(name, raising=False)
+        if b2_configured:
+            (tmp_path / "b2").mkdir(exist_ok=True)
+            (tmp_path / "b2" / key).write_text("configured\n", encoding="utf-8")
+            monkeypatch.setenv(name, str(tmp_path / "b2" / key))
     queue, setups = _pending_canary(tmp_path)
     calls: list[dict[str, object]] = []
     real = canary_disk.reserve_control_plane_disk

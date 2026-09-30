@@ -1,14 +1,21 @@
 """The Quick-10 provider-output delivery mode and its member contract (plan 15, PR C).
 
-Delivery mode. ``BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY`` is ``download``
-(also when unset or empty: today's path, byte for byte) or ``stream``. Only
-the Quick-10 session (``native_task_arena_vast.run_native_task_arena_policy_canary_session_vast``)
-reads it, before its session authority is consumed; any other value, however
-close (``Stream``, ``stream ``), refuses there with
-``policy_canary_output_delivery_mode_invalid`` and zero provider mutations.
-``stream`` also refuses there unless the dedicated B2 artifact store is
-configured (review I4). Every other arena caller keeps the lane's ``download``
-default. Readers never read the environment: they learn the mode from the
+Delivery mode. ``BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY`` unset or empty means
+auto (the founder's default, 2026-09-30): ``stream`` when the dedicated B2
+artifact store is configured (``artifact_store_configured``, the very check
+an explicit ``stream`` must pass), else ``download``, today's path. An
+explicit ``download`` or ``stream`` means exactly what it says, whatever the
+store. Only the Quick-10 session
+(``native_task_arena_vast.run_native_task_arena_policy_canary_session_vast``)
+resolves it, before its session authority is consumed; any other value,
+however close (``Stream``, ``stream ``, ``auto``), refuses there with
+``policy_canary_output_delivery_mode_invalid`` and zero provider mutations, and
+``stream`` refuses there without the store (review I4). The session records
+the effective mode and why (``explicit``, ``auto_artifact_store_configured``
+or ``auto_artifact_store_not_configured``) in every result it returns once
+resolved, the lane result included, as ``provider_output_delivery_resolution``.
+Every other arena caller keeps the lane's ``download`` default and records
+nothing. Readers never read the environment: they learn the mode from the
 records on disk (the lane result, a member view descriptor).
 
 Contract ``policy_canary_output_member_contract.v1``. A streamed attempt
@@ -35,8 +42,9 @@ aggregate, needs 436,485,098 bytes (416 MiB); the children would add
 191,208,330. 640 MiB is 1.5 times that measurement, and with the ingestion
 metadata still fits the ``policy_canary_output`` role's 1 GiB declared
 footprint. A run whose needed set exceeds it seals blocked with its archive
-durable. The measurement is an estimate: before flipping the flag the owner
-measures one retained Quick-10 with
+durable. The measurement is an estimate: before a host streams its first
+run (with the default, its first Quick-10 once the B2 store is configured)
+the owner measures one retained Quick-10 with
 ``python -m blueprint_pipeline.provider_output_member_view plan --archive <zip>
 --contract policy_canary_output_member_contract.v1`` (docs/CONTROL_PLANE_STORAGE.md).
 """
@@ -55,6 +63,14 @@ STREAM = "stream"
 DELIVERY_MODES = (DOWNLOAD, STREAM)
 MODE_INVALID = "policy_canary_output_delivery_mode_invalid"
 ARTIFACT_STORE_NOT_CONFIGURED = "policy_canary_output_stream_artifact_store_not_configured"
+# Why the mode was chosen: the setting named it, or it was unset or empty (auto)
+# and the dedicated B2 store was, or was not, configured.
+EXPLICIT = "explicit"
+AUTO_ARTIFACT_STORE_CONFIGURED = "auto_artifact_store_configured"
+AUTO_ARTIFACT_STORE_NOT_CONFIGURED = "auto_artifact_store_not_configured"
+DELIVERY_REASONS = (EXPLICIT, AUTO_ARTIFACT_STORE_CONFIGURED, AUTO_ARTIFACT_STORE_NOT_CONFIGURED)
+# The result field holding ``OutputDelivery.record()``.
+RESOLUTION_FIELD = "provider_output_delivery_resolution"
 CONTRACT_VERSION = "policy_canary_output_member_contract.v1"
 # The worker's per-cell child result name (native_task_arena_policy_canary_session.
 # PROVIDER_RESULT_FILENAME, kept equal by a test so this module imports nothing heavy).
@@ -79,13 +95,33 @@ class PolicyCanaryOutputDeliveryError(ValueError):
     """A typed refusal; the message is the stable code."""
 
 
-def resolve_output_delivery(environ: Mapping[str, str] | None = None) -> str:
-    """``download`` when unset or empty, the value when it is a mode, else a typed refusal."""
-    raw = (os.environ if environ is None else environ).get(DELIVERY_ENV)
+@dataclass(frozen=True)
+class OutputDelivery:
+    """The effective delivery mode (one of ``DELIVERY_MODES``) and why (one of ``DELIVERY_REASONS``)."""
+
+    mode: str
+    reason: str
+
+    def record(self) -> dict[str, str]:
+        """What the session's results record as ``RESOLUTION_FIELD``."""
+        return {"mode": self.mode, "reason": self.reason}
+
+
+def resolve_output_delivery(environ: Mapping[str, str] | None = None) -> OutputDelivery:
+    """The mode the setting names; unset or empty is auto; any other value is a typed refusal.
+
+    Auto streams exactly when ``artifact_store_configured`` holds for the same
+    environment. An explicit ``stream`` resolves without that check: the
+    session, not the resolution, refuses it when the store is missing.
+    """
+    values = os.environ if environ is None else environ
+    raw = values.get(DELIVERY_ENV)
     if raw is None or raw == "":
-        return DOWNLOAD
+        if artifact_store_configured(values):
+            return OutputDelivery(STREAM, AUTO_ARTIFACT_STORE_CONFIGURED)
+        return OutputDelivery(DOWNLOAD, AUTO_ARTIFACT_STORE_NOT_CONFIGURED)
     if raw in DELIVERY_MODES:
-        return raw
+        return OutputDelivery(raw, EXPLICIT)
     raise PolicyCanaryOutputDeliveryError(MODE_INVALID)
 
 
@@ -157,19 +193,25 @@ POLICY_CANARY_OUTPUT_CONTRACT = PolicyCanaryOutputContract()
 
 __all__ = [
     "ARTIFACT_STORE_NOT_CONFIGURED",
+    "AUTO_ARTIFACT_STORE_CONFIGURED",
+    "AUTO_ARTIFACT_STORE_NOT_CONFIGURED",
     "CHILD_RESULT_NAME",
     "CONTRACT_VERSION",
     "DELIVERY_ENV",
     "DELIVERY_MODES",
+    "DELIVERY_REASONS",
     "DOWNLOAD",
+    "EXPLICIT",
     "FORECAST_INDEX_ROW_BYTES",
     "FORECAST_MEMBER_COUNT",
     "MODE_INVALID",
     "NOT_INGESTED_GAP",
     "NEEDED_SET_BUDGET_BYTES",
+    "OutputDelivery",
     "POLICY_CANARY_OUTPUT_CONTRACT",
     "PolicyCanaryOutputContract",
     "PolicyCanaryOutputDeliveryError",
+    "RESOLUTION_FIELD",
     "STREAM",
     "artifact_store_configured",
     "resolve_output_delivery",

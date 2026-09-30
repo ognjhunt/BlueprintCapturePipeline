@@ -49,7 +49,7 @@ and never a host path.
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
 | `scene_configuration_output` | 2 GiB | only with `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`, for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix leaves archives in the job directory, estimated at one unpacked bundle (an estimate, not a proven bound). When it shares the volume, admission checks the larger of its own need and the hold plus those archives up front, and the hold is taken after the prefix releases; otherwise one reservation holds both. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
-| `policy_canary_output` | 1 GiB | only with `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`: a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
+| `policy_canary_output` | 1 GiB | only when the Quick-10 streams (`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`, or unset with the B2 store configured): a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
 
 A measured output hold refused after the CPU prefix is sealed like one refused
 before staging: exactly `scene_configuration_provider_output_disk_budget_exceeded`,
@@ -1237,7 +1237,8 @@ path it reads; without one (download mode) it runs exactly its old code.
   `python -m blueprint_pipeline.provider_output_member_view materialize --evidence-root <attempt>/immutable_execution --prefix cell_runs/NN/ --output-root <scratch>`.
 
 **Rollback rule.** Once any streamed run exists, roll back only by setting
-`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` back to `download`. Never revert these
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download` (unset is auto, which streams
+wherever the B2 store is configured). Never revert these
 readers: a streamed run's registry, downloads, interpretation, rescoring,
 adoption, closeout and billing all depend on them for as long as the run is
 retained, and without them its members that stay in the archive read as
@@ -1261,17 +1262,48 @@ Two stream-mode records look alarming and are not:
 ## Streamed provider output: the Quick-10 lane (2026-09-29)
 
 `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` selects how a Quick-10's provider
-archive reaches the host. Unset, empty or `download` is today's path, byte for
-byte (a test pins the lane result and artifact manifest to digests taken before
-the stream path existed). `stream` is read only by the Quick-10 session, before
-its authority is consumed; any other value, or `stream` unless all five
-dedicated B2 settings name readable regular files, refuses there with zero
-provider mutations
-(`policy_canary_output_delivery_mode_invalid`,
+archive reaches the host. **The default is auto** (2026-09-30): unset or empty
+streams when the dedicated B2 artifact store is configured, meaning all five
+`BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings name readable
+regular files (the same check an explicit `stream` must pass), and downloads
+otherwise. The canary dispatcher and the existing-run continuation units bind
+the B2 store explicitly, as the intake unit does, so a production host whose
+B2 files are in place streams by default. An explicit value overrides auto: `download` always downloads, and
+`stream` streams or, without the store, refuses. Only the Quick-10 session
+resolves the setting, before its authority is consumed; any other value
+(`auto` included), or `stream` without the store, refuses there with zero
+provider mutations (`policy_canary_output_delivery_mode_invalid`,
 `policy_canary_output_stream_artifact_store_not_configured`). Every other arena
-caller keeps the lane's `download` default. The canary dispatcher and the
-existing-run continuation units bind the B2 store explicitly, as the intake
-unit does.
+caller keeps the lane's `download` default.
+
+| Setting | B2 store | Effective mode | Recorded `reason` |
+|---|---|---|---|
+| unset or empty | configured | `stream` | `auto_artifact_store_configured` |
+| unset or empty | not configured | `download` | `auto_artifact_store_not_configured` |
+| `download` | either | `download` | `explicit` |
+| `stream` | configured | `stream` | `explicit` |
+| `stream` | not configured | refused, zero mutations | `explicit` |
+| anything else | either | refused, zero mutations | none (nothing resolved) |
+
+**Why a run streamed or downloaded** is on its records. Every result the
+session returns once the mode is resolved records
+`provider_output_delivery_resolution`, `{"mode": …, "reason": …}`: the lane
+result (`<attempt>/adp_arena_vast_result.json`, the job root's copy, and the
+dispatcher's `allocator_result.json`), whether it ran, was blocked before the
+provider or is a dry run, and the session's own refusals (store missing, disk
+admission, consumption). The ingestion receipt does not carry it: the generic
+ingester writes that receipt, the door's resume writes it later without a
+session, and a downloaded run has none. Download mode is otherwise today's
+path, byte for byte: a test pins the lane result and artifact manifest to
+digests taken before the stream path existed, and another pins the session's
+download result, with the setting unset and no store, to one taken before auto
+(that lane result gains only this record; its artifact manifest is unchanged).
+
+**Before the host streams its first run, measure one retained Quick-10** (see
+*Budget and measurement* below). With the default, the first streamed run is
+the host's first Quick-10 once its units bind the B2 store; to keep a host
+downloading until the measurement is done, set
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`.
 
 **What a streamed run does.**
 
@@ -1307,11 +1339,12 @@ unit does.
 a Quick-10-shaped fixture: the lifecycle rehearsal's real worker output, whose
 needed set is 2.29 times its aggregate, scaled to production's measured
 190,573,875-byte aggregate. The children would have added 191,208,330 bytes.
-**Before flipping the flag, measure one retained Quick-10**:
-`python -m blueprint_pipeline.provider_output_member_view plan --archive <retained vast_provider_runtime_output.zip> --contract policy_canary_output_member_contract.v1`
-prints `dispositions.materialized.bytes`. If it is over the budget, streamed
-runs would block after the run with their archive durable; raise the budget
-or move to a selection v2 before flipping.
+**Before the host streams its first run, measure one retained Quick-10**:
+`python -m blueprint_pipeline.provider_output_member_view plan --archive <zip> --contract policy_canary_output_member_contract.v1`,
+where `<zip>` is a retained `vast_provider_runtime_output.zip`, prints
+`dispositions.materialized.bytes`. If it is over the budget, streamed runs
+would block after the run with their archive durable; keep the host on
+`download` and raise the budget or move to a selection v2 first.
 
 **After-run outcomes.** Each seals `blocked` like a failed download, with
 `archive_durable` saying whether B2 holds the output:
@@ -1364,8 +1397,8 @@ re-binds the durable receipt for the same output key and observed (size, ETag)
 (`rebound_from_staging_manifest_sha256`), and a durable receipt it cannot
 re-bind is renamed aside, never overwritten.
 
-**Owner rehearsal (no provider, no spend).** Before flipping the flag, promote
-and ingest one retained Quick-10 into the dev bucket on the host:
+**Owner rehearsal (no provider, no spend).** Before the host streams its first
+run, promote and ingest one retained Quick-10 into the dev bucket on the host:
 
 1. As `blueprint` with umask 0077, lay out a scratch attempt:
    `<scratch>/attempt_001/vast_provider_run/vast_provider_runtime_output.zip`, a
@@ -1389,17 +1422,20 @@ and ingest one retained Quick-10 into the dev bucket on the host:
 rows and the streamed roles), and with it the records billing's terminal
 evidence binds for the manifest and the lane result;
 `provider_runtime_output_zip_inspection` (`zip_path`, no ffprobe rows); the
-stream-only lane-result fields (`provider_output_*`, `archive_durable`,
-`provider_output_host_bytes` = M1); `provider_runtime_output_zip_path` naming no
-file; and host bytes. The native result and its digest, the joined terminal
-result, the registry rows, the public delivery and projection, the strict
+stream-only lane-result fields (`provider_output_*` but the resolution,
+`archive_durable`, `provider_output_host_bytes` = M1) and the resolution's
+`mode`; `provider_runtime_output_zip_path` naming no file; and host bytes. The
+native result and its digest, the joined terminal result, the registry rows,
+the public delivery and projection, the strict
 controls' cell archives (`result_delivery/controls/cell-NN.zip`, whose frames
 and videos a streamed run reads through the member view), the interpretation
 receipts, the billing verdict, teardown, provider-zero and the cleanup rows are
 the same (`tests/test_policy_canary_output_streaming.py`).
 
-**Rollback.** Unset the flag or set `download`. Never revert the readers of
-the section above while a streamed run is retained.
+**Rollback.** Set `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`. Unsetting
+it is not a rollback: auto streams again wherever the B2 store is configured.
+Never revert the readers of the section above while a streamed run is
+retained.
 
 ## Remote episode compilation (plan 14, 2026-09-29)
 
