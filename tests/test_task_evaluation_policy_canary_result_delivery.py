@@ -24,6 +24,10 @@ from blueprint_pipeline.task_evaluation_result_delivery import (
 from blueprint_pipeline.task_evaluation_policy_canary_result_projection import (
     build_policy_canary_result_projection,
 )
+from blueprint_pipeline.task_evaluation_policy_canary_result import (
+    TaskEvaluationPolicyCanaryResultError,
+    validate_policy_canary_result,
+)
 from blueprint_pipeline.task_evaluation_result_archive_members import (
     REFERENCES_RELATIVE_PATH as REFERENCES,
 )
@@ -875,3 +879,42 @@ def test_not_ingested_episode_delivers_unknown_execution_claims_as_null(
     assert after["delivery_digest"] == cross_runtime_canonical_digest(
         after, digest_field="delivery_digest"
     )
+
+
+def test_terminal_projection_preserves_only_typed_not_ingested_unknowns(tmp_path: Path) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _mixed_result(evidence)
+    result["episodes"][0]["evidence_artifacts"]["review_video"] = next(
+        artifact for artifact in result["artifact_inventory"] if artifact["role"] == "review_video"
+    )
+    result["episodes"].extend([
+        _gap_row("pi05_droid", "quick-cell-3", 3103, gap=NOT_INGESTED_GAP, claims=True),
+        _gap_row("groot_n17_droid", "quick-cell-3", 3103, gap=NOT_INGESTED_GAP, claims=_ABSENT),
+    ])
+    result["configuration_digest"] = "sha256:" + "a" * 64
+    result = _reseal(result)
+    delivery = _deliver_blocked(tmp_path / "delivery", evidence, result)
+    projection = build_policy_canary_result_projection(
+        setup={
+            "scene_id": "839873",
+            "request_digest": "sha256:" + "b" * 64,
+            "scene_revision_digest": result["scene_revision_digest"],
+            "task_success_contract": result["task_success_contract"],
+            "task_success_contract_digest": result["task_success_contract_digest"],
+        },
+        result=result,
+        delivery=delivery,
+    )
+    assert {
+        (row["cell_id"], row["candidate_id"]): tuple(row[claim] for claim in _EXECUTION_CLAIMS)
+        for row in projection["episodes"]
+    } == _delivered_claims(delivery)
+    assert [row["actions_delivered_episode_count"] for row in projection["candidate_results"]] == [2, 0]
+    unknown = next(row for row in projection["episodes"] if row["candidate_policy_queried"] is None)
+    unknown["failure_taxonomy"] = "before_first_observation"
+    projection["projection_digest"] = cross_runtime_canonical_digest(
+        projection, digest_field="projection_digest"
+    )
+    with pytest.raises(TaskEvaluationPolicyCanaryResultError, match="policy_canary_result_invalid:episodes"):
+        validate_policy_canary_result(projection)

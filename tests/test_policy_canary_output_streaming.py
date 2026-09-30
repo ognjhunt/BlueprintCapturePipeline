@@ -914,6 +914,11 @@ def test_a_streamed_run_blocked_after_its_paid_run_is_not_sealed_as_before_first
                  episode["action_delivery"]["arm_moved"]) for episode in episodes} == {(None, None, None)}, name
     projection = json.loads((root / "artifacts/result_delivery/policy_canary_result_projection.json").read_text())
     assert {row["failure_taxonomy"] for row in projection["episodes"]} == {"provider_output_not_ingested"}
+    assert {
+        tuple(row[claim] for claim in ("candidate_policy_queried", "actions_reached_robot", "arm_moved"))
+        for row in projection["episodes"]
+    } == {(None, None, None)}
+    assert {row["actions_delivered_episode_count"] for row in projection["candidate_results"]} == {0}
     for name in ("delivery.json", "policy_canary_result_projection.json", "policy_canary_webapp_sync.json"):
         assert "before_first_observation" not in (root / "artifacts/result_delivery" / name).read_text(), name
 
