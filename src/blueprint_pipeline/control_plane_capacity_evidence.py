@@ -263,4 +263,3 @@ def whole_chain_admission(
         'provider_mutation_performed': False,
         'reservation_granted': False,
     }
-

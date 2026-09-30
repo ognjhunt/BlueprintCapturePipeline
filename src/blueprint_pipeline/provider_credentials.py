@@ -55,4 +55,3 @@ def _read_secret(name: str) -> str | None:
         except OSError:
             continue
     return None
-

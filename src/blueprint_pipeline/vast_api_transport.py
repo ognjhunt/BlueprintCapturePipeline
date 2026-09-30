@@ -35,4 +35,3 @@ def _api_json(
         timeout_seconds=timeout_seconds,
         **read_options,
     )
-

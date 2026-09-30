@@ -655,4 +655,3 @@ def bundle_requires_artifixer(receipt: Mapping[str, Any]) -> bool:
     envelope = portable_construction_envelope(receipt)
     return any(stage["adapter"]["id"] == "artifixer3d_observed_object_removal"
                for stage in envelope["recipe"]["stage_sequence"])
-

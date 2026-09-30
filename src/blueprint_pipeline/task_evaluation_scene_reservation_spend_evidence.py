@@ -34,4 +34,3 @@ def scene_reservation_spend_record(path: Path) -> tuple[dict[str, Any], dict[str
         **record, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap,
         "accounting_kind": "persistent_scene_reservation", "owner_intent": intent_record,
     }
-

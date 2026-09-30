@@ -23,4 +23,3 @@ def write_exclusive(path, value):
         return _write_exclusive_native(path, value)
     except OwnerTargetVersionError as exc:
         raise SceneIntakeError(exc.code) from None
-
