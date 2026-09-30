@@ -852,7 +852,7 @@ def main(argv=None):
                 result = runner.start_or_resume(allow_create=False)
             if result["state"] in {"running", "collecting"}:
                 result = runner.cancel_current(result["date"], "observation_deadline")
-        # Report only status and artifact paths; dot reads/reviews the packet.
+        # Report status and artifact paths for the owner's independent reviewer.
         print(canonical(status_summary(result)))
         return 1 if result.get("state") in {"failed", "cancelled", "creation_unresolved", "cancel_pending"} else 0
     except Exception as exc:  # noqa: BLE001 - CLI returns stable errors and never prints provider/key values
