@@ -322,7 +322,10 @@ def _installed_entry(root, entry):
         # installation. The production source loader still verifies every
         # actual import's ancestry/owner/mode/single-link identity. This is
         # not a service venv fallback or proof of a live host SDK installation.
-        distribution = Path(boto3.__file__).parent.parent
+        # uv may spell its sealed SDK through a lib/lib64 alias. Compile the
+        # physical installation directory; the isolated loader then opens only
+        # that canonical namespace with its original no-follow protections.
+        distribution = Path(boto3.__file__).parent.parent.resolve(strict=True)
         boot = boot.replace("_SYSTEM_PACKAGES = Path('/usr/lib/python3/dist-packages')",
                             '_SYSTEM_PACKAGES = Path(' + repr(str(distribution)) + ')')
     adjacent = root / 'work/adjacent-unselected.log'
@@ -385,6 +388,10 @@ def _require(value):
                 location = dict(function=frame.f_code.co_name, line=frame.f_lineno)
                 if frame.f_code.co_name == 'find_spec':
                     location['module'] = frame.f_locals['fullname']
+                if frame.f_code.co_name == '_open' and 'before' in frame.f_locals:
+                    observed = frame.f_locals['before']
+                    location['entry_metadata'] = dict(mode=observed.st_mode,
+                        uid=observed.st_uid, gid=observed.st_gid, links=observed.st_nlink)
                 locations.append(location)
             frame = frame.f_back
         _fixture_entry_failure[:] = locations
