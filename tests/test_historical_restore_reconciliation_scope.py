@@ -53,7 +53,7 @@ def test_only_exact_unlogged_pending_member_is_reviewable_not_authorized(histori
 
 @pytest.mark.parametrize('change', ['missing_intent', 'born_member', 'extra_row', 'wrong_path', 'wrong_kind',
     'owner', 'mode', 'inode_parent', 'parent_links', 'parent_owner', 'root_inode', 'parent_identity',
-    'size', 'wrong_total', 'wrong_count', 'complete', 'publication', 'wrong_digest'])
+    'size', 'wrong_total', 'wrong_count', 'complete', 'publication', 'wrong_digest', 'known_alias'])
 def test_unknown_scope_cannot_include_known_birth_or_unselected_namespace(historical_installation, change):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     values = uncertain_member(historical_installation)
@@ -70,6 +70,8 @@ def test_unknown_scope_cannot_include_known_birth_or_unselected_namespace(histor
         events[-1]['body']['path'] = 'not-selected'
     elif change == 'wrong_kind':
         events[-1]['body']['phase'] = 'directory'
+    elif change == 'known_alias':
+        member['version'][:2] = parent['version'][:2]
     elif change in ('owner', 'mode'):
         member['version'][3 if change == 'owner' else 2] += 1
     elif change.startswith('parent_') and change != 'parent_identity':
@@ -95,5 +97,39 @@ def test_unknown_scope_cannot_include_known_birth_or_unselected_namespace(histor
         observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
     if change == 'wrong_digest':
         observed['generation_digest'] = 'sha256:' + 'a' * 64
+    with pytest.raises(ValueError):
+        scope(values)
+
+
+def uncertain_root(installed):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    values = prefix(installed)
+    _, observed, _, events, action_id = values
+    root_birth = events.pop()['body']
+    events.append(dict(kind='restore_intent', body=dict(phase='directory', path='',
+        stage_path='.historical-restore-' + action_id)))
+    observed['members'][1]['version'] = root_birth['version'].copy()
+    # Explicit parser-only Linux empty-directory projection. This is neither
+    # an observed inode nor a birth receipt; real native proof remains separate.
+    observed['members'][1]['version'][5] = 2
+    observed['generation_digest'] = canonical_digest(observed, digest_field='generation_digest')
+    return values
+
+
+def test_only_empty_unlogged_root_can_be_proposed_for_distinct_owner_discard(historical_installation):
+    values = uncertain_root(historical_installation)
+    result = scope(values)
+    assert result['remove_member']['kind'] == 'directory'
+    assert result['execution_authorized'] is False
+    assert result['parent_path'] == '' and result['parent_before'] == values[2]['tombstone_version']
+
+
+def test_unlogged_root_with_extra_descendant_is_not_remove_only_scope(historical_installation):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    values = uncertain_root(historical_installation)
+    values[1]['members'].append(copy.deepcopy(values[1]['members'][1]))
+    values[1]['members'][-1]['path'] += '/unknown-child'
+    values[1]['member_count'] += 1
+    values[1]['generation_digest'] = canonical_digest(values[1], digest_field='generation_digest')
     with pytest.raises(ValueError):
         scope(values)
