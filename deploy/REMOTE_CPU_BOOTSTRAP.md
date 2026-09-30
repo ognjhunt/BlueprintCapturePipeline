@@ -13,7 +13,10 @@ on the verified `us/gcr.io` Artifact Registry repository.
 
 Use `deploy/scripts/deploy.sh --remote-cpu-only` from clean, promoted main.
 The normal exact-commit Full Test Lane gate remains mandatory. Build and push
-the pipeline image for that exact commit first. Supply the approved GCS state
+the pipeline image for that exact commit first. Install `crane` and configure
+its registry authentication through the existing gcloud Docker credential helper.
+The immutable image's OCI revision must equal the promoted full source SHA;
+missing labels and older source revisions fail before Terraform. Supply the approved GCS state
 bucket, canonical `capture-pipeline` prefix, CMEK key, and billing account through
 the existing deployment settings. Authenticate as `ohstnhunt@gmail.com`;
 project creation and billing-link permissions and quota are required.

@@ -2,6 +2,21 @@
 # Sourced by deploy.sh after the unchanged clean-main/full-lane release gates.
 # ADP-009D/day 28: Terraform owns a new isolated project in the canonical state.
 
+verify_remote_cpu_image_revision() {
+    local image="$1" source_commit="$2"
+    [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || return 2
+    command -v crane >/dev/null || {
+        printf '%s\n' 'crane is required to verify the immutable worker image revision.' >&2
+        return 2
+    }
+    if ! (set -o pipefail; crane config --platform linux/amd64 "$image" |
+        jq -e --arg source "$source_commit" \
+            '.config.Labels["org.opencontainers.image.revision"] == $source' >/dev/null); then
+        printf '%s\n' 'Worker image revision is missing or differs from promoted source.' >&2
+        return 2
+    fi
+}
+
 apply_remote_cpu_bootstrap() {
     [[ "${REMOTE_CPU_WORKERS_ENABLED}" == "true" ]] || {
         log_error "The reviewed worker bootstrap requires remote CPU workers enabled."
@@ -17,6 +32,7 @@ apply_remote_cpu_bootstrap() {
     local resolved_image
     resolved_image="$(resolve_image_digest_uri "$tagged_image")"
     require_resolved_image_matches "exact-release pipeline image" "$IMAGE_DIGEST_URI" "$resolved_image"
+    verify_remote_cpu_image_revision "$resolved_image" "$GIT_SHA" || return 2
     export TF_VAR_project_id="$PROJECT_ID"
     export TF_VAR_primary_region="$PRIMARY_REGION"
     export TF_VAR_deployment_scope=remote_cpu

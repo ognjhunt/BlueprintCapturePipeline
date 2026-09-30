@@ -96,6 +96,23 @@ def test_conflicting_scope_flags_fail_before_provider_commands(tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("revision,accepted", [("a" * 40, True), ("b" * 40, False), (None, False)])
+def test_worker_image_revision_must_match_promoted_source(tmp_path, revision, accepted):
+    config = {"config": {"Labels": {}}}
+    if revision is not None:
+        config["config"]["Labels"]["org.opencontainers.image.revision"] = revision
+    crane = tmp_path / "crane"
+    crane.write_text("#!/bin/sh\ncat <<'IMAGE_CONFIG'\n" + json.dumps(config) + "\nIMAGE_CONFIG\n")
+    crane.chmod(0o755)
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(["bash", "-c", 'source "$1"; verify_remote_cpu_image_revision "$2" "$3"',
+                             "guard-test", str(root / "deploy/scripts/remote-cpu-bootstrap.sh"),
+                             "gcr.io/blueprint-8c1ca/pipeline@sha256:" + "c" * 64, "a" * 40],
+                            env=dict(os.environ, PATH=str(tmp_path)+os.pathsep+os.environ["PATH"]),
+                            capture_output=True, text=True)
+    assert result.returncode == (0 if accepted else 2)
+
+
 @pytest.mark.parametrize("address", ["google_service_account.pipeline_runner",
                                     "google_project_iam_member.trigger_storage_admin",
                                     'google_cloud_run_v2_job.remote_cpu_worker["unreviewed-stage"]'])
