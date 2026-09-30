@@ -118,7 +118,7 @@ def publish_current_scene_project_spend(**kwargs: Any) -> dict[str, Any]:
         return _publish_current_scene_project_spend_locked(**kwargs)
 
 
-def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[str, Any] | None:
+def _configured_monitor() -> dict[str, Any] | None:
     configured = os.getenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", "")
     if not configured:
         return None
@@ -147,6 +147,49 @@ def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[
                 raise ValueError("scene_spend_monitor_seed_reference_invalid")
         except (OSError, TypeError, ValueError):
             raise ValueError("scene_spend_monitor_seed_reference_invalid") from None
+    return value
+
+
+def observe_configured_scene_project_spend(*, now: float | None = None) -> dict[str, Any] | None:
+    """Observe the publisher's fresh checked exposure without taking its write lock.
+
+    Capacity's sandbox permits writing only capacity reports. The dedicated
+    refresh service and activation remain the publication owners; observation
+    never restamps freshness, enumerates new reservations or grants execution.
+    """
+    from .project_spend_reconciliation import validate_project_spend_reconciliation
+
+    value = _configured_monitor()
+    if value is None:
+        return None
+    _record(Path(value["current_path"]))
+    pointer = read_scene(Path(value["current_path"]), "receipt_digest")
+    observed = pointer.get("observed_at_epoch")
+    clock = time.time() if now is None else now
+    source = Path(str(pointer.get("path") or ""))
+    output = Path(value["output_root"])
+    if (set(pointer) != {"schema_version", "path", "digest", "observed_at_epoch", "receipt_digest"}
+            or pointer.get("schema_version") != "task_evaluation_project_spend_current.v1"
+            or isinstance(observed, bool) or not isinstance(observed, (int, float))
+            or not 0 <= clock - observed <= 900
+            or not source.is_absolute() or source.parent.parent != output
+            or source.name != "project_spend_reconciliation.json"):
+        raise ValueError("scene_spend_pointer_invalid_or_stale")
+    if _record(source)["sha256"] != pointer["digest"]:
+        raise ValueError("scene_spend_pointer_source_changed")
+    receipt, record = validate_project_spend_reconciliation(source)
+    if record["sha256"] != pointer["digest"]:
+        raise ValueError("scene_spend_pointer_source_changed")
+    return {"status": "published_project_exposure_observed", "pointer": pointer,
+            "total_cost_usd": receipt["total_cost_usd"],
+            "accounting_scope": "last_checked_publication_not_new_reservation_admission",
+            "provider_mutation_performed": False, "reserved_caps_are_not_actual_billing": True}
+
+
+def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[str, Any] | None:
+    value = _configured_monitor()
+    if value is None:
+        return None
     # Stamp the pointer with the caller's ``now`` (the activation tick captures one
     # ``now`` for the whole pass, then gates on ``0 <= now - observed_at_epoch <= 900``;
     # defaulting to ``time.time()`` here stamps a moment LATER than that ``now`` and the

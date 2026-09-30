@@ -907,9 +907,9 @@ def run_controller(
         disk_usage=disk_usage,
         now=observed,
     )
-    from .task_evaluation_scene_spend import refresh_configured_scene_project_spend
+    from .task_evaluation_scene_spend import observe_configured_scene_project_spend
     try:
-        if project_spend := refresh_configured_scene_project_spend():
+        if project_spend := observe_configured_scene_project_spend():
             report["project_spend"] = project_spend
     except (OSError, ValueError, TypeError):
         report["level"] = "critical"
