@@ -98,3 +98,44 @@ def test_native_reference_refusal_keeps_its_type_and_closes_archive(source, tmp_
     assert caught.value is refusal
     assert list(stage.root.iterdir()) == []
     assert cloud.calls[-1] == 'client_closed' and all(body.closed for body in cloud.bodies)
+
+
+@pytest.mark.parametrize('change', [None, 'bytes', 'tail'])
+def test_archive_reuses_exact_private_file_through_read_only_descriptor(source, tmp_path, change):  # noqa: F811
+    from types import SimpleNamespace
+    from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
+    from blueprint_pipeline.control_plane_lane_historical_restore_prefix import _PrefixTree
+    manifest, raw, original, pointer, cloud = prepared(source)
+    stage = PrivateStage(tmp_path / 'stage')
+    stage.directory(dict(path='nested'))
+    selected = stage.root / 'nested/two'
+    selected.write_bytes(original['nested/two'])
+    if change:
+        selected.write_bytes(b'wrong' if change == 'bytes' else original['nested/two'] + b'extra')
+    before = selected.stat(), selected.read_bytes()
+    @contextmanager
+    def opened(relative):
+        fd = os.open(stage.root.parent / relative, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            yield fd, lambda: None
+        finally:
+            os.close(fd)
+    @contextmanager
+    def authority(**options):
+        # Parser transport only; this context grants no native authority.
+        yield
+    stage.name = stage.root.name
+    stage.held = SimpleNamespace(_opened=opened)
+    stage.worker = SimpleNamespace(mutation_authority=authority)
+    wrapped = _PrefixTree(stage, {'', 'nested', 'nested/two'})
+    if change:
+        with pytest.raises(ValueError, match='restore_payload_changed'):
+            extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', wrapped, lambda: None)
+    else:
+        result = extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', wrapped, lambda: None)
+        assert result['restored_files'] == 2
+        assert all((stage.root / name).read_bytes() == value for name, value in original.items())
+    after = selected.stat()
+    assert (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns, selected.read_bytes()) == (
+        before[0].st_dev, before[0].st_ino, before[0].st_mtime_ns, before[0].st_ctime_ns, before[1])
+    assert cloud.calls[-1] == 'client_closed' and all(body.closed for body in cloud.bodies)

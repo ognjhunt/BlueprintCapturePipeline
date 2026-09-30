@@ -249,7 +249,7 @@ def worker_main(root, action_id):
                     os.link, os.fsync = original_link, original_sync
             journal_code._publish = publish
         elif phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed',
-                     'unwritten_stage', 'access_intent', 'stage_complete'):
+                     'unwritten_stage', 'access_intent', 'stage_complete', 'restore_directory', 'restore_member'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
@@ -354,12 +354,21 @@ def _assert_restore_increment(receipt, original):
     # Its later recovered receipt credits zero, while the original durable
     # final below still has to account for the full manifest exactly once.
     fields = ('recovered_publication', 'recovered_before_final', 'recovered_access',
-              'restarted_unwritten', 'recovered_stage')
+              'restarted_unwritten', 'recovered_stage', 'recovered_prefix')
     assert all(field not in receipt or type(receipt[field]) is bool for field in fields), receipt
     phases = [field for field in fields if receipt.get(field) is True]
     assert len(phases) <= 1, receipt
     recovered = bool(phases and phases != ['restarted_unwritten'])
     expected = (0, 0) if recovered else (len(original), sum(map(len, original.values())))
+    if phases == ['recovered_prefix']:
+        from itertools import combinations
+        reuse = (receipt.get('reused_files'), receipt.get('reused_logical_bytes'))
+        assert all(type(value) is int and value >= 0 for value in reuse), receipt
+        assert len(original) <= 8  # finite tiny fixture, not production accounting
+        allowed = {(len(rows), sum(map(len, rows))) for count in range(len(original) + 1)
+                   for rows in combinations(original.values(), count)}
+        assert reuse in allowed, receipt
+        expected = (len(original)-reuse[0], sum(map(len, original.values()))-reuse[1])
     assert (receipt['restored_files'], receipt['restored_logical_bytes']) == expected, receipt
 
 
@@ -840,11 +849,19 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
                 if restore_interruption == 'unwritten_stage':
                     assert not list(target.iterdir())
-                elif restore_interruption == 'stage_complete':
+                elif restore_interruption in ('stage_complete', 'restore_directory', 'restore_member'):
                     stage = target / ('.historical-restore-' + restore['action_id'])
                     assert set(path.name for path in target.iterdir()) == {stage.name}
                     assert stage.stat().st_uid == 0 and stat.S_IMODE(stage.stat().st_mode) == 0o700
-                    assert all((stage / name).read_bytes() == value for name, value in original.items())
+                    if restore_interruption == 'stage_complete':
+                        assert all((stage / name).read_bytes() == value for name, value in original.items())
+                    elif restore_interruption == 'restore_directory':
+                        assert not list(stage.iterdir())
+                    else:
+                        assert (stage / 'nested/two.log').read_bytes() == original['nested/two.log']
+                        assert not (stage / 'one.log').exists()
+                    retained_stage_inodes = {path.relative_to(stage).as_posix():
+                        (path.stat().st_dev, path.stat().st_ino) for path in stage.rglob('*')}
                 else:
                     assert all((target / name).read_bytes() == value for name, value in original.items())
                 if restore_interruption == 'restore_member_chown':
@@ -868,7 +885,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
                     restore_interruption in ('restore_final', 'access_intent'))
                 assert ('restore.snapshot.json' in interrupted_prefix) == (
-                    restore_interruption not in ('stage_removed', 'unwritten_stage', 'restore_member_chown', 'stage_complete'))
+                    restore_interruption not in ('stage_removed', 'unwritten_stage', 'restore_member_chown', 'stage_complete', 'restore_directory', 'restore_member'))
                 assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
                 (root / 'interrupt-once').unlink()
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
@@ -878,11 +895,19 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             'before_restore_final': 'recovered_before_final',
                             'stage_removed': 'recovered_publication', 'unwritten_stage': 'restarted_unwritten',
                             'access_intent': 'recovered_access', 'restore_member_chown': 'recovered_publication',
-                            'stage_complete': 'recovered_stage'}
+                            'stage_complete': 'recovered_stage',
+                            'restore_directory': 'recovered_prefix', 'restore_member': 'recovered_prefix'}
                 assert restored[recovery[restore_interruption]] is True
                 if restore_interruption == 'unwritten_stage':
                     assert restored['restored_files'] == len(original)
                     assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
+                elif restore_interruption in ('restore_directory', 'restore_member'):
+                    born = [event['body'] for event in interrupted_events if event['kind'] == 'restore_member']
+                    assert restored['reused_files'] == len(born)
+                    assert restored['reused_logical_bytes'] == sum(row['size_bytes'] for row in born)
+                    assert all((target / name).stat().st_dev == identity[0]
+                               and (target / name).stat().st_ino == identity[1]
+                               for name, identity in retained_stage_inodes.items())
                 else:
                     assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
                 assert all((journals / restore['action_id'] / name).read_bytes() == raw
@@ -951,6 +976,8 @@ CONNECTED_CASES = (
     ('access_intent', dict(action='offload', restore_interruption='access_intent')),
     ('stage_removed', dict(action='offload', restore_interruption='stage_removed')),
     ('stage_complete', dict(action='offload', restore_interruption='stage_complete')),
+    ('restore_directory', dict(action='offload', restore_interruption='restore_directory')),
+    ('restore_member', dict(action='offload', restore_interruption='restore_member')),
     ('corrupt', dict(action='offload', corrupt=True)),
 )
 
