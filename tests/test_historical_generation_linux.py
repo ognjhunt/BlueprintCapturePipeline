@@ -4,6 +4,7 @@ Disposable Linux only. This proves permissions and retained foreign references,
 not a historical owner decision, a deletion receipt or a cleared reference set.
 """
 # Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_lane_historical_publication.py
 #   src/blueprint_pipeline/control_plane_lane_historical_dispatch.py
 #   src/blueprint_pipeline/control_plane_lane_historical_fence.py
 #   src/blueprint_pipeline/control_plane_lane_historical_processes.py

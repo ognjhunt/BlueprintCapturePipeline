@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import pwd
+import signal
 import stat
 import subprocess
 import sys
@@ -161,7 +162,34 @@ def worker_main(root, action_id):
     interruption = root / 'interrupt-once'
     if interruption.exists():
         phase = interruption.read_text()
-        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed',
+        if phase.startswith('metadata_'):
+            from blueprint_pipeline import control_plane_lane_historical_journal as journal_code
+            original_publish = journal_code._publish
+            def publish(files, parent, name, payload, **options):
+                if name != 'e-00001.json':
+                    return original_publish(files, parent, name, payload, **options)
+                original_link, original_sync = os.link, os.fsync
+                linked = False
+                def link(*args, **kwargs):
+                    nonlocal linked
+                    if phase == 'metadata_before_link':
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    result = original_link(*args, **kwargs)
+                    linked = True
+                    if phase == 'metadata_after_link':
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return result
+                def sync(fd):
+                    if phase == 'metadata_before_parent_fsync' and linked and fd == parent:
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return original_sync(fd)
+                os.link, os.fsync = link, sync
+                try:
+                    return original_publish(files, parent, name, payload, **options)
+                finally:
+                    os.link, os.fsync = original_link, original_sync
+            journal_code._publish = publish
+        elif phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed',
                      'unwritten_stage', 'access_intent', 'stage_complete'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
@@ -276,7 +304,7 @@ def _assert_restore_increment(receipt, original):
     assert (receipt['restored_files'], receipt['restored_logical_bytes']) == expected, receipt
 
 
-def _launch_worker_once(entry, action_id, target, journals, *, restore=False, launch=None):
+def _launch_worker_once(entry, action_id, target, journals, *, restore=False, launch=None, process_death=False):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
     def observations():
@@ -341,6 +369,15 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
             os.close(fd)
     finally:
         os.close(startup)
+    if process_death:
+        # No worker receipt is manufactured after SIGKILL. The actual emptied
+        # cgroup above and service-manager signal record prove this boundary.
+        log = subprocess.run(['/usr/bin/journalctl', '--unit=' + unit, '--output=cat',
+            '--no-pager', '--lines=64'], capture_output=True, text=True, timeout=5)
+        assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
+        assert 'code=killed, status=9/KILL' in log.stdout, log.stdout
+        assert observations() == previous, 'killed worker must not emit a terminal receipt'
+        return None
     receipt_deadline = time.monotonic() + 2
     current = observations()
     while current == previous and time.monotonic() < receipt_deadline:
@@ -591,16 +628,27 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             _installed_entry(root, entry)
         if interruption:
             _write(root / 'interrupt-once', interruption.encode())
-            interrupted = _launch_worker(entry, action_id, target, journals, expected='failed')
-            assert interrupted['code'] == 'fixture_interrupted_after_' + interruption
+            death = interruption.startswith('metadata_')
+            if death:
+                assert _launch_worker_once(entry, action_id, target, journals, process_death=True) is None
+            else:
+                interrupted = _launch_worker(entry, action_id, target, journals, expected='failed')
+                assert interrupted['code'] == 'fixture_interrupted_after_' + interruption
             expected_paths = set(original) - ({'nested/two.log'} if interruption in ('removed', 'unlink') else set())
             assert all((target / path).read_bytes() == original[path] for path in expected_paths)
             if interruption in ('removed', 'unlink'):
                 assert not (target / 'nested/two.log').exists()
-            assert target.stat().st_uid == 0
+            if not death:
+                assert target.stat().st_uid == 0
             initial = [path.read_bytes() for path in sorted((journals / action_id).glob('e-*.json'))]
             head = json.loads(initial[-1])
-            assert head['kind'] == {'fenced': 'fenced', 'chown': 'fence_intent',
+            if death:
+                assert head['kind'] == ('intent' if interruption == 'metadata_before_link' else 'fence_intent')
+                assert all(path.name.startswith('e-') and path.stat().st_nlink == 1
+                           for path in (journals / action_id).iterdir())
+                assert all((target / path).read_bytes() == raw for path, raw in original.items())
+            else:
+                assert head['kind'] == {'fenced': 'fenced', 'chown': 'fence_intent',
                                    'removed': 'removed', 'unlink': 'removal_intent'}[interruption]
             (root / 'interrupt-once').unlink()
         if corrupt:
@@ -821,6 +869,9 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
 
 CONNECTED_CASES = (
     ('delete', dict(interruption=None)),
+    ('metadata_before_link', dict(interruption='metadata_before_link')),
+    ('metadata_after_link', dict(interruption='metadata_after_link')),
+    ('metadata_before_parent_fsync', dict(interruption='metadata_before_parent_fsync')),
     ('fenced', dict(interruption='fenced')),
     ('chown', dict(interruption='chown')),
     ('removed', dict(interruption='removed')),
