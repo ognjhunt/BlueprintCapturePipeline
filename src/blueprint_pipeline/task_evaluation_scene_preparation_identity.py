@@ -14,4 +14,3 @@ def preparation_attempt_path(directory, attempt_id):
     found = [path for path in paths if path.exists()]
     require(len(found) <= 1, "preparation_attempt_identity_ambiguous")
     return found[0] if found else paths[0]
-

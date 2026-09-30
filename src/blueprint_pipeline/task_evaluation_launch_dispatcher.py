@@ -28,9 +28,7 @@ from .adp_articulated_task_success_contract import (
     task_kind_of_contract,
     validate_task_success_contract,
 )
-from .adp_task_scoring import (
-    TaskNeutralScoringError,
-)
+from .adp_task_scoring import TaskNeutralScoringError
 from .control_plane_disk_budget import (
     DEFAULT_RESERVATION_ROOT,
     ControlPlaneDiskBudgetError,
@@ -51,8 +49,6 @@ from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
     stage_directory_projections,
     write_immutable_launch_record,
-)
-from .launch_immutable_input_writer import (
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
 )
 from .launch_profile_immutable_inputs import immutable_input_digest
@@ -64,15 +60,9 @@ from .task_evaluation_immutable_input_resolver import (
     STAGING_RECEIPT_ENV,
     STAGING_SCHEMA_VERSION,
 )
-from .task_evaluation_launch_context import (
-    is_identifier as _is_identifier,
-)
-from .task_evaluation_launch_context import (
-    validate_task_evaluation_run_context,
-)
-from .task_evaluation_launch_evidence_contracts import (
-    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION as LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,  # noqa: PLC0414 - compatibility reexport
-)
+from .task_evaluation_launch_context import is_identifier as _is_identifier
+from .task_evaluation_launch_context import validate_task_evaluation_run_context
+from .task_evaluation_launch_evidence_contracts import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
 from .task_evaluation_launch_terminal_evidence import (
     terminal_evidence as _build_terminal_evidence,
 )

@@ -37,4 +37,3 @@ def _bounded_launch_id(activation_id: str) -> str:
     prefix = activation_id[:150].rstrip("._-")
     token = hashlib.sha256(activation_id.encode("utf-8")).hexdigest()[:24]
     return _identifier(f"{prefix}-{token}-launch")
-
