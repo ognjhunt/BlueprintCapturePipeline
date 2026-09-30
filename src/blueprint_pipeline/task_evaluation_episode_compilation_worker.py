@@ -590,7 +590,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if not args.queue_root or not args.input_root or not args.output_root:
         raise SystemExit("episode compilation roots are required")
-    # The no-spend unit (plan 14 §1): in ``host`` mode, the default, exactly this queue run.
+    # The no-spend unit (plan 14 §1): in ``host`` mode, which an unset mode is without the remote CPU config,
+    # exactly this queue run.
     from . import task_evaluation_episode_compilation_remote as remote
 
     result = remote.run_no_spend_unit(

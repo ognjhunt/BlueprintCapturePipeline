@@ -227,9 +227,10 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
-    # Remote episode compilation dispatches only with the mode flag set, a remote
-    # CPU config, the owner's standing authority and the dispatcher credential;
-    # while the flag is unset its ExecCondition skips it except to drain.
+    # Remote episode compilation dispatches only in a remote mode (set, or auto
+    # once the remote CPU config is there), with that config, the owner's
+    # standing authority and the dispatcher credential; in host mode, which an
+    # unset flag without a config is, its ExecCondition skips it except to drain.
     "blueprint-task-evaluation-episode-compilation-remote.path",
 )
 #: This fixed timer advances only a sealed, qualifying configured-scene plan

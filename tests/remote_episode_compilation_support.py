@@ -562,6 +562,8 @@ class CollectorWorld:
         self.host.record_worker_environment()
         self.compiler = install_compile_stand_ins(monkeypatch.setattr)
         self.stage_override: Any = None
+        # What each execution's worker measures of its own environment (the host's, unless a test moves it).
+        self.worker_record: dict[str, Any] = HOST_RECORD
         self.executed: list[str] = []
         self.results: list[dict[str, Any]] = []
         if plan is None:
@@ -701,7 +703,7 @@ class CollectorWorld:
             os.rename(self.host.fs, aside)
             try:
                 common = {"environ": environ, "http": RecordingHttp(self.store), "filesystem_root": self.host.fs,
-                          "clock": self.clock, "measure": lambda: HOST_RECORD, "log": lambda line: None}
+                          "clock": self.clock, "measure": lambda: self.worker_record, "log": lambda line: None}
                 if behaviour == "hang":
                     common["launch"] = lambda handoff: (_ for _ in ()).throw(Crash("worker stopped"))
                     runtime = worker.WorkerRuntime(**common, reader=self.bucket.reader())
@@ -715,7 +717,8 @@ class CollectorWorld:
                     **common, reader=self.bucket.reader(),
                     launch=lambda handoff: worker.execute_attempt(handoff, execute))) == 0
             finally:
-                os.rename(self.host.fs, tree)
+                if self.host.fs.exists():  # a worker refused before it wrote anything leaves no tree
+                    os.rename(self.host.fs, tree)
                 os.rename(aside, self.host.fs)
 
     def advance(self, seconds: float) -> None:

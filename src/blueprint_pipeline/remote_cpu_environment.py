@@ -8,12 +8,15 @@ preflight, and later the worker.  ``environment_digest`` covers behaviour, never
   members are deflated at level 6, after a level-6 compressibility probe);
 - a golden digest of the float32 ``exp`` and sigmoid and float64 quaternion norms that NuRec
   conversion computes, which can differ by SIMD path;
-- the versions of the distributions a compile loads;
-- the CPU class: the machine, numpy's SIMD view and the CPU flags.
+- the versions of the distributions a compile loads.
 
-``sys.version``, ``libc_ver`` and the zlib version strings are recorded as informational only: two
-zlib builds that deflate identically must not look like different environments.  This module
-measures; it decides nothing and writes nothing.
+The CPU class (the machine, numpy's SIMD view and the CPU flags) is recorded beside the digest, not
+in it: dispatch requires equality on everything but the CPU class (plan 14 §5), because the golden
+deflate and SIMD outputs already capture how this machine behaves.  Only inline NuRec conversion
+pins a CPU class, through the descriptor's ``allowed_cpu_classes``: its float32 math runs over
+arrays the golden input cannot stand for.  ``sys.version``, ``libc_ver`` and the zlib version
+strings are recorded as informational only: two zlib builds that deflate identically must not look
+like different environments.  This module measures; it decides nothing and writes nothing.
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ COMPILE_DISTRIBUTIONS = (
     "numpy", "packaging", "pillow", "pydantic", "pydantic-core", "referencing", "rpds-py", "typing-extensions",
     "typing-inspection", "usd-convert-gsplat", "usd-core", "webcolors",
 )
-DIGESTED_FIELDS = ("python_version_info", "golden_deflate", "golden_simd", "distributions", "cpu_class")
+DIGESTED_FIELDS = ("python_version_info", "golden_deflate", "golden_simd", "distributions")
 
 
 def _digest(data: bytes) -> str:
@@ -154,7 +157,8 @@ def environment_record(*, cpuinfo_path: Path | None = None,
     """Measure this interpreter.
 
     ``cpu_class`` digests the machine, numpy's SIMD view and the CPU flags; it is ``None`` when
-    either is unmeasured, and an unmeasured class is never qualified.
+    either is unmeasured, and an unmeasured class is never qualified.  It stays out of
+    ``environment_digest`` (plan 14 §5).
     """
 
     flags, source = cpu_flags(CPUINFO_PATH if cpuinfo_path is None else Path(cpuinfo_path))

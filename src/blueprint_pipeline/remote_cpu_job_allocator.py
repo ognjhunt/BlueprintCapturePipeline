@@ -112,14 +112,15 @@ def _read_private_json(path: str | Path, *, forbidden_mode: int) -> dict[str, An
         descriptor = os.open(path, flags)
     except OSError as exc:
         raise RemoteCpuAllocatorError("missing" if isinstance(exc, FileNotFoundError) else "unsafe") from None
+    status = os.fstat(descriptor)  # before a stream wraps it: wrapping a directory raises IsADirectoryError
+    if not stat.S_ISREG(status.st_mode) or status.st_mode & forbidden_mode:
+        os.close(descriptor)
+        raise RemoteCpuAllocatorError("unsafe")
     with os.fdopen(descriptor, "rb") as stream:
-        status = os.fstat(stream.fileno())
-        if not stat.S_ISREG(status.st_mode) or status.st_mode & forbidden_mode:
-            raise RemoteCpuAllocatorError("unsafe")
         payload = stream.read(_MAX_RECORD_BYTES + 1)
     try:
         value = json.loads(payload)
-    except ValueError:
+    except (ValueError, RecursionError):
         value = None
     if not isinstance(value, dict) or len(payload) > _MAX_RECORD_BYTES:
         raise RemoteCpuAllocatorError("unreadable")
