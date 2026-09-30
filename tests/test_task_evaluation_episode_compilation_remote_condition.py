@@ -33,6 +33,13 @@ def _write(path: Path, value: object, *, mode: int = 0o640) -> Path:
     return path
 
 
+def _surrogate() -> str:
+    """A whole config whose rate-table source starts with an escaped lone surrogate: JSON reads it, and every
+    check passes until a digest tries to encode it as UTF-8."""
+
+    return json.dumps(remote_cpu_config()).replace('"source": "', '"source": "\\ud800', 1)
+
+
 def _config_states(root: Path) -> dict[str, tuple[Path, bool]]:
     """Every state the config file can be in, and whether the paid unit would load it for this stage."""
 
@@ -51,6 +58,14 @@ def _config_states(root: Path) -> dict[str, tuple[Path, bool]]:
             {**usable, "schema_version": "remote_cpu_workers_config.v0"}, "config_digest")), False),
         "other_stage_only": (_write(root / "other-stage.json", seal(
             {**usable, "stages": {"cpu_prestage": stage}}, "config_digest")), False),
+        # Review M2: what the condition can check cheaply, it checks: a US region and the config's own shape.
+        "non_us_region": (_write(root / "non-us.json", remote_cpu_config(region="europe-west1")), False),
+        "unknown_key": (_write(root / "unknown-key.json", seal({**usable, "note": "x"}, "config_digest")), False),
+        "unknown_stage_key": (_write(root / "unknown-stage-key.json", remote_cpu_config(
+            stages={"episode_compilation": {**stage, "note": "x"}})), False),
+        # Review M1: no loader may crash on these; each is simply no config.
+        "lone_surrogate": (_write(root / "surrogate.json", _surrogate()), False),
+        "deep_nesting": (_write(root / "nested.json", "[" * 50000 + "]" * 50000), False),
         # Larger than the allocator reads: it refuses the file, so auto must not turn on for it either.
         "oversize": (_write(root / "oversize.json", json.dumps(usable) + " " * allocator._MAX_RECORD_BYTES), False),
     }
@@ -67,11 +82,11 @@ def test_auto_turns_on_only_for_a_config_the_paid_unit_would_load_for_this_stage
     every state the file can be in, and so does the ExecCondition's standard-library reading."""
 
     for label, (path, usable) in _config_states(tmp_path).items():
-        # The allocator's reader raises on a directory (it wraps the descriptor before checking it).  The no-spend
-        # side reads one as no config: an unset mode reads this path on every run and must never stop host compiles.
-        if label != "directory":
+        try:
             _, blockers = allocator.load_remote_cpu_config(path)
-            assert (remote.load_config(path) is not None) == (not blockers), label
+        except Exception:  # noqa: BLE001 - a config the allocator cannot validate: the paid unit drains (below)
+            blockers = ["raised"]
+        assert (remote.load_config(path) is not None) == (not blockers), label
         environ = {remote.CONFIG_ENV: str(path)}
         assert remote.remote_configured(environ) is usable, label
         assert remote.resolve_execution_mode(environ) == (AUTO_ON if usable else AUTO_OFF), label
@@ -82,6 +97,8 @@ def test_auto_turns_on_only_for_a_config_the_paid_unit_would_load_for_this_stage
         "BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG", "/etc/blueprint/remote-cpu-workers.json")
     assert condition.CONFIG_MAX_BYTES == remote.CONFIG_MAX_BYTES == allocator._MAX_RECORD_BYTES
     assert condition.CONFIG_SCHEMA_VERSION == contract.CONFIG_SCHEMA_VERSION
+    assert condition.CONFIG_KEYS == contract._CONFIG_KEYS
+    assert condition.STAGE_KEYS == {"job", "image", *contract._JOB_LIMITS}
     for unit in ("blueprint-task-evaluation-episode-compilation.service",
                  "blueprint-task-evaluation-episode-compilation-remote.service"):
         text = (SYSTEMD / unit).read_text(encoding="utf-8")
@@ -126,15 +143,17 @@ def test_the_exec_condition_runs_the_paid_unit_when_the_effective_mode_is_remote
 
 def test_a_sealed_config_the_paid_unit_refuses_starts_it_only_to_drain_without_a_provider(
         tmp_path: Path, monkeypatch) -> None:
-    """The condition checks what the standard library can: the file, its JSON, schema, seal and stage.  A sealed
-    config that fails a deeper check (here a region outside the US) still starts the unit.  The run resolves auto
-    to host, loads the config as the allocator does, finds it unusable, and drains without ever connecting: no
-    network, no spend, and a summary that says why."""
+    """The condition checks what the standard library can do cheaply: the file, its JSON, schema, seal, shape,
+    stage and US region.  A sealed config that fails a deeper check (here an image not pinned by digest) still
+    starts the unit.  The run resolves auto to host, loads the config as the allocator does, finds it unusable,
+    and drains without ever connecting: no network, no spend, and a summary that says why."""
 
     from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
     from blueprint_pipeline.task_evaluation_episode_compilation_worker import OUTPUT_ROOT_ENV, QUEUE_ROOT_ENV
 
-    config = _write(tmp_path / "etc" / "remote-cpu-workers.json", remote_cpu_config(region="europe-west1"))
+    stage = remote_cpu_config()["stages"]["episode_compilation"]
+    config = _write(tmp_path / "etc" / "remote-cpu-workers.json", remote_cpu_config(
+        stages={"episode_compilation": {**stage, "image": "registry.example/blueprint-pipeline:latest"}}))
     assert condition.configured(config) is True and remote.load_config(config) is None
     jobs = tmp_path / "jobs"
     jobs.mkdir()
@@ -151,4 +170,56 @@ def test_a_sealed_config_the_paid_unit_refuses_starts_it_only_to_drain_without_a
     assert collector.main(["run", "--source-commit", "a" * 40, "--jobs-root", str(jobs)]) == 0
     summary = json.loads((jobs / "summary.json").read_text(encoding="utf-8"))
     assert (summary["mode"], summary["execution_mode"], summary["rows"]) == ("host", AUTO_OFF, {})
-    assert summary["blockers"] == ["remote_cpu_config_region_not_us"]
+    assert summary["blockers"] == ["remote_cpu_config_invalid:stages"]
+
+
+def _drain(tmp_path: Path, monkeypatch, config: Path) -> dict:
+    """One paid-unit run with ``config`` and the mode unset; any connection fails the test."""
+
+    from blueprint_pipeline import task_evaluation_episode_compilation_collector as collector
+    from blueprint_pipeline.task_evaluation_episode_compilation_worker import OUTPUT_ROOT_ENV, QUEUE_ROOT_ENV
+
+    def never(*_args, **_kwargs):
+        raise AssertionError("the paid unit connected with a config it cannot use")
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir(parents=True, exist_ok=True)
+    monkeypatch.delenv(remote.EXECUTION_ENV, raising=False)
+    monkeypatch.setenv(remote.CONFIG_ENV, str(config))
+    monkeypatch.setenv(QUEUE_ROOT_ENV, str(tmp_path / "queue"))
+    monkeypatch.setenv(OUTPUT_ROOT_ENV, str(tmp_path / "outputs"))
+    monkeypatch.setattr(allocator, "_connect", never)
+    assert collector.main(["run", "--source-commit", "a" * 40, "--jobs-root", str(jobs)]) == 0
+    return json.loads((jobs / "summary.json").read_text(encoding="utf-8"))
+
+
+def test_a_config_or_authority_no_loader_can_read_leaves_a_drain_never_a_crash(tmp_path: Path, monkeypatch) -> None:
+    """Review M1 and verdict 7: a directory at the config or authority path, a lone surrogate, deep nesting.  The
+    allocator's reader refuses a directory as a typed error; whatever the allocator still raises on, the paid
+    unit's run turns into a blocker and drains; the condition never crashes, and reads the drain first."""
+
+    directory = tmp_path / "etc" / "directory.json"
+    directory.mkdir(parents=True)
+    assert allocator.load_remote_cpu_config(directory) == ({}, ["remote_cpu_config_invalid:unsafe"])
+    assert allocator.load_standing_authority(stage="episode_compilation", now=1.0, path=directory) == (
+        None, ["remote_cpu_standing_authority_invalid:unsafe"])
+    surrogate = _write(tmp_path / "etc" / "surrogate.json", _surrogate())
+    nested = _write(tmp_path / "etc" / "nested.json", "[" * 50000 + "]" * 50000)
+    for config, blocker in ((directory, "remote_cpu_config_invalid:unsafe"),
+                            (surrogate, "remote_cpu_config_invalid:UnicodeEncodeError"),
+                            (nested, "remote_cpu_config_invalid:unreadable")):
+        assert remote.resolve_execution_mode({remote.CONFIG_ENV: str(config)}) == AUTO_OFF, config.name
+        assert condition.configured(config) is False, config.name
+        summary = _drain(tmp_path / config.stem, monkeypatch, config)
+        assert (summary["execution_mode"], summary["blockers"]) == (AUTO_OFF, [blocker]), config.name
+
+    # The drain comes first: a live lease runs the unit before the mode is even read.
+    jobs = tmp_path / "jobs"
+    (jobs / "live").mkdir(parents=True)
+    (jobs / "live" / "lease.json").write_text("{}", encoding="utf-8")
+
+    def unread(_environ=None):
+        raise AssertionError("the mode was read before the drain")
+
+    monkeypatch.setattr(condition, "remote_mode", unread)
+    assert condition.should_run(jobs, {}) is True

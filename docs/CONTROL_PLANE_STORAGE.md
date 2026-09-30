@@ -1419,14 +1419,31 @@ census, `absent_inline_only`, environment parity and image drift, the
 allocator's admission, the standing authority and its daily and total caps all
 apply exactly as they do to a set `cloud_run`.
 
+A config that cannot be read at all (a directory at the path, deep nesting, an
+escaped lone surrogate) is no config: the no-spend unit compiles on the host,
+the ExecCondition skips unless something is left to drain, and a paid-unit run
+that loads it drains with a typed `remote_cpu_config_invalid:*` blocker.
+
 The chain preflight reports the mode under `episode_compilation_execution`:
 `requested` (a mode, `invalid`, or `null` when unset), `effective`, `reason`
 (`explicit`, `auto_with_config` or `auto_without_config`) and the config path,
-resolved for the `blueprint` account rather than root. It warns
+resolved for the `blueprint` account rather than root: its mode bits, its
+primary and supplementary groups, and search on every parent directory (POSIX
+ACLs and the unit's sandbox are not modelled). It warns
 `episode_compilation_execution_mode_invalid`,
 `episode_compilation_cloud_run_requires_census_pointer_support`, or, when a
 config is there that auto cannot use (written with the default umask, say),
 `episode_compilation_auto_config_unusable`.
+
+**The CPU class.** Dispatch requires the worker's environment to equal the
+host's on everything but the CPU class (plan 14 §5): `environment_digest`
+covers CPython, the golden deflate and SIMD outputs and the compile's
+distributions, and records the CPU class beside it. A worker Cloud Run places
+on another machine therefore runs and is compared. Only inline NuRec
+conversion pins a CPU class, through the descriptor's `allowed_cpu_classes`,
+and only its shadow passes are counted per CPU class. A probe recorded under
+the earlier digest, which included the CPU class, is treated as unrecorded
+until the allocator's preflight probes again.
 
 **Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
 owns `pending/` in every mode and empties it each run: it recovers the claims
@@ -1440,20 +1457,41 @@ gets a hand-off and stays in `processing/`. `cloud_run` progresses by itself: an
 eligible row whose class lacks them compiles on the host, authoritatively, and
 gets a shadow marker, exactly as in `cloud_run_shadow`, so the class earns its
 passes and its later rows go remote; a failed comparison sends the class back
-to shadowing. The per-class gate is the last check, so no other refusal is ever
-shadowed, and an inline NuRec row stays on the host with no marker in every
-mode. Any other row compiles on the host. In `cloud_run_shadow` every row
-compiles on the host and an eligible one also gets a shadow marker. A shadow
-marker is the same record in both modes and changes nothing a consumer reads.
+to shadowing. It pays only for shadows that can move a class: a row the host
+blocked is not shadowed (`shadow_skipped: host_compile_blocked`), a class never
+has more than three shadows outstanding (`shadow_backlog_full`), and the paid
+unit retires, undispatched, a waiting shadow whose class already has its passes.
+The per-class gate is the last check, so no other refusal is ever shadowed,
+and an inline NuRec row stays on the host with no marker in every mode. Any
+other row compiles on the host. In `cloud_run_shadow` every row compiles on
+the host and an eligible one also gets a shadow marker, blocked or not. A
+shadow marker is the same record in both modes and changes nothing a consumer
+reads.
+
+**The per-class breaker.** Every shadow outcome is sealed per closure class and
+commit: `passed`, `failed`, `inconclusive` (nothing compiled on both sides) or
+`abandoned` (a shadow that ran but was never compared). Three outcomes in a row
+that are not passes, on one class and one `source_commit`, open the class's
+breaker in both remote modes: its rows compile on the host with no plan
+(`remote_ineligible:shadow_breaker_open:<class>`), and the paid unit retires any
+waiting shadow of it, undispatched. A pass in between, or a new commit, closes
+it. A shadow that never ran spent nothing and is no outcome.
+
 Rows never leave the four queue states. The paid unit
 (`blueprint-task-evaluation-episode-compilation-remote`) never compiles: it
 dispatches through `paid_resource_allocator remote-cpu-job`, follows, collects
-and tears down. Its ExecCondition, standard library only, starts it when the
-effective mode is remote, set or auto, or while a live lease or a marker waits.
-For auto it checks the config's file, mode, size, JSON, schema, seal and stage;
-a sealed config that fails a deeper check (a region outside the US, say) starts
-a run that loads it as the allocator does and only drains, without a provider
-connection. A refused dispatch writes the fallback, then drops the hand-off,
+and tears down. Before it stages anything for a new attempt, it asks, read-only,
+what the allocator's admission would refuse: the standing authority (missing,
+invalid, expired, another stage) and the ledger's attempt, daily, total and
+execution caps at the attempt's worst case. A refusal hands the row back (a
+shadow is simply retired) with nothing uploaded to B2; the allocator checks
+again at dispatch. Its ExecCondition, standard library only, starts it while a
+live lease or a marker waits, or when the effective mode is remote, set or
+auto, in that order. For auto it checks the config's file, mode, size, JSON,
+schema, seal, shape, stage and US region; a sealed config that fails a deeper
+check (an image not pinned by digest, say) starts a run that loads it as the
+allocator does and only drains, without a provider connection. A refused
+dispatch writes the fallback, then drops the hand-off,
 and a hand-off whose row was given up, handed back or moved
 on is never dispatched again. A commit that cannot finish after compute-zero (a
 result or pointer already there that is not this attempt's, or the row gone)
@@ -1503,7 +1541,7 @@ marker directories below it for the service account.
 | `descriptors/`, `leases/`, `live/`, `teardowns/` | paid unit, allocator | plan 14 §3, §7, §11 |
 | `receipts/<attempt>.json` | paid unit | the fenced receipt, kept because provider-zero deletes staging early |
 | `rows/episode_compilation/<row>` | paid unit | promotion and landing retries, and a row given up |
-| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class: `passed` only when both sides compiled and match byte for byte; two blocked compiles are `inconclusive`, which neither counts toward nor breaks a class's three passes |
+| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow outcome, per closure class and `source_commit`: `passed` only when both sides compiled and match byte for byte; two blocked compiles are `inconclusive`, and a shadow that ran but was never compared is `abandoned`; neither counts toward nor breaks a class's three passes, but both count toward its breaker |
 | `environment/`, `drift/episode_compilation.json` | allocator, paid unit | the probed worker environment and the job template's image |
 | `summary.json` (0644) | paid unit | door-readable: the mode (`execution_mode`: requested, effective, reason, findings) and counts: drift, unproven teardowns, orphans cancelled, parity |
 

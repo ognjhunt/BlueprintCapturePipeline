@@ -788,21 +788,39 @@ def _service_ids(account: str) -> tuple[int, int] | None:
     return record.pw_uid, record.pw_gid
 
 
-def readable_by(path: Path, uid: int, gid: int) -> bool:
-    """Discretionary read access as the kernel grants it; root bypasses mode bits."""
+def _account_groups(uid: int, gid: int) -> set[int]:
+    """The primary group and every supplementary group of the account ``uid`` (``/etc/group``), as the kernel
+    gives a unit's process; the primary alone when the account is unknown."""
+
+    try:
+        return {gid, *os.getgrouplist(pwd.getpwuid(uid).pw_name, gid)}
+    except (KeyError, OSError):
+        return {gid}
+
+
+def _permits(st: os.stat_result, uid: int, groups: set[int], bits: tuple[int, int, int]) -> bool:
+    mode = stat.S_IMODE(st.st_mode)
+    if st.st_uid == uid:
+        return bool(mode & bits[0])
+    return bool(mode & (bits[1] if st.st_gid in groups else bits[2]))
+
+
+def readable_by(path: Path, uid: int, gid: int, *, traverse: bool = False) -> bool:
+    """Discretionary read access as the kernel grants it by mode bits: root bypasses them; otherwise the owner's
+    bits, then the group's for the account's primary or any supplementary group, then other's.  ``traverse`` also
+    requires search on every parent directory.  POSIX ACLs and a unit's own sandbox are not modelled."""
 
     try:
         st = path.stat()
+        if uid == 0:
+            return True
+        groups = _account_groups(uid, gid)
+        if traverse and not all(_permits(os.stat(parent), uid, groups, (stat.S_IXUSR, stat.S_IXGRP, stat.S_IXOTH))
+                                for parent in path.absolute().parents):
+            return False
     except OSError:
         return False
-    if uid == 0:
-        return True
-    mode = stat.S_IMODE(st.st_mode)
-    if st.st_uid == uid:
-        return bool(mode & stat.S_IRUSR)
-    if st.st_gid == gid:
-        return bool(mode & stat.S_IRGRP)
-    return bool(mode & stat.S_IROTH)
+    return _permits(st, uid, groups, (stat.S_IRUSR, stat.S_IRGRP, stat.S_IROTH))
 
 
 def writable_by(path: Path, uid: int, gid: int) -> bool:
@@ -1658,14 +1676,15 @@ def episode_compilation_execution(units: Mapping[str, dict[str, Any]],
     """Plan 14 §1: the episode-compilation mode asked for, the one the no-spend unit runs in, and why (explicit,
     or auto with or without this stage's config), as that unit's own account resolves it; never a finding.
 
-    Root reads a config the ``blueprint`` account may not: with ``ids``, a config those ids cannot read is none.
+    Root reads a config the ``blueprint`` account may not: with ``ids``, a config those ids cannot read, through
+    its mode, groups and every parent directory, is none.  POSIX ACLs and the unit's sandbox are not modelled.
     """
 
     from . import task_evaluation_episode_compilation_remote as remote
 
     environment = units.get(EPISODE_COMPILATION_UNIT, {}).get("effective_environment") or {}
     config = Path(environment.get(remote.CONFIG_ENV) or remote.DEFAULT_CONFIG_PATH)
-    configured = False if ids is not None and not readable_by(config, *ids) else None
+    configured = False if ids is not None and not readable_by(config, *ids, traverse=True) else None
     return {**remote.resolve_execution_mode(environment, configured=configured), "config": str(config)}
 
 

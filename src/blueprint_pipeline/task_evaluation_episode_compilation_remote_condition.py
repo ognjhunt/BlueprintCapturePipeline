@@ -1,19 +1,22 @@
 """The paid remote episode-compilation unit's ExecCondition, with the standard library alone (plan 14 §1).
 
 The condition runs every 60 s.  Importing the collector to answer it costs about 0.8 s of CPU and
-75 MB each time, so this reads the filesystem instead: the unit runs when the effective mode is a
-remote one, a lease is live, or a hand-off or shadow marker waits.  A set mode keeps its name, and an
-invalid one runs as ``host``.  An unset or empty mode is auto (owner decision 2026-09-30): remote
-once this stage's remote-CPU config is there, as the paid unit would load it, and ``host`` without it,
-which skips exactly as before and reads nothing but the config's path.
+75 MB each time, so this reads the filesystem instead: the unit runs when a lease is live, a hand-off
+or shadow marker waits, or the effective mode is a remote one, in that order, so nothing about the
+mode can keep a drain from its run.  A set mode keeps its name, and an invalid one runs as ``host``.
+An unset or empty mode is auto (owner decision 2026-09-30): remote once this stage's remote-CPU
+config is there, as the paid unit would load it, and ``host`` without it, which skips exactly as
+before and reads nothing but the config's path.
 
-``configured`` checks what the standard library can: a regular, unlinked file no other account may
-write or read, no larger than the allocator reads, holding a sealed ``remote_cpu_workers_config.v1``
-object that names this stage.  A sealed config that fails a deeper check (a region outside the US, a
-malformed image) still starts the unit, whose run loads it as the allocator does, finds it unusable
-and drains without a provider connection.  The collector's own effective mode (which also waits for
-the owner census) decides what a run then does.  Its constants are pinned to the remote module's and
-the allocator's by ``tests/test_task_evaluation_episode_compilation_units.py`` and
+``configured`` checks what the standard library can cheaply: a regular, unlinked file no other
+account may write or read, no larger than the allocator reads, holding a sealed
+``remote_cpu_workers_config.v1`` object of the config's own shape, in a US region, that names this
+stage.  Anything it cannot read is no config.  A sealed config that fails a deeper check (an image
+not pinned by digest, a malformed rate table) still starts the unit, whose run loads it as the
+allocator does, finds it unusable and drains without a provider connection.  The collector's own
+effective mode (which also waits for the owner census) decides what a run then does.  Its constants
+are pinned to the remote module's, the contract's and the allocator's by
+``tests/test_task_evaluation_episode_compilation_units.py`` and
 ``tests/test_task_evaluation_episode_compilation_remote_condition.py``.
 """
 
@@ -22,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 from collections.abc import Mapping
@@ -35,6 +39,11 @@ CONFIG_ENV = "BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG"
 DEFAULT_CONFIG_PATH = "/etc/blueprint/remote-cpu-workers.json"
 CONFIG_SCHEMA_VERSION = "remote_cpu_workers_config.v1"
 CONFIG_MAX_BYTES = 256 * 1024
+# The config's shape and region rule, as ``remote_cpu_job_contract.config_blockers`` checks them.
+CONFIG_KEYS = frozenset({"schema_version", "project", "region", "transport_bucket", "stages", "rate_table",
+                         "max_live_executions", "max_attempts", "config_digest"})
+STAGE_KEYS = frozenset({"job", "image", "vcpu", "memory_bytes", "ephemeral_bytes", "task_timeout_seconds"})
+US_REGION = re.compile(r"us-[a-z]+[0-9]+")
 # Group write and any access by other accounts: the allocator refuses such a config (0640 at most).
 CONFIG_FORBIDDEN_MODE = 0o027
 STAGE = "episode_compilation"
@@ -54,6 +63,13 @@ def _waiting(directory: Path) -> bool:
 def configured(path: str | Path) -> bool:
     """Whether the remote-CPU config at ``path`` is there for this stage, as far as the standard library can tell."""
 
+    try:
+        return _configured(path)
+    except Exception:  # noqa: BLE001 - review M1: deep nesting, a lone surrogate: what cannot be read is no config
+        return False
+
+
+def _configured(path: str | Path) -> bool:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags)
@@ -77,9 +93,11 @@ def configured(path: str | Path) -> bool:
         value = json.loads(payload) if len(payload) <= CONFIG_MAX_BYTES else None
     except ValueError:
         return False
-    if not isinstance(value, dict) or value.get("schema_version") != CONFIG_SCHEMA_VERSION:
+    if (not isinstance(value, dict) or value.get("schema_version") != CONFIG_SCHEMA_VERSION or set(value) != CONFIG_KEYS
+            or not isinstance(value["region"], str) or US_REGION.fullmatch(value["region"]) is None):
         return False
-    if not isinstance(value.get("stages"), dict) or STAGE not in value["stages"]:
+    stages = value["stages"]
+    if not isinstance(stages, dict) or not isinstance(stages.get(STAGE), dict) or set(stages[STAGE]) != STAGE_KEYS:
         return False
     # The config's own seal, as ``decision_evidence_contracts.canonical_digest`` computes it.
     sealed = json.dumps({name: item for name, item in value.items() if name != "config_digest"}, sort_keys=True,
@@ -99,8 +117,8 @@ def remote_mode(environ: Mapping[str, str] | None = None) -> bool:
 
 def should_run(jobs_root: str | Path, environ: Mapping[str, str] | None = None) -> bool:
     root = Path(jobs_root)
-    return (remote_mode(environ) or _waiting(root / "live")
-            or any(_waiting(root / name / STAGE) for name in MARKER_DIRECTORIES))
+    return (_waiting(root / "live") or any(_waiting(root / name / STAGE) for name in MARKER_DIRECTORIES)
+            or remote_mode(environ))
 
 
 def main(argv: list[str] | None = None) -> int:

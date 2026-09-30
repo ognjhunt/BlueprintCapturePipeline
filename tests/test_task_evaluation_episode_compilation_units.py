@@ -521,6 +521,10 @@ def test_unset_without_this_stages_config_is_todays_host_mode_byte_for_byte(tmp_
                                                                       {**usable, "max_attempts": 1}))},
         "explicit_host": {remote.CONFIG_ENV: str(_write_config(etc / "usable.json", usable)),
                           remote.EXECUTION_ENV: "host"},
+        # Review M1: configs no loader can finish reading are no config, never a crash that stops host compiles.
+        "lone_surrogate": {remote.CONFIG_ENV: str(_write_config(etc / "surrogate.json",
+                                                                '{"schema_version": "\\ud800"}'))},
+        "deep_nesting": {remote.CONFIG_ENV: str(_write_config(etc / "nested.json", "[" * 50000 + "]" * 50000))},
     }
 
     def offline(*_args, **_kwargs):
@@ -601,7 +605,11 @@ def test_unset_with_this_stages_config_runs_cloud_run_which_proves_each_class_be
     [shadowed], run = _no_spend(host, {**auto, remote.EXECUTION_ENV: "cloud_run_shadow"}, compiler, "still-shadowed")
     assert run["shadowed"] == [shadowed] and "handoffs" not in run
     assert (host.queue / "completed" / shadowed).is_file()
-    # A later failed comparison sends the class back to proving: its next row is shadowed again.
+    # A later failed comparison sends the class back to proving: its next row is shadowed again, once the paid unit
+    # has finished the shadows outstanding (three of them, the most a class may have).
+    assert len(remote.markers(host.jobs, "shadow")) == remote.SHADOW_BACKLOG_LIMIT
+    for path, _ in remote.markers(host.jobs, "shadow"):
+        path.unlink()
     _passes(host, "not_applicable", first=4, count=1, parity="failed")
     [again], run = _no_spend(host, auto, compiler, "proving-again")
     assert (run["handoffs"], run["shadowed"]) == ([], [again])
@@ -647,7 +655,7 @@ def test_chain_preflight_reports_the_requested_and_effective_mode_and_why(tmp_pa
     config = _write_config(tmp_path / "etc" / "remote-cpu-workers.json")
     environment = {remote.JOBS_ROOT_ENV: str(host.jobs), remote.CONFIG_ENV: str(config)}
     unit = preflight.EPISODE_COMPILATION_UNIT
-    mine, other = (os.getuid(), os.getgid()), (os.getuid() + 1, os.getgid() + 1)
+    mine, other = (os.getuid(), os.getgid()), (987654, 987653)  # no such account: it owns nothing here
 
     def units(extra: dict | None = None) -> dict:
         return {unit: {"effective_environment": {**environment, **(extra or {})}}}
@@ -696,3 +704,83 @@ def test_chain_preflight_reports_the_requested_and_effective_mode_and_why(tmp_pa
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["episode_compilation_execution"] == resolved("cloud_run", "auto_with_config")
     assert (report["blocker_count"], report["warning_count"]) == (0, 0)
+
+
+def test_cloud_run_shadows_only_what_the_host_compiled_and_at_most_three_per_class(tmp_path: Path,
+                                                                                   monkeypatch) -> None:
+    """Review I1: self-progression spends only where it can progress.  A row the host blocked is never shadowed
+    in ``cloud_run`` (its comparison could only be inconclusive or failed), and a class never has more than
+    three shadows outstanding, the passes it needs.  ``cloud_run_shadow`` keeps shadowing every eligible row."""
+
+    from blueprint_pipeline.task_evaluation_native_arena_episode_compiler import (
+        TaskEvaluationNativeArenaEpisodeCompilerError,
+    )
+    from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+    compiler = install_compile_stand_ins(monkeypatch.setattr)
+    auto = {remote.CONFIG_ENV: str(_write_config(tmp_path / "etc" / "remote-cpu-workers.json"))}
+
+    def refuses(**_kwargs):
+        raise TaskEvaluationNativeArenaEpisodeCompilerError("episode_compiler_destination_usd_format_unrecognized")
+
+    for label, environ, shadows_everything in (
+            ("cloud_run", auto, False), ("cloud_run_shadow", {**auto, remote.EXECUTION_ENV: "cloud_run_shadow"}, True)):
+        host = Host(tmp_path / label)
+        host.record_worker_environment()
+        [blocked], run = _no_spend(host, environ, refuses, "refused")
+        assert (host.queue / "blocked" / blocked).is_file(), label
+        assert remote.marker_path(host.jobs, "shadow", blocked).is_file() is shadows_everything, label
+        assert run.get("shadow_skipped", {}) == ({} if shadows_everything else {blocked: "host_compile_blocked"})
+        names, run = _no_spend(host, environ, compiler, "row-1", "row-2", "row-3", "row-4", "row-5")
+        assert all((host.queue / "completed" / name).is_file() for name in names), label
+        if shadows_everything:
+            assert run["shadowed"] == names and "shadow_skipped" not in run
+            continue
+        # The blocked row's marker was never written, so three of these five may be shadowed, and no more.
+        assert run["shadowed"] == names[:3] and run["shadow_skipped"] == dict.fromkeys(names[3:],
+                                                                                      "shadow_backlog_full")
+        assert len(remote.markers(host.jobs, "shadow")) == 3
+
+
+def test_readable_by_counts_supplementary_groups_and_can_require_every_parent_to_be_searchable(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review M4: the kernel grants a file's group bits to any of the account's groups, not only its primary one,
+    and nothing under a directory the account cannot search.  POSIX ACLs and a unit's own sandbox stay out of
+    scope, as the preflight's docstring says."""
+
+    import os
+    import stat as mode
+    import types
+
+    from blueprint_pipeline import task_evaluation_production_chain_preflight as preflight
+
+    folder = tmp_path / "etc"
+    folder.mkdir()
+    config = _write_config(folder / "remote-cpu-workers.json")
+    group, account = config.stat().st_gid, (987654, 987653)  # no such account: it owns nothing here
+    monkeypatch.setattr(preflight.pwd, "getpwuid", lambda uid: types.SimpleNamespace(pw_name="blueprint"))
+    monkeypatch.setattr(preflight.os, "getgrouplist", lambda name, gid: [gid])
+    assert preflight.readable_by(config, *account) is False
+    monkeypatch.setattr(preflight.os, "getgrouplist", lambda name, gid: [gid, group])  # a supplementary member
+    assert preflight.readable_by(config, *account) is True
+    # The directories above this test's tree stand in for the host's own root-owned, searchable ones.
+    real, above = os.stat, set(folder.parents)
+
+    def system_above(path, *args, **kwargs):
+        found = real(path, *args, **kwargs)
+        if not isinstance(path, (str, os.PathLike)) or Path(path) not in above:
+            return found
+        return os.stat_result((mode.S_IFDIR | 0o755, found.st_ino, found.st_dev, found.st_nlink, 0, 0,
+                               found.st_size, found.st_atime, found.st_mtime, found.st_ctime))
+
+    monkeypatch.setattr(os, "stat", system_above)
+    environment = {remote.CONFIG_ENV: str(config), remote.JOBS_ROOT_ENV: str(tmp_path / "jobs")}
+    units = {preflight.EPISODE_COMPILATION_UNIT: {"effective_environment": environment}}
+    folder.chmod(0o750)  # its group may search it
+    assert preflight.readable_by(config, *account, traverse=True) is True
+    assert preflight.episode_compilation_execution(units, account)["reason"] == "auto_with_config"
+    folder.chmod(0o700)  # only its owner may
+    assert preflight.readable_by(config, *account) is True  # the file's own bits alone
+    assert preflight.readable_by(config, *account, traverse=True) is False
+    # The preflight resolves auto mode for the unit's account through every parent.
+    assert preflight.episode_compilation_execution(units, account)["reason"] == "auto_without_config"

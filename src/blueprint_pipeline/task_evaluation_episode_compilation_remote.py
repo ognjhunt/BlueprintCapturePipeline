@@ -14,11 +14,14 @@ appearance closure class is ``not_applicable``, ``shipped`` (a valid host cache 
 ship as inputs with the cache-root environment) or ``absent_inline_only`` (a NuRec source small
 enough to convert inline, which stays on the host in every mode until that conversion is
 deterministic); the worker's ephemeral disk fits the compile; the probe-recorded worker
-environment equals the host's on everything but the CPU class, for the configured image; and, for
-``cloud_run`` only and last, the class has three consecutive shadow parity passes on the current
-image, host environment and CPU class.  ``cloud_run`` progresses by itself: a row that only that
-last gate holds back compiles on the host and is shadowed, exactly as in ``cloud_run_shadow``, so
-its class earns the passes that let a later row go remote.
+environment equals the host's on everything but the CPU class, for the configured image; the
+class's breaker is closed (its last three shadow outcomes on this commit were not all failed,
+inconclusive or abandoned); and, for ``cloud_run`` only and last, the class has three consecutive
+shadow parity passes on the current image and host environment (and, for inline NuRec conversion
+alone, CPU class).  ``cloud_run`` progresses by itself: a row that only that last gate holds back
+compiles on the host and, if the host compiled it and its class has fewer than three shadows
+outstanding, is shadowed exactly as in ``cloud_run_shadow``, so its class earns the passes that let
+a later row go remote.
 
 Inside the worker, ``run_episode_compilation_in_worker`` runs the host's own
 ``compile_claimed_envelope`` at the host's paths.  Nothing here imports allocation authority: the
@@ -39,7 +42,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .remote_cpu_environment import DIGESTED_FIELDS, environment_record
+from .remote_cpu_environment import DIGESTED_FIELDS, environment_digest, environment_record
 from .remote_cpu_job_contract import (
     CACHE_ROOT_VARIABLE,
     PERMITTED_PATH_ROOTS,
@@ -81,6 +84,15 @@ PREPARED_REFERENCES = "/var/lib/blueprint/task-evaluation-inputs/prepared-refere
 DEFAULT_CACHE_ROOT = "/var/lib/blueprint/task-evaluation-inputs/particlefield-runtime-assets"
 MAX_INLINE_NUREC_BYTES = MAXIMUM_INLINE_NUREC_CONVERSION_BYTES
 SHADOW_PASSES_REQUIRED = 3
+# Review I2: this many outcomes of a class in a row on one commit that are not passes (failed, inconclusive or
+# abandoned) open its breaker: no more shadows of it, and no remote compile, until a pass or a new commit.
+SHADOW_BREAKER_THRESHOLD = 3
+# Review I1: cloud_run keeps no more shadows of one class outstanding than the passes the class needs.
+SHADOW_BACKLOG_LIMIT = 3
+# The one closure class whose outcomes are per CPU class: the environment digest leaves its float32 math to the
+# descriptor's allowed CPU classes (plan 14 §5).
+INLINE_CLASS = "absent_inline_only"
+COMPILED = STAGES[STAGE]["success_status"]
 # usd-convert-gsplat writes a random temporary PLY path into the converted layer's comment, so an inline NuRec
 # conversion never matches the host's: its shadow comparison could only fail while spending (review I4).
 INLINE_NUREC_CONVERSION_DETERMINISTIC = False
@@ -164,10 +176,7 @@ def remote_configured(environ: Mapping[str, str] | None = None) -> bool:
     """Whether this stage's remote-CPU config is there and usable, exactly as the paid unit loads it (``load_config``
     is the no-spend copy of the allocator's ``load_remote_cpu_config``), and names this stage."""
 
-    try:
-        config = load_config(environ=environ)
-    except OSError:  # a config that cannot be read now is none: the host compiles, as without one
-        return False
+    config = load_config(environ=environ)
     return config is not None and STAGE in config["stages"]
 
 
@@ -337,8 +346,8 @@ def worker_environment(jobs_root: str | Path) -> dict[str, Any] | None:
     worker = (record or {}).get("worker_environment")
     if (record is None or record.get("schema_version") != WORKER_ENVIRONMENT_SCHEMA_VERSION
             or not isinstance(worker, Mapping) or not set(DIGESTED_FIELDS) <= set(worker)
-            or record.get("environment_digest") != worker.get("environment_digest")):
-        return None
+            or not record.get("environment_digest") == worker.get("environment_digest") == environment_digest(worker)):
+        return None  # absent, unsealed, or sealed under a digest this host no longer computes: probe again
     return record
 
 
@@ -377,28 +386,61 @@ def record_shadow_parity(jobs_root: str | Path, fields: Mapping[str, Any]) -> di
     return record
 
 
-def shadow_passes(jobs_root: str | Path, *, closure_class: str, image: str, host_environment_digest: str,
-                  cpu_class: str | None) -> int:
-    """Consecutive trailing parity passes for one class on this image, host environment and CPU class.
+def shadow_class(plan: RemotePlan) -> dict[str, Any]:
+    """A plan's closure class as ``shadow_passes`` and ``shadow_breaker_open`` key it."""
 
-    An ``inconclusive`` comparison (nothing compiled on both sides) neither counts nor breaks the run."""
+    return {"closure_class": plan.closure["class"], "image": plan.image,
+            "host_environment_digest": plan.host_environment_digest,
+            "cpu_class": plan.allowed_cpu_classes[0] if plan.allowed_cpu_classes else None}
+
+
+def _outcomes(jobs_root: str | Path, *, closure_class: str, image: str, host_environment_digest: str,
+              cpu_class: str | None, source_commit: str | None = None) -> list[str]:
+    """One class's sealed shadow outcomes, newest first: its closure class on this image and host environment,
+    and for inline NuRec conversion alone on this CPU class (plan 14 §5); only ``source_commit``'s if given.
+    At the same moment, anything but a pass counts as the later one."""
 
     rows = []
     for path in sorted((Path(jobs_root) / "parity" / STAGE).glob("*.json")):
         record = _read_record(path)
         if (record is not None and record.get("schema_version") == PARITY_SCHEMA_VERSION
                 and record.get("record_digest") == canonical_digest(record, digest_field="record_digest")
-                and record.get("parity") != "inconclusive"
-                and (record.get("closure_class"), record.get("image"), record.get("host_environment_digest"),
-                     record.get("cpu_class")) == (closure_class, image, host_environment_digest, cpu_class)):
-            rows.append((float(record.get("compared_at_epoch") or 0.0), record.get("parity") != "passed"))
+                and (record.get("closure_class"), record.get("image"), record.get("host_environment_digest"))
+                == (closure_class, image, host_environment_digest)
+                and (closure_class != INLINE_CLASS or record.get("cpu_class") == cpu_class)
+                and (source_commit is None or record.get("source_commit") == source_commit)):
+            parity = str(record.get("parity"))
+            rows.append((float(record.get("compared_at_epoch") or 0.0), parity != "passed", parity))
+    return [parity for *_, parity in sorted(rows, reverse=True)]
+
+
+def shadow_passes(jobs_root: str | Path, *, closure_class: str, image: str, host_environment_digest: str,
+                  cpu_class: str | None) -> int:
+    """Consecutive trailing parity passes for one class.  An ``inconclusive`` comparison (nothing compiled on both
+    sides) or an ``abandoned`` shadow (never compared) neither counts nor breaks the run; a failure breaks it."""
+
     count = 0
-    # Newest first; a failure compared at the same moment as a pass counts as the later one.
-    for _, failed in sorted(rows, reverse=True):
-        if failed:
+    for parity in _outcomes(jobs_root, closure_class=closure_class, image=image,
+                            host_environment_digest=host_environment_digest, cpu_class=cpu_class):
+        if parity in {"inconclusive", "abandoned"}:
+            continue
+        if parity != "passed":
             break
         count += 1
     return count
+
+
+def shadow_breaker_open(jobs_root: str | Path, *, closure_class: str, image: str, host_environment_digest: str,
+                        cpu_class: str | None, source_commit: str) -> bool:
+    """Review I2: whether the class's last ``SHADOW_BREAKER_THRESHOLD`` outcomes on this commit were all not passes."""
+
+    trailing = 0
+    for parity in _outcomes(jobs_root, closure_class=closure_class, image=image, cpu_class=cpu_class,
+                            host_environment_digest=host_environment_digest, source_commit=source_commit):
+        if parity == "passed":
+            break
+        trailing += 1
+    return trailing >= SHADOW_BREAKER_THRESHOLD
 
 
 def _closure(envelope: Mapping[str, Any], references: Mapping[str, Mapping[str, Any]],
@@ -501,8 +543,8 @@ def plan_remote_compilation(
         return HostDecision("remote_ineligible:image_drift")
     host = dict(host_environment) if host_environment is not None else environment_record()
     worker = recorded["worker_environment"]
-    for field in DIGESTED_FIELDS:
-        if field != "cpu_class" and worker.get(field) != host.get(field):
+    for field in DIGESTED_FIELDS:  # everything but the CPU class, which the digest leaves out (plan 14 §5)
+        if worker.get(field) != host.get(field):
             return HostDecision(f"remote_ineligible:environment_mismatch:{field}")
     cpu_class = recorded.get("cpu_class")
     inline = closure_record["class"] == "absent_inline_only"
@@ -520,11 +562,13 @@ def plan_remote_compilation(
         inputs=tuple(rows), output_root=f"{output_parent}/{envelope['compilation_id']}",
         declared_scratch=(f"{output_parent}/content-addressed/",),
         allowed_cpu_classes=(str(cpu_class),) if inline else (), ephemeral_bytes_required=required)
+    # Review I2: a class whose last shadows on this commit all came to nothing is neither shadowed nor sent, in
+    # either remote mode, until a pass or a new commit.
+    if shadow_breaker_open(jobs_root, source_commit=source_commit, **shadow_class(plan)):
+        return HostDecision(f"remote_ineligible:shadow_breaker_open:{closure_record['class']}")
     # The per-class shadow gate is the last: a row it holds back passed every other gate, so its decision carries
     # the whole plan, and cloud_run shadows the row while the host compiles it (self-progression).
-    if require_shadow_gate and shadow_passes(
-            jobs_root, closure_class=closure_record["class"], image=entry["image"],
-            host_environment_digest=host["environment_digest"], cpu_class=cpu_class) < SHADOW_PASSES_REQUIRED:
+    if require_shadow_gate and shadow_passes(jobs_root, **shadow_class(plan)) < SHADOW_PASSES_REQUIRED:
         return HostDecision(f"remote_ineligible:shadow_parity_unproven:{closure_record['class']}", shadow_plan=plan)
     return plan
 
@@ -598,8 +642,11 @@ def load_config(path: str | Path | None = None, environ: Mapping[str, str] | Non
     allocator (the worker's stage child imports it from the release), so a test pins the two together."""
 
     location = path or (os.environ if environ is None else environ).get(CONFIG_ENV) or DEFAULT_CONFIG_PATH
-    config = _read_record(Path(location), forbidden_mode=0o027, maximum=CONFIG_MAX_BYTES)
-    return config if config is not None and not config_blockers(config) else None
+    try:
+        config = _read_record(Path(location), forbidden_mode=0o027, maximum=CONFIG_MAX_BYTES)
+        return config if config is not None and not config_blockers(config) else None
+    except Exception:  # noqa: BLE001 - review M1: deep nesting, a lone surrogate, an I/O error: no config, host
+        return None
 
 
 def _compile_on_host(queue: Path, name: str, claimed: Path, *, inputs: Path, outputs: Path, source_commit: str,
@@ -640,6 +687,19 @@ def _compile_fallbacks(queue: Path, jobs_root: Path, clock: Any, *, limit: int, 
             compiled.append(sealed or _compile_on_host(queue, name, claimed, **host))
         path.unlink(missing_ok=True)
     return compiled, deferred
+
+
+def _outstanding_shadows(jobs_root: Path, plan: RemotePlan) -> int:
+    """Shadow markers of ``plan``'s class not yet finished: waiting, or in flight until the paid unit's teardown."""
+
+    key, count = shadow_class(plan), 0
+    for _, marker in markers(jobs_root, "shadow"):
+        try:
+            same = marker is not None and shadow_class(RemotePlan.from_record(marker["plan"])) == key
+        except (KeyError, TypeError, IndexError):  # a marker that names no plan is no class's
+            same = False
+        count += int(same)
+    return count
 
 
 def run_no_spend_unit(**arguments: Any) -> dict[str, Any]:
@@ -735,7 +795,7 @@ def _no_spend_run(
     (queue / "results").mkdir(mode=0o750, exist_ok=True)
     config = load_config(environ=environ) if config is None else dict(config)
     measured: dict[str, Any] = {}
-    processed, handed, shadowed, decisions = [], [], [], {}
+    processed, handed, shadowed, decisions, skipped = [], [], [], {}, {}
     for source in sorted((queue / "pending").glob("*.json"))[:max_messages]:
         claimed = claim_pending_row(queue, source)
         if claimed is None:
@@ -756,13 +816,20 @@ def _no_spend_run(
         # Either way the host compiles the row first, and what it writes is all any consumer reads.
         shadow = plan if isinstance(plan, RemotePlan) else plan.shadow_plan
         processed.append(_compile_on_host(queue, source.name, claimed, **host))
+        if shadow is not None and mode == "cloud_run":
+            # Review I1: self-progression pays only for a shadow that can move its class: of a row the host
+            # compiled, and while the class has fewer shadows outstanding than the passes it needs.
+            if processed[-1].get("status") != COMPILED:
+                skipped[source.name], shadow = "host_compile_blocked", None
+            elif _outstanding_shadows(jobs, shadow) >= SHADOW_BACKLOG_LIMIT:
+                skipped[source.name], shadow = "shadow_backlog_full", None
         if shadow is not None:
             write_handoff(jobs, shadow, mode="shadow", now=clock())
             shadowed.append(source.name)
     return {"schema_version": RUN_SCHEMA_VERSION, "status": "processed" if processed or handed else "idle",
             "processed_count": len(processed), "results": processed, "mode": mode, "findings": findings,
             "execution_mode": resolved, **({"handoffs": handed} if mode == "cloud_run" else {}),
-            "shadowed": shadowed, "host_decisions": decisions,
+            "shadowed": shadowed, **({"shadow_skipped": skipped} if skipped else {}), "host_decisions": decisions,
             "recovered_claims": recovered, "fallback_results": fallbacks, "fallback_deferred": deferred,
             "provider_mutation_performed": False, "paid_execution_requested": False,
             "automatic_retry_performed": False}
@@ -804,6 +871,8 @@ __all__ = [
     "load_config",
     "record_shadow_parity",
     "remote_configured",
+    "shadow_breaker_open",
+    "shadow_class",
     "resolve_execution_mode",
     "run_episode_compilation_in_worker",
     "run_no_spend_unit",

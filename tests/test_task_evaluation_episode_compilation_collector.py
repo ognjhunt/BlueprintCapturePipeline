@@ -528,8 +528,9 @@ def test_shadow_keeps_host_authoritative_and_counts_parity_per_closure_class(tmp
     assert parity[world.name]["parity"] == parity[shipped.queue_row["name"]]["parity"] == "passed"
     assert parity[drifted.queue_row["name"]]["parity"] == "failed"
     assert parity[drifted.queue_row["name"]]["mismatches"] == ["native-task-packet/native_task_arena_packet_request.v1.json"]
-    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 1, "inconclusive": 0},
-                                           "shipped": {"passed": 1, "failed": 0, "inconclusive": 0}}
+    assert world.results[-1]["parity"] == {
+        "not_applicable": {"passed": 1, "failed": 1, "inconclusive": 0, "abandoned": 0},
+        "shipped": {"passed": 1, "failed": 0, "inconclusive": 0, "abandoned": 0}}
     identity = {"image": world.plan.image, "host_environment_digest": HOST_RECORD["environment_digest"],
                 "cpu_class": HOST_RECORD["cpu_class"]}
     # Consecutive passes since the class's last failure: the pass counts only if it was compared after it.
@@ -639,7 +640,8 @@ def test_a_shadow_comparison_of_two_blocked_compiles_is_inconclusive(tmp_path: P
     identity = {"image": world.plan.image, "host_environment_digest": HOST_RECORD["environment_digest"],
                 "cpu_class": HOST_RECORD["cpu_class"]}
     assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", **identity) == 1
-    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 0, "inconclusive": 3}}
+    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 0, "inconclusive": 3,
+                                                              "abandoned": 0}}
 
 
 @pytest.mark.parametrize("trigger", ["result", "pointer"])
@@ -1032,7 +1034,9 @@ def test_a_persistent_host_error_before_the_commit_is_bounded_then_abandoned(tmp
     assert row["failures"] == collector.COLLECTION_RETRIES
     _assert_torn_down(world)  # provider-zero, settled, and its slot free
     if shadow:
-        assert not list((world.host.jobs / "parity").rglob("*.json"))
+        # Review I2: a comparison that could not finish is its class's abandoned outcome, never a parity result.
+        [record] = [json.loads(path.read_text(encoding="utf-8")) for path in (world.host.jobs / "parity").rglob("*.json")]
+        assert (record["parity"], record["attempt_id"]) == ("abandoned", lease["attempt_id"])
     else:
         assert remote.marker_path(world.host.jobs, "fallback", world.name).is_file()
         assert world.row_state() == "processing"
@@ -1190,9 +1194,10 @@ def test_auto_mode_proves_a_class_in_shadow_then_hands_its_next_row_off(tmp_path
         lease = json.loads((world.host.jobs / "leases" / f"{contract.job_id_for('episode_compilation', name)}.json")
                            .read_text(encoding="utf-8"))
         assert lease["state"] == "shadow_compared" and lease["provider_zero_proven"], name
-    parity = [json.loads(path.read_text(encoding="utf-8"))["parity"]
+    parity = [json.loads(path.read_text(encoding="utf-8"))
               for path in (world.host.jobs / "parity" / "episode_compilation").glob("*.json")]
-    assert parity == ["passed"] * 3
+    # Each comparison names the commit it ran on: the per-class breaker counts outcomes per commit.
+    assert [(row["parity"], row["source_commit"]) for row in parity] == [("passed", world.plan.source_commit)] * 3
     identity = {"image": world.plan.image, "host_environment_digest": HOST_RECORD["environment_digest"],
                 "cpu_class": HOST_RECORD["cpu_class"]}
     assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", **identity) == 3
@@ -1206,3 +1211,106 @@ def test_auto_mode_proves_a_class_in_shadow_then_hands_its_next_row_off(tmp_path
     assert (world.host.outputs / f"{envelope['compilation_id']}.remote-output.v1.json").is_file()
     result = json.loads((world.host.queue / "results" / proven).read_text(encoding="utf-8"))
     assert result["status"] == "compiled_for_production_launch"
+
+
+def _shadow_outcomes(world: CollectorWorld, *outcomes: str, first: int = 1) -> None:
+    """Sealed shadow outcomes for the world's class, image, host environment and commit."""
+
+    for index, parity in enumerate(outcomes, start=first):
+        remote.record_shadow_parity(world.host.jobs, {
+            "closure_class": world.plan.closure["class"], "attempt_id": f"rcj-ec-{'f' * 24}-a1-{index:032x}",
+            "queue_row": {"queue": remote.QUEUE, "name": f"row-{index}.json", "envelope_digest": "sha256:" + "1" * 64},
+            "image": world.plan.image, "host_environment_digest": world.plan.host_environment_digest,
+            "worker_environment_digest": world.plan.environment_digest, "cpu_class": HOST_RECORD["cpu_class"],
+            "parity": parity, "mismatches": [], "source_commit": world.plan.source_commit,
+            "compared_at_epoch": float(index)})
+
+
+@pytest.mark.parametrize("mode", ["cloud_run", "cloud_run_shadow"])
+def test_an_undispatched_shadow_is_retired_once_its_class_needs_no_more(tmp_path: Path, monkeypatch, mode: str) -> None:
+    """Review I1 and I2: the paid unit never pays for a shadow that cannot move its class.  In ``cloud_run`` a
+    class with its three passes needs no more; in either mode a class whose breaker is open gets no more on this
+    commit.  Such a marker goes, undispatched: nothing staged, consumed or run, and no outcome recorded."""
+
+    for label, outcomes, retired_in in (("proven", ("passed",) * 3, {"cloud_run"}),
+                                        ("broken", ("failed", "inconclusive", "abandoned"),
+                                         {"cloud_run", "cloud_run_shadow"})):
+        world = CollectorWorld(tmp_path / label, monkeypatch, mode=mode, marker="shadow")
+        _shadow_outcomes(world, *outcomes)
+        before = set(world.store.buckets[B2_BUCKET])
+        world.collect()
+        row = world.results[-1]["rows"][world.name]
+        if mode not in retired_in:  # cloud_run_shadow compares a proven class for its own sake
+            assert row["status"] == "dispatched", (label, row)
+            continue
+        reason = "remote_cpu_shadow_class_proven" if label == "proven" else "remote_cpu_shadow_breaker_open"
+        assert row == {"status": "returned_to_host", "reason": reason}, label
+        assert not remote.marker_path(world.host.jobs, "shadow", world.name).exists(), label
+        assert (world.executions(), _consumed(world), world.lease()) == ([], [], None), label
+        assert set(world.store.buckets[B2_BUCKET]) == before, label
+        assert len(list((world.host.jobs / "parity" / "episode_compilation").glob("*.json"))) == 3, label
+
+
+def test_a_shadow_given_up_after_it_ran_is_recorded_as_abandoned(tmp_path: Path, monkeypatch) -> None:
+    """Review I2: a shadow that ran but was never compared (both attempts crashed) is an outcome of its class on
+    this commit, so the breaker can count it; one that never ran is not."""
+
+    world = CollectorWorld(tmp_path, monkeypatch, mode="cloud_run", marker="shadow")
+    world.remote.jobs.script("crash", "crash")
+    world.drive(until=lambda: not remote.markers(world.host.jobs, "shadow"), step=120)
+    lease = world.lease()
+    assert lease["state"] == "fallback_host" and lease["attempt"] == 2 and len(world.executions()) == 2
+    [record] = [json.loads(path.read_text(encoding="utf-8"))
+                for path in (world.host.jobs / "parity" / "episode_compilation").glob("*.json")]
+    assert (record["parity"], record["attempt_id"], record["source_commit"], record["closure_class"]) == (
+        "abandoned", lease["attempt_id"], world.plan.source_commit, "not_applicable")
+    assert world.results[-1]["parity"] == {"not_applicable": {"passed": 0, "failed": 0, "inconclusive": 0,
+                                                              "abandoned": 1}}
+    _assert_torn_down(world)
+
+
+@pytest.mark.parametrize(("authority", "blocker"), [
+    ("missing", "remote_cpu_standing_authority_missing"),
+    ("expired", "remote_cpu_standing_authority_expired"),
+    ("capped", "remote_cpu_total_cap_exceeded"),
+])
+def test_nothing_is_staged_for_a_dispatch_the_standing_authority_would_refuse(
+        tmp_path: Path, monkeypatch, authority: str, blocker: str) -> None:
+    """Review I3: the admission the allocator would refuse is checked, read-only, before any input or release is
+    uploaded.  A missing, expired or capped-out authority hands the row back with nothing written to B2."""
+
+    from tests.remote_cpu_allocator_fakes import standing_authority
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    if authority == "missing":
+        (world.remote.spend / "authorizations" / "remote-cpu-standing-authorization.v1.json").unlink()
+    else:
+        world.remote.write_authority(standing_authority(**(
+            {"expires_at_epoch": world.clock.now - 1} if authority == "expired" else {"max_total_usd": 0.01})))
+    before = set(world.store.buckets[B2_BUCKET])
+    world.collect()
+    assert world.results[-1]["rows"][world.name] == {"status": "dispatch_refused", "blocker": blocker,
+                                                     "reason": blocker}
+    assert set(world.store.buckets[B2_BUCKET]) == before
+    assert not list((world.host.jobs / "descriptors").glob("*.json"))
+    assert (world.executions(), _consumed(world), world.lease()) == ([], [], None)
+    assert remote.marker_path(world.host.jobs, "fallback", world.name).is_file()
+
+
+def test_a_shadow_on_another_cpu_class_is_compared_and_counts_for_its_class(tmp_path: Path, monkeypatch) -> None:
+    """Review I1: dispatch requires equality on everything but the CPU class (plan 14 §5).  A worker that Cloud
+    Run placed on another machine compares, passes and counts toward its class, with no retry."""
+
+    from tests.remote_cpu_allocator_fakes import environment
+
+    world = CollectorWorld(tmp_path, monkeypatch, mode="cloud_run", marker="shadow")
+    world.worker_record = environment(cpu_class="sha256:" + "a" * 64)
+    assert world.worker_record["cpu_class"] != HOST_RECORD["cpu_class"]
+    world.drive(until=lambda: not remote.markers(world.host.jobs, "shadow"), step=120)
+    [record] = [json.loads(path.read_text(encoding="utf-8"))
+                for path in (world.host.jobs / "parity" / "episode_compilation").glob("*.json")]
+    assert (record["parity"], record["cpu_class"]) == ("passed", "sha256:" + "a" * 64)
+    assert len(world.executions()) == 1
+    assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", image=world.plan.image,
+                                host_environment_digest=world.plan.host_environment_digest,
+                                cpu_class=HOST_RECORD["cpu_class"]) == 1
