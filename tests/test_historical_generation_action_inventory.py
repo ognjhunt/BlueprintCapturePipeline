@@ -90,6 +90,65 @@ def test_changed_payload_during_hash_is_not_a_reviewable_generation(historical_t
     assert changed
 
 
+def test_unrelated_ancestor_namespace_change_does_not_change_selected_generation(historical_tree, monkeypatch):
+    parent, target = historical_tree
+    from blueprint_pipeline import control_plane_lane_historical_generation as module
+    original = module.os.read
+    changed = False
+    sibling = parent.parent / (parent.name + '-unselected')
+    def read(fd, amount):
+        nonlocal changed
+        value = original(fd, amount)
+        if not changed and os.fstat(fd).st_ino == (target / 'one.bin').stat().st_ino:
+            changed = True
+            sibling.mkdir()
+        return value
+    monkeypatch.setattr(module.os, 'read', read)
+    try:
+        observed = inventory(parent, target)
+        assert changed and observed['member_count'] == 4
+    finally:
+        sibling.rmdir()
+
+
+def test_original_selected_parent_change_during_hash_still_refuses(historical_tree, monkeypatch):
+    parent, target = historical_tree
+    from blueprint_pipeline import control_plane_lane_historical_generation as module
+    original = module.os.read
+    changed = False
+    def read(fd, amount):
+        nonlocal changed
+        value = original(fd, amount)
+        if not changed and os.fstat(fd).st_ino == (target / 'one.bin').stat().st_ino:
+            changed = True
+            (parent / 'changed-selected-parent').mkdir()
+        return value
+    monkeypatch.setattr(module.os, 'read', read)
+    with pytest.raises(ValueError, match='historical_generation_changed'):
+        inventory(parent, target)
+    assert changed
+
+
+def test_unselected_ancestor_sibling_during_descriptor_acquisition(historical_tree, monkeypatch):
+    parent, target = historical_tree
+    from blueprint_pipeline import control_plane_lane_historical_generation as module
+    original = module.os.open
+    changed = False
+    sibling = parent.parent / (parent.name + '-acquisition-sibling')
+    def opening(name, flags, *args, **kwargs):
+        nonlocal changed
+        if not changed and name == parent.parent.name:
+            changed = True
+            sibling.mkdir()
+        return original(name, flags, *args, **kwargs)
+    monkeypatch.setattr(module.os, 'open', opening)
+    try:
+        assert inventory(parent, target)['member_count'] == 4
+        assert changed
+    finally:
+        sibling.rmdir()
+
+
 def test_elapsed_deadline_refuses_generation(historical_tree):
     parent, target = historical_tree
     calls = iter([0.0, 2.0])

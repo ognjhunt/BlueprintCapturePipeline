@@ -32,6 +32,39 @@ def _require(value, code):
         raise HistoricalGenerationError('historical_generation_' + code)
 
 
+def _verify_chain(chain):
+    """Retain every named ancestor; exact namespace versions only in scope.
+
+    A sibling outside the configured parent does not change this generation.
+    Its ancestor must still name the original inode with unchanged rights.
+    The selected parent and target retain their full original versions.
+    """
+    for index, (parent, name, fd, expected) in enumerate(chain):
+        opened = legacy._version(os.fstat(fd))
+        named = legacy._version(os.stat(name, dir_fd=parent, follow_symlinks=False))
+        if index < len(chain) - 2:
+            _require(opened[:5] == named[:5] == expected[:5], 'changed')
+        else:
+            _require(opened == named == expected, 'changed')
+
+
+def _chain(path, stack):
+    components = ('/', *path.parts[1:])
+    result, parent = [], None
+    for index, name in enumerate(components):
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        _require(stat.S_ISDIR(named.st_mode), 'changed')
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     dir_fd=parent)
+        stack.callback(os.close, fd)
+        expected, opened = legacy._version(named), legacy._version(os.fstat(fd))
+        _require(opened == expected if index >= len(components) - 2
+                 else opened[:5] == expected[:5], 'changed')
+        result.append((parent, name, fd, opened))
+        parent = fd
+    return result
+
+
 def verify_historical_member_versions(manifest, *, tick):
     """Recheck the entire original namespace without rereading payload bytes.
 
@@ -103,10 +136,10 @@ def verify_historical_member_versions(manifest, *, tick):
         with ExitStack() as stack:
             target = Path(manifest['target_path'])
             legacy._absolute(target)
-            chain = legacy._chain(target, stack)
+            chain = _chain(target, stack)
             _require(list(legacy._version(os.fstat(chain[-2][2]))) == manifest['root_version'], 'changed')
             walk(chain[-1][2], '')
-            legacy._verify_chain(chain)
+            _verify_chain(chain)
             tick()
     except (OSError, legacy.LegacyOwnerError):
         raise HistoricalGenerationError('historical_generation_changed') from None
@@ -229,12 +262,12 @@ def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMB
     try:
         with ExitStack() as stack:
             tick()
-            chain = legacy._chain(target, stack)
+            chain = _chain(target, stack)
             parent_fd, target_fd = chain[-2][2], chain[-1][2]
             parent_info, target_info = os.fstat(parent_fd), os.fstat(target_fd)
             _require(parent_info.st_dev == target_info.st_dev, 'member_unsupported')
             walk(target_fd, '', 0, target_info.st_dev)
-            legacy._verify_chain(chain)
+            _verify_chain(chain)
             tick()
             value = dict(schema_version='control_plane_historical_generation.v1',
                 target_path=str(target), parent_path=str(target.parent),
