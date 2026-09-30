@@ -11,6 +11,8 @@ import re
 import stat
 import sys
 import time
+from contextlib import ExitStack
+from pathlib import Path
 
 from .control_plane_kernel_process import kernel_has_no_user_memory
 
@@ -51,6 +53,8 @@ class _Scan:
         self.tick_operation = tick
         self.started = self.last = time.monotonic()
         self.entries, self.raw_bytes = 0, 0
+        self.views = {}
+        self.physical_target = None
 
     def tick(self):
         self.tick_operation()
@@ -101,19 +105,130 @@ def _namespace(directory, *, kernel=False):
     return tuple(values)
 
 
+def _mount_path(raw):
+    # The kernel escapes these four characters in mountinfo. Unrecognized or
+    # noncanonical spellings remain unknown, rather than inventing an alias.
+    raw = re.sub(rb'\\(040|011|012|134)', lambda match: bytes([int(match[1], 8)]), raw)
+    _require(0 < len(raw) <= 4096 and b'\\' not in raw, 'process_view_unknown')
+    text = os.fsdecode(raw)
+    path = Path(text)
+    _require(path.is_absolute() and str(path) == text and '..' not in path.parts
+        and len(path.parts) <= 32 and all(32 <= ord(char) < 127 or 127 < ord(char) < 0xD800
+            or 0xDFFF < ord(char) for char in text), 'process_view_unknown')
+    return path
+
+
+def _mount_rows(raw, tick=lambda: None):
+    _require(isinstance(raw, bytes) and 0 < len(raw) <= 1024**2, 'process_view_unknown')
+    result, identities = [], set()
+    for line in raw.splitlines():
+        tick()
+        _require(len(result) < 4096, 'process_view_unknown')
+        left, separator, right = line.partition(b' - ')
+        fields, tail = left.split(), right.split()
+        _require(separator and len(fields) >= 6 and len(tail) == 3
+            and fields[0].isdigit() and fields[1].isdigit() and fields[0] not in identities
+            and re.fullmatch(rb'[0-9]{1,10}:[0-9]{1,10}', fields[2]), 'process_view_unknown')
+        identities.add(fields[0])
+        major, minor = fields[2].split(b':')
+        result.append((os.makedev(int(major), int(minor)), _mount_path(fields[3]),
+                       _mount_path(fields[4])))
+    _require(result, 'process_view_unknown')
+    return result
+
+
+def _physical_target(raw, target, device, *, tick=lambda: None):
+    candidates = [row for row in _mount_rows(raw, tick) if target.is_relative_to(row[2])]
+    _require(candidates, 'process_view_unknown')
+    selected = max(candidates, key=lambda row: len(row[2].parts))
+    _require(selected[0] == device, 'process_view_unknown')
+    return selected[1] / target.relative_to(selected[2])
+
+
+def _view_routes(raw, physical, device, *, tick=lambda: None):
+    routes = []
+    for current, root, point in _mount_rows(raw, tick):
+        if current != device:
+            continue
+        # The first scope excludes mounts rooted at or inside the selected
+        # generation. Ancestor mounts are known only after the actual target
+        # inode and root-owned rights are observed through EVERY derived route.
+        _require(not root.is_relative_to(physical), 'process_view_unknown')
+        if physical.is_relative_to(root):
+            route = point / physical.relative_to(root)
+            _require(len(routes) < 16 and len(os.fsencode(route)) <= 4096, 'process_view_unknown')
+            routes.append(route)
+    _require(routes, 'process_view_unknown')
+    return tuple(dict.fromkeys(routes))
+
+
+def _known_filesystem_view(scan, directory, view, target, identities, root_identity):
+    """Authenticate actual mount routes and rights, not a namespace-name waiver.
+
+    A different service namespace may expose the same protected generation.
+    Full current mount bytes derive every ancestor alias. Missing/hidden routes,
+    subtree binds, remapped owner rights, links or changed mount bytes refuse.
+    Current FD/cwd/maps and start/namespace checks still run after this proof.
+    """
+    target = Path(target)
+    current = os.stat(target, follow_symlinks=False)
+    _require(stat.S_ISDIR(current.st_mode) and (current.st_dev, current.st_ino) in identities
+        and current.st_uid == current.st_gid == 0 and stat.S_IMODE(current.st_mode) == 0o700,
+        'process_view_unknown')
+    if scan.physical_target is None:
+        own = os.open('/proc/' + str(os.getpid()), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            raw = scan.read(own, 'mountinfo')
+            physical = _physical_target(raw, target, current.st_dev, tick=scan.tick)
+            _require(scan.read(own, 'mountinfo') == raw, 'process_view_unknown')
+            scan.physical_target = physical
+        finally:
+            os.close(own)
+    raw = scan.read(directory, 'mountinfo')
+    if view not in scan.views:
+        _require(len(scan.views) < 16, 'process_view_unknown')
+        scan.views[view] = (raw, _view_routes(raw, scan.physical_target, current.st_dev, tick=scan.tick))
+    _require(scan.views[view][0] == raw, 'process_view_unknown')
+    for route in scan.views[view][1]:
+        with ExitStack() as stack:
+            root = os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=directory)
+            stack.callback(os.close, root)
+            info = os.fstat(root)
+            _require((info.st_dev, info.st_ino) == root_identity, 'process_view_unknown')
+            parent = root
+            for part in route.parts[1:]:
+                scan.tick()
+                named = os.stat(part, dir_fd=parent, follow_symlinks=False)
+                descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                     dir_fd=parent)
+                stack.callback(os.close, descriptor)
+                opened = os.fstat(descriptor)
+                _require((opened.st_dev, opened.st_ino, opened.st_mode, opened.st_uid, opened.st_gid)
+                    == (named.st_dev, named.st_ino, named.st_mode, named.st_uid, named.st_gid),
+                    'process_view_unknown')
+                parent = descriptor
+            info = os.fstat(parent)
+            _require((info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+                == (current.st_dev, current.st_ino, current.st_mode, 0, 0), 'process_view_unknown')
+    _require(scan.read(directory, 'mountinfo') == raw, 'process_view_unknown')
+
+
 def _inspect_process(scan, directory, pid, target, identities, namespaces, host_mount, root_identity):
     """Private parser seam; native acceptance uses an actual foreign UID PID."""
     started = _process_start(scan.read(directory, 'stat', 16384), pid)
     kernel = kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid)
     view = _namespace(directory, kernel=kernel)
-    _require(view[:2] == namespaces[:2]
-        and (view[2] in (namespaces[2], host_mount) or kernel and view[2] is None))
+    _require(view[:2] == namespaces[:2])
+    if kernel:
+        _require(view[2] in (namespaces[2], host_mount, None))
     try:
         info = os.stat('root', dir_fd=directory)
     except FileNotFoundError:
         _require(kernel)
     else:
         _require((info.st_dev, info.st_ino) == root_identity)
+    if not kernel:
+        _known_filesystem_view(scan, directory, view[2], target, identities, root_identity)
     channels = set()
     for name in ('cwd', 'root'):
         scan.tick()
@@ -154,6 +269,10 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
              and _namespace(directory, kernel=kernel) == view
              and (not kernel or kernel_has_no_user_memory(
                  lambda name, cap: scan.read(directory, name, cap), pid)))
+    if not kernel:
+        _require(scan.read(directory, 'mountinfo') == scan.views[view[2]][0], 'process_view_unknown')
+        current_root = os.stat('root', dir_fd=directory)
+        _require((current_root.st_dev, current_root.st_ino) == root_identity, 'process_view_unknown')
     return channels
 
 
