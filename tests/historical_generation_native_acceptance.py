@@ -269,17 +269,34 @@ def worker_main(root, action_id):
                 os.write = write
             else:
                 original_unlink, original_sync = os.unlink, os.fsync
-                removed = False
+                from blueprint_pipeline.control_plane_lane_historical_action import _Worker
+                from blueprint_pipeline.control_plane_lane_historical_fence import _version
+                original_record = _Worker.record
+                selected, removed_parent = None, None
+                def reconciliation_record(self, kind, body):
+                    nonlocal selected
+                    result = original_record(self, kind, body)
+                    if kind == 'restore_intent' and body.get('phase') == 'reconcile_intent':
+                        approved, _, _ = self.reconciliation_selected[-1]
+                        selected = approved['packet']['scope']
+                    return result
+                _Worker.record = reconciliation_record
                 def unlink(name, *args, **kwargs):
-                    nonlocal removed
+                    nonlocal removed_parent
+                    parent = kwargs.get('dir_fd')
+                    matched = selected is not None and name == selected['remove_member']['path'].rpartition('/')[2] \
+                        and parent is not None and _version(os.fstat(parent)) == selected['parent_after'] \
+                        and _version(os.stat(name, dir_fd=parent, follow_symlinks=False)) == selected['remove_member']['version']
                     result = original_unlink(name, *args, **kwargs)
-                    removed = True
-                    if phase == 'reconcile_remove':
+                    if matched:
+                        removed_parent = parent
+                    if matched and phase == 'reconcile_remove':
                         os.kill(os.getpid(), signal.SIGKILL)
                     return result
                 def sync(fd):
                     result = original_sync(fd)
-                    if removed and phase == 'reconcile_sync':
+                    if removed_parent == fd and phase == 'reconcile_sync':
+                        assert _version(os.fstat(fd))[:6] == selected['parent_after'][:6]
                         os.kill(os.getpid(), signal.SIGKILL)
                     return result
                 os.unlink, os.fsync = unlink, sync
@@ -701,6 +718,36 @@ def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *,
     return approved
 
 
+def _assert_reconciliation_death_boundary(root, restore, target, journals, approval, phase):
+    from blueprint_pipeline.control_plane_lane_historical_generation import inventory_historical_generation
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_scope import reconciled_parent
+    directory = root / 'state/requests/historical-generation-actions'
+    raw = (directory / (approval['decision_id'] + '.manifest.json')).read_bytes()
+    assert dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)) == approval['observed_manifest']
+    approved = json.loads(raw)
+    decision_raw = (directory / (approval['decision_id'] + '.json')).read_bytes()
+    assert json.loads(decision_raw) == approval
+    observed = inventory_historical_generation(target, allowed_roots=(root / 'work', root / 'inputs'))
+    head = json.loads(max((journals / restore['action_id']).glob('e-*.json')).read_bytes())
+    expected = 'reconciled' if phase == 'reconcile_consumed' else 'reconcile_intent'
+    assert head['kind'] == 'restore_intent' and head['body']['phase'] == expected
+    assert head['action_id'] == restore['action_id']
+    assert head['body']['decision_id'] == approval['decision_id']
+    assert head['body']['decision'] == dict(sha256='sha256:' + hashlib.sha256(decision_raw).hexdigest(),
+                                         size_bytes=len(decision_raw))
+    assert head['body']['original_head_event_digest'] == approval['packet']['original_head_event_digest']
+    if phase == 'reconcile_intent':
+        assert observed == approved  # exact inode, parent, namespace and partial bytes
+    else:
+        parent = reconciled_parent(approved, observed, approval['packet']['scope'])
+        if phase == 'reconcile_consumed':
+            assert head['body']['parent_version'] == parent
+            assert head['body']['uncertain'] is True and head['body']['credited_removed_allocated_bytes'] == 0
+    print(json.dumps(dict(fixture_actual_reconciliation_boundary=phase,
+        action_id=restore['action_id'], decision_id=approval['decision_id'], journal_head=head['event_digest'],
+        observed_generation_digest=observed['generation_digest'])), flush=True)
+
+
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
                      restore_interruption='restore_final', installed=False, destination_conflict=False, metadata_probe=False,
                      reconciliation_interruption=None):
@@ -992,6 +1039,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                         assert not list(stage.iterdir())
                     else:
                         assert (stage / 'nested/two.log').read_bytes() == original['nested/two.log'][:1]
+                        retained_known_directories = {name: (path.stat().st_dev, path.stat().st_ino)
+                            for name, path in (('', stage), ('nested', stage / 'nested'))}
                 elif restore_interruption == 'unwritten_stage':
                     assert not list(target.iterdir())
                 elif restore_interruption in ('stage_complete', 'restore_directory', 'restore_member'):
@@ -1039,6 +1088,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     born_roots = [event['body'] for event in interrupted_events
                                   if event['kind'] == 'restore_directory' and event['body']['path'] == '']
                     assert len(born_roots) == 1 and tuple(born_roots[0]['version'][:2]) == retained_stage_root
+                if restore_interruption == 'unlogged_member':
+                    born = {event['body']['path']: tuple(event['body']['version'][:2])
+                            for event in interrupted_events if event['kind'] == 'restore_directory'}
+                    assert born == retained_known_directories
                 if restore_interruption == 'restore_member_chown':
                     intent = max(interrupted_events, key=lambda event: event['sequence'])
                     assert intent['kind'] == 'restore_intent'
@@ -1061,6 +1114,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                         assert _launch_worker_once(entry, restore['action_id'], target, journals,
                                                   restore=True, process_death=True) is None
                         (root / 'interrupt-once').unlink()
+                        _assert_reconciliation_death_boundary(root, restore, target, journals,
+                            reconciliation, reconciliation_interruption)
                         if reconciliation_interruption == 'reconcile_consumed':
                             # Actual elapsed time, no injected clock or renewed
                             # decision. Only consumed DELETE may be historical;
@@ -1094,6 +1149,9 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
                 elif restore_interruption.startswith('unlogged_'):
                     assert restored['reused_files'] == restored['reused_logical_bytes'] == 0
+                    if restore_interruption == 'unlogged_member':
+                        assert ((target / 'nested').stat().st_dev, (target / 'nested').stat().st_ino) \
+                            == retained_known_directories['nested']
                 elif restore_interruption in ('restore_directory', 'restore_member'):
                     born = [event['body'] for event in interrupted_events if event['kind'] == 'restore_member']
                     assert restored['reused_files'] == len(born)
@@ -1122,6 +1180,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                               and event['body'].get('phase') == 'reconciled']
                 assert len(reconciled) == 1 and reconciled[0]['body']['uncertain'] is True
                 assert reconciled[0]['body']['credited_removed_allocated_bytes'] == 0
+                if restore_interruption == 'unlogged_member':
+                    born = {event['body']['path']: tuple(event['body']['version'][:2])
+                            for event in restore_events if event['kind'] == 'restore_directory'}
+                    assert born == retained_known_directories
             assert kinds.index('restore_final') < kinds.index('access_reopened')
             assert sum(kind == 'restore_member' for kind in kinds) == len(original)
             directories = [event['body'] for event in restore_events if event['kind'] == 'restore_directory']
