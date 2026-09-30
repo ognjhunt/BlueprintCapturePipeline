@@ -38,11 +38,21 @@ migration receipt; original scope bytes and all prior journal entries remain
 intact. The two-case search/controller ceiling is $0.646240, with complete
 matrix/review headroom preserved under the same aggregate $10 cap.
 
+The first corrected pilot search succeeded, but its two safe Chef homepage
+pagination URLs were blocked by local parsing. The narrow numeric-query fix is
+now separate from actual provider-warning handling; the entire supplied ten-URL
+list passes offline without HTTP upgrades or authority claims for a lookalike
+domain. A digest-bound zero-call continuation verifies the used effective scope,
+completed search/envelope and original failed receipt before authorizing the
+reviewed parser patch. It preserves the original plan/key/hold/journal and failed
+receipt, then writes an explicit sidecar consumed consistently by resume, pilot
+gates and review. The accepted search is never repeated or reserved twice.
+
 The earlier narrow BMW locale-query fix and offline adoption remain intact,
 preserving their original scope/grant/journal with no repeated search.
 Independent Sol review verified fixes for followup-evidence crowd-out, malformed
 assessment JSON, and preservation of the existing secure-access receipt gate.
-All 18 adaptive hermetic tests pass, with 17 focused checks independently replayed;
+All 27 adaptive hermetic tests pass, with 26 focused checks independently replayed;
 Ruff and diff checks pass. Verification covers the whole adaptive matrix and review,
 resume/uncertainty/budget/round/privacy boundaries and native query contracts.
 No live calls or credential/subscription/top-up/deployment/schedule changes were

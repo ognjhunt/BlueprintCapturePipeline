@@ -16,6 +16,10 @@ from experiments.provider_eval_recovery.live_http import (COUNT_ALLOWANCE, COUNT
 from experiments.provider_eval_recovery.live_runner import CATALOG, OWNER
 from experiments.provider_eval_recovery.public_inputs import DECLARED_ORIGINAL_SHA256, load_public
 
+from .continuation import (BASE_CODE, RECEIPT_NAME, ContinuationError, authorize as authorize_continuation,
+                          receipt_path, verify as verify_continuation)
+from .citations import CitationNormalizationError, ProviderInputWarning
+
 from .protocol import (APPROVAL, CURRENT_DATE, LIMITS, MODES, PROTOCOL, RATES, ROOT, SEEDS,
     budget, code_hash, decision, evidence, model_envelopes, model_input, model_reserve, search_request)
 
@@ -51,7 +55,8 @@ def has_adaptive_reservation(ledger, original):
                 or event.get("role", "").startswith(PROTOCOL + ":")) for event in ledger.events)
 
 
-def admission(root, access, inputs, *, adopt_unused_scope_sha256=None, owner_task_id=None):
+def admission(root, access, inputs, *, adopt_unused_scope_sha256=None, owner_task_id=None,
+              continue_retained_attempt=None, retained_envelope_sha256=None, expected_adaptive_scope_sha256=None):
     root = Path(root).resolve()
     public, _, provenance = load_public(inputs)
     if not provenance["byte_parity_with_original_public"]:
@@ -82,14 +87,34 @@ def admission(root, access, inputs, *, adopt_unused_scope_sha256=None, owner_tas
     paths = root / "protocols" / PROTOCOL
     with exclusive(root):
         ledger = Ledger(root / "live_journal.jsonl", "10.00")
-        guard(ledger, plan)
         scope_path = paths / "scope.json"
+        continuing = any(value is not None for value in
+                         (continue_retained_attempt, retained_envelope_sha256, expected_adaptive_scope_sha256))
         if not scope_path.exists():
-            if adopt_unused_scope_sha256 is not None:
+            if adopt_unused_scope_sha256 is not None or continuing:
                 raise Blocked("existing_unused_scope_required_for_adoption")
+            guard(ledger, plan)
             write_once(scope_path, plan)
+        elif (paths / RECEIPT_NAME).exists() or continuing:
+            base = active_scope(paths)
+            if (base.get("code_sha256") != BASE_CODE or {**base, "code_sha256": plan["code_sha256"]} != plan
+                    or adopt_unused_scope_sha256 is not None):
+                raise Blocked("original_used_plan_required_for_citation_continuation")
+            guard(ledger, base)
+            try:
+                if continuing:
+                    if owner_task_id != OWNER or expected_adaptive_scope_sha256 != digest(base):
+                        raise Blocked("sole_fresh_owner_and_exact_effective_scope_digest_required_for_citation_continuation")
+                    authorize_continuation(root, paths, base, public, continue_retained_attempt, retained_envelope_sha256)
+                verify_continuation(root, paths, base, public)
+            except ContinuationError as exc:
+                raise Blocked(str(exc)) from None
+            plan = base  # preserve original request keys, paid allocation binding and holds
         elif active_scope(paths) != plan or adopt_unused_scope_sha256 is not None:
+            guard(ledger, plan)
             original = read_json(scope_path)
+            if adopt_unused_scope_sha256 is None and has_adaptive_reservation(ledger, active_scope(paths)):
+                raise Blocked("used_adaptive_scope_requires_digest_bound_continuation")
             if (owner_task_id != OWNER or adopt_unused_scope_sha256 != digest(original)
                     or original.get("code_sha256") != UNUSED_REVIEWED_CODE
                     or {**original, "code_sha256": plan["code_sha256"]} != plan):
@@ -101,6 +126,8 @@ def admission(root, access, inputs, *, adopt_unused_scope_sha256=None, owner_tas
             write_once(paths / "unused_scope_adoption.json", {
                 "original_scope_sha256": digest(original), "reviewed_original_commit": "63ad3659112b2e9befd2b9fcffdf03160f22562a",
                 "zero_adaptive_reservations_verified": True, "adopted_scope": plan})
+        else:
+            guard(ledger, plan)
     return plan, public, paths
 
 
@@ -158,7 +185,12 @@ class Transport:
                                              allocation_binding_digest=binding, require_allocation_binding=True)
         key = digest({"plan": binding, "cell": cell, "step": step, "request": envelope})
         with exclusive(self.root):
-            if (active_scope(self.paths) != self.plan or self.plan["code_sha256"] != code_hash()
+            if self.plan["code_sha256"] != code_hash():
+                try:
+                    verify_continuation(self.root, self.paths, self.plan, self.public)
+                except ContinuationError as exc:
+                    raise Blocked(str(exc)) from None
+            if (active_scope(self.paths) != self.plan
                     or digest(read_json(self.root / "live_scope.json")) != self.plan["original_scope_sha256"]
                     or digest(read_json(self.root / "live_access.json")) != self.plan["access_sha256"]):
                 raise Blocked("frozen_adaptive_scope_or_code_changed")
@@ -289,6 +321,10 @@ def research(transport, index, mode):
         answer = transport.infer(cell, "synthesis")
     except CellStop as exc:
         status = "unknown_budget_stop:" + str(exc)
+    except ProviderInputWarning:
+        status = "unknown_provider_input_warning_not_provider_quality"
+    except CitationNormalizationError:
+        status = "unknown_local_citation_normalization_error_not_provider_warning"
     except ValueError:
         status = "unknown_contract_or_evidence_stop_not_provider_quality"
     attempts = {}
@@ -303,7 +339,7 @@ def research(transport, index, mode):
                "grade": "pending isolated reviewer; controller triage is not ground truth",
                "retained_attempts": attempts, "current_date": CURRENT_DATE}
     with exclusive(transport.root):
-        write_once(transport.paths / "receipts" / (cell + ".json"), receipt)
+        write_once(receipt_path(transport.paths, cell), receipt)
     return receipt
 
 
@@ -312,41 +348,56 @@ def require_completed_pilot(root, access, public, plan, paths):
     for index in (1, 2):
         for mode in MODES:
             cell = f"{index:02d}_{mode}"
-            expected = read_json(paths / "receipts" / (cell + ".json"))
-            if expected.get("status", "").startswith("unknown_contract_or_evidence"):
+            expected = read_json(receipt_path(paths, cell))
+            if protocol_stop(expected.get("status", "")):
                 raise Blocked("pilot_contract_warning_prevents_remaining_phase")
             if research(replay, index, mode) != expected:
                 raise Blocked("pilot_receipt_integrity_failure")
 
 
 def run(root, access, inputs, *, phase="pilot", execute=False, owner_task_id=None, opener=None,
-        adopt_unused_scope_sha256=None):
+        adopt_unused_scope_sha256=None, continue_retained_attempt=None, retained_envelope_sha256=None,
+        expected_adaptive_scope_sha256=None):
     if phase not in {"pilot", "remaining"}:
         raise Blocked("pilot_or_remaining_phase_required")
-    if execute and adopt_unused_scope_sha256 is not None:
+    if execute and (adopt_unused_scope_sha256 is not None or continue_retained_attempt is not None
+                    or retained_envelope_sha256 is not None):
         raise Blocked("unused_scope_adoption_requires_network_free_preflight")
     plan, public, paths = admission(root, access, inputs, adopt_unused_scope_sha256=adopt_unused_scope_sha256,
-                                    owner_task_id=owner_task_id)
+                                    owner_task_id=owner_task_id, continue_retained_attempt=continue_retained_attempt,
+                                    retained_envelope_sha256=retained_envelope_sha256,
+                                    expected_adaptive_scope_sha256=expected_adaptive_scope_sha256)
     ledger = Ledger(Path(plan["journal_root"]) / "live_journal.jsonl", "10.00")
     if phase == "remaining":
         require_completed_pilot(root, access, public, plan, paths)
     indices = range(1, 3) if phase == "pilot" else range(3, 21)
     if not execute:
-        return {"status": "adaptive_preflight_no_network", "protocol": PROTOCOL, "phase": phase,
+        result = {"status": "adaptive_preflight_no_network", "protocol": PROTOCOL, "phase": phase,
                 "selected_cases": list(indices),
                 "existing_reserved_usd": str(ledger.exposure),
                 "budget": {k: str(v) for k, v in budget().items()}, "matrix": "20cases x4modes",
                 "diagnostic_answers_preserved": len(list((Path(root) / "live_receipts").glob("*.json")))}
+        if (paths / RECEIPT_NAME).exists():
+            accepted = read_json(paths / RECEIPT_NAME)
+            result["accepted_search_continuation"] = {"attempt_id": accepted["attempt_id"],
+                "citation_urls_audited": len(accepted["citation_url_audit"]), "search_redispatch": False}
+        return result
     if owner_task_id != OWNER:
         raise Blocked("sole_fresh_execution_owner_required")
     transport = Transport(root, access, public, plan, paths, opener=opener)
     for index in indices:
         for mode in MODES:
             receipt = research(transport, index, mode)
-            if receipt["status"].startswith("unknown_contract_or_evidence"):
+            if protocol_stop(receipt["status"]):
+                if receipt["status"].startswith("unknown_local_citation_normalization"):
+                    raise Blocked("local_citation_normalizer_stopped_whole_phase_not_provider_warning")
                 raise Blocked("adaptive_contract_warning_stopped_whole_phase")
     return {"status": "adaptive_phase_complete_independent_review_pending", "protocol": PROTOCOL, "phase": phase,
             "aggregate_reserved_usd": str(Ledger(transport.root / "live_journal.jsonl", "10.00").exposure)}
+
+
+def protocol_stop(status):
+    return status.startswith(("unknown_contract_or_evidence", "unknown_provider_input_warning", "unknown_local_citation_normalization"))
 
 
 def main():
@@ -356,12 +407,18 @@ def main():
     parser.add_argument("--input", type=Path, default=ROOT.parent / "provider_eval_recovery/real_public/inputs.parent-message.json")
     parser.add_argument("--phase", choices=("pilot", "remaining"), default="pilot")
     parser.add_argument("--adopt-unused-scope-sha256", help="explicit zero-reservation migration; network-free preflight only")
+    parser.add_argument("--continue-retained-attempt", help="explicit accepted first-search continuation; network-free preflight only")
+    parser.add_argument("--retained-envelope-sha256")
+    parser.add_argument("--expected-adaptive-scope-sha256", help="owner-supplied digest of the existing effective adaptive scope")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--execution-owner-task-id")
     args = parser.parse_args()
     try:
         result = run(args.output, read_json(args.access_receipt), args.input, phase=args.phase, execute=args.execute,
-                     owner_task_id=args.execution_owner_task_id, adopt_unused_scope_sha256=args.adopt_unused_scope_sha256)
+                     owner_task_id=args.execution_owner_task_id, adopt_unused_scope_sha256=args.adopt_unused_scope_sha256,
+                     continue_retained_attempt=args.continue_retained_attempt,
+                     retained_envelope_sha256=args.retained_envelope_sha256,
+                     expected_adaptive_scope_sha256=args.expected_adaptive_scope_sha256)
     except Blocked as exc:
         print(json.dumps({"status": "blocked", "reason": str(exc)}))
         raise SystemExit(2) from None

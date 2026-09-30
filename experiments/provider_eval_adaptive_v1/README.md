@@ -78,6 +78,58 @@ aggregate root and `live_access.json`; creating another run root is not a resume
 No credential values belong in commands, receipts, chat, or committed files.
 The old implementation task performs only mock verification.
 
+### Current accepted-search continuation
+
+The corrected pilot accepted one Parallel search, then the local citation parser
+rejected two Chef homepage pagination URLs. This was a local normalizer failure,
+not a provider warning. The narrow exception accepts only HTTPS
+`www.chefrobotics.ai` homepage URLs with the exact `3f5a3c8b_page` key and an
+unsigned decimal value of at most six digits. BMW's existing language exception
+is unchanged; all other query/security restrictions remain enforced.
+
+All ten parent-supplied URLs were audited offline in all four modes. Their order
+and exact URLs are preserved, including three HTTP URLs. URL validation does not
+establish vendor authority: the lookalike `chefroboticsai.com` remains unverified,
+and secondary/social/CDN sources retain their authority limits. The audit packet
+is task-input provenance, not materialized Library content or independent proof
+of a vendor claim. See `retained_case01_url_audit.json`.
+
+The current scope has a paid attempt, so **do not use unused-scope adoption**.
+After checking out the reviewed patch, run this zero-network continuation using
+the owner's existing aggregate root:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_adaptive_v1.runner \
+  --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json" --phase pilot \
+  --continue-retained-attempt 875515c0d3d6797bc84d53a1fea1d630628ede05d29a5629bc0198c188d7515d \
+  --retained-envelope-sha256 63d8b7bfc7220741c114bea090006ffdbd2c58fa68a43c9d0eccf9fa71d6a535 \
+  --expected-adaptive-scope-sha256 09680b135d5bd7dded1ee8cbcdb120bf894f4277eb5ed3c8cc8223bcdb2f19c0 \
+  --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
+```
+
+This verifies the effective scope, pinned prior code, exact original request,
+attempt, completed journal state, whole retained-envelope digest and canonical
+failed receipt. Exactly one adaptive attempt may exist when creating the
+authorization. All bounded citation URLs are validated before context clipping;
+provider warnings or unresolved normalization prevent authorization. No request,
+reservation, journal transition, billing release or source fetch occurs.
+
+The immutable `citation_continuation.json` authorizes only the reviewed code
+exception. The original plan, allocation binding, search key, raw envelope,
+failed receipt and journal entries remain intact. Resume writes the first cell's
+new receipt to `continued_receipts/01_parallel_fast.json`; pilot replay, remaining
+admission and isolated review all use that explicit path. Changes to code,
+scope, retained evidence or authorization block before a new paid stage.
+
+Then resume the pilot with the normal execute command below, without continuation
+flags. The accepted search is adopted; the first new request is input counting.
+At most 47 new pilot HTTP requests remain. Its remaining search/controller
+reservation is $0.642115. Of the unchanged $7.572000 full adaptive envelope,
+$0.004125 is already held, leaving at most $7.567875 of new reservation; the
+aggregate bound remains $9.857510, with no double counting of this search.
+
+### Earlier unused-preflight setup
+
 From the repository root, replace the following path with the owner's existing
 aggregate root. If it has the old `63ad365` preflight scope, run the explicit
 adoption command below first; otherwise use this network-free preflight:

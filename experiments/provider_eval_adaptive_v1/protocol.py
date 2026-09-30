@@ -5,9 +5,10 @@ import json
 from pathlib import Path
 import re
 
-from experiments.provider_eval_recovery.adapters import MODEL, MODES, RATES, Limits, normalize
+from experiments.provider_eval_recovery.adapters import MODEL, MODES, RATES
 from experiments.provider_eval_recovery.harness import digest
 from experiments.provider_eval_recovery.live_http import COUNT_ALLOWANCE, COUNT_ENDPOINT, ENDPOINTS, EXTRAS_PER_SEARCH_ATTEMPT
+from .citations import ProviderInputWarning, normalize_public
 
 PROTOCOL = "bounded_adaptive_v1"
 CURRENT_DATE = "2026-09-30"
@@ -72,8 +73,8 @@ def search_request(index, mode, case, query):
 def evidence(mode, raws, chars):
     # Warnings are client/contract diagnostics, never provider quality scores.
     if any(raw.get("warnings") for raw in raws):
-        raise ValueError("provider_input_warning_quality_not_interpretable")
-    rounds = [normalize(mode, raw, Limits(evidence_chars=6000)) for raw in raws]
+        raise ProviderInputWarning("provider_input_warning_quality_not_interpretable")
+    rounds = [normalize_public(mode, raw) for raw in raws]
     merged = {}
     # Interleave by native relevance, newest round first. A full initial result
     # set must never crowd all evidence from the requested followup out.

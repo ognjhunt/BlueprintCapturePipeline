@@ -9,6 +9,7 @@ from experiments.provider_eval_recovery.harness import digest, exclusive, read_j
 from experiments.provider_eval_recovery.live_runner import OWNER
 
 from .protocol import CURRENT_DATE, MODES, PROTOCOL, ROOT, evidence
+from .continuation import receipt_path
 from .runner import Blocked, CellStop, Transport, admission
 
 
@@ -39,7 +40,7 @@ def review_case(transport, index, oracle, spec):
         raise Blocked("frozen_reviewer_oracle_spec_changed")
     for mode in MODES:
         cell = f"{index:02d}_{mode}"
-        receipt = read_json(transport.paths / "receipts" / (cell + ".json"))
+        receipt = read_json(receipt_path(transport.paths, cell))
         if receipt.get("protocol") != PROTOCOL or receipt.get("cell") != cell or receipt.get("case_id") != case["id"]:
             raise Blocked("exact_adaptive_four_output_case_required")
         from .runner import research

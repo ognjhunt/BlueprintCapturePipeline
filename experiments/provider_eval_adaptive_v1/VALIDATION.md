@@ -64,3 +64,39 @@ adaptive artifacts, and missing/tampered pilot rejection before remaining calls.
 The complete pilot→remaining→review regression passed: **18 tests in 117.018
 seconds**, Ruff and diff checks clean. CLI help confirms both phase choices and
 the explicit unused-scope adoption flag. This patch made no provider calls.
+
+## Accepted Chef pagination continuation
+
+Commands and repository files were verified available after the implementation
+executor disconnect. The parent supplied the effective scope, accepted attempt,
+envelope digest and ten public URLs as task text; no Library transfer is claimed.
+An offline audit accepted all ten URLs in all four modes with exactly two Chef
+numeric homepage pagination exceptions. Three HTTP URLs were preserved, and no
+lookalike domain was promoted to verified vendor authority.
+
+The accepted-search continuation binds the original effective c6d09 plan/code,
+original request, exact completed attempt/envelope, canonical preserved failed
+receipt, patched code and normalized evidence. Creation requires the sole owner,
+expected scope digest and exactly one adaptive attempt. It does not change any
+journal state or reservation, and it does not repeat the search. The original
+failed receipt remains immutable; an explicitly scoped sidecar holds the resumed
+receipt and is used by pilot validation and the separate reviewer.
+
+**27 hermetic tests passed in 126.673 seconds**, with Ruff and diff checks clean.
+Continuation regressions include zero-call/idempotent authorization, bytewise
+preservation of scope/adoption/raw/failure artifacts, journal-prefix retention,
+first new request as token counting, 47 mocked pilot requests instead of 48,
+resume without redispatch, sidecar reviewer integration, wrong owner/scope/hash,
+extra released attempts, real provider warnings and authorization/raw tampering.
+Source guards refuse userinfo, fragments, unknown queries, credential/redirect
+parameters, duplicate keys and non-decimal values; local parser failures are
+reported separately from provider input warnings and stop the entire phase.
+
+Independent GPT6.1Sol review passed all **26 focused non-full tests**, verified
+the c6d09 fingerprint and exact ten-URL audit, and found no remaining must-fix
+issue. The complete 27-test result above passed in this implementation executor.
+
+The parent's runtime checkpoint is 227 events, 113 completed attempts, zero
+uncertain attempts and $2.289635 reserved; the prior 225-event prefix and 37
+diagnostic answers are preserved. Those runtime files were not materialized in
+this executor. Implementation provider calls and spend remain zero.
