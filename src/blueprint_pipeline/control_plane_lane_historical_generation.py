@@ -32,6 +32,86 @@ def _require(value, code):
         raise HistoricalGenerationError('historical_generation_' + code)
 
 
+def verify_historical_member_versions(manifest, *, tick):
+    """Recheck the entire original namespace without rereading payload bytes.
+
+    This closes metadata drift since hashing; it does not fence future writers
+    or confer mutation authority. The caller supplies its original deadline.
+    """
+    rows = manifest['members']
+    _require(0 < len(rows) == manifest['member_count'] <= MAX_MEMBERS, 'manifest_invalid')
+    expected, children = {}, {}
+    for row in rows:
+        tick()
+        relative = row['path']
+        _require(isinstance(relative, str) and len(os.fsencode(relative)) <= 1024
+                 and (relative == '' or all(part not in ('', '.', '..')
+                                           for part in relative.split('/')))
+                 and len(relative.split('/')) <= 17 and relative not in expected
+                 and row['kind'] in ('directory', 'file'), 'manifest_invalid')
+        expected[relative] = row
+        if relative:
+            parent, _, name = relative.rpartition('/')
+            children.setdefault(parent, []).append(name)
+    _require('' in expected and expected['']['kind'] == 'directory'
+             and all(parent in expected and expected[parent]['kind'] == 'directory'
+                     for parent in children), 'manifest_invalid')
+
+    def same(info, relative):
+        tick()
+        row = expected[relative]
+        _require(list(legacy._version(info)) == row['version']
+                 and info.st_dev == expected['']['version'][0]
+                 and (stat.S_ISDIR(info.st_mode) if row['kind'] == 'directory'
+                      else stat.S_ISREG(info.st_mode) and info.st_nlink == 1), 'changed')
+
+    def names(fd):
+        found = []
+        with os.scandir(fd) as stream:
+            for row in stream:
+                tick()
+                _require(len(found) < MAX_MEMBERS, 'changed')
+                found.append(row.name)
+        return sorted(found)
+
+    def walk(fd, relative):
+        same(os.fstat(fd), relative)
+        selected = sorted(children.get(relative, []))
+        _require(names(fd) == selected, 'changed')
+        for name in selected:
+            child_path = relative + '/' + name if relative else name
+            same(os.stat(name, dir_fd=fd, follow_symlinks=False), child_path)
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+            if expected[child_path]['kind'] == 'directory':
+                flags |= os.O_DIRECTORY
+            child = os.open(name, flags, dir_fd=fd)
+            try:
+                same(os.fstat(child), child_path)
+                if expected[child_path]['kind'] == 'directory':
+                    walk(child, child_path)
+                same(os.fstat(child), child_path)
+                same(os.stat(name, dir_fd=fd, follow_symlinks=False), child_path)
+            finally:
+                os.close(child)
+        _require(names(fd) == selected, 'changed')
+        for name in selected:
+            same(os.stat(name, dir_fd=fd, follow_symlinks=False),
+                 relative + '/' + name if relative else name)
+        same(os.fstat(fd), relative)
+
+    try:
+        with ExitStack() as stack:
+            target = Path(manifest['target_path'])
+            legacy._absolute(target)
+            chain = legacy._chain(target, stack)
+            _require(list(legacy._version(os.fstat(chain[-2][2]))) == manifest['root_version'], 'changed')
+            walk(chain[-1][2], '')
+            legacy._verify_chain(chain)
+            tick()
+    except (OSError, legacy.LegacyOwnerError):
+        raise HistoricalGenerationError('historical_generation_changed') from None
+
+
 def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMBERS,
                                     max_payload_bytes=MAX_PAYLOAD_BYTES,
                                     max_seconds=MAX_SECONDS, monotonic=time.monotonic):
