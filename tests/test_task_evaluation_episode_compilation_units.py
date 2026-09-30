@@ -291,3 +291,18 @@ def test_chain_preflight_reports_invalid_modes_and_remote_cpu_image_drift(tmp_pa
     remote.record_job_image(host.jobs, job_image=IMAGE.replace("d" * 64, "e" * 64), config_image=IMAGE, now=1.0)
     assert [finding["code"] for finding in preflight.remote_execution_checks(units)] == ["remote_cpu_image_drift"]
     assert preflight.PAID_EPISODE_COMPILATION_UNIT in preflight.CHAIN_UNITS
+
+
+def test_a_skipped_exec_condition_is_not_a_failed_unit() -> None:
+    """Review minor: in host mode the paid unit's ExecCondition skips every run, which systemd reports as
+    ``Result=exec-condition``; that is the unit working as designed, never ``unit_failed_state``."""
+
+    from blueprint_pipeline import task_evaluation_production_chain_preflight as preflight
+
+    def unit(result: str, state: str = "inactive") -> dict:
+        return {"properties": {"ActiveState": [state], "Result": [result], "LoadState": ["loaded"], "TriggeredBy": [""],
+                               "ExecCondition": ["{ path=/usr/bin/python3 ; argv[]=python3 -m x should-run }"]}}
+
+    assert [f["code"] for f in preflight.unit_health_checks({f"{PAID}.service": unit("exec-condition")})] == []
+    assert [f["code"] for f in preflight.unit_health_checks({f"{PAID}.service": unit("exit-code", "failed")})] == [
+        "unit_failed_state"]

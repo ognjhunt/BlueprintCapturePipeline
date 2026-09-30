@@ -1601,7 +1601,8 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, An
         props = unit["properties"]
         state = _first(props, "ActiveState")
         result = _first(props, "Result")
-        if state == "failed" or result not in {"success", ""}:
+        # A skipped ExecCondition (``exec-condition``) is a condition unit working as designed, not a failure.
+        if state == "failed" or result not in {"success", "", "exec-condition"}:
             findings.append(_finding("warning", "unit_failed_state", unit=unit_name, active_state=state, result=result, exec_main_status=_first(props, "ExecMainStatus")))
         if _first(props, "LoadState") != "loaded":
             findings.append(_finding("blocker", "unit_not_loaded", unit=unit_name, load_state=_first(props, "LoadState")))
