@@ -76,6 +76,37 @@ def _namespace(root):
     unit._EXECUTABLE = str(root / 'action-entry')
 
 
+def _unreadable_process_channels():
+    """Bounded metadata diagnostics; never expose command/environment bytes."""
+    blocked = []
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit() or int(process.name) == os.getpid():
+            continue
+        try:
+            fields = (process / 'stat').read_bytes().rpartition(b') ')[2].split()
+            kernel_thread = bool(int(fields[6]) & 0x00200000)
+        except (OSError, ValueError, IndexError):
+            kernel_thread = None
+        for channel in ('cmdline', 'environ', 'cwd', 'fd'):
+            try:
+                if channel in ('cmdline', 'environ'):
+                    with (process / channel).open('rb') as stream:
+                        stream.read(1)
+                elif channel == 'cwd':
+                    os.readlink(process / channel)
+                else:
+                    for descriptor in (process / 'fd').iterdir():
+                        os.readlink(descriptor)
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                blocked.append(dict(pid=int(process.name), channel=channel,
+                                    errno=error.errno, kernel_thread=kernel_thread))
+                if len(blocked) == 16:
+                    return blocked
+    return blocked
+
+
 def worker_main(root, action_id):
     root = Path(root)
     _namespace(root)
@@ -156,7 +187,8 @@ def connected_delete():
         census = build_census(work_root=root / 'work', inputs_root=root / 'inputs',
             process_root=Path('/proc'), pins_root=root / 'pins', queue_roots=[root / 'queues'],
             active_run_roots=[root / 'evidence', root / 'settlement'], release_link=root / 'active', now=clock)
-        assert census['status'] == 'complete', census['scan_errors']
+        assert census['status'] == 'complete', dict(errors=census['scan_errors'],
+            unreadable=_unreadable_process_channels())
         raw = _encoded(census)
         annotations = _encoded(dict(schema_version='control_plane_lane_scratch_annotations.v1',
             census_digest='sha256:' + hashlib.sha256(raw).hexdigest(), decisions=[dict(path=str(target),
