@@ -222,7 +222,14 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
             assert done.returncode == 0, done.stdout + done.stderr
         else:
             phase = launch()
-            assert phase['units_started'] == 1 and phase['removed_bytes'] == phase['mutations'] == 0, phase
+            assert phase['removed_bytes'] == phase['mutations'] == 0, phase
+            if phase['units_started'] == 0:
+                receipt = next(row for row in phase['outcomes'] if row['action_id'] == action_id)
+                assert receipt['status'] == 'completed' and receipt['observation_only'] is True, receipt
+                assert receipt['action_unit_started'] is receipt['execution_authorized'] is False
+                assert observations() == previous
+                return receipt
+            assert phase['units_started'] == 1, phase
             assert phase['outcomes'][-1]['status'] == 'submitted', phase
         # The worker waits before scanning. Reap the launcher (its argv is a
         # real target reference), retain the actual cgroup FD, then signal using
@@ -413,10 +420,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
         else:
             raise AssertionError('default-off worker executed')
         assert not list(journals.iterdir())
-        def gc_tick():
+        def gc_tick(now=time.time):
             from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
             report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
-                pins_root=root / 'pins', apply=True, ack=RUN_ACK, _experiment_config_path=config)
+                pins_root=root / 'pins', apply=True, ack=RUN_ACK, _experiment_config_path=config, now=now)
             return report['historical_generations']
         if installed:
             disabled = gc_tick()
@@ -514,8 +521,19 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             assert sum(event['kind'] == 'intent' for event in events) == 1
             assert sum(event['kind'] == 'fence_intent' and event['body']['path'] == '' for event in events) == 1
         before = {path.name: path.read_bytes() for path in (journals / action_id).iterdir()}
-        repeated = _launch_worker(entry, action_id, target, journals,
-                                  launch=gc_tick if installed else None)
+        if installed:
+            # If the old path still launches a unit, the helper drains that
+            # actual fixture unit before this RED assertion and cleanup.
+            repeated = _launch_worker(entry, action_id, target, journals, launch=gc_tick)
+            assert repeated['status'] == 'completed' and repeated.get('observation_only') is True
+            assert repeated['execution_authorized'] is repeated['action_unit_started'] is False
+            # Read-only clock-model check: past facts are still observable,
+            # with no resumed worker or claim of fresh action permission.
+            later = gc_tick(now=lambda: time.time() + 1000)
+            assert later['units_started'] == later['removed_bytes'] == later['mutations'] == 0, later
+            assert later['outcomes'] == [dict(repeated, observed_at_epoch=later['outcomes'][0]['observed_at_epoch'])]
+        else:
+            repeated = _launch_worker(entry, action_id, target, journals)
         assert repeated['idempotent'] is True
         assert repeated['observed_removed_allocated_bytes'] == 0
         assert repeated['removed_files'] == repeated['removed_directories'] == 0
