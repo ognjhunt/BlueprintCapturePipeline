@@ -90,6 +90,14 @@ def _namespace(root):
 
 def worker_main(root, action_id):
     root = Path(root)
+    # The controller retains its startup and cgroup descriptors before allowing
+    # real reference scans. Opening a new poll descriptor during the scan was
+    # itself a genuine changing-FD observation. This supplies no reader proof.
+    ready = root / ('.fixture-unit-ready-' + action_id)
+    deadline = time.monotonic() + 10
+    while ready.read_bytes() != b'ready\n':
+        assert time.monotonic() < deadline, 'fixture_controller_startup_not_complete'
+        time.sleep(0.01)
     _namespace(root)
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
     from blueprint_pipeline import control_plane_lane_historical_processes as processes
@@ -119,7 +127,8 @@ def worker_main(root, action_id):
                                        line=trace.tb_lineno))
                 trace = trace.tb_next
             scan_failure.update(error_type=type(error).__name__,
-                                errno=getattr(error, 'errno', None), frames=frames)
+                                errno=getattr(error, 'errno', None), frames=frames,
+                                process_is_init=args[2] == '1')
             raise
     processes._inspect_process = inspect
     cloud = None
@@ -186,7 +195,10 @@ def worker_main(root, action_id):
     except BaseException as error:
         emit(dict(status='failed', error_type=type(error).__name__, code=str(error),
                   **({'_fixture_scan_failure': scan_failure} if scan_failure else {})))
-        raise
+        # The original class/code and safe observation location are retained.
+        # An unsuccessful actual unit exits nonzero without an unbounded stack
+        # pushing earlier same-ID receipts out of the bounded journal window.
+        raise SystemExit(1) from None
     emit(receipt)
 
 
@@ -199,27 +211,29 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
         assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
         return [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
     previous = observations()
-    done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
-        *('--property=' + value for value in _unit_property_assignments(target, journals, restore=restore)),
-        '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
-    assert done.returncode == 0, done.stdout + done.stderr
-    # The launcher must exit: its argv contains the selected write mount and
-    # therefore is a real reference. Wait on one retained kernel cgroup FD in
-    # this existing parent, without spawning pollers or changing its FD set.
-    events = Path('/sys/fs/cgroup/system.slice') / (unit + '.service') / 'cgroup.events'
-    deadline, fd = time.monotonic() + 60, None
-    while time.monotonic() < deadline:
-        try:
-            fd = os.open(events, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-            break
-        except FileNotFoundError:
-            if time.monotonic() >= deadline - 55:
-                # A short completed cached-result unit may already be collected.
-                # Its sole current journal receipt is still required below.
+    ready = entry.parent / ('.fixture-unit-ready-' + action_id)
+    _write(ready, b'')
+    startup = os.open(ready, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
+            *('--property=' + value for value in _unit_property_assignments(target, journals, restore=restore)),
+            '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
+        assert done.returncode == 0, done.stdout + done.stderr
+        # The worker waits before scanning. Reap the launcher (its argv is a
+        # real target reference), retain the actual cgroup FD, then signal using
+        # the already held startup FD. No controller FD changes race the scan.
+        events = Path('/sys/fs/cgroup/system.slice') / (unit + '.service') / 'cgroup.events'
+        deadline, fd = time.monotonic() + 60, None
+        while time.monotonic() < deadline - 55:
+            try:
+                fd = os.open(events, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
                 break
-            time.sleep(0.01)
-    if fd is not None:
+            except FileNotFoundError:
+                time.sleep(0.01)
+        assert fd is not None, 'actual_worker_cgroup_missing_before_startup'
         try:
+            assert os.write(startup, b'ready\n') == 6
+            os.fsync(startup)
             populated = False
             while time.monotonic() < deadline:
                 try:
@@ -239,6 +253,8 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
                 raise AssertionError('actual worker did not reach terminal cgroup state')
         finally:
             os.close(fd)
+    finally:
+        os.close(startup)
     receipt_deadline = time.monotonic() + 2
     current = observations()
     while current == previous and time.monotonic() < receipt_deadline:
