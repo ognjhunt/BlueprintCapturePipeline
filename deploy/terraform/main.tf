@@ -802,6 +802,25 @@ resource "google_project_iam_member" "pipeline_invoker_run" {
   project = var.project_id
   role    = "roles/run.invoker"
   member  = "serviceAccount:${google_service_account.pipeline_invoker.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant can no
+  # longer run or invoke their jobs. A job's resource name may carry the
+  # project id or its number, so both prefixes are excluded.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-jobs"
+      description = "Any Cloud Run resource except the blueprint-remote-cpu-* jobs and their executions (plan 14 C2)."
+      expression  = "!resource.name.startsWith(\"projects/${var.project_id}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\") && !resource.name.startsWith(\"projects/${data.google_project.current.number}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Allow creating Cloud Tasks
@@ -866,12 +885,50 @@ resource "google_project_iam_member" "storage_trigger_run" {
   project = var.project_id
   role    = "roles/run.invoker"
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant can no
+  # longer run or invoke their jobs. A job's resource name may carry the
+  # project id or its number, so both prefixes are excluded.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-jobs"
+      description = "Any Cloud Run resource except the blueprint-remote-cpu-* jobs and their executions (plan 14 C2)."
+      expression  = "!resource.name.startsWith(\"projects/${var.project_id}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\") && !resource.name.startsWith(\"projects/${data.google_project.current.number}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_project_iam_member" "storage_trigger_run_jobs" {
   project = var.project_id
   role    = "roles/run.jobsExecutorWithOverrides"
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant can no
+  # longer run or invoke their jobs. A job's resource name may carry the
+  # project id or its number, so both prefixes are excluded.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-jobs"
+      description = "Any Cloud Run resource except the blueprint-remote-cpu-* jobs and their executions (plan 14 C2)."
+      expression  = "!resource.name.startsWith(\"projects/${var.project_id}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\") && !resource.name.startsWith(\"projects/${data.google_project.current.number}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Logging

@@ -363,3 +363,26 @@ def test_existing_storage_grants_exclude_the_transport_bucket() -> None:
         # name as a prefix is unaffected.
         assert _remote_cpu_exclusion(body) == (
             f'resource.name != "{transport}" && !resource.name.startsWith("{transport}/")'), name
+
+
+def test_existing_run_grants_exclude_remote_cpu_jobs() -> None:
+    """Plan 14 C2: no project-wide run role can start, or invoke, a remote CPU job."""
+    main = _main()
+    job = _terraform_resource_body(main, "google_cloud_run_v2_job", "remote_cpu_worker")
+    prefix = _strings(_attr(job, "name"))[0].removesuffix("${each.key}")
+    assert prefix == "blueprint-remote-cpu-"
+    assert _attr(job, "location") == "var.primary_region"
+
+    grants = _project_grants(main, "roles/run.")
+    assert sorted(grants) == [
+        "pipeline_invoker_run",  # run.invoker
+        "storage_trigger_run",  # run.invoker
+        "storage_trigger_run_jobs",  # run.jobsExecutorWithOverrides
+    ]
+    # A job's resource name may carry the project id or its number. Either way every remote CPU
+    # job, and each of its executions, falls under one of these prefixes; no other job does.
+    jobs = [f"projects/{project}/locations/${{var.primary_region}}/jobs/{prefix}"
+            for project in ("${var.project_id}", "${data.google_project.current.number}")]
+    expected = " && ".join(f'!resource.name.startsWith("{name}")' for name in jobs)
+    for name, body in sorted(grants.items()):
+        assert _remote_cpu_exclusion(body) == expected, name
