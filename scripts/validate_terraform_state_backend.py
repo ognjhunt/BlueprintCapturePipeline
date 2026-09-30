@@ -17,6 +17,13 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _seconds(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def validate_bucket(
     payload: Mapping[str, Any], *, expected_bucket: str, expected_kms_key: str
 ) -> list[str]:
@@ -36,11 +43,12 @@ def validate_bucket(
         blockers.append("terraform_state_public_access_prevention_not_enforced")
     if _mapping(payload.get("versioning")).get("enabled") is not True:
         blockers.append("terraform_state_versioning_not_enabled")
-    retention = _mapping(payload.get("retentionPolicy"))
-    try:
-        retention_seconds = int(retention.get("retentionPeriod") or 0)
-    except (TypeError, ValueError):
-        retention_seconds = 0
+    # Keep existing versioned retention buckets valid. Soft delete is another
+    # supported way to preserve deleted state for the same recovery window.
+    retention_seconds = max(
+        _seconds(_mapping(payload.get("retentionPolicy")).get("retentionPeriod")),
+        _seconds(_mapping(payload.get("softDeletePolicy")).get("retentionDurationSeconds")),
+    )
     if retention_seconds < MINIMUM_RETENTION_SECONDS:
         blockers.append("terraform_state_retention_below_30_days")
     configured_kms = str(
@@ -78,7 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for blocker in blockers:
             print(f"[terraform-state] ERROR {blocker}", file=sys.stderr)
         return 1
-    print("[terraform-state] remote locked CMEK backend verified")
+    print("[terraform-state] remote versioned recoverable CMEK backend verified")
     return 0
 
 

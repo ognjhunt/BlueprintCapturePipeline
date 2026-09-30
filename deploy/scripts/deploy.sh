@@ -53,15 +53,15 @@ WORLDLABS_DEFAULT_MODEL="${WORLDLABS_DEFAULT_MODEL:-Marble 0.1-mini}"
 BLUEPRINT_LAUNCH_PROOF_MODE="${BLUEPRINT_LAUNCH_PROOF_MODE:-production}"
 PRIVACY_PIPELINE_ENABLED="${PRIVACY_PIPELINE_ENABLED:-true}"
 PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"
-# Remote CPU workers (plan 14). Opt in with a reviewed commit that flips this
-# default to true and sets the object prefix default below (the US B2
-# endpoint, bucket and key prefix; not a secret). The opt-in also needs
+# Remote CPU workers (plan 14), enabled by the owner's 2026-09-30 direction.
+# The committed prefix names the host's dedicated US B2 artifact store.
+# Applying this infrastructure also needs
 # billing_account_id in terraform.tfvars, which this script never exports: the
 # workers' budget requires it, and setting it also creates the GPU fleet beta
 # budget. Never opt in with an environment override: the next deploy without
 # it would destroy the jobs, identities and transport bucket.
-REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-false}"
-REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-}"
+REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-true}"
+REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-https://s3.us-east-005.backblazeb2.com/blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/}"
 PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"
 PRIVACY_VIP_URL="${PRIVACY_VIP_URL:-}"
 PRIVACY_DEEPPRIVACY2_URL="${PRIVACY_DEEPPRIVACY2_URL:-}"
@@ -329,7 +329,7 @@ validate_terraform_state_backend() {
         exit 2
     fi
     local bucket_metadata
-    bucket_metadata="$(gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --format=json)" || {
+    bucket_metadata="$(gcloud storage buckets describe "gs://${TERRAFORM_STATE_BUCKET}" --raw --format=json)" || {
         log_error "Unable to read the configured Terraform state bucket."
         exit 2
     }
