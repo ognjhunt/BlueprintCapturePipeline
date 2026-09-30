@@ -13,6 +13,7 @@ import time
 from . import control_plane_lane_historical_authority as authority
 from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_dispatch import dispatch_historical_action
+from .control_plane_lane_historical_receipts import observe_historical_action
 
 
 def gc_historical_actions(*, installed_config_path, apply, now, monotonic=time.monotonic):
@@ -40,6 +41,11 @@ def gc_historical_actions(*, installed_config_path, apply, now, monotonic=time.m
             candidates.append(name[:-5])
     for action_id in candidates:
         try:
+            completed = observe_historical_action(installed_config_path=installed_config_path,
+                action_id=action_id, now=operation.moment(), monotonic=monotonic)
+            if completed is not None:
+                result['outcomes'].append(completed)
+                continue
             submitted = dispatch_historical_action(installed_config_path=installed_config_path,
                 action_id=action_id, now=operation.moment(), monotonic=monotonic)
         except (OSError, ValueError) as error:

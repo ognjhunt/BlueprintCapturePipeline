@@ -16,7 +16,7 @@ from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_owner_consents as owners
 from .control_plane_lane_historical_journal import HistoricalJournalObservation
-from .control_plane_lane_historical_recovery import recover_action
+from .control_plane_lane_historical_receipts import validate_historical_final
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA = 'control_plane_historical_restore_decision.v1'
@@ -32,44 +32,8 @@ def _require(value, code):
 
 def _completed(selected, events):
     """Replay actual recorded transitions; a final label alone is insufficient."""
-    _, decision, manifest, _ = selected
-    _require(events[-1]['kind'] == 'final', 'offload_incomplete')
-    final, receipt = events[-1], events[-1]['body']
-    _require(receipt.get('status') == 'completed' and receipt.get('action') == 'offload'
-        and receipt.get('action_id') == decision['action_id'] and receipt.get('owner') == decision['owner']
-        and receipt.get('generation_digest') == manifest['generation_digest']
-        and receipt.get('original_manifest') == decision['manifest']
-        and receipt.get('root_directory_retained') is True
-        and receipt.get('uncertain_removed_allocated_bytes') == 0, 'offload_invalid')
-    # This is a projection of journal facts, not a filesystem observation.
-    # Its resulting root must later match a separate current full inventory.
-    tombstone = dict(manifest, member_count=1,
-        members=[dict(manifest['members'][0], version=receipt.get('tombstone_version'))])
-    _require(tombstone['members'][0]['path'] == '', 'offload_invalid')
-    recovered = recover_action(manifest, events[:-1], tombstone)
-    known, uncertain = recovered['removed'], recovered['uncertain']
-    rows = {row['path']: row for row in manifest['members']}
-    _require(known | uncertain == set(rows) - {''} and not recovered['pending_removal']
-        and recovered['reconcile'] is None
-        and receipt.get('removed_files') == sum(rows[name]['kind'] == 'file' for name in known)
-        and receipt.get('removed_directories') == sum(rows[name]['kind'] == 'directory' for name in known)
-        and receipt.get('logical_bytes') == sum(rows[name]['size_bytes'] for name in known)
-        and receipt.get('uncertain_removed_members', 0) == len(uncertain)
-        and receipt.get('observed_removed_allocated_bytes') == recovered['prior_observed_removed_allocated_bytes'],
-        'offload_invalid')
-    event = recovered['preservation']
-    _require(event is not None, 'preservation_invalid')
-    pointer = event['body']
-    _require(set(pointer) == {'schema_version', 'action_id', 'generation_digest', 'manifest',
-            'archive', 'pointer_digest'}
-        and pointer['schema_version'] == 'control_plane_historical_preservation.v1'
-        and pointer['action_id'] == decision['action_id']
-        and pointer['generation_digest'] == manifest['generation_digest']
-        and pointer['manifest'] == decision['manifest']
-        and pointer['pointer_digest'] == canonical_digest(pointer, digest_field='pointer_digest')
-        and receipt.get('preservation_event_digest') == event['event_digest']
-        and receipt.get('preservation') == pointer['archive'], 'preservation_invalid')
-    return dict(final=final, preservation=event)
+    _require(selected[1]['action'] == 'offload', 'offload_invalid')
+    return validate_historical_final(selected, events)
 
 
 def observe_preserved_generation(*, installed_config_path, offload_action_id, operation):
