@@ -248,9 +248,45 @@ def worker_main(root, action_id):
                 finally:
                     os.link, os.fsync = original_link, original_sync
             journal_code._publish = publish
+        elif phase in ('unlogged_directory', 'unlogged_member', 'reconcile_remove', 'reconcile_sync'):
+            if phase == 'unlogged_directory':
+                original_mkdir = os.mkdir
+                def mkdir(name, *args, **kwargs):
+                    result = original_mkdir(name, *args, **kwargs)
+                    if name == '.historical-restore-' + action_id:
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return result
+                os.mkdir = mkdir
+            elif phase == 'unlogged_member':
+                original_write = os.write
+                def write(fd, raw):
+                    path = os.readlink('/proc/self/fd/' + str(fd))
+                    if '/.historical-restore-' + action_id + '/' in path:
+                        assert len(raw) > 1
+                        original_write(fd, memoryview(raw)[:1])
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return original_write(fd, raw)
+                os.write = write
+            else:
+                original_unlink, original_sync = os.unlink, os.fsync
+                removed = False
+                def unlink(name, *args, **kwargs):
+                    nonlocal removed
+                    result = original_unlink(name, *args, **kwargs)
+                    removed = True
+                    if phase == 'reconcile_remove':
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return result
+                def sync(fd):
+                    result = original_sync(fd)
+                    if removed and phase == 'reconcile_sync':
+                        os.kill(os.getpid(), signal.SIGKILL)
+                    return result
+                os.unlink, os.fsync = unlink, sync
         elif phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed',
                      'unwritten_stage', 'access_intent', 'stage_complete', 'restore_directory', 'restore_member',
-                     'publish_intent', 'publish_rename', 'publish_observed', 'stage_remove_intent', 'stage_remove_effect'):
+                     'publish_intent', 'publish_rename', 'publish_observed', 'stage_remove_intent', 'stage_remove_effect',
+                     'reconcile_intent', 'reconcile_consumed'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
@@ -261,6 +297,10 @@ def worker_main(root, action_id):
                 if phase == 'before_restore_final' and kind == 'restore_final':
                     raise RuntimeError('fixture_interrupted_after_' + phase)
                 original_record(self, kind, body)
+                if phase == 'reconcile_intent' and kind == 'restore_intent' and body.get('phase') == phase:
+                    os.kill(os.getpid(), signal.SIGKILL)
+                if phase == 'reconcile_consumed' and kind == 'restore_intent' and body.get('phase') == 'reconciled':
+                    os.kill(os.getpid(), signal.SIGKILL)
                 if phase == 'publish_intent' and kind == 'restore_intent' and body.get('phase') == 'publish':
                     raise RuntimeError('fixture_interrupted_after_' + phase)
                 if phase == 'stage_remove_intent' and kind == 'restore_intent' and body.get('phase') == 'stage_remove':
@@ -615,8 +655,55 @@ def _installed_entry(root, entry):
     dispatch._ACTION_EXECUTABLE = str(entry)
 
 
+def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *, short_expiry=False):
+    """Actual tiny owner decision; original restore principal cannot DELETE."""
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_authority import (
+        observe_historical_restore_reconciliation, approve_historical_restore_reconciliation)
+    action_id = restore['action_id']
+    def unchanged():
+        return {path.relative_to(target).as_posix(): (
+            path.stat().st_dev, path.stat().st_ino, path.stat().st_mode, path.stat().st_uid,
+            path.stat().st_gid, path.stat().st_nlink, path.stat().st_size,
+            path.stat().st_mtime_ns, path.stat().st_ctime_ns,
+            path.read_bytes() if path.is_file() else None) for path in (target, *target.rglob('*'))}
+    original = unchanged()
+    before = {path.name: path.read_bytes() for path in (journals / action_id).iterdir()}
+    refused = _launch_worker(entry, action_id, target, journals, restore=True, expected='failed')
+    assert refused['code'] == 'historical_generation_restore_reconciliation_approval_missing', refused
+    assert unchanged() == original
+    assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+    packet = observe_historical_restore_reconciliation(installed_config_path=config, action_id=action_id, now=time.time())
+    assert packet['execution_authorized'] is False
+    assert packet['original_intent_bytes'] == dict(sha256='sha256:' + hashlib.sha256(before['e-00000.json']).hexdigest(),
+                                                   size_bytes=len(before['e-00000.json']))
+    options = dict(installed_config_path=config, action_id=action_id,
+        ack_packet_digest=packet['packet_digest'], principal='operator', owner='owner',
+        discard_unfinished_row=True, no_future_writers=True, no_future_readers=True,
+        expires_at_epoch=min(time.time() + (12 if short_expiry else 300), restore['expires_at_epoch']), now=time.time())
+    store = root / 'state/requests/historical-generation-actions'
+    records = {path.name: path.read_bytes() for path in store.iterdir()}
+    for changes in (dict(principal='restore-operator'), dict(owner='different-owner'),
+        dict(ack_packet_digest='sha256:' + 'f' * 64), dict(no_future_writers=False),
+        dict(expires_at_epoch=restore['expires_at_epoch'] + 1)):
+        try:
+            approve_historical_restore_reconciliation(**(options | changes))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('unfinished discard accepted without exact current owner DELETE')
+        assert {path.name: path.read_bytes() for path in store.iterdir()} == records
+        assert unchanged() == original
+    approved = approve_historical_restore_reconciliation(**options)
+    assert approved['packet'] == packet and approved['execution_authorized'] is False
+    assert approved['discard_unfinished_row_approved'] is True
+    assert unchanged() == original
+    assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+    return approved
+
+
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
-                     restore_interruption='restore_final', installed=False, destination_conflict=False, metadata_probe=False):
+                     restore_interruption='restore_final', installed=False, destination_conflict=False, metadata_probe=False,
+                     reconciliation_interruption=None):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -879,11 +966,33 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 return dict(historical_restore_existing_destination_kept=True)
             if restore_interruption is not None:
                 _write(root / 'interrupt-once', restore_interruption.encode())
-                interrupted = _launch_worker(entry, restore['action_id'], target, journals,
-                                             restore=True, expected='failed')
-                assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption, interrupted
+                if restore_interruption.startswith('unlogged_'):
+                    assert _launch_worker_once(entry, restore['action_id'], target, journals,
+                                              restore=True, process_death=True) is None
+                else:
+                    interrupted = _launch_worker(entry, restore['action_id'], target, journals,
+                                                 restore=True, expected='failed')
+                    if interrupted['code'] == 'historical_generation_restore_reconciliation_approval_missing':
+                        # A genuine scan refusal may have left a different
+                        # unfinished syscall before the requested boundary.
+                        # Retain it, obtain a real exact tiny-owner DELETE
+                        # decision, then reach the SAME original fault/intent.
+                        initial = (journals / restore['action_id'] / 'e-00000.json').read_bytes()
+                        print(json.dumps(dict(fixture_unfinished_restore_refusal=interrupted,
+                            action_id=restore['action_id'], original_intent_sha256=hashlib.sha256(initial).hexdigest())), flush=True)
+                        _approve_unlogged_fixture(root, config, entry, restore, target, journals)
+                        interrupted = _launch_worker(entry, restore['action_id'], target, journals,
+                                                     restore=True, expected='failed')
+                    assert interrupted['code'] == 'fixture_interrupted_after_' + restore_interruption, interrupted
                 assert target.stat().st_uid == 0 and stat.S_IMODE(target.stat().st_mode) == 0o700
-                if restore_interruption == 'unwritten_stage':
+                if restore_interruption.startswith('unlogged_'):
+                    stage = target / ('.historical-restore-' + restore['action_id'])
+                    assert stage.is_dir() and stage.stat().st_uid == 0
+                    if restore_interruption == 'unlogged_directory':
+                        assert not list(stage.iterdir())
+                    else:
+                        assert (stage / 'nested/two.log').read_bytes() == original['nested/two.log'][:1]
+                elif restore_interruption == 'unwritten_stage':
                     assert not list(target.iterdir())
                 elif restore_interruption in ('stage_complete', 'restore_directory', 'restore_member'):
                     stage = target / ('.historical-restore-' + restore['action_id'])
@@ -940,9 +1049,27 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     restore_interruption in ('restore_final', 'access_intent'))
                 assert ('restore.snapshot.json' in interrupted_prefix) == (
                     restore_interruption not in ('stage_removed', 'unwritten_stage', 'restore_member_chown', 'stage_complete', 'restore_directory', 'restore_member',
-                                                 'publish_intent', 'publish_rename', 'publish_observed', 'stage_remove_intent', 'stage_remove_effect'))
+                                                 'publish_intent', 'publish_rename', 'publish_observed', 'stage_remove_intent', 'stage_remove_effect',
+                                                 'unlogged_directory', 'unlogged_member'))
                 assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
                 (root / 'interrupt-once').unlink()
+                if restore_interruption.startswith('unlogged_'):
+                    reconciliation = _approve_unlogged_fixture(root, config, entry, restore, target, journals,
+                        short_expiry=reconciliation_interruption == 'reconcile_consumed')
+                    if reconciliation_interruption:
+                        _write(root / 'interrupt-once', reconciliation_interruption.encode())
+                        assert _launch_worker_once(entry, restore['action_id'], target, journals,
+                                                  restore=True, process_death=True) is None
+                        (root / 'interrupt-once').unlink()
+                        if reconciliation_interruption == 'reconcile_consumed':
+                            # Actual elapsed time, no injected clock or renewed
+                            # decision. Only consumed DELETE may be historical;
+                            # the original restore expiry stays current.
+                            deadline = time.monotonic() + 15
+                            while time.time() <= reconciliation['expires_at_epoch']:
+                                assert time.monotonic() < deadline
+                                time.sleep(0.05)
+                            assert time.time() < restore['expires_at_epoch']
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
                                       launch=gc_tick if installed else None)
             if restore_interruption is not None:
@@ -955,6 +1082,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             'publish_intent': 'recovered_split', 'publish_rename': 'recovered_split',
                             'publish_observed': 'recovered_split', 'stage_remove_intent': 'recovered_split',
                             'stage_remove_effect': 'recovered_split'}
+                recovery.update(unlogged_directory='recovered_prefix', unlogged_member='recovered_prefix')
                 if recovery[restore_interruption] == 'recovered_split':
                     _assert_boundary_recovery(restored, 'recovered_split',
                         restored.get('_fixture_reference_refusals', []), restore['action_id'],
@@ -964,6 +1092,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 if restore_interruption == 'unwritten_stage':
                     assert restored['restored_files'] == len(original)
                     assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
+                elif restore_interruption.startswith('unlogged_'):
+                    assert restored['reused_files'] == restored['reused_logical_bytes'] == 0
                 elif restore_interruption in ('restore_directory', 'restore_member'):
                     born = [event['body'] for event in interrupted_events if event['kind'] == 'restore_member']
                     assert restored['reused_files'] == len(born)
@@ -987,6 +1117,11 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             restore_events = [json.loads(path.read_bytes()) for path in
                               sorted((journals / restore['action_id']).glob('e-*.json'))]
             kinds = [event['kind'] for event in restore_events]
+            if restore_interruption and restore_interruption.startswith('unlogged_'):
+                reconciled = [event for event in restore_events if event['kind'] == 'restore_intent'
+                              and event['body'].get('phase') == 'reconciled']
+                assert len(reconciled) == 1 and reconciled[0]['body']['uncertain'] is True
+                assert reconciled[0]['body']['credited_removed_allocated_bytes'] == 0
             assert kinds.index('restore_final') < kinds.index('access_reopened')
             assert sum(kind == 'restore_member' for kind in kinds) == len(original)
             directories = [event['body'] for event in restore_events if event['kind'] == 'restore_directory']
@@ -1050,6 +1185,12 @@ CONNECTED_CASES = (
     ('stage_complete', dict(action='offload', restore_interruption='stage_complete')),
     ('restore_directory', dict(action='offload', restore_interruption='restore_directory')),
     ('restore_member', dict(action='offload', restore_interruption='restore_member')),
+    ('unlogged_directory', dict(action='offload', restore_interruption='unlogged_directory')),
+    ('unlogged_member', dict(action='offload', restore_interruption='unlogged_member')),
+    ('reconcile_intent', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent')),
+    ('reconcile_remove', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove')),
+    ('reconcile_sync', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_sync')),
+    ('reconcile_consumed', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_consumed')),
     ('publish_intent', dict(action='offload', restore_interruption='publish_intent')),
     ('publish_rename', dict(action='offload', restore_interruption='publish_rename')),
     ('publish_observed', dict(action='offload', restore_interruption='publish_observed')),
