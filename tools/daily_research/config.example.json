@@ -1,0 +1,10 @@
+{
+  "enabled": false,
+  "first_date": "2026-09-30",
+  "approval_reference": "01a0ef70-d046-74f6-9434-a19e5456b0ef:approved-recurring-soft-1-usd",
+  "scheduler_authority_reference": "PENDING-explicit-parent-cutover-approval",
+  "crm_snapshot": "/var/lib/blueprint/researcher/crm-snapshot.json",
+  "slack_channel_id": null,
+  "max_runtime_seconds": 180,
+  "soft_target_usd": 1
+}
