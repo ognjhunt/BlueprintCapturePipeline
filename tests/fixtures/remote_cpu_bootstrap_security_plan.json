@@ -1,0 +1,397 @@
+{
+  "configuration": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "google_artifact_registry_repository_iam_member.remote_cpu_image_reader",
+          "mode": "managed",
+          "type": "google_artifact_registry_repository_iam_member",
+          "name": "remote_cpu_image_reader",
+          "provider_config_key": "google",
+          "expressions": {
+            "location": {
+              "constant_value": "us"
+            },
+            "member": {
+              "references": [
+                "google_project_service_identity.remote_cpu_run[0].email",
+                "google_project_service_identity.remote_cpu_run[0]",
+                "google_project_service_identity.remote_cpu_run"
+              ]
+            },
+            "project": {
+              "references": [
+                "var.project_id"
+              ]
+            },
+            "repository": {
+              "constant_value": "gcr.io"
+            },
+            "role": {
+              "constant_value": "roles/artifactregistry.reader"
+            }
+          },
+          "schema_version": 0,
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          }
+        },
+        {
+          "address": "google_iam_deny_policy.remote_cpu_isolation",
+          "mode": "managed",
+          "type": "google_iam_deny_policy",
+          "name": "remote_cpu_isolation",
+          "provider_config_key": "google",
+          "expressions": {
+            "display_name": {
+              "constant_value": "Blueprint Remote CPU Identity and Transport Isolation"
+            },
+            "name": {
+              "constant_value": "remote-cpu-isolation"
+            },
+            "parent": {
+              "references": [
+                "google_project.remote_cpu[0].number",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "rules": [
+              {
+                "deny_rule": [
+                  {
+                    "denial_condition": [
+                      {
+                        "expression": {
+                          "references": [
+                            "google_tags_tag_key.remote_cpu_isolation[0].id",
+                            "google_tags_tag_key.remote_cpu_isolation[0]",
+                            "google_tags_tag_key.remote_cpu_isolation",
+                            "google_tags_tag_value.remote_cpu_isolation[\"dispatcher\"].id",
+                            "google_tags_tag_value.remote_cpu_isolation[\"dispatcher\"]",
+                            "google_tags_tag_value.remote_cpu_isolation"
+                          ]
+                        }
+                      }
+                    ],
+                    "denied_permissions": {
+                      "constant_value": [
+                        "iam.googleapis.com/serviceAccounts.actAs",
+                        "iam.googleapis.com/serviceAccounts.getAccessToken",
+                        "iam.googleapis.com/serviceAccounts.getOpenIdToken",
+                        "iam.googleapis.com/serviceAccounts.signBlob",
+                        "iam.googleapis.com/serviceAccounts.signJwt",
+                        "iam.googleapis.com/serviceAccounts.implicitDelegation",
+                        "iam.googleapis.com/serviceAccounts.setIamPolicy",
+                        "iam.googleapis.com/serviceAccounts.delete",
+                        "iam.googleapis.com/serviceAccounts.disable",
+                        "iam.googleapis.com/serviceAccounts.enable",
+                        "iam.googleapis.com/serviceAccounts.update",
+                        "iam.googleapis.com/serviceAccounts.undelete",
+                        "iam.googleapis.com/serviceAccountKeys.create"
+                      ]
+                    },
+                    "denied_principals": {
+                      "constant_value": [
+                        "principalSet://goog/public:all"
+                      ]
+                    },
+                    "exception_principals": {
+                      "constant_value": [
+                        "principal://goog/subject/ohstnhunt@gmail.com"
+                      ]
+                    }
+                  }
+                ],
+                "description": {
+                  "constant_value": "Only the founder can impersonate or mutate the dispatcher identity."
+                }
+              },
+              {
+                "deny_rule": [
+                  {
+                    "denial_condition": [
+                      {
+                        "expression": {
+                          "references": [
+                            "google_tags_tag_key.remote_cpu_isolation[0].id",
+                            "google_tags_tag_key.remote_cpu_isolation[0]",
+                            "google_tags_tag_key.remote_cpu_isolation",
+                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"].id",
+                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"]",
+                            "google_tags_tag_value.remote_cpu_isolation"
+                          ]
+                        }
+                      }
+                    ],
+                    "denied_permissions": {
+                      "constant_value": [
+                        "storage.googleapis.com/objects.get"
+                      ]
+                    },
+                    "denied_principals": {
+                      "constant_value": [
+                        "principalSet://goog/public:all"
+                      ]
+                    },
+                    "exception_principals": {
+                      "references": [
+                        "google_service_account.remote_cpu_worker[0].unique_id",
+                        "google_service_account.remote_cpu_worker[0]",
+                        "google_service_account.remote_cpu_worker",
+                        "google_service_account.remote_cpu_dispatcher[0].unique_id",
+                        "google_service_account.remote_cpu_dispatcher[0]",
+                        "google_service_account.remote_cpu_dispatcher"
+                      ]
+                    }
+                  }
+                ],
+                "description": {
+                  "constant_value": "Transport objects are readable only by the two lane identities and founder."
+                }
+              },
+              {
+                "deny_rule": [
+                  {
+                    "denial_condition": [
+                      {
+                        "expression": {
+                          "references": [
+                            "google_tags_tag_key.remote_cpu_isolation[0].id",
+                            "google_tags_tag_key.remote_cpu_isolation[0]",
+                            "google_tags_tag_key.remote_cpu_isolation",
+                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"].id",
+                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"]",
+                            "google_tags_tag_value.remote_cpu_isolation"
+                          ]
+                        }
+                      }
+                    ],
+                    "denied_permissions": {
+                      "constant_value": [
+                        "storage.googleapis.com/objects.create",
+                        "storage.googleapis.com/objects.delete"
+                      ]
+                    },
+                    "denied_principals": {
+                      "constant_value": [
+                        "principalSet://goog/public:all"
+                      ]
+                    },
+                    "exception_principals": {
+                      "references": [
+                        "google_service_account.remote_cpu_dispatcher[0].unique_id",
+                        "google_service_account.remote_cpu_dispatcher[0]",
+                        "google_service_account.remote_cpu_dispatcher"
+                      ]
+                    }
+                  }
+                ],
+                "description": {
+                  "constant_value": "Only the dispatcher and founder can write transport objects."
+                }
+              }
+            ]
+          },
+          "schema_version": 0,
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_tags_tag_binding.remote_cpu_identity",
+            "google_tags_location_tag_binding.remote_cpu_transport"
+          ]
+        },
+        {
+          "address": "google_project_iam_policy.remote_cpu",
+          "mode": "managed",
+          "type": "google_project_iam_policy",
+          "name": "remote_cpu",
+          "provider_config_key": "google",
+          "expressions": {
+            "policy_data": {
+              "references": [
+                "data.google_iam_policy.remote_cpu_project[0].policy_data",
+                "data.google_iam_policy.remote_cpu_project[0]",
+                "data.google_iam_policy.remote_cpu_project"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            }
+          },
+          "schema_version": 0,
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          }
+        },
+        {
+          "address": "data.google_iam_policy.remote_cpu_project",
+          "mode": "data",
+          "type": "google_iam_policy",
+          "name": "remote_cpu_project",
+          "provider_config_key": "google",
+          "expressions": {
+            "binding": [
+              {
+                "members": {
+                  "constant_value": [
+                    "user:ohstnhunt@gmail.com"
+                  ]
+                },
+                "role": {
+                  "constant_value": "roles/owner"
+                }
+              },
+              {
+                "members": {
+                  "references": [
+                    "google_project_service_identity.remote_cpu_run[0].email",
+                    "google_project_service_identity.remote_cpu_run[0]",
+                    "google_project_service_identity.remote_cpu_run"
+                  ]
+                },
+                "role": {
+                  "constant_value": "roles/run.serviceAgent"
+                }
+              }
+            ]
+          },
+          "schema_version": 0,
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "values": {
+    "data.google_iam_policy.remote_cpu_project[0]": {
+      "audit_config": [],
+      "binding": [
+        {
+          "condition": [],
+          "members": [
+            "user:ohstnhunt@gmail.com"
+          ],
+          "role": "roles/owner"
+        },
+        {
+          "condition": [],
+          "members": [
+            null
+          ],
+          "role": "roles/run.serviceAgent"
+        }
+      ]
+    },
+    "google_artifact_registry_repository_iam_member.remote_cpu_image_reader[0]": {
+      "condition": [],
+      "location": "us",
+      "project": "blueprint-8c1ca",
+      "repository": "gcr.io",
+      "role": "roles/artifactregistry.reader"
+    },
+    "google_iam_deny_policy.remote_cpu_isolation[0]": {
+      "display_name": "Blueprint Remote CPU Identity and Transport Isolation",
+      "name": "remote-cpu-isolation",
+      "rules": [
+        {
+          "deny_rule": [
+            {
+              "denial_condition": [
+                {
+                  "description": null,
+                  "location": null,
+                  "title": null
+                }
+              ],
+              "denied_permissions": [
+                "iam.googleapis.com/serviceAccounts.actAs",
+                "iam.googleapis.com/serviceAccounts.getAccessToken",
+                "iam.googleapis.com/serviceAccounts.getOpenIdToken",
+                "iam.googleapis.com/serviceAccounts.signBlob",
+                "iam.googleapis.com/serviceAccounts.signJwt",
+                "iam.googleapis.com/serviceAccounts.implicitDelegation",
+                "iam.googleapis.com/serviceAccounts.setIamPolicy",
+                "iam.googleapis.com/serviceAccounts.delete",
+                "iam.googleapis.com/serviceAccounts.disable",
+                "iam.googleapis.com/serviceAccounts.enable",
+                "iam.googleapis.com/serviceAccounts.update",
+                "iam.googleapis.com/serviceAccounts.undelete",
+                "iam.googleapis.com/serviceAccountKeys.create"
+              ],
+              "denied_principals": [
+                "principalSet://goog/public:all"
+              ],
+              "exception_permissions": null,
+              "exception_principals": [
+                "principal://goog/subject/ohstnhunt@gmail.com"
+              ]
+            }
+          ],
+          "description": "Only the founder can impersonate or mutate the dispatcher identity."
+        },
+        {
+          "deny_rule": [
+            {
+              "denial_condition": [
+                {
+                  "description": null,
+                  "location": null,
+                  "title": null
+                }
+              ],
+              "denied_permissions": [
+                "storage.googleapis.com/objects.get"
+              ],
+              "denied_principals": [
+                "principalSet://goog/public:all"
+              ],
+              "exception_permissions": null
+            }
+          ],
+          "description": "Transport objects are readable only by the two lane identities and founder."
+        },
+        {
+          "deny_rule": [
+            {
+              "denial_condition": [
+                {
+                  "description": null,
+                  "location": null,
+                  "title": null
+                }
+              ],
+              "denied_permissions": [
+                "storage.googleapis.com/objects.create",
+                "storage.googleapis.com/objects.delete"
+              ],
+              "denied_principals": [
+                "principalSet://goog/public:all"
+              ],
+              "exception_permissions": null
+            }
+          ],
+          "description": "Only the dispatcher and founder can write transport objects."
+        }
+      ],
+      "timeouts": null
+    },
+    "google_project_iam_policy.remote_cpu[0]": {
+      "project": "blueprint-remote-cpu-8c1ca"
+    }
+  }
+}
