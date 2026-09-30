@@ -166,7 +166,7 @@ def test_unit_assignments_preserve_two_syscall_filters_and_only_selected_mounts(
     target, store = historical_installation[1], historical_installation[3]
     assignments = _unit_property_assignments(target, store)
     filters = [row for row in assignments if row.startswith('SystemCallFilter=')]
-    assert filters == ['SystemCallFilter=@system-service',
+    assert filters == ['SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self',
                        'SystemCallFilter=~ptrace process_vm_readv process_vm_writev']
     assert [row for row in assignments if row.startswith('ReadWritePaths=')] == [
         'ReadWritePaths=' + str(target) + ' ' + str(store)]

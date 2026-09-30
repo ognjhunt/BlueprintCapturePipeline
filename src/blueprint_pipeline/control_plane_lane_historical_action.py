@@ -6,6 +6,7 @@ No entrypoint launches this partial worker on an installed host.
 """
 from __future__ import annotations
 
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,8 +17,8 @@ from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_fence import _HistoricalGenerationFence
 from .control_plane_lane_historical_journal import HistoricalActionJournal, journal_root
 from .control_plane_lane_historical_unit import prove_historical_unit
-from .control_plane_lane_historical_processes import refuse_historical_process_references
 from .control_plane_lane_historical_references import historical_reference_fence
+from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
 
 
 def _require(value, code):
@@ -29,6 +30,7 @@ class _Worker:
         self.config_path, self.action_id, self.operation = config_path, action_id, operation
         self.selected = None
         self.head = None
+        self.sandbox = None
 
     @contextmanager
     def checkpoint(self, *, journal=False):
@@ -62,7 +64,8 @@ class _Worker:
             if readers:
                 with historical_reference_fence(files, config,
                         Path(self.selected[2]['target_path']), observed_at=self.operation.moment()) as guard:
-                    refuse_historical_process_references(self.selected[2], tick=self.operation.remaining)
+                    _require(self.sandbox is not None, 'sandbox_unknown')
+                    self.sandbox.refuse_references()
                     guard()
                     yield
                     guard()
@@ -100,15 +103,22 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
         _require(head['kind'] == 'intent', 'recovery_required')
         worker.head = head['event_digest']
     with _HistoricalGenerationFence(manifest, tick=operation.remaining) as held:
-        held.revoke(before_change=worker.mutation_authority, record=worker.record)
-        with worker.mutation_authority(readers=True):
-            held.verify()
-        _require(worker.selected[1]['action'] == 'delete', 'preservation_required')
-        def removal_authority():
-            return worker.mutation_authority(readers=True)
-        outcome = held.remove_members(before_change=removal_authority, record=worker.record)
-        receipt = dict(status='completed', action='delete', action_id=action_id,
-            owner=worker.selected[1]['owner'], generation_digest=manifest['generation_digest'],
-            original_manifest=worker.selected[1]['manifest'], **outcome)
-        worker.record('final', receipt)
-        return receipt
+        with worker.checkpoint(journal=True) as (_, _, journal):
+            private = os.dup(journal.directory)
+        try:
+            with HistoricalNativeSandbox(held.root, private, manifest, tick=operation.remaining) as sandbox:
+                worker.sandbox = sandbox
+                held.revoke(before_change=worker.mutation_authority, record=worker.record)
+                with worker.mutation_authority(readers=True):
+                    held.verify()
+                _require(worker.selected[1]['action'] == 'delete', 'preservation_required')
+                def removal_authority():
+                    return worker.mutation_authority(readers=True)
+                outcome = held.remove_members(before_change=removal_authority, record=worker.record)
+                receipt = dict(status='completed', action='delete', action_id=action_id,
+                    owner=worker.selected[1]['owner'], generation_digest=manifest['generation_digest'],
+                    original_manifest=worker.selected[1]['manifest'], **outcome)
+                worker.record('final', receipt)
+                return receipt
+        finally:
+            os.close(private)

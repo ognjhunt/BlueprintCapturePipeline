@@ -91,7 +91,7 @@ def _root_fixture():
         fence.write_bytes((Path(__file__).parents[1] /
             'src/blueprint_pipeline/control_plane_lane_historical_fence.py').read_bytes())
         fence.chmod(0o644)
-        processes = root / 'historical_processes.py'
+        processes = root / 'control_plane_lane_historical_processes.py'
         processes.write_bytes((Path(__file__).parents[1] /
             'src/blueprint_pipeline/control_plane_lane_historical_processes.py').read_bytes())
         processes.chmod(0o644)
@@ -99,6 +99,10 @@ def _root_fixture():
         kernel.write_bytes((Path(__file__).parents[1] /
             'src/blueprint_pipeline/control_plane_kernel_process.py').read_bytes())
         kernel.chmod(0o644)
+        sandbox = root / 'control_plane_lane_historical_sandbox.py'
+        sandbox.write_bytes((Path(__file__).parents[1] /
+            'src/blueprint_pipeline/control_plane_lane_historical_sandbox.py').read_bytes())
+        sandbox.chmod(0o644)
         manifest = inventory_historical_generation(target, allowed_roots=(parent,))
         probe = root / 'probe.py'
         probe.write_text(
@@ -118,15 +122,6 @@ def _root_fixture():
             'assert Path("/proc/"+pid+"/cwd").resolve()==Path(target)\n'
             'assert os.readlink("/proc/"+pid+"/fd/"+foreign_fd)==original\n'
             'assert original in Path("/proc/"+pid+"/maps").read_text()\n'
-            '# A read-only mount namespace must not be bypassed through a foreign root.\n'
-            '# Probe open rights only: no truncation or byte mutation of the canary.\n'
-            'try:\n'
-            ' escaped=os.open("/proc/1/root"+neighbor,os.O_WRONLY|os.O_CLOEXEC)\n'
-            'except OSError:\n'
-            ' pass\n'
-            'else:\n'
-            ' os.close(escaped)\n'
-            ' raise AssertionError("foreign_proc_root_write_escape")\n'
             'Path("/proc/"+pid+"/cmdline").read_bytes()\n'
             'Path("/proc/"+pid+"/environ").read_bytes()\n'
             'assert not any("acl" in name for name in os.listxattr(target))\n'
@@ -170,6 +165,38 @@ def _root_fixture():
             ' assert {"fd","cwd","maps","cmdline"}.issubset(channels)\n'
             'finally:\n'
             ' for descriptor in (process,own,host):os.close(descriptor)\n'
+            'from installed_historical.control_plane_lane_historical_sandbox import HistoricalNativeSandbox,_readonly_observer\n'
+            'import threading\n'
+            'readonly_probe=Path(private)/"readonly-observer-probe"\n'
+            'readonly_probe.write_bytes(b"unchanged")\n'
+            'writable=os.open(readonly_probe,os.O_WRONLY)\n'
+            'observed=[]\n'
+            'def observer_probe():\n'
+            ' _readonly_observer()\n'
+            ' try: os.write(writable,b"mutated")\n'
+            ' except PermissionError: observed.append("write-denied")\n'
+            ' for path in (original,str(readonly_probe),"/proc/1/root"+neighbor):\n'
+            '  try: escaped=os.open(path,os.O_WRONLY|os.O_CLOEXEC)\n'
+            '  except PermissionError: observed.append("open-denied")\n'
+            '  else: os.close(escaped)\n'
+            'observer=threading.Thread(target=observer_probe)\n'
+            'observer.start();observer.join(timeout=5)\n'
+            'assert not observer.is_alive() and observed==["write-denied"]+["open-denied"]*3\n'
+            'os.close(writable)\n'
+            'assert readonly_probe.read_bytes()==b"unchanged"\n'
+            'readonly_probe.unlink()\n'
+            'target_fd=os.open(target,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\n'
+            'private_fd=os.open(private,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\n'
+            'native_sandbox=HistoricalNativeSandbox(target_fd,private_fd,manifest,tick=tick)\n'
+            'os.close(target_fd);os.close(private_fd)\n'
+            '# Probe open rights only: no truncation or byte mutation of the canary.\n'
+            'try:\n'
+            ' escaped=os.open("/proc/1/root"+neighbor,os.O_WRONLY|os.O_CLOEXEC)\n'
+            'except OSError:\n'
+            ' pass\n'
+            'else:\n'
+            ' os.close(escaped)\n'
+            ' raise AssertionError("foreign_proc_root_write_escape")\n'
             'created=Path(target)/"exact-write-probe"\n'
             'created.write_bytes(b"only selected target writable")\n'
             'created.unlink()\n'
@@ -178,8 +205,10 @@ def _root_fixture():
             ' try: Path(path).write_bytes(b"must be refused")\n'
             ' except OSError: denied+=1\n'
             'assert denied==2\n'
-            'assert os.readlink("/proc/"+pid+"/fd/"+foreign_fd)==original\n'
-            'assert original in Path("/proc/"+pid+"/maps").read_text()\n'
+            'try: native_sandbox.refuse_references()\n'
+            'except ValueError as error: assert str(error)=="historical_generation_process_reference",str(error)\n'
+            'else: raise AssertionError("foreign_reference_was_cleared")\n'
+            'native_sandbox.close()\n'
             'Path(private,"receipt.json").write_text(json.dumps({"target_writable":True,'
             '"adjacent_and_parent_denied":2,"foreign_fd_cwd_mapping_visible":True,'
             '"references_clear":False,"actual_unit_guard_passed":True,"all_original_members_fenced":True,'
@@ -194,7 +223,10 @@ def _root_fixture():
         argv = ['/usr/bin/systemd-run', '--unit=' + unit, '--wait', '--collect',
                 *('--property=' + value for value in assignments), '--', str(entry), action_id]
         done = subprocess.run(argv, capture_output=True, text=True, timeout=45)
-        assert done.returncode == 0, done.stdout + done.stderr
+        if done.returncode:
+            logs = subprocess.run(['/usr/bin/journalctl', '--no-pager', '-u', unit, '-n', '48', '-o', 'cat'],
+                                  capture_output=True, text=True, timeout=5)
+            raise AssertionError(done.stdout + done.stderr + logs.stdout[:32768])
         receipt = json.loads((private / 'receipt.json').read_bytes())
         checked, errors = child.communicate('check\n', timeout=5)
         assert child.returncode == 0, errors
@@ -234,4 +266,13 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
     from historical_generation_native_acceptance import connected_delete
-    print(json.dumps(_root_fixture() | connected_delete(), sort_keys=True))
+    # Exercise both independent native boundaries even when the first refuses.
+    # Neither failed boundary contributes a receipt or passes this selector.
+    results, failures = {}, []
+    for acceptance in (_root_fixture, connected_delete):
+        try:
+            results.update(acceptance())
+        except Exception as error:
+            failures.append(acceptance.__name__ + ':' + type(error).__name__ + ':' + str(error))
+    assert not failures, '\n'.join(failures)
+    print(json.dumps(results, sort_keys=True))

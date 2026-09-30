@@ -32,7 +32,7 @@ def test_kernel_or_manager_drift_cannot_clear_installed_rights(changed):
               'CapBnd': '000000000008000f', 'NoNewPrivs': '1', 'Seccomp': '2'}
     fields = _REQUIREMENTS | dict(Id=unit, MainPID='1234', ControlGroup='/system.slice/' + unit,
         ReadWritePaths='/work/selected /private/journals', TimeoutStartUSec='4h',
-        SystemCallFilter='read write openat close',
+        SystemCallFilter='read write openat close landlock_create_ruleset landlock_add_rule landlock_restrict_self',
         CapabilityBoundingSet='cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_sys_ptrace',
         ExecStart='{ path=/opt/blueprint/operator-door/bin/blueprint-historical-generation-action ; '
                   'argv[]=/opt/blueprint/operator-door/bin/blueprint-historical-generation-action '

@@ -114,12 +114,13 @@ def worker_main(root, action_id):
     from blueprint_pipeline import control_plane_lane_historical_processes as processes
     from blueprint_pipeline.control_plane_kernel_process import kernel_has_no_user_memory
     inspect_process, read_channel = processes._inspect_process, processes._Scan.read
+    diagnostics = []
     def diagnosed_read(self, directory, name, cap=1024**2):
         try:
             return read_channel(self, directory, name, cap)
         except OSError as error:
             if not isinstance(error, ProcessLookupError):
-                print('PROCESS_CHANNEL:' + json.dumps(dict(channel=name, errno=error.errno)), flush=True)
+                diagnostics.append(('PROCESS_CHANNEL', dict(channel=name, errno=error.errno)))
             raise
     def diagnosed_inspection(scan, directory, pid, target, identities, namespaces, host_mount, root_identity):
         try:
@@ -149,7 +150,7 @@ def worker_main(root, action_id):
                 facts['root_identity_matches'] = (current.st_dev, current.st_ino) == root_identity
             except OSError as error:
                 facts['root_errno'] = error.errno
-            print('PROCESS_GUARD:' + json.dumps(facts), flush=True)
+            diagnostics.append(('PROCESS_GUARD', facts))
             raise
     processes._inspect_process = diagnosed_inspection
     processes._Scan.read = diagnosed_read
@@ -157,6 +158,8 @@ def worker_main(root, action_id):
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
     except BaseException as error:
+        for label, facts in diagnostics[:16]:
+            print(label + ':' + json.dumps(facts), flush=True)
         print(json.dumps(dict(status='failed', error_type=type(error).__name__, code=str(error))), flush=True)
         raise
     print(json.dumps(receipt), flush=True)
