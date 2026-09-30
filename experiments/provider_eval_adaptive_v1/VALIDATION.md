@@ -39,3 +39,28 @@ Actual grading still requires the parent's frozen local oracle/spec mapping and
 adjudication. The model reviewer cannot establish ground truth or certify full
 pages beyond retained excerpts. The reservation plan includes an unpublished
 count-fee allowance and search extras; actual invoices/taxes remain unresolved.
+
+## Pilot phase and unused-preflight-scope repair
+
+The runner now defaults to cases 1–2 (`--phase pilot`); cases 3–20 require
+`--phase remaining` and offline validation of all eight retained pilot receipts.
+Protocol warnings stop the whole phase after retaining the affected receipt.
+Security/uncertain failures continue to stop immediately with their original hold.
+The full $7.572000 adaptive admission envelope is unchanged.
+
+The owner's unused preflight scope may explicitly adopt this reviewed code when
+its exact old digest and pinned `63ad365` code fingerprint match, all non-code
+fields are unchanged, and there are zero adaptive reservations/artifacts. The
+original scope remains byte-for-byte intact; a separate immutable adoption
+receipt binds the effective scope. No diagnostic journal event is rewritten,
+released, or duplicated. Parent-reported baseline is 225 events, 112 completed
+attempts, zero uncertain attempts, $2.285510 reserved and 37 diagnostic answers.
+
+**17 focused non-full tests pass**, independently replayed by GPT6.1Sol with no
+must-fix findings. They cover default pilot selection, whole-phase warning and
+uncertainty stops, zero-call scope adoption preserving original scope/journal
+bytes, wrong owner/digest/execute/non-code drift, prior released adaptive attempts,
+adaptive artifacts, and missing/tampered pilot rejection before remaining calls.
+The complete pilot→remaining→review regression passed: **18 tests in 117.018
+seconds**, Ruff and diff checks clean. CLI help confirms both phase choices and
+the explicit unused-scope adoption flag. This patch made no provider calls.

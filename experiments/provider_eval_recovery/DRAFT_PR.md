@@ -30,11 +30,19 @@ it never resets earlier exposure or silently reduces the matrix. Count fees are
 not published, and invoices/taxes remain unreconciled, so no billing guarantee
 or provider winner is claimed.
 
+Pilot/remaining execution is now explicit: the default pilot selects cases 1–2,
+then remaining selects 3–20 only after verified offline pilot replay. Protocol
+warnings stop the entire phase. The unused preflight-only adaptive scope can
+adopt this reviewed code through an exact-digest, zero-adaptive-reservation
+migration receipt; original scope bytes and all prior journal entries remain
+intact. The two-case search/controller ceiling is $0.646240, with complete
+matrix/review headroom preserved under the same aggregate $10 cap.
+
 The earlier narrow BMW locale-query fix and offline adoption remain intact,
 preserving their original scope/grant/journal with no repeated search.
 Independent Sol review verified fixes for followup-evidence crowd-out, malformed
 assessment JSON, and preservation of the existing secure-access receipt gate.
-All 12 adaptive hermetic tests pass, with 11 focused checks independently replayed;
+All 18 adaptive hermetic tests pass, with 17 focused checks independently replayed;
 Ruff and diff checks pass. Verification covers the whole adaptive matrix and review,
 resume/uncertainty/budget/round/privacy boundaries and native query contracts.
 No live calls or credential/subscription/top-up/deployment/schedule changes were

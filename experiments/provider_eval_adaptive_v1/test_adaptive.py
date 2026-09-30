@@ -9,14 +9,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from experiments.provider_eval_recovery.harness import Ledger, write_once
+from experiments.provider_eval_recovery.harness import Ledger, digest, read_json, write_once
 from experiments.provider_eval_recovery.live_http import COUNT_ENDPOINT, MODEL, PROJECT
 from experiments.provider_eval_recovery.live_runner import CATALOG, OWNER
 from experiments.provider_eval_recovery.public_inputs import DECLARED_ORIGINAL_SHA256
 
-from .protocol import ENTITIES, MODES, ROOT, SEEDS, budget, decision, evidence, model_input, search_request
+from .protocol import ENTITIES, MODES, PROTOCOL, ROOT, SEEDS, budget, code_hash, decision, evidence, model_input, search_request
 from .reviewer import ReviewerTransport, bind_reviewer, review_case
-from .runner import Blocked, Transport, admission, research, run
+from .runner import Blocked, Transport, UNUSED_REVIEWED_CODE, active_scope, admission, research, run
 
 
 class Response(io.BytesIO):
@@ -81,8 +81,15 @@ class AdaptiveTests(unittest.TestCase):
         cls = ReviewerTransport if reviewer else Transport
         return cls(self.root, self.access, public, plan, paths, opener=self.opener)
 
-    def invoke(self, execute=False):
-        return run(self.root, self.access, self.inputs, execute=execute, owner_task_id=OWNER, opener=self.opener)
+    def invoke(self, execute=False, phase="pilot", **kwargs):
+        return run(self.root, self.access, self.inputs, phase=phase, execute=execute,
+                   owner_task_id=OWNER, opener=self.opener, **kwargs)
+
+    def unused_scope(self):
+        plan, _, paths = admission(self.root, self.access, self.inputs)
+        original = {**plan, "code_sha256": UNUSED_REVIEWED_CODE}
+        (paths / "scope.json").write_text(json.dumps(original))
+        return original, paths
 
     def test_exact_budget_and_all_twenty_entity_first_native_queries(self):
         self.assertEqual(budget()["incremental_usd"], Decimal("7.572000"))
@@ -116,9 +123,16 @@ class AdaptiveTests(unittest.TestCase):
         self.assertEqual(self.invoke()["status"], "adaptive_preflight_no_network")
         self.assertEqual(self.opener.requests, [])
         output = self.invoke(True)
+        self.assertEqual(output["phase"], "pilot")
+        self.assertEqual(Decimal(output["aggregate_reserved_usd"]), Decimal("2.931750"))
+        self.assertEqual(len(self.opener.requests), 48)
+        self.assertEqual(len(list((self.root / "protocols" / PROTOCOL / "receipts").glob("*.json"))), 8)
+        self.invoke(True)
+        self.assertEqual(len(self.opener.requests), 48)
+        output = self.invoke(True, "remaining")
         self.assertEqual(Decimal(output["aggregate_reserved_usd"]), Decimal("8.747910"))
         self.assertEqual(len(self.opener.requests), 480)
-        self.invoke(True)
+        self.invoke(True, "remaining")
         self.assertEqual(len(self.opener.requests), 480)
         transport = self.transport(True)
         bundle = {"spec": "SYNTHETIC_REVIEW_ONLY", "cases": {c["id"]: {"truth": "SYNTHETIC_REVIEW_ONLY"} for c in transport.public["cases"]}}
@@ -134,6 +148,81 @@ class AdaptiveTests(unittest.TestCase):
             if req.full_url.endswith("/responses"):
                 self.assertIn("Trusted current date: 2026-09-30", json.loads(req.data)["input"][0]["content"])
         self.assertNotIn("mock-only", (self.root / "live_journal.jsonl").read_text())
+
+    def test_unused_scope_adoption_changes_only_code_without_touching_journal(self):
+        original, paths = self.unused_scope()
+        scope_bytes = (paths / "scope.json").read_bytes()
+        ledger_bytes = (self.root / "live_journal.jsonl").read_bytes()
+        for _ in range(2):
+            result = self.invoke(adopt_unused_scope_sha256=digest(original))
+            self.assertEqual(result["status"], "adaptive_preflight_no_network")
+            self.assertEqual(result["selected_cases"], [1, 2])
+        adopted = active_scope(paths)
+        self.assertEqual(adopted, {**original, "code_sha256": code_hash()})
+        self.assertEqual((paths / "scope.json").read_bytes(), scope_bytes)
+        self.assertEqual((self.root / "live_journal.jsonl").read_bytes(), ledger_bytes)
+        self.assertTrue(read_json(paths / "unused_scope_adoption.json")["zero_adaptive_reservations_verified"])
+        self.assertEqual(self.opener.requests, [])
+        self.invoke()  # ordinary preflight resolves the preserved-scope adoption
+
+    def test_unused_scope_adoption_requires_exact_owner_digest_and_preflight(self):
+        original, paths = self.unused_scope()
+        for args in ({}, {"adopt_unused_scope_sha256": "0" * 64},
+                     {"adopt_unused_scope_sha256": digest(original), "execute": True}):
+            with self.assertRaises(Blocked):
+                self.invoke(**args)
+        with self.assertRaises(Blocked):
+            run(self.root, self.access, self.inputs, adopt_unused_scope_sha256=digest(original), owner_task_id="other")
+        changed = {**original, "current_date": "2026-07-17"}
+        (paths / "scope.json").write_text(json.dumps(changed))
+        with self.assertRaises(Blocked):
+            self.invoke(adopt_unused_scope_sha256=digest(changed))
+        self.assertFalse((paths / "unused_scope_adoption.json").exists())
+        self.assertEqual(self.opener.requests, [])
+
+    def test_unused_scope_adoption_refuses_even_released_adaptive_attempt(self):
+        original, paths = self.unused_scope()
+        ledger = Ledger(self.root / "live_journal.jsonl", "10.00")
+        ledger.append("reserved", "old-adaptive", amount_usd="0.004125", protocol=PROTOCOL,
+                      plan_sha256=digest(original), cell="01_parallel_fast", role=PROTOCOL + ":search1")
+        ledger.append("not_accepted", "old-adaptive", nonacceptance_proof="synthetic-only")
+        ledger_bytes = (self.root / "live_journal.jsonl").read_bytes()
+        with self.assertRaisesRegex(Blocked, "reservation_exists"):
+            self.invoke(adopt_unused_scope_sha256=digest(original))
+        self.assertEqual((self.root / "live_journal.jsonl").read_bytes(), ledger_bytes)
+        self.assertFalse((paths / "unused_scope_adoption.json").exists())
+        self.assertEqual(self.opener.requests, [])
+
+    def test_unused_scope_adoption_refuses_adaptive_artifacts(self):
+        original, paths = self.unused_scope()
+        (paths / "raw").mkdir()
+        with self.assertRaisesRegex(Blocked, "artifacts_exist"):
+            self.invoke(adopt_unused_scope_sha256=digest(original))
+        self.assertEqual(self.opener.requests, [])
+
+    def test_remaining_cannot_start_missing_or_tampered_pilot(self):
+        with self.assertRaises((Blocked, FileNotFoundError)):
+            self.invoke(True, "remaining")
+        self.assertEqual(self.opener.requests, [])
+        self.invoke(True)
+        dispatched = len(self.opener.requests)
+        path = self.root / "protocols" / PROTOCOL / "receipts/01_parallel_fast.json"
+        altered = {**read_json(path), "answer": "Tampered pilot answer"}
+        path.write_text(json.dumps(altered))
+        with self.assertRaises((Blocked, ValueError)):
+            self.invoke(True, "remaining")
+        self.assertEqual(len(self.opener.requests), dispatched)
+
+    def test_protocol_warning_stops_whole_phase_before_next_arm(self):
+        self.opener.warn = True
+        with self.assertRaisesRegex(Blocked, "stopped_whole_phase"):
+            self.invoke(True)
+        self.assertEqual(len(self.opener.requests), 1)
+        receipts = self.root / "protocols" / PROTOCOL / "receipts"
+        self.assertEqual([p.name for p in receipts.glob("*.json")], ["01_parallel_fast.json"])
+        with self.assertRaisesRegex(Blocked, "stopped_whole_phase"):
+            self.invoke(True)
+        self.assertEqual(len(self.opener.requests), 1)
 
     def test_insufficient_budget_never_selects_reduced_matrix_or_dispatches(self):
         ledger = Ledger(self.root / "live_journal.jsonl", "10.00")
@@ -180,12 +269,11 @@ class AdaptiveTests(unittest.TestCase):
                 decision(raw, 1, SEEDS[0])
 
     def test_uncertain_submission_preserves_hold_and_never_retries(self):
-        transport = self.transport()
         self.opener.fail = True
         with self.assertRaisesRegex(Blocked, "uncertain"):
-            research(transport, 1, "parallel_fast")
+            self.invoke(True)
         with self.assertRaisesRegex(Blocked, "uncertain"):
-            research(transport, 1, "parallel_fast")
+            self.invoke(True)
         self.assertEqual(len(self.opener.requests), 1)
         self.assertEqual(Ledger(self.root / "live_journal.jsonl", "10.00").exposure, Decimal("2.289635"))
 

@@ -19,7 +19,8 @@ Perplexity has no objective field, so its natural-language query contains those
 same keywords followed by the same objective. Generic grading instructions are
 supplied to the controller only. Native character/token controls differ; the
 controller additionally clips evidence to the same character limits. Any search
-warning stops that cell as an unscorable contract diagnostic before synthesis.
+warning retains an unscorable contract diagnostic and stops the whole phase
+before another arm/case can dispatch. Security failures likewise stop the phase.
 All controller and reviewer developer instructions supply the trusted date
 2026-09-30; retrieved text cannot change it.
 
@@ -78,7 +79,8 @@ No credential values belong in commands, receipts, chat, or committed files.
 The old implementation task performs only mock verification.
 
 From the repository root, replace the following path with the owner's existing
-aggregate root, then run the network-free preflight:
+aggregate root. If it has the old `63ad365` preflight scope, run the explicit
+adoption command below first; otherwise use this network-free preflight:
 
 ```sh
 EVAL_ROOT='/absolute/path/to/existing-aggregate-run'
@@ -86,21 +88,56 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m experiments.provide
   --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json"
 ```
 
-After the parent's retained-response audit and immutable reviewed-commit gate,
-execute or resume the exact adaptive 20×4 matrix:
+The live owner's earlier network-free preflight created an unused scope with
+digest `d3d1430a7ddc6f8840f6d3c6ca115cacc5b47eae36b17583c5759e84aff0fbb6`.
+For that existing root only, explicitly adopt the reviewed phase-control patch
+before executing. This command makes no HTTP calls:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_adaptive_v1.runner \
-  --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json" \
+  --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json" --phase pilot \
+  --adopt-unused-scope-sha256 d3d1430a7ddc6f8840f6d3c6ca115cacc5b47eae36b17583c5759e84aff0fbb6 \
+  --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
+```
+
+Adoption requires the exact owner/digest and pinned previous reviewed code hash,
+unchanged non-code scope fields, no adaptive reservations (even released ones),
+and no adaptive raw/receipt/review artifacts. It preserves the original scope
+bytes and every prior journal entry, recording only `unused_scope_adoption.json`.
+Ordinary subsequent admission resolves that immutable receipt. Adoption cannot
+be combined with `--execute` or used after an adaptive attempt.
+
+After the parent's retained-response audit and immutable reviewed-commit gate,
+execute or resume the two-case pilot (cases 1–2, eight cells):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_adaptive_v1.runner \
+  --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json" --phase pilot \
   --execute --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
 ```
+
+The runner defaults to `pilot`, never to the full 80 cells. Maximum pilot
+search/controller reservation is **$0.646240**, with at most 48 HTTP dispatches.
+Full-plan admission still preserves the complete 20-case matrix and independent
+review budget. After the owner reviews the pilot, select cases 3–20 explicitly:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_adaptive_v1.runner \
+  --output "$EVAL_ROOT" --access-receipt "$EVAL_ROOT/live_access.json" --phase remaining \
+  --execute --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce
+```
+
+Both remaining preflight and execution verify all eight pilot receipts against
+their retained responses, without initiating missing research. Missing, altered
+or protocol-warning pilot evidence blocks remaining before dispatch.
 
 Accepted steps are verified and adopted without a second reservation or request.
 An uncertain submission stops execution, retains its entire hold, and requires
 owner reconciliation. It is never automatically retried. Code, original scope,
 public bytes, access receipt, query sequence, and adaptive scope are frozen.
 
-Independent grading runs in a separate process. The parent must supply the
+Independent grading of the completed 20-case matrix runs in a separate process.
+The parent must supply the
 actual local oracle/spec mapping, never a synthetic fixture:
 
 ```json
