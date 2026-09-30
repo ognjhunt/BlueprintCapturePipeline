@@ -1610,6 +1610,17 @@ def run_storage_gc(
             return {"enabled": False, "outcomes": [], "blockers": ["experiment_configuration_unavailable"]}
 
     _isolated(report, "registered_experiments", registered_experiment_phase)
+    def historical_generation_phase() -> Any:
+        from .control_plane_lane_historical_gc import gc_historical_actions
+        try:
+            return gc_historical_actions(installed_config_path=_experiment_config_path,
+                                         apply=apply, now=clock)
+        except (OSError, ValueError) as error:
+            return {"enabled": False, "units_started": 0, "mutations": 0, "removed_bytes": 0,
+                    "outcomes": [], "blockers": [getattr(error, "code",
+                                                   "historical_configuration_unavailable")]}
+
+    _isolated(report, "historical_generations", historical_generation_phase)
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 
