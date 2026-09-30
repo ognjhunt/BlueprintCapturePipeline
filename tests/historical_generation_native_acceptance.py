@@ -525,7 +525,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             no_future_writers=True, no_future_readers=True, expires_at_epoch=clock + 700, now=time.time())
         action_id = decision['action_id']
         entry = root / 'action-entry'
-        _write(entry, ('#!/opt/blueprint-native-test-venv/bin/python\nimport sys\n'
+        _write(entry, ('#!/var/lib/blueprint-native-test-venv/bin/python\nimport sys\n'
             + 'sys.path.insert(0,' + repr(str(root / 'python')) + ')\n'
             + 'from fixture_acceptance import worker_main\nassert len(sys.argv)==2\n'
             + 'worker_main(' + repr(str(root)) + ',sys.argv[1])\n').encode(), 0o755)
