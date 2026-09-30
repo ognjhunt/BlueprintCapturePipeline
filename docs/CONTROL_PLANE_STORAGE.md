@@ -443,7 +443,10 @@ because the content stores and the trees built from them share bytes through
 hardlinks. Bytes on the work volume are attributed at the paths the pipeline uses
 (`/mnt/blueprint-work/workspace` → `/workspace`, any other
 `/mnt/blueprint-work/<rel>` → `/var/lib/blueprint/<rel>`). The walk stops after
-3,000,000 entries or 240 s with `status: "truncated"`. A 20,000-entry memory
+3,000,000 entries or 240 s with `status: "truncated"`. Each surveyed root has a
+reserved share of the entry, time and memory limits; exhausting the root-disk
+share cannot prevent the work-volume scan. Hardlinks still count once across
+roots, and a partial scan remains explicitly truncated. A 20,000-entry memory
 bound on buffered directory entries, pending directories, owner rows and shared
 inodes also truncates the survey before the capacity unit's 512 MiB limit is
 at risk. Unreadable entries are counted. Paths the unit's sandbox hides
