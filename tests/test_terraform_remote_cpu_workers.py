@@ -425,3 +425,36 @@ def test_pipeline_failure_alert_excludes_remote_cpu_jobs_which_have_their_own() 
     assert _attr(own, "notification_channels") == "var.monitoring_notification_channels"
     assert _child(_child(own, "lifecycle"), "precondition") == (
         _child(_child(existing, "lifecycle"), "precondition"))
+
+
+def test_remote_cpu_budget_alerts_at_the_approved_cap() -> None:
+    """Owner decision 2: the lane's first month runs under a $25 cap, backed by a budget alert."""
+    main = _main()
+    budget = _terraform_resource_body(main, "google_billing_budget", "remote_cpu_workers")
+    assert _attr(budget, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
+    # Required, not optional, once the workers exist.
+    precondition = _child(_child(budget, "lifecycle"), "precondition")
+    assert _attr(precondition, "condition") == 'var.billing_account_id != ""'
+    assert _attr(budget, "billing_account") == "var.billing_account_id"
+
+    amount = _terraform_variable_body(main, "remote_cpu_workers_budget_usd")
+    thresholds = _terraform_variable_body(main, "remote_cpu_workers_budget_thresholds")
+    assert (_attr(amount, "default"), _attr(thresholds, "default")) == ("25", "[0.5, 0.9, 1.0]")
+    specified = _child(_child(budget, "amount"), "specified_amount")
+    assert _attr(specified, "currency_code") == '"USD"'
+    assert _attr(specified, "units") == "tostring(var.remote_cpu_workers_budget_usd)"
+    rules = _child(budget, 'dynamic "threshold_rules"')
+    assert _attr(rules, "for_each") == "var.remote_cpu_workers_budget_thresholds"
+    assert _attr(_child(rules, "content"), "threshold_percent") == "threshold_rules.value"
+    example = TFVARS_EXAMPLE.read_text(encoding="utf-8")
+    assert re.search(r"(?m)^remote_cpu_workers_budget_usd\s*=\s*25\s*$", example)
+
+    # Scoped by label to the lane's own resources, which all carry it.
+    budget_filter = _child(budget, "budget_filter")
+    assert _attr(budget_filter, "projects") == '["projects/${data.google_project.current.number}"]'
+    assert _attr(_child(budget_filter, "labels ="), "cost-center") == '"remote-cpu-workers"'
+    resources = _resources(main)
+    for address in (("google_cloud_run_v2_job", "remote_cpu_worker"),
+                    ("google_storage_bucket", "remote_cpu_transport")):
+        assert _attr(resources[address], "labels") == (
+            'merge(local.common_labels, { cost-center = "remote-cpu-workers" })'), address

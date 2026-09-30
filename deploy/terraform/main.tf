@@ -2147,6 +2147,31 @@ variable "remote_cpu_worker_object_prefix" {
   }
 }
 
+variable "remote_cpu_workers_budget_usd" {
+  description = "Monthly GCP budget for spend labeled cost-center=remote-cpu-workers. Owner decision 2 caps the first month at $25; raise it only after billing export and reconciliation."
+  type        = number
+  default     = 25
+
+  validation {
+    condition     = var.remote_cpu_workers_budget_usd > 0 && floor(var.remote_cpu_workers_budget_usd) == var.remote_cpu_workers_budget_usd
+    error_message = "remote_cpu_workers_budget_usd must be a positive whole-dollar amount."
+  }
+}
+
+variable "remote_cpu_workers_budget_thresholds" {
+  description = "Alert thresholds for the remote CPU worker budget, as fractions of remote_cpu_workers_budget_usd."
+  type        = list(number)
+  default     = [0.5, 0.9, 1.0]
+
+  validation {
+    condition = alltrue([
+      for threshold in var.remote_cpu_workers_budget_thresholds :
+      threshold > 0 && threshold <= 1.5
+    ])
+    error_message = "remote_cpu_workers_budget_thresholds values must be > 0 and <= 1.5."
+  }
+}
+
 # Each attempt's transport (its descriptor and presigned links) is one object
 # written with if_generation_match=0 and read at that generation. The host
 # deletes it at teardown; the one-day rule is the backstop. Nothing is kept:
@@ -2374,6 +2399,51 @@ resource "google_monitoring_alert_policy" "remote_cpu_job_failures" {
     content   = "A remote CPU worker task attempt failed. The attempt falls back to the host after at most one retry by the dispatcher. Check the execution's logs and the control plane's remote-cpu-jobs summary; a stuck execution can be cancelled with `gcloud run jobs executions cancel`."
     mime_type = "text/markdown"
   }
+}
+
+# Owner decision 2: the first month runs under a $25 total cap. The host's
+# standing authority enforces it per attempt; this budget alerts on what GCP
+# actually bills to the lane's labeled jobs and bucket. It is required, not
+# optional, once the workers exist.
+resource "google_billing_budget" "remote_cpu_workers" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  billing_account = var.billing_account_id
+  display_name    = "Blueprint Remote CPU Workers Budget"
+
+  budget_filter {
+    projects = ["projects/${data.google_project.current.number}"]
+    labels = {
+      cost-center = "remote-cpu-workers"
+    }
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "USD"
+      units         = tostring(var.remote_cpu_workers_budget_usd)
+    }
+  }
+
+  dynamic "threshold_rules" {
+    for_each = var.remote_cpu_workers_budget_thresholds
+
+    content {
+      threshold_percent = threshold_rules.value
+      spend_basis       = "CURRENT_SPEND"
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.billing_account_id != ""
+      error_message = "Remote CPU workers need billing_account_id so their budget alert exists (plan 14, owner decision 2)."
+    }
+  }
+
+  depends_on = [
+    google_project_service.required_apis["billingbudgets.googleapis.com"],
+  ]
 }
 
 # =============================================================================

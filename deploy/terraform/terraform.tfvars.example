@@ -86,8 +86,12 @@ gpu_fleet_billing_budget_thresholds   = [0.5, 0.8, 1.0]
 # bucket and configured-scene key prefix that every presigned URL handed to a
 # worker must stay under, for example
 # https://s3.us-<region>.backblazeb2.com/<bucket>/blueprint/arm-decision-proof-v1/configured-scenes/
-remote_cpu_workers_enabled      = false
-remote_cpu_worker_object_prefix = ""
+# The budget alerts on spend labeled cost-center=remote-cpu-workers and needs
+# billing_account_id once the workers are enabled.
+remote_cpu_workers_enabled           = false
+remote_cpu_worker_object_prefix      = ""
+remote_cpu_workers_budget_usd        = 25
+remote_cpu_workers_budget_thresholds = [0.5, 0.9, 1.0]
 remote_cpu_worker_stages = {
   episode-compilation = {
     cpu                  = "4"
