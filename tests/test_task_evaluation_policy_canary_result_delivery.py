@@ -12,6 +12,7 @@ from blueprint_pipeline.decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
 from blueprint_pipeline.policy_canary_output_members import NOT_INGESTED_GAP
+from blueprint_pipeline import task_evaluation_result_delivery as delivery_module
 from blueprint_pipeline.task_evaluation_result_delivery import (
     POLICY_CANARY_INLINE_TIMELINE_MAX_SAMPLES,
     TaskEvaluationResultDeliveryError,
@@ -738,9 +739,35 @@ def test_view_digest_mismatch_is_the_download_mode_digest_refusal(tmp_path, monk
 # the arm never moved.
 _EXECUTION_CLAIMS = ("candidate_policy_queried", "actions_reached_robot", "arm_moved")
 _ABSENT = object()
-# main's delivery digests (2812a2720), before unknown claims passed through as null.
-_COMPLETED_DELIVERY_DIGEST_ON_MAIN = "sha256:d2e91615ed6b4f1257b1f191afe78e76c8eff7a25101326cd2553dc069814921"
-_MIXED_DELIVERY_DIGEST_ON_MAIN = "sha256:eec46be8ab42502d21d589d85d320eff4985ec047fb5144616e9bd74a8a5e8cd"
+
+
+def _claim_rule_before_null_passthrough(row: dict, claim: str) -> bool:
+    """The delivery's rule before unknown claims passed through: anything but True is False."""
+    return row.get(claim) is True
+
+
+def _deliver_under_both_claim_rules(tmp_path, monkeypatch, evidence, result, deliver):
+    """Deliver ``result`` under the previous claim rule and the current one, in separate run roots."""
+    with monkeypatch.context() as patch:
+        patch.setattr(delivery_module, "_execution_claim", _claim_rule_before_null_passthrough)
+        before = deliver(tmp_path / "before", evidence, result)
+    return before, deliver(tmp_path / "after", evidence, result)
+
+
+def _differences(before: object, after: object, path: tuple = ()) -> dict[tuple, tuple]:
+    """Every leaf that differs between two JSON values, keyed by its path."""
+    if isinstance(before, dict) and isinstance(after, dict):
+        found: dict[tuple, tuple] = {}
+        for key in before.keys() | after.keys():
+            found.update(_differences(before.get(key, _ABSENT), after.get(key, _ABSENT), (*path, key)))
+        return found
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        found = {}
+        for index, (left, right) in enumerate(zip(before, after)):
+            found.update(_differences(left, right, (*path, index)))
+        return found
+    same = type(before) is type(after) and before == after
+    return {} if same else {path: (before, after)}
 
 
 def _gap_row(candidate_id: str, cell_id: str, seed: int, *, gap: str, claims: object) -> dict:
@@ -798,20 +825,31 @@ def _delivered_claims(delivery: dict) -> dict[tuple[str, str], tuple[object, obj
     }
 
 
-def test_completed_canary_delivery_is_mains_byte_for_byte(tmp_path: Path) -> None:
+def test_completed_canary_delivery_is_byte_identical_under_either_claim_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    delivery = _deliver(tmp_path, evidence, _result(evidence))
-    assert _delivered_claims(delivery) == {("quick-cell-0", "pi05_droid"): (True, True, True)}
-    assert delivery["delivery_digest"] == _COMPLETED_DELIVERY_DIGEST_ON_MAIN
+    before, after = _deliver_under_both_claim_rules(
+        tmp_path, monkeypatch, evidence, _result(evidence), _deliver
+    )
+
+    assert _delivered_claims(after) == {("quick-cell-0", "pi05_droid"): (True, True, True)}
+    assert after == before
+    delivered = Path("artifacts/result_delivery/delivery.json")
+    assert (tmp_path / "after" / delivered).read_bytes() == (tmp_path / "before" / delivered).read_bytes()
 
 
-def test_not_ingested_episode_delivers_unknown_execution_claims_as_null(tmp_path: Path) -> None:
+def test_not_ingested_episode_delivers_unknown_execution_claims_as_null(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    delivery = _deliver_blocked(tmp_path, evidence, _mixed_result(evidence))
+    before, after = _deliver_under_both_claim_rules(
+        tmp_path, monkeypatch, evidence, _mixed_result(evidence), _deliver_blocked
+    )
 
-    assert _delivered_claims(delivery) == {
+    assert _delivered_claims(after) == {
         ("quick-cell-0", "pi05_droid"): (True, True, True),
         ("quick-cell-0", "groot_n17_droid"): (False, False, False),
         ("quick-cell-1", "pi05_droid"): (False, False, False),
@@ -820,16 +858,20 @@ def test_not_ingested_episode_delivers_unknown_execution_claims_as_null(tmp_path
         ("quick-cell-2", "groot_n17_droid"): (False, False, False),
     }
     # The Website copy carries the same nulls.
-    assert _delivered_claims(compact_policy_canary_website_delivery(delivery)) == _delivered_claims(delivery)
-    # Nothing else moved: read the unknown claims as false again and the
-    # delivery is main's, byte for byte.
-    as_on_main = deepcopy(delivery)
-    for episode in as_on_main["episodes"]:
-        if episode["policy_query"]["candidate_policy_queried"] is None:
-            episode["policy_query"]["candidate_policy_queried"] = False
-        for claim in ("actions_reached_robot", "arm_moved"):
-            if episode["action_delivery"][claim] is None:
-                episode["action_delivery"][claim] = False
-    assert cross_runtime_canonical_digest(
-        as_on_main, digest_field="delivery_digest"
-    ) == _MIXED_DELIVERY_DIGEST_ON_MAIN
+    assert _delivered_claims(compact_policy_canary_website_delivery(after)) == _delivered_claims(after)
+    # The previous rule delivered false for the unknown claims. Nothing else
+    # moved: the three claims of that one episode, and the digest over them.
+    index = next(
+        position
+        for position, episode in enumerate(after["episodes"])
+        if (episode["variation"]["cell_id"], episode["subject_id"]) == ("quick-cell-2", "pi05_droid")
+    )
+    assert _differences(before, after) == {
+        ("episodes", index, "policy_query", "candidate_policy_queried"): (False, None),
+        ("episodes", index, "action_delivery", "actions_reached_robot"): (False, None),
+        ("episodes", index, "action_delivery", "arm_moved"): (False, None),
+        ("delivery_digest",): (before["delivery_digest"], after["delivery_digest"]),
+    }
+    assert after["delivery_digest"] == cross_runtime_canonical_digest(
+        after, digest_field="delivery_digest"
+    )
