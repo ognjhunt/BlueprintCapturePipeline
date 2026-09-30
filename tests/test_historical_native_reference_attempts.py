@@ -65,7 +65,7 @@ def test_missing_or_changed_original_intent_never_triggers_a_second_attempt(tmp_
 
 
 @pytest.mark.parametrize('phase', [None, 'recovered_publication', 'recovered_before_final',
-                                  'recovered_access', 'restarted_unwritten'])
+                                  'recovered_access', 'restarted_unwritten', 'recovered_stage'])
 def test_restore_increment_is_bound_to_actual_recovery_phase(phase):
     original = {'one.log': b'a', 'nested/two.log': b'bc'}
     receipt = dict(restored_files=2, restored_logical_bytes=3)
