@@ -63,10 +63,30 @@ def _root_fixture():
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             preexec_fn=lambda: (os.setgroups([]), os.setgid(foreign.pw_gid), os.setuid(foreign.pw_uid)))
         fd = json.loads(child.stdout.readline())['fd']
+        action_id = secrets.token_hex(16)
+        entry = root / 'action-entry'
+        guard_source = (Path(__file__).parents[1] / 'src/blueprint_pipeline/control_plane_lane_historical_unit.py').read_text()
+        # This disposable installed namespace is sealed before startup. Only
+        # the compiled fixed executable pathname changes; no kernel/manager
+        # observation, expected property or authority condition is mocked.
+        guard_source = guard_source.replace(
+            "'/opt/blueprint/operator-door/bin/blueprint-historical-generation-action'", repr(str(entry)))
+        guard = root / 'unit_guard.py'
+        guard.write_text(guard_source)
+        guard.chmod(0o644)
         probe = root / 'probe.py'
         probe.write_text(
-            'import json,os,sys\nfrom pathlib import Path\n'
-            'target,original,neighbor,private,pid,foreign_fd=sys.argv[1:]\n'
+            'import importlib.util,json,os,sys\nfrom pathlib import Path\n'
+            'action_id=sys.argv[1]\n'
+            'target,original,neighbor,private,pid,foreign_fd=' + repr(tuple(map(str,
+                (target, original, neighbor, private, child.pid, fd)))) + '\n'
+            'spec=importlib.util.spec_from_file_location("installed_historical_unit",'
+                + repr(str(guard)) + ')\n'
+            'unit_guard=importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(unit_guard)\n'
+            'rights=unit_guard.prove_historical_unit(action_id,target,private)\n'
+            'assert rights["actual_kernel_and_manager_observed"] is True\n'
+            'assert rights["execution_authorized"] is False\n'
             'assert os.geteuid()==0\n'
             'assert "NoNewPrivs:\\t1" in Path("/proc/self/status").read_text()\n'
             'assert Path("/proc/"+pid+"/cwd").resolve()==Path(target)\n'
@@ -91,14 +111,16 @@ def _root_fixture():
             'assert original in Path("/proc/"+pid+"/maps").read_text()\n'
             'Path(private,"receipt.json").write_text(json.dumps({"target_writable":True,'
             '"adjacent_and_parent_denied":2,"foreign_fd_cwd_mapping_visible":True,'
-            '"references_clear":False}))\n'
+            '"references_clear":False,"actual_unit_guard_passed":True}))\n'
         )
         probe.chmod(0o644)
+        entry.write_text('#!/bin/sh\nset -eu\ntest "$#" = 1\nexec /usr/bin/python3 '
+                         + str(probe) + ' "$1"\n')
+        entry.chmod(0o755)
         assignments = _unit_property_assignments(target, private)
-        unit = 'blueprint-historical-generation-' + secrets.token_hex(16)
+        unit = 'blueprint-historical-generation-' + action_id
         argv = ['/usr/bin/systemd-run', '--unit=' + unit, '--wait', '--collect',
-                *('--property=' + value for value in assignments), '--', '/usr/bin/python3',
-                str(probe), str(target), str(original), str(neighbor), str(private), str(child.pid), str(fd)]
+                *('--property=' + value for value in assignments), '--', str(entry), action_id]
         done = subprocess.run(argv, capture_output=True, text=True, timeout=45)
         assert done.returncode == 0, done.stdout + done.stderr
         receipt = json.loads((private / 'receipt.json').read_bytes())
@@ -131,7 +153,8 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(target_writable=True,
         adjacent_and_parent_denied=2, foreign_fd_cwd_mapping_visible=True,
-        references_clear=False, future_writes_denied=3, old_fd_retained=True)
+        references_clear=False, future_writes_denied=3, old_fd_retained=True,
+        actual_unit_guard_passed=True)
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
