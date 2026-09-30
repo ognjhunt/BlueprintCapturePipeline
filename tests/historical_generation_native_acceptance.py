@@ -162,6 +162,7 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
             time.sleep(0.01)
     if fd is not None:
         try:
+            populated = False
             while time.monotonic() < deadline:
                 try:
                     raw = os.pread(fd, 1025, 0)
@@ -171,14 +172,22 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed'):
                 assert 0 < len(raw) <= 1024
                 fields = dict(line.split() for line in raw.splitlines())
                 assert fields.get(b'populated') in (b'0', b'1')
-                if fields[b'populated'] == b'0':
+                if fields[b'populated'] == b'1':
+                    populated = True
+                if populated and fields[b'populated'] == b'0':
                     break
                 time.sleep(0.05)
             else:
                 raise AssertionError('actual worker did not reach terminal cgroup state')
         finally:
             os.close(fd)
+    receipt_deadline = time.monotonic() + 2
     current = observations()
+    while current == previous and time.monotonic() < receipt_deadline:
+        # The worker is terminal before these journal queries. Allow its final
+        # stdout record to reach journald; no query races an active scan.
+        time.sleep(0.05)
+        current = observations()
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
     assert receipt['status'] == expected, receipt
