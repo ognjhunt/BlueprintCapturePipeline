@@ -65,7 +65,8 @@ def test_missing_or_changed_original_intent_never_triggers_a_second_attempt(tmp_
 
 
 @pytest.mark.parametrize('phase', [None, 'recovered_publication', 'recovered_before_final',
-                                  'recovered_access', 'restarted_unwritten', 'recovered_stage'])
+                                  'recovered_access', 'restarted_unwritten', 'recovered_stage',
+                                  'recovered_split', 'idempotent'])
 def test_restore_increment_is_bound_to_actual_recovery_phase(phase):
     original = {'one.log': b'a', 'nested/two.log': b'bc'}
     receipt = dict(restored_files=2, restored_logical_bytes=3)
@@ -108,3 +109,40 @@ def test_prefix_accounting_refuses_unproven_or_repeated_credit(change):
         receipt.pop('reused_files')
     with pytest.raises(AssertionError):
         native._assert_restore_increment(receipt, {'one.log': b'a', 'nested/two.log': b'bc'})
+
+
+def test_later_recovery_phase_needs_retained_actual_same_intent_refusal(tmp_path):
+    import hashlib
+    path, raw = original_journal(tmp_path)
+    receipts = [dict(REFUSED), dict(status='completed', recovered_access=True,
+                                 restored_files=0, restored_logical_bytes=0)]
+    observations = []
+    result = native._later_reference_attempts(lambda: receipts.pop(0), tmp_path, ACTION,
+                                              observations=observations)
+    assert observations == [dict(action_id=ACTION, code=REFUSED['code'],
+        original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=1)]
+    native._assert_boundary_recovery(result, 'recovered_split', observations, ACTION, raw)
+    assert (path / 'e-00000.json').read_bytes() == raw
+
+
+@pytest.mark.parametrize('change', ['none', 'wrong_id', 'wrong_intent', 'wrong_code', 'credit', 'flag'])
+def test_later_phase_cannot_replace_a_missing_boundary_proof(tmp_path, change):
+    import hashlib
+    _, raw = original_journal(tmp_path)
+    result = dict(status='completed', recovered_access=True, restored_files=0, restored_logical_bytes=0)
+    observations = [dict(action_id=ACTION, code=REFUSED['code'],
+        original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=1)]
+    if change == 'none':
+        observations.clear()
+    elif change == 'wrong_id':
+        observations[0]['action_id'] = 'b' * 32
+    elif change == 'wrong_intent':
+        observations[0]['original_intent_sha256'] = 'f' * 64
+    elif change == 'wrong_code':
+        observations[0]['code'] = 'restore_recovery_required'
+    elif change == 'credit':
+        result['restored_files'] = 1
+    else:
+        result['recovered_access'] = 'true'
+    with pytest.raises(AssertionError):
+        native._assert_boundary_recovery(result, 'recovered_split', observations, ACTION, raw)
