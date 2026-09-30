@@ -152,8 +152,8 @@ chown root:blueprint "$config_dir/tokens.json"
 chmod 0640 "$config_dir/tokens.json"
 fi
 
-# OWNER CONSENT PROVISIONING BEGIN
 if [ "$dispatcher_hold_only" -eq 0 ]; then
+# OWNER CONSENT PROVISIONING BEGIN
 # Existing policy, records and lock inode are preserved. This never enables intent.
 owner_store="$state_root/requests/owner-consents"
 owner_policy="$config_dir/lane-owner-policy.json"
