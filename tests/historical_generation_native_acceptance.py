@@ -292,7 +292,8 @@ def connected_delete():
         observations = [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
         assert len(observations) == 1, log.stdout
         receipt = observations[0]
-        diagnostics = [line for line in log.stdout.splitlines() if line.startswith('PROCESS_')]
+        diagnostics = [line for line in log.stdout.splitlines()
+                       if line.startswith(('PROCESS_', 'ACTION_FAILURE:'))]
         assert receipt['status'] == 'completed', dict(receipt=receipt, diagnostics=diagnostics)
         assert receipt['removed_files'] == 2 and receipt['removed_directories'] == 1
         assert receipt['logical_bytes'] == sum(map(len, original.values()))
