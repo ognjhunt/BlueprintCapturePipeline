@@ -13,9 +13,10 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .paid_attempt_authority import valid_adp_paid_provider_zero
+from .task_evaluation_launch_evidence_contracts import (
+    DIRECT_EXECUTION_ADOPTION_SCHEMA_VERSION as SCHEMA_VERSION,
+)
 
-
-SCHEMA_VERSION = "task_evaluation_native_direct_execution_adoption.v1"
 STATUS = "blocked"
 FILENAME = "native_direct_execution_adoption.v1.json"
 

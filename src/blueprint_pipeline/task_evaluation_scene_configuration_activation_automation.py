@@ -31,6 +31,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .task_evaluation_scene_configuration_activation_identity import (
+    SceneConfigurationActivationAutomationError,
+    _IDENTIFIER,
+    _identifier,
+    _activation_id,
+    _bounded_launch_id,
+)
+
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_launch_activation_contract import (
     TaskEvaluationLaunchActivationContractError,
@@ -94,7 +102,6 @@ REQUIRED_MUTATIONS = {
 PROVIDER_ZERO_MODE = {"mode": "observe_live_before_authorization"}
 STATE_DIRECTORY = "scene-configuration-activations"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
-_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _PLACEHOLDER_WINDOW = {
     "uri": "https://tryblueprint.io/internal/release-window-placeholder",
@@ -108,8 +115,6 @@ Submitter = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 ProviderZeroCollector = Callable[[], Mapping[str, Any]]
 
 
-class SceneConfigurationActivationAutomationError(RuntimeError):
-    """A join between preparation, authority, and launch could not be made."""
 
 
 def _load(path: Path, *, blocker: str) -> dict[str, Any]:
@@ -216,13 +221,6 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _identifier(value: Any) -> str:
-    text = str(value or "")
-    if _IDENTIFIER.fullmatch(text) is None:
-        raise SceneConfigurationActivationAutomationError(
-            "scene_configuration_activation_identifier_invalid"
-        )
-    return text
 
 
 # --------------------------------------------------------------------------- intent
@@ -648,9 +646,6 @@ def release_window_publisher() -> Publisher:
 # ---------------------------------------------------------------- activation
 
 
-def _activation_id(preparation_id: str) -> str:
-    stem = preparation_id.removesuffix("-preparation")
-    return _identifier(f"{stem}-activation-auto")
 
 
 def _preparation_result(preparation_result_path: Path) -> dict[str, Any]:
@@ -1005,13 +1000,6 @@ def advance_scene_configuration_activation(
 # ---------------------------------------------------------------- launch
 
 
-def _bounded_launch_id(activation_id: str) -> str:
-    readable = activation_id + "-launch"
-    if _IDENTIFIER.fullmatch(readable) is not None:
-        return readable
-    prefix = activation_id[:150].rstrip("._-")
-    token = hashlib.sha256(activation_id.encode("utf-8")).hexdigest()[:24]
-    return _identifier(f"{prefix}-{token}-launch")
 
 
 def _materialized_activation(

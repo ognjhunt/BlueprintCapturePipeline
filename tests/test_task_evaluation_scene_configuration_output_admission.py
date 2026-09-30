@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline import control_plane_capacity_controller as controller
+from blueprint_pipeline import control_plane_capacity_evidence as controller
 from blueprint_pipeline import control_plane_disk_budget as disk_budget
 from blueprint_pipeline import task_evaluation_artifixer_pretraining as pretraining
 from blueprint_pipeline import task_evaluation_scene_capacity_recovery as capacity
