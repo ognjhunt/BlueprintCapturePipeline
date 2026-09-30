@@ -151,7 +151,66 @@ def worker_main(root, action_id):
         # Keep the real protected environment/credential acquisition and SDK
         # selection. Replace only the object transport; never contact a provider.
         boto3.client = object_client
+    metadata_proof = None
+    if (root / 'metadata-boundary-probe').exists():
+        from blueprint_pipeline.control_plane_lane_historical_action import _Worker
+        from blueprint_pipeline import control_plane_lane_historical_publication as publication
+        original_probe_record = _Worker.record
+        def probe_record(self, kind, body):
+            nonlocal metadata_proof
+            result = original_probe_record(self, kind, body)
+            if kind == 'fenced' and metadata_proof is None:
+                assert self.sandbox is not None and not self.sandbox.closed
+                with self.checkpoint(journal=True) as (files, _, journal):
+                    # Explicit non-authorizing metadata projections. This
+                    # exercises full-size byte publication under real installed
+                    # systemd/Landlock rights, not a fabricated generation/owner.
+                    leaf = 'metadata-publication-probe'
+                    files.location(journal.directory)
+                    os.mkdir(leaf, 0o700, dir_fd=journal.directory)
+                    child = files.open(leaf, os.O_RDONLY | os.O_DIRECTORY, parent=journal.directory)
+                    child_birth = os.fstat(child)
+                    prefix = b'{"schema_version":"metadata_publication_probe.v1","execution_authorized":false,"data":"'
+                    suffix = b'"}\n'
+                    cap = publication._CAPS['manifest']
+                    payload = prefix + b'x' * (cap - len(prefix) - len(suffix)) + suffix
+                    assert len(payload) == cap == publication._CAPS['historical_restore_snapshot']
+                    for output, category in [('f' * 32 + '.manifest.json', 'manifest'),
+                                             ('restore.snapshot.json', 'historical_restore_snapshot')]:
+                        published = publication._publish(files, child, output, payload, kind=category)
+                        assert published == dict(sha256='sha256:' + hashlib.sha256(payload).hexdigest(), size_bytes=cap)
+                        check = files.open(output, os.O_RDONLY, parent=child)
+                        birth = os.fstat(check)
+                        assert birth.st_uid == birth.st_gid == 0 and birth.st_nlink == 1
+                        assert stat.S_IMODE(birth.st_mode) == 0o600
+                        assert files.read_bytes(check, cap) == payload  # third full comparison
+                        try:
+                            publication._publish(files, child, output, b'conflict', kind=category)
+                        except ValueError as error:
+                            assert str(error) == 'experiment_publication_destination_exists'
+                        else:
+                            raise AssertionError('metadata destination was overwritten')
+                        assert os.stat(output, dir_fd=child, follow_symlinks=False) == os.fstat(check)
+                        assert os.fstat(check).st_ino == birth.st_ino and os.fstat(check).st_size == cap
+                        # Remove only this fixture's fully verified actual new
+                        # inode while its original descriptor remains retained.
+                        os.unlink(output, dir_fd=child)
+                        files.close(check)
+                    files.location(child)
+                    named_child = os.stat(leaf, dir_fd=journal.directory, follow_symlinks=False)
+                    assert (named_child.st_dev, named_child.st_ino) == (child_birth.st_dev, child_birth.st_ino)
+                    assert not os.listdir(child)
+                    os.rmdir(leaf, dir_fd=journal.directory)
+                    files.close(child)
+                    files.location(journal.directory)
+                    os.fsync(journal.directory)
+                    metadata_proof = dict(records=2, bytes_per_record=cap, full_comparisons=6,
+                                          no_replace_conflicts=2, actual_landlock=True)
+            return result
+        _Worker.record = probe_record
     def emit(receipt):
+        if metadata_proof is not None:
+            receipt = dict(receipt, _fixture_metadata_proof=metadata_proof)
         if cloud is not None:
             receipt = dict(receipt, _fixture_remote=dict(corrupt=cloud.corrupt,
                 objects={key: base64.b64encode(raw).decode() for key, raw in cloud.objects.items()},
@@ -387,6 +446,12 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
         current = observations()
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
+    metadata_proof = receipt.pop('_fixture_metadata_proof', None)
+    if (entry.parent / 'metadata-boundary-probe').exists():
+        assert metadata_proof == dict(records=2, bytes_per_record=1048576,
+            full_comparisons=6, no_replace_conflicts=2, actual_landlock=True), metadata_proof
+    else:
+        assert metadata_proof is None
     remote = receipt.pop('_fixture_remote', None)
     if remote is not None:
         assert len(_encoded(remote)) <= 16384
@@ -505,7 +570,7 @@ def _installed_entry(root, entry):
 
 
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
-                     restore_interruption='restore_final', installed=False, destination_conflict=False):
+                     restore_interruption='restore_final', installed=False, destination_conflict=False, metadata_probe=False):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -626,6 +691,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             + 'worker_main(' + repr(str(root)) + ',sys.argv[1])\n').encode(), 0o755)
         if installed:
             _installed_entry(root, entry)
+        if metadata_probe:
+            _write(root / 'metadata-boundary-probe', b'non-authorizing metadata byte projections\n')
         if interruption:
             _write(root / 'interrupt-once', interruption.encode())
             death = interruption.startswith('metadata_')
@@ -869,6 +936,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
 
 CONNECTED_CASES = (
     ('delete', dict(interruption=None)),
+    ('metadata_bounds', dict(metadata_probe=True)),
     ('metadata_before_link', dict(interruption='metadata_before_link')),
     ('metadata_after_link', dict(interruption='metadata_after_link')),
     ('metadata_before_parent_fsync', dict(interruption='metadata_before_parent_fsync')),

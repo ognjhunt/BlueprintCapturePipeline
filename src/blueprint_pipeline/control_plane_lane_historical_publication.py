@@ -92,7 +92,11 @@ def _publish(files, parent, name, payload, *, kind):
         raise OwnerTargetVersionError('experiment_publication_destination_exists')
     # Two comparisons here and one protected caller readback must be admitted
     # before creating/linking any inode, with original counters conserved.
-    _require(3 * len(payload) <= min(files.raw_cap, files.budget.limits['raw_bytes'])
+    # Snapshot readback revalidates intent/head/previous and boot identity
+    # both before and after its full read. Use the publisher's event cap, which
+    # bounds the narrower journal event cap, and preserve an EOF probe byte.
+    overhead = 6 * _CAPS['event'] + 2 * 40 if kind == 'historical_restore_snapshot' else 0
+    _require(3 * len(payload) + overhead + 1 <= min(files.raw_cap, files.budget.limits['raw_bytes'])
              - files.budget.counts['raw_bytes'], 'owner_target_resource_exhausted')
     view = CreationProcView(files)
     fd = None

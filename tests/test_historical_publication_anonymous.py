@@ -23,7 +23,7 @@ from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectio
 
 def protocol(monkeypatch, *, named_changes=None, opened_changes=None):
     trace = []
-    parent = SimpleNamespace(st_dev=1, st_ino=2, st_mode=stat.S_IFDIR | 0o700)
+    parent = SimpleNamespace(st_dev=1, st_ino=2, st_mode=stat.S_IFDIR | 0o700, st_uid=0, st_gid=0)
     values = dict(st_dev=1, st_ino=3, st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
                   st_nlink=0, st_size=0, st_mtime_ns=1, st_ctime_ns=1)
     named = SimpleNamespace(**(values | (named_changes or {})))
@@ -159,3 +159,21 @@ def test_historical_metadata_checkpoint_supports_declared_manifest_reads(histori
         # protected readback fit with conserved acquisition counters.
         needed = 4 * MAX_MANIFEST_BYTES
         assert min(files.raw_cap, files.budget.limits['raw_bytes']) - files.budget.counts['raw_bytes'] >= needed
+
+
+
+@pytest.mark.parametrize('kind,name,offset', [('event', 'e-00001.json', -1),
+    ('event', 'e-00001.json', 0), ('historical_restore_snapshot', 'restore.snapshot.json', -1),
+    ('historical_restore_snapshot', 'restore.snapshot.json', 0)])
+def test_complete_read_and_eof_reservation_precedes_any_creation(monkeypatch, kind, name, offset):
+    files, _ = protocol(monkeypatch)
+    payload = b'{"execution_authorized":false}\n'
+    extra = 6 * publication._CAPS['event'] + 80 if kind == 'historical_restore_snapshot' else 0
+    files.raw_cap = 3 * len(payload) + extra + offset
+    def absent(*args, **kwargs):
+        raise FileNotFoundError
+    monkeypatch.setattr(publication.os, 'stat', absent)
+    monkeypatch.setattr(publication, 'CreationProcView', lambda *a: pytest.fail('creation before complete read admission'))
+    with pytest.raises(ValueError, match='resource_exhausted'):
+        publication._publish(files, 7, name, payload, kind=kind)
+    assert files.budget.counts['raw_bytes'] == 0 and set(files.owned) == {7}

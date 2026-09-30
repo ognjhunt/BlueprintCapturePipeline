@@ -309,7 +309,7 @@ jobs:
           /var/lib/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
-          assert len(cases) == 22, "all original boundaries, complete-stage recovery and three metadata SIGKILL cases must execute"
+          assert len(cases) == 23, "all original boundaries, complete-stage recovery, full-size metadata and three SIGKILL cases must execute"
           assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "native skips and refusals do not prove acceptance"
           PYTHON
 
