@@ -84,3 +84,11 @@ test('legacy imports require disabled control and preserve an attempted date', a
   db.values.get(ROOT).enabled = true;
   await assert.rejects(store.createCheck(row().date, row().metadata), /not_admitted/);
 });
+
+test('imported legacy review packets reach the agent queue without rerunning research', async () => {
+  const {db, store} = await fixture(); db.values.get(ROOT).enabled = false;
+  const legacy = {...row(), state: 'awaiting_review', packet: {findings: []}, packet_digest: 'digest'};
+  await store.importRun(legacy);
+  assert.equal(db.values.get(`${ROOT}/workItems/${row().date}`).stage, 'agent_qa_pending');
+  assert.equal(db.values.get(`${ROOT}/runs/${row().date}`).create_attempt_claimed, true);
+});

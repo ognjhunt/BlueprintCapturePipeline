@@ -111,6 +111,14 @@ export class Store {
     for (const snap of snaps.docs) result.push(await this.get(snap.id));
     return result.sort((a, b) => a.date.localeCompare(b.date));
   }
+  projectWorkItem(tx, row, hash) {
+    if (row.packet) tx.set(this.db.doc(`${ROOT}/workItems/${row.date}`), {
+      date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest,
+      owner: 'blueprint-research-qa-publication-agent',
+      stage: row.state === 'awaiting_review' ? 'agent_qa_pending' : row.state === 'reviewed' ? 'publication_pending' : row.state,
+      observer_receipt_required: false, scope: 'research_only_no_outreach'
+    });
+  }
   async put(row) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}`) refuse('firestore_row_binding_invalid');
     const hash = await this.blobPut(Buffer.from(JSON.stringify(row)).toString('base64'));
@@ -123,12 +131,7 @@ export class Store {
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null});
-      if (row.packet) tx.set(this.db.doc(`${ROOT}/workItems/${row.date}`), {
-        date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest,
-        owner: 'blueprint-research-qa-publication-agent',
-        stage: row.state === 'awaiting_review' ? 'agent_qa_pending' : row.state === 'reviewed' ? 'publication_pending' : row.state,
-        observer_receipt_required: false, scope: 'research_only_no_outreach'
-      });
+      this.projectWorkItem(tx, row, hash);
     });
     return true;
   }
@@ -178,6 +181,7 @@ export class Store {
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: true, session_id: row.session_id || null, turn_id: row.turn_id || null,
         environment_id: row.environment_id || null});
+      this.projectWorkItem(tx, row, hash);
       return true;
     });
   }
