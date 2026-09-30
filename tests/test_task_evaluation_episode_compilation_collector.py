@@ -639,3 +639,48 @@ def test_a_shadow_comparison_of_two_blocked_compiles_is_inconclusive(tmp_path: P
                 "cpu_class": HOST_RECORD["cpu_class"]}
     assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", **identity) == 1
     assert world.results[-1]["parity"] == {"not_applicable": {"passed": 1, "failed": 0, "inconclusive": 3}}
+
+
+@pytest.mark.parametrize("trigger", ["result", "pointer"])
+def test_a_commit_that_cannot_finish_still_tears_down_and_hands_the_row_back(tmp_path: Path, monkeypatch,
+                                                                              trigger: str) -> None:
+    """Review I3: an unexpected commit error after compute-zero (a result or a pointer already there) never
+    wedges the attempt.  It is torn down to provider-zero and settled, the lease ends ``blocked`` and frees its
+    slot, and the uncommitted row goes back to the host; what was already there is left untouched."""
+
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    if trigger == "result":
+        existing = world.host.queue / "results" / world.name
+        write_launch_preparation_record_exclusive(existing, {"schema_version": "task_evaluation_episode_compilation_result.v1",
+                                                             "status": "blocked", "blockers": ["written_elsewhere"]})
+    else:
+        existing = world.host.outputs / f"{world.plan.compilation_id}.remote-output.v1.json"
+        existing.write_text("{}\n", encoding="utf-8")
+    before = existing.read_bytes()
+    _complete(world, step=300)
+    lease = world.lease()
+    assert lease["state"] == "blocked" and lease["outcome"].startswith("remote_cpu_commit_failed:"), lease["outcome"]
+    _assert_torn_down(world)
+    assert remote.marker_path(world.host.jobs, "fallback", world.name).is_file()
+    assert world.row_state() == "processing" and existing.read_bytes() == before
+
+
+def test_the_shadow_tree_comparison_hashes_files_as_a_stream(tmp_path: Path, monkeypatch) -> None:
+    """Review I3: comparing a host tree never reads a whole output file into memory (``MemoryMax=2G``)."""
+
+    root = tmp_path / "out"
+    (root / "native-task-packet").mkdir(parents=True)
+    member = root / "native-task-packet" / "bundle.zip"
+    member.write_bytes(b"x" * (3 * 1024 * 1024 + 7))
+    index = {"root_mode": f"{root.stat().st_mode & 0o7777:04o}",
+             "directories": [{"path": "native-task-packet", "mode": f"{member.parent.stat().st_mode & 0o7777:04o}"}],
+             "entries": [{"path": "native-task-packet/bundle.zip", "blob": digest_of(member.read_bytes()),
+                          "size_bytes": member.stat().st_size, "mode": f"{member.stat().st_mode & 0o7777:04o}"}]}
+
+    def whole_file(self):
+        raise MemoryError("read the whole file")
+
+    monkeypatch.setattr(Path, "read_bytes", whole_file)
+    assert collector._tree_mismatches(root, index) == []

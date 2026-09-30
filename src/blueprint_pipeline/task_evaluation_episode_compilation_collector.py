@@ -625,6 +625,9 @@ def _commit(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.Re
     """Plan 14 §9's commit order; each step is idempotent, so a resume starts at the first one missing."""
 
     name, attempt_id, result = plan.queue_row["name"], lease["attempt_id"], receipt["result"]
+    abandoned = _row(c, name, plan.queue_row)["gave_up"]
+    if abandoned is not None:  # a commit that could not finish: only its teardown is left (review I3)
+        return _close(c, path, marker, lease, terminal="blocked", outcome=abandoned["reason"])
     blocked = receipt["status"] == "blocked"
     terminal = "blocked" if blocked else "completed"
     if (c.queue_root / terminal / name).is_file() and not (c.queue_root / "processing" / name).exists():
@@ -665,10 +668,20 @@ def _commit(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.Re
     return _close(c, path, marker, lease, terminal=terminal, outcome=result["status"])
 
 
-def _tree_mismatches(root: Path, index: Mapping[str, Any]) -> list[str]:
-    """Where the host's own output tree differs from the worker's index: paths, bytes, modes."""
+def _file_digest(path: Path) -> str:
+    """A file's SHA-256, read in bounded chunks: the unit runs under ``MemoryMax=2G`` (review I3)."""
 
     import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _tree_mismatches(root: Path, index: Mapping[str, Any]) -> list[str]:
+    """Where the host's own output tree differs from the worker's index: paths, bytes, modes."""
 
     if not root.is_dir():
         return ["$root"]
@@ -679,7 +692,7 @@ def _tree_mismatches(root: Path, index: Mapping[str, Any]) -> list[str]:
         if stat.S_ISDIR(info.st_mode):
             found[relative] = ("dir", mode)
         else:
-            found[relative] = ("sha256:" + hashlib.sha256(current.read_bytes()).hexdigest(), info.st_size, mode)
+            found[relative] = (_file_digest(current), info.st_size, mode)
     expected = {row["path"]: ("dir", row["mode"]) for row in index["directories"]}
     expected.update({row["path"]: (row["blob"], row["size_bytes"], row["mode"]) for row in index["entries"]})
     mismatches = sorted(path for path in set(found) | set(expected) if found.get(path) != expected.get(path))
@@ -694,6 +707,9 @@ def _compare_shadow(c: Collector, path: Path, marker: Mapping[str, Any], plan: r
 
     if not _compute_zero(c, lease, descriptor):
         return {"status": "collecting", "blocker": "remote_cpu_compute_zero_unproven"}
+    abandoned = _row(c, plan.queue_row["name"], plan.queue_row)["gave_up"]
+    if abandoned is not None:  # a comparison that could not finish: only its teardown is left (review I3)
+        return _close(c, path, marker, lease, terminal="blocked", outcome=abandoned["reason"])
     recorded = _read_json(c.jobs_root / "parity" / STAGE / f"{lease['attempt_id']}.json")
     if recorded is not None:  # compared already: only the teardown is left
         return _close(c, path, marker, lease, terminal="shadow_compared", outcome=f"shadow_parity_{recorded['parity']}")
@@ -764,6 +780,21 @@ def _collect(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.R
         return _commit(c, path, marker, plan, lease, descriptor, verdict["receipt"])
     except _AttemptFailed as exc:
         return _fail(c, _lease(c, lease["job_id"]), str(exc))
+    except Exception as exc:  # noqa: BLE001 - past compute-zero, any other error still ends in provider-zero
+        current = _lease(c, lease["job_id"])
+        if current["state"] != "collecting" or (current["dispatch_started"] and not current["compute_zero_proven"]):
+            raise  # nothing was committed yet: the next run tries again
+        return _abandon_commit(c, path, marker, current, f"remote_cpu_commit_failed:{_typed(exc)}")
+
+
+def _abandon_commit(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str, Any],
+                    reason: str) -> dict[str, Any]:
+    """Review I3: a commit that cannot finish (a result or pointer already there, a row gone, a read that
+    fails) must not hold the attempt's slot forever.  The row, if still claimed, goes back to the host; the
+    attempt is torn down to provider-zero and settled; the lease ends ``blocked``."""
+
+    _give_up(c, marker, reason=reason, attempts=lease["attempt"])
+    return _close(c, path, marker, lease, terminal="blocked", outcome=reason)
 
 
 # ---------------------------------------------------------------------------------------------- teardown

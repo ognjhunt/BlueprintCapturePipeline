@@ -1419,7 +1419,11 @@ other row compiles on the host. In `cloud_run_shadow` every row compiles on the
 host and an eligible one also gets a shadow marker. Rows never leave the four
 queue states. The paid unit (`blueprint-task-evaluation-episode-compilation-remote`)
 never compiles: it dispatches through `paid_resource_allocator remote-cpu-job`,
-follows, collects and tears down.
+follows, collects and tears down. A refused dispatch writes the fallback, then
+drops the hand-off, and a hand-off whose row was given up, handed back or moved
+on is never dispatched again. A commit that cannot finish after compute-zero (a
+result or pointer already there, a row gone) hands the row back and still tears
+the attempt down to provider-zero; its lease ends `blocked`.
 
 **What lands on the host.** A remote compile writes its whole tree in the
 worker. The host gains only what later stages read by path, the consumer
