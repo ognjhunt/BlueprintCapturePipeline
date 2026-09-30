@@ -1,0 +1,460 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blueprint.knowledge-snapshot.v1.schema.json",
+  "title": "Reviewed Notion knowledge snapshot v1",
+  "description": "Structural schema. Loader additionally validates hashes, date ordering, unique IDs, foreign keys, source-page domains, specification conditions and bounds. No reviewer authentication implied.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "blueprint.knowledge-snapshot.v1"
+    },
+    "exported_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "source_pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,120}$"
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "pattern": "^https://[^/@:]+\\.[^/]+(/|$)"
+          },
+          "revision": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "native_revision_id",
+                  "page_last_edited_at"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ]
+          }
+        },
+        "required": [
+          "page_id",
+          "url",
+          "revision"
+        ]
+      },
+      "maxItems": 30,
+      "minItems": 1
+    },
+    "companies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,120}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "maxItems": 20,
+            "uniqueItems": true
+          },
+          "source_page_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "maxItems": 20,
+            "uniqueItems": true,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "company_id",
+          "name",
+          "roles",
+          "source_page_ids"
+        ]
+      },
+      "maxItems": 100
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,120}$"
+          },
+          "company_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,120}$"
+          },
+          "record_type": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,120}$"
+          },
+          "product": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "version"
+            ]
+          },
+          "task_tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "maxItems": 20,
+            "uniqueItems": true
+          },
+          "geography_tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "maxItems": 20,
+            "uniqueItems": true
+          },
+          "facts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "fact_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,120}$"
+                },
+                "field": {
+                  "enum": [
+                    "availability",
+                    "cycle_time",
+                    "deployment",
+                    "embodiment",
+                    "geography",
+                    "integration",
+                    "limit",
+                    "price",
+                    "reliability",
+                    "safety",
+                    "specification",
+                    "supervision",
+                    "support",
+                    "supported_hardware",
+                    "task_claim",
+                    "unknown"
+                  ]
+                },
+                "statement": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "status": {
+                  "enum": [
+                    "reviewed",
+                    "conflicted",
+                    "unsupported",
+                    "unknown"
+                  ]
+                },
+                "evidence_level": {
+                  "enum": [
+                    "current_availability",
+                    "demonstrated_capability",
+                    "named_deployment",
+                    "unknown",
+                    "vendor_claim"
+                  ]
+                },
+                "confidence": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "unknown"
+                  ]
+                },
+                "freshness_days": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 90
+                },
+                "task_tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "maxItems": 20,
+                  "uniqueItems": true
+                },
+                "geography_tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "maxItems": 20,
+                  "uniqueItems": true
+                },
+                "source_page_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "maxItems": 20,
+                  "uniqueItems": true,
+                  "minItems": 1
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000,
+                        "pattern": "^https://[^/@:]+\\.[^/]+(/|$)"
+                      },
+                      "publisher": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "publication_date": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "format": "date"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "source_checked_at": {
+                        "type": "string",
+                        "anyOf": [
+                          {
+                            "format": "date"
+                          },
+                          {
+                            "format": "date-time"
+                          }
+                        ]
+                      },
+                      "revalidated_at": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "anyOf": [
+                              {
+                                "format": "date"
+                              },
+                              {
+                                "format": "date-time"
+                              }
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "classification": {
+                        "enum": [
+                          "operator",
+                          "vendor",
+                          "independent"
+                        ]
+                      },
+                      "quote": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "url",
+                      "publisher",
+                      "publication_date",
+                      "source_checked_at",
+                      "revalidated_at",
+                      "classification",
+                      "quote"
+                    ]
+                  },
+                  "maxItems": 4
+                },
+                "limits": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "maxItems": 20,
+                  "uniqueItems": true
+                },
+                "conflicts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "maxItems": 20,
+                  "uniqueItems": true
+                },
+                "specification": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 120
+                    },
+                    "value": {
+                      "type": "number"
+                    },
+                    "unit": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "conditions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120
+                      },
+                      "maxItems": 20,
+                      "uniqueItems": true,
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "value",
+                    "unit",
+                    "conditions"
+                  ]
+                }
+              },
+              "required": [
+                "fact_id",
+                "field",
+                "statement",
+                "status",
+                "evidence_level",
+                "confidence",
+                "freshness_days",
+                "task_tags",
+                "geography_tags",
+                "source_page_ids",
+                "sources",
+                "limits",
+                "conflicts"
+              ]
+            },
+            "maxItems": 20
+          }
+        },
+        "required": [
+          "record_id",
+          "company_id",
+          "record_type",
+          "product",
+          "task_tags",
+          "geography_tags",
+          "facts"
+        ]
+      },
+      "maxItems": 100
+    }
+  },
+  "required": [
+    "schema_version",
+    "exported_at",
+    "content_hash",
+    "source_pages",
+    "companies",
+    "records"
+  ]
+}
