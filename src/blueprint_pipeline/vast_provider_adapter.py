@@ -32,6 +32,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
+from .vast_api_transport import (
+    VAST_API_BASE,
+    _api_json,
+)
+
 from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
 from .vast_provider_log_observations import (
     _log_result_saw_container_missing,
@@ -207,7 +212,6 @@ VAST_ISAAC_IMAGE_STARTUP_PREFLIGHT_SCHEMA_VERSION = "vast_isaac_image_startup_pr
 VAST_TEMPLATE_DISCOVERY_SCHEMA_VERSION = "vast_template_discovery.v1"
 VAST_FINAL_VALIDATION_SCHEMA_VERSION = "vast_final_validation.v1"
 
-VAST_API_BASE = "https://console.vast.ai/api/v0"
 VAST_API_KEY_FILE_ENV = "VAST_API_KEY_FILE"
 VAST_LAUNCH_LOCK_FILE_ENV = "VAST_LAUNCH_LOCK_FILE"
 VAST_SESSION_BUDGET_LEDGER_FILE_ENV = "VAST_SESSION_BUDGET_LEDGER_FILE"
@@ -995,34 +999,6 @@ def _head_with_public_dns_fallback(
     }
 
 
-def _api_json(
-    *,
-    method: str,
-    path: str,
-    api_key: str,
-    payload: Mapping[str, Any] | None = None,
-    timeout_seconds: int = 30,
-) -> tuple[int, dict[str, Any]]:
-    url = (
-        path
-        if path.startswith("http://") or path.startswith("https://")
-        else f"{VAST_API_BASE}{path}"
-    )
-    from .provider_transport import provider_json_request
-
-    read_options = {}
-    if method.upper() == "GET" and path in {"/instances", "/instances/"}:
-        from .vast_inventory_read_retry import inventory_read_retry
-        read_options["read_retry"] = inventory_read_retry()
-
-    return provider_json_request(
-        url=url,
-        method=method,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        body_json=payload,
-        timeout_seconds=timeout_seconds,
-        **read_options,
-    )
 
 
 def _fetch_text(url: str, timeout_seconds: int = 30) -> str:

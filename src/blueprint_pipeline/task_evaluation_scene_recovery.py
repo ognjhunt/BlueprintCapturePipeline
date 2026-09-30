@@ -194,7 +194,7 @@ def validate_recovery_evidence(evidence, *, prior_attempt, provider, now):
         require(provider_null_evidence(producer), "scene_recovery_provider_null_evidence_missing")
     else:
         require(create_evidence, "scene_recovery_create_failure_evidence_missing")
-    from .task_evaluation_launch_reconciler import _guard_provider_zero
+    from .task_evaluation_launch_evidence_contracts import _guard_provider_zero
     zero, blockers = _guard_provider_zero(
         guard=values["provider_guard"], required_providers=[provider], max_age_seconds=300,
         now=datetime.fromtimestamp(now, timezone.utc),

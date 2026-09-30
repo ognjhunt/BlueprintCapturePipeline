@@ -13,12 +13,13 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 
-from . import task_evaluation_scene_intake as intake
+from . import task_evaluation_scene_intent_contracts as intake
+from .task_evaluation_scene_intent_storage import write_exclusive
 from . import task_evaluation_authoring_auth_recovery as auth
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_public_scene_attempt_factory import record
+from .task_evaluation_scene_attempt_evidence import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
-from .task_evaluation_scene_progression_state import require, safe_path
+from .task_evaluation_scene_progression_contracts import require, safe_path
 
 KIND = "preallocation_capacity"
 BLOCKER = "scene_configuration_provider_output_disk_capacity_insufficient"
@@ -59,7 +60,7 @@ def preallocation_capacity_failure(result) -> bool:
     A measured refusal after paid API pretraining keeps its blocker but is
     withheld, as a credit refusal is once that preparation has run.
     """
-    from .task_evaluation_scene_configuration_output_admission import recovery_withheld
+    from .task_evaluation_scene_configuration_output_evidence import recovery_withheld
     return (isinstance(result, Mapping) and result.get("blockers") in PREALLOCATION_BLOCKERS
             and not recovery_withheld(result))
 
@@ -119,7 +120,7 @@ def _values(refs):
 
 def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
     """Reopen exact producer/request/owner bytes, including the failed disk phase."""
-    from .task_evaluation_scene_configuration_provider_artifacts import (
+    from .task_evaluation_scene_configuration_provider_contracts import (
         _provider_output_disk_requirements, _provider_transfer_byte_budget,
     )
     values = _values(refs)
@@ -200,7 +201,7 @@ def validate_source(refs, *, prior_attempt, kind="preallocation_capacity"):
         return values
     _download, upload = _provider_transfer_byte_budget(bundle)
     if result.get("blockers") == [MEASURED_BLOCKER]:
-        from .task_evaluation_scene_configuration_output_admission import (
+        from .task_evaluation_scene_configuration_output_evidence import (
             recorded_preallocation_refusal,
         )
         require(recorded_preallocation_refusal(
@@ -257,7 +258,7 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
             observation = {"recoverable": False, "blockers": blockers, "result": record(result_path)}
             # A withheld measured refusal seals the recoverable blocker exactly;
             # only this observation says why no retry follows.
-            from .task_evaluation_scene_configuration_output_admission import recovery_withheld_reason
+            from .task_evaluation_scene_configuration_output_evidence import recovery_withheld_reason
             withheld = recovery_withheld_reason(result) if MEASURED_BLOCKER in blockers else None
             if withheld is not None:
                 observation.update(recovery_withheld=withheld, blockers=[
@@ -282,7 +283,7 @@ def observe_failure(*, attempt, link_path, preparation_path, factory_path, confi
 
 def capacity_admission(observation, config, now):
     """Measure current headroom for the whole CPU chain, next bundle, and output."""
-    from .control_plane_capacity_controller import whole_chain_admission
+    from .control_plane_capacity_evidence import whole_chain_admission
     from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, ROLE_FOOTPRINT_BYTES
     bundle, result = observation["values"]["bundle"], observation["values"]["result"]
     overhead = bundle["bundle_size_bytes"]
@@ -303,7 +304,7 @@ def capacity_admission(observation, config, now):
     else:
         # A measured run is re-checked the way its successor will be admitted:
         # the role's ledger projection (floor, live reservations), never 5U.
-        from .task_evaluation_scene_configuration_output_admission import output_role_projection
+        from .task_evaluation_scene_configuration_output_evidence import output_role_projection
         projection = output_role_projection(
             output_path=output_path, reservation_root=reservation_root,
             required_available_bytes=measured, disk_usage=shutil.disk_usage)
@@ -343,10 +344,10 @@ def _measured_output_requirement(bundle, result):
     Re-derived with admission's own formula from the recorded hold and CPU
     prefix phases, residue included, so a successor is re-checked exactly as
     it will be admitted."""
-    from .task_evaluation_scene_configuration_output_admission import (
+    from .task_evaluation_scene_configuration_output_evidence import (
         measured_admission_record, recorded_output_requirement,
     )
-    from .task_evaluation_scene_configuration_provider_artifacts import _provider_transfer_byte_budget
+    from .task_evaluation_scene_configuration_provider_contracts import _provider_transfer_byte_budget
     record = measured_admission_record(result)
     if record is None:
         return None
@@ -371,7 +372,7 @@ def retain_failure(*, observation, attempt, output_root, admission):
     value["failure_digest"] = canonical_digest(value, digest_field="failure_digest")
     path = output / (value["failure_digest"][7:] + ".json")
     if not path.exists():
-        intake.write_exclusive(path, value)
+        write_exclusive(path, value)
     return path
 
 

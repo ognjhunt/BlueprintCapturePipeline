@@ -78,7 +78,7 @@ def capacity_fixture(tmp_path, monkeypatch, retries=2):
     write(result_path, producer, "result_digest")
     config = {"intent_root": str(tmp_path), "factory_output_root": str(factory_root),
               "launch_execution_root": str(launches), "preparation_worker": {"disk_reservation_root": str(tmp_path / "reservations")}}
-    from blueprint_pipeline import control_plane_capacity_controller as controller
+    from blueprint_pipeline import control_plane_capacity_evidence as controller
     measure = controller.measure_mount
     free = {"value": 80 * 1024**3}
     def usage(_path):
@@ -306,7 +306,7 @@ def test_capacity_recovery_rechecks_by_role(tmp_path, monkeypatch):
     """A measured pre-allocation refusal is a $0 capacity failure like the ceiling one,
     and it is re-checked through the scene_configuration_output ledger projection
     (bulk floor, live reservations, then U + 512 MiB), never through 5U."""
-    from blueprint_pipeline import control_plane_capacity_controller as controller
+    from blueprint_pipeline import control_plane_capacity_evidence as controller
     from blueprint_pipeline import control_plane_disk_budget as disk
     first, refs, config, hold, free = _measured_refusal(tmp_path, monkeypatch)
     observation = capacity.observe_failure(
@@ -426,7 +426,7 @@ def test_a_measured_dead_machine_is_rechecked_by_role_not_5u(tmp_path, monkeypat
     """Dead-machine auto-retry treats a measured run like its ceiling twin in every
     respect but the output re-check, which follows how the successor will be
     admitted: the role projection for a measured run, the recorded 5U otherwise."""
-    from blueprint_pipeline import control_plane_capacity_controller as controller
+    from blueprint_pipeline import control_plane_capacity_evidence as controller
     from blueprint_pipeline import task_evaluation_scene_configuration_output_admission as output
     gib = 1024**3
     bundle = {"bundle_size_bytes": 1_260_479_494, "bundle_path": str(tmp_path / "removed.zip")}

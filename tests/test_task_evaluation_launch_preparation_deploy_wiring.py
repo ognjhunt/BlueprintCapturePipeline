@@ -217,7 +217,8 @@ def test_canonical_installer_installs_and_enables_episode_compilation_pair() -> 
         "blueprint-task-evaluation-episode-compilation.path"
     ) in installer
     # Plan 14 §1: the paid unit's trio is installed and its triggers armed; its ExecCondition skips it
-    # while the flag is unset.  Its remote job directories exist before any trigger watches them.
+    # while the effective mode is host (an unset flag without the remote CPU config included).  Its remote
+    # job directories exist before any trigger watches them.
     for unit in (
         "blueprint-task-evaluation-episode-compilation-remote.service",
         "blueprint-task-evaluation-episode-compilation-remote.timer",

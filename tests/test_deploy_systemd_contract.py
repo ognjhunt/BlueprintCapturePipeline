@@ -816,7 +816,7 @@ def test_full_test_lane_is_explicit_or_nightly_and_gates_deploy_contract():
     assert "schedule:" in event_block
     assert 'cron: "17 8 * * *"' in event_block
     assert "workflow_dispatch:" in event_block
-    assert "uv run scripts/pytest_full.sh" in workflow
+    assert "uv run --no-sync scripts/pytest_full.sh" in workflow
     assert (
         '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml"'
         in workflow

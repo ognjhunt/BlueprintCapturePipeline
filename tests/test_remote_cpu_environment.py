@@ -125,13 +125,15 @@ def test_environment_records_cpython_zlib_golden_deflate_simd_and_distributions(
     for row in record["distributions"]:
         assert row["version"] == _installed_version(row["name"]), row
     digested = {name: record[name] for name in environment.DIGESTED_FIELDS}
-    assert set(digested) == {"python_version_info", "golden_deflate", "golden_simd", "distributions", "cpu_class"}
+    assert set(digested) == {"python_version_info", "golden_deflate", "golden_simd", "distributions"}
     assert record["environment_digest"] == canonical_digest(digested) == environment.environment_digest(record)
 
     other_cpu = environment.environment_record(cpuinfo_path=_cpuinfo(tmp_path / "other", "sse2"))
     unmeasured = environment.environment_record(cpuinfo_path=tmp_path / "absent")
     assert other_cpu["cpu_class"] != record["cpu_class"] and unmeasured["cpu_class"] is None
-    assert len({record["environment_digest"], other_cpu["environment_digest"], unmeasured["environment_digest"]}) == 3
+    # The CPU class is recorded beside the digest, never in it (plan 14 §5): the same behaviour on another machine
+    # is the same environment.  Only inline NuRec conversion pins a class, through the descriptor.
+    assert record["environment_digest"] == other_cpu["environment_digest"] == unmeasured["environment_digest"]
     assert (unmeasured["informational"]["cpu_flags"], unmeasured["informational"]["cpu_flags_source"]) == ([], None)
     missing = environment.environment_record(
         cpuinfo_path=cpuinfo, distributions=(*environment.COMPILE_DISTRIBUTIONS, "definitely-not-installed")

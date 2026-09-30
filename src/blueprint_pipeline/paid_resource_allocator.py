@@ -78,7 +78,10 @@ from .paid_resource_admission import (
     build_paid_lane_admission,
     require_paid_resource_admission,
 )
-from .paid_resource_cli_arguments import add_cpu_arguments as _add_cpu_arguments
+from .paid_resource_cli_arguments import (
+    add_adp_resource_arguments as _add_adp_resource_arguments,
+    add_cpu_arguments as _add_cpu_arguments,
+)
 from .provider_machine_avoidlist import (
     content_agents_machine_avoidlist_path as _content_agents_machine_avoidlist_path,
     simready_isaac_machine_avoidlist_path as _simready_isaac_machine_avoidlist_path,
@@ -1947,27 +1950,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gpu.add_argument("--paired-target-native-import-bundle-receipt")
     gpu.add_argument("--paired-target-native-import-attempt-authority")
     gpu.add_argument("--adp-job-dir")
-    gpu.add_argument("--adp-max-hourly-rate-usd", type=float, default=0.80)
-    gpu.add_argument("--adp-max-spend-usd", type=float, default=2.00)
-    gpu.add_argument("--adp-hard-ttl-seconds", type=int, default=7200)
-    gpu.add_argument("--adp-machine-avoidlist")
-    gpu.add_argument(
-        "--adp-allowed-vast-machine-id", action="append", type=int, default=[],
-        help="Operator-selected machine IDs for a controlled native policy run.",
-    )
-    gpu.add_argument(
-        "--adp-excluded-vast-machine-id",
-        action="append",
-        type=int,
-        default=[],
-        help="Immutable repeatable Vast machine exclusion bound before allocation.",
-    )
-    gpu.add_argument(
-        "--adp-allowed-active-vast-instance-id",
-        action="append",
-        type=int,
-        default=[],
-    )
+    _add_adp_resource_arguments(gpu)
     gpu.add_argument("--adp-content-agents-bundle-receipt")
     gpu.add_argument("--adp-content-agents-config-preflight-receipt")
     gpu.add_argument("--adp-content-agents-attempt-authority")

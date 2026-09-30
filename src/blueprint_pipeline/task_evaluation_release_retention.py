@@ -60,9 +60,16 @@ from blueprint_pipeline.control_plane_release_leases import (
 )
 
 
+from .task_evaluation_release_binding_storage import (
+    EVIDENCE_BINDING_SCHEMA_VERSION,
+    DEFAULT_EVIDENCE_BINDING_ROOT,
+    ReleaseRetentionError,
+    _canonical_json,
+    _write_exclusive,
+)
+
 SCHEMA_VERSION = "task_evaluation_release_retention_plan.v1"
 APPLY_SCHEMA_VERSION = "task_evaluation_release_retention_apply.v1"
-EVIDENCE_BINDING_SCHEMA_VERSION = "task_evaluation_release_retention_binding.v1"
 RECONCILIATION_SCHEMA_VERSION = (
     "task_evaluation_release_retention_namespace_reconciliation.v1"
 )
@@ -80,10 +87,6 @@ DEFAULT_PUBLIC_CATALOG = Path(
 )
 DEFAULT_STANDING_AUTHORIZATION_DIR = Path(
     "/var/lib/blueprint/pipeline-control-plane/standing-authorizations"
-)
-DEFAULT_EVIDENCE_BINDING_ROOT = Path(
-    "/var/lib/blueprint/pipeline-control-plane/"
-    "task-evaluation-release-retention-bindings"
 )
 DEFAULT_RETENTION_PLAN_ROOT = Path(
     "/var/lib/blueprint/pipeline-control-plane/release-retention"
@@ -125,14 +128,8 @@ _EXPECTED_TERMINAL_AUTHORIZATION_BLOCKERS = frozenset(
 )
 
 
-class ReleaseRetentionError(ValueError):
-    """The retirement boundary could not be proven safe."""
 
 
-def _canonical_json(value: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
 
 
 def _canonical_digest(value: Mapping[str, Any], *, digest_field: str) -> str:
@@ -1143,18 +1140,6 @@ def _read_plan(path: Path) -> dict[str, Any]:
     return plan
 
 
-def _write_exclusive(path: Path, value: Mapping[str, Any]) -> None:
-    payload = _canonical_json(value) + b"\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("xb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except FileExistsError as exc:
-        raise ReleaseRetentionError(
-            f"release_retention_receipt_conflict:{path.name}"
-        ) from exc
 
 
 def _assert_direct_child(path: Path, *, root: Path, blocker: str) -> None:

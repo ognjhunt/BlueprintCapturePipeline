@@ -7,7 +7,8 @@ After=network-online.target
 [Service]
 # Plan 14 §1: the paid unit.  It never compiles: it dispatches through the canonical allocator subcommand
 # (remote-cpu-job), follows, promotes, lands only the consumer subset and tears down.  Its ExecCondition skips it
-# unless a remote mode is set, or a live lease or a marker is left to finish (the rollback drain).
+# unless the effective mode is remote (a remote mode is set, or the mode is unset and the config below is there:
+# auto, owner decision 2026-09-30), or a live lease or a marker is left to finish (the rollback drain).
 Type=oneshot
 User=blueprint
 Group=blueprint

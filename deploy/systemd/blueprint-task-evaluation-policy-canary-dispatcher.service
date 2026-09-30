@@ -70,6 +70,9 @@ Environment=PIPELINE_TASK_EVALUATION_LAUNCH_PROGRESS_WEBAPP_URL=https://trybluep
 # The dedicated B2 artifact store, bound explicitly (plan 15, review I4): a
 # streamed Quick-10's allocator child promotes its provider output there and
 # ingests members from it, and refuses to borrow the staging store otherwise.
+# With BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY unset (auto, the default), a
+# Quick-10 streams only with this binding and the host's recorded needed-set
+# measurement (docs/CONTROL_PLANE_STORAGE.md); deploying this unit never does.
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_BUCKET_FILE=/etc/blueprint/provider-secrets/backblaze_b2_bucket

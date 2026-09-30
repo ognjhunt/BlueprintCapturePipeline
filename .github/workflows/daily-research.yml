@@ -1,0 +1,66 @@
+name: Daily research runner
+
+on:
+  pull_request:
+    paths:
+      - "tools/daily_research/**"
+      - "tests/test_daily_research_runner.py"
+      - "tests/test_daily_research_knowledge.py"
+      - "tests/test_daily_research_standalone.py"
+      - "tests/fixtures/daily_research/**"
+      - ".github/workflows/daily-research.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "tools/daily_research/**"
+      - "tests/test_daily_research_runner.py"
+      - "tests/test_daily_research_knowledge.py"
+      - "tests/test_daily_research_standalone.py"
+      - "tests/fixtures/daily_research/**"
+      - ".github/workflows/daily-research.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-research-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  research-runner:
+    name: Research lifecycle and pinned SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install isolated CPU runtime
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+      - name: Install runner and verification tools only
+        run: |
+          uv venv "${RUNNER_TEMP}/daily-research-venv"
+          uv pip install --python "${RUNNER_TEMP}/daily-research-venv/bin/python" -r tools/daily_research/requirements.txt pytest==9.1.1 ruff==0.16.9 jsonschema==4.26.0
+      - name: Verify lifecycle, SDK contracts and changed-file lint
+        run: |
+          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
+          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/runner.py tools/daily_research/knowledge.py tools/daily_research/contracts.py tools/daily_research/freshness.py tools/daily_research/standalone.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py
+          python3 - "${RUNNER_TEMP}/daily-research-tests.xml" <<'PYTHON'
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          assert cases, "runner verification must execute"
+          assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "SDK/lifecycle skips do not prove verification"
+          PYTHON
+      - name: Preserve test receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: daily-research-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/daily-research-tests.xml
+          if-no-files-found: error
+          retention-days: 7

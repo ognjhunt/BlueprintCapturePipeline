@@ -96,6 +96,126 @@ def test_unclassified_roots_are_reported(tmp_path):
     assert survey["unclassified_roots"][0]["root"] == str(base / "mystery")
 
 
+def test_busy_first_mount_cannot_spend_the_second_mount_entry_budget(tmp_path):
+    roots = [tmp_path / name for name in ("root", "work")]
+    for root in roots:
+        root.mkdir()
+        for index in range(12):
+            (root / f"{index:02d}.bin").write_bytes(b"x" * 4096)
+    report = survey_usage(roots, aliases={}, prefixes=tuple(map(str, roots)),
+                          classify=_classifier({str(root): "work" for root in roots}),
+                          statvfs=_statvfs(), max_entries=8)
+    assert report["status"] == "truncated"
+    assert report["entries_visited"] <= 8
+    counted = {row["root"] for row in report["top_roots"] if row["allocated_bytes"] > 0}
+    assert counted == set(map(str, roots))
+
+
+def test_busy_first_mount_cannot_spend_the_second_mount_time_budget(tmp_path):
+    roots = [tmp_path / name for name in ("root", "work")]
+    for root in roots:
+        root.mkdir()
+        for index in range(12):
+            (root / f"{index:02d}.bin").write_bytes(b"x" * 4096)
+    now = [0.0]
+    classify = _classifier({str(root): "work" for root in roots})
+
+    def slow_classify(path):
+        now[0] += 0.1
+        return classify(path)
+
+    report = survey_usage(roots, aliases={}, prefixes=tuple(map(str, roots)),
+                          classify=slow_classify, statvfs=_statvfs(),
+                          max_seconds=0.8, clock=lambda: now[0])
+    assert report["status"] == "truncated"
+    counted = {row["root"] for row in report["top_roots"] if row["allocated_bytes"] > 0}
+    assert counted == set(map(str, roots))
+
+
+def test_fair_root_budgets_keep_cross_root_hardlinks_counted_once(tmp_path):
+    roots = [tmp_path / name for name in ("root", "work")]
+    for root in roots:
+        root.mkdir()
+    original = roots[0] / "blob.bin"
+    original.write_bytes(b"x" * 4096)
+    os.link(original, roots[1] / "same.bin")
+    report = survey_usage(roots, aliases={}, prefixes=tuple(map(str, roots)),
+                          classify=_classifier({str(root): "work" for root in roots}),
+                          statvfs=_statvfs())
+    assert report["status"] == "complete"
+    assert report["hardlinks"]["duplicate_names_skipped"] == 1
+    assert report["mounts"][0]["surveyed_bytes"] == sum(map(_allocated, roots)) + _allocated(original)
+
+
+def test_slow_directory_enumeration_leaves_time_to_survey_later_roots(tmp_path, monkeypatch):
+    roots = [tmp_path / name for name in ("root", "work")]
+    for root in roots:
+        root.mkdir()
+        for index in range(12):
+            (root / f"{index:02d}.bin").write_bytes(b"x" * 4096)
+    now = [0.0]
+    real_scandir = os.scandir
+
+    class SlowScandir:
+        def __init__(self, path):
+            self.iterator = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.iterator.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            entry = next(self.iterator)
+            now[0] += 0.1
+            return entry
+
+    monkeypatch.setattr(usage_module.os, "scandir", SlowScandir)
+    report = survey_usage(roots, aliases={}, prefixes=tuple(map(str, roots)),
+                          classify=_classifier({str(root): "work" for root in roots}),
+                          statvfs=_statvfs(), max_seconds=0.8, clock=lambda: now[0])
+    assert report["status"] == "truncated"
+    assert now[0] <= 0.8
+    assert {row["root"] for row in report["top_roots"]} == set(map(str, roots))
+    assert all(row["allocated_bytes"] >= _allocated(root) + 4096
+               for root in roots for row in report["top_roots"] if row["root"] == str(root))
+
+
+def test_deferred_hardlinks_cannot_spend_later_roots_owner_capacity(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage_module, "SURVEY_MAX_BUFFERED_ENTRIES", 4)
+    roots = [tmp_path / name for name in ("root", "work")]
+    for root in roots:
+        root.mkdir()
+        (root / "a.bin").write_bytes(b"x" * 4096)
+        (root / "b.bin").write_bytes(b"x" * 4096)
+    os.link(roots[0] / "b.bin", tmp_path / "outside.bin")
+    for name in ("a.bin", "b.bin"):
+        os.link(roots[1] / name, tmp_path / f"outside-work-{name}")
+    report = survey_usage(roots, aliases={}, prefixes=tuple(map(str, roots)),
+                          classify=_classifier({}), statvfs=_statvfs())
+    assert report["status"] == "truncated"
+    assert len(report["top_owners"]) <= 4
+    assert any(row["root"].startswith(str(roots[1])) and row["allocated_bytes"] >= 4096
+               for row in report["top_roots"])
+
+
+def test_busy_first_mount_cannot_spend_second_mount_owner_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(usage_module, "SURVEY_MAX_BUFFERED_ENTRIES", 4)
+    roots = [tmp_path / name for name in ("root", "work")]
+    for root in roots:
+        for index in range(4):
+            (root / f"owner{index}").mkdir(parents=True)
+    report = survey_usage(roots, aliases={}, prefixes=tuple(map(str, roots)),
+                          classify=_classifier({}), statvfs=_statvfs())
+    assert report["status"] == "truncated"
+    assert len(report["top_owners"]) <= 4
+    assert any(row["root"].startswith(str(roots[1])) for row in report["top_roots"])
+
+
 def test_orphan_scratch_summary_counts_unique_bytes_and_newest_mtime(tmp_path):
     volume = tmp_path / "work"
     orphan = volume / "loose-run"

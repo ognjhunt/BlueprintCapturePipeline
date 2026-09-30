@@ -414,7 +414,8 @@ class _UsageWalk:
         self.unclassified_mtime: dict[str, float] = {}
         # st_dev -> [surveyed bytes, classified bytes]
         self.devices: dict[int, list[int]] = {}
-        # (st_dev, st_ino) -> [(not in a store, canonical name), attribution, allocated, apparent, st_dev]
+        # Shared rows also retain whether their owner slot was reserved while
+        # that root's memory share was active, before deferred byte accounting.
         self.shared: dict[tuple[int, int], list[Any]] = {}
         self.entries = 0
         self.unreadable = 0
@@ -467,14 +468,20 @@ class _UsageWalk:
             directory.file_attribution = attribution
         return attribution
 
-    def _add(self, attribution: tuple[str, str, str], allocated: int, apparent: int, files: int,
-             device: int) -> None:
+    def _reserve_owner(self, attribution: tuple[str, str, str]) -> bool:
         row = self.totals.get(attribution)
         if row is None:
             if len(self.totals) >= self.buffer_limit:
                 self.truncated = True
-                return
-            row = self.totals[attribution] = [0, 0, 0]
+                return False
+            self.totals[attribution] = [0, 0, 0]
+        return True
+
+    def _add(self, attribution: tuple[str, str, str], allocated: int, apparent: int, files: int,
+             device: int) -> None:
+        if not self._reserve_owner(attribution):
+            return
+        row = self.totals[attribution]
         row[0] += allocated
         row[1] += apparent
         row[2] += files
@@ -508,11 +515,12 @@ class _UsageWalk:
                 self.truncated = True
                 return
             self.shared[key] = [rank, attribution, allocated_bytes(metadata),
-                                int(metadata.st_size), device]
+                                int(metadata.st_size), device, self._reserve_owner(attribution)]
             return
         self.duplicates += 1
         if rank < held[0]:
             held[0], held[1] = rank, attribution
+            held[5] = self._reserve_owner(attribution)
 
     def walk(self, path: str, metadata: os.stat_result) -> None:
         """Walk one mount within its own filesystem, in ascending name order."""
@@ -534,11 +542,18 @@ class _UsageWalk:
                 with os.scandir(directory.path) as iterator:
                     entries = []
                     overflow = False
+                    # Keep time for stat/attribution of the partial, sorted batch.
+                    # A filesystem call itself cannot be preempted, but a large
+                    # directory must not consume every later mount's share.
+                    buffer_deadline = (self.clock() + self.deadline) / 2
                     for entry in iterator:
                         if len(entries) >= self.buffer_limit:
                             overflow = True
                             break
                         entries.append(entry)
+                        if self.clock() >= buffer_deadline:
+                            overflow = True
+                            break
                     entries.sort(key=lambda entry: entry.name)
             except OSError:
                 self.unreadable += 1
@@ -576,8 +591,9 @@ class _UsageWalk:
             stack.extend(reversed(subdirectories))
 
     def finish(self) -> None:
-        for _rank, attribution, allocated, apparent, device in self.shared.values():
-            self._add(attribution, allocated, apparent, 1, device)
+        for _rank, attribution, allocated, apparent, device, reserved in self.shared.values():
+            if reserved:
+                self._add(attribution, allocated, apparent, 1, device)
 
 
 def _mount_row(mount: str, used: int | None, surveyed: int, classified: int) -> dict[str, Any]:
@@ -660,8 +676,9 @@ def survey_usage(
     followed. Every inode is counted once, in allocated bytes, and attributed at its
     canonical path (``aliases`` applied, longest prefix first). The walk stops at
     ``max_entries`` or ``max_seconds`` with ``status: "truncated"``; unreadable
-    entries are counted, never raised. One row per filesystem says how much of its
-    used bytes the survey attributed.
+    entries are counted, never raised. Each root gets a reserved share of the
+    entry, time and memory budgets so a busy first disk cannot hide later disks.
+    One row per filesystem says how much of its used bytes the survey attributed.
     """
 
     started = clock()
@@ -703,8 +720,19 @@ def survey_usage(
             seen.add(key)
             walks.append((path, metadata))
     walk.walk_roots = frozenset(seen)
-    for path, metadata in walks:
+    root_count = max(1, len(walks))
+    entry_share, extra_entries = divmod(max_entries, root_count)
+    buffer_cap, shared_cap = walk.buffer_limit, walk.shared_limit
+    truncated = False
+    for index, (path, metadata) in enumerate(walks):
+        walk.max_entries = walk.entries + entry_share + (index < extra_entries)
+        walk.deadline = min(started + max_seconds, clock() + max_seconds / root_count)
+        walk.buffer_limit = buffer_cap * (index + 1) // root_count
+        walk.shared_limit = shared_cap * (index + 1) // root_count
+        walk.truncated = False
         walk.walk(path, metadata)
+        truncated |= walk.truncated
+    walk.truncated = truncated
     walk.finish()
 
     filesystems: dict[int, list[str]] = {}

@@ -955,7 +955,8 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
     printed = json.loads(capsys.readouterr().out)
     host = census.environment_record()
     assert printed == host and printed["environment_digest"] == census.environment_digest(printed)
-    assert set(printed) == {"schema_version", *census.DIGESTED_FIELDS, "informational", "environment_digest"}
+    assert set(printed) == {"schema_version", *census.DIGESTED_FIELDS, "cpu_class", "informational",
+                            "environment_digest"}
     assert worker.main(["environment", "--extra"]) == worker.EXIT_REFUSED
     assert os.umask(umask) == umask  # a mode other than bootstrap leaves the process's umask alone
 
@@ -1010,6 +1011,24 @@ def test_worker_environment_matches_the_host_census_schema_and_cpu_class_gate(tm
         assert _gets(world) == [world.key("receipt.json")] * 2, label
         verdict = contract.validate_receipt(receipt, descriptor=world.descriptor, execution_name=EXECUTION)
         assert f"infrastructure_failed:{refusal}" in verdict["infrastructure_failures"] and not verdict["terminal"]
+
+    # Every other closure runs on whatever CPU class Cloud Run gives it (plan 14 §5): its environment is the one it
+    # was dispatched for, and the class is recorded in the receipt, never compared.
+    elsewhere = {**WORKER_RECORD, "cpu_class": "sha256:" + "e" * 64}
+    assert elsewhere["cpu_class"] != qualified and census.environment_digest(elsewhere) == WORKER_RECORD[
+        "environment_digest"]
+    world = WorkerWorld(tmp_path / "another-cpu-class", closure={"class": "not_applicable",
+                                                                 "source_appearance_digest": None})
+    ran = []
+    runtime = world.runtime(measure=lambda: elsewhere, handlers={"episode_compilation": "x:y"},
+                            run_stage=lambda **_: ran.append(1) or report(
+                                sealed_result(world.descriptor, blockers=["episode_compilation_envelope_invalid"])))
+    assert worker.bootstrap(["bootstrap"], world.runtime(
+        measure=lambda: elsewhere, launch=lambda handoff: worker.execute_attempt(handoff, runtime))) == 0
+    receipt = world.receipt()
+    assert (receipt["status"], receipt["infrastructure_failures"], ran) == ("blocked", [], [1])
+    assert receipt["environment"]["cpu_class"] == elsewhere["cpu_class"]
+    assert contract.validate_receipt(receipt, descriptor=world.descriptor, execution_name=EXECUTION)["terminal"]
 
 
 def test_the_allocators_preflight_completes_against_the_real_worker(tmp_path: Path, monkeypatch) -> None:

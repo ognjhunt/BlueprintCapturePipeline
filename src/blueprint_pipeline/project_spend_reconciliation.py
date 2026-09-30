@@ -275,7 +275,7 @@ def _baseline(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def _unposted_authority(path: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
     source, value = _read(path, code="project_spend_unposted_authority_invalid")
     if value.get("schema_version") == "task_evaluation_scene_attempt.v1":
-        from .task_evaluation_scene_spend import scene_reservation_spend_record
+        from .task_evaluation_scene_reservation_spend_evidence import scene_reservation_spend_record
         return scene_reservation_spend_record(source)
     cap = value.get("hard_attempt_spend_cap_usd")
     digest = value.get("authorization_digest")

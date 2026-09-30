@@ -700,7 +700,7 @@ def _attempt_in_flight(directory: Path, intent: Mapping[str, Any]) -> bool:
     which leaves the run unknown rather than over.
     """
 
-    from . import task_evaluation_scene_intake as intake
+    from . import task_evaluation_scene_intent_contracts as intake
     from .task_evaluation_retained_controls_evidence import (
         DIRECTORY as CANCELLATIONS,
         validated_cancellation,
@@ -784,7 +784,7 @@ class RunStateResolver:
         and keeps its lease until the lease runs out.
         """
 
-        from . import task_evaluation_scene_intake as intake
+        from . import task_evaluation_scene_intent_contracts as intake
 
         intent_id = run_ref.get("intent_id")
         if self.intent_root is None or not _identifier(intent_id):
@@ -806,7 +806,8 @@ class RunStateResolver:
         # The same effective window the progression worker enforces, including
         # owner-approved extensions.
         _require_regular_children(directory / "execution-window-extensions")
-        expired = self.now >= intake.effective_execution_expiry(directory, intent)
+        from .task_evaluation_scene_execution_window_evidence import effective_execution_expiry
+        expired = self.now >= effective_execution_expiry(directory, intent)
         if not revoked and not expired:
             return "live"
         if _attempt_in_flight(directory, intent):

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blueprint.knowledge-refresh-policy.v1.schema.json",
+  "title": "Approved hash-bound knowledge refresh policy v1",
+  "description": "Review eligibility only. Runtime also validates complete fact digests, exact snapshot bytes, safety classification overrides and immutable context binding.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "blueprint.knowledge-refresh-policy.v1"
+    },
+    "approved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "approval_reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "snapshot_content_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "snapshot_file_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "classes": {
+      "const": {
+        "stable_versioned_embodiment_or_specification": 90,
+        "vendor_capability_or_limit": 30,
+        "dated_historical_report": 90,
+        "operational_status_or_requirements": 7,
+        "unresolved_conflict": null,
+        "explicit_unknown": null
+      }
+    },
+    "assignments": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,120}$"
+          },
+          "fact_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,120}$"
+          },
+          "policy_class": {
+            "enum": [
+              "stable_versioned_embodiment_or_specification",
+              "vendor_capability_or_limit",
+              "dated_historical_report",
+              "operational_status_or_requirements",
+              "unresolved_conflict",
+              "explicit_unknown"
+            ]
+          },
+          "fact_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "record_id",
+          "fact_id",
+          "policy_class",
+          "fact_hash"
+        ]
+      }
+    },
+    "policy_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "approved_at",
+    "approval_reference",
+    "snapshot_content_hash",
+    "snapshot_file_sha256",
+    "classes",
+    "assignments",
+    "policy_hash"
+  ]
+}

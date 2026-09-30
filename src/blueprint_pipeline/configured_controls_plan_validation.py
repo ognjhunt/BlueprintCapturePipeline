@@ -5,16 +5,18 @@ checks; service progression and pause/omission decisions remain in the worker.
 """
 from __future__ import annotations
 
-import json
 import hashlib
-
-from pathlib import Path
+import json
 import re
 import stat
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .decision_evidence_contracts import canonical_digest
 from .configured_scene_run_identity import evaluation_scope
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_configured_controls_source_evidence import (
+    TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError,  # noqa: PLC0414 - compatibility reexport
+)
 from .task_evaluation_team_run_authority import authority_scope
 
 
@@ -141,10 +143,6 @@ def load_configured_controls_plan(
             "configured_controls_worker_plan_inventory_invalid"
         )
     return value
-
-
-class TaskEvaluationConfiguredControlsProgressionWorkerError(RuntimeError):
-    """The automatic progression worker refused an unsafe transition."""
 
 
 def read_configured_controls_plan(path: Path) -> dict[str, Any]:

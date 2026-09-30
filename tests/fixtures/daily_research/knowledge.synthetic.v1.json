@@ -1,0 +1,75 @@
+{
+  "schema_version": "blueprint.knowledge-snapshot.v1",
+  "exported_at": "2026-09-30T11:00:00Z",
+  "source_pages": [
+    {
+      "page_id": "synthetic-page",
+      "url": "https://app.notion.com/p/synthetic-page",
+      "revision": {
+        "kind": "page_last_edited_at",
+        "value": "2026-09-29T12:00:00Z"
+      }
+    }
+  ],
+  "companies": [
+    {
+      "company_id": "synthetic-vendor",
+      "name": "Synthetic fixture vendor",
+      "roles": [
+        "hardware_vendor"
+      ],
+      "source_page_ids": [
+        "synthetic-page"
+      ]
+    }
+  ],
+  "records": [
+    {
+      "record_id": "synthetic-portioner-v1",
+      "company_id": "synthetic-vendor",
+      "record_type": "robot",
+      "product": {
+        "name": "Synthetic portioner",
+        "version": "v1"
+      },
+      "task_tags": [
+        "portioning"
+      ],
+      "geography_tags": [],
+      "facts": [
+        {
+          "fact_id": "portioning-v1",
+          "field": "task_claim",
+          "statement": "Synthetic fixture vendor claims ingredient portioning; no real deployment asserted.",
+          "status": "reviewed",
+          "evidence_level": "vendor_claim",
+          "confidence": "low",
+          "freshness_days": 30,
+          "task_tags": [
+            "portioning"
+          ],
+          "geography_tags": [],
+          "source_page_ids": [
+            "synthetic-page"
+          ],
+          "sources": [
+            {
+              "url": "https://synthetic-vendor.example/capability",
+              "publisher": "Synthetic vendor \u2014 fixture only",
+              "publication_date": null,
+              "source_checked_at": "2026-09-29",
+              "revalidated_at": null,
+              "classification": "vendor",
+              "quote": null
+            }
+          ],
+          "limits": [
+            "Synthetic fixture only"
+          ],
+          "conflicts": []
+        }
+      ]
+    }
+  ],
+  "content_hash": "dcaa565d72f65f1aca6292e0444df26c34a53517eecc86c403b2007b8413f499"
+}
