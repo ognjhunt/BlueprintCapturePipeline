@@ -21,6 +21,9 @@ from .vast_provider_output_recovery import _identity_file, _ssh_command
 
 
 CONTEXT_ENV = "BLUEPRINT_POLICY_SANDBOX_NETWORK_CONTEXT"
+# A new host can still be pulling the Isaac image before its SSH service starts.
+# Keep key pinning mandatory and this readiness wait inside the paid hard TTL.
+HOST_KEY_BOOTSTRAP_TIMEOUT_SECONDS = 15 * 60
 _REMOTE_IP_SCRIPT = (
     "set -eu; "
     "curl -fsS --connect-timeout 5 --max-time 10 https://api.ipify.org; "
@@ -60,7 +63,7 @@ def _outbound_ipv4(connection: Mapping[str, Any], *, attempt_dir: Path) -> str:
     if endpoint is None or identity is None:
         raise ValueError("policy_network_gpu_ssh_unavailable")
     host, port = endpoint
-    deadline = time.monotonic() + 180
+    deadline = time.monotonic() + HOST_KEY_BOOTSTRAP_TIMEOUT_SECONDS
     pin = None
     last_blocker = "vast_ssh_host_key_scan_failed"
     while time.monotonic() < deadline:
