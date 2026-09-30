@@ -95,6 +95,22 @@ def test_no_spend_unit_owns_pending_and_empties_it_in_every_mode(tmp_path: Path,
     assert remote.read_marker(handoff if mode == "cloud_run" else shadow) is not None or mode == "host"
 
 
+def test_inline_nurec_rows_stay_on_the_host_in_shadow_mode_too(tmp_path: Path, monkeypatch) -> None:
+    """Review I4: the inline NuRec conversion is not yet deterministic (usd-convert-gsplat writes a random temp
+    PLY path into the layer comment), so its shadow comparison could only fail while spending: no marker."""
+
+    from tests.remote_cpu_worker_stages import install_compile_stand_ins
+
+    monkeypatch.setattr(remote, "MAX_INLINE_NUREC_BYTES", 8192)
+    host = Host(tmp_path)
+    host.record_worker_environment()
+    _, name = stage_compile(host, label="inline", appearance=nurec_usdz(4096), appearance_name="appearance.usdz")
+    run = _run(host, "cloud_run_shadow", install_compile_stand_ins(monkeypatch.setattr))
+    assert run["host_decisions"] == {name: "remote_ineligible:inline_nurec_conversion_nondeterministic"}
+    assert run["shadowed"] == [] and not remote.marker_path(host.jobs, "shadow", name).exists()
+    assert (host.queue / "completed" / name).is_file()
+
+
 def test_fallback_rows_are_compiled_by_the_no_spend_unit(tmp_path: Path, monkeypatch) -> None:
     from tests.remote_cpu_worker_stages import install_compile_stand_ins
 

@@ -75,6 +75,11 @@ def test_nurec_over_inline_limit_without_cache_stays_on_host(tmp_path: Path, mon
     monkeypatch.setattr(remote, "MAX_INLINE_NUREC_BYTES", 8192)
     small, large = nurec_usdz(4096), nurec_usdz(16384)
     _, name = host.stage(label="small", appearance=small, appearance_name="appearance.usdz")
+    # Until the inline conversion is deterministic, such a row stays on the host (review I4).
+    assert _plan(host, host.claim(name)) == remote.HostDecision(
+        "remote_ineligible:inline_nurec_conversion_nondeterministic")
+    monkeypatch.setattr(remote, "INLINE_NUREC_CONVERSION_DETERMINISTIC", True)
+    os.replace(host.queue / "processing" / name, host.queue / "pending" / name)
     plan = _plan(host, host.claim(name))
     # A NuRec appearance at or under the inline limit converts inside the worker: its float32 math needs a
     # qualified CPU class, the one the preflight probe measured.

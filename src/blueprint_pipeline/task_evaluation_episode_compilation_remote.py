@@ -9,7 +9,8 @@ in shadow mode, a shadow marker) naming the plan.  An ineligible row compiles on
 Eligibility, in order: the envelope verifies exactly as the host compile would verify it; the
 appearance closure class is ``not_applicable``, ``shipped`` (a valid host cache entry, whose files
 ship as inputs with the cache-root environment) or ``absent_inline_only`` (a NuRec source small
-enough to convert inline); the worker's ephemeral disk fits the compile; the probe-recorded worker
+enough to convert inline, which stays on the host in every mode until that conversion is
+deterministic); the worker's ephemeral disk fits the compile; the probe-recorded worker
 environment equals the host's on everything but the CPU class, for the configured image; and, for
 ``cloud_run`` only, the class has three consecutive shadow parity passes on the current image,
 host environment and CPU class.
@@ -72,6 +73,9 @@ PREPARED_REFERENCES = "/var/lib/blueprint/task-evaluation-inputs/prepared-refere
 DEFAULT_CACHE_ROOT = "/var/lib/blueprint/task-evaluation-inputs/particlefield-runtime-assets"
 MAX_INLINE_NUREC_BYTES = MAXIMUM_INLINE_NUREC_CONVERSION_BYTES
 SHADOW_PASSES_REQUIRED = 3
+# usd-convert-gsplat writes a random temporary PLY path into the converted layer's comment, so an inline NuRec
+# conversion never matches the host's: its shadow comparison could only fail while spending (review I4).
+INLINE_NUREC_CONVERSION_DETERMINISTIC = False
 # Plan 14 §9: the files later host stages read by path; nothing else lands on the host.
 EPISODE_COMPILATION_CONSUMER_SUBSET = ("native-arena-adapter/**", "rigid_destination_native_probe_request.v1.json")
 WORKER_ENVIRONMENT_SCHEMA_VERSION = "remote_cpu_worker_environment.v1"
@@ -421,6 +425,8 @@ def plan_remote_compilation(
     if isinstance(closure, HostDecision):
         return closure
     closure_record, cache_files, asset_bytes = closure
+    if closure_record["class"] == "absent_inline_only" and not INLINE_NUREC_CONVERSION_DETERMINISTIC:
+        return HostDecision("remote_ineligible:inline_nurec_conversion_nondeterministic")
     rows = _inputs(claimed, references, cache_files, root)
     output_parent = _worker_path(Path(outputs), root)
     if rows is None or output_parent is None:
