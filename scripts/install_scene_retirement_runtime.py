@@ -108,8 +108,12 @@ def _read(path, deadline, *, output=None):
         os.close(fd)
 
 
-def _tree(path, prefix, rows, sources, deadline, depth=0):
+def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None):
     _require(depth <= 32 and time.monotonic() <= deadline)
+    # Carry one aggregate through descendants. Re-summing every previous
+    # SDK leaf on each insertion made final verification quadratic in files.
+    total = [sum(row['size'] for row in rows.values())] if _total is None else _total
+    _require(total[0] <= _MAX_BYTES and time.monotonic() <= deadline)
     fd = _open(path, directory=True)
     try:
         before = os.fstat(fd)
@@ -122,13 +126,15 @@ def _tree(path, prefix, rows, sources, deadline, depth=0):
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
                 _protected(info, directory=True)
-                _tree(child, prefix / name, rows, sources, deadline, depth + 1)
+                _tree(child, prefix / name, rows, sources, deadline, depth + 1, _total=total)
             else:
                 _require(len(rows) < _MAX_FILES)
                 key = str(prefix / name)
-                rows[key] = _read(child, deadline)
+                row = _read(child, deadline)
+                total[0] += row['size'] - rows.get(key, {}).get('size', 0)
+                rows[key] = row
                 sources[key] = child
-                _require(sum(row['size'] for row in rows.values()) <= _MAX_BYTES)
+                _require(total[0] <= _MAX_BYTES)
         _require(_identity(os.fstat(fd)) == _identity(before)
                  and _identity(path.lstat()) == _identity(before))
     finally:
