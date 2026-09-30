@@ -57,7 +57,10 @@ against the provider receipt and filesystem size before another action.
 Use the door for reclaim: `python3 scripts/operator_door.py unit start
 blueprint-control-plane-storage-gc.service`, then inspect its plan and receipt.
 Every storage GC switch is on by default since 2026-09-30, and `=0` in the
-environment file opts one out. Evidence offload still requires verified
+environment file opts one out. The unit reads that file optionally, so a missing
+file now means every phase applies. To stop reclaim in an emergency, place a door
+hold on `blueprint-control-plane-storage-gc.timer` (below) rather than editing or
+removing the file. Evidence offload still requires verified
 remote readback and a pointer before local bytes may leave. Scene-workspace
 retirement is a separate switch; to retire one scene by hand, use `python3 scripts/operator_door.py
 retire-scene-workspace <scene_id> --wait` to review an exact-path plan and

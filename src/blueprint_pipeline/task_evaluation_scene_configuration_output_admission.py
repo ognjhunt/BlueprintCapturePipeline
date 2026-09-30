@@ -71,6 +71,7 @@ from .task_evaluation_scene_configuration_provider_artifacts import (
 OUTPUT_ADMISSION_ENV = "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION"
 CEILING_MODE = "ceiling"
 MEASURED_MODE = "measured"
+_OPT_OUT_ALIASES = frozenset({"0", "false", "no"})
 OUTPUT_ROLE = "scene_configuration_output"
 ADMISSION_SCHEMA_VERSION = "scene_configuration_provider_output_disk_admission.v1"
 EXTRACTION_SCHEMA_VERSION = "scene_configuration_provider_output_extraction_admission.v1"
@@ -126,11 +127,14 @@ class SceneConfigurationOutputHoldRefused(TaskEvaluationSceneConfigurationVastEr
 
 def configured_output_admission_mode(environment: Mapping[str, str] | None = None) -> str | None:
     """``measured`` when unset or empty (the default since 2026-09-30) or asked for,
-    ``ceiling`` when the operator opts out, else None: refused before staging."""
+    ``ceiling`` when the operator opts out (``ceiling``, or ``0``/``false``/``no`` as the other
+    disk switches take it), else None: refused before staging."""
 
     raw = (os.environ if environment is None else environment).get(OUTPUT_ADMISSION_ENV)
     if raw is None or raw == "":
         return MEASURED_MODE
+    if raw in _OPT_OUT_ALIASES:
+        return CEILING_MODE
     return raw if raw in (CEILING_MODE, MEASURED_MODE) else None
 
 

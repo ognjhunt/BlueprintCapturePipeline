@@ -683,11 +683,14 @@ def test_scene_configuration_output_role_is_declared_for_a_paid_run() -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [(None, "measured"), ("", "measured"), ("ceiling", "ceiling"), ("measured", "measured"),
-     ("Measured", None), ("stream", None), (" measured", None), ("Ceiling", None), (" ", None)],
+     ("0", "ceiling"), ("false", "ceiling"), ("no", "ceiling"),
+     ("Measured", None), ("stream", None), (" measured", None), ("Ceiling", None), (" ", None),
+     ("1", None), ("off", None), ("False", None)],
 )
 def test_admission_mode_defaults_to_measured_and_refuses_anything_else(raw, expected) -> None:
     """Owner decision 2026-09-30: unset or empty is ``measured``; ``ceiling`` is the explicit
-    opt-out; any other value still refuses before staging (``None``)."""
+    opt-out, and so are ``0``/``false``/``no``, as the other disk switches take them (an operator
+    who writes ``=0`` must not block every run); any other value still refuses before staging."""
 
     environment = {} if raw is None else {admission.OUTPUT_ADMISSION_ENV: raw}
     assert admission.configured_output_admission_mode(environment) == expected

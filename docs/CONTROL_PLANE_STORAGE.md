@@ -898,7 +898,8 @@ With `--report-out` the tick also writes `summary.json`
 (`control_plane_storage_gc_summary.v1`) beside `latest.json`, published the same
 way (0644 in the 0755 directory). It holds the tick's status and
 `source_report_digest`, the `opt_in` flags (each switch as the tick read it: `true`
-unless the operator opted out or set an invalid value), alerts, `phase_errors` and
+unless the operator opted out or set an invalid value, except `lane_scratch`, which
+stays `false` until plan 12's apply lands), alerts, `phase_errors` and
 `skipped_roots`. Per phase it gives `candidate_bytes`,
 `removed_or_offloaded_bytes` and `retained_by_reason`, with null bytes where a
 phase counts without sizing, and the terminal pin phase also gives
