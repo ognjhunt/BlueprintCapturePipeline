@@ -1860,6 +1860,131 @@ def test_source_produced_preparation_reaches_local_activation_receipt(short_scen
     assert receipt.is_file() and result['profile_publication_receipt_digest'] == _raw(receipt)['sha256']
 
 
+def _execute_owned_construction_stages(source, base, monkeypatch):
+    """Run the sealed stage tool and native driver with hermetic Isaac observations."""
+    import subprocess
+    from blueprint_pipeline.task_evaluation_scene_configuration_orchestrator import (
+        _load_envelope)
+    from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
+        build_scene_configuration_provider_bundle)
+    from blueprint_pipeline.provider_archive import extract_provider_archive
+    from scripts import task_evaluation_scene_configuration_provider_runner as provider_runner
+    from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
+        TOOLCHAIN_ROOT_ENV, builtin_scene_configuration_stage_producer_registry)
+    from blueprint_pipeline.task_evaluation_scene_configuration_native_import_driver import (
+        execute_native_import_component)
+    from blueprint_pipeline.task_evaluation_scene_configuration_provider_runtime import (
+        execute_scene_configuration_stage_chain)
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_tool import execute_stage_tool
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        PARENT_DEADLINE_EPOCH_ENV, REQUIRED_PARENT_TTL_SECONDS)
+    from tests.astra_toolchain_fixture import astra_toolchain_fixture
+    from tests.test_task_evaluation_scene_configuration_native_import_driver import _observed
+
+    path = next((source['base'] / 'construction' / 'pending').glob('*.json'))
+    envelope = _load_envelope(path)
+    toolchain = base / 'toolchain'
+    if not toolchain.exists():
+        astra_toolchain_fixture(toolchain, envelope['expected_production_commit'], monkeypatch)
+    bundle = build_scene_configuration_provider_bundle(
+        construction_envelope_path=path, toolchain_root=toolchain,
+        repository_root=Path(__file__).resolve().parents[1],
+        output_root=base / 'owned-construction-bundle',
+        expected_source_commit=envelope['expected_production_commit'])
+    extracted = base / 'owned-construction-runtime'
+    extract_provider_archive(Path(bundle['bundle_path']), extracted)
+    runtime = extracted / 'provider_runtime'
+
+    def native_observations(*, observation_consumer, destination_asset_path=None, **_):
+        observed = _observed()
+        if destination_asset_path is not None:
+            observed['destination_repeats'] = _observed()['repeats']
+        return observation_consumer(observed)
+
+    def component(command, *, env, **_):
+        execute_native_import_component(environment=env, native_runner=native_observations)
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+
+    def stage_tool(command, *, env, **_):
+        value = json.loads(Path(env['BLUEPRINT_SCENE_CONFIGURATION_STAGE_INPUT']).read_bytes())
+        adapter_id = value['stage']['adapter']['id']
+        assert adapter_id == 'simready_native_import_qualification', value['stage']
+        execute_stage_tool(adapter_id=adapter_id, environment=env, runner=component)
+        return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+
+    producers = builtin_scene_configuration_stage_producer_registry(
+        expected_source_commit=envelope['expected_production_commit'], toolchain_root=toolchain,
+        runner=stage_tool, environment={TOOLCHAIN_ROOT_ENV: str(toolchain)})
+    def execute_with_native_fixture(**kwargs):
+        return execute_scene_configuration_stage_chain(producer_registry=producers, **kwargs)
+
+    output = base / 'owned-construction-stages'
+    monkeypatch.setattr(provider_runner, 'execute_scene_configuration_stage_chain', execute_with_native_fixture)
+    monkeypatch.setenv('BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT', str(runtime))
+    monkeypatch.setenv('BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT', str(output))
+    monkeypatch.setenv('BLUEPRINT_SCENE_CONFIGURATION_PROVIDER_RESULT',
+                       str(output / (provider_runner.RESULT_SCHEMA_VERSION + '.json')))
+    monkeypatch.setenv('BLUEPRINT_SCENE_CONFIGURATION_STAGE_CHECKPOINT_PATH',
+                       str(base / 'owned-stage-checkpoint.zip'))
+    monkeypatch.setenv(PARENT_DEADLINE_EPOCH_ENV, str(time.time() + REQUIRED_PARENT_TTL_SECONDS))
+    monkeypatch.delenv('BLUEPRINT_SCENE_CONFIGURATION_STAGE_LIMIT', raising=False)
+    assert provider_runner.main() == 0
+    return json.loads((output / (provider_runner.RESULT_SCHEMA_VERSION + '.json')).read_bytes())
+
+
+@pytest.mark.slow
+def test_source_preparation_executes_complete_construction(short_scene_directory, monkeypatch):
+    """Exercise actual construction producers, with only Isaac observations doubled."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import write_output_archive
+    from blueprint_pipeline.task_evaluation_scene_configuration_vast import (
+        TaskEvaluationSceneConfigurationVastError, _extract_provider_output, _publication_stage_results)
+    from tests.test_scene_retirement_real_participants import access_fixture
+
+    base = short_scene_directory.resolve()
+    _, policy, placeholder = access_fixture(base, monkeypatch)
+    placeholder.rmdir()
+    source = _source_owned_configuration(base, monkeypatch, policy)
+    result = _execute_owned_construction_stages(source, base, monkeypatch)
+    assert result['schema_version'] == 'task_evaluation_scene_configuration_provider_result.v1'
+    assert result['status'] == 'completed'
+    assert result['source_commit'] == source['request']['expected_production_commit']
+    assert result['result_digest'] == canonical_digest(result, digest_field='result_digest')
+    chain = result['stage_chain']
+    assert chain['status'] == 'completed'
+    assert chain['whole_run_completed'] is True
+    assert chain['stage_count'] == 6
+    assert chain['result_digest'] == canonical_digest(chain, digest_field='result_digest')
+    assert chain['nested_provider_mutations_performed'] == 0
+    assert chain['evaluation_episode_executed'] is False
+    manifest = next(row for row in chain['stage_results'][-1]['output_artifacts']
+                    if row['role'] == 'configured_scene_bundle_candidate_manifest')
+    candidate = json.loads((base / 'owned-construction-stages' /
+                            manifest['provider_output_relative_path']).read_bytes())
+    assert candidate['robot_neutral'] is True
+    assert candidate['robot_specific_base_registration_included'] is False
+    archive = base / 'owned-construction-output.zip'
+    write_output_archive(base / 'owned-construction-stages', archive)
+    destination = base / 'owned-construction-readback'
+    readback, blockers = _extract_provider_output(
+        archive, destination, maximum_archive_bytes=archive.stat().st_size)
+    assert blockers == []
+    assert readback == result
+    retained = _publication_stage_results(readback, extraction_root=destination)
+    assert len(retained) == 6
+    for stage in retained:
+        for artifact in stage['output_artifacts']:
+            actual = _raw(Path(artifact['path']))
+            assert (actual['sha256'], actual['size_bytes']) == (
+                artifact['digest'], artifact['size_bytes'])
+    asset = next(row for row in retained[-1]['output_artifacts']
+                 if row['role'] == 'configured_scene_bundle_candidate_manifest')
+    Path(asset['path']).write_bytes(b'changed after readback')
+    with pytest.raises(TaskEvaluationSceneConfigurationVastError,
+                       match='scene_configuration_provider_artifact_portability_invalid'):
+        _publication_stage_results(readback, extraction_root=destination)
+
+
 @pytest.mark.slow
 def test_website_owner_progression_selects_real_activation(short_scene_directory, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_progression_state import load_progression
