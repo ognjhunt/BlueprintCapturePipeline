@@ -962,6 +962,35 @@ def test_a_missing_teardown_record_of_an_unsettled_attempt_is_surfaced(tmp_path:
     assert not list((world.tmp_path / "remote" / "spend-authority" / "remote-cpu-settled").glob("*.json"))
 
 
+def test_an_unreadable_record_of_a_settled_prior_attempt_never_stops_the_current_teardown(tmp_path: Path,
+                                                                                         monkeypatch) -> None:
+    """A prior attempt already torn down and settled has nothing left to do, so its record is not read; and one
+    attempt's failure never stops another's teardown.  With every read of attempt 1's sealed teardown denied,
+    attempt 2 still completes, is settled and frees its slot."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    world.remote.jobs.script("crash", "succeed")
+    world.drive(until=lambda: (world.lease() or {}).get("attempt") == 2, step=30)
+    first = world.lease()["prior_attempts"][0]["attempt_id"]
+    read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    real, denied = os.open, {"count": 0}
+
+    def unreadable(path, flags, *args, **kwargs):
+        if flags == read_flags and str(path).endswith(f"/teardowns/{first}.json"):
+            denied["count"] += 1
+            raise PermissionError(13, "Permission denied")
+        return real(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", unreadable)
+    _complete(world, step=300)
+    lease = world.lease()
+    assert (lease["state"], world.row_state()) == ("completed", "completed")
+    assert [attempt["provider_zero_proven"] for attempt in _attempts(world)] == [True, True]
+    assert leases.slots_in_use(world.host.jobs) == 0
+    settled = world.tmp_path / "remote" / "spend-authority" / "remote-cpu-settled"
+    assert len(list(settled.glob("*.json"))) == 2
+
+
 def _denied(*_args, **_kwargs):
     raise PermissionError(13, "Permission denied")
 

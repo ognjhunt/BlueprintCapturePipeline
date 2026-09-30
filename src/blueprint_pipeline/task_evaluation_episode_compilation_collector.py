@@ -927,34 +927,42 @@ def _close(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str,
     if outcome is not None and lease["outcome"] != _outcome(outcome):
         lease = leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"], to_state=None,
                                   now=c.now, updates={"outcome": _outcome(outcome)})
-    pending = 0
+    pending, failures = 0, []
     for attempt in [*lease["prior_attempts"], lease]:
         if not attempt["dispatch_started"]:
             continue
-        descriptor, _ = _descriptor(c, attempt["attempt_id"])
-        if attempt["provider_zero_proven"]:
-            # Every provider-zero teardown, the allocator's or this collector's, is sealed at this path before the
-            # lease says so.  Without it nothing can be settled or resealed: a settled attempt has nothing left to
-            # do, and an unsettled one stays charged at its worst case and is surfaced, never skipped.
-            sealed = _read_json_present(c.jobs_root / "teardowns" / f"{attempt['attempt_id']}.json")
-            if sealed is None:
-                if _settled(attempt["attempt_id"]):
+        reseal = terminal == "completed" and attempt["attempt_id"] == lease["attempt_id"]
+        if attempt["provider_zero_proven"] and not reseal and _settled(attempt["attempt_id"]):
+            continue  # torn down and settled: nothing of it is left to read or do
+        try:
+            descriptor, _ = _descriptor(c, attempt["attempt_id"])
+            if attempt["provider_zero_proven"]:
+                # Every provider-zero teardown, the allocator's or this collector's, is sealed at this path before
+                # the lease says so.  Without it nothing can be settled or resealed: a settled attempt has nothing
+                # left to do, and an unsettled one stays charged at its worst case and is surfaced, never skipped.
+                sealed = _read_json_present(c.jobs_root / "teardowns" / f"{attempt['attempt_id']}.json")
+                if sealed is None:
+                    if _settled(attempt["attempt_id"]):
+                        continue
+                    raise CollectorError("remote_cpu_teardown_record_missing")
+                record = validate_teardown(sealed)
+            else:
+                record = _seal_teardown(c, attempt, descriptor)
+                if record is None:
+                    pending += 1
                     continue
-                raise CollectorError("remote_cpu_teardown_record_missing")
-            record = validate_teardown(sealed)
-        else:
-            record = _seal_teardown(c, attempt, descriptor)
-            if record is None:
-                pending += 1
-                continue
-            lease = leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"], to_state=None,
-                                      now=c.now, updates={"teardown": record})
-        # Settled and resealed until done, not only on the first teardown: a run that died between them left
-        # the worst case charged and the pointer unsealed (review N1).
-        if not _settled(attempt["attempt_id"]):
-            _settle(c, attempt, descriptor, record)
-        if terminal == "completed" and attempt["attempt_id"] == lease["attempt_id"]:
-            _reseal_pointer(c, marker["plan"]["compilation_id"], record)
+                lease = leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"],
+                                          to_state=None, now=c.now, updates={"teardown": record})
+            # Settled and resealed until done, not only on the first teardown: a run that died between them left
+            # the worst case charged and the pointer unsealed (review N1).
+            if not _settled(attempt["attempt_id"]):
+                _settle(c, attempt, descriptor, record)
+            if reseal:
+                _reseal_pointer(c, marker["plan"]["compilation_id"], record)
+        except Exception as exc:  # noqa: BLE001 - one attempt's failure never stops another's teardown
+            failures.append(exc)
+    if failures:
+        raise failures[0]
     if pending:
         c.summary["teardown_unproven"] = c.summary.get("teardown_unproven", 0) + pending
         return {"status": lease["state"], "blocker": "remote_cpu_provider_zero_unproven"}
