@@ -447,7 +447,8 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
     metadata_proof = receipt.pop('_fixture_metadata_proof', None)
-    if (entry.parent / 'metadata-boundary-probe').exists():
+    if (entry.parent / 'metadata-boundary-probe').exists() and not any(
+            '_fixture_metadata_proof' in row for row in previous):
         assert metadata_proof == dict(records=2, bytes_per_record=1048576,
             full_comparisons=6, no_replace_conflicts=2, actual_landlock=True), metadata_proof
     else:
