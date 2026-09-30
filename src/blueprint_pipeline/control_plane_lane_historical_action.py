@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 from . import control_plane_lane_historical_authority as authority
 from . import control_plane_lane_historical_dispatch as dispatch
@@ -16,6 +17,7 @@ from .control_plane_lane_historical_fence import _HistoricalGenerationFence
 from .control_plane_lane_historical_journal import HistoricalActionJournal, journal_root
 from .control_plane_lane_historical_unit import prove_historical_unit
 from .control_plane_lane_historical_processes import refuse_historical_process_references
+from .control_plane_lane_historical_references import historical_reference_fence
 
 
 def _require(value, code):
@@ -55,9 +57,17 @@ class _Worker:
             self.operation.remaining()
 
     @contextmanager
-    def mutation_authority(self):
-        with self.checkpoint(journal=True):
-            yield
+    def mutation_authority(self, *, readers=False):
+        with self.checkpoint(journal=True) as (files, config, _):
+            if readers:
+                with historical_reference_fence(files, config,
+                        Path(self.selected[2]['target_path']), observed_at=self.operation.moment()) as guard:
+                    refuse_historical_process_references(self.selected[2], tick=self.operation.remaining)
+                    guard()
+                    yield
+                    guard()
+            else:
+                yield
 
     def record(self, kind, body):
         with self.checkpoint(journal=True) as (_, _, journal):
@@ -91,9 +101,14 @@ def run_historical_action(*, installed_config_path, action_id, now, monotonic=ti
         worker.head = head['event_digest']
     with _HistoricalGenerationFence(manifest, tick=operation.remaining) as held:
         held.revoke(before_change=worker.mutation_authority, record=worker.record)
-        with worker.mutation_authority():
+        with worker.mutation_authority(readers=True):
             held.verify()
-            refuse_historical_process_references(manifest, tick=operation.remaining)
-        # A write fence alone does not clear old foreign descriptors/mappings,
-        # queue/pin/active-run/release consumers or justify any payload removal.
-        raise generation.HistoricalGenerationError('historical_generation_action_lifetime_unproven')
+        _require(worker.selected[1]['action'] == 'delete', 'preservation_required')
+        def removal_authority():
+            return worker.mutation_authority(readers=True)
+        outcome = held.remove_members(before_change=removal_authority, record=worker.record)
+        receipt = dict(status='completed', action='delete', action_id=action_id,
+            owner=worker.selected[1]['owner'], generation_digest=manifest['generation_digest'],
+            original_manifest=worker.selected[1]['manifest'], **outcome)
+        worker.record('final', receipt)
+        return receipt

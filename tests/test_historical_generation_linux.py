@@ -7,6 +7,9 @@ not a historical owner decision, a deletion receipt or a cleared reference set.
 #   src/blueprint_pipeline/control_plane_lane_historical_dispatch.py
 #   src/blueprint_pipeline/control_plane_lane_historical_fence.py
 #   src/blueprint_pipeline/control_plane_lane_historical_processes.py
+#   src/blueprint_pipeline/control_plane_lane_historical_action.py
+#   src/blueprint_pipeline/control_plane_lane_historical_references.py
+#   tests/historical_generation_native_acceptance.py
 import json
 import os
 import pwd
@@ -200,7 +203,7 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
     if os.geteuid() != 0:
         command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
                    'PYTHONDONTWRITEBYTECODE=1', *command]
-    done = subprocess.run(command, capture_output=True, text=True, timeout=70,
+    done = subprocess.run(command, capture_output=True, text=True, timeout=150,
                           cwd=Path(__file__).parents[1],
                           env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
     assert done.returncode == 0, done.stdout + done.stderr
@@ -208,8 +211,10 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
         adjacent_and_parent_denied=2, foreign_fd_cwd_mapping_visible=True,
         references_clear=False, future_writes_denied=4, old_fd_retained=True,
         actual_unit_guard_passed=True, all_original_members_fenced=True,
-        actual_foreign_channels_observed=True)
+        actual_foreign_channels_observed=True, actual_owner_approved_delete=True,
+        original_member_journal=True)
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
-    print(json.dumps(_root_fixture(), sort_keys=True))
+    from historical_generation_native_acceptance import connected_delete
+    print(json.dumps(_root_fixture() | connected_delete(), sort_keys=True))
