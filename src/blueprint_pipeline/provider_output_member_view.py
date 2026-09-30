@@ -35,9 +35,9 @@ CLI (read-only): ``python -m blueprint_pipeline.provider_output_member_view
 plan --archive <zip> --contract policy_canary_output_member_contract.v1``
 prints members, bytes by class and bytes by disposition under the contract,
 and any entry-rule refusal the index would raise, from the central directory
-alone. The contract here is the measurement rule the lane's contract module
-will own: every ``.json`` file outside a ``policy-requests`` directory is
-materialized; everything else stays remote.
+alone, under the lane's own rule (``policy_canary_output_members``): every
+``.json`` file outside a ``policy-requests`` directory, except the ten per-cell
+child results, is materialized; everything else stays remote.
 
 Scratch copies: ``python -m blueprint_pipeline.provider_output_member_view
 materialize --evidence-root <root> --prefix cell_runs/NN/ --output-root
@@ -76,6 +76,7 @@ from .provider_output_member_index import (
     read_indexed_member,
     validate_member_index,
 )
+from .policy_canary_output_members import POLICY_CANARY_OUTPUT_CONTRACT
 from .provider_output_native_inventory import ProviderOutputInventoryError, safe_member_name
 from .provider_output_range_ingestion import CasArchiveSource, ProviderOutputIngestionError
 from .provider_output_range_transport import ProviderOutputTransportError
@@ -109,12 +110,8 @@ CONTENT_MISMATCH_CODES = frozenset({
 })
 
 
-def _policy_canary_member_needed(path: str) -> bool:
-    member = PurePosixPath(path)
-    return member.suffix.lower() == ".json" and "policy-requests" not in member.parts
-
-
-CONTRACTS: dict[str, Callable[[str], bool]] = {POLICY_CANARY_CONTRACT: _policy_canary_member_needed}
+# The lane's contract module owns the rule; the planner measures with the same one.
+CONTRACTS: dict[str, Callable[[str], bool]] = {POLICY_CANARY_CONTRACT: POLICY_CANARY_OUTPUT_CONTRACT.needed}
 
 
 class ProviderOutputMemberViewError(ValueError):

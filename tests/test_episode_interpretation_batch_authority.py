@@ -22,8 +22,8 @@ def test_run_authority_derives_exact_episode_rights_after_digest_exists(tmp_path
     request = _request(_episode_root(tmp_path, no_drop=False, deterministic_success=True))
     interpreter = OpenAIMultimodalEpisodeInterpreter(
         invoker=_NoInvoke(),
-        model="gpt-6-sol",
-        model_version="gpt-6-sol",
+        model="gpt-6.1-sol",
+        model_version="gpt-6.1-sol",
     )
     profile_digest = "sha256:" + "b" * 64
     authority = {

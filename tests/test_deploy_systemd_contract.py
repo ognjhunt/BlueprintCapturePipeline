@@ -1006,7 +1006,8 @@ def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
         "launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,"
         "policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,"
         "handoff_staging=/var/lib/blueprint/pubsub-handoffs,"
-        "scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs"
+        "scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,"
+        "policy_canary_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries"
     )
     for name in (
         "blueprint-pipeline-intake.service",
@@ -1018,3 +1019,20 @@ def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
         encoding="utf-8"
     )
     assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in capacity
+
+
+def test_streamed_canary_units_bind_the_b2_artifact_store() -> None:
+    """Review I4: promotion and the member view refuse, rather than borrow the staging store's
+    credentials, unless the dedicated B2 store is configured. The canary dispatcher (whose
+    allocator child promotes and ingests) and the existing-run continuation (which promotes
+    before cleanup) bind it explicitly, exactly as the intake service does."""
+    intake = (SYSTEMD_DIR / "blueprint-pipeline-intake.service").read_text(encoding="utf-8")
+    bindings = [line for line in intake.splitlines()
+                if line.startswith("Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_")]
+    assert len(bindings) == 6 and any("_EXPECTED_BUCKET=" in line for line in bindings)
+    for name in ("blueprint-task-evaluation-policy-canary-dispatcher.service",
+                 "blueprint-existing-policy-canary-continuation.service"):
+        unit = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+        lines = unit.splitlines()
+        assert [line for line in lines if line in bindings] == bindings, name
+        assert "ReadOnlyPaths=/etc/blueprint/provider-secrets" in lines, name

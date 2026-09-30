@@ -381,3 +381,37 @@ def test_continuation_promotes_before_cleanup_when_staging_requires_it(tmp_path,
                                         "maximum_archive_bytes": MAXIMUM}})
     assert plain["all_objects_absent"] is True and ungated_world.cas.uploads == 0
     assert not (ungated_world.staging / records.RECEIPT_FILENAME).exists()
+
+
+def test_continuation_refuses_a_gated_cleanup_without_the_b2_artifact_store(tmp_path, monkeypatch, fixture):
+    """PR B review M7: without the dedicated B2 store, promotion used to be skipped silently --
+    a failed receipt nobody saw, a deferred output, and a tick pending for no named reason. The
+    gated cleanup now refuses with a typed code before anything is read or deleted."""
+    from blueprint_pipeline import provider_output_promotion_records as records
+    from blueprint_pipeline import task_evaluation_configured_scene_object_store as scene_store
+    from blueprint_pipeline.wam_provider_object_store import STAGING_MANIFEST_FILENAME
+    from tests.provider_output_fixtures import quick10_shaped_archive
+    from tests.test_provider_output_promotion import MAXIMUM, SMALL, World
+
+    world = World(tmp_path / "attempts", monkeypatch, witness=False)
+    world.stage("output", quick10_shaped_archive(**SMALL).archive)
+    for name in scene_store._ARTIFACT_STORE_FILE_ENV.values():
+        monkeypatch.delenv(name, raising=False)
+    intent = {"ingestion_binding": {"staging_manifest": file_record(world.staging / STAGING_MANIFEST_FILENAME),
+                                    "maximum_archive_bytes": MAXIMUM},
+              "cleanup_configuration": {}, "terminal_delivery_intent": {"run_root": str(tmp_path / "run-1")}}
+
+    with pytest.raises(handoff.ContinuationError, match="^continuation_output_promotion_artifact_store_not_configured$"):
+        coordinator.cleanup_owned_objects(intent)
+    assert world.spaces.deleted == [] and world.spaces.requests(world.keys["output"]) == []
+    assert not (world.staging / records.RECEIPT_FILENAME).exists()
+
+    # The tick names the refusal instead of the generic pending cleanup.
+    fixture.commit()
+
+    def refusing(_intent):
+        raise handoff.ContinuationError("continuation_output_promotion_artifact_store_not_configured")
+
+    result = coordinator.continue_existing_run(fixture.intent, adapters=replace(fixture.adapters, cleanup=refusing))
+    assert result["status"] == "pending"
+    assert result["blockers"] == ["continuation_output_promotion_artifact_store_not_configured"]

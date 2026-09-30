@@ -53,6 +53,15 @@ WORLDLABS_DEFAULT_MODEL="${WORLDLABS_DEFAULT_MODEL:-Marble 0.1-mini}"
 BLUEPRINT_LAUNCH_PROOF_MODE="${BLUEPRINT_LAUNCH_PROOF_MODE:-production}"
 PRIVACY_PIPELINE_ENABLED="${PRIVACY_PIPELINE_ENABLED:-true}"
 PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"
+# Remote CPU workers (plan 14). Opt in with a reviewed commit that flips this
+# default to true and sets the object prefix default below (the US B2
+# endpoint, bucket and key prefix; not a secret). The opt-in also needs
+# billing_account_id in terraform.tfvars, which this script never exports: the
+# workers' budget requires it, and setting it also creates the GPU fleet beta
+# budget. Never opt in with an environment override: the next deploy without
+# it would destroy the jobs, identities and transport bucket.
+REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-false}"
+REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-}"
 PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"
 PRIVACY_VIP_URL="${PRIVACY_VIP_URL:-}"
 PRIVACY_DEEPPRIVACY2_URL="${PRIVACY_DEEPPRIVACY2_URL:-}"
@@ -654,6 +663,8 @@ apply_terraform() {
     export TF_VAR_worldlabs_default_model="$WORLDLABS_DEFAULT_MODEL"
     export TF_VAR_privacy_pipeline_enabled="$PRIVACY_PIPELINE_ENABLED"
     export TF_VAR_privacy_fail_closed="$PRIVACY_FAIL_CLOSED"
+    export TF_VAR_remote_cpu_workers_enabled="$REMOTE_CPU_WORKERS_ENABLED"
+    export TF_VAR_remote_cpu_worker_object_prefix="$REMOTE_CPU_WORKER_OBJECT_PREFIX"
 
     validate_terraform_state_backend
     local -a terraform_init_args=(
@@ -916,6 +927,14 @@ create_pubsub_topics() {
 }
 
 setup_iam() {
+    # Not part of the deploy flow: Terraform owns IAM. Its unconditional
+    # project grants would replace the conditions that keep existing
+    # identities away from the remote CPU jobs and transport (plan 14 C2).
+    if [[ "$REMOTE_CPU_WORKERS_ENABLED" == "true" ]]; then
+        log_error "setup_iam would undo the remote CPU workers' IAM conditions; Terraform owns IAM"
+        return 1
+    fi
+
     log_info "Setting up IAM permissions..."
 
     if [[ "$DRY_RUN" == "true" ]]; then

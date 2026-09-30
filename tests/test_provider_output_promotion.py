@@ -108,12 +108,13 @@ class StagedSpaces:
 class World:
     """One Quick-10 attempt: a gated staging dir, Spaces, B2 and the lane's layout."""
 
-    def __init__(self, tmp_path: Path, monkeypatch, *, witness: bool = True):
+    def __init__(self, tmp_path: Path, monkeypatch, *, witness: bool = True, torn_down: bool = True):
         self.tmp_path = tmp_path
         tmp_path.mkdir(parents=True, exist_ok=True)
-        # The dedicated B2 store is explicitly configured (review I4).
-        for name in scene_store._ARTIFACT_STORE_FILE_ENV.values():
-            monkeypatch.setenv(name, str(tmp_path / "b2-configured-by-file"))
+        # The dedicated B2 store is explicitly configured (review I4), by readable files (minor 8).
+        for key, name in scene_store._ARTIFACT_STORE_FILE_ENV.items():
+            (tmp_path / f"b2-{key}").write_text("configured-by-file\n", encoding="utf-8")
+            monkeypatch.setenv(name, str(tmp_path / f"b2-{key}"))
         for name, value in (("ACCESS_KEY_ID", "access"), ("SECRET_ACCESS_KEY", "secret"),
                             ("BUCKET", StagedSpaces.BUCKET)):
             path = tmp_path / f"spaces-{name.lower()}"
@@ -144,6 +145,13 @@ class World:
                                           "authority": {"maximum_archive_bytes": MAXIMUM}}
         (self.staging / STAGING_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         self.spaces.put(self.keys["bundle"], b"provider bundle bytes", '"bundle"')
+        if torn_down:  # the paid window is over: the provider can no longer read or upload
+            self.tear_down()
+
+    def tear_down(self, *, continuing_spend=False):
+        (self.run / promotion.TEARDOWN_MANIFEST_NAME).write_text(json.dumps(
+            {"schema_version": "vast_teardown_manifest.v1", "status": "completed", "vast_instance_ids": [7],
+             "continuing_spend_from_this_run": continuing_spend}), encoding="utf-8")
 
     def stage(self, role, archive, etag='"spaces-1"'):
         self.cas.register(archive)
@@ -529,9 +537,12 @@ def test_promotion_resume_is_idempotent_and_records_no_url(paired_world):
     written = json.loads((world.attempt / promotion.RESUME_FILENAME).read_text())
     assert written == resumed and written["receipt_digest"] == canonical_digest(written, digest_field="receipt_digest")
 
-    # With everything already gone, another resume is the same answer.
+    # With everything already gone, another resume is the same answer, and it rewrites nothing
+    # the proof and the sealed artifact manifest bind (review minor 4).
+    sealed = (world.staging / records.RECEIPT_FILENAME).read_bytes()
     again = world.resume()
     assert again["status"] == "completed" and _proof(world) == proof
+    assert (world.staging / records.RECEIPT_FILENAME).read_bytes() == sealed
     assert world.spaces.whole_object_gets(world.keys["output"]) == reads and world.cas.uploads == uploads
     for path in world.files():
         data = path.read_bytes()
@@ -653,6 +664,40 @@ def test_promotion_and_resume_refuse_an_attempt_that_did_not_require_promotion(w
     assert local.is_file() and world.cas.uploads == 0 and world.spaces.deleted == []
     assert world.spaces.requests(world.keys["output"]) == []
     assert sorted(path.name for path in world.staging.iterdir()) == before
+
+
+@pytest.mark.parametrize("teardown", ["missing", "continuing_spend", "unreadable", "symlinked"])
+def test_resume_refuses_an_attempt_whose_paid_window_may_be_open(tmp_path, monkeypatch, teardown):
+    """Review critical 1: resume runs the gated cleanup, which deletes the staged bundle and seals a
+    write-once absence proof. While the paid window may be open the provider can still read the
+    bundle or upload its output, so until the teardown manifest records no continuing spend
+    nothing is read, published, removed or proven -- ingestion included."""
+    world = World(tmp_path, monkeypatch, witness=True, torn_down=False)
+    teardown_path = world.run / promotion.TEARDOWN_MANIFEST_NAME
+    if teardown == "continuing_spend":
+        world.tear_down(continuing_spend=True)
+    elif teardown == "unreadable":
+        teardown_path.write_text("{not json", encoding="utf-8")
+    elif teardown == "symlinked":
+        elsewhere = tmp_path / "teardown-elsewhere.json"
+        elsewhere.write_text('{"continuing_spend_from_this_run": false}', encoding="utf-8")
+        teardown_path.symlink_to(elsewhere)
+    before = world.files()
+
+    resumed = world.resume(ingest=True)
+
+    assert (resumed["status"], resumed["blockers"]) == ("blocked", ["provider_output_resume_attempt_not_torn_down"])
+    assert resumed["cleanup"] is None and resumed["absence_proof"] is None and "ingestion" not in resumed
+    assert world.keys["bundle"] in world.spaces.stores and world.spaces.deleted == []
+    assert world.cas.uploads == 0 and world.spaces.requests(world.keys["output"]) == []
+    assert _proof(world) is None and not (world.staging / records.RECEIPT_FILENAME).exists()
+    assert sorted(set(world.files()) - set(before)) == [world.attempt / promotion.RESUME_FILENAME]
+    assert promotion.main(["resume", "--attempt-root", str(world.attempt)]) == 1
+
+    teardown_path.unlink(missing_ok=True)
+    world.tear_down()  # the adapter's own teardown manifest now records no continuing spend
+    assert world.resume()["status"] == "completed"
+    assert world.keys["bundle"] not in world.spaces.stores and _proof(world) is not None
 
 
 @pytest.mark.parametrize("fault", ["symlinked_lock_file", "flock_unavailable"])
@@ -849,14 +894,18 @@ def test_a_transient_head_failure_on_resume_keeps_the_durable_receipt(world):
     assert _receipt_now(world)["durable_reference"] == first["durable_reference"]
 
 
-def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_path, monkeypatch):
+@pytest.mark.parametrize("late_output", [False, True])
+def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_path, monkeypatch, late_output):
     world = World(tmp_path, monkeypatch)
-    _, witness, _ = _paired()
+    output, witness, _ = _paired()
     world.stage("paired_witness", witness, etag='"witness-1"')
     first, _ = world.promote(cleanup=lambda: {"status": "blocked"})
     assert (first["status"], first["witness"]["disposition"]) == ("absent_confirmed", "promoted")
     world.cleanup()  # the witness, the only paid evidence, leaves staging behind its receipt
     assert world.keys["paired_witness"] not in world.spaces.stores
+    sealed = (world.staging / records.RECEIPT_FILENAME).read_bytes()
+    if late_output:
+        world.stage("output", output)  # this resume changes the record: it promotes an output
 
     with monkeypatch.context() as patch:
         patch.setattr(promotion._Promotion, "_witness", _kill)
@@ -864,9 +913,13 @@ def test_a_resume_killed_during_the_witness_step_keeps_the_promoted_witness(tmp_
             world.resume()
 
     mid = _receipt_now(world)
-    # Still a checkpoint (closeout waits on ``pending``), yet it names the promoted witness.
     section = mid["staged_objects"]["paired_witness"]
-    assert section["state"] == "pending"
+    if late_output:
+        # A checkpoint (closeout waits on ``pending``), yet it names the promoted witness.
+        assert section["state"] == "pending" and mid["status"] == "promoted"
+    else:
+        # Nothing changed before the witness step: the final receipt stands, untouched (review minor 4).
+        assert (world.staging / records.RECEIPT_FILENAME).read_bytes() == sealed
     assert section["versions"] == first["staged_objects"]["paired_witness"]["versions"]
     assert mid["witness"]["reference"] == first["witness"]["reference"]
     assert world.resume()["status"] == "completed"
@@ -916,3 +969,92 @@ def test_a_redundant_witness_stands_only_with_the_primary_it_was_proven_against(
     assert end["witness"]["disposition"] == "promoted"
     assert [row["redundancy"]["status"] for row in end["staged_objects"]["paired_witness"]["versions"]] == [
         "not_proven"]
+
+
+# -- A staging-manifest rewrite never demotes a durable output (PR A edge case) ---------
+
+
+def _rewrite_manifest(world):
+    """What ``--refresh-output-get-url`` does: new URL metadata, the same staged keys."""
+    path = world.staging / STAGING_MANIFEST_FILENAME
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["output_get_url_refresh"] = {"schema_version": "wam_provider_output_get_refresh.v1",
+                                          "status": "completed", "output_object_mutated": False}
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def test_resume_after_a_manifest_rewrite_rebinds_the_durable_receipt(world):
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    observation = _observed(archive)
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": observation}), encoding="utf-8")
+    first, cleaned = world.promote(observation=observation)
+    assert first["status"] == "promoted" and cleaned["all_objects_absent"] is True
+    old_digest = first["staging_manifest_sha256"]
+    _rewrite_manifest(world)
+    uploads, reads = world.cas.uploads, world.spaces.whole_object_gets(world.keys["output"])
+
+    resumed = world.resume()
+
+    assert resumed["status"] == "completed", resumed["blockers"]
+    receipt = _receipt_now(world)  # bound to the rewritten manifest
+    assert receipt is not None and receipt["status"] == "promoted"
+    for field in ("source", "archive_sha256", "size_bytes", "durable_reference", "member_index", "staged_objects"):
+        assert receipt[field] == first[field], field
+    assert receipt["staging_manifest_sha256"] == records.staging_manifest_sha256(world.staging) != old_digest
+    assert receipt["rebound_from_staging_manifest_sha256"] == old_digest
+    # Carried forward, not re-promoted: nothing was read from Spaces or uploaded to B2 again.
+    assert (world.cas.uploads, world.spaces.whole_object_gets(world.keys["output"])) == (uploads, reads)
+    assert _proof(world)["promotion_status"] == "promoted"
+
+
+def test_a_rewrite_never_rebinds_a_receipt_for_another_staged_object(world):
+    archive = quick10_shaped_archive(**SMALL).archive
+    world.stage("output", archive)
+    first, _ = world.promote(observation=_observed(archive))
+    _rewrite_manifest(world)
+    # The adapter's recorded observation names another object than the receipt made durable.
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": _observed(archive, etag='"spaces-9"')}),
+        encoding="utf-8")
+
+    resumed = world.resume()
+
+    assert resumed["status"] == "blocked" and "provider_output_observed_object_missing" in resumed["blockers"]
+    receipt = _receipt_now(world)
+    assert receipt["status"] == "failed" and "rebound_from_staging_manifest_sha256" not in receipt
+    # The durable record it did not rebind is set aside, never destroyed.
+    [aside] = sorted(world.staging.glob(records.RECEIPT_FILENAME + ".superseded-*"))
+    assert json.loads(aside.read_text())["receipt_digest"] == first["receipt_digest"]
+
+
+def test_a_missing_primary_copy_keeps_the_versions_whose_copies_still_stand(world):
+    """Probe A3: proving the primary's durable copy gone must not also drop the other versions
+    whose copies still answer, on this run or on any later one."""
+    first_archive = quick10_shaped_archive(**SMALL).archive
+    second = quick10_shaped_archive(**SMALL, extra_members={"late-upload.json": b"{}"}).archive
+    blocked = {"cleanup": lambda: {"status": "blocked"}}
+    observation = _observed(first_archive)
+    (world.run / "vast_provider_command_result.json").write_text(
+        json.dumps({"provider_output_remote_observation": observation}), encoding="utf-8")
+    world.stage("output", first_archive)
+    first, _ = world.promote(observation=observation, **blocked)
+    world.stage("output", second, etag='"spaces-2"')  # a re-upload after promotion
+    world.resume(**blocked)
+    before = _receipt_now(world)["staged_objects"]["output"]["versions"]
+    assert [row["etag"] for row in before] == ['"spaces-1"', '"spaces-2"']
+    assert before[1]["archive_sha256"] == virtual_sha256(second)
+    _drop_from_b2(world, first["durable_reference"]["uri"])  # the primary's copy is proven gone
+
+    # Only the re-upload is staged, which is not the observed output: the run fails.
+    rerun = world.resume(**blocked)
+    assert "provider_output_remote_version_changed" in rerun["blockers"]
+    assert _receipt_now(world)["status"] == "failed"
+    assert _receipt_now(world)["staged_objects"]["output"]["versions"] == [before[1]]
+
+    # Nothing is staged any more: a later run fails too, still naming the copy that stands.
+    world.spaces.stores.pop(world.keys["output"])
+    gone = world.resume(**blocked)
+    assert "provider_output_observed_object_missing" in gone["blockers"]
+    assert _receipt_now(world)["staged_objects"]["output"]["versions"] == [before[1]]

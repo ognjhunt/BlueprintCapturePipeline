@@ -71,7 +71,7 @@ def test_operator_guard_writer_records_digest_without_exceeding_stage_cap(tmp_pa
 def test_packaging_requires_deleted_bound_managed_session_receipt(tmp_path):
     path = tmp_path / "stage-receipt.json"
     value = {"schema_version": "task_asset_agents_api_stage_receipt.v1",
-        "provider": "openai", "model": "gpt-6-sol", "runtime": "openai_agents_api",
+        "provider": "openai", "model": "gpt-6.1-sol", "runtime": "openai_agents_api",
         "session_cleanup": "deleted", "result_digest": "sha256:" + "a" * 64}
     value["receipt_digest"] = canonical_digest(value)
     path.write_text(json.dumps(value))
@@ -117,7 +117,7 @@ def test_rejected_review_continues_same_managed_session_with_bounded_revision(
             path.write_text(json.dumps(value))
             return value
         return {"accepted": True, "result": {"result_digest": "sha256:" + "a" * 64,
-                                               "model": "gpt-6-sol"}}
+                                               "model": "gpt-6.1-sol"}}
 
     monkeypatch.setattr(managed, "OpenAIAgentsRuntime", FakeRuntime)
     monkeypatch.setattr(managed.AgentsAPIAssetTools, "review", review)
@@ -132,7 +132,7 @@ def test_rejected_review_continues_same_managed_session_with_bounded_revision(
         guard_file=guard_path, maximum_cost_usd=5.0,
         transport=SimpleNamespace(project_id="proj_fixture"), clock=lambda: 1100,
         sleep=lambda _seconds: None)
-    assert result["model"] == "gpt-6-sol"
+    assert result["model"] == "gpt-6.1-sol"
     assert [row[0] for row in calls] == ["start", "review", "continue", "review", "cleanup"]
     receipt = json.loads((tmp_path / "budget/agents_api_stage_receipt.json").read_text())
     assert receipt["session_id"] == "same-session"
@@ -215,7 +215,7 @@ def test_signed_agents_api_stage_routes_to_managed_authoring_then_existing_packa
         "consent": {"provider_terms_reference": "owner-approved-fixture"}}
     rights["digest"] = canonical_digest(rights, digest_field="digest")
     config = {"authoring_agent_runtime": "openai_agents_api", "authoring_model_provider": "openai",
-        "authoring_model": "gpt-6-sol", "source_observation_kind": "website_capture_frames",
+        "authoring_model": "gpt-6.1-sol", "source_observation_kind": "website_capture_frames",
         "agents_api_policy": policy}
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -243,7 +243,7 @@ def test_signed_agents_api_stage_routes_to_managed_authoring_then_existing_packa
         (object(), SimpleNamespace(manifest=lambda: {"review_calls": 1})))
     monkeypatch.setattr(managed, "run_managed_asset_authoring", lambda **kw:
         events.append(("managed", kw["policy"]["project_guard_receipt_digest"])) or
-        {"result_digest": "sha256:" + "b" * 64, "model": "gpt-6-sol"})
+        {"result_digest": "sha256:" + "b" * 64, "model": "gpt-6.1-sol"})
     monkeypatch.setattr(driver, "_finish_component", lambda **kw:
         events.append(("package", kw["authored"]["model"])) or {"status": "candidate"})
 
@@ -263,4 +263,4 @@ def test_signed_agents_api_stage_routes_to_managed_authoring_then_existing_packa
         cost_gate_factory=lambda **_kw: Gate())
     assert result == {"status": "candidate"}
     assert events == [("reserve", None), ("managed", digest(guard)),
-                      ("complete", True), ("package", "gpt-6-sol")]
+                      ("complete", True), ("package", "gpt-6.1-sol")]

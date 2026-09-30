@@ -148,7 +148,7 @@ def run_managed_asset_authoring(*, request_value: dict, output_root: Path, budge
     selected_tools = tools.tools()
 
     def validate(task: AgentTask) -> None:
-        if (task.run_id != tools.request.run_id or task.model != "gpt-6-sol"
+        if (task.run_id != tools.request.run_id or task.model != "gpt-6.1-sol"
                 or task.source_commit != source_commit
                 or task.admission.authority_digest != authority_digest
                 or task.admission.inference_budget_usd > maximum_cost_usd
@@ -234,7 +234,7 @@ def run_managed_asset_authoring(*, request_value: dict, output_root: Path, budge
                 result = reviewed["result"]
                 receipt = {"schema_version": "task_asset_agents_api_stage_receipt.v1",
                     "run_id": tools.request.run_id, "object_id": tools.request.object_id,
-                    "provider": "openai", "model": "gpt-6-sol", "runtime": "openai_agents_api",
+                    "provider": "openai", "model": "gpt-6.1-sol", "runtime": "openai_agents_api",
                     "authority_digest": authority_digest, "project_guard_digest": guard_digest,
                     "session_id": state["session_id"], "task_ids": task_ids,
                     "review_cycles": review_index + 1, "review_digest": digest(reviewed),

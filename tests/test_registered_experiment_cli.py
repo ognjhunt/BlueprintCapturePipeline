@@ -20,7 +20,7 @@ def call(root, capsys, arguments):
     return status, json.loads(raw)
 
 
-def test_fixed_root_cli_creates_then_deletes_real_expired_scratch(retirement_installation, monkeypatch, capsys):  # noqa: F811
+def test_fixed_root_cli_keeps_expired_scratch_without_producer_completion(retirement_installation, monkeypatch, capsys):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_retirement as root
     config, _, _, _ = retirement_installation
     monkeypatch.setattr(root, 'INSTALLED_CONFIG_PATH', config)
@@ -37,13 +37,9 @@ def test_fixed_root_cli_creates_then_deletes_real_expired_scratch(retirement_ins
     monkeypatch.setattr(root.time, 'time', lambda: 2900)
     status, action = call(root, capsys, ['issue-action', grant['intent_id'], '--principal', 'operator',
         '--owner', 'owner', '--action', 'delete', '--expires-at', '3500'])
-    assert status == 0
-    issued_action = action['result']
-    (config.parent / 'pins').mkdir()
-    status, applied = call(root, capsys, ['apply', issued_action['action_id'], '--sha256',
-        issued_action['action_intent']['sha256'], '--size-bytes', str(issued_action['action_intent']['size_bytes'])])
-    assert status == 0 and applied['result']['decision'] == 'retired', applied
-    assert not (target / 'temporary.txt').exists()
+    assert status == 2 and action == {
+        'decision': 'refused', 'reason': 'experiment_producer_completion_missing'}
+    assert (target / 'temporary.txt').read_text() == 'tiny scratch'
 
 
 @pytest.mark.parametrize('arguments', [

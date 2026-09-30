@@ -33,7 +33,7 @@ from .task_object_astra_authoring import (
 from .task_object_astra_retained_artifacts import completed_authoring
 
 
-MODEL = "gpt-6-sol"
+MODEL = "gpt-6.1-sol"
 _TOOL_VERSION = "task_asset_agents_api.v1"
 _MAX_DELIVERY_IMAGE_BYTES = 2_000_000
 

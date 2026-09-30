@@ -1,4 +1,7 @@
-"""Exact current-generation ISSUE selection and conserved original clocks."""
+"""ISSUE/scan mechanics after explicit test-only deletion eligibility bypass.
+
+These tests do not establish producer completion or product cleanup authority.
+"""
 
 # ruff: noqa: F811
 # Covers (for impacted-test selection):
@@ -12,11 +15,13 @@ import pytest
 from tests.test_owner_target_version_publication import root_metadata, protected_root_tmp_path  # noqa: F401
 from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_birth import birth
-from tests.test_registered_experiment_retirement_flow import retirement_installation, _issue_action  # noqa: F401
+from tests.test_registered_experiment_retirement_flow import (  # noqa: F401
+    retirement_installation, _issue_action, removal_engine_only,
+)
 
 
 def test_issue_selection_is_durable_before_scan_and_reuses_original_operation(
-    retirement_installation, monkeypatch
+    retirement_installation, monkeypatch, removal_engine_only
 ):
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline.control_plane_lane_owner_target_versions import OwnerTargetVersionError
@@ -137,7 +142,7 @@ def test_owner_expiry_also_restricts_original_monotonic_time_when_wall_clock_sta
 
 
 def test_interrupted_scan_permanently_consumes_two_passes_without_new_operation(
-    retirement_installation, monkeypatch
+    retirement_installation, monkeypatch, removal_engine_only
 ):
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline.control_plane_lane_owner_target_versions import OwnerTargetVersionError
@@ -167,7 +172,7 @@ def test_interrupted_scan_permanently_consumes_two_passes_without_new_operation(
 
 
 def test_gc_cannot_reset_original_issue_controller_after_boot_change(
-    retirement_installation, monkeypatch
+    retirement_installation, monkeypatch, removal_engine_only
 ):
     from blueprint_pipeline import control_plane_lane_experiment_work as work
     from tests.test_registered_experiment_retirement_flow import _gc
@@ -252,7 +257,7 @@ def test_all_row_event_kinds_refuse_oversized_payload_before_publication(
         files.budget.close()
 
 
-def test_escaped_row_size_keeps_payload(retirement_installation):
+def test_escaped_row_size_keeps_payload(retirement_installation, removal_engine_only):
     from tests.test_registered_experiment_retirement_flow import _gc, _payload_snapshot
 
     setup = retirement_installation
@@ -279,7 +284,7 @@ def test_escaped_row_size_keeps_payload(retirement_installation):
 
 @pytest.mark.parametrize("character", ["x", "\\"])
 def test_manifest_admits_bounded_rows_before_accumulating_whole_inventory(
-    retirement_installation, monkeypatch, character
+    retirement_installation, monkeypatch, character, removal_engine_only
 ):
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline import control_plane_lane_experiment_work as work

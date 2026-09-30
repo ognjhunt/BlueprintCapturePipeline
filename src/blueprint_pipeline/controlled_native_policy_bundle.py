@@ -6,7 +6,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 from typing import Any, Mapping
 
-from .controlled_policy_configuration import validate_native_configuration
+from .controlled_policy_configuration import validate_native_configuration, canonical_request_digest
 from .native_task_arena_bundle import build_native_task_arena_bundle
 from .native_task_arena_construction_bundle import load_verified_native_task_arena_construction_bundle
 from .native_task_arena_execution_contract import CONTROLLED_POLICY_RUNTIME_MODULE_NAMES
@@ -19,7 +19,8 @@ RUNTIME_MODULE_NAMES = CONTROLLED_POLICY_RUNTIME_MODULE_NAMES
 def build_controlled_native_policy_bundle(*, job_dir: Path, packet_dir: Path,
         runtime_source_packet_receipt: Path, implementation_commit: str,
         configuration: Mapping[str, Any], job_request: Mapping[str, Any],
-        observations: list[Mapping[str, Any]], policy_credential: Mapping[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+        observations: list[Mapping[str, Any]], policy_credential: Mapping[str, Any] | None = None,
+        qualified_sandbox_bridge: Mapping[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
     config = validate_native_configuration(configuration)
     plan = json.loads((packet_dir / "native_task_arena_scene_plan.v1.json").read_text())
     if config["scene_plan_digest"] != plan["plan_digest"]:
@@ -54,6 +55,16 @@ def build_controlled_native_policy_bundle(*, job_dir: Path, packet_dir: Path,
             credential_path.write_text(json.dumps(policy_credential))
             credential_path.chmod(0o600)
             inputs["policy_credential.json"] = credential_path
+        if qualified_sandbox_bridge is not None:
+            from .controlled_policy_remote_sandbox import validate_remote_sandbox_bridge
+            bridge = validate_remote_sandbox_bridge(qualified_sandbox_bridge)
+            if (bridge["job_id"] != job_request["job_id"]
+                    or bridge["canonical_request_digest"] != canonical_request_digest(job_request)):
+                raise ValueError("controlled_native_bridge_request_binding_mismatch")
+            bridge_path = Path(raw) / "qualified_sandbox_bridge.json"
+            bridge_path.write_text(json.dumps(bridge, sort_keys=True, allow_nan=False))
+            bridge_path.chmod(0o600)
+            inputs["qualified_sandbox_bridge.json"] = bridge_path
         return build_native_task_arena_bundle(job_dir=job_dir, packet_dir=packet_dir,
             worker_source=package / "controlled_native_policy_worker.py",
             runtime_module_sources=[package / name for name in RUNTIME_MODULE_NAMES],
@@ -77,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--policy-credential", type=Path)
+    parser.add_argument("--qualified-sandbox-bridge", type=Path)
     args = parser.parse_args(argv)
     try:
         credential = None
@@ -84,13 +96,19 @@ def main(argv: list[str] | None = None) -> int:
             if args.policy_credential.is_symlink() or args.policy_credential.stat().st_mode & 0o077:
                 raise ValueError("controlled_native_policy_credential_not_private")
             credential = json.loads(args.policy_credential.read_text())
+        bridge = None
+        if args.qualified_sandbox_bridge:
+            if args.qualified_sandbox_bridge.is_symlink() or args.qualified_sandbox_bridge.stat().st_mode & 0o077:
+                raise ValueError("controlled_native_qualified_sandbox_bridge_not_private")
+            bridge = json.loads(args.qualified_sandbox_bridge.read_text())
         receipt = build_controlled_native_policy_bundle(
             job_dir=args.job_dir, packet_dir=args.packet_dir,
             runtime_source_packet_receipt=args.runtime_source_packet_receipt,
             implementation_commit=args.implementation_commit,
             configuration=json.loads(args.configuration.read_text()),
             job_request=json.loads(args.job_request.read_text()),
-            observations=json.loads(args.observations.read_text()), policy_credential=credential)
+            observations=json.loads(args.observations.read_text()), policy_credential=credential,
+            qualified_sandbox_bridge=bridge)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(json.dumps({"status": "blocked", "error_class": type(exc).__name__,
                           "provider_mutation_performed": False}))
