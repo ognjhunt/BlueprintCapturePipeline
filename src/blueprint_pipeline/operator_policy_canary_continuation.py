@@ -78,6 +78,9 @@ def terminate_owned_instance(intent):
 # holds it, promotion is skipped, the gated cleanup still runs (and defers a
 # present output), and the next tick tries again.
 CLEANUP_PROMOTION_LOCK_TIMEOUT_SECONDS = 10.0
+# Promotion refuses without the dedicated B2 store; the tick says so by name
+# (PR B review M7) instead of deferring the output with no reason given.
+PROMOTION_STORE_MISSING = "continuation_output_promotion_artifact_store_not_configured"
 
 
 def cleanup_owned_objects(intent):
@@ -92,6 +95,9 @@ def cleanup_owned_objects(intent):
 
     if read_json(staging).get("output_promotion_required") is not True:
         return cleanup()
+    from .policy_canary_output_members import artifact_store_configured
+    if not artifact_store_configured():
+        raise ContinuationError(PROMOTION_STORE_MISSING)
     return _promote_then_cleanup(intent, staging, config, cleanup)
 
 
@@ -455,7 +461,8 @@ def continue_existing_run(intent, *, adapters=ExistingRunContinuationAdapters())
             return _seal(meta / "completed.json", final)
         except Exception as exc:
             _safe_failure(intent, phase, exc)
-            return _pending(intent, phases, "continuation_" + phase + "_pending")
+            typed = isinstance(exc, ContinuationError) and str(exc) == PROMOTION_STORE_MISSING
+            return _pending(intent, phases, PROMOTION_STORE_MISSING if typed else "continuation_" + phase + "_pending")
 
 
 def run_existing_watchdog(intent, *, intent_path, host_reader=host_identity):

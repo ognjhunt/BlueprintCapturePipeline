@@ -708,6 +708,28 @@ resource "google_project_iam_member" "pipeline_runner_storage" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"
   member  = "serviceAccount:${google_service_account.pipeline_runner.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant stops at
+  # their transport bucket, which holds live presigned links.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-transport"
+      description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
+      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses. Terraform extends this
+  # to what a conditioned grant depends on, so forcing the replacement of its
+  # service account under the same account_id (-replace) would collide with
+  # the old account: remove that account in a separate apply first. The same
+  # holds for every conditioned grant below.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_project_iam_member" "privacy_services_storage" {
@@ -721,6 +743,24 @@ resource "google_project_iam_member" "privacy_services_storage" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"
   member  = "serviceAccount:${each.value}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant stops at
+  # their transport bucket, which holds live presigned links.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-transport"
+      description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
+      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_project_iam_member" "privacy_services_logging" {
@@ -766,6 +806,25 @@ resource "google_project_iam_member" "pipeline_invoker_run" {
   project = var.project_id
   role    = "roles/run.invoker"
   member  = "serviceAccount:${google_service_account.pipeline_invoker.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant can no
+  # longer run or invoke their jobs. A job's resource name may carry the
+  # project id or its number, so both prefixes are excluded.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-jobs"
+      description = "Any Cloud Run resource except the blueprint-remote-cpu-* jobs and their executions (plan 14 C2)."
+      expression  = "!resource.name.startsWith(\"projects/${var.project_id}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\") && !resource.name.startsWith(\"projects/${data.google_project.current.number}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Allow creating Cloud Tasks
@@ -784,6 +843,24 @@ resource "google_project_iam_member" "storage_trigger_storage" {
   project = var.project_id
   role    = "roles/storage.objectViewer"
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant stops at
+  # their transport bucket, which holds live presigned links.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-transport"
+      description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
+      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Firestore access (create capture records)
@@ -812,12 +889,50 @@ resource "google_project_iam_member" "storage_trigger_run" {
   project = var.project_id
   role    = "roles/run.invoker"
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant can no
+  # longer run or invoke their jobs. A job's resource name may carry the
+  # project id or its number, so both prefixes are excluded.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-jobs"
+      description = "Any Cloud Run resource except the blueprint-remote-cpu-* jobs and their executions (plan 14 C2)."
+      expression  = "!resource.name.startsWith(\"projects/${var.project_id}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\") && !resource.name.startsWith(\"projects/${data.google_project.current.number}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_project_iam_member" "storage_trigger_run_jobs" {
   project = var.project_id
   role    = "roles/run.jobsExecutorWithOverrides"
   member  = "serviceAccount:${google_service_account.storage_trigger.email}"
+
+  # Plan 14 C2: once remote CPU workers exist, this project-wide grant can no
+  # longer run or invoke their jobs. A job's resource name may carry the
+  # project id or its number, so both prefixes are excluded.
+  dynamic "condition" {
+    for_each = var.remote_cpu_workers_enabled ? [1] : []
+
+    content {
+      title       = "not-remote-cpu-jobs"
+      description = "Any Cloud Run resource except the blueprint-remote-cpu-* jobs and their executions (plan 14 C2)."
+      expression  = "!resource.name.startsWith(\"projects/${var.project_id}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\") && !resource.name.startsWith(\"projects/${data.google_project.current.number}/locations/${var.primary_region}/jobs/blueprint-remote-cpu-\")"
+    }
+  }
+
+  # Adding or removing the condition replaces the binding; create the new one
+  # before removing the old so the grant never lapses.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Logging
@@ -1775,7 +1890,12 @@ resource "google_monitoring_alert_policy" "pipeline_failures" {
     display_name = "Job Failure Rate"
 
     condition_threshold {
-      filter          = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\""
+      # Remote CPU worker jobs have their own policy (remote_cpu_job_failures).
+      filter = join(" AND ", concat([
+        "resource.type=\"cloud_run_job\"",
+        "metric.type=\"run.googleapis.com/job/completed_task_attempt_count\"",
+        "metric.labels.result=\"failed\"",
+      ], var.remote_cpu_workers_enabled ? ["NOT resource.labels.job_name = starts_with(\"blueprint-remote-cpu-\")"] : []))
       duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 5
@@ -1950,6 +2070,418 @@ resource "google_monitoring_alert_policy" "gpu_runner_billable_instance_time" {
     content   = "GPU privacy/video-to-world Cloud Run billable instance time is sustained above the configured threshold. Confirm the jobs are operator-authorized and not retrying or over-scaling."
     mime_type = "text/markdown"
   }
+}
+
+# =============================================================================
+# Remote CPU Workers (plan 14, phase 3b)
+# =============================================================================
+#
+# Heavy control-plane CPU stages, starting with episode compilation, can run as
+# short-lived Cloud Run job executions. Everything in this section is gated by
+# remote_cpu_workers_enabled, which defaults to false, and so are the
+# conditions it adds to the existing project-wide storage and run grants and
+# the capture alert's exclusion: with the flag off, the plan is unchanged.
+# Opting in is a reviewed commit that flips REMOTE_CPU_WORKERS_ENABLED's
+# default in deploy/scripts/deploy.sh, never an environment override, so a
+# later deploy cannot silently destroy the jobs, identities or transport
+# bucket. Retention of the lane's B2 staging, inputs and outputs is a B2
+# bucket lifecycle rule the owner sets; Terraform does not manage B2.
+
+variable "remote_cpu_workers_enabled" {
+  description = "Create the remote CPU worker jobs, identities and transport bucket. Opt in only by committing deploy.sh's REMOTE_CPU_WORKERS_ENABLED default."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "remote_cpu_worker_stages" {
+  description = "Remote CPU worker jobs by stage. Each key becomes the job blueprint-remote-cpu-<key>; ephemeral_size_limit sizes the in-memory /var/lib/blueprint."
+  type = map(object({
+    cpu                  = string
+    memory               = string
+    timeout_seconds      = number
+    ephemeral_size_limit = string
+  }))
+  default = {
+    episode-compilation = {
+      cpu                  = "4"
+      memory               = "16Gi"
+      timeout_seconds      = 1800
+      ephemeral_size_limit = "10Gi"
+    }
+  }
+  nullable = false
+
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages :
+      can(regex("^[a-z][a-z0-9-]{0,39}[a-z0-9]$", stage)) && contains(["1", "2", "4", "6", "8"], limits.cpu)
+    ])
+    error_message = "remote_cpu_worker_stages keys must be lowercase job-name suffixes of at most 41 characters, and cpu one of 1, 2, 4, 6 or 8."
+  }
+
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages :
+      limits.timeout_seconds >= 1 && limits.timeout_seconds <= 3600 && floor(limits.timeout_seconds) == limits.timeout_seconds
+    ])
+    error_message = "remote_cpu_worker_stages timeout_seconds must be whole seconds, at most 3600."
+  }
+
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages : try(
+        tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) <= 32 &&
+        tonumber(regex("^([1-9][0-9]*)Gi$", limits.ephemeral_size_limit)[0]) < tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]),
+        false
+      )
+    ])
+    error_message = "remote_cpu_worker_stages memory must be whole Gi, at most 32Gi, with ephemeral_size_limit (in-memory) below it."
+  }
+
+  # Cloud Run's per-CPU memory range; outside it a plan passes and the apply fails.
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages : try(
+        tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) <= 4 * tonumber(limits.cpu) &&
+        (tonumber(limits.cpu) < 4 || tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) >= 2) &&
+        (tonumber(limits.cpu) < 6 || tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) >= 4),
+        false
+      )
+    ])
+    error_message = "remote_cpu_worker_stages memory must fit Cloud Run's range for its cpu: at most 4Gi per CPU, and at least 2Gi at 4 CPU and 4Gi at 6 or 8 CPU."
+  }
+}
+
+variable "remote_cpu_worker_object_prefix" {
+  description = "https://<US B2 endpoint>/<bucket>/<key prefix>/ that every presigned URL a remote CPU worker is handed must stay under. Required when remote_cpu_workers_enabled is true."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition = (
+      var.remote_cpu_worker_object_prefix == "" ||
+      can(regex("^https://s3\\.us-[a-z0-9-]+\\.backblazeb2\\.com/([A-Za-z0-9_~-][A-Za-z0-9._~-]*/)+$", var.remote_cpu_worker_object_prefix))
+    )
+    error_message = "remote_cpu_worker_object_prefix must be empty or a path-style https URL on a US B2 endpoint that ends in /."
+  }
+}
+
+variable "remote_cpu_workers_budget_usd" {
+  description = "Monthly GCP budget for spend labeled cost-center=remote-cpu-workers. Owner decision 2 caps the first month at $25; raise it only after billing export and reconciliation."
+  type        = number
+  default     = 25
+
+  validation {
+    condition     = var.remote_cpu_workers_budget_usd > 0 && floor(var.remote_cpu_workers_budget_usd) == var.remote_cpu_workers_budget_usd
+    error_message = "remote_cpu_workers_budget_usd must be a positive whole-dollar amount."
+  }
+}
+
+variable "remote_cpu_workers_budget_thresholds" {
+  description = "Alert thresholds for the remote CPU worker budget, as fractions of remote_cpu_workers_budget_usd."
+  type        = list(number)
+  default     = [0.5, 0.9, 1.0]
+
+  validation {
+    condition = alltrue([
+      for threshold in var.remote_cpu_workers_budget_thresholds :
+      threshold > 0 && threshold <= 1.5
+    ])
+    error_message = "remote_cpu_workers_budget_thresholds values must be > 0 and <= 1.5."
+  }
+}
+
+# Each attempt's transport (its descriptor and presigned links) is one object
+# written with if_generation_match=0 and read at that generation. The host
+# deletes it at teardown; the one-day rule is the backstop. Nothing is kept:
+# no versions and no soft delete.
+resource "google_storage_bucket" "remote_cpu_transport" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  name     = "${var.project_id}-remote-cpu-transport"
+  location = var.primary_region
+  labels   = merge(local.common_labels, { cost-center = "remote-cpu-workers" })
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = false
+  }
+
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+
+  lifecycle_rule {
+    condition {
+      age = 1
+    }
+    action {
+      type = "Delete"
+    }
+  }
+}
+
+# The job's own identity. It holds no project role: its only grant is get on
+# transport objects, which is how an execution reads its pinned transport.
+resource "google_service_account" "remote_cpu_worker" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  account_id   = "remote-cpu-worker"
+  display_name = "Blueprint Remote CPU Worker"
+  description  = "Runs remote CPU worker job executions; can only read transport objects"
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_transport_reader" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "remoteCpuTransportReader"
+  title       = "Blueprint Remote CPU Transport Reader"
+  description = "Read one remote CPU transport object at a known generation; bound only on the transport bucket."
+  permissions = ["storage.objects.get"]
+}
+
+# The host's paid unit dispatches as this identity. Its roles are custom and
+# bound only on the stage jobs and the transport bucket. Its key is created by
+# the owner and loaded into that unit alone with LoadCredential=; Terraform
+# never manages a service account key.
+resource "google_service_account" "remote_cpu_dispatcher" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  account_id   = "remote-cpu-dispatcher"
+  display_name = "Blueprint Remote CPU Dispatcher"
+  description  = "Runs remote CPU worker jobs with attempt overrides and cancels their executions"
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_dispatcher" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "remoteCpuDispatcher"
+  title       = "Blueprint Remote CPU Dispatcher"
+  description = "Run a remote CPU worker job with overrides and read or cancel its executions; bound only on those jobs."
+  permissions = [
+    "run.executions.cancel",
+    "run.executions.get",
+    "run.executions.list",
+    "run.jobs.get",
+    "run.jobs.run",
+    "run.jobs.runWithOverrides",
+  ]
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_transport_writer" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "remoteCpuTransportWriter"
+  title       = "Blueprint Remote CPU Transport Writer"
+  description = "Create, read and delete remote CPU transport objects; bound only on the transport bucket."
+  permissions = [
+    "storage.objects.create",
+    "storage.objects.delete",
+    "storage.objects.get",
+  ]
+}
+
+# The transport bucket's whole IAM policy, set authoritatively. A new bucket
+# starts with the project convenience bindings: Viewers read every object, and
+# Editors (default service accounts among them) and Owners own them. Additive
+# members would leave those in place, so any of them could read or replace
+# live presigned links. Here only the worker reads and only the dispatcher
+# writes; project Owners keep bucket management, which reads no object.
+data "google_iam_policy" "remote_cpu_transport" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  binding {
+    role    = google_project_iam_custom_role.remote_cpu_transport_reader[0].name
+    members = ["serviceAccount:${google_service_account.remote_cpu_worker[0].email}"]
+  }
+
+  binding {
+    role    = google_project_iam_custom_role.remote_cpu_transport_writer[0].name
+    members = ["serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"]
+  }
+
+  binding {
+    role    = "roles/storage.legacyBucketOwner"
+    members = ["projectOwner:${var.project_id}"]
+  }
+}
+
+resource "google_storage_bucket_iam_policy" "remote_cpu_transport" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  bucket      = google_storage_bucket.remote_cpu_transport[0].name
+  policy_data = data.google_iam_policy.remote_cpu_transport[0].policy_data
+}
+
+resource "google_cloud_run_v2_job" "remote_cpu_worker" {
+  provider = google-beta
+  for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
+
+  name     = "blueprint-remote-cpu-${each.key}"
+  location = var.primary_region
+  labels   = merge(local.common_labels, { cost-center = "remote-cpu-workers" })
+
+  template {
+    parallelism = 1
+    task_count  = 1
+
+    template {
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+      max_retries           = 0
+      timeout               = "${each.value.timeout_seconds}s"
+
+      service_account = google_service_account.remote_cpu_worker[0].email
+
+      containers {
+        image   = var.docker_image
+        command = ["python", "-m", "blueprint_pipeline.remote_cpu_worker", "bootstrap"]
+
+        resources {
+          limits = {
+            cpu    = each.value.cpu
+            memory = each.value.memory
+          }
+        }
+
+        env {
+          name  = "BLUEPRINT_REMOTE_CPU_STAGE"
+          value = each.key
+        }
+
+        env {
+          name  = "BLUEPRINT_REMOTE_CPU_OBJECT_PREFIX"
+          value = var.remote_cpu_worker_object_prefix
+        }
+
+        volume_mounts {
+          name       = "blueprint-state"
+          mount_path = "/var/lib/blueprint"
+        }
+      }
+
+      volumes {
+        name = "blueprint-state"
+
+        empty_dir {
+          medium     = "MEMORY"
+          size_limit = each.value.ephemeral_size_limit
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.remote_cpu_worker_object_prefix != ""
+      error_message = "remote_cpu_worker_object_prefix must name the B2 prefix the worker may reach when remote_cpu_workers_enabled is true."
+    }
+  }
+
+  depends_on = [
+    google_project_service.required_apis["run.googleapis.com"],
+  ]
+}
+
+resource "google_cloud_run_v2_job_iam_member" "remote_cpu_dispatcher" {
+  for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
+
+  project  = var.project_id
+  location = var.primary_region
+  name     = google_cloud_run_v2_job.remote_cpu_worker[each.key].name
+  role     = google_project_iam_custom_role.remote_cpu_dispatcher[0].name
+  member   = "serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"
+}
+
+# Every failed remote CPU task attempt alerts: the jobs never retry, so no
+# failure is retried away, and each one is paid compute.
+resource "google_monitoring_alert_policy" "remote_cpu_job_failures" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  display_name = "Blueprint Remote CPU Job Failures"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Remote CPU task attempt failed"
+
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\" AND resource.labels.job_name = starts_with(\"blueprint-remote-cpu-\")"
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
+
+  documentation {
+    content   = "A remote CPU worker task attempt failed. The attempt falls back to the host after at most one retry by the dispatcher. Check the execution's logs and the control plane's remote-cpu-jobs summary; a stuck execution can be cancelled with `gcloud run jobs executions cancel`."
+    mime_type = "text/markdown"
+  }
+}
+
+# Owner decision 2: the first month runs under a $25 total cap. The host's
+# standing authority enforces it before every dispatch; this budget alerts on
+# what GCP actually bills to the lane's labeled jobs and bucket. It is
+# required, not optional, once the workers exist.
+resource "google_billing_budget" "remote_cpu_workers" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  billing_account = var.billing_account_id
+  display_name    = "Blueprint Remote CPU Workers Budget"
+
+  budget_filter {
+    projects = ["projects/${data.google_project.current.number}"]
+    labels = {
+      cost-center = "remote-cpu-workers"
+    }
+  }
+
+  amount {
+    specified_amount {
+      currency_code = "USD"
+      units         = tostring(var.remote_cpu_workers_budget_usd)
+    }
+  }
+
+  dynamic "threshold_rules" {
+    for_each = var.remote_cpu_workers_budget_thresholds
+
+    content {
+      threshold_percent = threshold_rules.value
+      spend_basis       = "CURRENT_SPEND"
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.billing_account_id != ""
+      error_message = "Remote CPU workers need billing_account_id so their budget alert exists (plan 14, owner decision 2)."
+    }
+  }
+
+  depends_on = [
+    google_project_service.required_apis["billingbudgets.googleapis.com"],
+  ]
 }
 
 # =============================================================================

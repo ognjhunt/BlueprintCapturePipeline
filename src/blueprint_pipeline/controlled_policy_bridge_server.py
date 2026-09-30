@@ -101,7 +101,7 @@ class QualifiedPolicyBridge:
                     self._reply(400, {"error": "request_invalid"})
                     return
                 route = self.path.removeprefix("/v1/controlled-policy")
-                if route not in {"/ready", "/actions", "/finish", "/terminal"}:
+                if route not in {"/ready", "/actions", "/finish", "/terminal", "/abort"}:
                     self._reply(404, {"error": "route_invalid"})
                     return
                 if any(body.get(key) != value for key, value in owner.binding.items()):
@@ -131,6 +131,13 @@ class QualifiedPolicyBridge:
                             "terminal_receipt_digest": terminal.get("receipt_digest"),
                             "policy_calls": owner.calls})
                         owner.terminal_read.set()
+                        return
+                    if route == "/abort":
+                        if set(body) != set(owner.binding):
+                            self._reply(400, {"error": "abort_request_invalid"})
+                            return
+                        owner.finished.set()
+                        self._reply(200, {"status": "cleanup_pending"})
                         return
                     if owner.transport is None or owner.qualification is None or owner.finished.is_set():
                         self._reply(409, {"error": "session_unavailable"})

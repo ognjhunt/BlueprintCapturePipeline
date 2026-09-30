@@ -142,7 +142,7 @@ class Invoker:
 
     def invoke(self, spec, text):
         self.events.append('model_call')
-        assert spec.model == 'gpt-6-sol'
+        assert spec.model == 'gpt-6.1-sol'
         assert spec.max_turns == 1 and not spec.tool_bindings
         assert spec.reasoning_effort == 'high'
         payload = json.loads(text)
@@ -363,7 +363,7 @@ def test_successor_preserves_natural_task_and_records_actual_sdk_proposal(inputs
     assert successor['success'] == result['success']
     authority = successor['success_contract_authority']
     assert authority['author_source'] == 'agent_proposal'
-    assert authority['author_id'] == 'openai_agents_sdk:gpt-6-sol'
+    assert authority['author_id'] == 'openai_agents_sdk:gpt-6.1-sol'
     assert authority['proposal_digest'] == result['proposal_digest']
     assert authority['confirmed_by_team_id'] == original['team_namespace']
     assert authority['agent_proposal'] == result

@@ -62,7 +62,7 @@ def managed_asset_scope(receipt: Mapping[str, Any] | None,
     """Select a dedicated project/key only for the signed managed asset route."""
     if (receipt or {}).get("replacement_authoring_agent_runtime") != "openai_agents_api":
         return None
-    if ((receipt or {}).get("replacement_authoring_model") != "gpt-6-sol"
+    if ((receipt or {}).get("replacement_authoring_model") != "gpt-6.1-sol"
             or (receipt or {}).get("replacement_authoring_model_provider", "openai") != "openai"):
         raise TaskEvaluationSceneConfigurationVastError("scene_configuration_agents_api_selection_invalid")
     if any(float(stage_caps[stage]) != 0 for stage in (

@@ -35,29 +35,22 @@ def _seal(path, value, field):
     return value
 
 
-@pytest.fixture
-def case(tmp_path, monkeypatch):
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    result = _result(evidence)
-    first = result["episodes"][0]
-    first["evidence_artifacts"]["review_video"] = next(row for row in result["artifact_inventory"] if row["role"] == "review_video")
-    result.update(run_id="scene841757-controls", configuration_digest="sha256:" + "9"*64, blockers=[])
-    result["episodes"] = []
-    result["controls"] = []
+def write_native_controls(evidence, monkeypatch) -> tuple[dict, list[dict]]:
+    """Twenty sealed native controls for ``quick-cell-0..9`` under ``evidence/control_runs/NN/``.
 
+    Each cell holds lossless PNG frames, review videos and both control receipts
+    under ``strict_controls/``, and its ``policy_canary_cell_controls.v1.json``.
+    Returns the result fields that carry them (``controls``, the count and the
+    gates) and their ``control_evidence`` inventory rows.
+    """
     def encode(frame_paths, *, video_path, frames_per_second):
         video_path.write_bytes(b"same valid fixture video bytes")
         return {**_record(video_path, video_path.parent), "frame_count": len(frame_paths)}
     monkeypatch.setattr(visual, "_encode_or_resume_episode_video", encode)
+    controls, inventory = [], []
     for index in range(10):
         cell = f"quick-cell-{index}"
         seed = 3100 + index
-        for candidate in ("pi05_droid", "groot_n17_droid"):
-            episode = deepcopy(first)
-            episode.update(cell_id=cell, seed=seed, candidate_id=candidate)
-            episode["episode"]["episode_id"] = f"{result['run_id']}--{cell}--{candidate}"
-            result["episodes"].append(episode)
         cell_root = evidence / "control_runs" / f"{index:02d}"
         control_root = cell_root / "strict_controls"
         control_root.mkdir(parents=True)
@@ -98,15 +91,37 @@ def case(tmp_path, monkeypatch):
             "controls": receipts, "files": files, "blockers": []}
         _seal(parent_path, parent, "receipt_digest")
         for receipt in receipts:
-            result["controls"].append({"cell_id": cell, "seed": seed, "control_id": receipt["control_id"],
+            controls.append({"cell_id": cell, "seed": seed, "control_id": receipt["control_id"],
                 "control_passed": True, "receipt": receipt, "evidence_root": cell_root.relative_to(evidence).as_posix(),
                 "evidence_files": files, "cell_receipt_artifact": _record(parent_path, evidence)})
-        result["artifact_inventory"].extend({"role": "control_evidence", **_record(path, evidence)}
+        inventory.extend({"role": "control_evidence", **_record(path, evidence)}
             for path in sorted(cell_root.rglob("*")) if path.is_file())
-    result.update(control_episode_count=20,
-        controls_gate={"status": "passed", "required_control_episode_count": 20, "candidate_policies_loaded_during_controls": False},
-        strict_paired_gate={"schema_version": "policy_canary_strict_paired_gate.v1", "status": "passed", "blockers": [], "deterministic_success_required": False},
-        strict_gate_blockers=[])
+    return {"controls": controls, "control_episode_count": len(controls),
+            "controls_gate": {"status": "passed", "required_control_episode_count": 20,
+                              "candidate_policies_loaded_during_controls": False},
+            "strict_paired_gate": {"schema_version": "policy_canary_strict_paired_gate.v1", "status": "passed",
+                                   "blockers": [], "deterministic_success_required": False},
+            "strict_gate_blockers": []}, inventory
+
+
+@pytest.fixture
+def case(tmp_path, monkeypatch):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = _result(evidence)
+    first = result["episodes"][0]
+    first["evidence_artifacts"]["review_video"] = next(row for row in result["artifact_inventory"] if row["role"] == "review_video")
+    result.update(run_id="scene841757-controls", configuration_digest="sha256:" + "9"*64, blockers=[])
+    result["episodes"] = []
+    for index in range(10):
+        for candidate in ("pi05_droid", "groot_n17_droid"):
+            episode = deepcopy(first)
+            episode.update(cell_id=f"quick-cell-{index}", seed=3100 + index, candidate_id=candidate)
+            episode["episode"]["episode_id"] = f"{result['run_id']}--quick-cell-{index}--{candidate}"
+            result["episodes"].append(episode)
+    fields, inventory = write_native_controls(evidence, monkeypatch)
+    result.update(fields)
+    result["artifact_inventory"].extend(inventory)
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     closure = {key: _closure(tmp_path / f"{key}.json", flag=flag) for key, flag in (
         ("billing", "official_billing_sealed"), ("teardown", "teardown_completed"), ("provider_zero", "provider_zero_verified"))}

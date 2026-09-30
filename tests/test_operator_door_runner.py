@@ -617,3 +617,38 @@ def test_lane_scratch_renew_launches_only_the_configured_root(config: DoorConfig
     assert "--setenv=DOOR_SCRATCH_ACTION=renew" in call
     assert call[-1] == "/opt/blueprint/operator-door/door-lane-scratch.sh"
     assert _result(config, request_id)["status"] == "launched"
+
+
+def test_provider_output_resume_launches_the_release_module(config: DoorConfig) -> None:
+    """Review I5: the transient unit is sandboxed to the canary tree, the disk ledger and its
+    result; the script runs the active release's resume as ``blueprint`` with a private umask."""
+    request_id = _spooled(config, {"kind": "provider-output-resume", "run": "activation-1", "attempt": 3,
+                                   "ingest": True})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(b"activation-1/3").hexdigest()[:12]
+    unit = f"blueprint-operator-door-output-resume-{label}-{request_id[-8:]}.service"
+    results = str(Path(config.spool_root) / "results")
+    canaries = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries"
+    assert call[1] == f"--unit={unit}"
+    assert "--property=RuntimeMaxSec=2h" in call and "--property=TimeoutStartSec=2h" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+                    "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes"):
+        assert f"--property={sandbox}" in call, sandbox
+    assert (f"--property=ReadWritePaths={canaries} "
+            f"/var/lib/blueprint/pipeline-control-plane/disk-reservations {results}") in call
+    for value in (f"DOOR_CANARY_ROOT={canaries}", "DOOR_RUN=activation-1", "DOOR_ATTEMPT=3", "DOOR_INGEST=1",
+                  "DOOR_SERVICE_USER=blueprint", "DOOR_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane"):
+        assert f"--setenv={value}" in call, value
+    assert call[-1] == "/opt/blueprint/operator-door/door-provider-output-resume.sh"
+    assert _result(config, request_id) == {**_result(config, request_id), "status": "launched", "unit": unit}
+    # Without ingest the script is told nothing more; a resume never waits for or blocks a deploy.
+    plain = _spooled(config, {"kind": "provider-output-resume", "run": "activation-1", "attempt": 3})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    assert not any(value.startswith("--setenv=DOOR_INGEST") for value in call)
+    assert not any(row[:2] == ["systemctl", "list-units"] for row in runner.calls)
+    assert _result(config, plain)["status"] == "launched"

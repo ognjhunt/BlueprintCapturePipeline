@@ -502,8 +502,8 @@ def test_openai_adapter_uses_agents_sdk_and_discloses_frame_sampling_gap(
     invoker = _FakeAgentsSDKInvoker(_output(data))
     interpreter = OpenAIMultimodalEpisodeInterpreter(
         invoker=invoker,
-        model="gpt-6-sol",
-        model_version="gpt-6-sol-2026-09-03",
+        model="gpt-6.1-sol",
+        model_version="gpt-6.1-sol-2026-09-03",
         max_frames=2,
         run_id="quick10-interpretation-batch",
     )
@@ -692,7 +692,7 @@ def test_v1_interpreter_reads_only_its_selected_frames_by_range(tmp_path: Path, 
     for mode, request in (("download", _request(data)), ("stream", _streamed_request(data, streamed))):
         invoker = _FakeAgentsSDKInvoker(_output(data))
         interpreter = OpenAIMultimodalEpisodeInterpreter(
-            invoker=invoker, model="gpt-6-sol", model_version="gpt-6-sol-2026-09-03", max_frames=2,
+            invoker=invoker, model="gpt-6.1-sol", model_version="gpt-6.1-sol-2026-09-03", max_frames=2,
             run_id="quick10-interpretation-batch")
         rights_path = tmp_path / f"{mode}-rights.json"
         materialize_episode_interpretation_rights(

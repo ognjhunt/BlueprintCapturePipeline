@@ -83,7 +83,7 @@ def _fixture(tmp_path: Path) -> dict[str, object]:
             "kind": "ai",
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
         },
         "frames": frames,
         "task_thumbnail": {

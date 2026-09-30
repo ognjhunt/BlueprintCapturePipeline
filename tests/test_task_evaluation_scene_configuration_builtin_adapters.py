@@ -338,7 +338,7 @@ def test_artifixer_handler_admits_only_qualified_generated_appearance(
         "reviewer": {
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
         },
         "receipt_digest": "",
     }
