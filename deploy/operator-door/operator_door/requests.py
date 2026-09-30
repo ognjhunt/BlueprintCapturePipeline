@@ -87,6 +87,7 @@ _SAFETY_CRITICAL = re.compile(
     r"spend-guard|watchdog|teardown|reaper|provider-zero|"
     r"terminal-resource-release|storage-gc|capacity|replay-cache-gc|preflight"
 )
+_BASELINE_TRIGGER_SAFETY = re.compile(r"spend-guard|watchdog|teardown|reaper|provider-zero")
 _LOG_TAIL_LINES = 200
 
 
@@ -172,9 +173,12 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             # Pausing a trigger never kills a running job; stopping a service could.
             if not unit.endswith((".timer", ".path")):
                 raise RequestRefused("unit_action_not_allowed")
-            if _SAFETY_CRITICAL.search(unit):
+            safety = _BASELINE_TRIGGER_SAFETY if DISPATCHER_HOLD_ONLY else _SAFETY_CRITICAL
+            if safety.search(unit):
                 raise RequestRefused("unit_safety_critical")
-            if action == "stop":
+            if action == "stop" and (
+                not DISPATCHER_HOLD_ONLY or unit == "blueprint-agent-run-dispatcher.timer"
+            ):
                 raise RequestRefused("unit_stop_requires_hold")
         return {"kind": kind, "unit": unit, "action": action}
     if kind == "hold":

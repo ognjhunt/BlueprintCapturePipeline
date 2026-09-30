@@ -87,6 +87,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$stage" python3 -c 'import operator_door.s
 had_previous=0
 [ -d "$install_root" ] && had_previous=1
 swapped=0
+moved_previous=0
 
 rollback() {
   trap - ERR TERM INT
@@ -94,7 +95,9 @@ rollback() {
   if [ "$swapped" -eq 1 ]; then
     rm -rf "$install_root.failed"
     mv "$install_root" "$install_root.failed" 2>/dev/null || true
-    if [ -d "$install_root.previous" ]; then mv "$install_root.previous" "$install_root"; fi
+  fi
+  if [ "$moved_previous" -eq 1 ] && [ -d "$install_root.previous" ]; then
+    mv "$install_root.previous" "$install_root"
   fi
   for unit in "${units[@]}"; do
     if [ -f "$units_backup/$unit" ]; then
@@ -123,10 +126,11 @@ for unit in "${units[@]}"; do
 done
 if [ "$had_previous" -eq 1 ]; then
   rm -rf "$install_root.previous"
+  moved_previous=1
   mv "$install_root" "$install_root.previous"
 fi
-mv "$stage" "$install_root"
 swapped=1
+mv "$stage" "$install_root"
 
 # 3. State and config. Only pending/ is writable by the door (through a group only
 #    the door unit has); everything the root runner and scripts write is root's,

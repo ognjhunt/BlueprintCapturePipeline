@@ -37,6 +37,14 @@ body = {"kind":"hold", "unit":"blueprint-agent-run-dispatcher.timer", "owner":"r
 assert r.validate_request(body) == body
 assert r.required_scope("hold") == "operate"
 assert r.validate_request({"kind":"release-hold", "unit":body["unit"]})
+# The exact dispatcher gate changes; unrelated installed trigger controls do not.
+for unit in ("blueprint-pubsub-handoff-listener.timer", "blueprint-control-plane-capacity.timer", "blueprint-control-plane-storage-gc.timer", "blueprint-task-evaluation-preflight.timer", "blueprint-task-evaluation-terminal-resource-release.path"):
+    for action in ("stop", "restart"):
+        assert r.validate_request({"kind":"unit","unit":unit,"action":action})
+for action in ("stop", "restart"):
+    try: r.validate_request({"kind":"unit","unit":"blueprint-gpu-spend-guard.timer","action":action})
+    except r.RequestRefused as e: assert e.code == "unit_safety_critical"
+    else: raise AssertionError("baseline safety restriction changed")
 for kind in ("retire-scene-workspace", "restore-scene-workspace", "lane-scratch", "owner-census-decision", "legacy-owner-census", "provider-output-resume"):
     for call in (lambda: r.required_scope(kind), lambda: r.validate_request({"kind":kind})):
         try: call()
