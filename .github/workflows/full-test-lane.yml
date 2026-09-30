@@ -58,6 +58,9 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The historical evidence test replays an exact retained commit.
+          fetch-depth: 0
 
       - name: Checkout BlueprintContracts
         shell: bash
