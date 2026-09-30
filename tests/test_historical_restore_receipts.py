@@ -75,3 +75,34 @@ def test_invalid_restore_history_cannot_be_observed_as_completed(historical_inst
         events[-2]['body']['restored_files'] += 1
     with pytest.raises(ValueError):
         validate_restored_receipt(selected, events, snapshot)
+
+
+@pytest.mark.parametrize('change', [None, 'path', 'version', 'owner', 'mode', 'phase', 'kind'])
+def test_pending_access_only_selects_the_exact_still_private_root(historical_installation, change):
+    import stat
+    from blueprint_pipeline.control_plane_lane_historical_restore_receipts import validate_pending_owner_access
+    selected, events, snapshot = recorded_observations(historical_installation)
+    final = events[-2]
+    events.pop()  # No completed access event is fabricated.
+    owner = selected[2]['members'][0]['version']
+    body = dict(phase='owner_rights', path='', version=deepcopy(snapshot['members'][0]['version']),
+                uid=owner[3], gid=owner[4], mode=stat.S_IMODE(owner[2]))
+    pending = dict(kind='restore_intent', body=body, sequence=final['sequence'] + 1)
+    events.append(pending)
+    if change == 'kind':
+        pending['kind'] = 'restore_member'
+    elif change == 'version':
+        body['version'][1] += 1
+    elif change == 'owner':
+        body['uid'] += 1
+    elif change == 'mode':
+        body['mode'] ^= 0o020
+    elif change == 'path':
+        body['path'] = 'nested'
+    elif change == 'phase':
+        body['phase'] = 'publish'
+    if change is None:
+        assert validate_pending_owner_access(selected, events, snapshot, final) is None
+    else:
+        with pytest.raises(ValueError):
+            validate_pending_owner_access(selected, events, snapshot, final)

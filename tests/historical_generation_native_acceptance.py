@@ -161,7 +161,8 @@ def worker_main(root, action_id):
     interruption = root / 'interrupt-once'
     if interruption.exists():
         phase = interruption.read_text()
-        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed', 'unwritten_stage'):
+        if phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed',
+                     'unwritten_stage', 'access_intent'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
@@ -172,6 +173,9 @@ def worker_main(root, action_id):
                         and body.get('phase') == 'directory' and body.get('path') == '':
                     from blueprint_pipeline.control_plane_lane_historical_generation import HistoricalGenerationError
                     raise HistoricalGenerationError('fixture_interrupted_after_' + phase)
+                if phase == 'access_intent' and kind == 'restore_intent' \
+                        and body.get('phase') == 'owner_rights' and body.get('path') == '':
+                    raise RuntimeError('fixture_interrupted_after_' + phase)
                 if kind == phase or (kind == 'restore_intent' and body.get('phase') == phase):
                     raise RuntimeError('fixture_interrupted_after_' + phase)
             _Worker.record = record
@@ -706,7 +710,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
                                       if name.startswith('e-')]
                 assert sum(event['kind'] == 'restore_final' for event in interrupted_events) == int(
-                    restore_interruption == 'restore_final')
+                    restore_interruption in ('restore_final', 'access_intent'))
                 assert ('restore.snapshot.json' in interrupted_prefix) == (
                     restore_interruption not in ('stage_removed', 'unwritten_stage'))
                 assert not any(event['kind'] == 'access_reopened' for event in interrupted_events)
@@ -716,7 +720,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             if restore_interruption is not None:
                 recovery = {'restore_final': 'recovered_access',
                             'before_restore_final': 'recovered_before_final',
-                            'stage_removed': 'recovered_publication', 'unwritten_stage': 'restarted_unwritten'}
+                            'stage_removed': 'recovered_publication', 'unwritten_stage': 'restarted_unwritten',
+                            'access_intent': 'recovered_access'}
                 assert restored[recovery[restore_interruption]] is True
                 if restore_interruption == 'unwritten_stage':
                     assert restored['restored_files'] == len(original)
@@ -788,6 +793,7 @@ def connected_delete_recovery():
     run_case(action='offload')
     run_case(action='offload', restore_interruption='before_restore_final')
     run_case(action='offload', restore_interruption='unwritten_stage')
+    run_case(action='offload', restore_interruption='access_intent')
     run_case(action='offload', restore_interruption='stage_removed')
     run_case(action='offload', corrupt=True)
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
