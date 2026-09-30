@@ -534,3 +534,78 @@ def test_shadow_keeps_host_authoritative_and_counts_parity_per_closure_class(tmp
     passed_last = parity[world.name]["compared_at_epoch"] > parity[drifted.queue_row["name"]]["compared_at_epoch"]
     assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", **identity) == int(passed_last)
     assert remote.shadow_passes(world.host.jobs, closure_class="shipped", **identity) == 1
+
+
+def _consumed(world: CollectorWorld) -> list[Path]:
+    return sorted((world.remote.spend / "consumed").glob("remote-cpu-*.json"))
+
+
+def test_a_refused_dispatch_hands_the_row_back_and_is_never_dispatched_again(tmp_path: Path, monkeypatch) -> None:
+    """Review C1: a dispatch refused before its lease claim writes the fallback, then drops the hand-off, so no
+    later run can pay to compile a row the host has already compiled."""
+
+    from tests.remote_cpu_allocator_fakes import standing_authority
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    handoff = remote.marker_path(world.host.jobs, "authoritative", world.name)
+    fallback = remote.marker_path(world.host.jobs, "fallback", world.name)
+    (world.remote.spend / "authorizations" / "remote-cpu-standing-authorization.v1.json").unlink()
+    world.collect()
+    assert world.results[-1]["rows"][world.name]["status"] == "dispatch_refused"
+    assert fallback.is_file() and not handoff.exists() and world.lease() is None
+    # The no-spend unit compiles the handed-back row; then the authority comes back.
+    world.host_compile(world.name)
+    fallback.unlink()
+    world.remote.write_authority(standing_authority())
+    for _ in range(3):
+        world.advance(120)
+        world.collect()
+    assert world.executions() == [] and _consumed(world) == [] and world.lease() is None
+    assert world.row_state() == "completed"
+
+
+@pytest.mark.parametrize("left", ["fallback", "gave_up", "row_moved"])
+def test_a_hand_off_whose_row_went_back_is_never_dispatched(tmp_path: Path, monkeypatch, left: str) -> None:
+    """Review C1: whatever a crash left between the fallback and the hand-off's removal, or wherever the row went,
+    a hand-off whose row was given up, handed back or moved on is retired, never dispatched."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    handoff = remote.marker_path(world.host.jobs, "authoritative", world.name)
+    fallback = remote.marker_path(world.host.jobs, "fallback", world.name)
+    c = world.collector()
+    if left == "fallback":  # the fallback was written, then the process died before the hand-off went
+        remote.write_fallback(world.host.jobs, world.plan.queue_row, reason="remote_cpu_dispatch_refused", attempts=0,
+                              now=world.clock.now)
+    elif left == "gave_up":  # the give-up was recorded, then the process died before the fallback
+        collector._save_row(c, collector._row(c, world.name, world.plan.queue_row),
+                            gave_up={"reason": "remote_cpu_dispatch_refused", "at_epoch": world.clock.now})
+    else:  # the row is no longer claimed: the host compiled it
+        world.host_compile(world.name)
+    world.collect()
+    assert world.executions() == [] and _consumed(world) == [] and world.lease() is None
+    assert not handoff.exists()
+    if left == "row_moved":
+        assert not fallback.exists() and world.row_state() == "completed"
+    else:
+        assert fallback.is_file() and world.row_state() == "processing"
+
+
+def test_a_refused_second_attempt_hands_back_and_keeps_following_the_first_to_provider_zero(
+        tmp_path: Path, monkeypatch) -> None:
+    """Review C1: the refusal of attempt 2 hands the row back at once; the hand-off stays only until attempt 1 is
+    provider-zero, then the lease closes as ``fallback_host`` and attempt 2 never runs."""
+
+    from tests.remote_cpu_allocator_fakes import standing_authority
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    world.remote.jobs.script("crash")
+    world.drive(until=lambda: (world.lease() or {}).get("state") == "expired", step=30)
+    (world.remote.spend / "authorizations" / "remote-cpu-standing-authorization.v1.json").unlink()
+    fallback = remote.marker_path(world.host.jobs, "fallback", world.name)
+    world.drive(until=fallback.exists, step=30)
+    assert world.row_state() == "processing" and len(world.executions()) == 1
+    world.remote.write_authority(standing_authority())
+    _complete(world, step=300)
+    assert world.lease()["state"] == "fallback_host" and world.lease()["attempt"] == 1
+    assert len(world.executions()) == 1 and len(_consumed(world)) == 1
+    _assert_torn_down(world)

@@ -244,22 +244,18 @@ def _attempt_descriptor(c: Collector, plan: remote.RemotePlan, mode: str, attemp
     return descriptor, path
 
 
-def _dispatch(c: Collector, marker: Mapping[str, Any], plan: remote.RemotePlan, attempt: int) -> dict[str, Any]:
-    descriptor, path = _attempt_descriptor(c, plan, marker["mode"], attempt)
-    result = _allocate(c, "dispatch", path, descriptor["attempt_id"])
+def _dispatch(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.RemotePlan,
+              attempt: int) -> dict[str, Any]:
+    descriptor, descriptor_path = _attempt_descriptor(c, plan, marker["mode"], attempt)
+    result = _allocate(c, "dispatch", descriptor_path, descriptor["attempt_id"])
     status = str(result.get("status") or "blocked")
     if status in {"dispatched", "already_dispatched", "awaiting_capacity", "ambiguous_dispatch_unresolved",
                   "teardown_pending"}:
         return {"status": status, "attempt_id": descriptor["attempt_id"]}
     # Refused before anything ran (or, for a failed mint, torn down by the allocator): the host compiles it.
     reason = next(iter(result.get("blockers") or []), "remote_cpu_dispatch_refused")
-    lease = _lease(c, descriptor["job_id"])
-    if lease is not None and lease["attempt_id"] == descriptor["attempt_id"] and lease["state"] in {
-            "claimed", "awaiting_capacity"}:
-        leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"], to_state="fallback_host",
-                          now=c.now, updates={"outcome": _outcome(reason)})
-    _give_up(c, marker, reason=reason, attempts=attempt - 1)
-    return {"status": "dispatch_refused", "blocker": reason}
+    returned = _hand_back(c, path, marker, _lease(c, descriptor["job_id"]), reason, attempts=attempt - 1)
+    return {**returned, "status": "dispatch_refused", "blocker": reason}
 
 
 def _outcome(text: str) -> str:
@@ -283,21 +279,41 @@ def _give_up(c: Collector, marker: Mapping[str, Any], *, reason: str, attempts: 
             shutil.rmtree(partial, ignore_errors=True)
 
 
-def _undispatched(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str, Any] | None,
-                  reason: str) -> dict[str, Any]:
-    """Rollback or a changed release: an undispatched hand-off goes back, and its lease closes unrun."""
+def _hand_back(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str, Any] | None, reason: str, *,
+               attempts: int) -> dict[str, Any]:
+    """No (further) dispatch for this hand-off: the row goes back and the hand-off goes (review C1).
+
+    The fallback is written durably first, then the hand-off is removed, so a crash between them leaves a
+    hand-off that ``_advance`` retires rather than dispatches.  A hand-off stays only while an attempt that
+    may have started still owes its provider-zero teardown; the lease then closes as ``fallback_host``.
+    """
 
     if lease is not None and lease["state"] in {"claimed", "awaiting_capacity"}:
         descriptor_path = c.jobs_root / "descriptors" / f"{lease['attempt_id']}.json"
         if allocator._consumption_path(lease["attempt_id"]).exists() and descriptor_path.exists():
             _allocate(c, "reconcile", descriptor_path, lease["attempt_id"])  # a crashed dispatch: settle it at zero
         lease = _lease(c, lease["job_id"])
-        if lease["state"] in {"claimed", "awaiting_capacity"}:
-            leases.transition(c.jobs_root, lease["job_id"], attempt_id=lease["attempt_id"], to_state="fallback_host",
-                              now=c.now, updates={"outcome": reason})
-    _give_up(c, marker, reason=reason, attempts=0)
-    path.unlink(missing_ok=True)
-    return {"status": "returned_to_host", "reason": reason}
+    if lease is not None and lease["state"] not in {"claimed", "awaiting_capacity", "expired", *leases.TERMINAL_STATES}:
+        return {"status": lease["state"], "blocker": "remote_cpu_attempt_in_flight"}  # followed, never handed back
+    _give_up(c, marker, reason=reason, attempts=attempts)
+    if lease is None or lease["state"] in leases.TERMINAL_STATES:
+        path.unlink(missing_ok=True)
+        return {"status": "returned_to_host", "reason": _outcome(reason)}
+    return _close(c, path, marker, lease, terminal="fallback_host", outcome=reason)
+
+
+def _handed_back(c: Collector, marker: Mapping[str, Any]) -> str | None:
+    """Why this hand-off must never dispatch again: its row was given up, handed back, or is no longer claimed."""
+
+    name = marker["queue_row"]["name"]
+    row = _row(c, name, marker["queue_row"])
+    if row["gave_up"] is not None:
+        return row["gave_up"]["reason"]
+    if remote.marker_path(c.jobs_root, "fallback", name).exists():
+        return "remote_cpu_row_handed_back"
+    if marker["mode"] == "authoritative" and not (c.queue_root / "processing" / name).is_file():
+        return "remote_cpu_row_not_claimed"
+    return None
 
 
 def _dispatchable(c: Collector, marker: Mapping[str, Any]) -> bool:
@@ -837,10 +853,9 @@ def _after_expiry(c: Collector, path: Path, marker: Mapping[str, Any], plan: rem
     if not _compute_zero(c, lease, descriptor):
         return {"status": "expired", "blocker": "remote_cpu_compute_zero_unproven"}
     lease = _lease(c, lease["job_id"])
-    row = _row(c, plan.queue_row["name"], plan.queue_row)
-    if (row["gave_up"] is None and _dispatchable(c, marker) and lease["attempt"] < c.config["max_attempts"]
+    if (_handed_back(c, marker) is None and _dispatchable(c, marker) and lease["attempt"] < c.config["max_attempts"]
             and plan.source_commit == c.source_commit):
-        return _dispatch(c, marker, plan, lease["attempt"] + 1)
+        return _dispatch(c, path, marker, plan, lease["attempt"] + 1)
     _give_up(c, marker, reason=lease["outcome"] or "remote_cpu_attempts_exhausted", attempts=lease["attempt"])
     return _close(c, path, marker, lease, terminal="fallback_host")
 
@@ -850,11 +865,15 @@ def _advance(c: Collector, path: Path, marker: Mapping[str, Any]) -> dict[str, A
     lease = _lease(c, job_id_for(STAGE, marker["queue_row"]["name"]))
     state = None if lease is None else lease["state"]
     if state in {None, "claimed", "awaiting_capacity"}:
-        if not _dispatchable(c, marker):
-            return _undispatched(c, path, marker, lease, "remote_cpu_mode_rolled_back")
-        if plan.source_commit != c.source_commit:
-            return _undispatched(c, path, marker, lease, "remote_cpu_release_changed")
-        return _dispatch(c, marker, plan, 1 if lease is None else lease["attempt"])
+        retired = _handed_back(c, marker)
+        if retired is None and not _dispatchable(c, marker):
+            retired = "remote_cpu_mode_rolled_back"
+        if retired is None and plan.source_commit != c.source_commit:
+            retired = "remote_cpu_release_changed"
+        if retired is not None:
+            prior = 0 if lease is None else sum(attempt["dispatch_started"] for attempt in lease["prior_attempts"])
+            return _hand_back(c, path, marker, lease, retired, attempts=prior)
+        return _dispatch(c, path, marker, plan, 1 if lease is None else lease["attempt"])
     descriptor, descriptor_path = _descriptor(c, lease["attempt_id"])
     if state in {"dispatching", "expired"} and lease["worker_identity"] is None and lease["dispatch_started"]:
         # A dispatch whose response was lost, or that never started: the allocator lists every execution of the
