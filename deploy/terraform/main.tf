@@ -1886,7 +1886,12 @@ resource "google_monitoring_alert_policy" "pipeline_failures" {
     display_name = "Job Failure Rate"
 
     condition_threshold {
-      filter          = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\""
+      # Remote CPU worker jobs have their own policy (remote_cpu_job_failures).
+      filter = join(" AND ", concat([
+        "resource.type=\"cloud_run_job\"",
+        "metric.type=\"run.googleapis.com/job/completed_task_attempt_count\"",
+        "metric.labels.result=\"failed\"",
+      ], var.remote_cpu_workers_enabled ? ["NOT resource.labels.job_name = starts_with(\"blueprint-remote-cpu-\")"] : []))
       duration        = "0s"
       comparison      = "COMPARISON_GT"
       threshold_value = 5
@@ -2329,6 +2334,46 @@ resource "google_cloud_run_v2_job_iam_member" "remote_cpu_dispatcher" {
   name     = google_cloud_run_v2_job.remote_cpu_worker[each.key].name
   role     = google_project_iam_custom_role.remote_cpu_dispatcher[0].name
   member   = "serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"
+}
+
+# Every failed remote CPU task attempt alerts: the jobs never retry, so no
+# failure is retried away, and each one is paid compute.
+resource "google_monitoring_alert_policy" "remote_cpu_job_failures" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  display_name = "Blueprint Remote CPU Job Failures"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Remote CPU task attempt failed"
+
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\" AND resource.labels.job_name = starts_with(\"blueprint-remote-cpu-\")"
+      duration        = "0s"
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  notification_channels = var.monitoring_notification_channels
+
+  lifecycle {
+    precondition {
+      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
+    }
+  }
+
+  documentation {
+    content   = "A remote CPU worker task attempt failed. The attempt falls back to the host after at most one retry by the dispatcher. Check the execution's logs and the control plane's remote-cpu-jobs summary; a stuck execution can be cancelled with `gcloud run jobs executions cancel`."
+    mime_type = "text/markdown"
+  }
 }
 
 # =============================================================================

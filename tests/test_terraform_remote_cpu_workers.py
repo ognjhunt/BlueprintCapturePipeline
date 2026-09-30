@@ -386,3 +386,42 @@ def test_existing_run_grants_exclude_remote_cpu_jobs() -> None:
     expected = " && ".join(f'!resource.name.startsWith("{name}")' for name in jobs)
     for name, body in sorted(grants.items()):
         assert _remote_cpu_exclusion(body) == expected, name
+
+
+def test_pipeline_failure_alert_excludes_remote_cpu_jobs_which_have_their_own() -> None:
+    main = _main()
+    job = _terraform_resource_body(main, "google_cloud_run_v2_job", "remote_cpu_worker")
+    remote_jobs = 'resource.labels.job_name = starts_with("{}")'.format(
+        _strings(_attr(job, "name"))[0].removesuffix("${each.key}"))
+    failed_attempts = [
+        'resource.type="cloud_run_job"',
+        'metric.type="run.googleapis.com/job/completed_task_attempt_count"',
+        'metric.labels.result="failed"',
+    ]
+
+    # The capture pipeline's alert: its filter is unchanged while the workers are off, and drops
+    # the remote CPU jobs once they exist.
+    existing = _terraform_resource_body(main, "google_monitoring_alert_policy", "pipeline_failures")
+    threshold = _child(_child(existing, "conditions"), "condition_threshold")
+    expression = threshold[threshold.index("filter") : threshold.index("duration")]
+    assert 'join(" AND ", concat(' in expression
+    assert _strings(expression) == [" AND ", *failed_attempts, "NOT " + remote_jobs]
+    gated = re.search(r'var\.remote_cpu_workers_enabled \? \[("[^\]]*")\] : \[\]', expression)
+    assert gated is not None and _strings(gated.group(1)) == ["NOT " + remote_jobs]
+    assert " AND ".join(failed_attempts) == (
+        'resource.type="cloud_run_job" AND '
+        'metric.type="run.googleapis.com/job/completed_task_attempt_count" AND '
+        'metric.labels.result="failed"')
+
+    # Their own alert fires on any failed attempt: with no retries, none is retried away.
+    own = _terraform_resource_body(main, "google_monitoring_alert_policy", "remote_cpu_job_failures")
+    assert _attr(own, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
+    own_threshold = _child(_child(own, "conditions"), "condition_threshold")
+    assert _strings(_attr(own_threshold, "filter")) == [" AND ".join([*failed_attempts, remote_jobs])]
+    assert (_attr(own_threshold, "comparison"), _attr(own_threshold, "threshold_value"),
+            _attr(own_threshold, "duration")) == ('"COMPARISON_GT"', "0", '"0s"')
+    assert _child(own_threshold, "aggregations") == _child(threshold, "aggregations")
+    # The same receivers, and the same refusal to exist without one, as the existing policies.
+    assert _attr(own, "notification_channels") == "var.monitoring_notification_channels"
+    assert _child(_child(own, "lifecycle"), "precondition") == (
+        _child(_child(existing, "lifecycle"), "precondition"))
