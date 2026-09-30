@@ -1953,6 +1953,163 @@ resource "google_monitoring_alert_policy" "gpu_runner_billable_instance_time" {
 }
 
 # =============================================================================
+# Remote CPU Workers (plan 14, phase 3b)
+# =============================================================================
+#
+# Heavy control-plane CPU stages, starting with episode compilation, can run as
+# short-lived Cloud Run job executions. Everything in this section is gated by
+# remote_cpu_workers_enabled, which defaults to false. Opting in is a reviewed
+# commit that flips REMOTE_CPU_WORKERS_ENABLED's default in
+# deploy/scripts/deploy.sh, never an environment override, so a later deploy
+# cannot silently destroy the jobs, identities or transport bucket.
+
+variable "remote_cpu_workers_enabled" {
+  description = "Create the remote CPU worker jobs, identities and transport bucket. Opt in only by committing deploy.sh's REMOTE_CPU_WORKERS_ENABLED default."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "remote_cpu_worker_stages" {
+  description = "Remote CPU worker jobs by stage. Each key becomes the job blueprint-remote-cpu-<key>; ephemeral_size_limit sizes the in-memory /var/lib/blueprint."
+  type = map(object({
+    cpu                  = string
+    memory               = string
+    timeout_seconds      = number
+    ephemeral_size_limit = string
+  }))
+  default = {
+    episode-compilation = {
+      cpu                  = "4"
+      memory               = "16Gi"
+      timeout_seconds      = 1800
+      ephemeral_size_limit = "10Gi"
+    }
+  }
+  nullable = false
+
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages :
+      can(regex("^[a-z][a-z0-9-]{0,39}[a-z0-9]$", stage)) && contains(["1", "2", "4", "6", "8"], limits.cpu)
+    ])
+    error_message = "remote_cpu_worker_stages keys must be lowercase job-name suffixes of at most 41 characters, and cpu one of 1, 2, 4, 6 or 8."
+  }
+
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages :
+      limits.timeout_seconds >= 1 && limits.timeout_seconds <= 3600 && floor(limits.timeout_seconds) == limits.timeout_seconds
+    ])
+    error_message = "remote_cpu_worker_stages timeout_seconds must be whole seconds, at most 3600."
+  }
+
+  validation {
+    condition = alltrue([
+      for stage, limits in var.remote_cpu_worker_stages : try(
+        tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]) <= 32 &&
+        tonumber(regex("^([1-9][0-9]*)Gi$", limits.ephemeral_size_limit)[0]) < tonumber(regex("^([1-9][0-9]*)Gi$", limits.memory)[0]),
+        false
+      )
+    ])
+    error_message = "remote_cpu_worker_stages memory must be whole Gi, at most 32Gi, with ephemeral_size_limit (in-memory) below it."
+  }
+}
+
+variable "remote_cpu_worker_object_prefix" {
+  description = "https://<US B2 endpoint>/<bucket>/<key prefix>/ that every presigned URL a remote CPU worker is handed must stay under. Required when remote_cpu_workers_enabled is true."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition = (
+      var.remote_cpu_worker_object_prefix == "" ||
+      can(regex("^https://s3\\.us-[a-z0-9-]+\\.backblazeb2\\.com/([A-Za-z0-9_~-][A-Za-z0-9._~-]*/)+$", var.remote_cpu_worker_object_prefix))
+    )
+    error_message = "remote_cpu_worker_object_prefix must be empty or a path-style https URL on a US B2 endpoint that ends in /."
+  }
+}
+
+# The job's own identity. It holds no project role.
+resource "google_service_account" "remote_cpu_worker" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+
+  account_id   = "remote-cpu-worker"
+  display_name = "Blueprint Remote CPU Worker"
+  description  = "Runs remote CPU worker job executions; can only read transport objects"
+}
+
+resource "google_cloud_run_v2_job" "remote_cpu_worker" {
+  provider = google-beta
+  for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
+
+  name     = "blueprint-remote-cpu-${each.key}"
+  location = var.primary_region
+  labels   = merge(local.common_labels, { cost-center = "remote-cpu-workers" })
+
+  template {
+    parallelism = 1
+    task_count  = 1
+
+    template {
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+      max_retries           = 0
+      timeout               = "${each.value.timeout_seconds}s"
+
+      service_account = google_service_account.remote_cpu_worker[0].email
+
+      containers {
+        image   = var.docker_image
+        command = ["python", "-m", "blueprint_pipeline.remote_cpu_worker", "bootstrap"]
+
+        resources {
+          limits = {
+            cpu    = each.value.cpu
+            memory = each.value.memory
+          }
+        }
+
+        env {
+          name  = "BLUEPRINT_REMOTE_CPU_STAGE"
+          value = each.key
+        }
+
+        env {
+          name  = "BLUEPRINT_REMOTE_CPU_OBJECT_PREFIX"
+          value = var.remote_cpu_worker_object_prefix
+        }
+
+        volume_mounts {
+          name       = "blueprint-state"
+          mount_path = "/var/lib/blueprint"
+        }
+      }
+
+      volumes {
+        name = "blueprint-state"
+
+        empty_dir {
+          medium     = "MEMORY"
+          size_limit = each.value.ephemeral_size_limit
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.remote_cpu_worker_object_prefix != ""
+      error_message = "remote_cpu_worker_object_prefix must name the B2 prefix the worker may reach when remote_cpu_workers_enabled is true."
+    }
+  }
+
+  depends_on = [
+    google_project_service.required_apis["run.googleapis.com"],
+  ]
+}
+
+# =============================================================================
 # Outputs
 # =============================================================================
 
