@@ -20,7 +20,8 @@ from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch_decisions as retained
-from .control_plane_lane_experiment_publication import _BirthFiles, _publish
+from .control_plane_lane_experiment_publication import _BirthFiles
+from .control_plane_lane_historical_publication import _publish
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
 
@@ -138,12 +139,23 @@ class _Store:
         return _selector(raw)
 
 
+class _HistoricalFiles(_BirthFiles):
+    def __init__(self, budget):
+        super().__init__(budget)
+        # One original selection plus two complete publication comparisons and
+        # caller readback can each consume a declared 1 MiB manifest. Reserve
+        # another four such units for protected config/consent/event rereads.
+        # The same actual counters, global 20 MiB cap and five-second deadline
+        # remain conserved. Generic registered metadata retains its 2 MiB cap.
+        self.raw_cap = 8 * generation.MAX_MANIFEST_BYTES
+
+
 @contextmanager
 def _session(path, operation):
     _require(os.geteuid() == 0, 'root_required')
     budget = _historical_reference_budget(monotonic=operation.monotonic,
                                        time_budget_seconds=min(5, operation.remaining()))
-    files = _BirthFiles(budget)
+    files = _HistoricalFiles(budget)
     try:
         config = owners._installed_config(files, path)
         store = _Store(files, config)

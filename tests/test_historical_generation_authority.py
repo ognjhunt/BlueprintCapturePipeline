@@ -5,6 +5,7 @@
 """ADP-009D/day28: original historical bytes need a distinct owner decision."""
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,14 @@ def selector(raw):
 
 
 @pytest.fixture
-def historical_installation(installation):  # noqa: F811
+def historical_installation(installation, monkeypatch):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
+    if sys.platform != 'linux':
+        # CPU projections only. macOS cannot produce anonymous Linux inode or
+        # installed-unit proof. Real native cases use the production publisher.
+        from blueprint_pipeline.control_plane_lane_experiment_publication import _publish as cpu_publish
+        monkeypatch.setattr('blueprint_pipeline.control_plane_lane_historical_authority._publish', cpu_publish)
+        monkeypatch.setattr('blueprint_pipeline.control_plane_lane_historical_journal._publish', cpu_publish)
     config, settings, _, policy = installation
     settings['owner_census_decisions_enabled'] = 1
     config.write_bytes(encoded(settings))

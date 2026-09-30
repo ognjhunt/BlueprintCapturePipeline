@@ -254,3 +254,23 @@ def test_snapshot_cannot_be_inserted_in_a_delete_journal(historical_installation
         journal_call(historical_installation, approved, lambda journal: journal.publish_restore_snapshot(snapshot))
     directory = provision(historical_installation) / approved['action_id']
     assert not (directory / 'restore.snapshot.json').exists()
+
+
+def test_reopened_mutating_journal_syncs_exact_namespace_without_republishing(historical_installation, monkeypatch):
+    import os
+    from blueprint_pipeline import control_plane_lane_historical_journal as journal_code
+    approved = decision(historical_installation, packet(historical_installation))
+    intent = journal_call(historical_installation, approved, lambda journal: journal.head)
+    directory = provision(historical_installation) / approved['action_id']
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    identity = directory.stat()
+    original_sync, observed = os.fsync, []
+    def sync(fd):
+        current = os.fstat(fd)
+        observed.append((current.st_dev, current.st_ino))
+        return original_sync(fd)
+    monkeypatch.setattr(os, 'fsync', sync)
+    monkeypatch.setattr(journal_code, '_publish', lambda *a, **kw: pytest.fail('original event republished'))
+    assert journal_call(historical_installation, approved, lambda journal: journal.head, now=1040) == intent
+    assert (identity.st_dev, identity.st_ino) in observed
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == before

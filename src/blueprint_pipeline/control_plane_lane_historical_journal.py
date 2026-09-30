@@ -17,7 +17,7 @@ from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch_decisions as retained
 from . import control_plane_lane_experiment_work as work
-from .control_plane_lane_experiment_publication import _publish
+from .control_plane_lane_historical_publication import _publish
 from .decision_evidence_contracts import canonical_digest
 
 MAX_OPERATIONS = 512
@@ -89,6 +89,16 @@ class HistoricalActionJournal:
                         boot_id=work._controller_boot_id(files))
             self._publish('intent', body, 0, None)
         self._load()
+        # Anonymous records were fully fsynced before their one-link birth.
+        # A killed publisher may not have synced the directory. After exact
+        # original intent/head validation, make that namespace durable before
+        # this mutating journal can permit any subsequent effect. Read-only
+        # HistoricalJournalObservation has its own constructor and does none.
+        files.location(self.directory)
+        _require(owners._metadata(os.fstat(self.directory)) == self._namespace, 'changed')
+        os.fsync(self.directory)
+        files.location(self.directory)
+        _require(owners._metadata(os.fstat(self.directory)) == self._namespace, 'changed')
 
     def _scan(self):
         self.files.location(self.directory)
