@@ -16,6 +16,7 @@
     "knowledge_snapshot": "knowledge.json",
     "knowledge_refresh_policy": "refresh-policy.json",
     "research_contract_version": 3,
+    "expected_agent_instructions_sha256": "84aeea7cec9eb6e20d0d2fba10dcb269a615174e48ed91a60ff7a6a83ca37938",
     "max_runtime_seconds": 180,
     "soft_target_usd": 1,
     "slack_channel_id": null

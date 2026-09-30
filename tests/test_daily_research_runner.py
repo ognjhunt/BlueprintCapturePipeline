@@ -349,7 +349,7 @@ def test_review_binding_source_support_and_partial_delivery(fixture):
         runner.review(DAY, review)
     review["source_support_verified"] = True
     row = runner.review(DAY, review)
-    assert set(row["delivery"]) == {"sheets", "notion", "parent_status"}
+    assert set(row["delivery"]) == {"sheets", "notion"}
     assert "owner" not in row["delivery"] and "slack" not in row["delivery"]
     for dest, item in list(row["delivery"].items()):
         receipt = {"destination": dest, "key": item["key"], "payload_digest": item["payload_digest"],
@@ -357,7 +357,7 @@ def test_review_binding_source_support_and_partial_delivery(fixture):
         row = runner.receipt(DAY, receipt)
         assert row["delivery"][dest]["state"] == "acknowledged"
         assert runner.receipt(DAY, receipt) == row
-        if dest != "parent_status":
+        if dest != "notion":
             assert row["state"] == "reviewed"
     assert row["state"] == "completed"
     wrong = {**receipt, "payload_digest": "wrong"}

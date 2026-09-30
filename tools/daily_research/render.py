@@ -1,5 +1,7 @@
 """Isolated Render clock/CLI. Firestore is canonical; local inputs are disposable."""
 import argparse
+import base64
+import hashlib
 import json
 import os
 import signal
@@ -9,13 +11,21 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools.daily_research.firestore import Bridge, FencedProvider, FirestoreLedger, control_configuration
+from tools.daily_research.firestore import (
+    Bridge,
+    FencedProvider,
+    FirestoreLedger,
+    control_configuration,
+)
 from tools.daily_research.runner import (
     CENTRAL,
+    Ledger,
     Refusal,
     Runner,
     canonical,
     configuration,
+    digest,
+    due_date,
     preflight,
     read_json,
     save_bytes,
@@ -38,16 +48,16 @@ def configured(bridge, cache):
     control = bridge.call("control")
     cfg = control_configuration(control)
     manifest_path = Path(__file__).resolve().parents[2] / "manifest.json"
-    if cfg["enabled"]:
-        if (not manifest_path.is_file() or read_json(manifest_path).get("source_commit") != control.get("source_commit")
-                or not control.get("legacy_attempts_reconciled_reference")
-                or control["legacy_attempts_reconciled_reference"].startswith("PENDING")):
-            raise Refusal("reviewed_release_or_legacy_ledger_unverified")
+    if cfg["enabled"] and (not manifest_path.is_file()
+            or read_json(manifest_path).get("source_commit") != control.get("source_commit")
+            or not control.get("legacy_attempts_reconciled_reference")
+            or control["legacy_attempts_reconciled_reference"].startswith("PENDING")):
+        raise Refusal("reviewed_release_or_legacy_ledger_unverified")
     for field, name in INPUTS.items():
         cfg[field] = str(cache / name)
         try:
             save_bytes(cache / name, FirestoreLedger(bridge).read_bytes(name))
-        except Refusal:
+        except FileNotFoundError:
             # Recovery still observes/cancels the saved session if inputs are
             # missing. The unchanged core refuses creation/qualification later.
             pass
@@ -60,6 +70,16 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         return {"store": "firestore", "root": "blueprintDailyResearch/sites-first",
                 "runs": [status_summary(row) for row in ledger.rows()]}
     cfg = configured(bridge, cache)
+    if command in {"run", "preflight"} and (command == "preflight" or cfg["enabled"]):
+        summary = bridge.call("summary")
+        day = due_date(datetime.now(timezone.utc), cfg["first_date"])
+        if command == "preflight" or (day and not summary["unfinished"] and not summary["cleanup_required"]
+                                      and summary["latest_date"] != day):
+            # Persist a fresh canonical CRM snapshot before the core may create.
+            # Recovery bypasses this read so it can still cancel an older run.
+            with ledger.lock():
+                bridge.call("refresh_crm")
+            save_bytes(cache / "crm.json", ledger.read_bytes("crm.json"))
     api = None if command in {"review", "receipt"} else api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
     runner = Runner(ledger, cfg, api)
     runner.stop_requested = stopped
@@ -67,7 +87,8 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         from tools.daily_research.runner import crm_snapshot, load_knowledge_bundle
         crm_snapshot(cfg["crm_snapshot"], datetime.now(timezone.utc))
         load_knowledge_bundle(cfg, datetime.now(timezone.utc))
-        return {**preflight(api), "enabled": cfg["enabled"], "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
+        return {**preflight(api, cfg.get("expected_agent_instructions_sha256")), "enabled": cfg["enabled"],
+                "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
     if command in {"review", "receipt", "record-cleanup"}:
         if not day or decision is None:
             raise Refusal("date_and_input_required")
@@ -88,31 +109,65 @@ def emit(value):
     print(canonical(value), flush=True)
 
 
+def export_snapshot(bridge, day, destination):
+    snapshot = bridge.call("snapshot", day=day)
+    row = snapshot["row"]
+    files = {kind: base64.b64decode(raw, validate=True) for kind, raw in snapshot["files"].items()}
+    if "artifact" in files and hashlib.sha256(files["artifact"]).hexdigest() != row.get("raw_output_digest"):
+        raise Refusal("artifact_not_downloaded_or_digest_mismatch")
+    if "evidence" in files and digest(json.loads(files["evidence"])) != row.get("evidence_digest"):
+        raise Refusal("evidence_digest_mismatch")
+    if "review" in files:
+        packet = json.loads(files["review"])
+        pinned = packet.pop("packet_digest", None)
+        if pinned != row.get("packet_digest") or digest(packet) != pinned:
+            raise Refusal("review_packet_digest_mismatch")
+    destination = Path(destination)
+    destination.mkdir(mode=0o700, exist_ok=False)
+    save_bytes(destination / "status.json", canonical(row).encode())
+    for kind, raw in files.items():
+        save_bytes(destination / (day + "-" + kind + ".json"), raw)
+    return {"state": "exported", "directory": str(destination), "missing_files": snapshot["missing_files"]}
+
+
 def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(timezone.utc)):
-    # Catch up/reconcile on startup. Every wake uses the canonical per-date
-    # ledger; neither deployment overlap nor a missed wake replays paid work.
-    while not stopped.is_set():
-        bridge = bridge_factory()
-        try:
-            with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
-                enabled = bridge.call("control").get("enabled") is True
-                result = invoke("run" if enabled else "reconcile", bridge, Path(root), stopped=stopped.is_set)
-                emit(result)
-        except Exception as exc:  # noqa: BLE001 - never expose provider/credential exception bodies
-            emit({"state": "blocked", "error": str(exc) if isinstance(exc, Refusal) else "research_runtime_unavailable"})
-        finally:
+    # One child bridge, with no lease held during idle ticks.
+    last_signature, last_day, retry_at, bridge = None, None, None, None
+    try:
+        while not stopped.is_set():
+            try:
+                if bridge is None:
+                    bridge = bridge_factory()
+                control = bridge.call("control")
+                cfg = configuration(control_configuration(control))
+                signature = digest({key: value for key, value in control.items() if key != "lease"})
+                day = due_date(clock(), cfg["first_date"])
+                if signature != last_signature or day != last_day or (retry_at and clock() >= retry_at):
+                    last_signature, last_day = signature, day
+                    with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
+                        result = invoke("run" if cfg["enabled"] else "reconcile", bridge, Path(root), stopped=stopped.is_set)
+                    emit(result)
+                    retry_at = clock() + timedelta(minutes=5) if result.get("state") in {
+                        "creation_unresolved", "running", "cancel_pending", "collecting"} else None
+            except Exception as exc:  # noqa: BLE001 - fixed codes, never upstream exception bodies
+                emit({"state": "blocked", "error": str(exc) if isinstance(exc, Refusal) else "research_runtime_unavailable"})
+                retry_at = clock() + timedelta(minutes=5)
+                if bridge is not None:
+                    bridge.close()
+                    bridge = None
+            if stopped.is_set():
+                break
+            # Idle ticks read the small control document only. Full history is
+            # read at startup, a due date/control change or bounded recovery.
+            stopped.wait(min(60, max(0.01, (next_wake(clock()) - clock()).total_seconds())))
+    finally:
+        if bridge is not None:
             bridge.close()
-        if stopped.is_set():
-            break
-        # Recheck wall time/control each minute to survive clock changes and
-        # allow an operator's pause without waiting until the next morning.
-        wait = min(60, max(0.01, (next_wake(clock()) - clock()).total_seconds()))
-        stopped.wait(wait)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["scheduler", "init", "publish-input", "preflight", "run", "reconcile", "status", "review", "receipt", "record-cleanup", "export"])
+    parser.add_argument("command", choices=["scheduler", "init", "configure", "publish-input", "import-state", "preflight", "run", "reconcile", "status", "review", "receipt", "record-cleanup", "export"])
     parser.add_argument("--input")
     parser.add_argument("--name", choices=list(INPUTS.values()))
     parser.add_argument("--date")
@@ -136,6 +191,12 @@ def main(argv=None):
                 raise Refusal("firestore_init_not_disabled")
             bridge.call("init", value=value)
             result = {"state": "initialized_disabled"}
+        elif args.command == "configure":
+            value = read_json(args.input)
+            configuration(control_configuration(value))
+            with ledger.lock():
+                bridge.call("configure", value=value)
+            result = {"state": "control_configured", "enabled": value["enabled"]}
         elif args.command == "publish-input":
             if not args.name or not args.input:
                 raise Refusal("name_and_input_required")
@@ -146,23 +207,28 @@ def main(argv=None):
             with ledger.lock():
                 ledger.write_bytes(args.name, raw)
             result = {"state": "input_persisted", "name": args.name}
+        elif args.command == "import-state":
+            if not args.input or not (Path(args.input) / "ledger.sqlite3").is_file():
+                raise Refusal("legacy_ledger_missing")
+            source = Ledger(args.input)
+            try:
+                with ledger.lock():
+                    dates = []
+                    for row in source.rows():
+                        for kind in ("artifact", "evidence", "output", "review"):
+                            name = row["date"] + "-" + kind + ".json"
+                            path = source.root / name
+                            if path.is_file():
+                                ledger.write_bytes(name, path.read_bytes())
+                        bridge.call("import_run", row=row)
+                        dates.append(row["date"])
+                result = {"state": "legacy_state_imported", "dates": dates}
+            finally:
+                source.db.close()
         elif args.command == "export":
             if not args.output or not args.date:
                 raise Refusal("date_and_output_required")
-            row = ledger.get(args.date)
-            if not row:
-                raise Refusal("run_missing")
-            destination = Path(args.output)
-            destination.mkdir(mode=0o700, exist_ok=False)
-            save_bytes(destination / "status.json", canonical(row).encode())
-            for kind in ("artifact", "evidence", "review"):
-                name = args.date + "-" + kind + ".json"
-                try:
-                    raw = ledger.read_bytes(name)
-                except Refusal:
-                    continue
-                save_bytes(destination / name, raw)
-            result = {"state": "exported", "directory": str(destination)}
+            result = export_snapshot(bridge, args.date, args.output)
         else:
             with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
                 result = invoke(args.command, bridge, Path(root), stopped=stopped.is_set,
