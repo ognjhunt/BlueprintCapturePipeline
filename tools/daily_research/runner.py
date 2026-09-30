@@ -378,6 +378,15 @@ class Ledger:
                             (row["date"], canonical(row)))
         save_json(self.root / (row["date"] + "-status.json"), row)
 
+    def write_bytes(self, name, value):
+        save_bytes(self.root / name, value)
+
+    def write_json(self, name, value):
+        self.write_bytes(name, (canonical(value) + "\n").encode())
+
+    def read_bytes(self, name):
+        return (self.root / name).read_bytes()
+
 
 def preflight(api):
     agent, template = api.get("agent", AGENT), api.get("template", TEMPLATE)
@@ -606,7 +615,7 @@ class Runner:
             row["web_tool_activities"] = sum(i.get("type") == "web_search_call" for i in items)
             # Retain exact-turn messages/tool evidence before any lifecycle action.
             row["evidence_digest"] = digest(items)
-            save_json(self.ledger.root / (row["date"] + "-evidence.json"), items)
+            self.ledger.write_json(row["date"] + "-evidence.json", items)
             if turn and turn["status"] in {"completed", "failed", "cancelled"}:
                 completed_at = turn.get("completed_at")
                 runtime_exceeded = isinstance(completed_at, (int, float)) and (
@@ -673,7 +682,7 @@ class Runner:
         if len(raw) > LIMIT_BYTES:
             raise Refusal("artifact_too_large")
         row["raw_output_digest"] = hashlib.sha256(raw).hexdigest()
-        save_bytes(self.ledger.root / (row["date"] + "-artifact.json"), raw)
+        self.ledger.write_bytes(row["date"] + "-artifact.json", raw)
         row["artifact_downloaded"] = True
         row["artifact_id"] = artifacts[0]["id"]
         self.ledger.put(row)
@@ -683,7 +692,7 @@ class Runner:
             output = json.loads(raw)
         except (ValueError, UnicodeError):
             raise Refusal("artifact_json_invalid") from None
-        save_json(self.ledger.root / (row["date"] + "-output.json"), output)
+        self.ledger.write_json(row["date"] + "-output.json", output)
         _, known = crm_snapshot(self.config["crm_snapshot"], self.clock())
         for previous in self.ledger.rows():
             if previous["date"] != row["date"]:
@@ -721,7 +730,7 @@ class Runner:
         row["packet"], row["packet_digest"] = packet, digest(packet)
         row["state"] = "awaiting_review"
         row.pop("error", None)
-        save_json(self.ledger.root / (row["date"] + "-review.json"), {**packet, "packet_digest": row["packet_digest"]})
+        self.ledger.write_json(row["date"] + "-review.json", {**packet, "packet_digest": row["packet_digest"]})
         return True
 
     def review(self, day, decision):
@@ -780,9 +789,12 @@ class Runner:
                     or not receipt.get("action_time_approval_reference")):
                 raise Refusal("cleanup_receipt_not_admitted")
             if row.get("turn_status") == "completed":
-                artifact = self.ledger.root / (day + "-artifact.json")
-                if (not row.get("artifact_downloaded") or not artifact.is_file()
-                        or hashlib.sha256(artifact.read_bytes()).hexdigest() != row.get("raw_output_digest")):
+                try:
+                    artifact = self.ledger.read_bytes(day + "-artifact.json")
+                except OSError:
+                    artifact = None
+                if (not row.get("artifact_downloaded") or artifact is None
+                        or hashlib.sha256(artifact).hexdigest() != row.get("raw_output_digest")):
                     raise Refusal("artifact_not_downloaded_or_digest_mismatch")
             for resource in ("session", "environment"):
                 try:
