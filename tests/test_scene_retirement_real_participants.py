@@ -262,6 +262,11 @@ def test_real_materializer_lifetime_blocks_retirement(tmp_path, monkeypatch):
     access, _, member = access_fixture(tmp_path, monkeypatch)
     from blueprint_pipeline import website_scene_dispatch as existing
     from blueprint_pipeline import task_evaluation_scene_owner_authority as authority
+    # The materializer lazily imports this module before reopening authority.
+    # Load its real alias before the temporary pause can be captured in module
+    # state and escape monkeypatch teardown into subsequent progression tests.
+    from blueprint_pipeline import task_evaluation_scene_preparation_attempts as preparation
+    assert preparation.reopen_scene_intent is authority.reopen_scene_intent
     entered, finish, release = threading.Event(), threading.Event(), threading.Event()
     errors = []
     def paused(*args, **kwargs):
