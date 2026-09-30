@@ -12,8 +12,10 @@ teardown and the lease's terminal state, which frees the capacity slot.
 
 An infrastructure failure gets one fresh attempt once the failed one is compute-zero; then, or after a
 refused dispatch, the row goes back to the no-spend unit as a fallback marker.  A shadow attempt compares
-the worker's result and output with the host's, records parity for its closure class and lands nothing.
-In ``host`` mode the unit only drains: it collects what already runs and returns undispatched hand-offs.
+the worker's result and output with the host's, records parity for its closure class and lands nothing;
+it is the same whether ``cloud_run_shadow`` or a self-progressing ``cloud_run`` wrote its marker.  In
+``host`` mode (an unset flag without this stage's config included) the unit only drains: it collects what
+already runs and returns undispatched hand-offs.  ``summary.json`` says which mode a run was in and why.
 """
 
 from __future__ import annotations
@@ -119,6 +121,8 @@ class Collector:
     disk_reservation_root: Path | None = None
     storage_pins_root: Path | None = None
     summary: dict[str, Any] = field(default_factory=dict)
+    # The resolved mode (``remote.resolve_execution_mode``): what was asked for, and why ``mode`` is what it is.
+    execution: dict[str, Any] = field(default_factory=dict)
 
     @property
     def now(self) -> float:
@@ -1085,8 +1089,11 @@ def _each_marker(c: Collector, step: Callable[[Path, Mapping[str, Any]], dict[st
 
 
 def _start_summary(c: Collector, blockers: list[str]) -> None:
+    execution = {"requested": c.execution.get("requested"), "effective": c.mode, "reason": c.execution.get("reason"),
+                 "findings": list(c.execution.get("findings") or [])}
     c.summary = {"schema_version": SUMMARY_SCHEMA_VERSION, "stage": STAGE, "mode": c.mode, "observed_at_epoch": c.now,
-                 "rows": {}, "drift": 0, "teardown_unproven": 0, "orphans_cancelled": 0, "blockers": list(blockers)}
+                 "execution_mode": execution, "rows": {}, "drift": 0, "teardown_unproven": 0, "orphans_cancelled": 0,
+                 "blockers": list(blockers)}
 
 
 def _write_summary(c: Collector) -> dict[str, Any]:
@@ -1145,7 +1152,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-commit")
     parser.add_argument("--jobs-root", default=os.getenv(remote.JOBS_ROOT_ENV, remote.DEFAULT_JOBS_ROOT))
     args = parser.parse_args(argv)
-    mode, findings = remote.execution_mode()
+    execution = remote.resolve_execution_mode()
+    mode, findings = execution["effective"], execution["findings"]
     config, blockers = allocator.load_remote_cpu_config()
     runtime = allocator.RemoteCpuRuntime()
     blockers = blockers or allocator._connect(runtime, config)
@@ -1155,7 +1163,7 @@ def main(argv: list[str] | None = None) -> int:
     collector = Collector(
         runtime=runtime, config=config, jobs_root=Path(args.jobs_root),
         queue_root=Path(os.environ[QUEUE_ROOT_ENV]), outputs_root=Path(os.environ[OUTPUT_ROOT_ENV]),
-        source_commit=args.source_commit or "", mode=mode, allocate=subprocess_allocate,
+        source_commit=args.source_commit or "", mode=mode, execution=execution, allocate=subprocess_allocate,
         stage_release=lambda store, commit: publish_release_source(repository=repository, source_commit=commit,
                                                                    client=store[0], bucket=store[1]),
         disk_reservation_root=Path(os.environ["BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"])

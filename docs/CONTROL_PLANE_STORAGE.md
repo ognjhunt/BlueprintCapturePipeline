@@ -1404,11 +1404,29 @@ the section above while a streamed run is retained.
 ## Remote episode compilation (plan 14, 2026-09-29)
 
 `BLUEPRINT_EPISODE_COMPILATION_EXECUTION` picks where an episode compiles: `host`
-(the default, today's path), `cloud_run_shadow` or `cloud_run`. An unset or
-invalid value runs as `host`, and so does `cloud_run` until the owner census
-accepts the output pointer (it exports `REMOTE_OUTPUT_POINTER_SCHEMAS`); the
-chain preflight warns `episode_compilation_execution_mode_invalid` or
-`episode_compilation_cloud_run_requires_census_pointer_support`.
+(today's path), `cloud_run_shadow` or `cloud_run`. Unset or empty is auto
+(owner decision 2026-09-30, everything on by default): `cloud_run` once
+`/etc/blueprint/remote-cpu-workers.json` (`BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG`)
+is there and usable for this stage exactly as the paid unit loads it (a regular
+file the `blueprint` account can read, mode 0640 at most, at most 256 KiB,
+sealed, without blockers, naming `episode_compilation`), and `host` without it,
+which is today's path byte for byte: no marker, and, with nothing left to
+drain, no paid-unit start and no network. A set value keeps its name. An
+invalid value runs as `host`, and so does `cloud_run`, set or auto, until the
+owner census accepts the output pointer (it exports
+`REMOTE_OUTPUT_POINTER_SCHEMAS`). Auto relaxes no other gate: the
+census, `absent_inline_only`, environment parity and image drift, the
+allocator's admission, the standing authority and its daily and total caps all
+apply exactly as they do to a set `cloud_run`.
+
+The chain preflight reports the mode under `episode_compilation_execution`:
+`requested` (a mode, `invalid`, or `null` when unset), `effective`, `reason`
+(`explicit`, `auto_with_config` or `auto_without_config`) and the config path,
+resolved for the `blueprint` account rather than root. It warns
+`episode_compilation_execution_mode_invalid`,
+`episode_compilation_cloud_run_requires_census_pointer_support`, or, when a
+config is there that auto cannot use (written with the default umask, say),
+`episode_compilation_auto_config_unusable`.
 
 **Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
 owns `pending/` in every mode and empties it each run: it recovers the claims
@@ -1417,13 +1435,26 @@ a dead run left, compiles the rows the paid unit handed back (at most
 for the queue lock included; the rest
 wait for the next run, which the unit's five-minute timer backstops), then
 claims pending rows.
-An eligible row in `cloud_run` gets a hand-off and stays in `processing/`; any
-other row compiles on the host. In `cloud_run_shadow` every row compiles on the
-host and an eligible one also gets a shadow marker. Rows never leave the four
-queue states. The paid unit (`blueprint-task-evaluation-episode-compilation-remote`)
-never compiles: it dispatches through `paid_resource_allocator remote-cpu-job`,
-follows, collects and tears down. A refused dispatch writes the fallback, then
-drops the hand-off, and a hand-off whose row was given up, handed back or moved
+In `cloud_run` an eligible row whose closure class has its three shadow passes
+gets a hand-off and stays in `processing/`. `cloud_run` progresses by itself: an
+eligible row whose class lacks them compiles on the host, authoritatively, and
+gets a shadow marker, exactly as in `cloud_run_shadow`, so the class earns its
+passes and its later rows go remote; a failed comparison sends the class back
+to shadowing. The per-class gate is the last check, so no other refusal is ever
+shadowed, and an inline NuRec row stays on the host with no marker in every
+mode. Any other row compiles on the host. In `cloud_run_shadow` every row
+compiles on the host and an eligible one also gets a shadow marker. A shadow
+marker is the same record in both modes and changes nothing a consumer reads.
+Rows never leave the four queue states. The paid unit
+(`blueprint-task-evaluation-episode-compilation-remote`) never compiles: it
+dispatches through `paid_resource_allocator remote-cpu-job`, follows, collects
+and tears down. Its ExecCondition, standard library only, starts it when the
+effective mode is remote, set or auto, or while a live lease or a marker waits.
+For auto it checks the config's file, mode, size, JSON, schema, seal and stage;
+a sealed config that fails a deeper check (a region outside the US, say) starts
+a run that loads it as the allocator does and only drains, without a provider
+connection. A refused dispatch writes the fallback, then drops the hand-off,
+and a hand-off whose row was given up, handed back or moved
 on is never dispatched again. A commit that cannot finish after compute-zero (a
 result or pointer already there that is not this attempt's, or the row gone)
 hands the row back and still tears the attempt down to provider-zero; its lease
@@ -1474,7 +1505,7 @@ marker directories below it for the service account.
 | `rows/episode_compilation/<row>` | paid unit | promotion and landing retries, and a row given up |
 | `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class: `passed` only when both sides compiled and match byte for byte; two blocked compiles are `inconclusive`, which neither counts toward nor breaks a class's three passes |
 | `environment/`, `drift/episode_compilation.json` | allocator, paid unit | the probed worker environment and the job template's image |
-| `summary.json` (0644) | paid unit | door-readable counts: drift, unproven teardowns, orphans cancelled, parity |
+| `summary.json` (0644) | paid unit | door-readable: the mode (`execution_mode`: requested, effective, reason, findings) and counts: drift, unproven teardowns, orphans cancelled, parity |
 
 **Claim recovery.** At the start of each run, a `processing/` row with no
 hand-off, shadow or fallback marker and no lease record was left by a run that
@@ -1492,9 +1523,11 @@ counts. A handed-back row is never requeued: if its compile wrote the result
 before dying, the next run moves the row as that result says; otherwise the
 output it left at `<id>` is set aside and counted against the same three.
 
-**Rollback.** Unset the flag. The no-spend unit compiles everything; the paid
-unit's ExecCondition keeps it running only to drain live leases and to hand
-undispatched rows back. Without a provider connection (an unusable config or
-dispatcher credential) the paid unit still hands back every hand-off that never
-dispatched and writes `summary.json`; a started attempt keeps its hand-off
-until a connected run tears it down.
+**Rollback.** Set `BLUEPRINT_EPISODE_COMPILATION_EXECUTION=host` in the shared
+environment file: an unset flag is auto, which the config turns back on. The
+no-spend unit compiles everything; the paid unit's ExecCondition keeps it
+running only to drain live leases and to hand undispatched rows back. Leave the
+config in place until that drain ends. Without a provider connection (an
+unusable config or dispatcher credential) the paid unit still hands back every
+hand-off that never dispatched and writes `summary.json`; a started attempt
+keeps its hand-off until a connected run tears it down.

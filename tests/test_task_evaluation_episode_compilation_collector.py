@@ -1118,3 +1118,91 @@ def test_a_transient_open_error_on_the_pointer_is_not_a_conflict(tmp_path: Path,
     assert (world.lease()["state"], world.row_state()) == ("completed", "completed")
     assert not remote.marker_path(world.host.jobs, "fallback", world.name).exists()
     _assert_torn_down(world)
+
+
+# ------------------------------------------------------------------ everything on by default (owner, 2026-09-30)
+
+
+@pytest.mark.parametrize(("flag", "configured", "expected"), [
+    (None, True, {"requested": None, "effective": "cloud_run", "reason": "auto_with_config", "findings": []}),
+    (None, False, {"requested": None, "effective": "host", "reason": "auto_without_config", "findings": []}),
+    ("host", True, {"requested": "host", "effective": "host", "reason": "explicit", "findings": []}),
+    ("cloud_run_shadow", False, {"requested": "cloud_run_shadow", "effective": "cloud_run_shadow",
+                                 "reason": "explicit", "findings": []}),
+])
+def test_the_paid_units_summary_reports_the_requested_and_effective_mode_and_why(
+        tmp_path: Path, monkeypatch, flag: str | None, configured: bool, expected: dict) -> None:
+    """``summary.json``, which the door reads, says what mode the paid unit ran in, what was asked for, and why:
+    an explicit value, or auto with or without this stage's config."""
+
+    from blueprint_pipeline import remote_cpu_job_allocator as allocator
+    from blueprint_pipeline.task_evaluation_episode_compilation_worker import OUTPUT_ROOT_ENV, QUEUE_ROOT_ENV
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    if flag is None:
+        monkeypatch.delenv(remote.EXECUTION_ENV, raising=False)
+    else:
+        monkeypatch.setenv(remote.EXECUTION_ENV, flag)
+    monkeypatch.setenv(remote.CONFIG_ENV, str(world.remote.config_path if configured else tmp_path / "absent.json"))
+    monkeypatch.setenv(QUEUE_ROOT_ENV, str(world.host.queue))
+    monkeypatch.setenv(OUTPUT_ROOT_ENV, str(world.host.outputs))
+    # No provider connection: the run only drains, and still writes its summary.
+    monkeypatch.setattr(allocator, "_connect", lambda runtime, config: ["remote_cpu_dispatcher_unavailable:KeyError"])
+    assert collector.main(["run", "--source-commit", world.plan.source_commit, "--jobs-root", str(world.host.jobs)]) == 0
+    summary = json.loads((world.host.jobs / "summary.json").read_text(encoding="utf-8"))
+    assert (summary["mode"], summary["execution_mode"]) == (expected["effective"], expected)
+
+
+def test_auto_mode_proves_a_class_in_shadow_then_hands_its_next_row_off(tmp_path: Path, monkeypatch) -> None:
+    """End to end, with the flag unset and this stage's config present.  The no-spend unit runs ``cloud_run``,
+    which progresses by itself: rows of a class without its three shadow passes compile on the host and are
+    shadowed; the paid unit compares each remote compile and records a pass; then the class's next row is handed
+    off, dispatched through the allocator, collected and landed like any other."""
+
+    from tests.remote_episode_compilation_support import stage_compile
+
+    # The first proving row, host-compiled and shadowed exactly as the no-spend unit does it.
+    world = CollectorWorld(tmp_path, monkeypatch, mode="cloud_run", marker="shadow")
+    auto = {remote.CONFIG_ENV: str(world.remote.config_path)}  # the flag is unset
+
+    def no_spend(*labels: str) -> tuple[list[str], dict]:
+        names = [stage_compile(world.host, label=label)[1] for label in labels]
+        run = remote.run_no_spend_unit(
+            queue_root=world.host.queue, input_root=world.host.inputs, output_root=world.host.outputs,
+            source_commit=world.plan.source_commit, max_messages=8, jobs_root=world.host.jobs, environ=auto,
+            episode_compiler=world.compiler, filesystem_root=world.host.fs, cache_root=world.host.cache,
+            host_environment=HOST_RECORD, now=world.clock)
+        return sorted(names), run
+
+    proving, run = no_spend("proving-2", "proving-3")
+    assert (run["mode"], run["execution_mode"]["reason"]) == ("cloud_run", "auto_with_config")
+    assert (run["handoffs"], run["shadowed"]) == ([], proving)
+    assert all((world.host.queue / "completed" / name).is_file() for name in proving)
+    results = {name: (world.host.queue / "results" / name).read_bytes() for name in (world.name, *proving)}
+    outputs = {path.name: tree_snapshot(path) for path in sorted(world.host.outputs.iterdir())}
+    world.drive(until=lambda: not remote.markers(world.host.jobs, "shadow"), step=120)
+    # Shadow in cloud_run is shadow as cloud_run_shadow runs it: the host stayed authoritative, nothing was
+    # promoted or landed, and every attempt was compared and torn down to provider-zero.
+    assert {name: (world.host.queue / "results" / name).read_bytes() for name in results} == results
+    assert {path.name: tree_snapshot(path) for path in sorted(world.host.outputs.iterdir())} == outputs
+    assert not list(world.host.outputs.glob("*.remote-output.v1.json"))
+    for name in results:
+        lease = json.loads((world.host.jobs / "leases" / f"{contract.job_id_for('episode_compilation', name)}.json")
+                           .read_text(encoding="utf-8"))
+        assert lease["state"] == "shadow_compared" and lease["provider_zero_proven"], name
+    parity = [json.loads(path.read_text(encoding="utf-8"))["parity"]
+              for path in (world.host.jobs / "parity" / "episode_compilation").glob("*.json")]
+    assert parity == ["passed"] * 3
+    identity = {"image": world.plan.image, "host_environment_digest": HOST_RECORD["environment_digest"],
+                "cpu_class": HOST_RECORD["cpu_class"]}
+    assert remote.shadow_passes(world.host.jobs, closure_class="not_applicable", **identity) == 3
+
+    [proven], run = no_spend("proven")
+    assert (run["handoffs"], run["shadowed"], run["host_decisions"]) == ([proven], [], {})
+    assert (world.host.queue / "processing" / proven).is_file()
+    world.drive(until=lambda: (world.host.queue / "completed" / proven).is_file()
+                and not remote.marker_path(world.host.jobs, "authoritative", proven).exists(), step=120)
+    envelope = json.loads((world.host.queue / "completed" / proven).read_text(encoding="utf-8"))
+    assert (world.host.outputs / f"{envelope['compilation_id']}.remote-output.v1.json").is_file()
+    result = json.loads((world.host.queue / "results" / proven).read_text(encoding="utf-8"))
+    assert result["status"] == "compiled_for_production_launch"

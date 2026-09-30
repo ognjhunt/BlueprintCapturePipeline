@@ -474,3 +474,66 @@ def test_a_worker_compile_loads_no_allocation_or_staging_authority(tmp_path: Pat
     assert authority & loaded == {"blueprint_pipeline.paid_resource_admission"}
     assert not {name for name in loaded if name == "boto3" or name.startswith(("boto3.", "botocore", "google.oauth2",
                                                                                "google.auth"))}
+
+
+def test_an_unset_mode_is_auto_and_a_set_one_keeps_its_name(tmp_path: Path, monkeypatch) -> None:
+    """Owner decision 2026-09-30, everything on by default: unset or empty is auto, ``cloud_run`` with this
+    stage's usable config and ``host`` without it; a set value is explicit and keeps its name; an invalid value
+    runs as host; and the owner census gate holds auto's ``cloud_run`` on the host exactly as an explicit one."""
+
+    from blueprint_pipeline import task_evaluation_scene_compilation_owner_outputs as owner_census
+
+    usable = tmp_path / "remote-cpu-workers.json"
+    usable.write_text(json.dumps(remote_cpu_config()), encoding="utf-8")
+    usable.chmod(0o640)
+    absent = tmp_path / "absent.json"
+    on = {"requested": None, "effective": "cloud_run", "reason": "auto_with_config", "findings": []}
+    off = {"requested": None, "effective": "host", "reason": "auto_without_config", "findings": []}
+    for unset in ({}, {remote.EXECUTION_ENV: ""}, {remote.EXECUTION_ENV: "  "}):
+        assert remote.resolve_execution_mode({**unset, remote.CONFIG_ENV: str(usable)}) == on
+        assert remote.resolve_execution_mode({**unset, remote.CONFIG_ENV: str(absent)}) == off
+    assert remote.execution_mode({remote.CONFIG_ENV: str(usable)}) == ("cloud_run", [])
+    assert remote.execution_mode({remote.CONFIG_ENV: str(absent)}) == ("host", [])
+    for mode in remote.MODES:
+        for config in (usable, absent):
+            assert remote.resolve_execution_mode({remote.EXECUTION_ENV: mode, remote.CONFIG_ENV: str(config)}) == {
+                "requested": mode, "effective": mode, "reason": "explicit", "findings": []}
+    # The requested value is reported only as a known mode: summary.json is door-readable.
+    assert remote.resolve_execution_mode({remote.EXECUTION_ENV: "https://cloudrun", remote.CONFIG_ENV: str(usable)}) == {
+        "requested": "invalid", "effective": "host", "reason": "explicit",
+        "findings": ["episode_compilation_execution_mode_invalid"]}
+    monkeypatch.delattr(owner_census, "REMOTE_OUTPUT_POINTER_SCHEMAS")
+    assert remote.resolve_execution_mode({remote.CONFIG_ENV: str(usable)}) == {
+        **on, "effective": "host", "findings": ["episode_compilation_cloud_run_requires_census_pointer_support"]}
+
+
+def test_cloud_runs_shadow_gate_is_last_and_holds_back_a_whole_plan_to_shadow(tmp_path: Path, monkeypatch) -> None:
+    """Self-progression: the per-class shadow gate is ``cloud_run``'s last check, so a row it holds back passed
+    every other one, and its host decision carries the whole plan a shadow marker names.  No other host decision
+    carries a plan: those rows stay on the host in every mode."""
+
+    host = Host(tmp_path / "host")
+    host.record_worker_environment()
+    _, name = host.stage()
+    claimed = host.claim(name)
+    held = _plan(host, claimed, gate=True)
+    assert held == remote.HostDecision("remote_ineligible:shadow_parity_unproven:not_applicable")
+    ungated = _plan(host, claimed, gate=False)
+    assert isinstance(ungated, remote.RemotePlan) and held.shadow_plan == ungated
+    # Every other refusal holds back nothing to shadow.
+    tight = remote_cpu_config(stages={"episode_compilation": {
+        **remote_cpu_config()["stages"]["episode_compilation"], "ephemeral_bytes": 1}})
+    assert _plan(host, claimed, gate=True, config=tight).shadow_plan is None
+    host.record_worker_environment(image=IMAGE.replace("d" * 64, "e" * 64))
+    assert _plan(host, claimed, gate=True) == remote.HostDecision("remote_ineligible:image_drift")
+    assert _plan(host, claimed, gate=True).shadow_plan is None
+    host.record_worker_environment()
+    monkeypatch.setattr(remote, "MAX_INLINE_NUREC_BYTES", 8192)
+    _, inline = host.stage(label="inline", appearance=nurec_usdz(4096), appearance_name="appearance.usdz")
+    decided = _plan(host, host.claim(inline), gate=True)
+    assert decided == remote.HostDecision("remote_ineligible:inline_nurec_conversion_nondeterministic")
+    assert decided.shadow_plan is None
+    # Once the class has its passes, the gate lets the very same plan through.
+    for index in range(3):
+        _parity(host, "not_applicable", True, index=index + 1)
+    assert _plan(host, claimed, gate=True) == ungated

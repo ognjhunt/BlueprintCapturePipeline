@@ -1,10 +1,13 @@
-"""Episode compilation on a remote CPU worker, behind a default-off flag (plan 14 §1, §5, §13).
+"""Episode compilation on a remote CPU worker, on by default once it is configured (plan 14 §1, §5, §13).
 
-``BLUEPRINT_EPISODE_COMPILATION_EXECUTION`` is ``host`` (the default: today's path),
-``cloud_run_shadow`` or ``cloud_run``.  The no-spend unit owns ``pending/`` in every mode and never
-holds a credential: it decides here, from the claimed envelope and the host's own files, whether a
-row can compile remotely (``plan_remote_compilation``), and it leaves the paid unit a hand-off (or,
-in shadow mode, a shadow marker) naming the plan.  An ineligible row compiles on the host.
+``BLUEPRINT_EPISODE_COMPILATION_EXECUTION`` is ``host`` (today's path), ``cloud_run_shadow`` or
+``cloud_run``.  Unset or empty is auto (owner decision 2026-09-30, everything on by default):
+``cloud_run`` once this stage's remote-CPU config is there and usable, exactly as the paid unit
+loads it, and ``host`` otherwise, which is today's path byte for byte.  The no-spend unit owns
+``pending/`` in every mode and never holds a credential: it decides here, from the claimed envelope
+and the host's own files, whether a row can compile remotely (``plan_remote_compilation``), and it
+leaves the paid unit a hand-off (or a shadow marker) naming the plan.  An ineligible row compiles on
+the host.
 
 Eligibility, in order: the envelope verifies exactly as the host compile would verify it; the
 appearance closure class is ``not_applicable``, ``shipped`` (a valid host cache entry, whose files
@@ -12,8 +15,10 @@ ship as inputs with the cache-root environment) or ``absent_inline_only`` (a NuR
 enough to convert inline, which stays on the host in every mode until that conversion is
 deterministic); the worker's ephemeral disk fits the compile; the probe-recorded worker
 environment equals the host's on everything but the CPU class, for the configured image; and, for
-``cloud_run`` only, the class has three consecutive shadow parity passes on the current image,
-host environment and CPU class.
+``cloud_run`` only and last, the class has three consecutive shadow parity passes on the current
+image, host environment and CPU class.  ``cloud_run`` progresses by itself: a row that only that
+last gate holds back compiles on the host and is shadowed, exactly as in ``cloud_run_shadow``, so
+its class earns the passes that let a later row go remote.
 
 Inside the worker, ``run_episode_compilation_in_worker`` runs the host's own
 ``compile_claimed_envelope`` at the host's paths.  Nothing here imports allocation authority: the
@@ -29,6 +34,7 @@ import stat
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -62,9 +68,11 @@ EXECUTION_ENV = "BLUEPRINT_EPISODE_COMPILATION_EXECUTION"
 MODES = ("host", "cloud_run_shadow", "cloud_run")
 JOBS_ROOT_ENV = "BLUEPRINT_REMOTE_CPU_JOBS_ROOT"
 DEFAULT_JOBS_ROOT = "/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs"
-# The allocator reads the same file (its own ``CONFIG_ENV``); the no-spend unit reads it to decide.
+# The allocator reads the same file (its own ``CONFIG_ENV``); the no-spend unit reads it to decide, and an unset
+# mode reads it to choose.  A config larger than the allocator reads (its ``_MAX_RECORD_BYTES``) is none at all.
 CONFIG_ENV = "BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG"
 DEFAULT_CONFIG_PATH = "/etc/blueprint/remote-cpu-workers.json"
+CONFIG_MAX_BYTES = 256 * 1024
 RUN_SCHEMA_VERSION = "task_evaluation_episode_compilation_queue_run.v1"
 STAGE = "episode_compilation"
 QUEUE = STAGES[STAGE]["queue"]
@@ -104,9 +112,14 @@ class TaskEvaluationEpisodeCompilationRemoteError(RuntimeError):
 
 @dataclass(frozen=True)
 class HostDecision:
-    """The row compiles on the host, for this reason."""
+    """The row compiles on the host, for this reason.
+
+    ``shadow_plan`` is set only when ``cloud_run``'s last gate, the class's shadow passes, is all that held the
+    row back: it is then the whole plan, which a shadow marker names while the host compiles the row
+    (self-progression).  It takes no part in equality."""
 
     reason: str
+    shadow_plan: RemotePlan | None = dataclass_field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -147,33 +160,69 @@ def census_accepts_remote_output_pointers() -> bool:
     return POINTER_SCHEMA_VERSION in getattr(census, "REMOTE_OUTPUT_POINTER_SCHEMAS", ())
 
 
+def remote_configured(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether this stage's remote-CPU config is there and usable, exactly as the paid unit loads it (``load_config``
+    is the no-spend copy of the allocator's ``load_remote_cpu_config``), and names this stage."""
+
+    try:
+        config = load_config(environ=environ)
+    except OSError:  # a config that cannot be read now is none: the host compiles, as without one
+        return False
+    return config is not None and STAGE in config["stages"]
+
+
+def resolve_execution_mode(environ: Mapping[str, str] | None = None, *,
+                           configured: bool | None = None) -> dict[str, Any]:
+    """The mode a run asks for, the mode it runs in, and why (owner decision 2026-09-30, everything on by default).
+
+    A set value is ``explicit`` and keeps its name.  Unset or empty is auto: ``cloud_run`` when this stage's
+    config is usable (``auto_with_config``), ``host`` otherwise (``auto_without_config``).  ``configured`` stands
+    in for reading the config, for a caller that knows the unit's own account cannot.  An invalid value runs as
+    ``host``, and so does ``cloud_run`` until the owner census accepts the remote-output pointer that stands for
+    a remote compile's packet: its result's lineage would otherwise name bytes nothing on the host accounts for.
+    Door-safe: ``requested`` is a known mode, ``"invalid"`` or ``None`` (unset), never the raw value."""
+
+    values = os.environ if environ is None else environ
+    raw = str(values.get(EXECUTION_ENV) or "").strip()
+    if raw:
+        selected, reason = raw, "explicit"
+    elif (remote_configured(values) if configured is None else configured):
+        selected, reason = "cloud_run", "auto_with_config"
+    else:
+        selected, reason = "host", "auto_without_config"
+    findings: list[str] = []
+    if selected not in MODES:
+        findings.append("episode_compilation_execution_mode_invalid")
+    elif selected == "cloud_run" and not census_accepts_remote_output_pointers():
+        findings.append("episode_compilation_cloud_run_requires_census_pointer_support")
+    return {"requested": (raw if raw in MODES else "invalid") if raw else None,
+            "effective": "host" if findings else selected, "reason": reason, "findings": findings}
+
+
 def execution_mode(environ: Mapping[str, str] | None = None) -> tuple[str, list[str]]:
-    """The effective mode and why it differs from the requested one.  An invalid value runs as ``host``, and so
-    does ``cloud_run`` until the owner census accepts the remote-output pointer that stands for a remote
-    compile's packet: its result's lineage would otherwise name bytes nothing on the host accounts for."""
+    """The effective mode, and why it differs from the one asked for (``resolve_execution_mode``)."""
 
-    requested = str((os.environ if environ is None else environ).get(EXECUTION_ENV) or "host").strip() or "host"
-    if requested not in MODES:
-        return "host", ["episode_compilation_execution_mode_invalid"]
-    if requested == "cloud_run" and not census_accepts_remote_output_pointers():
-        return "host", ["episode_compilation_cloud_run_requires_census_pointer_support"]
-    return requested, []
+    resolved = resolve_execution_mode(environ)
+    return resolved["effective"], list(resolved["findings"])
 
 
-def _read_record(path: Path, *, forbidden_mode: int = 0o022) -> dict[str, Any] | None:
+def _read_record(path: Path, *, forbidden_mode: int = 0o022,
+                 maximum: int = _MAX_RECORD_BYTES) -> dict[str, Any] | None:
     """A regular, non-symlinked JSON object no other account may write; ``None`` when absent or unusable."""
 
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     except OSError:
         return None
+    # Checked before any stream wraps it: wrapping a directory raises, and an unset mode reads this path each run.
+    status = os.fstat(descriptor)
+    if not stat.S_ISREG(status.st_mode) or status.st_mode & forbidden_mode:
+        os.close(descriptor)
+        return None
     with os.fdopen(descriptor, "rb") as stream:
-        status = os.fstat(stream.fileno())
-        if not stat.S_ISREG(status.st_mode) or status.st_mode & forbidden_mode:
-            return None
-        payload = stream.read(_MAX_RECORD_BYTES + 1)
+        payload = stream.read(maximum + 1)
     try:
-        value = json.loads(payload) if len(payload) <= _MAX_RECORD_BYTES else None
+        value = json.loads(payload) if len(payload) <= maximum else None
     except ValueError:
         return None
     return value if isinstance(value, dict) else None
@@ -459,14 +508,10 @@ def plan_remote_compilation(
     inline = closure_record["class"] == "absent_inline_only"
     if inline and not cpu_class:
         return HostDecision("remote_ineligible:cpu_class_unmeasured")
-    if require_shadow_gate and shadow_passes(
-            jobs_root, closure_class=closure_record["class"], image=entry["image"],
-            host_environment_digest=host["environment_digest"], cpu_class=cpu_class) < SHADOW_PASSES_REQUIRED:
-        return HostDecision(f"remote_ineligible:shadow_parity_unproven:{closure_record['class']}")
     cache_variable = _worker_path(Path(cache_root or DEFAULT_CACHE_ROOT), root)
     if closure_record["class"] == "shipped" and cache_variable is None:
         return HostDecision("remote_ineligible:path_outside_permitted_roots")
-    return RemotePlan(
+    plan = RemotePlan(
         queue_row={"queue": QUEUE, "name": claimed.name, "envelope_digest": envelope["envelope_digest"]},
         compilation_id=str(envelope["compilation_id"]), source_commit=source_commit, image=entry["image"],
         environment_digest=str(recorded["environment_digest"]),
@@ -475,6 +520,13 @@ def plan_remote_compilation(
         inputs=tuple(rows), output_root=f"{output_parent}/{envelope['compilation_id']}",
         declared_scratch=(f"{output_parent}/content-addressed/",),
         allowed_cpu_classes=(str(cpu_class),) if inline else (), ephemeral_bytes_required=required)
+    # The per-class shadow gate is the last: a row it holds back passed every other gate, so its decision carries
+    # the whole plan, and cloud_run shadows the row while the host compiles it (self-progression).
+    if require_shadow_gate and shadow_passes(
+            jobs_root, closure_class=closure_record["class"], image=entry["image"],
+            host_environment_digest=host["environment_digest"], cpu_class=cpu_class) < SHADOW_PASSES_REQUIRED:
+        return HostDecision(f"remote_ineligible:shadow_parity_unproven:{closure_record['class']}", shadow_plan=plan)
+    return plan
 
 
 def marker_path(jobs_root: str | Path, kind: str, name: str) -> Path:
@@ -541,10 +593,12 @@ def input_sources(plan: RemotePlan, queue_root: str | Path) -> list[dict[str, An
 
 
 def load_config(path: str | Path | None = None, environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
-    """The host's ``remote_cpu_workers_config.v1`` (0640, no other access), or ``None`` when absent or unusable."""
+    """The host's ``remote_cpu_workers_config.v1`` (0640, no other access), or ``None`` when absent or unusable:
+    what the allocator's ``load_remote_cpu_config`` loads without blockers.  This module may not import the
+    allocator (the worker's stage child imports it from the release), so a test pins the two together."""
 
     location = path or (os.environ if environ is None else environ).get(CONFIG_ENV) or DEFAULT_CONFIG_PATH
-    config = _read_record(Path(location), forbidden_mode=0o027)
+    config = _read_record(Path(location), forbidden_mode=0o027, maximum=CONFIG_MAX_BYTES)
     return config if config is not None and not config_blockers(config) else None
 
 
@@ -592,11 +646,12 @@ def run_no_spend_unit(**arguments: Any) -> dict[str, Any]:
     """One run of the no-spend unit, which owns ``pending/`` in every mode (plan 14 §1).
 
     It first recovers the claims a dead run left (plan 14 §10), then compiles the rows the paid unit handed
-    back; then it claims pending rows as today.  In ``host`` mode that is exactly today's queue run.  In
-    ``cloud_run`` an eligible row gets a hand-off and stays in ``processing/``, and any other compiles here;
-    in ``cloud_run_shadow`` every row compiles here and an eligible one also gets a shadow marker.  Every
-    run empties ``pending/``, so its ``PathExistsGlob`` cannot loop, and no row ever leaves the four queue
-    states.
+    back; then it claims pending rows as today.  In ``host`` mode (an unset flag without this stage's config
+    included) that is exactly today's queue run.  In ``cloud_run`` an eligible row gets a hand-off and stays in
+    ``processing/``; a row whose class still lacks its shadow passes compiles here and gets a shadow marker, so
+    the class earns them; any other compiles here.  In ``cloud_run_shadow`` every row compiles here and an
+    eligible one also gets a shadow marker.  A shadow marker is the same record in both modes.  Every run
+    empties ``pending/``, so its ``PathExistsGlob`` cannot loop, and no row ever leaves the four queue states.
 
     Recovery treats every unmarked claim as a dead run's, so one run at a time holds the queue: an
     ``flock`` on the queue directory itself, which adds no file to the queue.  A run that finds it held (a
@@ -651,7 +706,8 @@ def _no_spend_run(
 
     from .task_evaluation_episode_compilation_claim_recovery import recover_interrupted_claims
 
-    mode, findings = execution_mode(environ)
+    resolved = resolve_execution_mode(environ)
+    mode, findings = resolved["effective"], resolved["findings"]
     clock = now or time.time
     compiler = episode_compiler or compile_native_arena_episode
     jobs = Path(jobs_root)
@@ -679,7 +735,7 @@ def _no_spend_run(
     (queue / "results").mkdir(mode=0o750, exist_ok=True)
     config = load_config(environ=environ) if config is None else dict(config)
     measured: dict[str, Any] = {}
-    processed, handed, decisions = [], [], {}
+    processed, handed, shadowed, decisions = [], [], [], {}
     for source in sorted((queue / "pending").glob("*.json"))[:max_messages]:
         claimed = claim_pending_row(queue, source)
         if claimed is None:
@@ -690,19 +746,23 @@ def _no_spend_run(
             claimed, inputs=host["inputs"], outputs=host["outputs"], source_commit=source_commit,
             config=config or {}, jobs_root=jobs, filesystem_root=filesystem_root, cache_root=cache_root,
             host_environment=host_environment or measured["record"], require_shadow_gate=mode == "cloud_run")
-        if isinstance(plan, HostDecision):
-            decisions[source.name] = plan.reason
-        elif mode == "cloud_run":
+        if isinstance(plan, RemotePlan) and mode == "cloud_run":
             write_handoff(jobs, plan, mode="authoritative", now=clock())
             handed.append(source.name)
             continue
+        if isinstance(plan, HostDecision):
+            decisions[source.name] = plan.reason
+        # cloud_run_shadow shadows every eligible row; cloud_run, the rows whose class is still earning its passes.
+        # Either way the host compiles the row first, and what it writes is all any consumer reads.
+        shadow = plan if isinstance(plan, RemotePlan) else plan.shadow_plan
         processed.append(_compile_on_host(queue, source.name, claimed, **host))
-        if isinstance(plan, RemotePlan):
-            write_handoff(jobs, plan, mode="shadow", now=clock())
-            handed.append(source.name)
+        if shadow is not None:
+            write_handoff(jobs, shadow, mode="shadow", now=clock())
+            shadowed.append(source.name)
     return {"schema_version": RUN_SCHEMA_VERSION, "status": "processed" if processed or handed else "idle",
             "processed_count": len(processed), "results": processed, "mode": mode, "findings": findings,
-            "handoffs" if mode == "cloud_run" else "shadowed": handed, "host_decisions": decisions,
+            "execution_mode": resolved, **({"handoffs": handed} if mode == "cloud_run" else {}),
+            "shadowed": shadowed, "host_decisions": decisions,
             "recovered_claims": recovered, "fallback_results": fallbacks, "fallback_deferred": deferred,
             "provider_mutation_performed": False, "paid_execution_requested": False,
             "automatic_retry_performed": False}
@@ -743,6 +803,8 @@ __all__ = [
     "record_job_image",
     "load_config",
     "record_shadow_parity",
+    "remote_configured",
+    "resolve_execution_mode",
     "run_episode_compilation_in_worker",
     "run_no_spend_unit",
     "shadow_passes",

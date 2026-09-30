@@ -73,7 +73,7 @@ CHAIN_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-launch-preparation.service",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
     "blueprint-task-evaluation-episode-compilation.service",
-    # Plan 14 §1: the paid remote-compilation unit (skipped by its ExecCondition while the flag is unset).
+    # Plan 14 §1: the paid remote-compilation unit (its ExecCondition skips it while the effective mode is host).
     "blueprint-task-evaluation-episode-compilation-remote.service",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-configured-controls-progression.service",
@@ -1653,8 +1653,26 @@ def append_history(path: Path, report: Mapping[str, Any], *, blockers: Sequence[
     return row
 
 
-def remote_execution_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Plan 14 §1, §15: a mode that runs as ``host`` instead of what was asked, and image drift, as warnings.
+def episode_compilation_execution(units: Mapping[str, dict[str, Any]],
+                                  ids: tuple[int, int] | None = None) -> dict[str, Any]:
+    """Plan 14 §1: the episode-compilation mode asked for, the one the no-spend unit runs in, and why (explicit,
+    or auto with or without this stage's config), as that unit's own account resolves it; never a finding.
+
+    Root reads a config the ``blueprint`` account may not: with ``ids``, a config those ids cannot read is none.
+    """
+
+    from . import task_evaluation_episode_compilation_remote as remote
+
+    environment = units.get(EPISODE_COMPILATION_UNIT, {}).get("effective_environment") or {}
+    config = Path(environment.get(remote.CONFIG_ENV) or remote.DEFAULT_CONFIG_PATH)
+    configured = False if ids is not None and not readable_by(config, *ids) else None
+    return {**remote.resolve_execution_mode(environment, configured=configured), "config": str(config)}
+
+
+def remote_execution_checks(units: Mapping[str, dict[str, Any]],
+                            ids: tuple[int, int] | None = None) -> list[dict[str, Any]]:
+    """Plan 14 §1, §15: a mode that runs as ``host`` instead of what was asked, a config that auto mode cannot
+    use, and image drift, as warnings.
 
     Drift is the configured image differing from the image the preflight probe measured or from the job
     template's last observed image; eligibility then keeps every row on the host, so it never pages.
@@ -1663,9 +1681,13 @@ def remote_execution_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[st
     from . import task_evaluation_episode_compilation_remote as remote
 
     environment = units.get(EPISODE_COMPILATION_UNIT, {}).get("effective_environment") or {}
-    _, reasons = remote.execution_mode(environment)
+    execution = episode_compilation_execution(units, ids)
     findings = [_finding("warning", reason, unit=EPISODE_COMPILATION_UNIT,
-                         requested=str(environment.get(remote.EXECUTION_ENV))[:64]) for reason in reasons]
+                         requested=str(environment.get(remote.EXECUTION_ENV))[:64]) for reason in execution["findings"]]
+    if execution["reason"] == "auto_without_config" and os.path.lexists(execution["config"]):
+        # The owner put a config there, but auto cannot use it (its mode, owner, seal or content): still host.
+        findings.append(_finding("warning", "episode_compilation_auto_config_unusable", unit=EPISODE_COMPILATION_UNIT,
+                                 config=execution["config"]))
     config = remote.load_config(environ=environment)
     jobs_root = environment.get(remote.JOBS_ROOT_ENV) or remote.DEFAULT_JOBS_ROOT
     if config is not None and remote.STAGE in config["stages"]:
@@ -1761,7 +1783,8 @@ def run_chain(args: argparse.Namespace) -> int:
     report["host_findings"].extend(provider_credit_check(units))
     report["host_findings"].extend(disk_admission_check(units))
     report["host_findings"].extend(unit_health_checks(units))
-    report["host_findings"].extend(remote_execution_checks(units))
+    report["host_findings"].extend(remote_execution_checks(units, ids))
+    report["episode_compilation_execution"] = episode_compilation_execution(units, ids)
     report["host_findings"].extend(intake_check(units, ids))
 
     # Effective environments carry secrets by reference only, but strip values
