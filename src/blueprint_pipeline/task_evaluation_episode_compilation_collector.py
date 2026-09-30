@@ -162,6 +162,21 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return remote._read_record(path)
 
 
+def _read_json_present(path: Path) -> dict[str, Any] | None:
+    """A record that must be read whenever it exists: ``None`` only when it is absent.  Any other failure to read
+    it (EMFILE, EIO, a link, a special file or a record this account may not trust) raises, so the step is retried
+    rather than taken as done."""
+
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return None
+    record = remote._read_record(path)
+    if record is None:
+        raise CollectorError(f"remote_cpu_record_unreadable:{path.name}")
+    return record
+
+
 def _row_path(c: Collector, name: str) -> Path:
     return c.jobs_root / "rows" / STAGE / name
 
@@ -870,7 +885,7 @@ def _seal_teardown(c: Collector, attempt: Mapping[str, Any], descriptor: dict[st
     """One started attempt's provider-zero teardown, sealed once (plan 14 §11); ``None`` while unprovable."""
 
     path = c.jobs_root / "teardowns" / f"{attempt['attempt_id']}.json"
-    sealed = _read_json(path)
+    sealed = _read_json_present(path)
     if sealed is not None:
         return validate_teardown(sealed)
     compute = allocator.prove_compute_zero(c.action(), attempt, descriptor)
@@ -918,9 +933,14 @@ def _close(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str,
             continue
         descriptor, _ = _descriptor(c, attempt["attempt_id"])
         if attempt["provider_zero_proven"]:
-            sealed = _read_json(c.jobs_root / "teardowns" / f"{attempt['attempt_id']}.json")
+            # Every provider-zero teardown, the allocator's or this collector's, is sealed at this path before the
+            # lease says so.  Without it nothing can be settled or resealed: a settled attempt has nothing left to
+            # do, and an unsettled one stays charged at its worst case and is surfaced, never skipped.
+            sealed = _read_json_present(c.jobs_root / "teardowns" / f"{attempt['attempt_id']}.json")
             if sealed is None:
-                continue  # torn down by the allocator itself, which settled it
+                if _settled(attempt["attempt_id"]):
+                    continue
+                raise CollectorError("remote_cpu_teardown_record_missing")
             record = validate_teardown(sealed)
         else:
             record = _seal_teardown(c, attempt, descriptor)
@@ -947,7 +967,7 @@ def _close(c: Collector, path: Path, marker: Mapping[str, Any], lease: dict[str,
 
 def _reseal_pointer(c: Collector, compilation_id: str, record: Mapping[str, Any]) -> None:
     path = _pointer_path(c, compilation_id)
-    pointer = _read_json(path)
+    pointer = _read_json_present(path)
     if pointer is None or pointer.get("teardown_receipt_digest") == record["teardown_digest"]:
         return
     resealed = pointer_record({}, previous=pointer, teardown=record)

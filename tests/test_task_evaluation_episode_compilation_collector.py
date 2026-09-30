@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -879,6 +880,86 @@ def test_a_transient_write_error_before_the_result_resumes_the_same_attempt(tmp_
     assert not list(world.host.outputs.glob(".*.interrupted-*"))
     assert not list((world.host.jobs / "recovery").rglob("*.json"))
     _assert_torn_down(world)
+
+
+def _unopenable_once(monkeypatch, *, matches, when) -> dict:
+    """The collector's next read of a record that ``matches`` its path, once ``when()`` holds, fails with EMFILE:
+    the file is there, and the process has no descriptor to spare."""
+
+    import errno
+
+    read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    real, failures = os.open, {"left": 1}
+
+    def unopenable(path, flags, *args, **kwargs):
+        if failures["left"] and flags == read_flags and matches(str(path)) and when():
+            failures["left"] -= 1
+            raise OSError(errno.EMFILE, "Too many open files")
+        return real(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", unopenable)
+    return failures
+
+
+def _settle_fails_once(monkeypatch) -> dict:
+    real, failures = collector._settle, {"left": 1}
+
+    def flaky(c, attempt, descriptor, record):
+        if failures["left"]:
+            failures["left"] -= 1
+            raise ConnectionResetError(54, "Connection reset by peer")
+        return real(c, attempt, descriptor, record)
+
+    monkeypatch.setattr(collector, "_settle", flaky)
+    return failures
+
+
+def test_an_unreadable_pointer_is_resealed_by_the_next_run(tmp_path: Path, monkeypatch) -> None:
+    """Review follow-up to N1: one EMFILE opening the pointer to reseal it is not "no pointer".  That run keeps
+    the lease open with a typed blocker; the next reseals the pointer and completes."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    failures = _unopenable_once(monkeypatch, matches=lambda path: path.endswith(".remote-output.v1.json"),
+                                when=lambda: world.row_state() == "completed")
+    _complete(world, step=300)
+    lease = world.lease()
+    assert failures["left"] == 0
+    assert (lease["state"], world.row_state()) == ("completed", "completed")
+    pointer = json.loads((world.host.outputs / f"{world.plan.compilation_id}.remote-output.v1.json").read_text(
+        encoding="utf-8"))
+    assert pointer["provider_zero_proven"] and pointer["teardown_receipt_digest"] == lease["teardown_digest"]
+    _assert_torn_down(world)
+
+
+def test_an_unreadable_teardown_record_is_still_settled(tmp_path: Path, monkeypatch) -> None:
+    """Review follow-up to N1: after a settlement failed, one EMFILE reading the sealed teardown at the next run
+    is not "torn down and settled elsewhere".  The attempt is settled exactly once, and the lease completes."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    settle = _settle_fails_once(monkeypatch)
+    failures = _unopenable_once(monkeypatch, matches=lambda path: "/teardowns/" in path,
+                                when=lambda: settle["left"] == 0)
+    _complete(world, step=300)
+    assert (settle["left"], failures["left"]) == (0, 0)
+    assert (world.lease()["state"], world.row_state()) == ("completed", "completed")
+    _assert_torn_down(world)  # one settlement for the one started attempt
+
+
+def test_a_missing_teardown_record_of_an_unsettled_attempt_is_surfaced(tmp_path: Path, monkeypatch) -> None:
+    """Every provider-zero teardown, the allocator's or the collector's, is sealed at ``teardowns/<attempt>.json``
+    before the lease says so.  One gone before its attempt was settled can be neither settled nor resealed: the
+    run says so and leaves the worst case charged, and never completes the lease as if it had been settled."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    settle = _settle_fails_once(monkeypatch)
+    world.drive(until=lambda: settle["left"] == 0, step=300)
+    lease = world.lease()
+    assert lease["provider_zero_proven"] and lease["state"] not in leases.TERMINAL_STATES
+    (world.host.jobs / "teardowns" / f"{lease['attempt_id']}.json").unlink()
+    summary = world.collect()
+    assert summary["rows"][world.name]["blocker"].startswith("remote_cpu_teardown_record_missing")
+    assert world.lease()["state"] not in leases.TERMINAL_STATES
+    assert not list((world.tmp_path / "remote" / "spend-authority" / "remote-cpu-settled").glob("*.json"))
 
 
 def _denied(*_args, **_kwargs):
