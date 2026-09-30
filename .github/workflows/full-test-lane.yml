@@ -138,6 +138,11 @@ jobs:
           cache: npm
           cache-dependency-path: tools/splat_render/package-lock.json
 
+      - name: Install sealed-camera renderer packages
+        working-directory: tools/splat_render
+        timeout-minutes: 2
+        run: npm ci
+
       - name: Install sealed-camera renderer dependencies
         working-directory: tools/splat_render
         # Root dependencies run in a bounded cgroup so an apt descendant cannot
@@ -146,7 +151,6 @@ jobs:
         timeout-minutes: 12
         run: |
           set -euo pipefail
-          npm ci
           task_node="$(command -v node)"
           task_deps_ready=0
           for attempt in 1 2; do

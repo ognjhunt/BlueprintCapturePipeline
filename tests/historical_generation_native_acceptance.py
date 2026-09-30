@@ -860,6 +860,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     else:
                         assert (stage / 'nested/two.log').read_bytes() == original['nested/two.log']
                         assert not (stage / 'one.log').exists()
+                    retained_stage_root = (stage.stat().st_dev, stage.stat().st_ino)
                     retained_stage_inodes = {path.relative_to(stage).as_posix():
                         (path.stat().st_dev, path.stat().st_ino) for path in stage.rglob('*')}
                 else:
@@ -876,6 +877,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                                       (journals / restore['action_id']).iterdir()}
                 interrupted_events = [json.loads(raw) for name, raw in interrupted_prefix.items()
                                       if name.startswith('e-')]
+                if restore_interruption in ('restore_directory', 'restore_member'):
+                    born_roots = [event['body'] for event in interrupted_events
+                                  if event['kind'] == 'restore_directory' and event['body']['path'] == '']
+                    assert len(born_roots) == 1 and tuple(born_roots[0]['version'][:2]) == retained_stage_root
                 if restore_interruption == 'restore_member_chown':
                     intent = max(interrupted_events, key=lambda event: event['sequence'])
                     assert intent['kind'] == 'restore_intent'
@@ -922,6 +927,11 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             kinds = [event['kind'] for event in restore_events]
             assert kinds.index('restore_final') < kinds.index('access_reopened')
             assert sum(kind == 'restore_member' for kind in kinds) == len(original)
+            directories = [event['body'] for event in restore_events if event['kind'] == 'restore_directory']
+            assert len({row['path'] for row in directories}) == len(directories)
+            if restore_interruption in ('restore_directory', 'restore_member'):
+                roots = [row for row in directories if row['path'] == '']
+                assert len(roots) == 1 and tuple(roots[0]['version'][:2]) == retained_stage_root
             finals = [event['body'] for event in restore_events if event['kind'] == 'restore_final']
             assert len(finals) == 1
             assert (finals[0]['restored_files'], finals[0]['restored_logical_bytes']) == (
