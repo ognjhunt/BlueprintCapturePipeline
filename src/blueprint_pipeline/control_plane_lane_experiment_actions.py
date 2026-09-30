@@ -338,6 +338,16 @@ def _context(files, config_path, issued):
     return config, gid
 
 
+def _require_disposable_producer_completion():
+    """A zero-participant birth has no sealed writer completion authority.
+
+    Keep this refusal until a real root/manual producer and durable seal are
+    independently specified. The lease, expiry and owner action are not that
+    proof, even when the target has no observed references.
+    """
+    raise OwnerTargetVersionError("experiment_producer_completion_missing")
+
+
 def _hash_manifest(files, target, target_fd, manifest, *, role):
     """One declared full payload pass, retaining one original member at a time."""
     _require(type(files) is _ActionFiles and len(manifest['members']) <= 4096,
@@ -395,6 +405,7 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         if action == "delete":
             _require(origin["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
                      and lease["cleanup"] == "delete", "experiment_delete_ineligible")
+            _require_disposable_producer_completion()
         if action == "offload":
             _require(lease["class_intent"] == "evidence" and entry["completion"] is not None,
                      "experiment_completion_required")
@@ -711,6 +722,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         if action["action"] == "delete":
             _require(original["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
                      and lease["cleanup"] == "delete", "experiment_action_profile_unsupported")
+            try:
+                _require_disposable_producer_completion()
+            except OwnerTargetVersionError as error:
+                return _outcome(action, "kept", error.code)
         else:
             _require(action["action"] == "offload" and lease["class_intent"] == "evidence", "experiment_action_profile_unsupported")
             from .control_plane_lane_experiment_completion import selected_completion
@@ -950,6 +965,14 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                                             decision='kept', reason='experiment_action_expired', receipt=None,
                                             removed_logical_bytes=0, removed_allocated_bytes=0))
                         continue
+                    if candidate['action'] == 'delete':
+                        try:
+                            _require_disposable_producer_completion()
+                        except OwnerTargetVersionError as error:
+                            expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
+                                                decision='kept', reason=error.code, receipt=None,
+                                                removed_logical_bytes=0, removed_allocated_bytes=0))
+                            continue
                     if current_boot is None:
                         current_boot = work._controller_boot_id(files)
                         current_monotonic = time.monotonic()

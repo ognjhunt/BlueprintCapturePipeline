@@ -14,6 +14,23 @@ from .controlled_simulator_adapter import ControlledSimulatorAdapter
 from .decision_evidence_contracts import canonical_digest
 
 
+def validate_native_controller_interface(contract: Mapping[str, Any]) -> None:
+    """Bind action tensor positions to the offered arm and gripper semantics."""
+    robot = contract["robot"]
+    action = contract["action_schema"]
+    joints = robot["joint_names"]
+    channels = action["channels"]
+    if (action["adapter_id"] != "absolute_joint_position_gripper_v1"
+            or len(joints) != 7 or len(channels) != 8
+            or [row["name"] for row in channels] != [*joints, robot["gripper"]["name"]]
+            or any(channel["unit"] != limit["unit"] or channel["unit"] != "radian"
+                   or channel["executed_semantics"] != "absolute_joint_position"
+                   for channel, limit in zip(channels[:7], robot["joint_limits"], strict=True))
+            or channels[7]["unit"] != robot["gripper"]["unit"]
+            or channels[7]["executed_semantics"] != robot["gripper"]["executed_semantics"]):
+        raise ValueError("controlled_native_controller_interface_mismatch")
+
+
 def build_controlled_native_environment(*, runtime_root: Path, configuration: Mapping[str, Any],
                                        job_request: Mapping[str, Any], observation: Mapping[str, Any],
                                        evidence_root: Path) -> ControlledSimulatorAdapter:
@@ -30,6 +47,7 @@ def build_controlled_native_environment(*, runtime_root: Path, configuration: Ma
     packet = runtime_root / "native_task_packet"
     plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
     contract = configuration["contract"]
+    validate_native_controller_interface(contract)
     from .native_task_runtime_source_packet import ISAACLAB_COMMIT, ARENA_COMMIT
     robot_definition = {"robot": plan["robot"], "isaaclab_commit": ISAACLAB_COMMIT, "arena_commit": ARENA_COMMIT}
     if contract["robot"]["definition_digest"] != canonical_digest(robot_definition):

@@ -355,7 +355,7 @@ def select_partial_astra_source(*, owner_attempt_path, envelope, output_root,
                     _require(authored.get("schema_version") == "task_object_astra_articulated_authoring_result.v1"
                              and authored.get("status") == "parts_authored_pending_native_qualification"
                              and authored.get("agent_runtime") == "openai_agents_api"
-                             and authored.get("model") == "gpt-6-sol"
+                             and authored.get("model") == "gpt-6.1-sol"
                              and (authored.get("plan") or {}).get("source_geometry_receipt", {}).get(
                                  "construction_envelope_digest") == source_envelope_digest
                              and authored.get("result_digest") == canonical_digest(authored, digest_field="result_digest"),

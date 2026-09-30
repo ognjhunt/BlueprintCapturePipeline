@@ -48,9 +48,16 @@ class ControlledPolicyExecutor:
         contract = dict(self.task_contract(job_request=job_request))
         contract.pop("contract_digest", None)
         if modality != "policy_api_endpoint":
+            if payload.get("execution_profile") != "controlled_observation_v1":
+                raise ValueError("controlled_policy_execution_profile_invalid")
+            if (modality == "sim_controller_plugin"
+                    and payload.get("transport") != "isolated_container_http_json_v1"):
+                raise ValueError("controlled_policy_controller_transport_invalid")
             image = payload.get("image_ref")
             artifact = payload.get("model_artifact")
             if artifact is not None:
+                if payload.get("runner_profile") != "onnx_state_mlp_cpu_v1":
+                    raise ValueError("controlled_policy_model_runner_profile_invalid")
                 if not isinstance(artifact, Mapping) or self.model_image_builder is None:
                     raise ValueError("controlled_policy_model_builder_required")
                 validate_model_task_binding(artifact, contract)
@@ -79,7 +86,8 @@ class ControlledPolicyExecutor:
                     stream.flush()
                 def run_session(transport: Any) -> Mapping[str, Any]:
                     policy = transport if modality == "policy_api_endpoint" else ControlledPolicyClient(
-                        contract=contract, transport=transport, transport_name="qualified_sandbox_unix_proxy")
+                        contract=contract, transport=transport,
+                        transport_name=getattr(self.sandbox_factory, "transport_name", "qualified_sandbox_unix_proxy"))
                     environment = self.environment_factory(job_request=job_request, observation=observation)
                     receipt = run_controlled_policy_episode(environment=environment, policy=policy,
                         max_queries=self.max_queries, deadline_seconds=self.deadline_seconds, retain=retain)

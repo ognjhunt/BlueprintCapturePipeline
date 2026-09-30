@@ -140,7 +140,7 @@ def test_sponsored_agents_api_choice_requires_complete_digest_bound_policy(monke
               "project_guard_receipt_digest": "sha256:" + "f" * 64,
               "ttl_seconds": 900, "maximum_review_cycles": 3}
     value = {**sponsorship(), "authoring_provider": "openai",
-             "authoring_agent_runtime": "openai_agents_api", "authoring_model": "gpt-6-sol",
+             "authoring_agent_runtime": "openai_agents_api", "authoring_model": "gpt-6.1-sol",
              "agents_api_policy": policy}
     value["authority_digest"] = canonical_digest(value, digest_field="authority_digest")
     monkeypatch.setattr(module, "website_webapp_request", lambda **_: value)

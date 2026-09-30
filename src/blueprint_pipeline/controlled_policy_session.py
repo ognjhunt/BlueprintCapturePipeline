@@ -36,7 +36,7 @@ class ControlledPolicyClient:
     def __init__(self, *, contract: Mapping[str, Any],
                  transport: Callable[[bytes, float], bytes], transport_name: str):
         self.contract = validate_company_policy_container_contract_v2(contract)
-        if transport_name not in {"approved_https", "qualified_sandbox_unix_proxy"}:
+        if transport_name not in {"approved_https", "qualified_sandbox_unix_proxy", "qualified_sandbox_https_bridge"}:
             raise ValueError("controlled_policy_transport_invalid")
         self.transport = transport
         self.transport_name = transport_name

@@ -58,7 +58,7 @@ def test_future_scene_task_is_explicitly_admitted_and_model_bound(agent_fixture)
     task = prepare_asset_task(request_value=f.kwargs["request_value"], tools=tools,
         admission=admission, task_id="future_drawer_author", source_commit="a" * 40,
         deadline=now + 1800)
-    assert task.model == "gpt-6-sol" and task.admission.runtime == "openai_agents_api"
+    assert task.model == "gpt-6.1-sol" and task.admission.runtime == "openai_agents_api"
     assert task.tool_ids == ("observe_object", "build_cad", "render_candidate", "inspect_candidate")
     assert "independent review" in task.instructions
     with pytest.raises(AgentExecutionError, match="asset_api_admission_mismatch"):
@@ -105,7 +105,7 @@ def test_tool_repair_restart_and_independent_review(agent_fixture):  # noqa: F81
     assert sum(item["type"] == "input_image" for item in inspected) == 3
     invoker, _ = bounded(f)
     state = {"state": "completed", "task": {"run_id": f.request.run_id,
-        "model": "gpt-6-sol", "capability": "task_asset_authoring",
+        "model": "gpt-6.1-sol", "capability": "task_asset_authoring",
         "input_digests": [digest(asset_input(f.kwargs["request_value"]))]}}
     with pytest.raises(AgentExecutionError, match="asset_api_author_turn_not_completed"):
         restarted.review(task_state={**state, "state": "running"}, invoker=invoker)
@@ -199,7 +199,7 @@ def test_wire_shaped_agents_api_dispatches_confined_asset_tool_once(agent_fixtur
         clock=lambda: now)
     assert runtime.start(task)["state"] == "running"
     payload = api.calls[0][2]
-    assert payload["agent"]["model"] == "gpt-6-sol"
+    assert payload["agent"]["model"] == "gpt-6.1-sol"
     assert payload["environment"] == {"type": "none"}
     assert {tool["name"] for tool in payload["agent"]["tools"]} == set(task.tool_ids)
     api.actions = [{"type": "function_call", "turn_id": "turn_1", "call_id": "call_observe",

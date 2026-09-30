@@ -1,4 +1,4 @@
-"""Real root expiry interruption resumes only the original durable operation."""
+"""Retirement journal recovery mechanics after test-only eligibility bypass."""
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_experiment_actions.py
 #   src/blueprint_pipeline/control_plane_storage_gc.py
@@ -9,11 +9,12 @@ import pytest
 from tests.test_registered_experiment_retirement_flow import (
     retirement_installation, root_metadata, installation, _born_scratch,  # noqa: F401
     _issue_action, _gc, _current_entry, _payload_snapshot,
+    removal_engine_only,  # noqa: F401
 )  # noqa: F401
 
 
 @pytest.mark.parametrize('boundary', ['first_removed', 'retired_receipt'])
-def test_actual_timer_resumes_durable_removal_or_final_receipt(retirement_installation, monkeypatch, boundary):  # noqa: F811
+def test_actual_timer_resumes_durable_removal_or_final_receipt(retirement_installation, monkeypatch, boundary, removal_engine_only):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_actions as code
     grant, _, target = _born_scratch(retirement_installation)
     action = _issue_action(retirement_installation, grant)
@@ -45,7 +46,7 @@ def test_actual_timer_resumes_durable_removal_or_final_receipt(retirement_instal
                for name, raw in first_events.items())
 
 
-def test_resume_refuses_changed_reference_configuration_before_more_unlinks(retirement_installation, monkeypatch):  # noqa: F811
+def test_resume_refuses_changed_reference_configuration_before_more_unlinks(retirement_installation, monkeypatch, removal_engine_only):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_actions as code
     grant, _, target = _born_scratch(retirement_installation)
     action = _issue_action(retirement_installation, grant)
@@ -70,7 +71,7 @@ def test_resume_refuses_changed_reference_configuration_before_more_unlinks(reti
     assert _payload_snapshot(target) == before
 
 
-def test_resume_rejects_tampered_durable_progress_before_more_unlinks(retirement_installation, monkeypatch):  # noqa: F811
+def test_resume_rejects_tampered_durable_progress_before_more_unlinks(retirement_installation, monkeypatch, removal_engine_only):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_actions as code
     grant, _, target = _born_scratch(retirement_installation)
     action = _issue_action(retirement_installation, grant)
@@ -98,7 +99,7 @@ def test_resume_rejects_tampered_durable_progress_before_more_unlinks(retirement
 
 
 def test_unlink_before_durable_parent_proof_keeps_uncertain_state_without_counting_bytes(
-        retirement_installation, monkeypatch):  # noqa: F811
+        retirement_installation, monkeypatch, removal_engine_only):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_actions as code
     grant, _, target = _born_scratch(retirement_installation)
     action = _issue_action(retirement_installation, grant)
@@ -125,7 +126,7 @@ def test_unlink_before_durable_parent_proof_keeps_uncertain_state_without_counti
 
 
 def test_terminal_replay_rejects_modified_receipt_instead_of_reporting_freed_bytes(
-        retirement_installation, monkeypatch):  # noqa: F811
+        retirement_installation, monkeypatch, removal_engine_only):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_actions as code
     grant, _, _ = _born_scratch(retirement_installation)
     action = _issue_action(retirement_installation, grant)
@@ -141,7 +142,7 @@ def test_terminal_replay_rejects_modified_receipt_instead_of_reporting_freed_byt
             installed_config_path=retirement_installation[0], now=lambda: 2900, _pins_root=None)
 
 
-def test_actual_terminal_replay_accounts_160_members_under_finite_event_fds(retirement_installation):  # noqa: F811
+def test_actual_terminal_replay_accounts_160_members_under_finite_event_fds(retirement_installation, removal_engine_only):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_actions as code
     grant, _, target = _born_scratch(retirement_installation)
     for index in range(160):

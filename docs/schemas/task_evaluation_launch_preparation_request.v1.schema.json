@@ -1302,7 +1302,7 @@
     },
     "replacement_authoring_model_provider": {"const": "anthropic"},
     "replacement_authoring_agent_runtime": {"const": "openai_agents_api"},
-    "replacement_authoring_model": {"const": "gpt-6-sol"}
+    "replacement_authoring_model": {"const": "gpt-6.1-sol"}
   },
   "allOf": [
     {

@@ -149,7 +149,7 @@ def test_completed_articulated_source_is_selected_from_cpu_archive(retained):
         requests[part] = value
     authored = seal({"schema_version": "task_object_astra_articulated_authoring_result.v1",
                      "status": "parts_authored_pending_native_qualification",
-                     "provider": "openai", "agent_runtime": "openai_agents_api", "model": "gpt-6-sol",
+                     "provider": "openai", "agent_runtime": "openai_agents_api", "model": "gpt-6.1-sol",
                      "plan": {"source_geometry_receipt": source_geometry},
                      "parts": {part: {} for part in requests},
                      "part_request_digests": {part: value["request_digest"] for part, value in requests.items()}},

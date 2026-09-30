@@ -51,6 +51,7 @@ from .remote_cpu_job_contract import (
 from .remote_cpu_job_records import (
     compute_zero_proven, fsync_directory, teardown_record, validate_teardown, write_remote_cpu_record,
 )
+from .remote_cpu_transport import RemoteCpuTransportError, publish_running_release
 from .spend_authority_consumption_root import (
     SpendAuthorityRootError, authorizations_root, prepare_consumption_root, spend_authority_root,
 )
@@ -356,10 +357,12 @@ def admit_remote_cpu_job(*, blockers: list[str], binding: Mapping[str, Any],
 def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: str, descriptor: Mapping[str, Any],
                    bucket: Any, object_store: tuple[Any, str, str], clock: Callable[[], float],
                    object_uri: str) -> dict[str, Any]:
-    """Presign an admitted attempt's transport and write it create-if-absent (plan 14 §4).  GETs live through the
-    start allowance, fetch and grace; PUTs to the hard deadline.  botocore signs at the real clock, so each recorded
-    expiry is the clock read after signing, plus the lifetime and a margin.  The transport exists only in memory
-    and in its GCS object; the caller records its name, generation and both expiries on the lease."""
+    """Presign an admitted attempt's transport and write it create-if-absent (plan 14 §4).  Data GETs (inputs and
+    source) live through the start allowance, fetch and grace, and that is the recorded read expiry; the PUTs, and
+    the receipt GET the worker checks before every receipt it writes, live to the hard deadline.  botocore signs
+    at the real clock, so each recorded expiry is the clock read after signing, plus the lifetime and a margin.
+    The transport exists only in memory and in its GCS object; the caller records its name, generation and both
+    expiries on the lease."""
     require_paid_resource_admission_grant(grant, resource_class=RESOURCE_CLASS, allocation_binding_digest=binding_digest,
                                           require_allocation_binding=True)
     client, b2_bucket, limits = object_store[0], object_store[1], descriptor["limits"]
@@ -372,9 +375,10 @@ def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: 
 
     inputs = [{"materialize_at": item["materialize_at"], "digest": item["digest"], "size_bytes": item["size_bytes"],
                "url": get(item["uri"])} for item in descriptor["inputs"]]
-    # PR 3: the receipt GET shares the fetch window, so the worker checks for an earlier receipt before fetching.
-    source, receipt = {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])}, get(
-        staging + "receipt.json")
+    # The worker never overwrites a committed receipt, however long it runs, so this GET outlives the fetch window.
+    source = {"digest": archive["digest"], "size_bytes": archive["size_bytes"], "url": get(archive["uri"])}
+    receipt = presign_remote_cpu_get(uri=staging + "receipt.json", expires_in_seconds=writes, client=client,
+                                     bucket=b2_bucket)
     outputs = {name: presign_remote_cpu_put(grant=grant, binding_digest=binding_digest, staging_uri=staging + name,
                                             expires_in_seconds=writes, client=client, bucket=b2_bucket)
                for name in STAGING_OBJECTS}
@@ -393,8 +397,8 @@ def mint_transport(*, grant: PaidResourceAdmissionGrant | None, binding_digest: 
 @dataclass
 class RemoteCpuRuntime:
     """What the seam touches beyond this host; production builds each service lazily from its credential.
-    ``stage_release_source`` (plan 14 task 3.1) returns the release commit and its CAS source archive;
-    until it is wired, the preflight probe refuses before any mutation."""
+    ``stage_release_source(object_store)`` stages the release this code runs from (plan 14 task 3.1) and
+    returns its commit and CAS source archive; without one, the preflight probe refuses before any mutation."""
 
     config_path: str | None = None
     clock: Callable[[], float] = time.time
@@ -402,7 +406,7 @@ class RemoteCpuRuntime:
     cloud_run: Any = None
     transport_bucket: Any = None
     object_store: tuple[Any, str, str] | None = None
-    stage_release_source: Callable[[], Mapping[str, Any]] | None = None
+    stage_release_source: Callable[[tuple[Any, str, str]], Mapping[str, Any]] | None = publish_running_release
     host_environment: Callable[[], Mapping[str, Any]] = environment_record
     presigned_put: Callable[[str, bytes], int] | None = None
     poll_seconds: float = 15.0
@@ -820,7 +824,7 @@ def preflight_remote_cpu_stage(action: _Action, stage: str) -> dict[str, Any]:
         return {"status": "blocked" if action.blockers else "dry_run_ready", "blockers": action.blockers}
     host = dict(runtime.host_environment())
     probe = replace(action, config=_probe_config(action.config, stage))
-    descriptor = _probe_descriptor(probe, stage, source=runtime.stage_release_source(),
+    descriptor = _probe_descriptor(probe, stage, source=runtime.stage_release_source(runtime.object_store),
                                    host_digest=host["environment_digest"])
     write_remote_cpu_record(action.root / "descriptors" / f"{descriptor['attempt_id']}.json", descriptor)
     result = {"probe": {name: descriptor[name] for name in ("job_id", "attempt_id", "descriptor_digest")},
@@ -977,7 +981,8 @@ def run_remote_cpu_job(args: argparse.Namespace, *, runtime: RemoteCpuRuntime | 
                               "blockers": []}
     try:
         result.update(_run_action(args, runtime, now))
-    except (RemoteCpuContractError, CloudRunJobsError, RemoteCpuAllocatorError, PaidResourceAdmissionBlocked) as exc:
+    except (RemoteCpuContractError, CloudRunJobsError, RemoteCpuAllocatorError, RemoteCpuTransportError,
+            PaidResourceAdmissionBlocked) as exc:
         typed = getattr(exc, "reasons", None) or getattr(exc, "blockers", None) or [getattr(exc, "code", "")]
         result.update(status="blocked", blockers=sorted(set(typed)))
     except Exception as exc:  # noqa: BLE001 - fail closed with a typed record; the cause may name a URL

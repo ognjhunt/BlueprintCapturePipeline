@@ -42,7 +42,7 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     if agents_api:
         assert not anthropic
         args["spend"].update(authoring_provider="openai",
-            authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6-sol",
+            authoring_agent_runtime="openai_agents_api", authoring_model="gpt-6.1-sol",
             agents_api_policy={"schema_version": "scene_configuration_agents_api_policy.v1",
                 "disclosure_scope": "task_asset_source_frames_and_metric_envelope",
                 "session_retention": "until_deleted", "trace_retention": "provider_default",
@@ -202,7 +202,7 @@ def test_new_signed_website_drawer_selects_sol_managed_runtime_without_spend(tmp
     request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
     authoring = json.loads((root / "configuration/stage_3.json").read_text())
     assert request["replacement_authoring_agent_runtime"] == "openai_agents_api"
-    assert request["replacement_authoring_model"] == "gpt-6-sol"
+    assert request["replacement_authoring_model"] == "gpt-6.1-sol"
     assert authoring["authoring_agent_runtime"] == "openai_agents_api"
     assert authoring["agents_api_policy"]["project_guard_receipt_digest"] == "sha256:" + "f" * 64
     assert request["runtime"]["network"]["allowlist"] == ["api.openai.com"]

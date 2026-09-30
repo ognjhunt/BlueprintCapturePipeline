@@ -173,7 +173,7 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
         raise ValueError("website_scene_sponsorship_authoring_provider_invalid")
     if authoring_runtime is not None or value.get("authoring_model") is not None or agents_policy is not None:
         if (authoring_runtime != "openai_agents_api" or authoring_provider != "openai"
-                or value.get("authoring_model") != "gpt-6-sol"
+                or value.get("authoring_model") != "gpt-6.1-sol"
                 or not isinstance(agents_policy, Mapping)
                 or agents_policy.get("schema_version") != "scene_configuration_agents_api_policy.v1"
                 or agents_policy.get("disclosure_scope") != "task_asset_source_frames_and_metric_envelope"

@@ -147,7 +147,7 @@ def _thumbnail_review() -> tuple[bytes, bytes]:
             "kind": "ai",
             "identity": "artifixer-independent-vision-reviewer-v1",
             "runtime": "openai_agents_sdk",
-            "model": "gpt-6-sol",
+            "model": "gpt-6.1-sol",
         },
         "receipt_digest": "",
     }

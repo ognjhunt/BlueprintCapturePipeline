@@ -137,6 +137,7 @@ def _run_native_task_arena_bounded_vast(
     hard_cap_usd: float = 1.00,
     hard_ttl_seconds: int = 5_400,
     allowed_active_instance_ids: Sequence[int] = (),
+    allowed_machine_ids: Sequence[int] = (),
     paid_attempt_authority: Mapping[str, Any] | None = None,
     retain_warm_instance: bool = False,
     controlled_policy: bool = False,
@@ -206,6 +207,7 @@ def _run_native_task_arena_bounded_vast(
         # preflight, so live RTX 4090 capacity is not falsely rejected.
         min_gpu_ram_mb=NO_POLICY_MIN_GPU_RAM_MB,
         allowed_active_instance_ids=allowed_ids,
+        allowed_machine_ids=allowed_machine_ids,
         vast_launch_lock_file=(
             job / "native_task_arena_paid_launch.lock" if allowed_ids else None
         ),

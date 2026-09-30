@@ -16,7 +16,7 @@ from collections.abc import Mapping
 
 from PIL import Image
 
-MODELS = frozenset({"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"})
+MODELS = frozenset({"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"})
 
 
 def image_context_tokens(width: int, height: int) -> int:

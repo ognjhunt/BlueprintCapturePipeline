@@ -42,7 +42,7 @@ from .local_reconstruction_adapters import _sha256_file
 
 SCHEMA_VERSION = "website_object_spec.v1"
 ENABLE_ENV = "BLUEPRINT_WEBSITE_OBJECT_SPEC_AGENT"
-MODEL = "gpt-6-sol"  # Same family as the image repair agent.
+MODEL = "gpt-6.1-sol"  # Same family as the image repair agent.
 # 3: category-standard figures and kept quotes (2026-09-27 website capture).
 REVISION = 3
 CAPABILITY = "website_object_spec_researcher"

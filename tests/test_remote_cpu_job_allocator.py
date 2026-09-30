@@ -344,10 +344,13 @@ def test_presigned_puts_exist_only_after_admission_and_expire_at_the_hard_deadli
     gets = [(key, seconds) for method, key, seconds in world.store.presigned if method == "get_object"]
     assert sorted(key.removeprefix(staging) for key, _ in puts) == [
         "blobs.tar", "heartbeat.json", "index.json", "receipt.json"]
-    assert {seconds for _, seconds in puts} == {2520} and {seconds for _, seconds in gets} == {1020}
-    assert sorted(key for key, _ in gets) == sorted([
-        *(item["uri"].removeprefix(f"s3://{B2_BUCKET}/") for item in descriptor["inputs"]),
-        descriptor["code"]["source_archive"]["uri"].removeprefix(f"s3://{B2_BUCKET}/"), staging + "receipt.json"])
+    # Data GETs (inputs and source) live through the fetch window; the receipt GET, which the worker checks
+    # before every receipt it writes so that it never overwrites a committed one, lives as long as the PUTs.
+    assert {seconds for _, seconds in puts} == {2520}
+    assert sorted(gets) == sorted([
+        *((item["uri"].removeprefix(f"s3://{B2_BUCKET}/"), 1020) for item in descriptor["inputs"]),
+        (descriptor["code"]["source_archive"]["uri"].removeprefix(f"s3://{B2_BUCKET}/"), 1020),
+        (staging + "receipt.json", 2520)])
 
     _, _, transport = _transport(world, descriptor)
     assert transport["schema_version"] == "remote_cpu_job_transport.v1" and transport["descriptor"] == descriptor
@@ -357,10 +360,13 @@ def test_presigned_puts_exist_only_after_admission_and_expire_at_the_hard_deadli
     assert world.store.request("PUT", heartbeat, body=b"{}").status == 200
     world.clock.now = fetch_end
     assert world.store.request("GET", source).status == 403
+    assert world.store.request("GET", transport["receipt_url"]).status == 404  # still answers: none is up yet
     world.clock.now = hard - 1
     assert world.store.request("PUT", heartbeat, body=b"{}").status == 200
+    assert world.store.request("GET", transport["receipt_url"]).status == 404
     world.clock.now = hard
     assert world.store.request("PUT", heartbeat, body=b"{}").status == 403
+    assert world.store.request("GET", transport["receipt_url"]).status == 403
 
 
 def test_transport_is_read_only_at_its_generation(tmp_path: Path, monkeypatch) -> None:
@@ -884,11 +890,12 @@ def test_recorded_url_expiry_outlasts_every_minted_url_and_dispatch_is_stamped_a
     descriptor = world.descriptor()
     assert world.run("dispatch", descriptor=descriptor)["status"] == "teardown_pending"
     lease = world.lease(descriptor)
-    puts = list(minted["outputs"].values())
-    gets = [minted["receipt_url"], minted["source_archive"]["url"], *(row["url"] for row in minted["inputs"])]
+    # The receipt GET lives as long as the PUTs; the recorded read expiry is the data GETs' (plan 14 §11).
+    puts, data_gets = [*minted["outputs"].values(), minted["receipt_url"]], [
+        minted["source_archive"]["url"], *(row["url"] for row in minted["inputs"])]
     # botocore signs at the real clock: the recorded bounds come from after signing, plus a margin.
     assert lease["write_urls_expire_at_epoch"] >= max(map(_signed_until, puts)) + 300
-    assert lease["read_urls_expire_at_epoch"] >= max(map(_signed_until, gets)) + 300
+    assert lease["read_urls_expire_at_epoch"] >= max(map(_signed_until, data_gets)) + 300
     # The dispatch clock starts when :run is sent, not when the action began.
     assert runs == [lease["deadlines"]["dispatch_started_at_epoch"]] and runs[0] >= T0 + 120
 
@@ -897,8 +904,9 @@ def test_recorded_url_expiry_outlasts_every_minted_url_and_dispatch_is_stamped_a
     world.clock.now = lease["write_urls_expire_at_epoch"]
     closed = world.run("reconcile", descriptor=descriptor)
     assert closed["status"] == "abandoned_dispatch" and closed["teardown"]["provider_zero_proven"] is True
-    # Provider zero is sealed only once no minted write URL still works.
-    assert {world.store.request("PUT", url, body=b"late").status for url in puts} == {403}
+    # Provider zero is sealed only once no minted write URL, nor the receipt GET, still works.
+    assert {world.store.request("PUT", url, body=b"late").status for url in minted["outputs"].values()} == {403}
+    assert world.store.request("GET", minted["receipt_url"]).status == 403
 
 
 def test_teardown_resumes_from_its_sealed_record_after_a_failed_transition(tmp_path: Path, monkeypatch) -> None:
