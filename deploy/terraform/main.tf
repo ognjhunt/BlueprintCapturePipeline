@@ -2074,10 +2074,14 @@ resource "google_monitoring_alert_policy" "gpu_runner_billable_instance_time" {
 #
 # Heavy control-plane CPU stages, starting with episode compilation, can run as
 # short-lived Cloud Run job executions. Everything in this section is gated by
-# remote_cpu_workers_enabled, which defaults to false. Opting in is a reviewed
-# commit that flips REMOTE_CPU_WORKERS_ENABLED's default in
-# deploy/scripts/deploy.sh, never an environment override, so a later deploy
-# cannot silently destroy the jobs, identities or transport bucket.
+# remote_cpu_workers_enabled, which defaults to false, and so are the
+# conditions it adds to the existing project-wide storage and run grants and
+# the capture alert's exclusion: with the flag off, the plan is unchanged.
+# Opting in is a reviewed commit that flips REMOTE_CPU_WORKERS_ENABLED's
+# default in deploy/scripts/deploy.sh, never an environment override, so a
+# later deploy cannot silently destroy the jobs, identities or transport
+# bucket. Retention of the lane's B2 staging, inputs and outputs is a B2
+# bucket lifecycle rule the owner sets; Terraform does not manage B2.
 
 variable "remote_cpu_workers_enabled" {
   description = "Create the remote CPU worker jobs, identities and transport bucket. Opt in only by committing deploy.sh's REMOTE_CPU_WORKERS_ENABLED default."
@@ -2402,9 +2406,9 @@ resource "google_monitoring_alert_policy" "remote_cpu_job_failures" {
 }
 
 # Owner decision 2: the first month runs under a $25 total cap. The host's
-# standing authority enforces it per attempt; this budget alerts on what GCP
-# actually bills to the lane's labeled jobs and bucket. It is required, not
-# optional, once the workers exist.
+# standing authority enforces it before every dispatch; this budget alerts on
+# what GCP actually bills to the lane's labeled jobs and bucket. It is
+# required, not optional, once the workers exist.
 resource "google_billing_budget" "remote_cpu_workers" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
 
