@@ -75,7 +75,8 @@ def routes_controlled_request(request: Mapping[str, Any]) -> bool:
                for name in ("policy_api_endpoint", "docker_container", "sim_controller_plugin"))
 
 
-def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Path) -> None:
+def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Path,
+                                       pipeline_run_id: str | None = None) -> None:
     profile = configured_profile(request)
     if profile is None:
         raise ValueError("controlled_native_task_profile_required")
@@ -131,7 +132,8 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
         access_client = None
         if payload.get("credential_ref"):
             from .checkpoint_policy_credentials import CheckpointPolicyCredentialClient
-            access_client = CheckpointPolicyCredentialClient(request=request, payload=payload)
+            access_client = CheckpointPolicyCredentialClient(request=request, payload=payload,
+                pipeline_run_id=pipeline_run_id)
             access = access_client.access()
             if modalities[0] == "policy_api_endpoint":
                 if access.get("kind") != "bearer" or not isinstance(access.get("credential"), Mapping):
@@ -261,11 +263,13 @@ def _execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: P
         seal_native_terminal(request=request, job_dir=job_dir, source_commit=commit)
 
 
-def execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Path) -> None:
+def execute_staged_controlled_request(*, request: Mapping[str, Any], job_dir: Path,
+                                      pipeline_run_id: str | None = None) -> None:
     """A failed attempt releases its hold only after provider-zero is observed."""
     job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        _execute_staged_controlled_request(request=request, job_dir=job_dir)
+        _execute_staged_controlled_request(request=request, job_dir=job_dir,
+            pipeline_run_id=pipeline_run_id)
     except Exception as exc:
         from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
         blockers = [str(exc)[:300]]

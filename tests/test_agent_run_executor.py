@@ -540,3 +540,118 @@ def test_native_admission_uses_frozen_profile_instead_of_mutable_legacy_episodes
     summary = executor.poll_once(client=client, capture_root=tmp_path)
     assert summary["claimed"] == 1 and summary["blocked"] == 1 and summary["staged"] == 0
     assert client.blocked == ["agent_execution_native_profile_missing"]
+
+
+@pytest.mark.parametrize("state,transport_failure", [(None, False), ("claim_intent", False),
+    ("staged", False), ("native_execution_in_progress", False), (None, True)])
+def test_native_credential_request_uses_confirmed_journal_owner_on_restart(
+    tmp_path: Path, monkeypatch, state, transport_failure, capsys, caplog,
+) -> None:
+    from blueprint_pipeline import controlled_native_queue as native
+    from blueprint_pipeline import adp_task_evaluation_abstention as abstention
+    from blueprint_pipeline import controlled_policy_session as session
+    from blueprint_pipeline.safe_outbound_http import SafeHttpResponse
+
+    row = _row(tmp_path)
+    canonical = row["execution_admission"]["canonical_execution_request"]
+    reference = "policy-credential-00000000-0000-0000-0000-000000000001"
+    canonical["policy_package"]["policy_api_endpoint"].update(
+        execution_profile="controlled_observation_v1", endpoint_url="https://policy.example/action",
+        credential_ref=reference, credential_kind="bearer")
+    canonical["execution_authorization"]["episodes"] = row["quoted_episodes"] = 1
+    frozen = json.dumps(row["execution_admission"], sort_keys=True, separators=(",", ":"))
+    row["execution_admission_canonical_json"] = frozen
+    row["execution_admission_digest"] = "sha256:" + hashlib.sha256(frozen.encode()).hexdigest()
+    key = tmp_path / "synthetic-sync-key"
+    token = "synthetic-offline-worker-key-" + "x" * 32
+    secret = "synthetic-private-bearer-do-not-log"
+    key.write_text(token)
+    key.chmod(0o600)
+    monkeypatch.setenv("BLUEPRINT_PIPELINE_SYNC_TOKEN_FILE", str(key))
+    monkeypatch.setenv("BLUEPRINT_WEBAPP_URL", "https://webapp.example")
+    config = tmp_path / "synthetic-configuration.json"
+    config.write_text(json.dumps({"contract": {}, "allowed_origins": ["https://policy.example"]}))
+    monkeypatch.setattr(native, "configured_profile", lambda _request: {
+        "configuration_path": str(config), "allowed_modalities": ["policy_api_endpoint"],
+        "hard_cap_usd": 1, "task_id": "pick_place", "scenario_id": "nominal",
+        "packet_dir": str(tmp_path), "runtime_source_packet_receipt": str(tmp_path / "unused.json")})
+    monkeypatch.setattr(native, "validate_native_configuration", lambda value: value)
+    monkeypatch.setattr(session, "customer_hosted_client", lambda **_kwargs: None)
+    monkeypatch.setattr(abstention, "collect_vast_provider_zero_receipt", lambda: {"provider_zero": True})
+
+    class OwnerClient(FakeClient):
+        def report_blocked(self, _row, pipeline_run_id, reason):
+            self.blocked.append((pipeline_run_id, reason))
+
+    client = OwnerClient([row] if state is None else [])
+    owner = "agent-attempt-" + "a" * 32
+    journals = tmp_path / "pipeline/agent_run_executor/journal"
+    if state is not None:
+        journal = {"state": state, "run_id": row["run_id"], "pipeline_run_id": owner,
+            "canonical_job_id": canonical["job_id"], "execution_admission_digest": row["execution_admission_digest"],
+            "disposition": "stage_for_execution", "row": row}
+        executor._write_json_atomic(journals / "restart.json", journal)
+
+    received = []
+
+    def signed_credential_request(url, *, data, headers, **_kwargs):
+        nonlocal owner
+        if state is None:
+            owner = client.claims[-1][1]
+        body = json.loads(data)
+        assert body == {"action": "access", "job_id": canonical["job_id"],
+            "pipeline_run_id": owner, "canonical_request_digest": executor._digest(canonical)}
+        assert body["canonical_request_digest"] != row["execution_admission_digest"]
+        expected = hmac.new(token.encode(), headers["X-Blueprint-Pipeline-Timestamp"].encode() + b"." + data,
+            hashlib.sha256).hexdigest()
+        assert headers["X-Blueprint-Pipeline-Signature"] == "sha256=" + expected
+        received.append(body)
+        if transport_failure:
+            raise urllib.error.URLError(secret)
+        response = {**body, "ok": True, "credential_ref": reference, "kind": "bearer",
+            "credential": {"job_id": canonical["job_id"], "endpoint_url": "https://policy.example/action",
+                "bearer_token": secret}}
+        return SafeHttpResponse(status=200, body=json.dumps(response).encode(), url=url, final_url=url)
+
+    def stop_before_paid_admission(**kwargs):
+        assert kwargs["policy_credential"]["bearer_token"] == secret
+        raise ValueError("synthetic_stop_before_paid_admission")
+
+    monkeypatch.setattr(executor, "safe_request", signed_credential_request)
+    monkeypatch.setattr(native, "build_controlled_native_policy_bundle", stop_before_paid_admission)
+    summary = executor.poll_once(client=client, capture_root=tmp_path)
+    assert summary["blocked"] == 1 and len(received) == 1
+    reason = ("checkpoint_policy_credential_delivery_unavailable" if transport_failure
+        else "synthetic_stop_before_paid_admission")
+    assert client.blocked == [(owner, reason)]
+    assert all(claimed_owner == owner for _, claimed_owner in client.claims)
+    assert executor._digest(canonical) == received[0]["canonical_request_digest"]
+    job_dir = tmp_path / "pipeline/robot_eval_jobs" / canonical["job_id"]
+    assert not (job_dir / "native_authority.json").exists()
+    assert not (job_dir / "native_allocator.log").exists()
+    assert secret not in "".join(path.read_text() for path in job_dir.glob("*.json"))
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err + caplog.text
+
+
+@pytest.mark.parametrize("accepted_owner", [None, "another-owner"])
+def test_missing_or_mismatched_start_owner_never_enters_native_execution(
+    tmp_path: Path, monkeypatch, accepted_owner,
+) -> None:
+    from blueprint_pipeline import controlled_native_queue as native
+
+    row = _row(tmp_path)
+    canonical = row["execution_admission"]["canonical_execution_request"]
+    canonical["policy_package"]["policy_api_endpoint"]["execution_profile"] = "controlled_observation_v1"
+    canonical["execution_authorization"]["episodes"] = row["quoted_episodes"] = 1
+    frozen = json.dumps(row["execution_admission"], sort_keys=True, separators=(",", ":"))
+    row["execution_admission_canonical_json"] = frozen
+    row["execution_admission_digest"] = "sha256:" + hashlib.sha256(frozen.encode()).hexdigest()
+    monkeypatch.setattr(native, "configured_profile", lambda _request: {})
+    monkeypatch.setattr(native, "execute_staged_controlled_request",
+        lambda **_kwargs: pytest.fail("unconfirmed claim entered native execution"))
+    client = FakeClient([row])
+    monkeypatch.setattr(client, "claim", lambda *_args: {"pipeline_run_id": accepted_owner})
+    summary = executor.poll_once(client=client, capture_root=tmp_path)
+    assert summary["blocked"] == 1 and summary["claimed"] == summary["staged"] == 0
+    assert not list((tmp_path / "pipeline/robot_eval_job_requests").glob("**/*.json"))
