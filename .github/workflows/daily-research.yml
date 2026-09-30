@@ -42,7 +42,7 @@ jobs:
       - name: Install runner and verification tools only
         run: |
           uv venv "${RUNNER_TEMP}/daily-research-venv"
-          uv pip install --python "${RUNNER_TEMP}/daily-research-venv/bin/python" -r tools/daily_research/requirements.txt pytest==9.1.1 ruff==0.16.9 'jsonschema[format-nongpl]==4.26.0'
+          uv pip install --python "${RUNNER_TEMP}/daily-research-venv/bin/python" -r tools/daily_research/requirements.txt pytest==9.1.1 ruff==0.16.9 jsonschema==4.26.0
       - name: Verify lifecycle, SDK contracts and changed-file lint
         run: |
           "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"

@@ -1,7 +1,8 @@
 """Synthetic, offline snapshot/provenance tests; never real qualified evidence."""
 import json
+import re
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,33 @@ from tools.daily_research.runner import (
 )
 
 FIXTURE = Path(__file__).parent / "fixtures/daily_research/knowledge.synthetic.v1.json"
+
+
+def schema_format_checker():
+    """Independent RFC3339 test checker; works with plain jsonschema installs.
+
+    Do not use the loader's parser as the schema oracle. strptime checks calendar,
+    clock and UTC-offset ranges independently after a lexical RFC3339 check.
+    Fraction precision is preserved by the implementation; the checker needs
+    only to validate its lexical form, so it strips fractions before strptime.
+    """
+    from jsonschema import FormatChecker
+    checker = FormatChecker()
+
+    @checker.checks("date-time")
+    def rfc3339(value):
+        if not isinstance(value, str):
+            return True  # JSON Schema's type validator owns non-string rejection.
+        pattern = r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})"
+        if re.fullmatch(pattern, value) is None:
+            return False
+        try:
+            datetime.strptime(re.sub(r"\.[0-9]+", "", value.upper()), "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError:
+            return False
+        return True
+
+    return checker
 
 
 @pytest.fixture
@@ -295,14 +323,14 @@ def test_configuration_explicit_v2_and_export_validated(tmp_path):
 
 
 def test_published_schemas_accept_synthetic_fixture_and_v2_packet():
-    from jsonschema import Draft202012Validator, FormatChecker
-    assert "date-time" in FormatChecker().checkers, "date-time format validation must be installed"
+    from jsonschema import Draft202012Validator
+    assert "date-time" in schema_format_checker().checkers, "date-time format validation must be active"
     directory = Path(__file__).parents[1] / "tools/daily_research"
     for filename, value in (("knowledge-snapshot.v1.schema.json", snapshot()),
                             ("daily-research.v2.schema.json", v2(context()))):
         schema = json.loads((directory / filename).read_text())
         Draft202012Validator.check_schema(schema)
-        Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+        Draft202012Validator(schema, format_checker=schema_format_checker()).validate(value)
 
 
 def test_duplicate_json_keys_and_private_source_urls_rejected(tmp_path):
@@ -349,7 +377,7 @@ def test_exact_reviewed_quote_and_source_precision_are_preserved():
     lambda f:f.update(specification={"name":"payload", "value":5, "unit":"kg", "conditions":["Synthetic rated limit"]}),
 ])
 def test_specification_shape_cannot_bypass_loader_or_schema(change):
-    from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+    from jsonschema import Draft202012Validator, ValidationError
     value = snapshot()
     change(value["records"][0]["facts"][0])
     rehash(value)
@@ -357,7 +385,7 @@ def test_specification_shape_cannot_bypass_loader_or_schema(change):
         k.validate(value, NOW)
     schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/knowledge-snapshot.v1.schema.json").read_text())
     with pytest.raises(ValidationError):
-        Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+        Draft202012Validator(schema, format_checker=schema_format_checker()).validate(value)
 
 
 def test_expiry_during_run_refuses_cache_without_rewriting_saved_context():
@@ -419,8 +447,8 @@ def test_reviewed_unknown_field_is_always_a_gap():
     ("revision", "2026-09-29X11:00:00Z"),
 ])
 def test_date_lexical_contract_matches_loader_and_active_schema(field, bad_date):
-    from jsonschema import Draft202012Validator, FormatChecker, ValidationError
-    checker = FormatChecker()
+    from jsonschema import Draft202012Validator, ValidationError
+    checker = schema_format_checker()
     assert "date-time" in checker.checkers
     value = snapshot()
     if field == "exported_at":
@@ -438,7 +466,7 @@ def test_date_lexical_contract_matches_loader_and_active_schema(field, bad_date)
 
 
 def test_valid_rfc3339_precision_is_preserved_without_normalizing_source_string():
-    from jsonschema import Draft202012Validator, FormatChecker
+    from jsonschema import Draft202012Validator
     value = snapshot()
     source = value["records"][0]["facts"][0]["sources"][0]
     source["source_checked_at"] = "2026-09-29t18:30:00.123456789z"
@@ -447,7 +475,7 @@ def test_valid_rfc3339_precision_is_preserved_without_normalizing_source_string(
     ctx = context(value)
     assert ctx["records"][0]["facts"][0]["sources"][0]["source_checked_at"] == "2026-09-29t18:30:00.123456789z"
     schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/knowledge-snapshot.v1.schema.json").read_text())
-    Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
+    Draft202012Validator(schema, format_checker=schema_format_checker()).validate(value)
 
 
 @pytest.mark.parametrize("failure", ["missing", "bad_hash", "too_broad", "bad_filters"])
@@ -503,7 +531,7 @@ def test_cli_v2_preflight_refuses_bad_snapshot_before_provider_construction(runn
     ("capability", "unknown", "unsupported_evidence_level"),
 ])
 def test_site_facts_cannot_be_mislabeled_as_capability_demonstrations(role, level, code):
-    from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+    from jsonschema import Draft202012Validator, ValidationError
     ctx = context()
     result = v2(ctx)
     entry = next(e for e in result["candidates"][0]["evidence"] if e["role"] == role)
@@ -512,4 +540,17 @@ def test_site_facts_cannot_be_mislabeled_as_capability_demonstrations(role, leve
         validate(result, ctx)
     schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/daily-research.v2.schema.json").read_text())
     with pytest.raises(ValidationError):
-        Draft202012Validator(schema, format_checker=FormatChecker()).validate(result)
+        Draft202012Validator(schema, format_checker=schema_format_checker()).validate(result)
+
+
+def test_schema_datetime_oracle_does_not_call_loader_parser(monkeypatch):
+    def unavailable_loader(_value):
+        raise AssertionError("schema validation must be independent of loader parsing")
+
+    monkeypatch.setattr(k, "timestamp", unavailable_loader)
+    checker = schema_format_checker()
+    assert checker.conforms("2026-09-30T11:00:00Z", "date-time")
+    assert checker.conforms("2026-09-30t06:00:00.123456789-05:00", "date-time")
+    assert not checker.conforms("2026-09-30T11:00:00+00:90", "date-time")
+    assert not checker.conforms("20260930T110000+0000", "date-time")
+    assert not checker.conforms("2026-02-30T11:00:00Z", "date-time")

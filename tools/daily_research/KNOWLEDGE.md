@@ -143,9 +143,10 @@ admission and refuses invalid v2 inputs before provider construction or reads.
 
 The lightweight daily-research workflow runs the existing lifecycle suite plus
 `tests/test_daily_research_knowledge.py`, schema/fixture checks and changed-file
-lint. Its test-only jsonschema format extras activate date-time validation; tests
-assert that the checker is installed and reject malformed dates through both the
-schema and loader. It rejects skipped/failed/errored cases. Tests cover missing snapshots before
+lint. Tests register an independent RFC3339 checker using the standard library,
+so plain jsonschema installs cannot silently skip date-time validation. It does
+not reuse the loader parser. Negative tests reject malformed dates through both
+the schema and loader; optional format packages are unnecessary. It rejects skipped/failed/errored cases. Tests cover missing snapshots before
 provider access, bounds, hashing, revisions, date granularity, stale/conflicted/
 unsupported facts, stable cached capability reuse, live operational boundaries,
 filtered relevance/unknown geography, fabricated quotes, ledger resume/tampering,
