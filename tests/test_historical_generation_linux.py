@@ -286,3 +286,24 @@ if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
             failures.append(acceptance.__name__ + ':' + type(error).__name__ + ':' + str(error))
     assert not failures, '\n'.join(failures)
     print(json.dumps(results, sort_keys=True))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
+                   reason='actual disposable installed Linux GC required; Mac skip is unmet')
+def test_actual_installed_historical_gc_default_off_delete_and_second_tick():
+    command = [sys.executable, str(Path(__file__).resolve()), '--installed-root-fixture']
+    if os.geteuid() != 0:
+        command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
+                   'PYTHONDONTWRITEBYTECODE=1', *command]
+    done = subprocess.run(command, capture_output=True, text=True, timeout=150,
+                          cwd=Path(__file__).parents[1],
+                          env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(actual_owner_approved_delete=True,
+        original_member_journal=True, historical_delete_idempotent=True)
+
+
+if __name__ == '__main__' and sys.argv[1:] == ['--installed-root-fixture']:
+    from historical_generation_native_acceptance import connected_delete
+    print(json.dumps(connected_delete(installed=True), sort_keys=True))

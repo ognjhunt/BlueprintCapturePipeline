@@ -202,7 +202,7 @@ def worker_main(root, action_id):
     emit(receipt)
 
 
-def _launch_worker(entry, action_id, target, journals, *, expected='completed', restore=False):
+def _launch_worker(entry, action_id, target, journals, *, expected='completed', restore=False, launch=None):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
     def observations():
@@ -215,10 +215,15 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     _write(ready, b'')
     startup = os.open(ready, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
-            *('--property=' + value for value in _unit_property_assignments(target, journals, restore=restore)),
-            '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
-        assert done.returncode == 0, done.stdout + done.stderr
+        if launch is None:
+            done = subprocess.run(['/usr/bin/systemd-run', '--unit=' + unit, '--no-block', '--collect',
+                *('--property=' + value for value in _unit_property_assignments(target, journals, restore=restore)),
+                '--', str(entry), action_id], capture_output=True, text=True, timeout=10)
+            assert done.returncode == 0, done.stdout + done.stderr
+        else:
+            phase = launch()
+            assert phase['units_started'] == 1 and phase['removed_bytes'] == phase['mutations'] == 0, phase
+            assert phase['outcomes'][-1]['status'] == 'submitted', phase
         # The worker waits before scanning. Reap the launcher (its argv is a
         # real target reference), retain the actual cgroup FD, then signal using
         # the already held startup FD. No controller FD changes race the scan.
@@ -272,8 +277,12 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     return receipt
 
 
+def _installed_entry(root, entry):
+    raise AssertionError('fixture_installed_historical_entry_not_staged')
+
+
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
-                     restore_interruption='restore_final'):
+                     restore_interruption='restore_final', installed=False):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -345,6 +354,15 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
         else:
             raise AssertionError('default-off worker executed')
         assert not list(journals.iterdir())
+        def gc_tick():
+            from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
+            report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
+                pins_root=root / 'pins', apply=True, ack=RUN_ACK, _experiment_config_path=config)
+            return report['historical_generations']
+        if installed:
+            disabled = gc_tick()
+            assert disabled['units_started'] == disabled['removed_bytes'] == disabled['mutations'] == 0
+            assert all((target / name).read_bytes() == raw for name, raw in original.items())
         settings['historical_generation_actions_enabled'] = True
         _write(config, _encoded(settings))
         clock = time.time()
@@ -379,6 +397,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             + 'sys.path.insert(0,' + repr(str(root / 'python')) + ')\n'
             + 'from fixture_acceptance import worker_main\nassert len(sys.argv)==2\n'
             + 'worker_main(' + repr(str(root)) + ',sys.argv[1])\n').encode(), 0o755)
+        if installed:
+            _installed_entry(root, entry)
         if interruption:
             _write(root / 'interrupt-once', interruption.encode())
             interrupted = _launch_worker(entry, action_id, target, journals, expected='failed')
@@ -402,7 +422,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             remote = json.loads((root / 'cloud-fixture.json').read_bytes())
             assert remote['calls'].count('readback') == 1 and remote['calls'][-1] == 'client_closed'
             return dict(historical_corrupt_offload_keeps_bytes=True)
-        receipt = _launch_worker(entry, action_id, target, journals)
+        receipt = _launch_worker(entry, action_id, target, journals,
+                                 launch=gc_tick if installed else None)
         assert receipt['action'] == action
         assert receipt['removed_files'] == (1 if interruption == 'unlink' else 2) and receipt['removed_directories'] == 1
         assert receipt['logical_bytes'] == sum(map(len, original.values())) - (len(original['nested/two.log']) if interruption == 'unlink' else 0)
@@ -434,7 +455,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             assert sum(event['kind'] == 'intent' for event in events) == 1
             assert sum(event['kind'] == 'fence_intent' and event['body']['path'] == '' for event in events) == 1
         before = {path.name: path.read_bytes() for path in (journals / action_id).iterdir()}
-        repeated = _launch_worker(entry, action_id, target, journals)
+        repeated = _launch_worker(entry, action_id, target, journals,
+                                  launch=gc_tick if installed else None)
         assert repeated['idempotent'] is True
         assert repeated['observed_removed_allocated_bytes'] == 0
         assert repeated['removed_files'] == repeated['removed_directories'] == 0
