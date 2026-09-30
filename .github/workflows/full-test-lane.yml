@@ -46,6 +46,7 @@ jobs:
       BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
       PYTHONDONTWRITEBYTECODE: "1"
       UV_PROJECT_ENVIRONMENT: /opt/blueprint-native-test-venv
+      BLUEPRINT_RESEARCH_SDK_PYTHON: /opt/blueprint-research-sdk-proof/bin/python
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
@@ -173,6 +174,16 @@ jobs:
           # The actual different-UID child has ProtectHome=yes. Its interpreter
           # and imported dependencies must be protected outside /home/runner.
           sudo chown -hR root:root /opt/blueprint-native-test-venv
+
+      - name: Install isolated daily research SDK for wire proof
+        if: hashFiles('tools/daily_research/requirements.txt') != ''
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-research-sdk-proof
+          uv venv --python /usr/bin/python3 /opt/blueprint-research-sdk-proof
+          uv pip install --python /opt/blueprint-research-sdk-proof/bin/python \
+            -r tools/daily_research/requirements.txt pytest==9.1.1
+          sudo chown -hR root:root /opt/blueprint-research-sdk-proof
 
       - name: Validate Python interpreter matrix
         run: uv run --no-sync python scripts/validate_python_interpreter_matrix.py --assert-current

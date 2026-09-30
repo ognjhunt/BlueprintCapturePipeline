@@ -2,6 +2,9 @@
 import hashlib
 import json
 import multiprocessing
+import os
+import subprocess
+import sys
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -393,9 +396,11 @@ def test_two_processes_cannot_overlap(fixture):
         assert queue.get(timeout=1) == "runner_overlap"
 
 
-def test_sdk_wire_contract_no_retries_redirects_or_paid_calls():
-    openai = pytest.importorskip("openai")
-    httpx = pytest.importorskip("httpx2")
+def _sdk_wire_probe():
+    import httpx2 as httpx
+    import openai
+
+    assert openai.__version__ == "3.22.1", "wire proof requires the deployed SDK pin"
     calls = []
 
     def respond(request):
@@ -421,6 +426,21 @@ def test_sdk_wire_contract_no_retries_redirects_or_paid_calls():
     assert all(r.headers["OpenAI-Project"] == PROJECT and r.headers["OpenAI-Beta"] == "agents=v1" for r in calls)
     assert all(r.method != "DELETE" for r in calls)
     p.client.close()
+
+
+def test_sdk_wire_contract_no_retries_redirects_or_paid_calls():
+    # The repository and this standalone runner intentionally use different
+    # SDKs. Verify the actual runner pin in its isolated CPU interpreter.
+    runtime = os.environ.get("BLUEPRINT_RESEARCH_SDK_PYTHON", sys.executable)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OPENAI_")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run(
+        [runtime, "-c", "import runpy,sys; runpy.run_path(sys.argv[1], run_name='__main__')",
+         str(Path(__file__).resolve())],
+        cwd=Path(__file__).resolve().parents[1], env=env, capture_output=True,
+        text=True, timeout=30, check=True,
+    )
+    assert result.stdout.strip() == "sdk_wire_contract_verified"
 
 
 def test_cli_status_without_provider_or_key(fixture, capsys):
@@ -618,3 +638,8 @@ def test_units_do_not_install_or_arm_existing_deployment():
     assert "tools.daily_research.runner" in service
     assert "blueprint-researcher-daily" not in (root / "scripts/deploy_control_plane_commit.py").read_text()
     assert configuration(json.loads((root / "tools/daily_research/config.example.json").read_text()))["enabled"] is False
+
+
+if __name__ == "__main__":
+    _sdk_wire_probe()
+    print("sdk_wire_contract_verified")

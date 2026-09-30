@@ -76,6 +76,7 @@ jobs:
       # CI runners are ephemeral; never use the checkout as a durable artifact cache.
       BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
       BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
+      BLUEPRINT_RESEARCH_SDK_PYTHON: ${{ runner.temp }}/daily-research-sdk-proof/bin/python
       CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
       # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
       CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
@@ -164,6 +165,13 @@ jobs:
           # Native camera/lifecycle rehearsals use real tensors on this CPU
           # runner. Keep the CUDA runtime out of the ordinary PR dependency set.
           uv pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
+
+      - name: Install isolated daily research SDK for wire proof
+        if: hashFiles('tools/daily_research/requirements.txt') != ''
+        run: |
+          uv venv "${RUNNER_TEMP}/daily-research-sdk-proof" --python 3.12
+          uv pip install --python "${RUNNER_TEMP}/daily-research-sdk-proof/bin/python" \
+            -r tools/daily_research/requirements.txt pytest==9.1.1
 
       - name: Verify approved CPU model runner with real inference
         run: |
