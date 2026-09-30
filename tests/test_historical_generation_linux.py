@@ -5,6 +5,7 @@ not a historical owner decision, a deletion receipt or a cleared reference set.
 """
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_historical_dispatch.py
+#   src/blueprint_pipeline/control_plane_lane_historical_fence.py
 import json
 import os
 import pwd
@@ -24,6 +25,7 @@ def _root_fixture():
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
+    from blueprint_pipeline.control_plane_lane_historical_generation import inventory_historical_generation
     foreign = pwd.getpwnam('nobody')
     root = Path(tempfile.mkdtemp(prefix='blueprint-historical-unit-', dir='/var/lib'))
     child = None
@@ -39,6 +41,13 @@ def _root_fixture():
         original.write_bytes(b'original foreign writer bytes')
         original.chmod(0o600)
         os.chown(original, foreign.pw_uid, foreign.pw_gid)
+        nested = target / 'nested'
+        nested.mkdir(mode=0o700)
+        os.chown(nested, foreign.pw_uid, foreign.pw_gid)
+        deep = nested / 'deep.bin'
+        deep.write_bytes(b'every descendant also fenced')
+        deep.chmod(0o600)
+        os.chown(deep, foreign.pw_uid, foreign.pw_gid)
         neighbor.write_bytes(b'adjacent must remain unchanged')
         private.mkdir(mode=0o700)
         secret = private / 'protected.json'
@@ -52,10 +61,10 @@ def _root_fixture():
             'print(json.dumps({"fd":fd}),flush=True)\n'
             'assert sys.stdin.readline().strip()=="check"\n'
             'denied=0\n'
-            'for path in (sys.argv[2],sys.argv[1]+"/new-writer",sys.argv[3]):\n'
+            'for path in (sys.argv[2],sys.argv[1]+"/new-writer",sys.argv[3],sys.argv[1]+"/nested/deep.bin"):\n'
             ' try: os.close(os.open(path,os.O_WRONLY|os.O_CREAT,0o600))\n'
             ' except PermissionError: denied+=1\n'
-            'assert denied==3\n'
+            'assert denied==4\n'
             'assert os.read(fd,4096)==b"original foreign writer bytes"\n'
             'print(json.dumps({"future_writes_denied":denied,"old_fd_retained":True}),flush=True)\n'
         )
@@ -74,9 +83,14 @@ def _root_fixture():
         guard = root / 'unit_guard.py'
         guard.write_text(guard_source)
         guard.chmod(0o644)
+        fence = root / 'generation_fence.py'
+        fence.write_bytes((Path(__file__).parents[1] /
+            'src/blueprint_pipeline/control_plane_lane_historical_fence.py').read_bytes())
+        fence.chmod(0o644)
+        manifest = inventory_historical_generation(target, allowed_roots=(parent,))
         probe = root / 'probe.py'
         probe.write_text(
-            'import importlib.util,json,os,sys\nfrom pathlib import Path\n'
+            'import importlib.util,json,os,sys,time\nfrom pathlib import Path\n'
             'action_id=sys.argv[1]\n'
             'target,original,neighbor,private,pid,foreign_fd=' + repr(tuple(map(str,
                 (target, original, neighbor, private, child.pid, fd)))) + '\n'
@@ -96,9 +110,21 @@ def _root_fixture():
             'Path("/proc/"+pid+"/environ").read_bytes()\n'
             'assert not any("acl" in name for name in os.listxattr(target))\n'
             'assert not any("acl" in name for name in os.listxattr(original))\n'
-            'for path in (target,original):\n'
-            ' os.chown(path,0,0)\n'
-            ' os.chmod(path,0o700 if path==target else 0o600)\n'
+            'spec=importlib.util.spec_from_file_location("installed_generation_fence",'
+                + repr(str(fence)) + ')\n'
+            'generation_fence=importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(generation_fence)\n'
+            'manifest=' + repr(manifest) + '\n'
+            'started=time.monotonic()\n'
+            'def tick():\n'
+            ' assert time.monotonic()-started<15\n'
+            'events=[]\n'
+            'def authority():\n'
+            ' unit_guard.prove_historical_unit(action_id,target,private)\n'
+            'with generation_fence._HistoricalGenerationFence(manifest,tick=tick) as held:\n'
+            ' held.revoke(before_change=authority,record=lambda kind,body:events.append((kind,body)))\n'
+            'assert len(events)==2*manifest["member_count"]\n'
+            'assert all(Path(target,row["path"]).stat().st_uid==0 for row in manifest["members"])\n'
             'created=Path(target)/"exact-write-probe"\n'
             'created.write_bytes(b"only selected target writable")\n'
             'created.unlink()\n'
@@ -111,7 +137,7 @@ def _root_fixture():
             'assert original in Path("/proc/"+pid+"/maps").read_text()\n'
             'Path(private,"receipt.json").write_text(json.dumps({"target_writable":True,'
             '"adjacent_and_parent_denied":2,"foreign_fd_cwd_mapping_visible":True,'
-            '"references_clear":False,"actual_unit_guard_passed":True}))\n'
+            '"references_clear":False,"actual_unit_guard_passed":True,"all_original_members_fenced":True}))\n'
         )
         probe.chmod(0o644)
         entry.write_text('#!/bin/sh\nset -eu\ntest "$#" = 1\nexec /usr/bin/python3 '
@@ -129,6 +155,7 @@ def _root_fixture():
         receipt.update(json.loads(checked))
         assert neighbor.read_bytes() == b'adjacent must remain unchanged'
         assert original.read_bytes() == b'original foreign writer bytes'
+        assert deep.read_bytes() == b'every descendant also fenced'
         assert not (parent / 'forbidden-parent-entry').exists()
         assert original.stat().st_uid == target.stat().st_uid == 0
         return receipt
@@ -153,8 +180,8 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout.strip().splitlines()[-1]) == dict(target_writable=True,
         adjacent_and_parent_denied=2, foreign_fd_cwd_mapping_visible=True,
-        references_clear=False, future_writes_denied=3, old_fd_retained=True,
-        actual_unit_guard_passed=True)
+        references_clear=False, future_writes_denied=4, old_fd_retained=True,
+        actual_unit_guard_passed=True, all_original_members_fenced=True)
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
