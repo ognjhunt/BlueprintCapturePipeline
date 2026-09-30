@@ -398,12 +398,13 @@ def _read_cas(c: Collector, reference: Mapping[str, Any], maximum: int) -> bytes
 def _promote(c: Collector, descriptor: dict[str, Any], output: Mapping[str, Any]) -> dict[str, Any]:
     """Server-side copy of ``blobs.tar`` and ``index.json`` into CAS, then one streaming readback (plan 14 §9).
 
-    A promoted object whose bytes do not match its key is discarded, every version, so a retry from staging
-    copies again rather than finding it."""
+    When the bytes do not match their key, the version this promotion created is discarded, so a retry from
+    staging copies again rather than finding it; a key that already existed is shared, and never touched."""
 
     client, bucket, _ = c.runtime.object_store
     staging = descriptor["outputs"]["staging_prefix"]
     promoted: dict[str, Any] = {}
+    created: dict[str, str | None] = {}
     for name, label in (("index.json", "index"), ("blobs.tar", "archive")):
         key = (staging + name).removeprefix(f"s3://{bucket}/")
         etag = str(client.head_object(Bucket=bucket, Key=key).get("ETag") or "")
@@ -411,6 +412,7 @@ def _promote(c: Collector, descriptor: dict[str, Any], output: Mapping[str, Any]
             staging_uri=staging + name, digest=output[label]["digest"], size_bytes=output[label]["size_bytes"],
             etag=etag, artifact_kind="remote-cpu-output", filename=name, client=client, bucket=bucket)
         promoted[label] = {"uri": copied["uri"], "digest": copied["digest"], "size_bytes": copied["size_bytes"]}
+        created[label] = copied.get("created_version_id")
     try:
         index = json.loads(_read_cas(c, promoted["index"], MAX_INDEX_BYTES))
         body = client.get_object(Bucket=bucket, Key=promoted["archive"]["uri"].removeprefix(f"s3://{bucket}/"))["Body"]
@@ -418,7 +420,7 @@ def _promote(c: Collector, descriptor: dict[str, Any], output: Mapping[str, Any]
     except (CollectorError, RemoteCpuArchiveError, ValueError) as exc:
         for label in ("archive", "index"):
             discard_remote_cpu_output_object(uri=promoted[label]["uri"], digest=promoted[label]["digest"],
-                                             client=client, bucket=bucket)
+                                             client=client, bucket=bucket, version_id=created[label])
         raise CollectorError(f"remote_cpu_promotion_readback_failed:{type(exc).__name__}") from None
     return promoted
 

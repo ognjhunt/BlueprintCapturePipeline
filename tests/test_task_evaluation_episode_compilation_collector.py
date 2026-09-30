@@ -720,3 +720,31 @@ def test_without_a_provider_connection_undispatched_hand_offs_still_go_back(tmp_
     assert summary["blockers"] == ["remote_cpu_dispatcher_unavailable:KeyError"]
     assert summary["rows"][name]["status"] == "returned_to_host"
     assert summary["rows"][world.name]["status"] == "held_for_provider"
+
+
+def test_a_failed_readback_discards_only_the_version_this_attempt_created(tmp_path: Path, monkeypatch) -> None:
+    """Review minor: a content-addressed key another pointer may share is never emptied by an attempt that did
+    not write it.  Here the archive's key already holds bytes that do not match: the readback fails, nothing
+    this attempt did not create is deleted, and the attempt fails and the row goes back to the host instead."""
+
+    from blueprint_pipeline.task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    real, planted = collector.copy_remote_cpu_staging_to_cas, []
+
+    def someone_else_promoted_first(**kwargs):
+        if kwargs["filename"] == "blobs.tar" and not planted:
+            key = f"{LARGE_ARTIFACT_KEY_PREFIX}/remote-cpu-output/sha256/{kwargs['digest'][7:]}/blobs.tar"
+            world.store.put_object(Bucket=B2_BUCKET, Key=key, Body=b"\0" * kwargs["size_bytes"],
+                                   Metadata={"sha256": kwargs["digest"][7:]})
+            planted.append(key)
+        return real(**kwargs)
+
+    monkeypatch.setattr(collector, "copy_remote_cpu_staging_to_cas", someone_else_promoted_first)
+    _complete(world, step=300)
+    assert world.lease()["state"] == "fallback_host" and world.row_state() == "processing"
+    [key] = planted
+    versions = [row for row in world.store.list_object_versions(Bucket=B2_BUCKET, Prefix=key)["Versions"]
+                if row["Key"] == key]
+    assert len(versions) == 1  # the other promotion's object is still there, untouched
+    _assert_torn_down(world)
