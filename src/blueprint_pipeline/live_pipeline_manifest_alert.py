@@ -39,7 +39,7 @@ def _mapping(value: Any) -> Dict[str, Any]:
 
 
 def _string_list(value: Any, *, limit: int = 12) -> list[str]:
-    if not isinstance(value, list):
+    if not isinstance(value, list) or limit <= 0:
         return []
     result: list[str] = []
     for item in value:
@@ -64,6 +64,9 @@ def _read_manifest(path: Path) -> Dict[str, Any]:
 
 def _manifest_blockers(manifest: Mapping[str, Any]) -> list[str]:
     blockers = _string_list(manifest.get("blockers"))
+    # Live runs project setup blockers at the top level rather than embedding
+    # the setup manifest. Preserve those reasons in the operator notification.
+    blockers.extend(_string_list(manifest.get("setup_blockers"), limit=12 - len(blockers)))
     setup = _mapping(manifest.get("setup"))
     blockers.extend(_string_list(setup.get("blockers"), limit=12 - len(blockers)))
     if len(blockers) < 12:
