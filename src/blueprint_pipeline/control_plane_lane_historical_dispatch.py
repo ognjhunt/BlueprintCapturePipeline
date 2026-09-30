@@ -70,7 +70,8 @@ def _unit_property_assignments(target, private_store):
     return tuple(assignments)
 
 
-def _selection(files, config, store, config_path, action_id, moment):
+def _original_selection(store, action_id):
+    """Authenticate original protected facts; this grants no current authority."""
     decision, decision_raw = store.read(action_id)
     _require(set(decision) == _DECISION_FIELDS
         and decision['schema_version'] == 'control_plane_historical_decommission.v1'
@@ -89,6 +90,19 @@ def _selection(files, config, store, config_path, action_id, moment):
         and packet.get('execution_authorized') is False
         and all(packet[key] == decision[key] for key in ('owner', 'principal', 'generation_digest', 'manifest')),
         'packet_invalid')
+    manifest, raw = store.read(decision['packet_id'], manifest=True)
+    _require(authority._selector(raw) == decision['manifest']
+        and manifest.get('schema_version') == 'control_plane_historical_generation.v1'
+        and manifest.get('generation_digest') == decision['generation_digest']
+        == canonical_digest(manifest, digest_field='generation_digest')
+        and manifest.get('target_path') == packet['selected_path'], 'manifest_changed')
+    return packet, decision, manifest, dict(packet=authority._selector(packet_raw),
+                                           decision=authority._selector(decision_raw))
+
+
+def _selection(files, config, store, config_path, action_id, moment):
+    selected = _original_selection(store, action_id)
+    packet, decision, _, _ = selected
     _require(packet['observed_at_epoch'] <= decision['issued_at_epoch'] <= moment
         < decision['expires_at_epoch'] <= packet['expires_at_epoch'], 'expired')
     old, configured, policy_selector, policy = authority._authority(
@@ -99,14 +113,7 @@ def _selection(files, config, store, config_path, action_id, moment):
     approved_policy = owners._policy(policy, decision['principal'], files.budget)
     owners._authorize(dict(owner=decision['owner'], action=decision['action'], ttl_seconds=900),
                       approved_policy, decision['expires_at_epoch'], moment)
-    manifest, raw = store.read(decision['packet_id'], manifest=True)
-    _require(authority._selector(raw) == decision['manifest']
-        and manifest.get('schema_version') == 'control_plane_historical_generation.v1'
-        and manifest.get('generation_digest') == decision['generation_digest']
-        == canonical_digest(manifest, digest_field='generation_digest')
-        and manifest.get('target_path') == packet['selected_path'], 'manifest_changed')
-    return packet, decision, manifest, dict(packet=authority._selector(packet_raw),
-                                           decision=authority._selector(decision_raw))
+    return selected
 
 
 def select_historical_action(*, installed_config_path, action_id, now, monotonic=time.monotonic):

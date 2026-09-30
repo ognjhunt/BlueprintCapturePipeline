@@ -36,7 +36,7 @@ def _stage(root):
     destination = root / 'python/blueprint_pipeline'
     destination.mkdir(parents=True, mode=0o755)
     todo = ['__init__', 'control_plane_lane_historical_action', 'control_plane_lane_scratch_census',
-            'control_plane_lane_experiment_archive']
+            'control_plane_lane_experiment_archive', 'control_plane_lane_historical_restore_authority']
     seen, size = set(), 0
     while todo:
         name = todo.pop()
@@ -387,6 +387,37 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
             assert remote['calls'].count('readback') == 1
         assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
         assert not list(target.iterdir())
+        if action == 'offload':
+            from blueprint_pipeline.control_plane_lane_historical_restore_authority import approve_historical_restore
+            # A distinct currently mapped owner principal can approve restore;
+            # the old policy selector is a past fact, never fresh permission.
+            policy['principals'].append(dict(principal='restore-operator', owners=['owner'],
+                allowed_actions=['register', 'offload'], max_consent_seconds=900))
+            _write(root / 'policy.json', _encoded(policy))
+            restore = approve_historical_restore(installed_config_path=config,
+                offload_action_id=action_id, ack_final_event_digest=events[-1]['event_digest'],
+                principal='restore-operator', owner='owner', expires_at_epoch=time.time() + 600,
+                now=time.time())
+            assert restore['action_id'] != action_id and restore['action'] == 'restore'
+            assert restore['execution_authorized'] is False and restore['restore_approved'] is True
+            assert restore['preservation_event_digest'] == receipt['preservation_event_digest']
+            assert restore['archive'] == receipt['preservation']
+            assert restore['tombstone_version'] == receipt['tombstone_version']
+            assert not list(target.iterdir()) and target.stat().st_uid == 0
+            assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+            store = root / 'state/requests/historical-generation-actions'
+            after_approval = {path.name: path.read_bytes() for path in store.iterdir()}
+            for changes in ({'owner': 'another-owner'}, {'ack_final_event_digest': 'sha256:' + 'f' * 64}):
+                try:
+                    approve_historical_restore(**(dict(installed_config_path=config,
+                        offload_action_id=action_id, ack_final_event_digest=events[-1]['event_digest'],
+                        principal='restore-operator', owner='owner', expires_at_epoch=time.time() + 600,
+                        now=time.time()) | changes))
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError('unapproved restore decision published')
+                assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
         # A completed receipt never adopts a rewritten or repopulated tombstone.
         _write(target / 'changed-after-final', b'keep changed bytes')
         changed = _launch_worker(entry, action_id, target, journals, expected='failed')
@@ -394,7 +425,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
         assert (target / 'changed-after-final').read_bytes() == b'keep changed bytes'
         assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
         if action == 'offload':
-            return dict(historical_offload_full_readback=True)
+            return dict(historical_offload_full_readback=True, historical_restore_decision_bound=True)
         return dict(actual_owner_approved_delete=True, original_member_journal=True,
                     historical_delete_idempotent=True)
 
@@ -410,7 +441,8 @@ def connected_delete_recovery():
     return dict(actual_owner_approved_delete=True, original_member_journal=True,
                 historical_delete_idempotent=True, original_fence_recovered=True,
                 interrupted_removal_recovered=True, uncertain_removal_credit_zero=True,
-                historical_offload_full_readback=True, historical_corrupt_offload_keeps_bytes=True)
+                historical_offload_full_readback=True, historical_corrupt_offload_keeps_bytes=True,
+                historical_restore_decision_bound=True)
 
 
 if __name__ == '__main__':

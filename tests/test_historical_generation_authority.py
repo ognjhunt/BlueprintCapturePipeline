@@ -138,6 +138,21 @@ def test_owner_review_decision_grants_no_execution(historical_installation):
     assert (historical_installation[1] / 'one.log').read_bytes() == b'original owner diagnostics\n'
 
 
+@pytest.mark.parametrize('action', ['delete', 'offload', 'owner_review'])
+def test_restore_approval_requires_actual_completed_preservation(historical_installation, action):
+    from blueprint_pipeline.control_plane_lane_historical_restore_authority import approve_historical_restore
+    selected = packet(historical_installation)
+    approved = decision(historical_installation, selected, action=action)
+    store = historical_installation[3]
+    before = {path.name: path.read_bytes() for path in store.iterdir()}
+    with pytest.raises((ValueError, OSError)):
+        approve_historical_restore(installed_config_path=historical_installation[0],
+            offload_action_id=approved['action_id'], ack_final_event_digest='sha256:' + 'f' * 64,
+            principal='operator', owner='owner', expires_at_epoch=2100, now=2000, monotonic=lambda: 50000)
+    assert {path.name: path.read_bytes() for path in store.iterdir()} == before
+    assert (historical_installation[1] / 'one.log').read_bytes() == b'original owner diagnostics\n'
+
+
 def test_decision_collision_preserves_the_original_packet(historical_installation, monkeypatch):
     from blueprint_pipeline import control_plane_lane_historical_authority as feature
     selected = packet(historical_installation)
