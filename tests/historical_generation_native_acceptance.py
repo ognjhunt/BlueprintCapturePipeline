@@ -418,6 +418,16 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
                 else:
                     raise AssertionError('unapproved restore decision published')
                 assert {path.name: path.read_bytes() for path in store.iterdir()} == after_approval
+            restored = _launch_worker(entry, restore['action_id'], target, journals)
+            assert restored['action'] == 'restore' and restored['owner_access_reopened'] is True
+            assert restored['fresh_disk_reservation'] is True
+            assert all((target / name).read_bytes() == value for name, value in original.items())
+            assert target.stat().st_uid == foreign.pw_uid and target.stat().st_gid == foreign.pw_gid
+            restore_events = [json.loads(path.read_bytes()) for path in
+                              sorted((journals / restore['action_id']).glob('e-*.json'))]
+            kinds = [event['kind'] for event in restore_events]
+            assert kinds.index('restore_final') < kinds.index('access_reopened')
+            assert sum(kind == 'restore_member' for kind in kinds) == len(original)
         # A completed receipt never adopts a rewritten or repopulated tombstone.
         _write(target / 'changed-after-final', b'keep changed bytes')
         changed = _launch_worker(entry, action_id, target, journals, expected='failed')
@@ -429,7 +439,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
         assert (target / 'changed-after-final').read_bytes() == b'keep changed bytes'
         assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
         if action == 'offload':
-            return dict(historical_offload_full_readback=True, historical_restore_decision_bound=True)
+            return dict(historical_offload_full_readback=True, historical_restore_decision_bound=True,
+                        historical_restored_bytes_and_access=True)
         return dict(actual_owner_approved_delete=True, original_member_journal=True,
                     historical_delete_idempotent=True)
 
@@ -446,7 +457,7 @@ def connected_delete_recovery():
                 historical_delete_idempotent=True, original_fence_recovered=True,
                 interrupted_removal_recovered=True, uncertain_removal_credit_zero=True,
                 historical_offload_full_readback=True, historical_corrupt_offload_keeps_bytes=True,
-                historical_restore_decision_bound=True)
+                historical_restore_decision_bound=True, historical_restored_bytes_and_access=True)
 
 
 if __name__ == '__main__':

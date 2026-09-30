@@ -265,7 +265,7 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility():
         original_member_journal=True, historical_delete_idempotent=True, original_fence_recovered=True,
         interrupted_removal_recovered=True, uncertain_removal_credit_zero=True,
         historical_offload_full_readback=True, historical_corrupt_offload_keeps_bytes=True,
-        historical_restore_decision_bound=True)
+        historical_restore_decision_bound=True, historical_restored_bytes_and_access=True)
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
