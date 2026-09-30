@@ -313,3 +313,15 @@ API references: [session management/cancellation](https://developers.openai.com/
 [immutable artifact retrieval/lifetime](https://developers.openai.com/api/docs/guides/agents-api/environments/files),
 [hosted setup and actual tier](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted).
 Parent handoff: https://app.notion.com/p/3eb80154161d81348d4de0c3b58940e0.
+
+## Reviewed knowledge integration
+
+[Knowledge snapshot and research v2](KNOWLEDGE.md) is a deliberate opt-in contract.
+It supplies a small reviewed Notion mirror as untrusted background, preserves source
+review dates, and returns evidence-backed proposed knowledge deltas for parent review.
+The default v1 path and all live-operation/schedule gates remain unchanged.
+
+The owner-approved field-specific refresh policy has an explicit v3 opt-in, separate
+hash-bound overlay, dated background citations and live operational gates; see the
+v3 section in [Knowledge integration](KNOWLEDGE.md). Existing v1/v2 runs retain their
+original contract and age semantics.

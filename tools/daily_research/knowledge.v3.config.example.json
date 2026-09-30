@@ -1,0 +1,18 @@
+{
+  "enabled": false,
+  "first_date": "2026-09-30",
+  "approval_reference": "PENDING-owner-scope-reference",
+  "scheduler_authority_reference": "PENDING-no-cutover",
+  "crm_snapshot": "/var/lib/blueprint/researcher/crm.json",
+  "slack_channel_id": null,
+  "max_runtime_seconds": 180,
+  "soft_target_usd": 1,
+  "research_contract_version": 3,
+  "knowledge_snapshot": "/var/lib/blueprint/researcher/knowledge.json",
+  "knowledge_filters": {
+    "task_tags": [
+      "portioning"
+    ]
+  },
+  "knowledge_refresh_policy": "/var/lib/blueprint/researcher/refresh-policy.approved.v1.json"
+}

@@ -5,12 +5,16 @@ on:
     paths:
       - "tools/daily_research/**"
       - "tests/test_daily_research_runner.py"
+      - "tests/test_daily_research_knowledge.py"
+      - "tests/fixtures/daily_research/**"
       - ".github/workflows/daily-research.yml"
   push:
     branches: ["main"]
     paths:
       - "tools/daily_research/**"
       - "tests/test_daily_research_runner.py"
+      - "tests/test_daily_research_knowledge.py"
+      - "tests/fixtures/daily_research/**"
       - ".github/workflows/daily-research.yml"
 
 permissions:
@@ -38,11 +42,11 @@ jobs:
       - name: Install runner and verification tools only
         run: |
           uv venv "${RUNNER_TEMP}/daily-research-venv"
-          uv pip install --python "${RUNNER_TEMP}/daily-research-venv/bin/python" -r tools/daily_research/requirements.txt pytest==9.1.1 ruff==0.16.9
+          uv pip install --python "${RUNNER_TEMP}/daily-research-venv/bin/python" -r tools/daily_research/requirements.txt pytest==9.1.1 ruff==0.16.9 jsonschema==4.26.0
       - name: Verify lifecycle, SDK contracts and changed-file lint
         run: |
-          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_runner.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
-          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/runner.py tests/test_daily_research_runner.py
+          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
+          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/runner.py tools/daily_research/knowledge.py tools/daily_research/contracts.py tools/daily_research/freshness.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py
           python3 - "${RUNNER_TEMP}/daily-research-tests.xml" <<'PYTHON'
           import sys
           import xml.etree.ElementTree as ET
