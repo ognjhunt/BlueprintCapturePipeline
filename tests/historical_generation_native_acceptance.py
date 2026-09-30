@@ -267,7 +267,7 @@ def _assert_restore_increment(receipt, original):
     # Its later recovered receipt credits zero, while the original durable
     # final below still has to account for the full manifest exactly once.
     fields = ('recovered_publication', 'recovered_before_final', 'recovered_access',
-              'restarted_unwritten')
+              'restarted_unwritten', 'recovered_stage')
     assert all(field not in receipt or type(receipt[field]) is bool for field in fields), receipt
     phases = [field for field in fields if receipt.get(field) is True]
     assert len(phases) <= 1, receipt

@@ -20,6 +20,7 @@ from .control_plane_lane_historical_restore_archive import extract_preserved_mem
 from .control_plane_lane_historical_restore_tree import RestoreTree
 from .control_plane_lane_historical_restore_snapshot import after_reopen, validate_private
 from .control_plane_lane_historical_restore_publication import validate_publication
+from .control_plane_lane_historical_restore_staging import validate_complete_stage
 from .control_plane_lane_historical_restore_receipts import validate_restore_final, validate_pending_owner_access
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
 
@@ -138,7 +139,9 @@ def _recover_access(worker, events, roots, monotonic):
 
 
 def _recover_before_final(worker, events, roots, monotonic):
-    """Complete only an actual fully restored, privately snapshotted generation."""
+    """Complete only authenticated physical stages or privately snapshotted trees."""
+    if events[-1]['kind'] == 'restore_intent' and events[-1]['body'].get('phase') == 'stage_complete':
+        return _recover_complete_stage(worker, events, roots, monotonic)
     generation._require(events[-1]['kind'] == 'restore_intent'
         and events[-1]['body'].get('phase') in ('owner_rights', 'stage_removed')
         and not any(event['kind'] in ('restore_final', 'access_reopened') for event in events),
@@ -230,6 +233,27 @@ def _recover_publication(worker, events, roots, monotonic):
             restored_logical_bytes=sum(row['size_bytes'] for row in files))
         receipt = _finish_restore(worker, tree, held, roots, monotonic, extracted)
         return dict(receipt, recovered_publication=True, restored_files=0, restored_logical_bytes=0)
+
+
+def _recover_complete_stage(worker, events, roots, monotonic):
+    """Resume fully journaled private bytes; never create replacement births."""
+    manifest, decision = worker.selected[2], worker.selected[1]
+    observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
+        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+    validate_complete_stage(manifest, observed, decision, events, worker.action_id,
+                            tick=worker.operation.remaining)
+    _readback(worker, observed, roots, monotonic)
+    with _resources(worker, observed) as (held, reservation):
+        with worker.mutation_authority(readers=True):
+            held.verify()
+            reservation.renew()
+        tree = RestoreTree(held, worker, manifest)
+        tree.verify_bytes(staged=True)
+        tree.publish()
+        extracted = {key: events[-1]['body'][key] for key in
+            ('archive_sha256', 'archive_size_bytes', 'restored_files', 'restored_logical_bytes')}
+        receipt = _finish_restore(worker, tree, held, roots, monotonic, extracted)
+        return dict(receipt, recovered_stage=True, restored_files=0, restored_logical_bytes=0)
 
 
 def _unwritten_restore_attempt(events, action_id):
