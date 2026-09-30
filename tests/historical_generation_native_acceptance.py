@@ -421,7 +421,11 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False):
         # A completed receipt never adopts a rewritten or repopulated tombstone.
         _write(target / 'changed-after-final', b'keep changed bytes')
         changed = _launch_worker(entry, action_id, target, journals, expected='failed')
-        assert changed['code'].endswith('action_tombstone_changed'), changed
+        # Offload restore approval above rotated the current policy. The old
+        # offload action must refuse that earlier authority gate; all five
+        # unchanged-policy delete cases independently exercise tombstone drift.
+        refusal = 'owner_consent_policy_changed' if action == 'offload' else 'action_tombstone_changed'
+        assert changed['code'].endswith(refusal), changed
         assert (target / 'changed-after-final').read_bytes() == b'keep changed bytes'
         assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
         if action == 'offload':
