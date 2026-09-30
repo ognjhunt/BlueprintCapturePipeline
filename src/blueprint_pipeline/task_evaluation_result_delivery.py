@@ -38,6 +38,7 @@ from .decision_evidence_contracts import (
     cross_runtime_canonical_digest,
 )
 from .droid_policy_canary_embodiment import DROID_POLICY_CANARY_PRESET_ID
+from .policy_canary_output_members import NOT_INGESTED_GAP
 
 
 DELIVERY_SCHEMA_VERSION = "task_evaluation_result_delivery.v1"
@@ -50,6 +51,24 @@ _FIXED_ZIP_TIME = (2020, 1, 1, 0, 0, 0)
 
 class TaskEvaluationResultDeliveryError(ValueError):
     """Fail-closed delivery construction error."""
+
+
+def _execution_claim(row: Mapping[str, Any], claim: str) -> bool | None:
+    """One policy-canary execution claim: ``True``/``False``, or ``None`` when never ingested.
+
+    A streamed run whose provider output arrived but was never ingested
+    carries the dispatcher's ``provider_output_not_ingested`` media gap and no
+    value for ``candidate_policy_queried``, ``actions_reached_robot`` or
+    ``arm_moved``. Delivering ``False`` would say the policy was never queried
+    and the arm never moved, so the unknown passes through as ``None``. Every
+    other row keeps ``is True``: a reported boolean, and any other absent value.
+    """
+    value = row.get(claim)
+    visual_evidence = row.get("visual_evidence")
+    gap = visual_evidence.get("media_gap") if isinstance(visual_evidence, Mapping) else None
+    if value is None and isinstance(gap, Mapping) and gap.get("type") == NOT_INGESTED_GAP:
+        return None
+    return value is True
 
 
 def _sha256(path: Path) -> str:
@@ -1344,12 +1363,12 @@ def materialize_policy_canary_result_delivery(
                 },
                 "reset_state_digest": row.get("reset_state_digest"),
                 "policy_query": {
-                    "candidate_policy_queried": row.get("candidate_policy_queried") is True,
+                    "candidate_policy_queried": _execution_claim(row, "candidate_policy_queried"),
                     "receipt": bound_artifact(source_artifacts.get("policy_query_receipt")),
                 },
                 "action_delivery": {
-                    "actions_reached_robot": row.get("actions_reached_robot") is True,
-                    "arm_moved": row.get("arm_moved") is True,
+                    "actions_reached_robot": _execution_claim(row, "actions_reached_robot"),
+                    "arm_moved": _execution_claim(row, "arm_moved"),
                     "returned_action_sequence": bound_artifact(
                         source_artifacts.get("action_sequence"), role="returned_action_sequence"
                     ),

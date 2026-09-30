@@ -906,6 +906,12 @@ def test_a_streamed_run_blocked_after_its_paid_run_is_not_sealed_as_before_first
     delivered = (root / "artifacts/result_delivery/delivery.json").read_text()
     assert {episode["failure"]["code"] for episode in json.loads(delivered)["episodes"]} == {
         "provider_output_not_ingested"}
+    # Both deliveries leave the three execution claims unknown (null), never false.
+    for name in ("delivery.json", "website_delivery.json"):
+        episodes = json.loads((root / "artifacts/result_delivery" / name).read_text())["episodes"]
+        assert len(episodes) == 20
+        assert {(episode["policy_query"]["candidate_policy_queried"], episode["action_delivery"]["actions_reached_robot"],
+                 episode["action_delivery"]["arm_moved"]) for episode in episodes} == {(None, None, None)}, name
     projection = json.loads((root / "artifacts/result_delivery/policy_canary_result_projection.json").read_text())
     assert {row["failure_taxonomy"] for row in projection["episodes"]} == {"provider_output_not_ingested"}
     for name in ("delivery.json", "policy_canary_result_projection.json", "policy_canary_webapp_sync.json"):
