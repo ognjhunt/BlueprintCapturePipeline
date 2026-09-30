@@ -143,6 +143,7 @@ class HistoricalActionJournal:
             and seed['started_monotonic'] <= current < seed['started_monotonic'] + generation.MAX_SECONDS
             and seed['started_at_epoch'] <= self.operation.moment()
             and seed['boot_id'] == work._controller_boot_id(self.files), 'deadline')
+        self.operation.resume_original(seed['started_monotonic'])
         head = self._read(count - 1) if count > 1 else intent
         if count > 1:
             previous = self._read(count - 2)
@@ -155,6 +156,34 @@ class HistoricalActionJournal:
     @property
     def head(self):
         return self._load()
+
+    def replay_batch(self, start, *, previous, observed_at, expected_head):
+        """Read the whole chain in finite metadata checkpoints on the worker.
+
+        A fresh checkpoint gets a new five-second acquisition budget while the
+        verified original operation timer keeps running. The worker must start
+        at zero and carry the observed link/time through every batch. No batch
+        alone establishes recovery authority or clears current references.
+        """
+        _require(type(start) is int and 0 <= start < self._count
+            and (previous is None and observed_at is None if start == 0 else
+                 isinstance(previous, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', previous)
+                 and type(observed_at) in (int, float) and math.isfinite(observed_at)), 'invalid')
+        _require(self.head['event_digest'] == expected_head, 'changed')
+        values = []
+        for index in range(start, min(self._count, start + 32)):
+            self.operation.remaining()
+            value = self._read(index)
+            _require(value['previous_event_digest'] == previous
+                and (value['kind'] == 'intent' if index == 0 else value['kind'] != 'intent')
+                and (observed_at is None or observed_at <= value['observed_at_epoch'])
+                and value['observed_at_epoch'] <= self.operation.moment(), 'changed')
+            previous, observed_at = value['event_digest'], value['observed_at_epoch']
+            values.append(value)
+        end = start + len(values)
+        _require(self.head['event_digest'] == expected_head, 'changed')
+        return dict(events=values, next_start=end, previous=previous, observed_at=observed_at,
+                    complete=end == self._count, event_count=self._count)
 
     def _publish(self, kind, body, sequence, previous):
         _require(self.operation.moment() < self.scope['expires_at_epoch'], 'expired')

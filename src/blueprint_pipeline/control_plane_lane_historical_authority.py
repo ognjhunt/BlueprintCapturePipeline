@@ -46,6 +46,18 @@ class _Operation:
         self.started = self.last = monotonic()
         _require(type(self.started) in (int, float) and math.isfinite(self.started), 'deadline')
 
+    def resume_original(self, started):
+        """Retain the original monotonic deadline without rolling back wall time.
+
+        Only the verified protected journal calls this; a retry cannot gain a
+        fresh payload-read allowance from constructing another worker object.
+        """
+        _require(type(started) in (int, float) and math.isfinite(started)
+                 and 0 <= started <= self.started, 'deadline')
+        self.now -= self.started - started
+        self.started = started
+        self.remaining()
+
     def remaining(self):
         observed = self.monotonic()
         _require(type(observed) in (int, float) and math.isfinite(observed)

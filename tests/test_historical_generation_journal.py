@@ -98,6 +98,39 @@ def test_reopen_does_not_restart_original_monotonic_operation(historical_install
                      monotonic=lambda: 4 * 3600)
 
 
+def test_reopened_operation_hash_budget_is_bound_to_original_start(historical_installation):
+    approved = decision(historical_installation, packet(historical_installation))
+    journal_call(historical_installation, approved, lambda journal: journal.head,
+                 monotonic=lambda: 100)
+    remaining, moment = journal_call(historical_installation, approved,
+        lambda journal: (journal.operation.remaining(), journal.operation.moment()),
+        now=1040, monotonic=lambda: 120)
+    assert remaining == 4 * 3600 - 20
+    assert moment == 1040  # Binding the old timer must not roll back current time.
+
+
+def test_recovery_reads_every_link_not_only_the_last_two(historical_installation):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    approved = decision(historical_installation, packet(historical_installation))
+    def add(journal):
+        head = journal.head
+        for index in range(4):
+            head = journal.append('fence_intent', {'member_index': index}, previous=head['event_digest'])
+        return head
+    head = journal_call(historical_installation, approved, add)
+    directory = provision(historical_installation) / approved['action_id']
+    early = directory / 'e-00001.json'
+    value = json.loads(early.read_bytes())
+    value['body']['member_index'] = 99
+    value['event_digest'] = canonical_digest(value, digest_field='event_digest')
+    early.write_text(json.dumps(value))
+    def replay(journal):
+        return journal.replay_batch(0, previous=None, observed_at=None,
+                                    expected_head=head['event_digest'])
+    with pytest.raises(ValueError, match='journal_changed'):
+        journal_call(historical_installation, approved, replay)
+
+
 def test_published_event_survives_interruption_without_replacement(historical_installation, monkeypatch):
     from blueprint_pipeline import control_plane_lane_historical_journal as journal_code
     root = provision(historical_installation)
