@@ -1,8 +1,8 @@
 """Fixed historical action worker; fresh authority is held around revocation.
 
 Owner decisions alone never clear readers. Delete holds current authority and
-native reference gates through each original-member removal. Offload and restore
-remain gated; no entrypoint launches this partial worker on an installed host.
+native reference gates through each original-member removal. The installed
+ID-only root entry launches this worker in its separately proven target unit.
 """
 from __future__ import annotations
 
