@@ -813,35 +813,29 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     historical_delete_idempotent=True)
 
 
-def connected_delete_recovery():
-    def run_case(**options):
-        started = time.monotonic()
-        print(json.dumps({'fixture_case_started': options}), flush=True)
-        try:
-            connected_delete(**options)
-        except Exception as error:
-            trace, locations = error.__traceback__, []
-            while trace is not None:
-                if trace.tb_frame.f_code.co_filename == __file__:
-                    locations.append(trace.tb_frame.f_code.co_name + ':' + str(trace.tb_lineno))
-                trace = trace.tb_next
-            raise AssertionError('connected case=' + repr(options) + ':'
-                                 + ','.join(locations) + ':' + str(error)) from error
-        print(json.dumps({'fixture_case_completed': options,
-                          'elapsed_seconds': time.monotonic() - started}), flush=True)
-    for phase in (None, 'fenced', 'chown', 'removed', 'unlink'):
-        run_case(interruption=phase)
-    run_case(action='offload')
-    run_case(action='offload', restore_interruption='before_restore_final')
-    run_case(action='offload', restore_interruption='unwritten_stage')
-    run_case(action='offload', restore_interruption='access_intent')
-    run_case(action='offload', restore_interruption='stage_removed')
-    run_case(action='offload', corrupt=True)
-    return dict(actual_owner_approved_delete=True, original_member_journal=True,
-                historical_delete_idempotent=True, original_fence_recovered=True,
-                interrupted_removal_recovered=True, uncertain_removal_credit_zero=True,
-                historical_offload_full_readback=True, historical_corrupt_offload_keeps_bytes=True,
-                historical_restore_decision_bound=True, historical_restored_bytes_and_access=True)
+CONNECTED_CASES = (
+    ('delete', dict(interruption=None)),
+    ('fenced', dict(interruption='fenced')),
+    ('chown', dict(interruption='chown')),
+    ('removed', dict(interruption='removed')),
+    ('unlink', dict(interruption='unlink')),
+    ('offload', dict(action='offload')),
+    ('before_restore_final', dict(action='offload', restore_interruption='before_restore_final')),
+    ('unwritten_stage', dict(action='offload', restore_interruption='unwritten_stage')),
+    ('access_intent', dict(action='offload', restore_interruption='access_intent')),
+    ('stage_removed', dict(action='offload', restore_interruption='stage_removed')),
+    ('corrupt', dict(action='offload', corrupt=True)),
+)
+
+
+def run_connected_case(case_id):
+    options = dict(CONNECTED_CASES)[case_id]
+    started = time.monotonic()
+    print(json.dumps({'fixture_case_started': options}), flush=True)
+    result = connected_delete(**options)
+    print(json.dumps({'fixture_case_completed': options,
+                      'elapsed_seconds': time.monotonic() - started}), flush=True)
+    return result
 
 
 if __name__ == '__main__':

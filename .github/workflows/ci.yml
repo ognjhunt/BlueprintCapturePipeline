@@ -300,6 +300,7 @@ jobs:
             tests/test_registered_feature_linux.py::test_actual_contained_blueprint_native_pair_child_and_kernel_completion \
             tests/test_legacy_owner_linux.py::test_actual_legacy_owner_door_privilege_and_revocation \
             tests/test_historical_generation_linux.py::test_actual_historical_target_only_write_and_foreign_reference_visibility \
+            tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption \
             tests/test_historical_generation_linux.py::test_actual_private_restore_member_permission_interruption \
             tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_default_off_delete_and_second_tick \
             tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_offload_and_restore \
@@ -308,7 +309,7 @@ jobs:
           /var/lib/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
-          assert len(cases) == 7, "all seven exact native selectors must execute"
+          assert len(cases) == 18, "all seven native boundaries and eleven original connected cases must execute"
           assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "native skips and refusals do not prove acceptance"
           PYTHON
 

@@ -28,6 +28,11 @@ from pathlib import Path
 
 import pytest
 
+if __package__:
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+else:
+    from historical_generation_native_acceptance import CONNECTED_CASES
+
 
 def _root_fixture():
     assert sys.platform == 'linux' and os.geteuid() == 0
@@ -276,25 +281,50 @@ def test_actual_historical_target_only_write_and_foreign_reference_visibility(re
         adjacent_and_parent_denied=2, foreign_fd_cwd_mapping_visible=True,
         references_clear=False, future_writes_denied=4, old_fd_retained=True,
         actual_unit_guard_passed=True, all_original_members_fenced=True,
-        actual_foreign_channels_observed=True, actual_owner_approved_delete=True,
-        original_member_journal=True, historical_delete_idempotent=True, original_fence_recovered=True,
-        interrupted_removal_recovered=True, uncertain_removal_credit_zero=True,
-        historical_offload_full_readback=True, historical_corrupt_offload_keeps_bytes=True,
-        historical_restore_decision_bound=True, historical_restored_bytes_and_access=True)
+        actual_foreign_channels_observed=True)
 
 
 if __name__ == '__main__' and sys.argv[1:] == ['--root-fixture']:
-    from historical_generation_native_acceptance import connected_delete_recovery
-    # Exercise both independent native boundaries even when the first refuses.
-    # Neither failed boundary contributes a receipt or passes this selector.
-    results, failures = {}, []
-    for acceptance in (_root_fixture, connected_delete_recovery):
-        try:
-            results.update(acceptance())
-        except Exception as error:
-            failures.append(acceptance.__name__ + ':' + type(error).__name__ + ':' + str(error))
-    assert not failures, '\n'.join(failures)
-    print(json.dumps(results, sort_keys=True))
+    print(json.dumps(_root_fixture(), sort_keys=True))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
+                   reason='actual disposable Linux connected case required; Mac skip is unmet')
+@pytest.mark.parametrize('case_id', [row[0] for row in CONNECTED_CASES])
+def test_actual_connected_historical_interruption(case_id, record_property):
+    # Separate original cases give each an observable bounded process. Their
+    # production action IDs, original deadlines and every gate are unchanged.
+    command = [sys.executable, str(Path(__file__).resolve()), '--connected-case', case_id]
+    if os.geteuid() != 0:
+        command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
+                   'PYTHONDONTWRITEBYTECODE=1', *command]
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=60,
+                              cwd=Path(__file__).parents[1],
+                              env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    except subprocess.TimeoutExpired as error:
+        output = (error.stdout or b'').decode() if isinstance(error.stdout, bytes) else error.stdout or ''
+        _record_reference_refusals(output, record_property)
+        print(output)
+        raise
+    _record_reference_refusals(done.stdout, record_property)
+    assert done.returncode == 0, done.stdout + done.stderr
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    if case_id == 'corrupt':
+        expected = dict(historical_corrupt_offload_keeps_bytes=True)
+    elif dict(CONNECTED_CASES)[case_id].get('action') == 'offload':
+        expected = dict(historical_offload_full_readback=True, historical_restore_decision_bound=True,
+                        historical_restored_bytes_and_access=True)
+    else:
+        expected = dict(actual_owner_approved_delete=True, original_member_journal=True,
+                        historical_delete_idempotent=True)
+    assert result == expected
+
+
+if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == '--connected-case':
+    from historical_generation_native_acceptance import run_connected_case
+    print(json.dumps(run_connected_case(sys.argv[2]), sort_keys=True))
 
 
 @pytest.mark.slow
