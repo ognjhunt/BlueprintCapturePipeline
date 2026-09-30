@@ -1,8 +1,8 @@
 """Reopen authenticated persistent owner consent for derived execution records."""
 from __future__ import annotations
 
-import os
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -98,7 +98,8 @@ def descriptive_task_match(*, owner_task, seed, source_binding):
 
 def reopen_scene_intent(reference, *, now=None):
     """Only server-retained intake records may supply owner identity or permission."""
-    from .task_evaluation_scene_intake import _read, validate_request, effective_execution_expiry
+    from .task_evaluation_scene_execution_window_evidence import effective_execution_expiry
+    from .task_evaluation_scene_intent_contracts import _read, validate_request
     path = Path(str((reference or {}).get("path", "")))
     root_text = os.getenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", "")
     require(bool(root_text), "scene_owner_intake_root_missing")
@@ -117,7 +118,7 @@ def reopen_scene_intent(reference, *, now=None):
     moment = time.time() if now is None else now
     require(not (path.parent / "revoked.json").exists(), "scene_owner_authority_revoked")
     require(moment < effective_execution_expiry(path.parent, intent), "scene_owner_authority_expired")
-    from .task_evaluation_scene_execution_budget import effective_execution_budget
+    from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
     effective_execution_budget(path.parent, intent)
     require(request["consent"]["accepted_by"] == request["owner"]["user_id"],
             "scene_owner_actor_mismatch")
@@ -133,7 +134,7 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
     request, owner = intent["request"], task.get("human_authority", {})
     consent = request["consent"]
     if "attempt" in binding:
-        from .task_evaluation_scene_intake import _read
+        from .task_evaluation_scene_intent_contracts import _read
         attempt_ref = binding["attempt"]
         attempt_path = checked_file(attempt_ref["path"], attempt_ref)
         attempt = _read(attempt_path, "attempt_digest")
@@ -145,7 +146,9 @@ def validate_task_scene_owner(task, *, provider_terms_path=None, now=None):
         require(attempt_path.parent == parent / ("preparation-attempts" if preparation_only else "attempts"),
                 "scene_owner_attempt_path_invalid")
         if not preparation_only:
-            from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
+            from .task_evaluation_scene_execution_budget_evidence import (
+                validate_attempt_execution_budget,
+            )
             validate_attempt_execution_budget(parent, intent, attempt)
     if task.get("owner_description_seed_binding") is not None:
         from .task_evaluation_scene_configuration_submission_inputs import read

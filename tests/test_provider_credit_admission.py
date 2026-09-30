@@ -108,7 +108,7 @@ def test_allocation_guard_is_wired_before_offer_search():
 
 def test_low_credit_stops_real_render_launcher_before_create(tmp_path, monkeypatch):
     from blueprint_pipeline.gpu_render_providers import VastRenderProvider
-    from blueprint_pipeline import vast_provider_adapter as adapter
+    from blueprint_pipeline import vast_api_transport as adapter
     from blueprint_pipeline.paid_resource_admission import (
         build_paid_lane_admission, require_paid_resource_admission, PAID_LANE_ADMISSION_SCHEMA_VERSION,
     )

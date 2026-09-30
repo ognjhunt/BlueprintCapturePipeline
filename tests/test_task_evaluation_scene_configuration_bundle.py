@@ -4228,7 +4228,8 @@ def test_the_receipt_carries_and_cross_compares_its_authorizing_decision() -> No
     decision_index = source.find('"disclosure_decision": (', manifest_index)
     assert decision_index != -1, "the manifest never records the decision"
 
-    compared = source[source.find("compared_fields = (") :]
+    reader = inspect.getsource(bundle.load_scene_configuration_provider_bundle_receipt)
+    compared = reader[reader.find("compared_fields = (") :]
     assert '"disclosure_decision",' in compared[: compared.find(")")], (
         "the decision is not cross-compared between receipt and bundle manifest"
     )
@@ -4437,6 +4438,10 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
     a conservative ceiling above that observed floor, not the old 2 GB value.
     """
 
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_provider_contracts as contracts,
+    )
+
     receipt = _build(tmp_path, "bundle")
     expected_upload = max(
         2 * receipt["bundle_size_bytes"],
@@ -4479,7 +4484,7 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
         ):
             scene_vast._provider_transfer_byte_budget(broken)
     monkeypatch.setattr(
-        provider_artifacts,
+        contracts,
         "PROVISIONING_DOWNLOAD_OVERHEAD_BYTES",
         observed_pinned_wheel_floor,
     )
@@ -4489,12 +4494,12 @@ def test_scene_configuration_transfer_budget_is_the_receipt_s_own_byte_count(
     ):
         scene_vast._provider_transfer_byte_budget(receipt)
     monkeypatch.setattr(
-        provider_artifacts,
+        contracts,
         "PROVISIONING_DOWNLOAD_OVERHEAD_BYTES",
         10_000_000_000,
     )
     monkeypatch.setattr(
-        provider_artifacts, "PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES", 1
+        contracts, "PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES", 1
     )
     with pytest.raises(
         scene_vast.TaskEvaluationSceneConfigurationVastError,

@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+from .task_evaluation_scene_configuration_provider_contracts import (
+    ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES,
+    PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
+    PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
+    PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER,
+    PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO,
+    PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT,
+    PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES,
+    TaskEvaluationSceneConfigurationVastError,
+    _provider_output_disk_requirements,
+    _provider_transfer_byte_budget,
+    _sha256,
+)
 
 from .provider_output_disk_capacity import observe_provider_output_disk_capacity
 from .task_evaluation_configured_scene_object_store import (
@@ -16,7 +29,7 @@ from .task_evaluation_scene_artifact_retention import (
     seal_scene_artifact_remote_index,
 )
 from .task_evaluation_scene_configuration_transfer_budget import (
-    scene_configuration_provider_transfer_byte_budget,
+    scene_configuration_provider_transfer_byte_budget,  # noqa: F401 - compatibility re-export
 )
 
 
@@ -29,35 +42,20 @@ from .task_evaluation_scene_configuration_transfer_budget import (
 #: but it does *not* skip Torch: ``run_public_scene_artifixer3d.sh`` installs
 #: the CUDA 12.8 build before importing the 3DGRUT JIT graph. The exact Torch
 #: wheel plus only five mandatory Linux wheels already total this many bytes.
-ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES = 2_209_255_046
 
 #: Conservative pre-allocation ceiling for all non-bundle downloads above.
 #: Keep this fail-closed: a tighter value needs a complete publisher-size
 #: inventory, not an assumption that one executed install branch is skipped.
-PROVISIONING_DOWNLOAD_OVERHEAD_BYTES = 10_000_000_000
 
 #: The result ZIP is bounded before its signed PUT is used. The floor leaves
 #: room for generated evidence when a test bundle is tiny; the receipt-relative
 #: term scales for production bundles with scene, renderer, and native pieces.
-PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES = 1_000_000_000
-PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER = 2
-PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO = 4
-PROVIDER_OUTPUT_MAXIMUM_MEMBER_COUNT = 10_000
 #: Space retained beyond the declared archive and maximum expansion for
 #: filesystem metadata, terminal manifests, and publication temporaries.
-PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES = 512 * 1024 * 1024
 
 
-class TaskEvaluationSceneConfigurationVastError(RuntimeError):
-    """The canonical scene-configuration Vast lane refused an unsafe input."""
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -124,37 +122,6 @@ def _seal_provider_bundle_remote_index(
     return reference, index, index_path
 
 
-def _provider_output_disk_requirements(
-    maximum_archive_bytes: int,
-) -> dict[str, int]:
-    """Return the one capacity formula used before transfer and extraction."""
-
-    if (
-        isinstance(maximum_archive_bytes, bool)
-        or not isinstance(maximum_archive_bytes, int)
-        or maximum_archive_bytes <= 0
-        or PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO < 1
-        or PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES <= 0
-    ):
-        raise TaskEvaluationSceneConfigurationVastError(
-            "scene_configuration_provider_output_disk_requirement_invalid"
-        )
-    maximum_expanded_bytes = (
-        maximum_archive_bytes * PROVIDER_OUTPUT_MAXIMUM_EXPANSION_RATIO
-    )
-    return {
-        "maximum_archive_bytes": maximum_archive_bytes,
-        "maximum_expanded_bytes": maximum_expanded_bytes,
-        "operational_reserve_bytes": PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES,
-        "required_free_bytes_before_download": (
-            maximum_archive_bytes
-            + maximum_expanded_bytes
-            + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
-        ),
-        "required_free_bytes_before_extraction": (
-            maximum_expanded_bytes + PROVIDER_OUTPUT_OPERATIONAL_RESERVE_BYTES
-        ),
-    }
 
 
 def _provider_output_disk_capacity(
@@ -207,21 +174,6 @@ def extract_provider_output_with_capacity_guard(
     return result, blockers, capacity
 
 
-def _provider_transfer_byte_budget(
-    receipt: Mapping[str, Any],
-) -> tuple[int, int]:
-    return scene_configuration_provider_transfer_byte_budget(
-        receipt,
-        provisioning_download_overhead_bytes=PROVISIONING_DOWNLOAD_OVERHEAD_BYTES,
-        artifixer_pinned_wheel_download_floor_bytes=(
-            ARTIFIXER_PINNED_WHEEL_DOWNLOAD_FLOOR_BYTES
-        ),
-        provider_output_upload_minimum_bytes=PROVIDER_OUTPUT_UPLOAD_MINIMUM_BYTES,
-        provider_output_upload_bundle_multiplier=(
-            PROVIDER_OUTPUT_UPLOAD_BUNDLE_MULTIPLIER
-        ),
-        error_factory=TaskEvaluationSceneConfigurationVastError,
-    )
 
 
 __all__ = [

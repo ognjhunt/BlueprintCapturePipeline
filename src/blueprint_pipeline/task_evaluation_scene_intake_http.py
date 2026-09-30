@@ -181,7 +181,7 @@ def register_scene_intake_routes(app: FastAPI, require_admission: Callable,
         refused_roles = sorted(str(role) for role in (headroom.get("refused_roles") or []))
         capacity: dict[str, object] = {"state": "available"}
         if "launch_preparation" in refused_roles:
-            from .control_plane_capacity_controller import _read_attention_summary, capacity_eta
+            from .control_plane_capacity_evidence import _read_attention_summary, capacity_eta
 
             target = next((row for row in headroom.get("targets") or []
                            if isinstance(row, Mapping) and row.get("role") == "launch_preparation"), {})

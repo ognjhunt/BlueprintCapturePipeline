@@ -17,8 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .adp009d_policy_candidate_admission import EXPECTED_CANDIDATES
-from .task_evaluation_scene_intake import SUPPORTED_POLICY_CANDIDATE_IDS
-
+from .task_evaluation_scene_intent_contracts import SUPPORTED_POLICY_CANDIDATE_IDS
 
 CAPABILITY_BLOCKER = "scene_policy_checkpoint_capability_unavailable"
 

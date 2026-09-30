@@ -1,10 +1,13 @@
 """Website receives exact owner context without granting execution or exposing credentials."""
 import json
+from pathlib import Path
+
 import pytest
 
-from blueprint_pipeline import task_evaluation_team_run_context as context
-from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline import task_evaluation_controls_autoprovision as worker
+from blueprint_pipeline import task_evaluation_scene_intake as intake
+from blueprint_pipeline import task_evaluation_team_run_context as context
+from tests.test_controls_read_evidence import _source
 from tests.test_team_evaluation_controller import _case, _put
 
 
@@ -12,6 +15,9 @@ def fixture(tmp_path, monkeypatch):
     args, config, path, _ = _case(tmp_path, monkeypatch)
     config['robot_catalog_path']=str(_put(tmp_path/'catalog.json', args['catalog']))
     original=intake._read(path, 'intent_digest')
+    run = Path(config['launch_state_root'])/'source-launch'
+    profile = json.loads((run/'launch_profile.json').read_text())
+    _source(tmp_path, run_root=run, profile_digest=profile['profile_digest'])
     return args, config, path, original
 
 
@@ -51,10 +57,27 @@ def test_private_source_cannot_be_read_without_exact_access(tmp_path, monkeypatc
     assert not list(args['scene_root'].glob('scene-*/attempts/*.json'))
 
 
+@pytest.mark.parametrize('artifact', ['launch_receipt', 'webapp_sync_succeeded',
+                                     'post_teardown_provider_zero_receipt'])
+def test_context_reopens_real_source_evidence_before_returning_owner_task(tmp_path, monkeypatch, artifact):
+    args, config, _path, original=fixture(tmp_path, monkeypatch)
+    retained=Path(config['launch_state_root'])/'source-launch'/f'{artifact}.json'
+    value=json.loads(retained.read_text())
+    value['run_id']='another-source'
+    _put(retained,value)
+    before={str(p):p.read_bytes() for p in tmp_path.rglob('*.json')}
+    with pytest.raises(RuntimeError, match='configured_controls_worker_'):
+        context.evaluation_context(source_launch_id='source-launch', owner=original['request']['owner'], config=config)
+    assert {str(p):p.read_bytes() for p in tmp_path.rglob('*.json')}==before
+    assert not list(args['scene_root'].glob('scene-*/attempts/*.json'))
+
+
 def test_http_context_requires_signature_and_does_not_create_intent(tmp_path, monkeypatch):
     import hmac
     from datetime import datetime, timezone
+
     from fastapi.testclient import TestClient
+
     from blueprint_pipeline import live_pipeline_intake_service as service
     args, config, path, original=fixture(tmp_path, monkeypatch)
     monkeypatch.setenv(worker.CONFIG_ENV,str(_put(tmp_path/'config.json',config)))

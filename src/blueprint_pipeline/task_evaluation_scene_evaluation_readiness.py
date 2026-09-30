@@ -14,13 +14,12 @@ from .task_evaluation_configured_scene_revision import (
     TaskEvaluationConfiguredSceneRevisionError,
     validate_configured_scene_revision,
 )
-
+from .task_evaluation_launch_evidence_contracts import (
+    CONFIGURATION_COMPLETE_OFFERING_STATUSES as CONFIGURATION_COMPLETE_OFFERING_STATUSES,  # noqa: PLC0414 - compatibility reexport
+)
 
 RECEIPT_SCHEMA_VERSION = (
     "task_evaluation_configured_scene_evaluation_readiness.v1"
-)
-CONFIGURATION_COMPLETE_OFFERING_STATUSES = frozenset(
-    {"launch_ready", "configured_controls_pending"}
 )
 
 
