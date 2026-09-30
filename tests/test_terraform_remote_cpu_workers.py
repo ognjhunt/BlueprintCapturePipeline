@@ -506,19 +506,21 @@ def test_remote_cpu_budget_alerts_at_the_approved_cap() -> None:
             'merge(local.common_labels, { cost-center = "remote-cpu-workers" })'), address
 
 
-def test_deploy_script_defaults_remote_cpu_workers_off_and_exports_the_flag() -> None:
+def test_deploy_script_defaults_remote_cpu_workers_on_and_exports_the_flag() -> None:
     """Enablement persists only as a committed default (review finding I7), never as a one-off
     environment value that the next deploy would silently undo by destroying the workers."""
     deploy = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     configuration = deploy[: deploy.index("# Directories")].splitlines()
-    default = 'REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-false}"'
+    default = 'REMOTE_CPU_WORKERS_ENABLED="${REMOTE_CPU_WORKERS_ENABLED:-true}"'
     assert configuration.count(default) == 1
     # Beside the other committed flag defaults, the privacy flags.
     fail_closed = configuration.index('PRIVACY_FAIL_CLOSED="${PRIVACY_FAIL_CLOSED:-true}"')
     assert fail_closed < configuration.index(default) < configuration.index(
         'PRIVACY_SAM3_URL="${PRIVACY_SAM3_URL:-}"')
-    assert 'REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-}"' in configuration
-    assert "REMOTE_CPU_WORKERS_ENABLED:-true" not in deploy
+    assert ('REMOTE_CPU_WORKER_OBJECT_PREFIX="${REMOTE_CPU_WORKER_OBJECT_PREFIX:-'
+            'https://s3.us-east-005.backblazeb2.com/blueprint-task-evaluation-artifacts-prod/'
+            'blueprint/arm-decision-proof-v1/configured-scenes/}"') in configuration
+    assert "REMOTE_CPU_WORKERS_ENABLED:-false" not in deploy
     # setup_iam is outside the deploy flow, and its unconditional project grants would undo plan 14
     # C2's conditions: it refuses before any grant once the workers are enabled.
     setup_iam = deploy[deploy.index("setup_iam() {"):]
@@ -533,7 +535,7 @@ def test_deploy_script_defaults_remote_cpu_workers_off_and_exports_the_flag() ->
     prefix = 'export TF_VAR_remote_cpu_worker_object_prefix="$REMOTE_CPU_WORKER_OBJECT_PREFIX"'
     assert exports.index('export TF_VAR_privacy_fail_closed="$PRIVACY_FAIL_CLOSED"') < exports.index(flag)
     assert prefix in exports
-    # Terraform's own default agrees with the script's.
+    # A bare Terraform invocation remains conservative; the deploy script is the committed opt-in.
     flag_variable = _terraform_variable_body(_main(), "remote_cpu_workers_enabled")
     assert _attr(flag_variable, "default") == "false"
 

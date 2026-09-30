@@ -26,7 +26,8 @@ from scripts import gpu_spend_guard as guard
 UTC = timezone.utc
 
 
-@pytest.mark.parametrize("fault", [None, "expired", "dead_owner", "wrong_deadline", "cancelled", "terminal"])
+@pytest.mark.parametrize("fault", [None, "expired", "dead_owner", "wrong_deadline", "cancelled", "terminal",
+    "missing_deadline", "boolean_deadline", "string_deadline", "invalid_deadline"])
 def test_task_evaluation_watchdog_protects_only_its_live_bounded_owner(tmp_path, fault):
     root = tmp_path / "task-evaluation-launch-runs/run/allocator/scene-configuration-job/independent_vast_watchdog"
     root.mkdir(parents=True)
@@ -54,6 +55,14 @@ def test_task_evaluation_watchdog_protects_only_its_live_bounded_owner(tmp_path,
         (root / "groot_oscar_runpod_canary_watchdog_cancel.json").write_text("{}")
     elif fault == "terminal":
         record["status"] = "provider_terminal"
+    elif fault == "missing_deadline":
+        record.pop("deadline_epoch")
+    elif fault == "boolean_deadline":
+        record["deadline_epoch"] = True
+    elif fault == "string_deadline":
+        record["deadline_epoch"] = str(deadline)
+    elif fault == "invalid_deadline":
+        record["deadline_epoch"] = None
     (root / "groot_oscar_runpod_canary_watchdog.json").write_text(json.dumps(record))
     protected = guard.find_protected_pod_ids([tmp_path], process_cmdlines=[command], now=now)
     assert protected == ({"50204295"} if fault is None else set())

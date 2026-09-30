@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import math
 import os
 import re
 import socket
@@ -23,6 +22,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .controlled_policy_actions import validate_action_response
 
 ACTION_ROUTE = "/v1/actions"
 MAX_REQUEST_BYTES_ENV = "BLUEPRINT_COMPANY_POLICY_PROXY_MAX_REQUEST_BYTES"
@@ -100,9 +100,6 @@ def _derived_response_limit(action_schema: dict[str, Any]) -> int:
     if not isinstance(channels, list) or not channels:
         raise ValueError("company_policy_proxy_action_schema_invalid")
     return min(65_536, max(1_024, 128 + rows * len(channels) * 32))
-
-
-from .controlled_policy_actions import validate_action_response
 
 
 def forward_action_json(
