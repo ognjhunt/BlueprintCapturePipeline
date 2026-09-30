@@ -113,9 +113,22 @@ def worker_main(root, action_id):
     _namespace(root)
     from blueprint_pipeline.control_plane_lane_historical_action import run_historical_action
     from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    from blueprint_pipeline import control_plane_lane_historical_references as references
     from blueprint_pipeline.control_plane_kernel_process import kernel_has_no_user_memory
     inspect_process, read_channel = processes._inspect_process, processes._Scan.read
     diagnostics = []
+    observe_pins = references.observe_storage_pins
+    def diagnosed_pins(*args, **kwargs):
+        result = observe_pins(*args, **kwargs)
+        if not result.complete:
+            budget = kwargs['budget']
+            diagnostics.append(('PIN_GUARD', dict(blockers=result.blockers,
+                root_identity=result.root_identity, budget_failure=budget.failure,
+                remaining_seconds=budget.deadline - time.monotonic()
+                    if budget.deadline is not None else None,
+                counts=dict(budget.counts))))
+        return result
+    references.observe_storage_pins = diagnosed_pins
     def diagnosed_read(self, directory, name, cap=1024**2):
         try:
             return read_channel(self, directory, name, cap)
@@ -293,7 +306,7 @@ def connected_delete():
         assert len(observations) == 1, log.stdout
         receipt = observations[0]
         diagnostics = [line for line in log.stdout.splitlines()
-                       if line.startswith(('PROCESS_', 'ACTION_FAILURE:'))]
+                       if line.startswith(('PROCESS_', 'PIN_GUARD:', 'ACTION_FAILURE:'))]
         assert receipt['status'] == 'completed', dict(receipt=receipt, diagnostics=diagnostics)
         assert receipt['removed_files'] == 2 and receipt['removed_directories'] == 1
         assert receipt['logical_bytes'] == sum(map(len, original.values()))
