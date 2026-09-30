@@ -262,6 +262,20 @@ def _later_reference_attempts(invoke, journals, action_id):
     raise AssertionError('bounded_reference_attempts_exhausted')
 
 
+def _assert_restore_increment(receipt, original):
+    # A genuine refused earlier unit may already have written every byte.
+    # Its later recovered receipt credits zero, while the original durable
+    # final below still has to account for the full manifest exactly once.
+    fields = ('recovered_publication', 'recovered_before_final', 'recovered_access',
+              'restarted_unwritten')
+    assert all(field not in receipt or type(receipt[field]) is bool for field in fields), receipt
+    phases = [field for field in fields if receipt.get(field) is True]
+    assert len(phases) <= 1, receipt
+    recovered = bool(phases and phases != ['restarted_unwritten'])
+    expected = (0, 0) if recovered else (len(original), sum(map(len, original.values())))
+    assert (receipt['restored_files'], receipt['restored_logical_bytes']) == expected, receipt
+
+
 def _launch_worker_once(entry, action_id, target, journals, *, restore=False, launch=None):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
@@ -751,9 +765,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     assert restored['restored_files'] == restored['restored_logical_bytes'] == 0
                 assert all((journals / restore['action_id'] / name).read_bytes() == raw
                            for name, raw in interrupted_prefix.items())
-            else:
-                assert restored['restored_files'] == len(original)
-                assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
+            _assert_restore_increment(restored, original)
             assert restored['action'] == 'restore' and restored['owner_access_reopened'] is True
             assert restored['fresh_disk_reservation'] is True
             assert all((target / name).read_bytes() == value for name, value in original.items())
@@ -763,6 +775,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             kinds = [event['kind'] for event in restore_events]
             assert kinds.index('restore_final') < kinds.index('access_reopened')
             assert sum(kind == 'restore_member' for kind in kinds) == len(original)
+            finals = [event['body'] for event in restore_events if event['kind'] == 'restore_final']
+            assert len(finals) == 1
+            assert (finals[0]['restored_files'], finals[0]['restored_logical_bytes']) == (
+                len(original), sum(map(len, original.values())))
             restore_before = {path.name: path.read_bytes() for path in (journals / restore['action_id']).iterdir()}
             restore_again = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
                                            launch=gc_tick if installed else None)
