@@ -810,14 +810,32 @@ def _collect(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.R
         return _commit(c, path, marker, plan, lease, descriptor, verdict["receipt"])
     except _AttemptFailed as exc:
         return _fail(c, _lease(c, lease["job_id"]), str(exc))
-    except Exception as exc:  # noqa: BLE001 - only a named conflict is abandoned; anything else resumes next run
+    except Exception as exc:  # noqa: BLE001 - a named conflict is abandoned; anything else is bounded, then abandoned
         current, code = _lease(c, lease["job_id"]), _typed(exc)
-        committed = c.queue_root / "results" / plan.queue_row["name"]
-        if (current["state"] != "collecting" or not _cannot_finish(code)
-                or (current["dispatch_started"] and not current["compute_zero_proven"])
-                or (committed.is_file() and committed.read_bytes() == _canonical_bytes(verdict["receipt"]["result"]))):
-            raise  # transient, or this attempt's result is written: the next run resumes where this one stopped
-        return _abandon_commit(c, path, marker, current, f"remote_cpu_commit_failed:{code}")
+        if current["state"] != "collecting" or (current["dispatch_started"] and not current["compute_zero_proven"]):
+            raise  # nothing is committed before compute-zero: the next run tries again
+        if _decided(c, plan, current, descriptor, verdict["receipt"]):
+            raise  # this attempt's result or parity is written: the next run resumes _close, the slot held by design
+        if _cannot_finish(code):
+            return _abandon_commit(c, path, marker, current, f"remote_cpu_commit_failed:{code}")
+        # Any other error counts against the collection budget, six runs or an hour, as promotion and landing
+        # failures do; past it the commit is abandoned, never retried by a second paid attempt (review Q3).
+        row = _for_attempt(c, _row(c, plan.queue_row["name"], plan.queue_row), current["attempt_id"])
+        try:
+            row = _record_failure(c, row, _failure(exc, "remote_cpu_commit_failed"))
+        except _AttemptFailed as spent:
+            return _abandon_commit(c, path, marker, current, str(spent))
+        return {"status": "collecting", "blocker": row["last_failure"]}
+
+
+def _decided(c: Collector, plan: remote.RemotePlan, lease: Mapping[str, Any], descriptor: Mapping[str, Any],
+             receipt: Mapping[str, Any]) -> bool:
+    """Whether this attempt's outcome is already written: its result for the row, or, in shadow, its parity."""
+
+    if descriptor["mode"] == "shadow":
+        return (c.jobs_root / "parity" / STAGE / f"{lease['attempt_id']}.json").is_file()
+    written = c.queue_root / "results" / plan.queue_row["name"]
+    return written.is_file() and written.read_bytes() == _canonical_bytes(receipt["result"])
 
 
 def _cannot_finish(code: str) -> bool:

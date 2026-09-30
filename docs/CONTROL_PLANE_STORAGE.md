@@ -1426,9 +1426,10 @@ drops the hand-off, and a hand-off whose row was given up, handed back or moved
 on is never dispatched again. A commit that cannot finish after compute-zero (a
 result or pointer already there that is not this attempt's, or the row gone)
 hands the row back and still tears the attempt down to provider-zero; its lease
-ends `blocked`. Anything else, such as a failed write or a teardown or
-settlement error once the result is written, is resumed by the next run from
-the step that failed.
+ends `blocked`. Any other error before the result is written (a failed write
+or read) is retried within the collection budget, six runs or an hour, then
+abandoned the same way, never with a second paid attempt; once the result is
+written, the next run resumes the teardown and settlement where they stopped.
 
 **What lands on the host.** A remote compile writes its whole tree in the
 worker. The host gains only what later stages read by path, the consumer

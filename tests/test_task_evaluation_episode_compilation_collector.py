@@ -879,3 +879,78 @@ def test_a_transient_write_error_before_the_result_resumes_the_same_attempt(tmp_
     assert not list(world.host.outputs.glob(".*.interrupted-*"))
     assert not list((world.host.jobs / "recovery").rglob("*.json"))
     _assert_torn_down(world)
+
+
+def _denied(*_args, **_kwargs):
+    raise PermissionError(13, "Permission denied")
+
+
+def _lease_of(world: CollectorWorld, plan) -> dict | None:
+    path = world.host.jobs / "leases" / f"{contract.job_id_for('episode_compilation', plan.queue_row['name'])}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+@pytest.mark.parametrize("site", ["result", "pointer", "shadow_tree"])
+def test_a_persistent_host_error_before_the_commit_is_bounded_then_abandoned(tmp_path: Path, monkeypatch,
+                                                                             site: str) -> None:
+    """Review Q3: an unnamed error that never clears (EACCES writing the result or the pointer, or reading the
+    shadow tree) counts against the collection budget.  Past it the attempt is torn down to provider-zero and
+    settled, its lease ends ``blocked``, the row goes back, and no second attempt is paid for."""
+
+    shadow = site == "shadow_tree"
+    world = CollectorWorld(tmp_path, monkeypatch, **({"mode": "cloud_run_shadow", "marker": "shadow"} if shadow else {}))
+    if site == "result":
+        monkeypatch.setattr(collector, "write_launch_preparation_record_exclusive", _denied)
+    elif site == "pointer":
+        real = collector.replace_remote_cpu_record
+
+        def denied_pointer(path, value, **kwargs):
+            if str(path).endswith(".remote-output.v1.json"):
+                _denied()
+            return real(path, value, **kwargs)
+
+        monkeypatch.setattr(collector, "replace_remote_cpu_record", denied_pointer)
+    else:
+        monkeypatch.setattr(collector, "_file_digest", _denied)
+    kind = "shadow" if shadow else "authoritative"
+    world.drive(until=lambda: world.terminal() and not remote.marker_path(world.host.jobs, kind, world.name).exists(),
+                step=60)
+    lease = world.lease()
+    assert (lease["state"], lease["attempt"], len(world.executions())) == ("blocked", 1, 1)
+    assert lease["outcome"].startswith("remote_cpu_commit_failed:")
+    row = json.loads((world.host.jobs / "rows" / "episode_compilation" / world.name).read_text(encoding="utf-8"))
+    assert row["failures"] == collector.COLLECTION_RETRIES
+    _assert_torn_down(world)  # provider-zero, settled, and its slot free
+    if shadow:
+        assert not list((world.host.jobs / "parity").rglob("*.json"))
+    else:
+        assert remote.marker_path(world.host.jobs, "fallback", world.name).is_file()
+        assert world.row_state() == "processing"
+
+
+def test_two_wedged_rows_free_their_slots_for_a_third_hand_off(tmp_path: Path, monkeypatch) -> None:
+    """Review Q3: two rows whose commits keep failing held both live-execution slots forever, so a third
+    hand-off waited in ``awaiting_capacity``.  Past the budget they tear down, and the third one runs."""
+
+    world = CollectorWorld(tmp_path, monkeypatch)
+    wedged = world.add_row(label="aaa-wedged", marker="authoritative")
+    waiting = world.add_row(label="zzz-waiting", marker="authoritative")
+    real = collector.write_launch_preparation_record_exclusive
+
+    def denied_unless_waiting(path, value):
+        if Path(path).name != waiting.queue_row["name"]:
+            _denied()
+        return real(path, value)
+
+    monkeypatch.setattr(collector, "write_launch_preparation_record_exclusive", denied_unless_waiting)
+    seen: set = set()
+
+    def finished() -> bool:
+        lease = _lease_of(world, waiting)
+        seen.add(None if lease is None else lease["state"])
+        return lease is not None and lease["state"] == "completed"
+
+    world.drive(until=finished, step=60)
+    assert "awaiting_capacity" in seen
+    assert [_lease_of(world, plan)["state"] for plan in (world.plan, wedged)] == ["blocked", "blocked"]
+    assert len(world.executions()) == 3 and leases.slots_in_use(world.host.jobs) == 0
