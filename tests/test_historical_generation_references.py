@@ -10,6 +10,7 @@ import pytest
 
 from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
 from tests.test_historical_generation_authority import historical_installation  # noqa: F401
+from tests.test_historical_generation_authority import packet, decision
 from tests.test_registered_experiment_issuer import installation, encoded  # noqa: F401
 from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
 
@@ -106,6 +107,49 @@ def test_current_reference_fence_holds_real_publisher_locks(reference_installati
                 os.close(descriptor)
         guard()
     reference_call(reference_installation, check)
+
+
+def test_authenticated_worker_frame_supports_every_held_reference_recheck(
+        reference_installation, historical_installation):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_historical_authority as authority
+    from blueprint_pipeline.control_plane_lane_historical_dispatch import _selection
+    from blueprint_pipeline.control_plane_lane_historical_references import historical_reference_fence
+    config, target, _ = reference_installation
+    approved = decision(historical_installation, packet(historical_installation))
+    with authority._session(config, authority._Operation(1030, lambda: 0)) as (files, settings, store):
+        selected = _selection(files, settings, store, config, approved['action_id'], 1030)
+        # The actual worker does the initial, before-effect, after-effect and
+        # context-exit rechecks while retaining the SAME metadata acquisition.
+        with historical_reference_fence(files, settings, target, observed_at=1030) as guard:
+            guard()
+            guard()
+        assert _selection(files, settings, store, config, approved['action_id'], 1030) == selected
+        assert files.budget.counts['roots'] > 16
+    assert (target / 'one.log').read_bytes() == b'original owner diagnostics\n'
+
+
+def test_historical_recheck_allowance_is_fixed_and_keeps_original_deadline():
+    from blueprint_pipeline.control_plane_lane_historical_authority import _HistoricalReferenceBudget
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudgetError
+    elapsed = [0]
+    budget = _HistoricalReferenceBudget(monotonic=lambda: elapsed[0])
+    generic = ReferenceCollectionBudget(monotonic=lambda: elapsed[0])
+    try:
+        assert generic.limits['roots'] == 16
+        budget.charge('roots', 32)
+        with pytest.raises(ReferenceCollectionBudgetError, match='reference_roots_limit'):
+            budget.charge('roots')
+    finally:
+        budget.close()
+        generic.close()
+    timed = _HistoricalReferenceBudget(monotonic=lambda: elapsed[0])
+    try:
+        timed.tick()
+        elapsed[0] = 5
+        with pytest.raises(ReferenceCollectionBudgetError, match='reference_deadline_exceeded'):
+            timed.tick()
+    finally:
+        timed.close()
 
 
 @pytest.mark.parametrize('changed', ['queue', 'release', 'pin'])

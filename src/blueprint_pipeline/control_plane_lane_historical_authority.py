@@ -38,6 +38,20 @@ def _selector(raw):
     return dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw))
 
 
+class _HistoricalReferenceBudget(ReferenceCollectionBudget):
+    """Bound repeated root observations within one held historical transaction.
+
+    Authority is read before/after; pins and reference configuration are read
+    initially and at every held effect boundary. These count the same roots
+    repeatedly. The reference fence still admits at most 16 configured table
+    roots; the acquisition counter permits 32 observations, never a reset.
+    The original five-second and all other resource bounds are unchanged.
+    """
+    def __init__(self, **options):
+        super().__init__(**options)
+        self._limits['roots'] = 32
+
+
 class _Operation:
     def __init__(self, now, monotonic):
         _require(type(now) in (int, float) and math.isfinite(now) and now >= 0
@@ -127,7 +141,7 @@ class _Store:
 @contextmanager
 def _session(path, operation):
     _require(os.geteuid() == 0, 'root_required')
-    budget = ReferenceCollectionBudget(monotonic=operation.monotonic,
+    budget = _HistoricalReferenceBudget(monotonic=operation.monotonic,
                                        time_budget_seconds=min(5, operation.remaining()))
     files = _BirthFiles(budget)
     try:
