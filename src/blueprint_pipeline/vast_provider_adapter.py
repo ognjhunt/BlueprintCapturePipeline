@@ -9963,12 +9963,20 @@ def run_vast_provider_adapter(
         )
         for instance_id in [] if retention_authorized else list(instance_ids):
             try:
-                status_code, response = _api_json(
-                    method="DELETE",
-                    path=f"/instances/{instance_id}/",
-                    api_key=api_key,
-                    timeout_seconds=30,
-                )
+                for destroy_attempt in range(1, 4):
+                    try:
+                        status_code, response = _api_json(
+                            method="DELETE",
+                            path=f"/instances/{instance_id}/",
+                            api_key=api_key,
+                            timeout_seconds=30,
+                        )
+                        break
+                    except urllib.error.HTTPError as exc:
+                        if exc.code == 429 and destroy_attempt < 3:
+                            time.sleep(min(8, 2 * destroy_attempt))
+                            continue
+                        raise
                 teardown_actions.append(
                     {
                         "instance_id": instance_id,
