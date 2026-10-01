@@ -303,5 +303,6 @@ def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
             profile_dir=output_root / "profiles", webapp_catalog=output_root / "catalog.json",
             standing_authorization_dir=output_root / "authorizations", source_commit=source,
             fetcher=fetch, preparer=prepare, disk_reservation_root=reservation_root)
-    return {"staged": staged, "worker": worker, "preparer": receipts[0] if len(receipts) == 1 else None,
+    return {"staged": staged, "worker": worker, "queue_root": queue,
+            "preparer": receipts[0] if len(receipts) == 1 else None,
             "fixture_provider": True, "actual_provider_calls": 0, "claim_ceiling": "development_only"}

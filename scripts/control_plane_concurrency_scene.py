@@ -43,6 +43,8 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
                            release_binding: dict | None = None, scene_key: str | None = None) -> dict:
     if _verified_checkout_head() != source_commit:
         raise ValueError("harness_checkout_source_mismatch")
+    if scene_key is not None and (not isinstance(scene_key, str) or not scene_key or len(scene_key) > 128):
+        raise ValueError("harness_scene_key_invalid")
     if host_root.exists() or host_root.is_symlink():
         raise ValueError("harness_scene_root_exists")
     host_root.mkdir(mode=0o700)
@@ -73,8 +75,6 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
     original_splat_bytes = fixture.splat_bytes
     fixture.SHA = template.SHA = source_commit
     if scene_key is not None:
-        if not isinstance(scene_key, str) or not scene_key or len(scene_key) > 128:
-            raise ValueError("harness_scene_key_invalid")
         # Author distinct immutable fixture inputs before intake seals any
         # digest. The PLY comment changes identity while retaining geometry.
         comment = b"comment fixture-scene " + hashlib.sha256(scene_key.encode()).hexdigest().encode() + b"\n"
@@ -200,12 +200,14 @@ def advance_fixture_preparation(*, intake: dict, object_root: Path,
 
 
 def advance_fixture_configuration(*, preparation: dict, object_root: Path, output_root: Path,
-                                  provider=None) -> dict:
+                                  provider=None, provider_output_root: Path | None = None) -> dict:
     from blueprint_pipeline.task_evaluation_scene_configuration_publication import publish_configured_scene_revision
     from blueprint_pipeline.task_evaluation_scene_construction_queue import finalize_scene_construction
     from scripts.control_plane_concurrency_provider import fixture_publisher, fixture_scene_artifacts
     envelope = preparation["construction_envelope"]
-    stage_results = (provider or fixture_scene_artifacts)(envelope=envelope, output_root=output_root / "fixture-provider")
+    output_root.mkdir(mode=0o700,parents=True,exist_ok=True)
+    stage_results = (provider or fixture_scene_artifacts)(envelope=envelope,
+        output_root=provider_output_root if provider_output_root is not None else output_root / "fixture-provider")
     if any(row.get("fixture_input_digest") != envelope["envelope_digest"]
            or row.get("actual_provider_calls") != 0 for row in stage_results):
         raise ValueError("harness_fixture_provider_input_mismatch")
