@@ -1699,3 +1699,74 @@ def test_recovery_schema_admits_only_bound_warm_control_search():
     assert not conditional_errors("native_task_arena_construction_recovery", {"retain_warm_control_search": True})
     assert conditional_errors("native_task_arena_controls", {"retain_warm_control_search": True})
     assert conditional_errors("native_task_arena_construction_recovery", {"terminal_feedback_adoption": "/adoption.json"})
+
+
+@pytest.mark.parametrize("kind", ["source_manifest", "rights_admission"])
+def test_completed_scene_claim_reference_keeps_exact_bytes_and_identity(tmp_path, kind):
+    expected = "task_evaluation_scene_" + kind + ".v1"
+    value = {"schema_version": "task_evaluation_completed_scene_" + kind + ".v1",
+        "scene_id": "completed-scene-1", "source": "owner_provided_completed_asset",
+        "status": "candidate_source_bytes_retained" if kind == "source_manifest" else "admitted_for_internal_development"}
+    source = tmp_path / "claim.json"
+    source.write_text(json.dumps(value))
+    digest = prep._sha256_file(source)
+    kwargs = dict(path=source, expected_digest=digest, expected_schema=expected,
+        expected_status="retained" if kind == "source_manifest" else "admitted",
+        digest_field=kind + "_digest", scene_id="completed-scene-1")
+    prep._load_scene_claim_reference(**kwargs)
+    with pytest.raises(prep.PaidLaneLaunchPreparationError):
+        prep._load_scene_claim_reference(**{**kwargs, "scene_id": "another-scene"})
+    value["schema_version"] = value["schema_version"].replace(".v1", ".v2")
+    source.write_text(json.dumps(value))
+    with pytest.raises(prep.PaidLaneLaunchPreparationError):
+        prep._load_scene_claim_reference(**{**kwargs, "expected_digest": prep._sha256_file(source)})
+
+
+@pytest.mark.parametrize("mutation", [None, "unknown_schema", "foreign_scene", "raw_upload",
+                                      "training", "public", "missing_derived", "unknown_role",
+                                      "foreign_bytes"])
+def test_completed_scene_derived_provider_rights_stay_bounded(mutation):
+    digest = "sha256:" + "a" * 64
+    source = {"schema_version": "task_evaluation_completed_scene_source_manifest.v1",
+              "source": "owner_provided_completed_asset", "scene_id": "completed-1",
+              "captured_observation_supplied": False,
+              "coordinate_system": {"physical_metrology_claimed": False}, "artifacts": []}
+    rights = {"schema_version": "task_evaluation_completed_scene_rights_admission.v1",
+              "source": "owner_provided_completed_asset", "scene_id": "completed-1",
+              "status": "admitted_for_internal_development", "source_bytes_redistributable": False,
+              "physical_metrology_claimed": False,
+              "private_provider_processing_allowed": True, "provider_training_allowed": False,
+              "public_redistribution_allowed": False,
+              "provider_disclosure": {"raw_owner_source_bytes_may_be_uploaded": False,
+                  "minimum_digest_bound_derived_runtime_bytes_may_be_privately_processed": True,
+                  "provider_training_allowed": False, "public_redistribution_allowed": False,
+                  "provider_retention_rule": "exact run then teardown"}}
+    revision = {"scene_identity": {"id": "completed-1"}, "source": {
+        "provider_disclosure_decision": {"rights_admission_permits_upload": False,
+                                        "human_authority_accepts_provider_terms": True}},
+        "geometry": {"configured_collision": {"digest": digest, "size_bytes": 17}}}
+    binding = {"semantic_role": "scene_collision", "source": {"sha256": digest, "size_bytes": 17},
+               "staged_sha256": digest, "staged_size_bytes": 17}
+    if mutation == "unknown_schema":
+        rights["schema_version"] = rights["schema_version"].replace(".v1", ".v2")
+    if mutation == "foreign_scene":
+        rights["scene_id"] = "foreign"
+    if mutation == "raw_upload":
+        rights["provider_disclosure"]["raw_owner_source_bytes_may_be_uploaded"] = True
+    if mutation == "training":
+        rights["provider_training_allowed"] = True
+    if mutation == "public":
+        rights["public_redistribution_allowed"] = True
+    if mutation == "missing_derived":
+        rights["provider_disclosure"].pop("minimum_digest_bound_derived_runtime_bytes_may_be_privately_processed")
+    if mutation == "unknown_role":
+        binding["semantic_role"] = "arbitrary-raw-source"
+    if mutation == "foreign_bytes":
+        binding["source"]["sha256"] = "sha256:" + "b" * 64
+    kwargs = dict(packet_receipt={"source_bindings": [binding]}, source_manifest=source,
+                  configured_scene_revision=revision, rights_admission=rights)
+    if mutation is None:
+        prep._validate_provider_packet_source_rights(**kwargs)
+    else:
+        with pytest.raises(prep.PaidLaneLaunchPreparationError, match="provider_source_rights_invalid"):
+            prep._validate_provider_packet_source_rights(**kwargs)

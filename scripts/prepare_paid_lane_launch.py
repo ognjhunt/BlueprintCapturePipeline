@@ -1623,6 +1623,16 @@ def _load_scene_claim_reference(
         "retained": {"retained", "candidate_source_bytes_retained"},
         "admitted": {"admitted", "admitted_for_internal_development"},
     }
+    schema_aliases = {
+        "task_evaluation_scene_source_manifest.v1": "task_evaluation_completed_scene_source_manifest.v1",
+        "task_evaluation_scene_rights_admission.v1": "task_evaluation_completed_scene_rights_admission.v1",
+    }
+    completed_schema = schema_aliases.get(expected_schema)
+    schema_valid = value.get("schema_version") == expected_schema or (
+        value.get("schema_version") == completed_schema
+        and completed_schema is not None
+        and value.get("source") == "owner_provided_completed_asset"
+    )
     observed_scene_id = str(value.get("scene_id") or "")
     scene_id_valid = observed_scene_id == scene_id or scene_id.endswith(
         "-" + observed_scene_id
@@ -1630,7 +1640,7 @@ def _load_scene_claim_reference(
     if (
         not source.is_file()
         or not isinstance(value, Mapping)
-        or value.get("schema_version") != expected_schema
+        or not schema_valid
         or value.get("status")
         not in status_aliases.get(expected_status, {expected_status})
         or not scene_id_valid
@@ -1770,6 +1780,28 @@ def _validate_provider_packet_source_rights(
         "scene_collision": "sage_collision_runtime_bytes_may_be_privately_processed",
         "task_object": "qualified_replacement_usd_may_be_privately_processed",
     }
+    # Completed owner assets have one permission covering digest-bound derived
+    # runtime files. Their raw source upload remains forbidden. Admit only the
+    # exact producer's development contract and the configured asset roles;
+    # byte membership and staging lineage are checked below for every binding.
+    completed_derived_permission = (
+        configured_scene_revision is not None
+        and source_manifest.get("schema_version") == "task_evaluation_completed_scene_source_manifest.v1"
+        and (rights_admission or {}).get("schema_version") == "task_evaluation_completed_scene_rights_admission.v1"
+        and source_manifest.get("source") == (rights_admission or {}).get("source") == "owner_provided_completed_asset"
+        and source_manifest.get("scene_id") == (rights_admission or {}).get("scene_id")
+        == (configured_scene_revision.get("scene_identity") or {}).get("id")
+        and isinstance(source_manifest.get("scene_id"), str) and bool(source_manifest["scene_id"])
+        and source_manifest.get("captured_observation_supplied") is False
+        and (source_manifest.get("coordinate_system") or {}).get("physical_metrology_claimed") is False
+        and (rights_admission or {}).get("status") == "admitted_for_internal_development"
+        and (rights_admission or {}).get("source_bytes_redistributable") is False
+        and (rights_admission or {}).get("physical_metrology_claimed") is False
+        and (rights_admission or {}).get("provider_training_allowed") is False
+        and (rights_admission or {}).get("public_redistribution_allowed") is False
+        and runtime_disclosure.get("raw_owner_source_bytes_may_be_uploaded") is False
+        and runtime_disclosure.get("minimum_digest_bound_derived_runtime_bytes_may_be_privately_processed") is True
+    )
     destination_pair = None
     if destination is not None:
         rights_path, destination_rights = _load_unlinked_json(
@@ -1839,7 +1871,8 @@ def _validate_provider_packet_source_rights(
         if configured_scene_revision is not None:
             role = raw.get("semantic_role")
             derived_permission = (
-                runtime_disclosure.get(role_permissions.get(role, "")) is True
+                (runtime_disclosure.get(role_permissions.get(role, "")) is True
+                 or (completed_derived_permission and role in role_permissions))
                 and runtime_disclosure.get("provider_training_allowed") is False
                 and runtime_disclosure.get("public_redistribution_allowed") is False
                 and bool(runtime_disclosure.get("provider_retention_rule"))
