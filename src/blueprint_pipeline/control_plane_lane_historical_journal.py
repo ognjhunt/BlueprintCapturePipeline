@@ -210,11 +210,17 @@ class HistoricalActionJournal:
         return dict(events=values, next_start=end, previous=previous, observed_at=observed_at,
                     complete=end == self._count, event_count=self._count)
 
-    def _publish(self, kind, body, sequence, previous):
-        _require(self.operation.moment() < self.scope['expires_at_epoch'], 'expired')
+    def _publish(self, kind, body, sequence, previous, *, observation_expires_at_epoch=None):
+        moment = self.operation.moment()
+        _require(moment < self.scope['expires_at_epoch'], 'expired')
+        if observation_expires_at_epoch is not None:
+            _require(type(observation_expires_at_epoch) in (int, float)
+                and math.isfinite(observation_expires_at_epoch)
+                and moment < observation_expires_at_epoch <= self.scope['expires_at_epoch'],
+                'observation_expired')
         value = dict(schema_version='control_plane_historical_action_event.v1', action_id=self.action_id,
             scope_digest=self.scope_digest, sequence=sequence, kind=kind, body=body,
-            previous_event_digest=previous, observed_at_epoch=self.operation.moment(),
+            previous_event_digest=previous, observed_at_epoch=moment,
             execution_authorized=False)
         value['event_digest'] = canonical_digest(value, digest_field='event_digest')
         raw = owners._encoded(value, self.files.budget, cap=MAX_EVENT_BYTES)
@@ -225,13 +231,14 @@ class HistoricalActionJournal:
         self._namespace = owners._metadata(os.fstat(self.directory))
         return value
 
-    def append(self, kind, body, *, previous):
+    def append(self, kind, body, *, previous, observation_expires_at_epoch=None):
         _require(kind in _KINDS - {'intent'} and type(body) is dict, 'invalid')
         head = self._load()
         _require(previous == head['event_digest'], 'changed')
         count, size = self._count, self._size
         _require(count < MAX_EVENTS and size <= MAX_JOURNAL_BYTES - MAX_EVENT_BYTES, 'store_full')
-        return self._publish(kind, body, count, previous)
+        return self._publish(kind, body, count, previous,
+                             observation_expires_at_epoch=observation_expires_at_epoch)
 
     def publish_restore_snapshot(self, snapshot):
         """Retain an actual private restored inventory; this grants no access."""

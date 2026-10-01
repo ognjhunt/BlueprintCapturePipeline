@@ -175,6 +175,46 @@ def test_reboot_or_current_namespace_change_cannot_adopt_old_journal(historical_
         journal_call(historical_installation, approved, changed)
 
 
+@pytest.mark.parametrize('elapsed', [0.1, 0.2])
+def test_expiry_during_append_reads_leaves_original_pending_head(historical_installation, elapsed):
+    # Controlled-clock CPU projection; no native observation or effect.
+    approved = decision(historical_installation, packet(historical_installation))
+    journal_call(historical_installation, approved, lambda journal: journal.head)
+    directory = provision(historical_installation) / approved['action_id']
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    clock = [0]
+    def append(journal):
+        head = journal.head
+        load = journal._load
+        def slow_read():
+            result = load()
+            clock[0] = elapsed
+            return result
+        journal._load = slow_read
+        return journal.append('fence_intent', {'member_index': 0}, previous=head['event_digest'],
+                              observation_expires_at_epoch=1030.1)
+    with pytest.raises(ValueError, match='journal_observation_expired'):
+        journal_call(historical_installation, approved, append, monotonic=lambda: clock[0])
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
+@pytest.mark.parametrize('expiry', [True, float('nan'), 1101])
+def test_observation_ceiling_never_widens_original_expiry(historical_installation, expiry):
+    approved = decision(historical_installation, packet(historical_installation))
+    with pytest.raises(ValueError, match='journal_observation_expired'):
+        journal_call(historical_installation, approved, lambda journal: journal.append(
+            'fence_intent', {'member_index': 0}, previous=journal.head['event_digest'],
+            observation_expires_at_epoch=expiry))
+
+
+def test_event_uses_genuine_current_publication_capture(historical_installation):
+    approved = decision(historical_installation, packet(historical_installation))
+    event = journal_call(historical_installation, approved, lambda journal: journal.append(
+        'fence_intent', {'member_index': 0}, previous=journal.head['event_digest'],
+        observation_expires_at_epoch=1040))
+    assert event['observed_at_epoch'] == 1030
+
+
 def test_past_journal_observation_never_renews_mutation_authority(historical_installation):
     from blueprint_pipeline import control_plane_lane_historical_authority as authority
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _selection
