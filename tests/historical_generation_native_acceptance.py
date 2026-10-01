@@ -584,7 +584,10 @@ def _unit_cursor(unit):
 
 
 def _unit_output(unit, cursor):
-    argv = ['/usr/bin/journalctl', '--unit=' + unit, '--output=json', '--no-pager', '--lines=65']
+    # JSON otherwise replaces fields above4096bytes with null. Retain actual
+    # messages in full inside the same finite output/time/record limits.
+    argv = ['/usr/bin/journalctl', '--unit=' + unit, '--output=json', '--all',
+        '--output-fields=MESSAGE', '--no-pager', '--lines=65']
     if cursor is not None:
         argv.append('--after-cursor=' + cursor)
     log = subprocess.run(argv, capture_output=True, text=True, timeout=5)
@@ -597,7 +600,7 @@ def _unit_output(unit, cursor):
     for line in lines:
         record = json.loads(line)
         message = record.get('MESSAGE')
-        assert type(message) is str, 'journal_delta_message_unknown'
+        assert type(message) is str, ('journal_delta_message_unknown', type(message).__name__)
         messages.append(message)
     return '\n'.join(messages)
 

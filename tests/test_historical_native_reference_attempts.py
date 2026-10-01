@@ -52,6 +52,20 @@ def test_journal_delta_refuses_overflow_instead_of_losing_new_receipts(monkeypat
         native._unit_output('actual-unit', 's=abc')
 
 
+def test_journal_delta_requests_complete_long_messages_with_existing_byte_bound(monkeypatch):
+    from types import SimpleNamespace
+    message = json.dumps(dict(status='completed', evidence='a' * 5000))
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        # journalctl's documented JSON default emits null above4096 bytes.
+        value = message if '--all' in argv else None
+        return SimpleNamespace(returncode=0, stdout=json.dumps(dict(MESSAGE=value)))
+    monkeypatch.setattr(native.subprocess, 'run', run)
+    assert native._unit_output('actual-unit', 's=abc') == message
+    assert '--output-fields=MESSAGE' in calls[0]
+
+
 def test_reconciliation_fault_observes_held_pin_without_a_new_journal_event():
     from types import SimpleNamespace
     scope = dict(remove_member=dict(path='actual pending row'))
