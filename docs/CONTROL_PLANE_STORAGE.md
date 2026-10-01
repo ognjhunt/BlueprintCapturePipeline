@@ -519,7 +519,7 @@ from door `status` as tables ([`OPERATOR_DOOR.md`](OPERATOR_DOOR.md)):
   truncated walk, unreadable or sandbox-hidden paths, or deleted files still held
   open by a process.
 - The owner table says what to retire. `scene:` workspaces, `run:` evidence
-  (offloadable by the reclaim timer), `release:` trees (retired by deploy) and
+  (offloadable by the reclaim timer), `release:` trees (explicit retirement) and
   `store:` blobs (reaped once nothing hardlinks them) each have their own
   retention rule.
 - An unclassified root is a tree the storage table does not know. Classify it in
@@ -1088,14 +1088,21 @@ files from ordinary completed captures go to the existing private artifact store
 (B2). Authority-ended captures stay local (`authority_ended_capture_kept_local`)
 until the owner approves a revocation and deletion lifecycle for those derivatives.
 
-## Release retirement at deploy
+## Release retirement as a separate action
 
-Deploy is the only event that creates per-commit release worktrees and runtime
-trees, so deploy retires them. After the new release is proven live, a commit's
-trees (release, `splat-render`, `scene-configuration` and their publication
-receipts) stay only while the commit is:
+Deployment creates per-commit release and runtime trees but preserves every
+existing tree, including interrupted `.retiring` trees and generated/untracked
+files. Its receipt records `release_retirement.status = not_requested`, reason
+`requires_separate_action`, and zero retired bytes. It neither plans nor applies
+retirement, sweeps leftovers, nor rewrites the last actual retirement summary.
+Insufficient disk headroom refuses deployment rather than deleting old trees.
 
-- the active release or the commit being deployed;
+Retirement remains a separate explicit operation. The existing plan/apply tools
+and their protection checks are unchanged. A commit's trees (release,
+`splat-render`, `scene-configuration` and their publication receipts) are kept
+while the commit is:
+
+- the active release or the current commit named by the retirement operation;
 - among the newest three releases;
 - in use by a live process (its cwd, executable or an argv path lies in the
   commit's release or runtime tree), checked when planning and again just before
@@ -1104,43 +1111,25 @@ receipts) stay only while the commit is:
 - held by a typed protection row: a lease (`live_queue`, `standing_authorization`,
   `retention_binding`) or current configuration (`configured_runtime`).
 
-Protection no longer comes from searching every JSON file for 40-hex tokens.
-That search protected git tree ids, commits embedded in profile ids and the
-consumption records of expired authorizations; on 2026-09-26 it protected 513
-commits and retired none of 95 trees. Every lease now has an owner, a reason,
-the run it serves and an expiry, and lapses when that run ends. Leases for
-immutable retention bindings live in sidecars under
-`/var/lib/blueprint/pipeline-control-plane/release-leases/bindings` (a root-only
-`ledger` root). The runbook
+Protection comes from typed leases and configuration, rather than searching
+all JSON files for commit-like tokens. Every lease has an owner, a reason, the
+run it serves and an expiry, and lapses when that run ends. Immutable retention
+binding leases live in sidecars under
+`/var/lib/blueprint/pipeline-control-plane/release-leases/bindings`. The runbook
 [`runbooks/task-evaluation-release-retention.md`](runbooks/task-evaluation-release-retention.md)
-covers the lease rules, migration, and how an owner renews or ends a lease.
+describes the separate reviewed operation, lease rules and how an owner renews
+or ends a lease.
 
-Every release-reference publisher (queue writers, the profile publisher, the
-standing-authorization materializer, release activation and the SAM prefix
-binding writer) locks the control-plane root shared. Retirement holds it
-exclusively, waiting at most 300 seconds for it, only while it collects
-protection, plans and renames each candidate into `<its root>/.retiring` (on a
-filesystem too full for that, it deletes the candidate directly). It deletes
-and measures the moved trees only after the deploy has released the lock, its
-paid-launch gate and its disk reservation, prunes the source clone's worktree
-registrations so a retired commit can be redeployed, and sweeps `.retiring`
-leftovers of an interrupted run before the deploy reserves disk.
-`retired_bytes` counts only bytes actually freed (each inode once, and only
-when its last link was deleted); hardlinked bytes are reported as
-`shared_bytes`. Any protection
-blocker (an unreadable or unsettled queue, a missing protection source, an
-unreadable configuration file, a live reference to a missing profile, a
-malformed standing authorization, an invalid or changed binding) retires
-nothing.
-
-The deploy receipt records `release_retirement`: `applied`, `skipped` with
-blockers, or `blocked`, together with `protected_by_kind` (tree counts per
-kind), `protected_tree_count`, `lease_protected_tree_count`, `lapsed_count`,
-`migrated_binding_count` and `alerts`. The same summary is written to
-`release-retention/latest-deploy-retirement.json` (0644). More than 20 trees
-held only by leases raises `release_retirement_lease_protected_trees:<n>`; a
-blocked or skipped retirement raises `release_retirement_blocked:<blocker>`. A
-retirement problem never fails a deploy whose surfaces already moved.
+Explicit retirement holds the publishers' reference locks exclusively while
+collecting protection, planning and renaming candidates into `<root>/.retiring`.
+On ENOSPC/EDQUOT its existing apply tool can delete candidates directly; after
+releasing the locks it deletes staged trees, including interrupted leftovers.
+These deletion effects require separate retirement authority and review.
+`retired_bytes` counts only bytes actually freed (each inode once, only when its
+last link was deleted); hardlinked bytes are reported as `shared_bytes`.
+Unreadable or unsettled queues, missing protection sources, unreadable
+configuration, missing profiles and malformed/changed authorizations or
+bindings block retirement. Deployment does not invoke any of these actions.
 
 
 ## Streaming offload and whole-chain admission (2026-09-08)

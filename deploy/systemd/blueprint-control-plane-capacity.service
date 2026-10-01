@@ -1,8 +1,10 @@
 [Unit]
 Description=Measure control-plane capacity, forecast the admission floor, alert, and grow the work volume
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
-Wants=network-online.target
-After=network-online.target
+# Wait for the existing local publisher, including on the first post-deploy tick.
+# Wants keeps capacity reporting stale accounting if the bounded refresh fails.
+Wants=network-online.target blueprint-scene-project-spend-refresh.service
+After=network-online.target blueprint-scene-project-spend-refresh.service
 
 [Service]
 Type=oneshot
