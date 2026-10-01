@@ -13,7 +13,7 @@ import os
 import stat
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_legacy_owner as legacy
@@ -34,7 +34,16 @@ def _pairs(values):
     return result
 
 
-def _mentions(value, target, budget, depth=0):
+def _target_observation(files, target, transient, descriptor_check):
+    """Original owner's selected namespace; this supplies no action grant."""
+    fd, _ = files.parent(target / '.historical-reference-probe',
+                         _descriptor_check=lambda additional: descriptor_check(transient + additional))
+    files.proof(fd)
+    files.location(fd)
+    return fd
+
+
+def _mentions(value, target, budget, depth=0, *, local=None):
     budget.charge('values')
     _require(depth <= 32, 'table_unknown')
     if isinstance(value, str):
@@ -46,18 +55,81 @@ def _mentions(value, target, budget, depth=0):
         decoded = unquote(value, errors='strict')
         budget.tick()
         _require(str(target) not in decoded and target.name not in decoded, 'table_reference')
+        if local is not None:
+            local(value)
     elif isinstance(value, dict):
         for key, child in value.items():
-            _mentions(key, target, budget, depth + 1)
-            _mentions(child, target, budget, depth + 1)
+            _mentions(key, target, budget, depth + 1, local=local)
+            _mentions(child, target, budget, depth + 1, local=local)
     elif isinstance(value, list):
         for child in value:
-            _mentions(child, target, budget, depth + 1)
+            _mentions(child, target, budget, depth + 1, local=local)
 
 
-def _table(root, target, budget, *, _descriptor_check=None):
+def _table(root, target, budget, *, _descriptor_check=None, _target_observation=None):
     """One bounded original named tree; exact JSON bytes and full namespace."""
-    snapshots = []
+    snapshots, external = [], []
+    transient, target_fd = 0, None
+    def capacity(count):
+        budget.tick()
+        _require(count <= 128, 'table_unknown')
+        if _descriptor_check is not None:
+            _descriptor_check(count)
+    def acquire(path, *, directory, active):
+        nonlocal transient
+        budget.charge('roots')
+        legacy._absolute(path)
+        components = ('/', *path.parts[1:])
+        parent, rows = None, []
+        for index, component in enumerate(components):
+            budget.charge('entries')
+            named = os.stat(component, dir_fd=parent, follow_symlinks=False)
+            is_directory = directory or index < len(components) - 1
+            _require(stat.S_ISDIR(named.st_mode) if is_directory else
+                     stat.S_ISREG(named.st_mode) and named.st_nlink == 1, 'table_unknown')
+            capacity(len(chain) + active + transient + 1)
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+            if is_directory:
+                flags |= os.O_DIRECTORY
+            fd = os.open(component, flags, dir_fd=parent)
+            stack.callback(os.close, fd)
+            transient += 1
+            budget.tick()
+            version = _version(os.fstat(fd))
+            _require(version == _version(named), 'table_unknown')
+            rows.append((parent, component, fd, version))
+            parent = fd
+        external.append(rows)
+        return rows
+    def local(value, active):
+        nonlocal target_fd
+        # Match the consumer: parse the ORIGINAL URI, then decode its path
+        # exactly once. Do not resolve or follow any queued namespace alias.
+        budget.tick()
+        parsed = urlparse(value)
+        if parsed.scheme != 'file' and not value.startswith('/'):
+            return
+        _require(parsed.scheme in ('', 'file') and parsed.netloc in ('', 'localhost'), 'table_unknown')
+        selected = unquote(parsed.path, errors='strict')
+        _require('\x00' not in selected and selected == str(Path(selected)), 'table_unknown')
+        source = Path(selected)
+        legacy._absolute(source)
+        if target_fd is None:
+            if _target_observation is None:
+                target_fd = acquire(target, directory=True, active=active)[-1][2]
+            else:
+                budget.tick()
+                target_fd = _target_observation(len(chain) + active + transient)
+        budget.tick()
+        target_info = os.fstat(target_fd)
+        _require(stat.S_ISDIR(target_info.st_mode), 'table_unknown')
+        rows = acquire(source, directory=False, active=active)
+        identity = (target_info.st_dev, target_info.st_ino)
+        _require(all(version[:2] != identity for _, _, _, version in rows), 'table_reference')
+        budget.charge('facts', len(rows))
+        snapshot = (str(source), 'local_uri', tuple(row[3] for row in rows))
+        budget.retain(snapshot)
+        snapshots.append(snapshot)
     def same(fd, initial, parent=None, name=None):
         budget.tick()
         _require(_version(os.fstat(fd)) == initial, 'table_unknown')
@@ -68,6 +140,7 @@ def _table(root, target, budget, *, _descriptor_check=None):
         _require(depth <= 16, 'table_unknown')
         initial = _version(os.fstat(fd))
         names = []
+        capacity(len(chain) + depth + transient + 1)
         with os.scandir(fd) as entries:
             for entry in entries:
                 budget.charge('entries')
@@ -86,8 +159,7 @@ def _table(root, target, budget, *, _descriptor_check=None):
             flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
             if stat.S_ISDIR(info.st_mode):
                 flags |= os.O_DIRECTORY
-            if _descriptor_check is not None:
-                _descriptor_check(len(chain) + depth + 1)
+            capacity(len(chain) + depth + transient + 1)
             child = os.open(name, flags, dir_fd=fd)
             try:
                 same(child, version, fd, name)
@@ -111,7 +183,7 @@ def _table(root, target, budget, *, _descriptor_check=None):
                         value = json.loads(payload, object_pairs_hook=_pairs,
                                            parse_constant=lambda value: (_ for _ in ()).throw(ValueError()))
                         _require(type(value) in (dict, list), 'table_unknown')
-                        _mentions(value, target, budget)
+                        _mentions(value, target, budget, local=lambda text: local(text, depth + 1))
                         digest = hashlib.sha256(payload).hexdigest()
                     snapshots.append((child_path, 'file', version, digest))
                 same(child, version, fd, name)
@@ -122,10 +194,13 @@ def _table(root, target, budget, *, _descriptor_check=None):
     try:
         with ExitStack() as stack:
             legacy._absolute(root)
-            chain = generation._chain(root, stack, _descriptor_check=_descriptor_check)
+            chain = generation._chain(root, stack, _descriptor_check=capacity)
             root_version = _version(os.fstat(chain[-1][2]))
             walk(chain[-1][2], '', 0)
             generation._verify_chain(chain)
+            for rows in external:
+                for parent, name, fd, version in rows:
+                    same(fd, version, parent, name)
             return snapshots
     except generation.HistoricalGenerationError:
         raise
@@ -154,8 +229,16 @@ def historical_reference_fence(files, config, target, *, observed_at, _held_pins
                      files, config, selected['pins_root']), 'table_unknown')
     roots = tuple(dict.fromkeys((*selected['queue_roots'], *selected['active_run_roots'])))
     _require(0 < len(roots) <= 16, 'table_unknown')
-    descriptor_check = getattr(files, 'table_descriptor_check', None)
-    baseline = {str(root): _table(root, target, files.budget, _descriptor_check=descriptor_check) for root in roots}
+    def target_observation(transient):
+        return _target_observation(files, target, transient, descriptor_check)
+    def descriptor_check(count):
+        files.budget.tick()
+        _require(len(files.owned) + len(files.probe_owned) + count <= 128, 'table_unknown')
+    descriptor_check = getattr(files, 'table_descriptor_check', descriptor_check)
+    def table(root):
+        return _table(root, target, files.budget, _descriptor_check=descriptor_check,
+                      _target_observation=target_observation)
+    baseline = {str(root): table(root) for root in roots}
     release = Path(config.active_release_link)
     parent, name = files.parent(release)
     before = _version(os.stat(name, dir_fd=parent, follow_symlinks=False))
@@ -180,7 +263,7 @@ def historical_reference_fence(files, config, target, *, observed_at, _held_pins
             _require(not any(Path(path) == target or target in Path(path).parents
                 or Path(path) in target.parents for path in row.paths), 'pin_reference')
         for root in roots:
-            _require(_table(root, target, files.budget, _descriptor_check=descriptor_check) == baseline[str(root)], 'table_unknown')
+            _require(table(root) == baseline[str(root)], 'table_unknown')
         files.location(parent)
         _require(_version(os.stat(name, dir_fd=parent, follow_symlinks=False)) == before
             and os.readlink(name, dir_fd=parent) == link, 'table_unknown')

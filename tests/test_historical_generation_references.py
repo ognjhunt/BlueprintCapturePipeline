@@ -154,8 +154,186 @@ def test_initial_encoded_reference_refuses_held_fence_without_effect(reference_i
 
 
 def test_unrelated_encoded_reference_does_not_select_target(tmp_path):
-    (tmp_path / 'job.json').write_text('{"source_uri":"file:///other%2Dgeneration/input.bin"}')
-    assert len(scan(tmp_path, Path('/unrelated/selected-diagnostics'))) == 2
+    queue, target, other = (tmp_path / name for name in ('queue', 'selected-diagnostics', 'other-generation'))
+    queue.mkdir()
+    target.mkdir()
+    other.mkdir()
+    payload = other / 'input.bin'
+    payload.write_bytes(b'disjoint source')
+    (queue / 'job.json').write_text(json.dumps({'source_uri': 'file://localhost' + str(payload).replace('-', '%2D')}))
+    assert any(row[1] == 'local_uri' for row in scan(queue, target))
+
+
+@pytest.mark.parametrize('alias_kind', ['directory_symlink', 'leaf_symlink', 'hardlink'])
+def test_actual_local_uri_alias_is_never_reference_absence(tmp_path, alias_kind):
+    queue, target = tmp_path / 'queue', tmp_path / 'selected-diagnostics'
+    queue.mkdir()
+    target.mkdir()
+    payload = target / 'input.bin'
+    payload.write_bytes(b'original selected source')
+    if alias_kind == 'directory_symlink':
+        alias = tmp_path / 'current-source'
+        alias.symlink_to(target, target_is_directory=True)
+        source = alias / payload.name
+    else:
+        source = tmp_path / 'current-input.bin'
+        if alias_kind == 'leaf_symlink':
+            source.symlink_to(payload)
+        else:
+            os.link(payload, source)
+    row = queue / 'job.json'
+    original = json.dumps({'source_uri': source.as_uri()}).encode()
+    row.write_bytes(original)
+    assert str(target) not in original.decode() and target.name not in original.decode()
+    assert source.read_bytes() == payload.read_bytes()
+    with pytest.raises(ValueError, match='historical_generation_table_unknown'):
+        scan(queue, target)
+    assert row.read_bytes() == original and payload.read_bytes() == b'original selected source'
+
+
+@pytest.mark.parametrize('suffix', ['missing.bin', '../other/input.bin', '%00input.bin', '%FFinput.bin'])
+def test_uninspectable_local_uri_is_unknown(tmp_path, suffix):
+    queue, target = tmp_path / 'queue', tmp_path / 'selected-diagnostics'
+    queue.mkdir()
+    target.mkdir()
+    (queue / 'job.json').write_text(json.dumps({'source_uri': 'file://localhost' + str(tmp_path) + '/' + suffix}))
+    with pytest.raises(ValueError, match='historical_generation_table_unknown'):
+        scan(queue, target)
+
+
+@pytest.mark.parametrize('change', ['leaf', 'ancestor'])
+def test_unchanged_queue_cannot_hide_external_local_source_drift(reference_installation, change):
+    _, _, root = reference_installation
+    source_root = root / 'other-source'
+    source_root.mkdir()
+    payload = source_root / 'input.bin'
+    payload.write_bytes(b'other original source')
+    row = root / 'queue/job.json'
+    original = json.dumps({'source_uri': payload.as_uri()}).encode()
+    row.write_bytes(original)
+    def change_source(guard):
+        if change == 'leaf':
+            payload.write_bytes(b'changed current source')
+        else:
+            source_root.rename(root / 'original-source')
+            source_root.mkdir()
+            payload.write_bytes(b'other original source')
+        guard()
+    with pytest.raises(ValueError, match='historical_generation_table_unknown'):
+        reference_call(reference_installation, change_source)
+    assert row.read_bytes() == original
+
+
+@pytest.mark.parametrize('bound', ['descriptors', 'roots'])
+def test_local_uri_observation_preserves_original_limits_and_closes_fds(tmp_path, monkeypatch, bound):
+    from blueprint_pipeline import control_plane_lane_historical_references as references
+    queue, target, other = (tmp_path / name for name in ('queue', 'selected-diagnostics', 'other'))
+    for directory in (queue, target, other):
+        directory.mkdir()
+    payload = other / 'input.bin'
+    payload.write_bytes(b'other source')
+    row = queue / 'job.json'
+    original = json.dumps({'source_uri': payload.as_uri()}).encode()
+    row.write_bytes(original)
+    actual_open, actual_close = os.open, os.close
+    opened, observations = set(), []
+    def acquire(*args, **kwargs):
+        fd = actual_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+    def close(fd):
+        actual_close(fd)
+        opened.remove(fd)
+    monkeypatch.setattr(references.os, 'open', acquire)
+    monkeypatch.setattr(references.os, 'close', close)
+    limit = len(queue.parts) + len(target.parts) + 1
+    def capacity(count):
+        observations.append((count, len(opened)))
+        assert count == len(opened) + 1
+        if count > limit:
+            raise ValueError('original descriptor limit')
+    budget = ReferenceCollectionBudget()
+    deadline = None
+    try:
+        if bound == 'roots':
+            budget.charge('roots', budget.limits['roots'] - 1)
+        budget.tick()
+        deadline = budget.deadline
+        with pytest.raises(ValueError, match='table_unknown'):
+            references._table(queue, target, budget, _descriptor_check=capacity if bound == 'descriptors' else None)
+        assert not opened and budget.deadline == deadline
+        if bound == 'roots':
+            assert budget.counts['roots'] == budget.limits['roots']
+            assert budget.failure == 'reference_roots_limit'
+        else:
+            assert observations[-1][0] == limit + 1
+        assert row.read_bytes() == original and payload.read_bytes() == b'other source'
+    finally:
+        budget.close()
+
+
+def test_local_source_named_ancestor_replacement_during_scan_is_unknown(tmp_path, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_historical_references as references
+    queue, target, other = (tmp_path / name for name in ('queue', 'selected-diagnostics', 'other'))
+    for directory in (queue, target, other):
+        directory.mkdir()
+    payload = other / 'input.bin'
+    payload.write_bytes(b'other source')
+    row = queue / 'job.json'
+    original = json.dumps({'source_uri': payload.as_uri()}).encode()
+    row.write_bytes(original)
+    actual_open = os.open
+    def acquire(name, *args, **kwargs):
+        fd = actual_open(name, *args, **kwargs)
+        if name == payload.name:
+            other.rename(tmp_path / 'original-other')
+            other.mkdir()
+            payload.write_bytes(b'other source')
+        return fd
+    monkeypatch.setattr(references.os, 'open', acquire)
+    with pytest.raises(ValueError, match='historical_generation_(table_unknown|changed)'):
+        scan(queue, target)
+    assert row.read_bytes() == original
+
+
+def test_production_lazy_target_parent_cannot_exceed_combined_original_fd_limit(tmp_path, monkeypatch):
+    from contextlib import ExitStack
+    from blueprint_pipeline.control_plane_lane_experiment_publication import _BirthFiles
+    from blueprint_pipeline import control_plane_lane_historical_references as references
+    target = tmp_path / 'selected-diagnostics'
+    target.mkdir()
+    budget = ReferenceCollectionBudget()
+    actual_open, actual_close = os.open, os.close
+    opened, peaks = set(), []
+    def acquire(*args, **kwargs):
+        fd = actual_open(*args, **kwargs)
+        opened.add(fd)
+        peaks.append(len(opened))
+        return fd
+    def close(fd):
+        actual_close(fd)
+        opened.remove(fd)
+    monkeypatch.setattr(references.os, 'open', acquire)
+    monkeypatch.setattr(references.os, 'close', close)
+    files = _BirthFiles(budget)
+    try:
+        with ExitStack() as scope:
+            for _ in range(103):
+                files.open('/', os.O_RDONLY | os.O_DIRECTORY)
+            for _ in range(25):
+                scope.callback(os.close, os.open('/', os.O_RDONLY | os.O_DIRECTORY))
+            assert len(opened) == 128
+            def capacity(transient):
+                budget.tick()
+                if len(files.owned) + len(files.probe_owned) + transient > 128:
+                    raise ValueError('combined original descriptor limit')
+            with pytest.raises(ValueError):
+                references._target_observation(files, target, 25, capacity)
+            assert max(peaks) == 128
+    finally:
+        files.finish()
+        budget.close()
+    assert not opened
 
 
 def test_current_reference_fence_holds_real_publisher_locks(reference_installation):

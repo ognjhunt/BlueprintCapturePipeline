@@ -52,10 +52,10 @@ def _chain(path, stack, *, _descriptor_check=None):
     components = ('/', *path.parts[1:])
     result, parent = [], None
     for index, name in enumerate(components):
-        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        _require(stat.S_ISDIR(named.st_mode), 'changed')
         if _descriptor_check is not None:
             _descriptor_check(index + 1)
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        _require(stat.S_ISDIR(named.st_mode), 'changed')
         fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                      dir_fd=parent)
         stack.callback(os.close, fd)

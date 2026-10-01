@@ -51,7 +51,7 @@ class _BirthFiles(_TargetFiles):
         if not cleanup:
             self.budget.tick()
 
-    def parent(self, path, *, protected=False):
+    def parent(self, path, *, protected=False, _descriptor_check=None):
         selected = retained._path(os.fspath(path), _work_budget=self.budget)
         known = self.parents.get(selected.parent)
         if known is not None:
@@ -73,6 +73,8 @@ class _BirthFiles(_TargetFiles):
         prefix = Path("/")
         fd = self.parents.get(prefix)
         if fd is None:
+            if _descriptor_check is not None:
+                _descriptor_check(1)
             fd = self.open("/", os.O_RDONLY | os.O_DIRECTORY)
             self.parents[prefix] = fd
         self.location(fd)
@@ -83,6 +85,8 @@ class _BirthFiles(_TargetFiles):
             prefix = prefix / component
             child = self.parents.get(prefix)
             if child is None:
+                if _descriptor_check is not None:
+                    _descriptor_check(1)
                 child = self.open(component, os.O_RDONLY | os.O_DIRECTORY, parent=fd)
                 self.parents[prefix] = child
             self.location(child)
