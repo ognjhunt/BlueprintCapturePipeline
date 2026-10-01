@@ -1,0 +1,9 @@
+{
+  "schema_version": "argus_shadow_plan.v1",
+  "manifest_digest": "sha256:58970d197270cc76ca4798c89d53ebe363f5017d55f92bff532752f8341ffa7a",
+  "corpus_kind": "retained_episodes",
+  "episode_count": 0,
+  "requests": [],
+  "model_calls": 0,
+  "production_grader_changed": false
+}

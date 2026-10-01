@@ -1,0 +1,50 @@
+BLUEPRINT SHADOW ACCEPTANCE OVERRIDE v1
+
+These instructions override conflicting Argus instructions above. This is a
+shadow annotation of a recorded robot policy episode, which may be autonomous
+rather than teleoperated. The intended task and the confirmed, digest-bound
+task_success_contract are supplied. Do not infer a more convenient goal from
+the motion. Name all applicable acceptance criteria before deciding completion.
+
+Evaluate the entire authored contract, including terminal state, destination
+containment, orientation, support, release, required settling duration, required
+retreat clearance and duration, and authored temporal invariants. A retreat
+required by the contract is part of success and completion time. Do not discard
+it as parking or incidental motion. A drop followed by recovery, excessive
+force, forbidden contact, containment/workspace excursion, retry or regrasp may
+fail the whole-episode contract even if the final placement looks correct.
+Honor the actual enabled/ignored modes and thresholds; do not invent extra
+requirements. Track partial progress separately from contractual success.
+
+Use success only when the supplied evidence supports every required predicate.
+Use failure when a required predicate is demonstrably violated. Use unclear
+when a required predicate cannot be determined from the supplied evidence,
+including occlusion, insufficient temporal sampling, unavailable contact/force
+readback, missing state, or uncertain correspondence between video and state.
+An occluded final state neither proves failure nor supplies missing confirmation
+of a required condition. State/action fields are recorded claims, with units and
+time bases, to cross-check against video; never infer forces from pixels.
+
+Preserve goal_reached_at_s and undone_at_s when the full acceptance predicate
+was reached and later lost. success_then_undone is a contractual failure for a
+task whose success must persist to the end; it does not count as success. Do not
+claim the full predicate was reached when only an intermediate subgoal held.
+completed_at_s is the first supplied timestamp at which all required predicates
+hold and continue to hold as required through termination, including authored
+settling/retreat requirements. Set it null for failure, unclear, and
+success_then_undone. Report timestamp precision and sampling limitations rather
+than presenting interpolated timing as an exact observed event.
+
+Keep the Argus completion fields and temporal annotation schema. Include a
+plain-language completion.reason that distinguishes visible facts, native-state
+facts, inference, contradictions, and missing evidence. Cite camera IDs and
+timestamps, relevant contract criteria, and artifact digests. Retain subtle
+failures, transients, recovery, and uncertainty in the timeline. Confidence, if
+reported, is annotation confidence; it is not a calibrated probability of
+contractual success. Explain disagreements without having access to the current
+grader output or the independent review labels.
+
+Argus issue severity describes effects on training data. It is not a physical
+safety rating or deployment authorization. Simulator recordings and generative
+appearance cannot establish physical validity. This output has no authority to
+replace Blueprint scoring, rank policies, promote a claim, or switch an evaluator.

@@ -1,0 +1,78 @@
+{
+  "schema_version": "argus_shadow_manifest.v1",
+  "program_id": "arm-decision-proof-v1",
+  "backlog_item": "ADP-009D",
+  "gate": "Day-28 optional sealed episode evidence comparison",
+  "corpus_kind": "retained_episodes",
+  "argus_commit": "6c99686a3d93027c517f02f37f24b5b68532e12a",
+  "argus_source_pins": {
+    "path": "docs/experiments/argus_shadow_20261001/argus_source_pins.json",
+    "sha256": "sha256:db4e6531ef97b8f07be48a63c95d93491bb13860b1355de12fdb9281b6cf0f21",
+    "size_bytes": 3310
+  },
+  "current_grader_kind": "adp_deterministic",
+  "current_grader_commit": "35f5c9ad43f84aa053aa7616a63a9aa4f6e32a61",
+  "current_grader_sources": [
+    {
+      "path": "src/blueprint_pipeline/adp_task_scoring.py",
+      "sha256": "sha256:dab4f24208d6d7b21c9c14532a9ba4f8b005446847d3b640a63b552772226a22",
+      "size_bytes": 56764
+    },
+    {
+      "path": "src/blueprint_pipeline/adp009d_task_scoring.py",
+      "sha256": "sha256:6d6d01ac2a61e42d58739892667178e2f0ce05f453d992cd13440d4c112b577f",
+      "size_bytes": 46464
+    },
+    {
+      "path": "src/blueprint_pipeline/adp_rigid_task_scoring.py",
+      "sha256": "sha256:d52c0affc1713936614cd37562535ad112963445b5ee8afea7a592a5481332ed",
+      "size_bytes": 49493
+    },
+    {
+      "path": "src/blueprint_pipeline/adp_rigid_retreat_scoring.py",
+      "sha256": "sha256:828cb9ac19a0dea1080bfdbaf87f26e8adeda2e7cebfaa40b362c99f12bbed75",
+      "size_bytes": 9162
+    },
+    {
+      "path": "src/blueprint_pipeline/adp_articulated_task_success_contract.py",
+      "sha256": "sha256:083fdb59be189882f4a36308a36db4fb64fab29b627b30f2966dec015c0e4727",
+      "size_bytes": 18907
+    },
+    {
+      "path": "src/blueprint_pipeline/task_evaluation_surface_target.py",
+      "sha256": "sha256:e8d4b6e4164d77a2f6548c907200c5e84ffb8d8026549da581732946eed67e0a",
+      "size_bytes": 14498
+    },
+    {
+      "path": "src/blueprint_pipeline/decision_evidence_contracts.py",
+      "sha256": "sha256:8d4d51a798030b9419fad6d590fb2ad3ca51ca394b954ee4c18e92ece94f7ebb",
+      "size_bytes": 32198
+    },
+    {
+      "path": "src/blueprint_pipeline/articulation_graph_contract.py",
+      "sha256": "sha256:99e101ec7ea44c9631612a57bad40cac9ced6185932cb3471d952cec3611b0a3",
+      "size_bytes": 15219
+    }
+  ],
+  "prompts": {
+    "argus_adapted": {
+      "path": "docs/experiments/argus_shadow_20261001/argus_adapted_teleop.txt",
+      "sha256": "sha256:308ffb611d39636709e57e2aad7f76259ff5bbb32fe5931386973c021b5f99d9",
+      "size_bytes": 30013
+    },
+    "argus_vanilla": {
+      "path": "docs/experiments/argus_shadow_20261001/argus_vanilla_teleop.txt",
+      "sha256": "sha256:79456a4ab69aea8202fe215d606484dfc38fcbc242da768b9a911c115c887f4e",
+      "size_bytes": 26668
+    }
+  },
+  "selection": {
+    "episode_ids": [],
+    "rule": "Exactly the existing successful, failed and ambiguous episodes, including supported subtle failures, occlusion and success-then-undone; no new rollout or replacement corpus",
+    "status": "blocked_no_locally_available_eligible_episode_bundles"
+  },
+  "episodes": [],
+  "external_execution_authorized": false,
+  "production_grader_switch_authorized": false,
+  "manifest_digest": "sha256:58970d197270cc76ca4798c89d53ebe363f5017d55f92bff532752f8341ffa7a"
+}

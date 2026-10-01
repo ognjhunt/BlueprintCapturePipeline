@@ -1,0 +1,36 @@
+{
+  "schema_version": "argus_shadow_validation.v1",
+  "status": "offline_checks_passed_real_run_blocked",
+  "source": {
+    "path": "src/blueprint_pipeline/argus_shadow.py",
+    "sha256": "sha256:24f115252ee5706638a2211f0b9fa610155e78e38671db8cc3eb00e2cf8aecf3",
+    "size_bytes": 31565
+  },
+  "test": {
+    "path": "tests/test_argus_shadow.py",
+    "sha256": "sha256:e68fe04432a888f182936ccbd3552ad1bbf32b1e60dc171c21cf21dbfd09f163",
+    "size_bytes": 17383
+  },
+  "commands": [
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q tests/test_argus_shadow.py",
+      "result": "27 passed in 0.52 seconds",
+      "protects": "paired immutable inputs, actual grader replay, independent labels, synthetic truth boundaries, native media/state schemas, safe output writing"
+    },
+    {
+      "command": ".venv/bin/ruff check src/blueprint_pipeline/argus_shadow.py tests/test_argus_shadow.py",
+      "result": "All checks passed",
+      "protects": "changed-file lint"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m blueprint_pipeline.impacted_test_selection --base 35f5c9ad --plan-output /tmp/argus-final-impact-plan.json",
+      "result": "36 passed, 4 warnings in 25.95 seconds; requires_full_suite false",
+      "protects": "changed contracts plus always-on security, paid-resource, success-claim and release sentinel set"
+    }
+  ],
+  "independent_sol_review": "Accepted; final independent rerun 27 passed in 0.62 seconds",
+  "paid_model_calls": 0,
+  "gpu_runs": 0,
+  "upstream_software_executed": false,
+  "production_grader_changed": false
+}

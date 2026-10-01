@@ -1,0 +1,70 @@
+{
+  "repository": "https://github.com/Pantheon-Industries-Inc/argus",
+  "commit": "6c99686a3d93027c517f02f37f24b5b68532e12a",
+  "inspection_only": true,
+  "upstream_software_executed": false,
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "sha256:9f6fb79d473f973acdfbfa418485c57f929ab3580a934913c08a1b57b297a2ff",
+      "size_bytes": 26121,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/README.md"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "sha256:cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "size_bytes": 11358,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/LICENSE"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.txt",
+      "sha256": "sha256:68eb2f72b08400ba652edf99edefb325063b27171bcc995fd127c01e3117f97e",
+      "size_bytes": 2197,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/THIRD_PARTY_NOTICES.txt"
+    },
+    {
+      "path": "configs/models.json",
+      "sha256": "sha256:f63bb6792d8770fb070eab569cc9f0c2362cf41a7dbeacffcffc24eb0a2275cd",
+      "size_bytes": 1023,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/configs/models.json"
+    },
+    {
+      "path": "label/prompts.py",
+      "sha256": "sha256:d8bd23f739bc9d91519bf0961d5ede634773064f66e4bb5df39c1191f68b9526",
+      "size_bytes": 60152,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/label/prompts.py"
+    },
+    {
+      "path": "label/harness.py",
+      "sha256": "sha256:6030a61e9d1ce2a3d9f6054713622869acb0b5d34ee60731954ce8711cb40ac9",
+      "size_bytes": 30351,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/label/harness.py"
+    },
+    {
+      "path": "label/route.py",
+      "sha256": "sha256:b823961877f2da668014857f95daff58281fc0647df1cc1f761418c498af2541",
+      "size_bytes": 6419,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/label/route.py"
+    },
+    {
+      "path": "label/run.py",
+      "sha256": "sha256:45b95475ef9dbb6cb695128ac4b01f64ef58cac7676c3b4a812b3aff905fc08d",
+      "size_bytes": 10023,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/label/run.py"
+    },
+    {
+      "path": "prepare/videos.py",
+      "sha256": "sha256:7ac2adedca0509a13bb719c3dc4577f532fa582cfd2c26b2822ab9c1ed96d3e5",
+      "size_bytes": 5714,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/prepare/videos.py"
+    },
+    {
+      "path": "prepare/formats.py",
+      "sha256": "sha256:52bb058b65affe10228f810f565429c578944d2f6031deb09d1014b51f5986ca",
+      "size_bytes": 144167,
+      "url": "https://github.com/Pantheon-Industries-Inc/argus/blob/6c99686a3d93027c517f02f37f24b5b68532e12a/prepare/formats.py"
+    }
+  ],
+  "vanilla_prompt_derivation": "AST literal extraction only; reconstruct fixed_instructions(teleop_arms, has_instruction=True); no upstream imports or execution",
+  "hand_pose_components_used": false
+}

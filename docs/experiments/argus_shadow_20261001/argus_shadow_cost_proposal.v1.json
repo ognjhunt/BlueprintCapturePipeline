@@ -1,0 +1,25 @@
+{
+  "schema_version": "argus_shadow_cost_proposal.v1",
+  "admitted_episode_count": 0,
+  "footage_seconds": 0,
+  "argus_arms": 2,
+  "current_replay_usd": 0,
+  "estimated_argus_usd": 0.0,
+  "paid_execution_authorized": false,
+  "conditional_pilot": {
+    "episodes": 12,
+    "seconds_per_episode_assumed": 60,
+    "success_failure_ambiguous_each": 4,
+    "argus_requests": 24,
+    "estimated_usd": 10.4,
+    "proposed_aggregate_cap_usd": 20,
+    "source_price_request_bound_usd": 4.4,
+    "source_price_24_request_bound_usd": 105.6,
+    "bound_assumptions": "120000 input tokens at $10/M; 64000 output tokens at $50/M, reasoning included; fixed route, no retry, no caching assumed. Source fallback rates, not current provider quote.",
+    "retry_count": 0
+  },
+  "estimate_basis": "Argus 6c99686a3d93027c517f02f37f24b5b68532e12a README, $26/teleop footage hour per arm; routing/prompt/media differences can change cost.",
+  "execution_gate": "Separate spend and disclosure approval; current official provider quote and worst-case per-request reservation before any send. A $20 cap does not guarantee 24 completions.",
+  "unrelated_budgets_available_usd": 0,
+  "model_calls": 0
+}
