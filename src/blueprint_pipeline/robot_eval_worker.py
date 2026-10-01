@@ -7,6 +7,7 @@ Live GPU execution still requires the orchestrator's explicit environment and CL
 """
 
 from __future__ import annotations
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
 
 import argparse
 import os
@@ -49,7 +50,6 @@ from .core.security_controls import (
 )
 from .wam_provider_runtime import parse_wam_provider_commands
 
-
 WORKER_RUNTIME_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_runtime_manifest.v1"
 WORKER_RUNTIME_PREFLIGHT_SCHEMA_VERSION = "robot_eval_worker_runtime_preflight.v1"
 WORKER_INPUT_MANIFEST_SCHEMA_VERSION = "robot_eval_worker_manifest.v1"
@@ -69,10 +69,8 @@ CAPTURE_ARCHIVE_MAX_EXPANDED_BYTES = 32 * 1024 * 1024 * 1024
 CAPTURE_ARCHIVE_MAX_MEMBER_BYTES = 8 * 1024 * 1024 * 1024
 CAPTURE_ARCHIVE_MAX_COMPRESSION_RATIO = 200.0
 
-
 def _string(value: Any) -> str:
     return value if isinstance(value, str) else ""
-
 
 def _mapping(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
@@ -520,7 +518,9 @@ def _s3_compatible_client(uri: str) -> Any:
         kwargs["endpoint_url"] = endpoint_url
     if region_name:
         kwargs["region_name"] = region_name
-    return boto3.client("s3", **kwargs)
+    return s3_compatible_client(boto3, **kwargs,
+        aws_access_key_id=os.getenv("BLUEPRINT_OBJECT_STORAGE_ACCESS_KEY_ID") or os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("BLUEPRINT_OBJECT_STORAGE_SECRET_ACCESS_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY"))
 
 
 def _download_s3_compatible_uri(

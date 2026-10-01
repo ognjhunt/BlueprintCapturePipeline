@@ -926,8 +926,7 @@ def test_cleanup_staged_objects_is_exact_and_absence_proven(tmp_path: Path, monk
     monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
 
-    result = object_store.cleanup_staged_wam_provider_objects(
-        job,
+    result = object_store.cleanup_staged_wam_provider_objects(job, endpoint_url="https://nyc3.digitaloceanspaces.com",
         access_key_id_file=access,
         secret_access_key_file=secret,
         bucket="bucket",
@@ -1025,8 +1024,7 @@ def test_cleanup_absence_proves_objects_from_a_bound_blocked_staging_manifest(
         sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig)
     )
 
-    result = object_store.cleanup_staged_wam_provider_objects(
-        job,
+    result = object_store.cleanup_staged_wam_provider_objects(job, endpoint_url="https://nyc3.digitaloceanspaces.com",
         access_key_id_file=access,
         secret_access_key_file=secret,
         bucket="bucket",
@@ -1099,8 +1097,7 @@ def test_cleanup_refuses_tampered_blocked_staging_binding(
         SimpleNamespace(Config=lambda **_kwargs: object()),
     )
 
-    result = object_store.cleanup_staged_wam_provider_objects(
-        job,
+    result = object_store.cleanup_staged_wam_provider_objects(job, endpoint_url="https://nyc3.digitaloceanspaces.com",
         access_key_id_file=access,
         secret_access_key_file=secret,
         bucket="bucket",
@@ -1184,8 +1181,7 @@ def test_cleanup_retries_transient_transport_failure_then_proves_absence(
     monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
 
-    result = object_store.cleanup_staged_wam_provider_objects(
-        job,
+    result = object_store.cleanup_staged_wam_provider_objects(job, endpoint_url="https://nyc3.digitaloceanspaces.com",
         access_key_id_file=access,
         secret_access_key_file=secret,
         bucket="bucket",
@@ -1247,8 +1243,7 @@ def test_cleanup_does_not_retry_a_non_transient_failure(tmp_path: Path, monkeypa
     monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "botocore.client", SimpleNamespace(Config=FakeConfig))
 
-    result = object_store.cleanup_staged_wam_provider_objects(
-        job,
+    result = object_store.cleanup_staged_wam_provider_objects(job, endpoint_url="https://nyc3.digitaloceanspaces.com",
         access_key_id_file=access,
         secret_access_key_file=secret,
         bucket="bucket",
@@ -1355,7 +1350,7 @@ def test_ungated_staging_and_cleanup_are_byte_identical(tmp_path: Path, monkeypa
     real_delete, real_head = client.delete_object, client.head_object
     client.delete_object = lambda **kw: calls.append(("delete", kw["Key"])) or real_delete(**kw)
     client.head_object = lambda **kw: calls.append(("head", kw["Key"])) or real_head(**kw)
-    result = object_store.cleanup_staged_wam_provider_objects(default_job)
+    result = object_store.cleanup_staged_wam_provider_objects(default_job, endpoint_url="https://nyc3.digitaloceanspaces.com")
     keys = [default["bundle_key"], default["output_key"]]
     assert calls == [("delete", keys[0]), ("head", keys[0]), ("delete", keys[1]), ("head", keys[1])]
     assert set(result) == {
@@ -1479,8 +1474,7 @@ def _receipt(job: Path, keys: dict, *, manifest_sha256: str | None = None, **sec
 
 
 def _gated_cleanup(tmp_path: Path, job: Path):
-    return object_store.cleanup_staged_wam_provider_objects(
-        job, access_key_id_file=tmp_path / "access", secret_access_key_file=tmp_path / "secret",
+    return object_store.cleanup_staged_wam_provider_objects(job, endpoint_url="https://nyc3.digitaloceanspaces.com", access_key_id_file=tmp_path / "access", secret_access_key_file=tmp_path / "secret",
         bucket="bucket")
 
 

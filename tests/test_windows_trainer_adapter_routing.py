@@ -71,21 +71,39 @@ def test_selection_grants_nothing_without_execute(tmp_path: Path) -> None:
     )
 
 
-def test_allocator_routes_a_windows_trainer_to_its_own_executor() -> None:
-    """It must reach the Windows executor, never the Linux Vast operation."""
-    import inspect
 
-    from blueprint_pipeline import paid_resource_allocator
+def test_allocator_refuses_windows_before_refresh_staging_or_admission(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired request must not reach providers/admission")
+    monkeypatch.setattr(allocator, "get_render_provider", forbidden)
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", forbidden)
+    args = Namespace(provider="vast", provider_launch_request=_request(tmp_path, CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID), reconstruction_refresh_preflight=True)
+    result = allocator._run_reconstruction_gpu_canary(args, checkout_commit="a" * 40)
+    assert result["blockers"] == ["aws_provider_integration_removed"]
+    args.provider = "aws"
+    args.provider_launch_request = tmp_path / "must-not-read"
+    assert allocator._run_reconstruction_gpu_canary(args, checkout_commit="a" * 40)["status"] == "blocked"
 
-    source = inspect.getsource(paid_resource_allocator)
-    # Slice exactly the Windows branch: from its guard to the next elif.
-    after = source.split("WINDOWS_TRAINER_ADAPTER_IDS:", 1)[1]
-    branch = after.split("elif operation in", 1)[0]
-    assert "run_reconstruction_aws_windows_operation(" in branch
-    assert "run_reconstruction_vast_operation(" not in branch
-    # The paid grant must reach the provider or every launch comes back blocked.
-    assert "paid_resource_admission_grant=grant" in branch
-    # The Windows branch must sit ahead of the Vast branch, not after it.
-    assert source.index("WINDOWS_TRAINER_ADAPTER_IDS:") < source.index(
-        "run_reconstruction_vast_operation("
-    )
+
+def test_retired_aws_capacity_never_calls_injected_probes():
+    import pytest
+    from blueprint_pipeline.reconstruction_gpu_admission import collect_reconstruction_vast_preflight
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired AWS probe invoked")
+    with pytest.raises(ValueError, match="aws_provider_integration_removed"):
+        collect_reconstruction_vast_preflight(provider_name="aws", capacity_probe=forbidden, inventory_probe=forbidden, name_prefix="scope", container_disk_bytes=0, max_hourly_rate_usd=1, watchdog={}, conflicting_owner_present=False)
+
+
+def test_quoted_home_windows_request_refuses_before_detachment_or_probes(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import paid_resource_allocator as allocator
+    request = _request(tmp_path, CANONICAL_POSTSHOT_AWS_WINDOWS_ADAPTER_ID)
+    original = Path.expanduser
+    monkeypatch.setattr(Path, "expanduser", lambda path: request if str(path) == "~/windows-request.json" else original(path))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("retired request reached detachment or providers")
+    monkeypatch.setattr(allocator, "configure_or_launch_detached_gpu_canary", forbidden)
+    monkeypatch.setattr(allocator, "get_render_provider", forbidden)
+    assert allocator.main(["gpu-canary", "--provider", "vast", "--probe-kind", allocator.RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND, "--provider-launch-request", "~/windows-request.json", "--execute"]) == 2
+    assert "aws_provider_integration_removed" in capsys.readouterr().out

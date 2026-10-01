@@ -10,6 +10,8 @@ before the source RunPod cache may be considered replaceable.
 
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import argparse
 import hashlib
 import json
@@ -432,8 +434,7 @@ def _presigned_download_manifest(
 
     access_key = _read_private_secret(access_key_file)
     secret_key = _read_private_secret(secret_key_file)
-    client = boto3.client(
-        "s3",
+    client = s3_compatible_client(boto3,
         endpoint_url=RUNPOD_S3_ENDPOINT,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,

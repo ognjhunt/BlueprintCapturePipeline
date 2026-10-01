@@ -2,7 +2,6 @@
   "schema_version": "paid_resource_mutation_surfaces.v1",
   "issuer_allowlist": {
     "build_paid_lane_admission": [
-      "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
       "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
       "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
@@ -24,7 +23,6 @@
       "src/blueprint_pipeline/teleport_paid_allocator.py"
     ],
     "require_paid_resource_admission": [
-      "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
       "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
       "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
@@ -65,19 +63,18 @@
     },
     {
       "path": "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
-      "classification": "canonical_adapter",
+      "classification": "hard_disabled_legacy_launcher",
       "required_markers": [
-        "build_paid_lane_admission",
-        "require_paid_resource_admission",
-        "run_reconstruction_aws_windows_operation"
+        "aws_provider_integration_removed",
+        "provider_mutations_performed"
       ]
     },
     {
       "path": "scripts/postshot_windows_worker/launch_postshot_worker.py",
-      "classification": "metered_object_storage_data_plane",
+      "classification": "hard_disabled_legacy_launcher",
       "required_markers": [
-        "legacy_postshot_windows_worker_launch_disabled_use_paid_resource_allocator",
-        "delete_object"
+        "aws_provider_integration_removed",
+        "provider_mutations_performed"
       ]
     },
     {

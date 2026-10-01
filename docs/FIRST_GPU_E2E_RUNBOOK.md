@@ -21,7 +21,7 @@ live policy success, customer delivery, or public-claim upgrades.
 
 ## Runtime Choice
 
-Use a GPU VM or pod for the first run. RunPod, Vast, NVIDIA Brev, AWS, Azure, or
+Use a GPU VM or pod for the first run. RunPod, Vast, NVIDIA Brev, Azure, or
 GCP can all work if the instance gives you Linux, Docker, NVIDIA Container
 Toolkit, persistent storage, outbound asset access, and an RTX-capable GPU.
 

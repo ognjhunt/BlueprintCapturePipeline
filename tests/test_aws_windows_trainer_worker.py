@@ -8,16 +8,12 @@ that make a Windows trainer host safe to allocate rather than merely possible.
 from __future__ import annotations
 
 import base64
-import hashlib
 import gzip
-from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.cloud_vm_render_providers import (
-    AWS_USER_DATA_MAX_BYTES,
     WINDOWS_WORKER_PLATFORM,
-    AWSRenderProvider,
     _windows_worker_bootstrap,
 )
 from blueprint_pipeline.gpu_render_providers import RenderLaunchSpec
@@ -110,23 +106,8 @@ def test_bootstrap_arms_a_local_hard_deadline() -> None:
     assert "5400" in script
 
 
-def test_launch_request_terminates_on_instance_initiated_shutdown(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch)
-    request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert request["run_instances"]["InstanceInitiatedShutdownBehavior"] == "terminate"
 
 
-def test_root_volume_is_encrypted_and_deleted_with_the_instance(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch)
-    ebs = AWSRenderProvider().build_request(_spec(), tmp_path)["run_instances"][
-        "BlockDeviceMappings"
-    ][0]["Ebs"]
-    assert ebs["Encrypted"] is True
-    assert ebs["DeleteOnTermination"] is True
 
 
 # --------------------------------------------------------------------------
@@ -134,34 +115,8 @@ def test_root_volume_is_encrypted_and_deleted_with_the_instance(
 # --------------------------------------------------------------------------
 
 
-def test_two_identical_launches_share_one_client_token(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """EC2 deduplicates RunInstances by ClientToken, so a retried dispatch
-    cannot allocate a second billable instance."""
-    _aws_env(monkeypatch)
-    provider = AWSRenderProvider()
-    first = provider.build_request(_spec(), tmp_path)
-    second = provider.build_request(_spec(), tmp_path)
-    assert first["run_instances"]["ClientToken"] == second["run_instances"]["ClientToken"]
 
 
-def test_a_different_run_gets_a_different_client_token(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch)
-    provider = AWSRenderProvider()
-    first = provider.build_request(_spec(), tmp_path)
-    other = RenderLaunchSpec(
-        name="blueprint-postshot-primary-002",
-        image=_spec().image,
-        env=dict(_spec().env),
-        bootstrap_argv=["-lc", "run-arm"],
-    )
-    assert (
-        provider.build_request(other, tmp_path)["run_instances"]["ClientToken"]
-        != first["run_instances"]["ClientToken"]
-    )
 
 
 # --------------------------------------------------------------------------
@@ -169,48 +124,14 @@ def test_a_different_run_gets_a_different_client_token(
 # --------------------------------------------------------------------------
 
 
-def test_windows_platform_selects_the_powershell_bootstrap(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch)
-    user_data = AWSRenderProvider().build_request(_spec(), tmp_path)["run_instances"]["UserData"]
-    assert user_data.startswith("<powershell>")
-    assert "docker" not in user_data.lower()
 
 
-def test_linux_platform_is_unchanged(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _aws_env(monkeypatch, BLUEPRINT_AWS_WORKER_PLATFORM="linux")
-    user_data = AWSRenderProvider().build_request(_spec(), tmp_path)["run_instances"]["UserData"]
-    assert user_data.startswith("#!/bin/bash")
 
 
-def test_unknown_platform_blocks_before_any_api_call(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch, BLUEPRINT_AWS_WORKER_PLATFORM="freebsd")
-    request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert "aws_worker_platform_invalid" in request["configuration_blockers"]
 
 
-def test_windows_lane_refuses_a_registry_mode_it_cannot_honour(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """There is no container runtime on the trainer host."""
-    _aws_env(monkeypatch, BLUEPRINT_AWS_REGISTRY_AUTH="aws_ecr")
-    request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert "aws_windows_worker_registry_auth_unsupported" in request["configuration_blockers"]
 
 
-def test_rate_above_the_authorized_ceiling_blocks(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(
-        monkeypatch,
-        BLUEPRINT_AWS_HOURLY_RATE_USD="4.00",
-        BLUEPRINT_AWS_MAX_HOURLY_RATE_USD="1.50",
-    )
-    request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert "aws_hourly_rate_exceeds_cap" in request["configuration_blockers"]
 
 
 DRIVER_URL = "https://example.invalid/nvidia-datacenter.exe"
@@ -255,71 +176,10 @@ def test_without_installer_urls_the_host_must_already_be_baked() -> None:
     assert "msiexec" not in script
 
 
-def test_install_at_boot_provisions_driver_and_postshot() -> None:
-    script = _windows_worker_bootstrap(_install_at_boot_spec())
-    decoded = _decoded_user_data(script)
-    assert DRIVER_URL in decoded
-    assert INSTALLER_URL in decoded
-    assert PYTHON_URL in decoded
-    assert NUMPY_URL in decoded
-    assert "nvidia_driver_digest_mismatch" in script
-    assert "nvidia_driver_install_failed" in script
-    assert "postshot_cli_not_found" in script
-    assert "python_embed_digest_mismatch" in script
-    assert "numpy_wheel_digest_mismatch" in script
-    assert "bootstrap_transport_digest_mismatch" in script
-    assert "blueprint_python_runtime_import_failed" in script
-    # A baked marker is meaningless on a host we are building right now.
-    assert "blueprint_worker_image_marker_missing" not in script
-    assert len(script.encode("utf-8")) <= AWS_USER_DATA_MAX_BYTES
 
 
-def test_windows_user_data_over_provider_limit_blocks_before_launch(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch)
-    request = AWSRenderProvider().build_request(
-        _install_at_boot_spec(
-            BLUEPRINT_LARGE_PUBLIC_VALUE="".join(
-                hashlib.sha256(str(index).encode()).hexdigest()
-                for index in range(1_500)
-            )
-        ),
-        tmp_path,
-    )
-    assert "aws_user_data_exceeds_provider_limit" in request["configuration_blockers"]
 
 
-def test_production_shaped_signed_transport_fits_aws_user_data_limit() -> None:
-    def signed(label: str) -> str:
-        query = "".join(
-            hashlib.sha256(f"{label}-{index}".encode()).hexdigest()
-            for index in range(8)
-        )
-        return (
-            f"https://sfo3.digitaloceanspaces.com/blueprint/{label}"
-            f"?X-Amz-Signature={query}"
-        )
-
-    script = _windows_worker_bootstrap(
-        _install_at_boot_spec(
-            BLUEPRINT_WINDOWS_NVIDIA_DRIVER_GET_URL=signed("driver"),
-            BLUEPRINT_WINDOWS_POSTSHOT_INSTALLER_GET_URL=signed("postshot"),
-            BLUEPRINT_WINDOWS_PYTHON_EMBED_GET_URL=signed("python"),
-            BLUEPRINT_WINDOWS_NUMPY_WHEEL_GET_URL=signed("numpy"),
-            BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL=signed("bundle"),
-            BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_GET_URL=signed("receipt"),
-            BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL=signed("output"),
-            BLUEPRINT_RECONSTRUCTION_PROGRESS_PUT_URL=signed("progress"),
-            BLUEPRINT_POSTSHOT_LICENCE_GET_URL=signed("license-get"),
-            BLUEPRINT_POSTSHOT_LICENCE_DELETE_URL=signed("license-delete"),
-            BLUEPRINT_CANONICAL_ALLOCATOR_ADMISSION_B64="".join(
-                hashlib.sha256(f"admission-{index}".encode()).hexdigest()
-                for index in range(25)
-            ),
-        )
-    )
-    assert len(script.encode("utf-8")) <= AWS_USER_DATA_MAX_BYTES
 
 
 def test_install_at_boot_pins_the_installer_digest() -> None:
@@ -375,35 +235,10 @@ def test_install_at_boot_still_arms_the_hard_deadline() -> None:
     assert "shutdown.exe" in script
 
 
-def test_windows_lane_needs_no_instance_profile(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The trainer talks only to signed URLs, so a role is privilege it never uses."""
-    _aws_env(monkeypatch)
-    monkeypatch.delenv("BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN", raising=False)
-    request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert request["configuration_blockers"] == []
-    assert "IamInstanceProfile" not in request["run_instances"]
 
 
-def test_linux_lane_still_requires_an_instance_profile(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch, BLUEPRINT_AWS_WORKER_PLATFORM="linux")
-    monkeypatch.delenv("BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN", raising=False)
-    request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert "aws_iam_instance_profile_arn_missing" in request["configuration_blockers"]
 
 
-def test_an_explicitly_configured_profile_is_still_attached(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Relaxing the requirement must not silently drop an operator's choice."""
-    _aws_env(monkeypatch)
-    request = AWSRenderProvider().build_request(_spec(), tmp_path)
-    assert request["run_instances"]["IamInstanceProfile"]["Arn"].endswith(
-        "instance-profile/blueprint-worker"
-    )
 
 
 def test_host_image_marker_is_verified_before_training(

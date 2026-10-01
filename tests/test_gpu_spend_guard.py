@@ -2313,3 +2313,25 @@ def test_provider_inventory_identifies_client_without_weakening_refusal(monkeypa
         with pytest.raises(guard.ProviderInventoryError) as failure:
             guard.fetch_runpod_pods("fixture-key")
         assert failure.value.status == 403
+
+
+def test_main_never_queries_retired_aws_even_when_old_credentials_are_configured(patched_guard, monkeypatch, capsys):
+    from scripts import gpu_spend_guard as guard
+    queried = []
+    def cloud_inventory(provider, **kwargs):
+        assert provider != "aws"
+        queried.append(provider)
+        return []
+    monkeypatch.setattr(guard, "cloud_provider_configured", lambda provider: True)
+    monkeypatch.setattr(guard, "fetch_cloud_vm_instances", cloud_inventory)
+    output = patched_guard[0] / "no-aws.json"
+    guard.main(["--json-report", str(output)])
+    import json
+    report = json.loads(output.read_text())
+    aws = next(row for row in report["inventory_results"] if row["provider"] == "aws")
+    assert aws["status"] == "unavailable"
+    assert aws["required"] is False
+    assert aws["row_count"] is None
+    assert aws["api_confirmed"] is False
+    assert "aws" not in queried
+    assert guard.main(["--require-provider", "aws", "--json-report", str(output)]) == 2

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import argparse
 import hashlib
 import json
@@ -70,13 +72,11 @@ DEFAULT_ACCESS_KEY_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_access_key_id",
     "~/.blueprint-secrets/runpod_s3_access_key",
     "~/.blueprint-secrets/r2_access_key_id",
-    "~/.blueprint-secrets/aws_access_key_id",
 )
 DEFAULT_SECRET_KEY_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_secret_access_key",
     "~/.blueprint-secrets/runpod_s3_secret_key",
     "~/.blueprint-secrets/r2_secret_access_key",
-    "~/.blueprint-secrets/aws_secret_access_key",
 )
 DEFAULT_ENDPOINT_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_endpoint_url",
@@ -87,11 +87,9 @@ DEFAULT_BUCKET_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_bucket",
     "~/.blueprint-secrets/runpod_network_volume_id",
     "~/.blueprint-secrets/r2_bucket",
-    "~/.blueprint-secrets/aws_s3_bucket",
 )
 DEFAULT_REGION_FILES = (
     "~/.blueprint-secrets/digitalocean_spaces_region",
-    "~/.blueprint-secrets/aws_region",
 )
 SUPPORTED_OUTPUT_CONTENT_TYPES = (
     "application/zip",
@@ -270,7 +268,7 @@ def stage_cached_runtime_dependency_object_store(
             }
             if endpoint:
                 kwargs["endpoint_url"] = endpoint
-            client = boto3.client("s3", **kwargs)
+            client = s3_compatible_client(boto3, **kwargs)
             try:
                 head = client.head_object(Bucket=bucket, Key=key)
                 cache_hit = True
@@ -737,7 +735,7 @@ def _s3_client(*, access_key: str, secret_key: str, endpoint: str, region: str) 
     }
     if endpoint:
         kwargs["endpoint_url"] = endpoint
-    return boto3.client("s3", **kwargs)
+    return s3_compatible_client(boto3, **kwargs)
 
 
 def cleanup_staged_wam_provider_objects(
@@ -1308,7 +1306,7 @@ def stage_wam_provider_bundle_object_store(
         if endpoint:
             client_kwargs["endpoint_url"] = endpoint
         try:
-            client = boto3.client("s3", **client_kwargs)
+            client = s3_compatible_client(boto3, **client_kwargs)
             if retain_content_addressed_bundle:
                 # A scene-configuration provider bundle is immutable and often
                 # byte-identical across retries. Publish it once under the
@@ -1767,7 +1765,7 @@ def refresh_wam_provider_output_get_url(
         if endpoint:
             client_kwargs["endpoint_url"] = endpoint
         try:
-            client = boto3.client("s3", **client_kwargs)
+            client = s3_compatible_client(boto3, **client_kwargs)
             observed = _mapping(client.head_object(Bucket=bucket_value, Key=output_key))
             object_size = int(observed.get("ContentLength") or -1)
             if object_size <= 0:

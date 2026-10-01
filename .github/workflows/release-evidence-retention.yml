@@ -243,16 +243,27 @@ jobs:
       - name: Archive with Object Lock COMPLIANCE and verify readback
         env:
           BLUEPRINT_RELEASE_EVIDENCE_S3_URI: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_S3_URI }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_SECRET_ACCESS_KEY }}
-          AWS_SESSION_TOKEN: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_SESSION_TOKEN }}
-          AWS_REGION: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_AWS_REGION }}
+          BLUEPRINT_RELEASE_EVIDENCE_ENDPOINT_URL: ${{ vars.BLUEPRINT_RELEASE_EVIDENCE_ENDPOINT_URL }}
+          BLUEPRINT_RELEASE_EVIDENCE_ACCESS_KEY_ID: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_ACCESS_KEY_ID }}
+          BLUEPRINT_RELEASE_EVIDENCE_SECRET_ACCESS_KEY: ${{ secrets.BLUEPRINT_RELEASE_EVIDENCE_SECRET_ACCESS_KEY }}
         run: |
-          test -n "${BLUEPRINT_RELEASE_EVIDENCE_S3_URI}"
+          set -euo pipefail
+          if [[ -z "${BLUEPRINT_RELEASE_EVIDENCE_S3_URI}" || -z "${BLUEPRINT_RELEASE_EVIDENCE_ENDPOINT_URL}" || -z "${BLUEPRINT_RELEASE_EVIDENCE_ACCESS_KEY_ID}" || -z "${BLUEPRINT_RELEASE_EVIDENCE_SECRET_ACCESS_KEY}" ]]; then
+            echo '::error::s3_compatible_archive_configuration_unavailable: AWS archive access removed; an existing compatible Object Lock destination must be configured by its owner.'
+            exit 1
+          fi
+          uv run python -c 'import os; from blueprint_pipeline.s3_compatible_transport import require_compatible_endpoint; require_compatible_endpoint(os.environ["BLUEPRINT_RELEASE_EVIDENCE_ENDPOINT_URL"])'
+          umask 077
+          archive_access_file="${{ runner.temp }}/blueprint-ci/retention/archive-access"
+          archive_secret_file="${{ runner.temp }}/blueprint-ci/retention/archive-secret"
+          printf '%s' "${BLUEPRINT_RELEASE_EVIDENCE_ACCESS_KEY_ID}" > "${archive_access_file}"
+          printf '%s' "${BLUEPRINT_RELEASE_EVIDENCE_SECRET_ACCESS_KEY}" > "${archive_secret_file}"
           uv run python scripts/archive_release_evidence.py \
             --bundle "${{ runner.temp }}/blueprint-ci/retention/release-evidence.tar.gz" \
             --bundle-manifest "${{ runner.temp }}/blueprint-ci/retention/release-evidence-manifest.json" \
             --archive-uri "${BLUEPRINT_RELEASE_EVIDENCE_S3_URI}" \
+            --endpoint-url "${BLUEPRINT_RELEASE_EVIDENCE_ENDPOINT_URL}" \
+            --access-key-file "${archive_access_file}" --secret-key-file "${archive_secret_file}" \
             --output "${{ runner.temp }}/blueprint-ci/retention/immutable-archive-receipt.json" \
             --envelope-output "${{ runner.temp }}/blueprint-ci/retention/immutable_retention.json"
 
