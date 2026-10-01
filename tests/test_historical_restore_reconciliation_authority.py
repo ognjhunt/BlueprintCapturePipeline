@@ -141,9 +141,11 @@ def test_effect_pin_cannot_rotate_to_an_unrecorded_or_observation_grant(change):
     from types import SimpleNamespace
     from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_worker import _effect_pin
     events, _, grant = resume_projection()
-    effect = (dict(decision_id=grant['decision_id'], action='discard_unfinished_restore_row'), {}, grant['decision'])
+    effect = (dict(decision_id=grant['decision_id'], action='discard_unfinished_restore_row', expires_at_epoch=1040), {}, grant['decision'])
+    from blueprint_pipeline.control_plane_lane_historical_authority import _Operation
     worker = SimpleNamespace(effect_selected=[effect], resume_selected=[effect],
-        reconciliations=[([], 'a' * 32, {}, tuple(events[1:]))])
+        reconciliations=[([], 'a' * 32, {}, tuple(events[1:]))],
+        operation=_Operation(1030, lambda: 0), selected=(None, dict(expires_at_epoch=1100)))
     selected = dict(grant)
     if change == 'rotated':
         worker.effect_selected = [(dict(effect[0], decision_id='8' * 32), {}, effect[2])]
@@ -172,3 +174,60 @@ def test_absent_delete_completion_requires_an_already_recorded_exact_resume(pres
     else:
         with pytest.raises(ValueError):
             _resume_effect_scope(present, pending, recorded, grant)
+
+
+def test_delayed_inode_guard_cannot_remove_after_grant_expiry(monkeypatch):
+    # CPU control-flow test only. These projected descriptors/gates grant no
+    # installed, native, namespace, owner or reader authority.
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from blueprint_pipeline.control_plane_lane_historical_authority import _Operation
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_worker import _remove
+    clock = [0]
+    @contextmanager
+    def checkpoint(**kwargs):
+        yield
+    @contextmanager
+    def opened(relative):
+        def guard():
+            if relative == 'stage':
+                clock[0] = 11
+        yield 99, guard
+    calls = []
+    monkeypatch.setattr('os.rmdir', lambda *args, **kwargs: calls.append('rmdir'))
+    grant = dict(decision_id='a' * 32, decision=dict(sha256='sha256:' + 'b' * 64, size_bytes=100))
+    worker = SimpleNamespace(operation=_Operation(1030, lambda: clock[0]),
+        selected=(None, dict(expires_at_epoch=1100)), resume_selected=[None],
+        effect_selected=[(dict(decision_id=grant['decision_id'], expires_at_epoch=1040), {}, grant['decision'])],
+        mutation_authority=checkpoint)
+    held = SimpleNamespace(_opened=opened, verify=lambda: None, children={'stage/unlogged': []})
+    scope = dict(remove_member=dict(kind='directory', path='stage/unlogged'), parent_path='stage')
+    with pytest.raises(ValueError, match='restore_reconciliation_approval_invalid'):
+        _remove(held, worker, scope, grant)
+    assert calls == []
+
+
+@pytest.mark.parametrize('observe_only', [False, True])
+def test_delayed_inode_guard_cannot_sync_absence_after_grant_expiry(monkeypatch, observe_only):
+    # CPU control-flow projection only; no installed or owner authority.
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from blueprint_pipeline.control_plane_lane_historical_authority import _Operation
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_worker import _sync_absence
+    clock, calls = [0], []
+    @contextmanager
+    def opened(relative):
+        def guard():
+            clock[0] = 11
+        yield 99, guard
+    grant = (dict(decision_id='a' * 32, expires_at_epoch=1040,
+        action='observe_unfinished_restore_row_absence' if observe_only else 'discard_unfinished_restore_row'),
+        {}, dict(sha256='sha256:' + 'b' * 64, size_bytes=100))
+    worker = SimpleNamespace(operation=_Operation(1030, lambda: clock[0]),
+        selected=(None, dict(expires_at_epoch=1100)), resume_selected=[grant if observe_only else None],
+        effect_selected=[grant])
+    held = SimpleNamespace(_opened=opened, rows={'stage': dict(kind='directory')})
+    monkeypatch.setattr('os.fsync', lambda *args: calls.append('fsync'))
+    with pytest.raises(ValueError, match='restore_reconciliation_approval_invalid'):
+        _sync_absence(held, worker, 'stage', grant, observe_only=observe_only)
+    assert calls == []

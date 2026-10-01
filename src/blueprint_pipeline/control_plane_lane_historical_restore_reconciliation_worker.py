@@ -20,6 +20,8 @@ def _effect_pin(worker, selected):
     effect = worker.effect_selected[-1]
     generation._require(selected == dict(decision_id=effect[0]['decision_id'], decision=effect[2]),
                         'restore_reconciliation_approval_invalid')
+    generation._require(worker.operation.moment() < effect[0]['expires_at_epoch']
+        <= worker.selected[1]['expires_at_epoch'], 'restore_reconciliation_approval_invalid')
     extra = worker.resume_selected[-1]
     if extra is not None:
         recorded = worker.reconciliations[-1][3]
@@ -36,6 +38,22 @@ def _resume_effect_scope(present, pending, recorded, selected):
         and recorded[-1]['body'].get('delete_resume') == selected), 'restore_reconciliation_scope_invalid')
 
 
+def _sync_absence(held, worker, relative, grant, *, observe_only):
+    """Sync only the guarded parent under the exact current selected grant."""
+    generation._require(relative in held.rows and held.rows[relative]['kind'] == 'directory', 'fence_changed')
+    with held._opened(relative) as (fd, guard):
+        guard()
+        current = worker.resume_selected[-1] if observe_only else worker.effect_selected[-1]
+        generation._require(current is not None
+            and current[0]['decision_id'] == grant[0]['decision_id'] and current[2] == grant[2]
+            and current[0]['action'] == ('observe_unfinished_restore_row_absence' if observe_only
+                else 'discard_unfinished_restore_row')
+            and worker.operation.moment() < current[0]['expires_at_epoch']
+                <= worker.selected[1]['expires_at_epoch'], 'restore_reconciliation_approval_invalid')
+        os.fsync(fd)
+        guard()
+
+
 def _remove(held, worker, scope, selected):
     relative, parent_path = scope['remove_member']['path'], scope['parent_path']
     row = scope['remove_member']
@@ -44,8 +62,8 @@ def _remove(held, worker, scope, selected):
             digest, size = hashlib.sha256(), 0
             while True:
                 with worker.mutation_authority(readers=True):
-                    _effect_pin(worker, selected)
                     guard()
+                    _effect_pin(worker, selected)
                     block = os.read(fd, 1024**2)
                     guard()
                 if not block:
@@ -57,15 +75,16 @@ def _remove(held, worker, scope, selected):
                                 'restore_reconciliation_scope_invalid')
         with held._opened(parent_path) as (parent, parent_guard):
             with worker.mutation_authority(readers=True):
-                _effect_pin(worker, selected)
                 held.verify()
                 guard()
                 parent_guard()
                 name = relative.rpartition('/')[2]
                 if row['kind'] == 'directory':
                     generation._require(not held.children[relative], 'restore_reconciliation_scope_invalid')
+                    _effect_pin(worker, selected)
                     os.rmdir(name, dir_fd=parent)
                 else:
+                    _effect_pin(worker, selected)
                     os.unlink(name, dir_fd=parent)
                 held.removed.add(relative)
                 held.children[parent_path].remove(name)
@@ -83,6 +102,7 @@ def _remove(held, worker, scope, selected):
                     held.chain[-1] = (ancestor, leaf, root, current)
                 guard()
                 parent_guard()
+                _effect_pin(worker, selected)
                 os.fsync(parent)
                 guard()
                 parent_guard()
@@ -147,7 +167,8 @@ def reconcile_unlogged_creation(worker, events, observed, roots, monotonic):
         else:
             with worker.mutation_authority(readers=True):
                 held.verify()
-                held.sync_directory(scope['parent_path'])
+                _sync_absence(held, worker, scope['parent_path'],
+                    observation if observe_only else effect, observe_only=observe_only)
             parent = held.versions[scope['parent_path']].copy()
         extra = ({('observation_resume' if observe_only else 'delete_resume'):
                   dict(decision_id=observation[0]['decision_id'], decision=observation[2])}

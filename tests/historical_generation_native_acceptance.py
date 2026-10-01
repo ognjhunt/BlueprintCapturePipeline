@@ -884,23 +884,34 @@ def _approve_fresh_discard_fixture(root, config, entry, restore, target, journal
     return approved, retained
 
 
-def _assert_reconciliation_death_boundary(root, restore, target, journals, approval, phase):
+def _assert_reconciliation_death_boundary(root, restore, target, journals, approval, phase, *, original_approval=None):
     from blueprint_pipeline.control_plane_lane_historical_generation import inventory_historical_generation
     from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_scope import reconciled_parent
-    directory = root / 'state/requests/historical-generation-actions'
-    raw = (directory / (approval['decision_id'] + '.manifest.json')).read_bytes()
-    assert dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)) == approval['observed_manifest']
-    approved = json.loads(raw)
-    decision_raw = (directory / (approval['decision_id'] + '.json')).read_bytes()
-    assert json.loads(decision_raw) == approval
+    from blueprint_pipeline import control_plane_lane_historical_authority as authority
+    from blueprint_pipeline.control_plane_lane_historical_restore_authority import select_restore
+    from blueprint_pipeline.control_plane_lane_historical_journal import HistoricalJournalObservation
+    original_approval = original_approval or approval
+    operation = authority._Operation(time.time(), time.monotonic)
+    with authority._session(root / 'door.json', operation) as (files, config, store):
+        approved, raw = store.read(approval['decision_id'], manifest=True)
+        assert authority._selector(raw) == approval['observed_manifest']
+        value, decision_raw = store.read(approval['decision_id'])
+        assert value == approval
+        value, original_raw = store.read(original_approval['decision_id'])
+        assert value == original_approval
+        selected = select_restore(files, config, store, root / 'door.json', restore['action_id'], operation.moment())
+        head = HistoricalJournalObservation(files, config, selected, operation).head
     observed = inventory_historical_generation(target, allowed_roots=(root / 'work', root / 'inputs'))
-    head = json.loads(max((journals / restore['action_id']).glob('e-*.json')).read_bytes())
-    expected = 'reconciled' if phase == 'reconcile_consumed' else 'reconcile_intent'
+    expected = ('reconcile_delete_resume' if phase == 'resumed_remove' else
+                'reconciled' if phase == 'reconcile_consumed' else 'reconcile_intent')
     assert head['kind'] == 'restore_intent' and head['body']['phase'] == expected
     assert head['action_id'] == restore['action_id']
-    assert head['body']['decision_id'] == approval['decision_id']
-    assert head['body']['decision'] == dict(sha256='sha256:' + hashlib.sha256(decision_raw).hexdigest(),
-                                         size_bytes=len(decision_raw))
+    assert head['body']['decision_id'] == original_approval['decision_id']
+    assert head['body']['decision'] == authority._selector(original_raw)
+    if phase == 'resumed_remove':
+        assert head['body']['delete_resume'] == dict(decision_id=approval['decision_id'],
+                                                     decision=authority._selector(decision_raw))
+        assert approval['issued_at_epoch'] <= head['observed_at_epoch'] < approval['expires_at_epoch']
     assert head['body']['original_head_event_digest'] == approval['packet']['original_head_event_digest']
     if phase == 'reconcile_intent':
         assert observed == approved  # exact inode, parent, namespace and partial bytes
@@ -1386,13 +1397,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                         assert _launch_worker_once(entry, restore['action_id'], target, journals,
                             restore=True, process_death=True) is None
                         (root / 'interrupt-once').unlink()
-                        resume_event = json.loads(max((journals / restore['action_id']).glob('e-*.json')).read_bytes())
-                        assert resume_event['body']['phase'] == 'reconcile_delete_resume'
-                        raw = (root / 'state/requests/historical-generation-actions' / (reconciliation['decision_id'] + '.json')).read_bytes()
-                        assert resume_event['body']['delete_resume'] == dict(decision_id=reconciliation['decision_id'],
-                            decision=dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)))
-                        assert resume_event['observed_at_epoch'] < reconciliation['expires_at_epoch']
-                        assert not (target / reconciliation['packet']['scope']['remove_member']['path']).exists()
+                        _assert_reconciliation_death_boundary(root, restore, target, journals, reconciliation,
+                            'resumed_remove', original_approval=initial_discard)
                         if resume_absent_expiry:
                             deadline = time.monotonic() + 15
                             while time.time() <= reconciliation['expires_at_epoch']:
