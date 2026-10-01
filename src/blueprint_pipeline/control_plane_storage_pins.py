@@ -64,7 +64,7 @@ def scene_participant():
     def decorate(function):
         @functools.wraps(function)
         def admitted(*args, **kwargs):
-            from .task_evaluation_scene_retirement_access import scene_participant as participant
+            from .task_evaluation_scene_retirement_lifetime import scene_participant as participant
             return participant()(function)(*args, **kwargs)
         admitted.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'
         return admitted
@@ -160,7 +160,7 @@ def write_storage_pin(
 ) -> dict[str, Any]:
     """Pin ``paths`` for ``owner_id``; an existing pin is returned unchanged."""
 
-    from .task_evaluation_scene_retirement_access import scene_access
+    from .task_evaluation_scene_retirement_lifetime import scene_access
     from .control_plane_registered_reference_gate import refuse_registered_references
     refuse_registered_references(paths, pins_root, depends_on)
 

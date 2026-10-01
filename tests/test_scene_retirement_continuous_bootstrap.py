@@ -50,7 +50,8 @@ def test_source_bundle_is_read_from_fixed_protected_core(tmp_path, monkeypatch):
     (foreign / 'blueprint_pipeline.py').write_text('raise AssertionError("foreign import")')
     monkeypatch.setenv('PYTHONPATH', str(foreign))
     values = module._core_sources()
-    assert len(values) == 6
+    assert len(values) == 7
+    assert 'blueprint_pipeline.task_evaluation_scene_retirement_lifetime' in values
     assert all(raw == b'value = "sealed-source"\n' and path.parent == package
                for path, raw in values.values())
 

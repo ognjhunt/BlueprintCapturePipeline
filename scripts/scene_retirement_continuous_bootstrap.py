@@ -23,7 +23,8 @@ _RUNTIME_ROOT = Path('/mnt/blueprint-work/scene-retirement-runtime')
 _BOOT_ROOT = Path('/usr/lib/blueprint/scene-retirement-runtime')
 _OWNER = 0
 _CORE = ('__init__.py', 'task_evaluation_scene_retirement_supervisor.py',
-         'task_evaluation_scene_retirement_access.py', 'decision_evidence_contracts.py',
+         'task_evaluation_scene_retirement_access.py',
+         'task_evaluation_scene_retirement_lifetime.py', 'decision_evidence_contracts.py',
          'task_evaluation_scene_retirement_preservation.py',
          'task_evaluation_scene_retirement_generations.py')
 _DAEMONS = frozenset(('blueprint_pipeline.live_pipeline_intake_service',

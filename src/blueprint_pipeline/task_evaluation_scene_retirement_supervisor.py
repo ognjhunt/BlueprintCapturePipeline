@@ -70,6 +70,7 @@ _TRUSTED_DEPENDENCIES = Path('/mnt/blueprint-work/scene-retirement-runtime/depen
 _PRELOADED_CORE = frozenset(('blueprint_pipeline',
     'blueprint_pipeline.task_evaluation_scene_retirement_supervisor',
     'blueprint_pipeline.task_evaluation_scene_retirement_access',
+    'blueprint_pipeline.task_evaluation_scene_retirement_lifetime',
     'blueprint_pipeline.decision_evidence_contracts',
     'blueprint_pipeline.task_evaluation_scene_retirement_preservation',
     'blueprint_pipeline.task_evaluation_scene_retirement_generations'))
