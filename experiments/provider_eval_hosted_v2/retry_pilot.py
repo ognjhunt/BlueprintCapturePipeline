@@ -107,14 +107,16 @@ def prepare_receipt(root, owner, prior_sha, *, clock=time.time):
     return receipt, digest(receipt)
 
 
-def validate_receipt(root, owner, expected_sha, *, clock=time.time):
+def validate_receipt(root, owner, expected_sha, *, clock=time.time, readonly_previous=False):
     root = Path(root).resolve()
     public, access_sha, scope_sha = base.scope_inputs(root, owner)
     saved = read_json(receipt_path(root))
     if digest(saved) != expected_sha:
         raise AgentExecutionError("exact_retry_receipt_hash_required")
     previous = prior_state(root, owner, saved.get("prior_approval_sha256"), clock=clock)
-    commit, code_sha = base.code_identity()
+    commit, code_sha = (("7394bc57f285060fd7e3a96f2a4390a18ffe69ea",
+                       "39c6f96c0564f1228dc82cb6e4dcf313acd78035974261470d34c03da37ac77c")
+                       if readonly_previous else base.code_identity())
     required = {"schema": "hosted_one_case_soft_retry.v1", "approval": APPROVAL, "protocol": PROTOCOL,
         "case_id": "BP-EVAL-01", "case_sha256": digest(public["cases"][0]), "arms": list(base.MODES),
         "public_inputs_sha256": base.DECLARED_ORIGINAL_SHA256, "model": base.MODEL, "project": base.PROJECT,
@@ -178,14 +180,18 @@ class RetryMonitor(base.SoftMonitor):
         if digest(self.receipt) != self.sha:
             self.stop("retry_in_memory_scope_changed")
             raise AgentExecutionError("retry_in_memory_scope_changed")
-        validate_receipt(self.root, base.OWNER, self.sha, clock=self.clock)
+        if (self.path / "usage_recovery.json").exists():
+            from .usage_recovery import validate_recovery
+            validate_recovery(self.root, self.receipt, clock=self.clock)
+        else:
+            validate_receipt(self.root, base.OWNER, self.sha, clock=self.clock)
         return super().guard(preparing_creation=preparing_creation)
 
 
 def run_retry(root, receipt, *, clock=time.time, sleep=time.sleep, notify=print, factory=base.make_runtime):
     if validate_receipt(root, base.OWNER, digest(receipt), clock=clock) != receipt:
         raise AgentExecutionError("exact_retry_receipt_required")
-    monitor = RetryMonitor(root, receipt, clock=clock, notify=notify)
+    monitor = RetryMonitor(root, receipt, clock=clock, notify=notify, sleep=sleep)
     monitor.reserve()
     # Share the original owner's lock too; independent cohorts cannot overlap.
     old_path = Path(root).resolve() / "protocols" / base.PROTOCOL / "soft_pilot"

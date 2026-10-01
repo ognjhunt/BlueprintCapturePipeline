@@ -38,6 +38,7 @@ REVIEW_HOLD = Decimal("0.05548")
 BASE_HOLD = 4 * (MODEL_HOLD + CONTAINER_HOLD) + REVIEW_HOLD
 SEARCH_HOLD = Decimal("0.0735")
 ARM_SECONDS, POLL_SECONDS = 300, 5
+USAGE_GRACE_SECONDS = 30
 PREVIOUS_SOURCE_IDENTITY = ("a3b583a93446d444a20b67279f71bf416802d28c",
     "8c704a8582aea0a7a1ed51a8399a5ab76a0b326cded647919f98252e2552f84a")
 
@@ -161,10 +162,11 @@ class SoftMonitor:
     protocol = PROTOCOL
     task_options = {}
 
-    def __init__(self, root, receipt, *, clock=time.time, notify=print):
+    def __init__(self, root, receipt, *, clock=time.time, notify=print, sleep=time.sleep):
         self.root, self.receipt = Path(root).resolve(), receipt
         self.path = self.root / "protocols" / PROTOCOL / "soft_pilot"
         self.clock, self.notify = clock, notify
+        self.sleep = sleep
         self.sha = digest(receipt)
 
     def task_id(self, mode):
@@ -310,6 +312,8 @@ class SoftMonitor:
             journal.record_event("hosted_creation_" + task_id, intent)
             write_once(started, intent)
         self.guard()
+        if path != "/agents/sessions":
+            self.require_fresh_usage()
         # Use the same canonical paid allocator chokepoint for managed model
         # creation/resumption as for native provider searches. The status is
         # derived from the approved soft receipt and live guard, never a flag.
@@ -324,6 +328,15 @@ class SoftMonitor:
     def observe(self, task_id, session, *, creation=False):
         usage = session.get("usage")
         known = isinstance(usage, dict) and all(type(usage.get(k)) is int and usage[k] >= 0 for k in ("input_tokens", "output_tokens"))
+        prior = sorted((o for o in self.observations() if o["task_id"] == task_id), key=lambda o: o["at"])
+        valid = [o for o in prior if o["model_estimate_usd"] is not None]
+        if (usage is not None and not known) or (known and valid and any(
+                usage[k] < max(o["usage"][k] for o in valid) for k in ("input_tokens", "output_tokens"))):
+            self.stop("hosted_usage_malformed_or_nonmonotonic")
+            raise AgentExecutionError("hosted_usage_malformed_or_nonmonotonic")
+        if prior and self.clock() < prior[-1]["at"]:
+            self.stop("hosted_usage_observation_clock_regressed")
+            raise AgentExecutionError("hosted_usage_observation_clock_regressed")
         # Aggregate counts do not identify each call's context tier/cache writes:
         # use maximum long-context cache-write/output rates for monitoring.
         cost = (usage["input_tokens"] * Decimal("5") + usage["output_tokens"] * Decimal("15")) / 1000000 if known else None
@@ -333,8 +346,31 @@ class SoftMonitor:
         AgentJournal(self.path / "agent_journal").record_event("hosted_observe_" + digest(observation), observation)
         write_once(self.path / task_id / "observations" / (digest(observation) + ".json"), observation)
         self.report()
-        if not known and not creation:
-            self.stop("fresh_hosted_usage_unknown_no_further_paid_work")
+        return known
+
+    def usage_deadline(self, task_id):
+        """Unknown reporting has a durable start; restarts cannot renew it."""
+        rows = sorted((o for o in self.observations() if o["task_id"] == task_id), key=lambda o: o["at"])
+        last_known = max((i for i, o in enumerate(rows) if o["model_estimate_usd"] is not None), default=-1)
+        unknown = rows[last_known + 1:]
+        if not unknown:
+            return self.clock() + USAGE_GRACE_SECONDS
+        journal = AgentJournal(self.path / "agent_journal")
+        state = journal.task(task_id)
+        active = [s for s in journal.lineage_tasks(task_id) if s["state"] not in TERMINAL_STATES]
+        task_deadline = max((s["task"]["deadline"] for s in active), default=state["task"]["deadline"])
+        return min(unknown[0]["at"] + USAGE_GRACE_SECONDS, task_deadline, self.receipt["expires_at"])
+
+    def require_fresh_usage(self):
+        journal = AgentJournal(self.path / "agent_journal")
+        for state in journal.tasks(active_only=True, limit=10):
+            if not state.get("session_id"):
+                continue
+            owner = journal.session_owner(state["task_id"])["task_id"]
+            rows = [o for o in self.observations() if o["task_id"] == owner]
+            latest = max(rows, key=lambda o: o["at"]) if rows else {}
+            if (latest.get("model_estimate_usd") is None or self.clock() - latest["at"] > USAGE_GRACE_SECONDS):
+                raise AgentExecutionError("fresh_hosted_usage_required_before_paid_admission")
 
 
 class MonitoredRuntime(HostedRuntime):
@@ -350,25 +386,43 @@ class MonitoredRuntime(HostedRuntime):
             task_id = (result.get("metadata") or {}).get("blueprint_task_id")
             if task_id != self.monitor.task_id(self.evidence.mode):
                 raise AgentExecutionError("observed_session_pilot_task_mismatch")
-            self.monitor.observe(task_id, result, creation=method == "POST")
+            known = self.monitor.observe(task_id, result, creation=method == "POST")
+            if method == "GET" and not known:
+                deadline = self.monitor.usage_deadline(task_id)
+                while not known and self.monitor.clock() < deadline:
+                    # No tools, message events, create or inference during this
+                    # reporting wait. Existing model/container holds stay counted.
+                    self.monitor.guard()
+                    self.monitor.sleep(min(POLL_SECONDS, deadline - self.monitor.clock()))
+                    result = super()._request(method, path, **kwargs)
+                    if self._validate_session(AgentTask.model_validate(self.journal.task(task_id)["task"]), result) != path.rsplit("/", 1)[-1]:
+                        raise AgentExecutionError("agents_api_session_identity_changed")
+                    known = self.monitor.observe(task_id, result)
+                if not known:
+                    self.monitor.stop("hosted_usage_reporting_grace_expired")
+                    raise AgentExecutionError("hosted_usage_reporting_grace_expired")
         return result
 
 
-def make_runtime(root, receipt, monitor, mode, *, transport=None):
+def make_runtime(root, receipt, monitor, mode, *, transport=None, runtime_class=MonitoredRuntime):
     public = load_public(PUBLIC)[0]
     evidence = Evidence(getattr(monitor, "evidence_root", root / "protocols"), public["cases"][0], mode)
     evidence.reuse(root)
     journal = AgentJournal(monitor.path / "agent_journal")
     def grant(context):
         monitor.guard()
+        monitor.require_fresh_usage()
         return require_paid_resource_admission({"schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION,
             "resource_class": "evaluator_api", "status": "admitted", "blockers": [],
             "allocation_binding_digest": context.authority_digest}, resource_class="evaluator_api",
             expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
     tools = ResearchTools(evidence, search=ExistingSearchRoute(root, authorize=grant),
         fetch=lambda request, context: public_fetch(request, context, authorize=lambda _: monitor.guard()))
-    ops = AgentOperations(journal, tools.tools(), authorize=lambda *_: monitor.guard(), clock=monitor.clock)
-    runtime = MonitoredRuntime(evidence=evidence, common_prompt=public["common_prompt"], monitor=monitor,
+    def authorize(*_):
+        monitor.guard()
+        monitor.require_fresh_usage()
+    ops = AgentOperations(journal, tools.tools(), authorize=authorize, clock=monitor.clock)
+    runtime = runtime_class(evidence=evidence, common_prompt=public["common_prompt"], monitor=monitor,
         transport=transport or OpenAIAgentsHTTP(api_key=existing_key("openai"), project_id=PROJECT),
         project_id=PROJECT, journal=journal, operations=ops, validate_admission=lambda _: monitor.guard(), clock=monitor.clock)
     task_id = monitor.task_id(mode)
@@ -391,7 +445,7 @@ def make_runtime(root, receipt, monitor, mode, *, transport=None):
 
 
 def run_pilot(root, receipt, *, clock=time.time, sleep=time.sleep, notify=print, factory=make_runtime):
-    monitor = SoftMonitor(root, receipt, clock=clock, notify=notify)
+    monitor = SoftMonitor(root, receipt, clock=clock, notify=notify, sleep=sleep)
     monitor.reserve()
     with exclusive(monitor.path):
         return _run_owned(root, receipt, monitor, sleep=sleep, notify=notify, factory=factory)

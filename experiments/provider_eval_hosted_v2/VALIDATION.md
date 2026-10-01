@@ -1,12 +1,12 @@
 # Offline validation
 
 Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
-Result: **116 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
-10 explicit-retry cases,
+Result: **132 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
+10 explicit-retry cases, 16 usage-lag/recovery cases,
 and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
-All network responses, keys and admissions used in tests are synthetic; module-
+All network responses, keys and admissions used in tests are mocked; module-
 relative key mocks prevent reading actual bindings under either pytest import
 path. No provider/model/hosted-session call was made and no live journal copied,
 reset, released, or modified by these checks.
@@ -40,7 +40,7 @@ Verified boundaries include:
   non-hard-cap target labeling, and a default zero-call paid admission guard.
 - Executable one-case/four-arm soft pilot with actual managed wire-shaped runtime;
   deterministic task replay, immutable approval/root-prefix binding, no duplicate
-  sessions, fresh unknown/high usage stopping before tools/model replies, bounded
+  sessions, bounded unknown-usage polling/high usage stopping before tools/model replies, bounded
   five-minute cancellation, and overrun reporting beyond the nominal ledger cap.
 - Durable creation/usage anchors prevent missing or changed sidecars from hiding
   known sessions or resetting retained-container carry costs across restarts.
@@ -72,6 +72,23 @@ Verified boundaries include:
   mutable Python scope and extra-cohort receipts are refused. High observed usage
   stops before another arm/tool/model reply. Selective range instructions retain
   full evidence access and identical criteria under Sol/Default.
+- Thirty-second reporting grace keeps conservative exposure and makes GETs only;
+  14.7-second initial lag settles without cancellation. Persistent unknown usage
+  stops without resetting grace on restart. Malformed/nonmonotonic/stale usage is
+  refused; fresh unchanged counters remain acceptable best-effort observations.
+- Exact same-session child input/turn binding preserves the cancelled parent and
+  ledger prefix, does not repeat creates/uncertain message sends, and retains
+  cumulative exposure. Fixed follow-up deadlines survive restarts, use one real
+  clock sample, and do not reuse the obsolete cancelled-parent deadline for grace.
+  Foreign session bodies, changed child scope and unrelated stop reasons refuse
+  message dispatch. Independent Sol review verified all 132 tests and source pin.
+
+Exact historical initial/settled API regression fixtures are still pending: the
+supported Library transfer failed and gzip cannot be rendered through Library.
+The supplied timestamps/counts are used as observed timing inputs, not mislabeled
+as recovered raw API responses. No materialization success or live readiness is
+claimed from these mocks alone; execution-owner read-only reconciliation retains
+fresh exact API responses before any same-session paid continuation.
 
 Remaining limitations are documented in README: hosted inference/write access
 is not verified by read-only saved-agent access; managed hidden-loop usage lacks

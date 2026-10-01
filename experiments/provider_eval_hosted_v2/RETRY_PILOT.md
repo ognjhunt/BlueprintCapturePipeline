@@ -94,3 +94,57 @@ Outputs live under
 `protocols/hosted_agent_research_v2_retry1/soft_pilot/reports/`; corresponding task,
 session, usage, evidence and cleanup artifacts are retained alongside them. Review
 and final billing still precede any winner claim.
+
+## Usage-lag recovery of the existing retry
+
+The first retry session was cancelled on an empty usage snapshot 0.33 seconds
+after creation. Supplied timestamps show usage arriving after 14.7 seconds:
+8,594 input / 84 output tokens. Missing usage is unknown, not zero. The repaired
+monitor waits at most **30 seconds**, using only session GETs; model/container
+holds stay counted, and application tools/message replies wait for valid usage.
+Malformed, decreasing, stale observations and grace expiry refuse paid work.
+Fresh unchanged counts remain valid best-effort observations, not a settled bill.
+Neither the usage counts nor the $2 soft target constitute a hard cap.
+
+The user has authorized finishing the existing retry. Its exact known session is
+`sess_09118c760a810004006abdc1869c9c8194844ab4a80b431ad5`, with cancelled turn
+`turn_09118c760a810004006abdc18be18081948811782f9c45e2ef`. The old task, cancelled
+turn, failure, receipt, allowance and ledger remain intact. One child task ending
+`_usage_resume1` sends one durable message event to this session; it never creates
+a replacement session or automatically resends an uncertain message. Its fixed
+five-minute follow-up deadline is anchored at preparation, within original receipt
+expiry. Original task deadline stays unchanged. Function opportunity is reduced by
+prior calls, search/fetch counts remain durable, and model exposure is cumulative
+for this same session. The other three original arms retain their existing slots.
+
+Use the current reviewed commit, SDK pair and **original retry receipt SHA**:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_hosted_v2.usage_recovery --aggregate-root /workspace/provider-eval-private-live-20260930 --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce --retry-receipt-sha256 ACTUAL_ORIGINAL_RETRY_SHA --prepare-continuation
+```
+
+Preparation makes GETs only. It verifies exact owned session/model/network,
+settled usage, idle session, cancelled root, immutable old source/approval, ledger
+prefix and remaining soft headroom. It retains the fresh API responses and the
+original lag failure under `soft_pilot/usage_recovery.json` and
+`soft_pilot/retained_usage_lag_stop.json`; no scope or budget is reset. Only that
+exact historical lag stop is superseded. A later stop remains effective.
+
+After the actual retained lifecycle fixtures are checked:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_hosted_v2.usage_recovery --aggregate-root /workspace/provider-eval-private-live-20260930 --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce --retry-receipt-sha256 ACTUAL_ORIGINAL_RETRY_SHA --execute
+```
+
+The recovery uses the existing $6.221400 aggregate reserve, with all prior cost
+uncertainty retained. The prior cancelled retry's observed model usage is included
+within its cumulative $0.26 arm hold, never zeroed or charged twice. Container age
+continues to accrue. If time, uncertainty or updated exposure reaches the original
+limits, admission stops; this command does not renew approval or increase budget.
+
+The recovery packet `libfile_f0f9e052fc388191949d408941075d2d` could not be downloaded
+through supported Library materialization, and its gzip has no readable Library
+projection. No proxy denial was bypassed. Parent-supplied timing evidence and
+mocked lifecycle regressions are verified; exact historical initial/settled API
+fixtures remain pending readable JSON or execution-owner local replay. The
+read-only preparation step is available now; implementation made no live calls.
