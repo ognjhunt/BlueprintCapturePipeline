@@ -511,8 +511,13 @@ def reconcile_provider_billing(
     export_path = Path(billing_export_path).expanduser().resolve()
     _atomic_write(export_path, (_canonical_json(billing_export) + "\n").encode("utf-8"))
     # Reporting is an offline observer, never an admission or reservation input.
-    from blueprint_pipeline.daily_spend_snapshot import write_daily_snapshot
-    daily_status = write_daily_snapshot(export_path, Path(source_path), Path(audit_root), evidence_origin=evidence_origin)
+    try:
+        from blueprint_pipeline.daily_spend_snapshot import write_daily_snapshot
+        daily_status = write_daily_snapshot(export_path, Path(source_path), Path(audit_root).expanduser().resolve(), evidence_origin=evidence_origin)
+    except Exception as exc:
+        # Observer defects cannot invalidate already committed billing evidence.
+        daily_status = {"status": "unavailable", "error_type": type(exc).__name__, "provider_requests_added": 0}
+
     return {
         "schema_version": "blueprint.provider_billing_reconciliation_run.v1",
         "status": "reconciled",
@@ -567,7 +572,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             aws_profile=args.aws_profile,
             required_providers=args.require_provider,
         )
-    except (OSError, ProviderBillingReconciliationError) as exc:
+    except (OSError, ProviderBillingReconciliationError, MeteredCallEvidenceError) as exc:
         print(
             json.dumps(
                 {

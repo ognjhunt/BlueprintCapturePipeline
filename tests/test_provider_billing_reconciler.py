@@ -511,3 +511,44 @@ def test_repeated_page_cursor_is_bounded_and_preserves_prior_accounting(tmp_path
         reconcile_provider_billing(**kwargs, transport=transport)
     assert transport.vast_reads == 2
     assert export.read_bytes() == prior
+
+
+def test_metered_journal_failure_retains_structured_cli_blocked_contract(tmp_path, capsys):
+    from blueprint_pipeline import provider_billing_reconciler as billing
+    audit = tmp_path / "billing-audit"
+    target = tmp_path / "target"
+    target.mkdir()
+    (tmp_path / "metered-call-events").symlink_to(target, target_is_directory=True)
+    output = tmp_path / "billing.json"
+    assert billing.main(["--secrets-dir", str(tmp_path / "missing-secrets"), "--billing-export", str(output), "--audit-root", str(audit), "--cohort-start-at", "2026-01-01T00:00:00Z"]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["schema_version"] == "blueprint.provider_billing_reconciliation_run.v1"
+    assert response["status"] == "blocked"
+    assert response["error_type"] == "MeteredCallEvidenceError"
+    assert response["provider_mutation_performed"] is False
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("previous", [[1], {"rows": [1]}])
+def test_malformed_optional_snapshot_cannot_invalidate_valid_billing_export(tmp_path, previous):
+    output = tmp_path / "billing.json"
+    (tmp_path / "daily_spend_snapshot.json").write_text(json.dumps(previous))
+    transport = _Transport()
+    result = reconcile_provider_billing(secrets_dir=_secrets(tmp_path), billing_export_path=output, audit_root=tmp_path / "billing-audit", start_at="2026-01-01T00:00:00Z", now=NOW, transport=transport)
+    assert result["status"] == "reconciled"
+    assert result["daily_spend_snapshot"]["status"] == "unavailable"
+    assert output.exists()
+    assert "aws" not in json.loads(output.read_text())["provider_totals_usd"]
+    assert all("amazonaws" not in url for url, _ in transport.requests)
+
+
+def test_observer_receives_the_same_expanded_audit_root_as_journal(tmp_path, monkeypatch):
+    from blueprint_pipeline import daily_spend_snapshot as observer
+    audit = tmp_path / "billing-audit"
+    original = Path.expanduser
+    monkeypatch.setattr(Path, "expanduser", lambda path: audit if str(path) == "~/billing-audit" else original(path))
+    observed = []
+    monkeypatch.setattr(observer, "write_daily_snapshot", lambda export, receipt, root, **kw: observed.append(root) or {"status": "written"})
+    result = reconcile_provider_billing(secrets_dir=_secrets(tmp_path), billing_export_path=tmp_path / "billing.json", audit_root="~/billing-audit", start_at="2026-01-01T00:00:00Z", now=NOW, transport=_Transport())
+    assert result["status"] == "reconciled"
+    assert observed == [audit.resolve()]
