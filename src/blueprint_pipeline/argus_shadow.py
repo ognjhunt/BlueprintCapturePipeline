@@ -19,6 +19,7 @@ from typing import Any
 
 SCHEMA = "argus_shadow_manifest.v1"
 ARGUS_COMMIT = "6c99686a3d93027c517f02f37f24b5b68532e12a"
+TARGET_MODEL = "openai/gpt-6.1-sol"
 ARMS = ("current", "argus_adapted", "argus_vanilla")
 OUTCOMES = {"success", "failure", "unclear"}
 ARTIFACTS = {"task_spec", "task_success_contract", "state_trace", "baseline_output",
@@ -204,6 +205,8 @@ def validate_manifest(manifest: dict, root: Path, *, allow_fixtures: bool = Fals
         raise ShadowError("invalid_manifest_schema")
     if manifest.get("argus_commit") != ARGUS_COMMIT:
         raise ShadowError("argus_source_pin_mismatch")
+    if manifest.get("argus_model") != TARGET_MODEL:
+        raise ShadowError("argus_model_pin_mismatch")
     fixture = manifest.get("corpus_kind") == "synthetic_fixture"
     if manifest.get("corpus_kind") not in {"retained_episodes", "synthetic_fixture"}:
         raise ShadowError("invalid_corpus_kind")
@@ -223,6 +226,8 @@ def validate_manifest(manifest: dict, root: Path, *, allow_fixtures: bool = Fals
             if digest(actual.read_bytes()) != ref["sha256"]:
                 raise ShadowError("executing_grader_differs_from_pin")
         read_bound(root, manifest["argus_source_pins"])
+    for ref in manifest.get("evidence_inventories", []):
+        read_bound(root, ref)
     for ref in manifest["current_grader_sources"]:
         read_bound(root, ref)
     if set(manifest["prompts"]) != set(ARMS[1:]):
@@ -336,7 +341,7 @@ def prepare(manifest: dict, root: Path, *, allow_fixtures: bool = False) -> dict
                        "frames": chosen, "source_frame_count": len(ordered),
                        "sampling_interval_s": 1.5, "grid_cell_width_px": 448,
                        "sampling_can_miss_transients": True,
-                       "model": "openai/gpt-6-astra", "reasoning_effort": "medium",
+                       "model": manifest["argus_model"], "reasoning_effort": "medium",
                        "max_input_tokens": 120000, "max_output_tokens": 64000, "model_calls": 0,
                        "request_kind": "offline_specification_not_provider_payload",
                        "target_inference_rights_admitted": ep["rights"].get(
@@ -505,21 +510,24 @@ def compare(manifest: dict, root: Path, records: list[dict], *, allow_fixtures: 
 def cost_proposal(manifest: dict, root: Path, *, allow_fixtures: bool = False) -> dict:
     episodes = validate_manifest(manifest, root, allow_fixtures=allow_fixtures)
     seconds = sum(ep["duration_s"] for ep in episodes)
-    # Pantheon's pinned README: measured Astra teleop first-send cost, not a quote.
-    estimate = seconds / 3600 * 26 * 2
+    # Research page reports GPT-6.1 Sol medium at ~$5/footage hour, not a quote.
+    estimate = seconds / 3600 * 5 * 2
     return {"schema_version": "argus_shadow_cost_proposal.v1", "admitted_episode_count": len(episodes),
             "footage_seconds": seconds, "argus_arms": 2, "current_replay_usd": 0,
             "estimated_argus_usd": round(estimate, 6), "paid_execution_authorized": False,
-            "conditional_pilot": {"episodes": 12, "seconds_per_episode_assumed": 60,
+            "target_model": TARGET_MODEL, "reasoning_effort": "medium",
+            "spend_status": "deferred_billing_incident_no_new_paid_approval_requested",
+            "illustrative_rate_comparison_only": {"episodes": 12, "seconds_per_episode_assumed": 60,
                                   "success_failure_ambiguous_each": 4,
-                                  "argus_requests": 24, "estimated_usd": 10.40,
-                                  "proposed_aggregate_cap_usd": 20,
-                                  "source_price_request_bound_usd": 4.40,
-                                  "source_price_24_request_bound_usd": 105.60,
-                                  "bound_assumptions": "120000 input tokens at $10/M; 64000 output tokens at $50/M, reasoning included; fixed route, no retry, no caching assumed. Source fallback rates, not current provider quote.",
+                                  "argus_requests": 24, "sol61_research_page_estimated_usd": 2.00,
+                                  "sol61_readme_ratio_estimated_usd": 2.08,
+                                  "astra_research_page_estimated_usd": 10.80,
+                                  "astra_readme_teleop_estimated_usd": 10.40,
+                                  "proposed_aggregate_cap_usd": None,
+                                  "sol61_token_bound_usd": None,
                                   "retry_count": 0},
-            "estimate_basis": f"Argus {ARGUS_COMMIT} README, $26/teleop footage hour per arm; routing/prompt/media differences can change cost.",
-            "execution_gate": "Separate spend and disclosure approval; current official provider quote and worst-case per-request reservation before any send. A $20 cap does not guarantee 24 completions.",
+            "estimate_basis": "Pantheon research page: GPT-6.1 Sol medium ~$5/footage hour vs Astra ~$27. Pinned README: Astra teleop ~$26/hour and Sol6.1 medium 20% of Astra per episode. Neither is an official quote.",
+            "execution_gate": "Paid work is deferred during billing incident. Trace/admit actual footage and independent labels first; current official Sol6.1 quote, disclosure terms and aggregate/request reservations are required before any later approval or send.",
             "unrelated_budgets_available_usd": 0, "model_calls": 0}
 
 

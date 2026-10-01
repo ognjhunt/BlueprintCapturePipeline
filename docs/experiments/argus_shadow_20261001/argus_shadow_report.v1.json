@@ -1,6 +1,6 @@
 {
   "schema_version": "argus_shadow_report.v1",
-  "manifest_digest": "sha256:58970d197270cc76ca4798c89d53ebe363f5017d55f92bff532752f8341ffa7a",
+  "manifest_digest": "sha256:6178d8cf836e49d880d963757fd4a2a24b07e4ea14738a08a17ec0d6fd1dbca4",
   "status": "blocked_no_retained_episodes",
   "episode_count": 0,
   "real_episode_count": 0,

@@ -1,6 +1,6 @@
 {
   "schema_version": "argus_shadow_inventory.v1",
-  "scope": "Local checkout plus /workspace/shared, /workspace/library-files, /workspace/scratch (empty); tracked video and archive members inspected, no remote artifact fetch",
+  "scope": "Local checkout media and archive inventory only; read-only remote trace is separate and pinned in the comparison manifest",
   "current_grader_repository_pin": "35f5c9ad43f84aa053aa7616a63a9aa4f6e32a61",
   "available_eligible_episode_count": 0,
   "available_eligible_categories": {
@@ -221,5 +221,24 @@
   },
   "live_deployment_configuration_inspected": false,
   "model_calls": 0,
-  "gpu_runs": 0
+  "gpu_runs": 0,
+  "remote_trace_summary": {
+    "projection_rows": 40,
+    "completed_rollouts_with_video_references": 8,
+    "existing_grader_reported_successes": 0,
+    "existing_grader_reported_failures": 8,
+    "blocked_attempts_with_video_references": 6,
+    "unexecuted_rows_without_video": 26,
+    "registered_review_video_references": 14,
+    "independently_reviewed_labels_found_in_inspected_records": 0,
+    "independently_admitted_success_failure_ambiguous_subtle_occlusion_undo_counts": {
+      "success": 0,
+      "failure": 0,
+      "ambiguous": 0,
+      "subtle_failure": 0,
+      "occlusion": 0,
+      "success_then_undone": 0
+    }
+  },
+  "remote_trace_path": "docs/experiments/argus_shadow_20261001/argus_shadow_remote_evidence_trace.v1.json"
 }

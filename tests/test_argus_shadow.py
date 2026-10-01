@@ -13,7 +13,7 @@ from blueprint_pipeline.adp_articulated_task_success_contract import (
 )
 from blueprint_pipeline.adp_task_scoring import score_task_episode_from_spec
 from blueprint_pipeline.argus_shadow import (
-    ARGUS_COMMIT, ARMS, SCHEMA, ShadowError, binding, compare, cost_proposal,
+    ARGUS_COMMIT, ARMS, SCHEMA, TARGET_MODEL, ShadowError, binding, compare, cost_proposal,
     normalize_argus, prepare, seal, validate_manifest, write_new_output, frame_rows,
 )
 
@@ -79,7 +79,7 @@ def _fixture(tmp_path: Path):
                          "provenance": {"source_kind": "synthetic_fixture", "synthetic": True, "generated": False},
                          "rights": {"offline_review_allowed": True, "basis": "Repository-owned synthetic test data"},
                          "artifacts": artifacts})
-    manifest = seal({"schema_version": SCHEMA, "argus_commit": ARGUS_COMMIT,
+    manifest = seal({"schema_version": SCHEMA, "argus_commit": ARGUS_COMMIT, "argus_model": TARGET_MODEL,
                      "corpus_kind": "synthetic_fixture", "current_grader_kind": "adp_deterministic",
                      "current_grader_commit": "fixture_checkout",
                      "current_grader_sources": [_write(tmp_path, "source.py", b"fixture source pin")],
@@ -313,4 +313,23 @@ def test_committed_empty_corpus_is_honest_and_zero_cost():
     cost = cost_proposal(manifest, REPO)
     assert cost["estimated_argus_usd"] == cost["unrelated_budgets_available_usd"] == 0
     assert cost["paid_execution_authorized"] is False
-    assert cost["conditional_pilot"]["estimated_usd"] == 10.40
+    assert cost["target_model"] == "openai/gpt-6.1-sol"
+    assert cost["illustrative_rate_comparison_only"]["sol61_research_page_estimated_usd"] == 2.00
+    assert cost["illustrative_rate_comparison_only"]["proposed_aggregate_cap_usd"] is None
+
+
+def test_model_pin_cannot_silently_select_astra(tmp_path):
+    manifest = _fixture(tmp_path)
+    manifest["argus_model"] = "openai/gpt-6-astra"
+    with pytest.raises(ShadowError, match="argus_model_pin_mismatch"):
+        prepare(seal(manifest, "manifest_digest"), tmp_path, allow_fixtures=True)
+
+
+def test_inventory_bytes_are_pinned_when_present(tmp_path):
+    manifest = _fixture(tmp_path)
+    manifest["evidence_inventories"] = [_write(tmp_path, "inventory.json", {"real": 0})]
+    manifest = seal(manifest, "manifest_digest")
+    assert validate_manifest(manifest, tmp_path, allow_fixtures=True)
+    (tmp_path / "inventory.json").write_text('{"real": 1}')
+    with pytest.raises(ShadowError, match="artifact_changed"):
+        validate_manifest(manifest, tmp_path, allow_fixtures=True)

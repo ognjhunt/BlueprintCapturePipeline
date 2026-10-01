@@ -66,5 +66,12 @@
     }
   ],
   "vanilla_prompt_derivation": "AST literal extraction only; reconstruct fixed_instructions(teleop_arms, has_instruction=True); no upstream imports or execution",
-  "hand_pose_components_used": false
+  "hand_pose_components_used": false,
+  "research_page": {
+    "url": "https://pantheon.inc/research/argus",
+    "sha256": "sha256:f228fc19def4b58a65b526c684cd09ae9e9e486e09a1dab5247008b5a837ba66",
+    "size_bytes": 281708,
+    "retrieved_on": "2026-10-01",
+    "model_cost_text": "GPT-6.1 Sol medium ~$5/hour of footage where Astra ~$27/hour; standard teleop Astra ~$26/hour; empirical averages, not official prices"
+  }
 }

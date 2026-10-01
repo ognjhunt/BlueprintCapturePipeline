@@ -3,19 +3,19 @@
   "status": "offline_checks_passed_real_run_blocked",
   "source": {
     "path": "src/blueprint_pipeline/argus_shadow.py",
-    "sha256": "sha256:24f115252ee5706638a2211f0b9fa610155e78e38671db8cc3eb00e2cf8aecf3",
-    "size_bytes": 31565
+    "sha256": "sha256:350862302a263261f027993d5a55c0673b76bda81d9b1fa9ad7b344af3d3d260",
+    "size_bytes": 32038
   },
   "test": {
     "path": "tests/test_argus_shadow.py",
-    "sha256": "sha256:e68fe04432a888f182936ccbd3552ad1bbf32b1e60dc171c21cf21dbfd09f163",
-    "size_bytes": 17383
+    "sha256": "sha256:175d06748d885e867ff51c74afce7c5971cf98d59c52430110ead1a3663362c7",
+    "size_bytes": 18401
   },
   "commands": [
     {
       "command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q tests/test_argus_shadow.py",
-      "result": "27 passed in 0.52 seconds",
-      "protects": "paired immutable inputs, actual grader replay, independent labels, synthetic truth boundaries, native media/state schemas, safe output writing"
+      "result": "29 passed in 0.57 seconds",
+      "protects": "paired immutable inputs, actual grader replay, independent labels, synthetic truth boundaries, native media/state schemas, safe output writing, Sol model pin and inventory tamper refusal"
     },
     {
       "command": ".venv/bin/ruff check src/blueprint_pipeline/argus_shadow.py tests/test_argus_shadow.py",
@@ -23,14 +23,18 @@
       "protects": "changed-file lint"
     },
     {
-      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m blueprint_pipeline.impacted_test_selection --base 35f5c9ad --plan-output /tmp/argus-final-impact-plan.json",
-      "result": "36 passed, 4 warnings in 25.95 seconds; requires_full_suite false",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m blueprint_pipeline.impacted_test_selection --base 35f5c9ad --plan-output /tmp/argus-revised-impact-plan.json",
+      "result": "38 passed, 4 existing google-auth grpc FutureWarnings in 26.95 seconds; requires_full_suite false",
       "protects": "changed contracts plus always-on security, paid-resource, success-claim and release sentinel set"
     }
   ],
-  "independent_sol_review": "Accepted; final independent rerun 27 passed in 0.62 seconds",
+  "independent_sol_review": "Accepted final revision; independent rerun 29 passed in 0.59 seconds, verified remote metadata counts/hash bindings/native containment arithmetic and all generated outputs",
   "paid_model_calls": 0,
   "gpu_runs": 0,
   "upstream_software_executed": false,
-  "production_grader_changed": false
+  "production_grader_changed": false,
+  "remote_episode_admission": "14 registered video references traced; zero complete reviewed/right-admitted bundles, HMAC result download returned 401",
+  "target_model": "openai/gpt-6.1-sol",
+  "paid_execution_status": "deferred_billing_incident_no_new_paid_approval_requested",
+  "hosted_ci": "Check final PR #2520 head; initial commit 02ad3958 impacted tests and sentinel gate passed, updated head must independently pass"
 }
