@@ -150,6 +150,8 @@ def reconcile_unlogged_creation(worker, events, observed, roots, monotonic):
     if observation is not None and not observe_only:
         _resume_effect_scope(present, pending_cleanup, recorded,
             dict(decision_id=observation[0]['decision_id'], decision=observation[2]))
+    from .control_plane_lane_historical_restore_metadata import preflight_restore_metadata
+    preflight_restore_metadata(worker)
     _readback(worker, observed, roots, monotonic)
     binding = dict(decision_id=identifier, decision=selected,
                    original_head_event_digest=prefix[-1]['event_digest'])

@@ -25,6 +25,7 @@ from .control_plane_lane_historical_restore_publication import validate_publicat
 from .control_plane_lane_historical_restore_staging import validate_complete_stage
 from .control_plane_lane_historical_restore_receipts import validate_restore_final, validate_pending_owner_access
 from .control_plane_lane_historical_sandbox import HistoricalNativeSandbox
+from .control_plane_lane_historical_restore_metadata import preflight_restore_metadata
 
 
 def _restored_snapshot(worker, events):
@@ -216,7 +217,8 @@ def _finish_restore(worker, tree, held, roots, monotonic, extracted):
         held.verify()
         generation.verify_historical_member_versions(snapshot, tick=worker.operation.remaining,
                 _restore_bounds=selected_restore_bounds(worker))
-        selected_snapshot = journal.publish_restore_snapshot(snapshot)
+        selected_snapshot = journal.publish_restore_snapshot(snapshot,
+            _post_selection_reserve=worker.metadata_post_selection)
     receipt = dict(status='completed', action='restore', action_id=worker.action_id,
         owner=decision['owner'], generation_digest=manifest['generation_digest'],
         original_manifest=decision['manifest'], original_final_event_digest=decision['final_event_digest'],
@@ -293,6 +295,7 @@ def run_restore(worker, roots, monotonic):
     operation = worker.operation
     manifest, decision = worker.selected[2], worker.selected[1]
     events = worker.replay()
+    preflight_restore_metadata(worker)
     if any(event['kind'] == 'restore_final' for event in events):
         if not any(event['kind'] == 'access_reopened' for event in events):
             return _recover_access(worker, events, roots, monotonic)

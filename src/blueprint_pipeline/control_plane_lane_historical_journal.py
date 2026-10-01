@@ -118,6 +118,7 @@ class HistoricalActionJournal:
         _require(owners._metadata(os.fstat(self.directory)) == self._namespace, 'changed')
 
     def _scan(self):
+        before_entries = self.files.budget.counts['entries']
         self.files.location(self.directory)
         before = owners._metadata(os.fstat(self.directory))
         count, size, maximum = 0, 0, -1
@@ -144,9 +145,13 @@ class HistoricalActionJournal:
         self.files.location(self.directory)
         _require(owners._metadata(os.fstat(self.directory)) == before, 'changed')
         self._namespace = before
+        self.scan_entry_work = self.files.budget.counts['entries'] - before_entries
         return count, size
 
     def _read(self, index):
+        before_values = self.files.budget.counts['values']
+        before_raw = self.files.budget.counts['raw_bytes']
+        before_entries = self.files.budget.counts['entries']
         path = self.root / f'e-{index:05d}.json'
         raw, record = self.files.read(path, cap=self.event_bytes, protected=True, mode=0o600)
         value = retained._document(raw, self.event_bytes, _work_budget=self.files.budget)
@@ -163,6 +168,18 @@ class HistoricalActionJournal:
             and value['execution_authorized'] is False
             and value['event_digest'] == canonical_digest(value, digest_field='event_digest'), 'changed')
         self.files.verify_record(record)
+        # Diagnostics for shape eligibility only: never refund these counters
+        # or retain decoded records/authorization between observations.
+        self.read_value_work = getattr(self, 'read_value_work', 0) + (
+            self.files.budget.counts['values'] - before_values)
+        self.read_raw_work = getattr(self, 'read_raw_work', 0) + (
+            self.files.budget.counts['raw_bytes'] - before_raw)
+        self.read_entry_work = getattr(self, 'read_entry_work', 0) + (
+            self.files.budget.counts['entries'] - before_entries)
+        if index:
+            if not hasattr(self, 'diagnostic_head_fds'):
+                self.diagnostic_head_fds = set()
+            self.diagnostic_head_fds.add(record.fd)
         return value
 
     def _load(self):
@@ -257,7 +274,7 @@ class HistoricalActionJournal:
         return self._publish(kind, body, count, previous,
                              observation_expires_at_epoch=observation_expires_at_epoch)
 
-    def publish_restore_snapshot(self, snapshot):
+    def publish_restore_snapshot(self, snapshot, *, _post_selection_reserve=None):
         """Retain an actual private restored inventory; this grants no access."""
         self._load()
         _require(self.scope['action'] == 'restore' and type(snapshot) is dict
@@ -268,6 +285,17 @@ class HistoricalActionJournal:
             and snapshot['members'][0]['version'][2:5] == [stat.S_IFDIR | 0o700, 0, 0], 'snapshot_invalid')
         raw = owners._encoded(snapshot, self.files.budget, cap=generation.MAX_MANIFEST_BYTES)
         _require(self._size + len(raw) <= MAX_JOURNAL_BYTES, 'store_full')
+        from .control_plane_lane_historical_restore_metadata import (
+            RESTORE_EVENT_VALUE_WORK, strict_document_value_work)
+        reserve = (dict(values=0, raw_bytes=0) if _post_selection_reserve is None
+                   else _post_selection_reserve)
+        _require(type(reserve) is dict and set(reserve) == {'values', 'raw_bytes'}
+            and all(type(amount) is int and amount >= 0 for amount in reserve.values()), 'snapshot_invalid')
+        self.files.budget.available('values', strict_document_value_work(snapshot, self.files.budget.tick)
+            + 3 * RESTORE_EVENT_VALUE_WORK + reserve['values'])
+        needed_raw = 3 * len(raw) + 3 * (self.event_bytes + 1) + 40 + 3 + reserve['raw_bytes']
+        self.files.budget.available('raw_bytes', needed_raw)
+        _require(needed_raw <= self.files.raw_cap - self.files.budget.counts['raw_bytes'], 'store_full')
         _publish(self.files, self.directory, 'restore.snapshot.json', raw, kind='historical_restore_snapshot')
         self._namespace = owners._metadata(os.fstat(self.directory))
         self._size += len(raw)

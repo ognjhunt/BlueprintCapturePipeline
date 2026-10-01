@@ -347,6 +347,29 @@ def test_snapshot_cannot_be_inserted_in_a_delete_journal(historical_installation
     assert not (directory / 'restore.snapshot.json').exists()
 
 
+def test_snapshot_readback_and_post_selection_are_admitted_before_link(historical_installation):
+    from blueprint_pipeline import control_plane_lane_historical_generation as generation
+    historical_installation[1].chmod(0o700)
+    approved = decision(historical_installation, packet(historical_installation))
+    snapshot = generation.inventory_historical_generation(historical_installation[1],
+        allowed_roots=(historical_installation[1].parent,))
+    def refuse(journal):
+        # Metadata-only local scope projection; no owner restore or native fact.
+        journal.scope = dict(journal.scope, action='restore')
+        before = dict(journal.files.budget.counts)
+        try:
+            journal.publish_restore_snapshot(snapshot,
+                _post_selection_reserve=dict(values=100_000, raw_bytes=0))
+        except ValueError:
+            assert not (journal.root / 'restore.snapshot.json').exists()
+            assert journal.files.budget.counts['values'] > before['values']
+            assert journal.files.budget.limits['values'] == 100_000
+            raise  # exhaustion stays sticky through the held session's exit
+        pytest.fail('snapshot was linked without readback capacity')
+    with pytest.raises(ValueError, match='reference_values_limit'):
+        journal_call(historical_installation, approved, refuse)
+
+
 def test_reopened_mutating_journal_syncs_exact_namespace_without_republishing(historical_installation, monkeypatch):
     import os
     from blueprint_pipeline import control_plane_lane_historical_journal as journal_code
