@@ -359,8 +359,11 @@ def test_provider_zero_inputs_share_the_immutable_task_evaluation_release() -> N
 def test_core_control_plane_uses_the_active_immutable_release() -> None:
     unit = _text("deploy/systemd/blueprint-pipeline-control-plane.service")
 
+    # Environment=BLUEPRINT_PIPELINE_REPO loses to the credential env file's
+    # archived checkout; tests/test_control_plane_postchecks_runtime.py runs the
+    # unit's commands under that precedence.
     assert (
-        "BLUEPRINT_PIPELINE_REPO=/opt/blueprint/task-evaluation-control-plane"
+        "BLUEPRINT_LIVE_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane"
         in unit
     )
     assert (
@@ -368,7 +371,8 @@ def test_core_control_plane_uses_the_active_immutable_release() -> None:
         "/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python"
         in unit
     )
-    assert 'cd -P "$${BLUEPRINT_PIPELINE_REPO}"' in unit
+    assert 'cd -P "$${BLUEPRINT_LIVE_CONTROL_PLANE_REPO}"' in unit
+    assert 'cd -P "$${BLUEPRINT_PIPELINE_REPO}"' not in unit
     assert "GIT_CONFIG_KEY_0=safe.directory" in unit
     assert 'PYTHONPATH=src "$${BLUEPRINT_PIPELINE_PYTHON}"' in unit
     assert ".venv/bin/python -m blueprint_pipeline.production_runtime_env_guard" not in unit

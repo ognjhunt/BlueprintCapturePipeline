@@ -6,7 +6,11 @@ manifest="${BLUEPRINT_CONTROL_PLANE_OUTPUT_PATH:-/var/lib/blueprint/pipeline-con
 
 cd -P "${repo}" || exit 1
 
-if [ -x .venv/bin/python ]; then
+# A release tree has no .venv; the unit's shared interpreter carries the
+# proof audit's dependencies, which a bare python3 lacks.
+if [ -n "${BLUEPRINT_PIPELINE_PYTHON:-}" ] && [ -x "${BLUEPRINT_PIPELINE_PYTHON}" ]; then
+  py=(env "PYTHONPATH=${PWD}/src" "${BLUEPRINT_PIPELINE_PYTHON}")
+elif [ -x .venv/bin/python ]; then
   py=(env "PYTHONPATH=${PWD}/src" .venv/bin/python)
 else
   py=(env "PYTHONPATH=${PWD}/src" python3)

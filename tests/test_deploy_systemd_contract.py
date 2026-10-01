@@ -102,10 +102,13 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
             "blueprint-pipeline-control-plane.service",
             "blueprint-pubsub-handoff-listener.service",
         }:
+            # The credential EnvironmentFile overrides Environment= and names an
+            # archived checkout in BLUEPRINT_PIPELINE_REPO, so the release is
+            # located through a unit-owned key and exported to the children.
             repo_key = (
                 "BLUEPRINT_PUBSUB_HANDOFF_REPO"
                 if unit == "blueprint-pubsub-handoff-listener.service"
-                else "BLUEPRINT_PIPELINE_REPO"
+                else "BLUEPRINT_LIVE_CONTROL_PLANE_REPO"
             )
             assert f"{repo_key}=/opt/blueprint/task-evaluation-control-plane" in text
             assert (
@@ -126,6 +129,11 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
             assert text.count('cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}"') == 2
             assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
             assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 2
+        if unit == "blueprint-pipeline-control-plane.service":
+            assert "Environment=BLUEPRINT_PIPELINE_REPO=" not in text
+            assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
+            assert text.count('cd -P "$${BLUEPRINT_LIVE_CONTROL_PLANE_REPO}"') == 3
+            assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 3
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
         assert "PRIVACY_FAIL_CLOSED=true" in text

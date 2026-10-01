@@ -43,6 +43,86 @@ def test_live_run_projects_setup_blockers_instead_of_generic_status(tmp_path: Pa
     assert "status contains blocked" not in audit["message_text"]
 
 
+def test_blocked_alert_counts_the_blockers_it_does_not_list(tmp_path: Path) -> None:
+    """2026-09-30: a pass with 13 setup blockers reached Slack as a bare status."""
+    manifest = tmp_path / "manifest.json"
+    setup = [f"setup_blocker_{index:02d}" for index in range(13)]
+    _write_json(manifest, {"status": "blocked", "blockers": [], "setup_blockers": setup})
+
+    audit = alert.build_live_pipeline_manifest_alert(
+        manifest_path=manifest, output_path=tmp_path / "alert.json", dry_run=True,
+    )
+
+    assert audit["blocker_count"] == 13
+    assert audit["blockers"] == setup[:12]
+    assert audit["message_text"].endswith("blockers=" + ", ".join(setup[:5]) + " (+8 more)")
+
+
+def _sending_run(tmp_path: Path, monkeypatch, sent: list[str], *, fail: bool = False):
+    def fake_post(url: str, payload: dict[str, object], *, timeout_seconds: float) -> None:
+        if fail:
+            raise RuntimeError("webhook returned HTTP 500")
+        sent.append(str(payload["text"]))
+
+    monkeypatch.setattr(alert, "_post_webhook", fake_post)
+    return lambda manifest, now: alert.build_live_pipeline_manifest_alert(
+        manifest_path=manifest, output_path=tmp_path / "alert.json",
+        webhook_url="https://hooks.example/blueprint", require_webhook=True, now=now,
+    )
+
+
+def test_an_unchanged_blocked_pass_repeats_hourly_instead_of_every_pass(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The control-plane timer runs every five minutes; the blocked state did not change."""
+    manifest = tmp_path / "manifest.json"
+    _write_json(manifest, {"status": "blocked", "setup_blockers": ["missing_simulator_command"]})
+    sent: list[str] = []
+    run = _sending_run(tmp_path, monkeypatch, sent)
+
+    assert run(manifest, 1_000.0)["notification_status"] == "sent"
+    repeat = run(manifest, 1_300.0)
+    assert repeat["notification_status"] == "suppressed_unchanged"
+    assert repeat["last_sent_at_epoch"] == 1_000.0 and alert._exit_code(repeat) == 0
+    assert run(manifest, 1_000.0 + 3_599)["notification_status"] == "suppressed_unchanged"
+    assert run(manifest, 1_000.0 + 3_600)["notification_status"] == "sent"
+    assert len(sent) == 2
+
+    _write_json(manifest, {"status": "blocked",
+                           "setup_blockers": ["missing_simulator_command", "missing_inbox"]})
+    assert run(manifest, 4_700.0)["notification_status"] == "sent"
+    _write_json(manifest, {"status": "blocked_on_inbox",
+                           "setup_blockers": ["missing_simulator_command", "missing_inbox"]})
+    assert run(manifest, 4_800.0)["notification_status"] == "sent"
+    assert len(sent) == 4
+
+
+def test_a_failed_delivery_is_retried_on_the_next_pass(tmp_path: Path, monkeypatch) -> None:
+    manifest = tmp_path / "manifest.json"
+    _write_json(manifest, {"status": "blocked", "setup_blockers": ["missing_inbox"]})
+    sent: list[str] = []
+
+    failed = _sending_run(tmp_path, monkeypatch, sent, fail=True)(manifest, 1_000.0)
+    assert failed["notification_status"] == "failed" and failed["last_sent_at_epoch"] is None
+    retried = _sending_run(tmp_path, monkeypatch, sent)(manifest, 1_300.0)
+    assert retried["notification_status"] == "sent" and len(sent) == 1
+
+
+def test_spend_lock_and_threshold_pages_are_never_suppressed(tmp_path: Path, monkeypatch) -> None:
+    sent: list[str] = []
+    run = _sending_run(tmp_path, monkeypatch, sent)
+    for name, payload in (
+        ("spend.json", {"schema_version": "blueprint.paid_spend_admission_lock.v1",
+                        "status": "blocked", "blockers": ["cohort_hard_stop_reached"]}),
+        ("page.json", {"status": "ready", "page_event": {"required": True}}),
+    ):
+        manifest = tmp_path / name
+        _write_json(manifest, payload)
+        assert run(manifest, 1_000.0)["notification_status"] == "sent"
+        assert run(manifest, 1_300.0)["notification_status"] == "sent"
+    assert len(sent) == 4
+
+
 def test_setup_projection_keeps_the_existing_blocker_bound() -> None:
     assert alert._manifest_blockers({"blockers": [f"blocked-{i}" for i in range(12)],
                                      "setup_blockers": ["setup"],
