@@ -543,8 +543,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=[],
         choices=PROVIDERS,
         help=(
-            "set a required provider for this refresh; defaults to "
-            "RunPod/Vast/DigitalOcean when omitted; AWS is unavailable"
+            "make this provider mandatory for the refresh; "
+            "unspecified providers are optional; AWS is unavailable"
         ),
     )
     args = parser.parse_args(argv)
