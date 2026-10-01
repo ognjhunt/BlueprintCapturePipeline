@@ -38,29 +38,26 @@ by `BLUEPRINT_GPU_BILLING_EXPORT` with this shape:
   "provider_totals_usd": {
     "runpod": 0.0,
     "vast": 0.0,
-    "digitalocean": 0.0,
-    "aws": 0.0
+    "digitalocean": 0.0
   }
 }
 ```
 
-AWS coverage is read-only and account-bound. An AWS launch requires the
-canonical AWS profile to
-allow `sts:GetCallerIdentity` and `ce:GetCostAndUsage`; the reconciler signs the
-fixed STS and Cost Explorer endpoints, retains their exact response bytes, and
-refuses an account mismatch. Cost Explorer refreshes at least daily, so live
-inventory plus the independent watchdog remains the immediate zero-resource
-authority while the official billing export supplies cumulative spend evidence.
+Automatic AWS billing collection is unavailable. Cost Explorer charges per API
+request, so the provider reconciler no longer reads AWS credentials or sends STS
+or Cost Explorer requests. This applies to timer runs, spend-guard dependencies,
+and direct canary billing refreshes. AWS remains in `uncovered_provider_ids`,
+with `aws_billing_unavailable_paid_api_collection_removed` recorded explicitly;
+no AWS total is invented or carried into a new export. `--require-provider aws`
+fails before any provider request and preserves the previous export. The
+provider-scoped admission guard still rejects an AWS resource when its current
+billing coverage is absent.
 
-The guard rejects a file older than 24 hours, a future timestamp, another
-currency/scope/schema, negative/non-numeric totals, or omission of any original
-cohort provider (RunPod, Vast, or DigitalOcean). A newly configured provider may
-be absent while its official billing API is unavailable, but that provider is
-recorded as uncovered and remains fail-closed at the shared pre-spend
-chokepoint. Its absence does not block a covered provider. The reconciler still
-attempts optional AWS billing and retains the failure plus any successful
-account-identity response; `--require-provider aws` makes an AWS-specific
-refresh all-or-nothing.
+Other provider collection and admission checks remain unchanged. An unavailable
+provider is recorded as uncovered and stays fail-closed at the shared pre-spend
+chokepoint, while covered providers retain their own billing evidence. No paid
+replacement billing service is provisioned by this change.
+
 The resulting artifact records the billing input digest and basename, not an
 absolute runner path. Supplying this file is external billing evidence; the
 repository does not manufacture it.

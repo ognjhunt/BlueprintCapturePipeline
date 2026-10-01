@@ -81,6 +81,10 @@ class _TargetFiles(owners._Files):
             self.probe_owned[fd] = (group, proof)
         return actual
 
+    def creation_checkpoint(self):
+        """Default acquisition budget; an enrolled composition may hold expiry."""
+        self.budget.tick()
+
     def open(self, name, flags, *, parent=None, mode=0o600, target=False):
         self.slot()
         if parent is not None:
@@ -102,7 +106,10 @@ class _TargetFiles(owners._Files):
             named = os.stat(name, dir_fd=parent, follow_symlinks=False)
             _require(stat.S_ISDIR(named.st_mode) if flags & os.O_DIRECTORY else stat.S_ISREG(named.st_mode),
                      "owner_target_acquisition_invalid")
-        self.budget.tick()
+        if creating:
+            self.creation_checkpoint()
+        else:
+            self.budget.tick()
         fd = os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=parent)
         if creating:
             # Created birth requires independent named evidence BEFORE first fstat.

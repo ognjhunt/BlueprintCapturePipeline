@@ -16,6 +16,7 @@ import stat
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from .control_plane_reference_budget import ReferenceCollectionBudget
@@ -158,14 +159,70 @@ def _json(raw: bytes, *, budget: ReferenceCollectionBudget | None = None) -> dic
         raise _Blocked("pin_row_invalid") from None
 
 
+class _HeldPinInventory:
+    """One selected ledger acquisition under its original publisher lock.
+
+    Only private descriptor owners may construct this observation. Retaining
+    the original directory handles avoids reacquiring a root/group at each
+    publication checkpoint; all current names, rows and bytes are still read.
+    The caller closes these handles with its original metadata owner.
+    """
+    @staticmethod
+    def require(value, code):
+        if not value:
+            raise StoragePinObservationError(code)
+
+    def __init__(self, files, pin_files, pin_directory, root):
+        from .control_plane_lane_experiment_publication import _BirthFiles
+        self.require(isinstance(files, _BirthFiles) and isinstance(pin_files, _BirthFiles),
+                     "pin_descriptor_changed")
+        self.files, self.pin_files, self.pin_directory = files, pin_files, pin_directory
+        self.root = _path(os.fspath(root))
+        self.directory, _ = files.parent(Path(self.root) / '.held-pin-inventory')
+        self.kinds = {}
+        self.check()
+        # The three selected group contracts belong to this same acquisition.
+        # Rereads charge their actual entries/rows/bytes, never refund counters.
+        files.budget.charge('groups', len(PIN_KINDS))
+
+    def check(self):
+        self.files.budget.tick()
+        self.files.location(self.directory)
+        self.files.proof(self.directory)
+        self.pin_files.location(self.pin_directory)
+        self.pin_files.proof(self.pin_directory)
+        held, locked = os.fstat(self.directory), os.fstat(self.pin_directory)
+        self.require(stat.S_ISDIR(held.st_mode) and stat.S_ISDIR(locked.st_mode)
+                     and (held.st_dev, held.st_ino) == (locked.st_dev, locked.st_ino),
+                     "pin_root_changed")
+        self.require(self.pin_files.parents.get(Path(self.root)) == self.pin_directory,
+                     "pin_root_changed")
+        for fd in self.kinds.values():
+            self.files.location(fd)
+            self.files.proof(fd)
+
+    def kind(self, name):
+        self.check()
+        self.require(name in PIN_KINDS, "pin_entry_unknown")
+        fd = self.kinds.get(name)
+        if fd is None:
+            fd = self.files.open(name, _DIR_FLAGS, parent=self.directory)
+            self.kinds[name] = fd
+        self.files.location(fd)
+        self.files.proof(fd)
+        return fd
+
+
 class _Scan:
     def __init__(self, root: str, observed: float, clock: Callable[[], float], budget: float,
-                 shared: ReferenceCollectionBudget | None = None, held_root_fd: int | None = None):
+                 shared: ReferenceCollectionBudget | None = None, held_root_fd: int | None = None,
+                 held_inventory: _HeldPinInventory | None = None):
         self.root, self.observed, self.clock = root, observed, clock
         self.deadline: float | None = None
         self.budget = budget
         self.shared = shared
         self.held_root_fd = held_root_fd
+        self.held_inventory = held_inventory
         self.fds: list[int] = []
         self.fd_identities: dict[int, tuple[int, int, int]] = {}
         self.failed_closes: set[int] = set()
@@ -224,6 +281,9 @@ class _Scan:
             self.blockers.add("pin_blockers_truncated")
 
     def close(self, fd: int) -> None:
+        if self.held_inventory is not None and fd in self.held_inventory.kinds.values():
+            self.held_inventory.files.proof(fd)
+            return
         if fd in self.failed_closes:
             # A close error may mean it closed. Never blindly close a reused FD.
             try:
@@ -261,6 +321,9 @@ class _Scan:
 
     def open(self, name: str, flags: int, parent: int | None = None) -> int:
         self.tick()
+        if (self.held_inventory is not None and parent == self.held_inventory.directory
+                and flags == _DIR_FLAGS):
+            return self.held_inventory.kind(name)
         fd = os.open(name, flags, dir_fd=parent)
         self.fds.append(fd)  # Own it before the post-syscall deadline check.
         self.tick()
@@ -270,6 +333,10 @@ class _Scan:
         return fd
 
     def walk(self) -> list[tuple[int, tuple[int, int]]]:
+        if self.held_inventory is not None:
+            self.held_inventory.check()
+            info = self.call(os.fstat, self.held_inventory.directory)
+            return [(self.held_inventory.directory, (info.st_dev, info.st_ino))]
         chain = []
         parent = None
         for name in ["/", *self.root.strip("/").split("/")] if self.root != "/" else ["/"]:
@@ -519,22 +586,29 @@ def observe_storage_pins(pins_root: str, *, observed_at_epoch: float,
                          monotonic: Callable[[], float] = time.monotonic,
                          time_budget_seconds: float = 5.0,
                          budget: ReferenceCollectionBudget | None = None,
-                         _held_root_fd: int | None = None) -> StoragePinObservation:
+                         _held_root_fd: int | None = None,
+                         _held_inventory: _HeldPinInventory | None = None) -> StoragePinObservation:
     """Read one explicit ledger, never repairing it or clearing general references."""
     if budget is not None:
         from .control_plane_reference_budget import bind_budget
         bind_budget(budget, monotonic=monotonic, time_budget_seconds=time_budget_seconds,
                     error=StoragePinObservationError, code="pin_parameters_invalid")
     root = _path(pins_root)
+    if _held_inventory is not None:
+        if not (type(_held_inventory) is _HeldPinInventory and budget is _held_inventory.files.budget
+                and root == _held_inventory.root and _held_root_fd == _held_inventory.pin_directory):
+            raise StoragePinObservationError("pin_parameters_invalid")
+        _held_inventory.check()
     if not (_finite(observed_at_epoch) and _finite(time_budget_seconds)
             and 0 < time_budget_seconds <= 5 and callable(monotonic)
             and (_held_root_fd is None or (type(_held_root_fd) is int and _held_root_fd >= 0))):
         raise StoragePinObservationError("pin_parameters_invalid")
     scan = _Scan(root, float(observed_at_epoch), monotonic, float(time_budget_seconds), budget,
-                 held_root_fd=_held_root_fd)
+                 held_root_fd=_held_root_fd, held_inventory=_held_inventory)
     try:
-        scan.shared_charge("roots")
-        scan.shared_charge("groups", len(PIN_KINDS))
+        if _held_inventory is None:
+            scan.shared_charge("roots")
+            scan.shared_charge("groups", len(PIN_KINDS))
         scan.observe()
     except FileNotFoundError:
         scan.block("pin_root_missing" if scan.root_identity is None else "pin_inventory_changed")

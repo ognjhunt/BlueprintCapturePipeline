@@ -8,6 +8,16 @@ TARGET = "/mnt/blueprint-work/lanes/g1/registered-" + "a" * 32
 VALUE = {"nested": [{"path": TARGET + "/payload.bin"}]}
 
 
+def test_actual_queue_refuses_diagnostic_reference_before_persistence(tmp_path):
+    from blueprint_pipeline.task_evaluation_launch_preparation_queue import write_launch_preparation_record_exclusive
+    selected = tmp_path / 'request.json'
+    value = {'source': '/mnt/blueprint-work/lanes/diagnostics/registered-' + 'b' * 32
+             + '/disk-capacity-report.v1.json'}
+    with pytest.raises(ValueError, match='experiment_external_publisher_unsupported'):
+        write_launch_preparation_record_exclusive(path=selected, value=value)
+    assert not selected.exists()
+
+
 def test_current_interpreter_symlink_is_allowed_only_for_nonregistered_target(tmp_path, monkeypatch):
     from blueprint_pipeline import control_plane_registered_reference_gate as gate
     safe = tmp_path / 'python-real'

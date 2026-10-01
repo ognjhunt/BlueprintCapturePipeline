@@ -49,8 +49,9 @@ def _mapping_inodes(raw):
 
 
 class _Scan:
-    def __init__(self, tick):
+    def __init__(self, tick, budget=None):
         self.tick_operation = tick
+        self.budget = budget
         self.started = self.last = time.monotonic()
         self.entries, self.raw_bytes = 0, 0
         self.views = {}
@@ -73,6 +74,8 @@ class _Scan:
             while True:
                 self.tick()
                 block = os.read(fd, min(4096, cap + 1 - len(data)))
+                if self.budget is not None:
+                    self.budget.charge('raw_bytes', len(block))
                 self.raw_bytes += len(block)
                 _require(len(data) + len(block) <= cap and self.raw_bytes <= 20 * 1024**2)
                 if not block:
@@ -86,6 +89,8 @@ class _Scan:
         with os.scandir(fd) as stream:
             for row in stream:
                 self.tick()
+                if self.budget is not None:
+                    self.budget.charge('entries')
                 self.entries += 1
                 _require(len(result) < limit and self.entries <= 20000)
                 result.append(row.name)
@@ -311,10 +316,10 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
     return channels
 
 
-def refuse_historical_process_references(manifest, *, tick, restore_bounds=None):
+def refuse_historical_process_references(manifest, *, tick, restore_bounds=None, budget=None):
     """Fixed real /proc, same PID/user namespace, finite complete current scan."""
     _require(sys.platform == 'linux' and os.geteuid() == 0, 'native_unavailable')
-    scan = _Scan(tick)
+    scan = _Scan(tick, budget)
     if restore_bounds is not None:
         from .control_plane_lane_historical_fence import _members
         _members(manifest, restore_bounds=restore_bounds)

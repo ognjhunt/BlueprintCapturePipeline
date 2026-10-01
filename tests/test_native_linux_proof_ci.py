@@ -111,6 +111,17 @@ def test_required_native_proof_still_gates_the_pr_on_success() -> None:
     assert 'if test "${NATIVE_REQUIRED}" = "true"; then\n  test "${NATIVE_RESULT}" = "success"' in step["run"]
 
 
+def test_diagnostic_native_failure_stops_before_unrelated_cases_without_reducing_acceptance() -> None:
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
+    assert selected[0] == 'tests/test_registered_feature_linux.py::test_actual_registered_disk_diagnostic_delete_offload_and_restore'
+    assert len(selected) == len(set(selected)) == 9
+    assert '--maxfail=1' in run
+    assert 'assert len(cases) == 46' in run
+    assert not any(flag in run for flag in ('--deselect', '--ignore', '-k '))
+
+
 def test_retained_failed_restore_paths_execute_before_remaining_native_cases():
     from tests.historical_generation_native_acceptance import CONNECTED_CASES
     assert [row[0] for row in CONNECTED_CASES[:5]] == [
@@ -118,8 +129,8 @@ def test_retained_failed_restore_paths_execute_before_remaining_native_cases():
     assert len(CONNECTED_CASES) == len(dict(CONNECTED_CASES)) == 38
     run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
-    first = run.split('python -m pytest', 1)[1].splitlines()[1].strip()
-    assert first.startswith('tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption')
+    selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
+    assert selected[1] == 'tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption'
     assert '--maxfail=1' in run and '--deselect' not in run and '-k ' not in run
 
 
@@ -132,7 +143,7 @@ def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> No
         absent_expiry=True, observation_expiry=True)
     run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
-    assert 'assert len(cases) == 45' in run
+    assert 'assert len(cases) == 46' in run
     assert 'case.find(tag)' in run and 'for tag in ("skipped", "error", "failure")' in run
 
 
