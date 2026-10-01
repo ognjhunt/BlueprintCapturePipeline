@@ -72,6 +72,45 @@ def _bounded_tar_info(allowance):
     count = 0
     depth = 0
     class BoundedTarInfo(tarfile.TarInfo):
+        def _proc_pax(self, archive):
+            # Never delegate unvalidated keys to stdlib: GNU sparse maps have
+            # independent allocation counts even inside a tiny local header.
+            allowance.tick()
+            raw = archive.fileobj.read(self._block(self.size))
+            allowance.tick()
+            _require(len(raw) == self._block(self.size)
+                     and not any(raw[self.size:]) and not archive.pax_headers,
+                     'scene_retirement_readback_unproven')
+            payload, offset, headers = raw[:self.size], 0, {}
+            while offset < len(payload):
+                allowance.tick()
+                space = payload.find(b' ', offset, offset + 5)
+                digits = payload[offset:space] if space >= 0 else b''
+                _require(1 <= len(digits) <= 4 and digits.isdigit()
+                         and not digits.startswith(b'0'), 'scene_retirement_readback_unproven')
+                length = int(digits)
+                _require(space + 3 < offset + length <= len(payload)
+                         and payload[offset + length - 1:offset + length] == b'\n',
+                         'scene_retirement_readback_unproven')
+                key, separator, value = payload[space + 1:offset + length - 1].partition(b'=')
+                _require(separator and key in (b'path', b'uid', b'gid') and key not in headers
+                         and len(headers) < 3, 'scene_retirement_readback_unproven')
+                if key == b'path':
+                    _require(0 < len(value) <= 4096 and b'\0' not in value,
+                             'scene_retirement_readback_unproven')
+                    decoded = value.decode('utf-8', errors='strict')
+                else:
+                    _require(0 < len(value) <= 10 and value.isdigit() and int(value) < 2**32,
+                             'scene_retirement_readback_unproven')
+                    decoded = value.decode('ascii')
+                headers[key] = decoded
+                offset += length
+            validated = {key.decode('ascii'): value for key, value in headers.items()}
+            result = self.fromtarfile(archive)
+            result._apply_pax_info(validated, archive.encoding, archive.errors)
+            result.offset = self.offset
+            return result
+
         def _proc_member(self, archive):
             nonlocal count, depth
             allowance.tick()

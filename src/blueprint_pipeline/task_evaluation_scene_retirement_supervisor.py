@@ -345,13 +345,16 @@ def _proc_fields(pid, native):
             key, separator, value = line.partition(':')
             _require(separator and key not in status, _READER_ERROR)
             status[key] = value.strip()
-        required = {'Uid', 'Gid', 'Threads', 'CapEff', 'CapPrm', 'CapInh', 'CapAmb', 'CapBnd', 'NoNewPrivs'}
+        required = {'Uid', 'Gid', 'Threads', 'CapEff', 'CapPrm', 'CapInh', 'CapAmb', 'CapBnd', 'NoNewPrivs', 'Groups'}
         _require(required <= set(status), _READER_ERROR)
         uid, gid = status['Uid'].split(), status['Gid'].split()
-        _require(len(uid) == len(gid) == 4 and all(item.isdigit() for item in uid + gid), _READER_ERROR)
+        groups = status['Groups'].split()
+        _require(len(uid) == len(gid) == 4 and len(groups) <= 64
+                 and all(item.isdigit() and int(item) < 2**32 for item in uid + gid + groups), _READER_ERROR)
+        native.consume(entries=len(groups))
         cgroup, _ = _native_bytes(root / 'cgroup', native, cap=16384)
-        groups = cgroup.decode('utf-8', errors='strict').splitlines()
-        _require(len(groups) == 1 and groups[0].startswith('0::/'), _READER_ERROR)
+        cgroup_rows = cgroup.decode('utf-8', errors='strict').splitlines()
+        _require(len(cgroup_rows) == 1 and cgroup_rows[0].startswith('0::/'), _READER_ERROR)
         command, _ = _native_bytes(root / 'cmdline', native, cap=16384)
         kernel = status.get('Kthread') == '1'
         links = {}
@@ -365,8 +368,8 @@ def _proc_fields(pid, native):
         _require(again.rfind(b') ') > 0 and again[again.rfind(b') ') + 2:].split()[19] == fields[19]
                  and _unit_version(os.fstat(parent)) == _unit_version(before), _READER_ERROR)
         return dict(pid=pid, ppid=int(fields[1]), start_ticks=int(fields[19]),
-            uid=list(map(int, uid)), gid=list(map(int, gid)), status={key:status[key] for key in required},
-            cgroup=groups[0][3:], cmdline=command.decode('utf-8', errors='strict').rstrip('\0').split('\0'),
+            uid=list(map(int, uid)), gid=list(map(int, gid)), groups=list(map(int, groups)), status={key:status[key] for key in required},
+            cgroup=cgroup_rows[0][3:], cmdline=command.decode('utf-8', errors='strict').rstrip('\0').split('\0'),
             kernel_thread=kernel, **links)
 
 
@@ -837,6 +840,12 @@ def _platform_processes(rows, snapshot, native):
     return result
 
 
+def _outside_service_identity(row, service_uid, service_gid):
+    """An unrelated UID alone does not prove absence of service access."""
+    return (0 not in row['uid'] and service_uid not in row['uid']
+            and service_gid not in row['gid'] and service_gid not in row['groups'])
+
+
 def _require_current_reader_closure(policy, allowance):
     """Enforce actual boot/current-process authority under the caller's EX fence.
 
@@ -879,7 +888,7 @@ def _require_current_reader_closure(policy, allowance):
             pid = int(unit['MainPID'])
             active[pid] = unit
             receipts[pid] = _boot_record(policy, before[pid], module, unit, sources, boot_id, native)
-        service_uid, _ = access._service_identity()
+        service_uid, service_gid = access._service_identity()
         for pid, row in before.items():
             if pid == os.getpid() or row['kernel_thread']:
                 continue
@@ -887,7 +896,7 @@ def _require_current_reader_closure(policy, allowance):
                 continue
             # Native OS MainPIDs were independently bound above; no child,
             # session, root Python or manual process inherits that classification.
-            _require(pid in platform or (0 not in row['uid'] and service_uid not in row['uid']
+            _require(pid in platform or (_outside_service_identity(row, service_uid, service_gid)
                                   and row['ppid'] not in active), _READER_ERROR)
         after = _snapshot(proc, roots, native)
         _require(_reader_inodes(roots, native) == native.inventory, _READER_ERROR)

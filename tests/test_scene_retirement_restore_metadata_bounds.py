@@ -78,5 +78,28 @@ def test_nested_pax_refuses_before_recursive_metadata_parse(tmp_path, monkeypatc
                                             sha256='sha256:' + 'a' * 64))
     with pytest.raises(ValueError, match='scene_retirement_readback_unproven'):
         restore._consume(selected, Transport(), journal.allowance)
-    assert len(parsed) == 1
+    assert parsed == []  # Unsupported recursive stdlib PAX handling is never entered.
+    assert (member / 'nested/evidence.bin').read_bytes() == b'preserved-evidence'
+
+
+def test_small_pax_cannot_enter_gnu_sparse_map_handler(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_retirement_restore as restore
+    _, member, preserved, journal = setup_operation(tmp_path, monkeypatch)
+    extension = tarfile.TarInfo._create_pax_generic_header(
+        {'GNU.sparse.major': '1', 'GNU.sparse.minor': '0'}, tarfile.XHDTYPE, 'utf-8')
+    raw = extension + tarfile.TarInfo('0/nested/evidence.bin').tobuf() + b'\0' * 1024
+    entered = []
+    def sparse(*args, **kwargs):
+        entered.append(True)
+        raise RuntimeError('untrusted sparse-map handler entered')
+    monkeypatch.setattr(tarfile.TarInfo, '_proc_gnusparse_10', sparse)
+    class Transport:
+        def read_archive(self, uri):
+            for offset in range(0, len(raw), 64):
+                yield raw[offset:offset + 64]
+    selected = dict(preserved, archive=dict(preserved['archive'], size_bytes=len(raw),
+                                            sha256='sha256:' + 'a' * 64))
+    with pytest.raises(ValueError, match='scene_retirement_readback_unproven'):
+        restore._consume(selected, Transport(), journal.allowance)
+    assert entered == []
     assert (member / 'nested/evidence.bin').read_bytes() == b'preserved-evidence'

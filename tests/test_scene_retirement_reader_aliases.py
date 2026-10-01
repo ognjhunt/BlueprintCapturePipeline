@@ -149,3 +149,51 @@ def test_mount_route_projection_requires_actual_root_inode_and_complete_view(
         with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
             supervisor._reader_view(54321, [selected], native)
     assert payload.read_bytes() == b'actual-member'
+
+
+@pytest.mark.parametrize('access_group', ['primary', 'effective', 'saved', 'filesystem', 'supplementary'])
+def test_manual_foreign_uid_with_service_group_has_unclosed_access_lifetime(access_group):
+    service_uid, service_gid = os.getuid(), os.getgid()
+    foreign = {'uid': [service_uid + 10000] * 4, 'gid': [service_gid + 10000] * 4, 'groups': []}
+    if access_group == 'supplementary':
+        foreign['groups'] = [service_gid]
+    else:
+        foreign['gid'][('primary', 'effective', 'saved', 'filesystem').index(access_group)] = service_gid
+    # There need not be any current FD or map: this identity can traverse750
+    # members after the scan without an enrolled SH participant.
+    assert not supervisor._outside_service_identity(foreign, service_uid, service_gid)
+
+
+@pytest.mark.parametrize('groups', ['20 21', '', 'unknown', '4294967296', ' '.join(['20'] * 65), None])
+def test_proc_group_projection_is_complete_bounded_and_retained(tmp_path, monkeypatch, groups):
+    proc = tmp_path / 'proc-group-projection'
+    proc.mkdir()
+    fields = ['S', '1', *(['0'] * 18)]
+    fields[19] = '12345'
+    (proc / 'stat').write_text('54321 (group-fixture) ' + ' '.join(fields) + '\n')
+    status = dict(Uid='1000 1000 1000 1000', Gid='1001 1001 1001 1001', Threads='1',
+                  CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd='0', NoNewPrivs='1')
+    if groups is not None:
+        status['Groups'] = groups
+    (proc / 'status').write_text(''.join(key + ': ' + value + '\n' for key, value in status.items()))
+    (proc / 'cgroup').write_text('0::/fixture\n')
+    (proc / 'cmdline').write_bytes(b'fixture\0')
+    for kind in ('exe', 'cwd'):
+        (proc / kind).symlink_to('/unrelated-projection')
+    original_opened = supervisor._opened
+    def opened(path, **kwargs):
+        path = Path(path)
+        if path.is_relative_to('/proc/54321'):
+            path = proc / path.relative_to('/proc/54321')
+        return original_opened(path, **kwargs)
+    monkeypatch.setattr(supervisor, '_opened', opened)
+    native = supervisor._NativeObservation(ActionAllowance(expires_at=3600, now=lambda: 100,
+                                                           monotonic=lambda: 0))
+    if groups in ('20 21', ''):
+        row = supervisor._proc_fields(54321, native)
+        assert row['groups'] == ([20, 21] if groups else [])
+        assert row['status']['Groups'] == groups
+        assert native.entries == len(row['groups'])
+    else:
+        with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
+            supervisor._proc_fields(54321, native)
