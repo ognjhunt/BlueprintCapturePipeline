@@ -45,7 +45,8 @@ The public 20-case input remains `../provider_eval_recovery/real_public/inputs.p
 SHA256 `cac8d7a31aea2ad1c2e5a47ea37e434abcaae4b4910ba4afc8f81dd11c404ff3`.
 Its provenance is parent-message transfer; this does not claim successful Library
 materialization. The reviewer oracle remains parent-side and unavailable to this
-agent or the providers.
+agent or the providers. The subsequently approved one-case soft-budget pilot has
+a separate receipt and executable entry point; see [SOFT_PILOT.md](SOFT_PILOT.md).
 
 ## Comparable application tools
 
@@ -105,15 +106,16 @@ container periods, long-context pricing and taxes require reconciliation. Three
 container periods would add $0.24 to the one-case planning target; that still does
 not establish an upper bound.
 
-Therefore `live_admission` and CLI `--execute` fail closed before key access,
+The original `live_admission` and `hosted.py` CLI `--execute` still fail closed before key access,
 session creation, model calls, or research requests. There is no override flag or
 receipt claiming a fictitious API hard cap. An existing saved-agent GET200 proves
 read access only. The official hosted quickstart requires application-key scopes
 `api.agents.read`, `api.agents.write`, and `api.responses.write`; inference/write
 access remains unverified here. Reuse existing authorized bindings only; this
-draft neither creates a key nor requests broader permissions. The installed
-OpenAI SDK is 2.45.0, so the existing documented raw REST transport is used rather
-than assuming it exposes the current 3.13+ `beta.agents` SDK surface.
+draft neither creates a key nor requests broader permissions. The soft-pilot
+entry point requires the tested public SDK pair OpenAI 3.22.1 / Agents SDK 0.22.3,
+uses the real SDK for its read-only access check, and reuses the documented raw
+REST transport for durable execution. The initial 2.45.0 SDK lacks `beta.agents`.
 
 ## Runnable offline commands
 
@@ -137,8 +139,9 @@ one. Its file/input digests, exact source commit, project/model/tool identities
 and deadline must be bound by the caller. Synthetic admission in tests is not
 authorization. A live integration must account for outer Sol, managed model
 usage, containers, all search attempts/extras and independent output review in
-the same ledger. That hosted reservation/billing admission is deliberately not
-implemented without a verified spend-control contract.
+the same ledger. The separately approved soft-pilot route supplies that admission
+through an explicit, digest-bound receipt and monitoring, without claiming a hard
+provider cap or enabling arbitrary cases/sessions.
 
 The managed final JSON and session/turn IDs are retained by the existing runtime.
 It instructs the agent to write/read back `/workspace/outputs/answer.json`; direct

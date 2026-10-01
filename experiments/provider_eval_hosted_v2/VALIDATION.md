@@ -1,8 +1,8 @@
 # Offline validation
 
-Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2/test_hosted.py tests/test_agent_execution_sessions.py -q`.
-Result: **59 passed**, comprising 23 hosted cohort test instances and 36 existing
-durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
+Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
+Result: **74 passed**, comprising 23 hosted cohort instances, 15 soft-pilot cases,
+and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
 All network responses, keys and admissions used in tests are synthetic; module-
@@ -37,10 +37,21 @@ Verified boundaries include:
   explicit unsupported-content gaps.
 - Shared $10 exposure accounting, exact supplied $3.934105 checkpoint math,
   non-hard-cap target labeling, and a default zero-call paid admission guard.
+- Executable one-case/four-arm soft pilot with actual managed wire-shaped runtime;
+  deterministic task replay, immutable approval/root-prefix binding, no duplicate
+  sessions, fresh unknown/high usage stopping before tools/model replies, bounded
+  five-minute cancellation, and overrun reporting beyond the nominal ledger cap.
+- Durable creation/usage anchors prevent missing or changed sidecars from hiding
+  known sessions or resetting retained-container carry costs across restarts.
+- Actual OpenAI SDK 3.22.1 read-only GET wire, Beta and Default project headers,
+  using a mock HTTP transport; compatible Agents SDK 0.22.3 installed from PyPI.
 
 Remaining limitations are documented in README: hosted inference/write access
 is not verified by read-only saved-agent access; managed hidden-loop usage lacks
-a documented hard cap; final billing/count/extras remain unreconciled; no paid
-hosted launch CLI or independent-output grading execution is authorized/wired;
+a documented hard cap; final billing/count/extras remain unreconciled. The user
+has explicitly approved the one-case $1 soft pilot with its separate receipt;
+the general hard-cap CLI remains blocked. Independent output grading is not run;
 PDF/redirect/binary inspection and direct artifact-content downloading are absent.
-The new cohort is not a completed provider comparison or a quality score.
+The SDK pair is an experiment override of the unchanged project metadata's older
+Agents SDK constraint, not a production dependency update. The new cohort is not
+a completed provider comparison or a quality score; no paid calls ran here.
