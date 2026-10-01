@@ -14,6 +14,7 @@ import os
 import pwd
 import select
 import time
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 
 from tests.test_registered_feature_linux import encoded, install_protected_feature, _run_shipped_gc_sandbox
@@ -54,7 +55,8 @@ def _ordinary_denied(target, value, account):
     assert {path.name: path.read_bytes() for path in target.iterdir()} == before
 
 
-def _held_fd_keeps(value, action, pins, report, account):
+@contextmanager
+def _foreign_report_fd(report, account):
     ready_read, ready_write = os.pipe()
     finish_read, finish_write = os.pipe()
     child = os.fork()
@@ -83,6 +85,16 @@ def _held_fd_keeps(value, action, pins, report, account):
         expected = report.stat()
         assert held['uid'] == account.pw_uid != 0
         assert (observed.st_dev, observed.st_ino) == (held['dev'], held['ino']) == (expected.st_dev, expected.st_ino)
+        yield held
+    finally:
+        os.write(finish_write, b'x')
+        os.close(finish_write)
+        os.close(ready_read)
+        os.waitpid(child, 0)
+
+
+def _held_fd_keeps(value, action, pins, report, account):
+    with _foreign_report_fd(report, account):
         original = report.read_bytes()
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True)
         row = next(row for row in result['report']['registered_experiments']['outcomes']
@@ -90,11 +102,47 @@ def _held_fd_keeps(value, action, pins, report, account):
         assert row['decision'] == 'kept' and row['removed_logical_bytes'] == row['removed_allocated_bytes'] == 0, row
         assert row['reason'] == 'experiment_diagnostic_process_reference', row
         assert report.read_bytes() == original
-    finally:
-        os.write(finish_write, b'x')
-        os.close(finish_write)
-        os.close(ready_read)
-        os.waitpid(child, 0)
+
+
+def _restore_reference_after_publication(value, restore, pins, target, account, original):
+    """Expose a real foreign FD after journaled link, before staged unlink."""
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    actual_event = actions._event
+    exposed = []
+    with ExitStack() as holders:
+        def event(*args, **kwargs):
+            result = actual_event(*args, **kwargs)
+            if args[3] == 'restore_member' and not exposed:
+                files = args[0]
+                # Select the actual owned stage binding, never a guessed birth.
+                references = files._diagnostic_references
+                stage_fd = references.stage
+                files.proof(stage_fd)
+                files.location(stage_fd)
+                assert files.bindings[stage_fd][0] == references.target_fd
+                stage = references.target / files.bindings[stage_fd][1]
+                report = stage / 'disk-capacity-report.v1.json'
+                assert report.read_bytes() == original
+                held = holders.enter_context(_foreign_report_fd(report, account))
+                exposed.append((report, held))
+            return result
+        actions._event = event
+        try:
+            try:
+                issuer.restore_registered_experiment(restore['action_id'], expected_restore_intent=restore['restore_intent'],
+                    installed_config_path=value['config'], now=time.time, _pins_root=pins)
+            except ValueError as error:
+                assert str(error) == 'experiment_diagnostic_process_reference', error
+            else:
+                raise AssertionError('restore unlinked a payload held by a foreign reader')
+            assert len(exposed) == 1
+            report, held = exposed[0]
+            info = report.stat()
+            assert (info.st_dev, info.st_ino) == (held['dev'], held['ino'])
+            assert report.read_bytes() == (target / report.name).read_bytes() == original
+        finally:
+            actions._event = actual_event
 
 
 def run(root):
@@ -224,6 +272,7 @@ def run(root):
                 assert refused['decision'] in {'kept', 'refused'}, refused
             assert report.stat().st_ino == foreign_inode and report.read_bytes() == b'owned-foreign-fixture'
             report.unlink()
+            _restore_reference_after_publication(value, restore, pins, target, account, before)
             outcome = issuer.restore_registered_experiment(restore['action_id'], expected_restore_intent=restore['restore_intent'],
                 installed_config_path=value['config'], now=time.time, _pins_root=pins)
             assert outcome['decision'] == 'restored', outcome

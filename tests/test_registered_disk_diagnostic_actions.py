@@ -222,3 +222,39 @@ def test_actual_current_queue_reference_preserves_the_sealed_report(installation
         actions.run_action(selected_action['action_id'], expected_action_intent=selected_action['action_intent'],
             installed_config_path=config, now=lambda: 2901, _pins_root=root / 'pins')
     assert {path.name: path.read_bytes() for path in target.iterdir()} == before
+
+
+def test_final_named_member_check_cannot_cross_original_delete_expiry(installation, monkeypatch):  # noqa: F811
+    """Portable clock model only; this supplies no kernel reader clearance."""
+    import sys
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline import control_plane_lane_disk_diagnostic_references as references
+    configure(installation)
+    _, _, grant, born, _ = seal(installation, monkeypatch, 'root_disk_diagnostic_disposable.v1')
+    selected = issuer.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+        action='delete', expires_at_epoch=3500, installed_config_path=installation[0], now=lambda: 2900)
+    target = Path(born['path'])
+    report = target / 'disk-capacity-report.v1.json'
+    original = report.read_bytes()
+    clock = [2901]
+    class PortableReferences:
+        def __init__(self, *args, **kwargs):
+            from types import SimpleNamespace
+            self.files = SimpleNamespace(owned=[], probe_owned=[])
+            self.budget = SimpleNamespace(tick=lambda: None)
+        def guard(self, **kwargs): pass
+        def close(self): pass
+    monkeypatch.setattr(references, 'DiagnosticReferences', PortableReferences)
+    actual_stat = actions.os.stat
+    def delayed_stat(path, *args, **kwargs):
+        info = actual_stat(path, *args, **kwargs)
+        caller = sys._getframe(1)
+        if caller.f_code.co_name == 'run_action' and str(path) == report.name:
+            clock[0] = 3501
+        return info
+    monkeypatch.setattr(actions.os, 'stat', delayed_stat)
+    with pytest.raises(ValueError, match='experiment_action_expired|experiment_work_refused'):
+        actions.run_action(selected['action_id'], expected_action_intent=selected['action_intent'],
+            installed_config_path=installation[0], now=lambda: clock[0], _pins_root=installation[0].parent / 'pins')
+    assert clock[0] == 3501 and report.read_bytes() == original

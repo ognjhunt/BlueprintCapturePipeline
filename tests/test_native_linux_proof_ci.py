@@ -120,7 +120,7 @@ def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> No
         absent_expiry=True, observation_expiry=True)
     run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
-    assert 'assert len(cases) == 45' in run
+    assert 'assert len(cases) == 46' in run
     assert 'case.find(tag)' in run and 'for tag in ("skipped", "error", "failure")' in run
 
 

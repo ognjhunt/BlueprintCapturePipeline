@@ -34,7 +34,9 @@ def test_request_binds_actual_installed_configuration_and_fixed_producer_sources
     assert not any(p.name.startswith('registered-') for p in installation[0].parent.rglob('*'))
 
 
-@pytest.mark.parametrize('changed_source', ['config.py', '__init__.py', 'consumer'])
+@pytest.mark.parametrize('changed_source', ['config.py', '__init__.py', 'consumer',
+                                          'control_plane_storage_pins', 'control_plane_disk_budget',
+                                          'control_plane_lane_historical_restore_limits'])
 def test_compatible_installed_acquisition_source_change_invalidates_request(installation, monkeypatch, changed_source):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_disk_diagnostic as producer
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
@@ -42,7 +44,7 @@ def test_compatible_installed_acquisition_source_change_invalidates_request(inst
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
     from blueprint_pipeline.control_plane_lane_experiment_retirement import _configuration
     prepare(installation)
-    if changed_source == 'consumer':
+    if changed_source == 'consumer' or changed_source.startswith('control_plane_'):
         # Disposable protected source mirror, no mutation of the shared checkout.
         mirror = installation[0].parent / 'producer-source'
         mirror.mkdir(mode=0o700)
@@ -52,7 +54,8 @@ def test_compatible_installed_acquisition_source_change_invalidates_request(inst
             target.write_bytes((source / (name + '.py')).read_bytes())
             target.chmod(0o600)
         monkeypatch.setattr(producer, '__file__', str(mirror / 'control_plane_lane_disk_diagnostic.py'))
-        changed = mirror / 'control_plane_lane_experiment_consumer.py'
+        changed = mirror / ((changed_source if changed_source != 'consumer'
+                             else 'control_plane_lane_experiment_consumer') + '.py')
     else:
         changed = owners.INSTALLED_PACKAGE_ROOT / 'operator_door' / changed_source
     request = _request(installation)

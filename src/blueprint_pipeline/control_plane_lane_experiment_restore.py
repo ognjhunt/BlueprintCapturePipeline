@@ -676,7 +676,13 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                     destination = os.stat(name, dir_fd=destination_parent, follow_symlinks=False)
                 except FileNotFoundError:
                     _require(relative not in linked_members, 'experiment_restore_destination_unproven')
+                    if diagnostic_references is not None:
+                        diagnostic_references.guard()
                     files.location(fd)
+                    if diagnostic_references is not None:
+                        diagnostic_references.budget.tick()
+                    files.check_long()
+                    _require(now() < action['expires_at_epoch'], 'experiment_restore_expired')
                     os.link(source_name, name, src_dir_fd=source_parent, dst_dir_fd=destination_parent, follow_symlinks=False)
                 else:
                     _require(relative in linked_members and owners._metadata(destination) == owners._metadata(os.fstat(fd)),
@@ -693,10 +699,16 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                         index=all_files.index(relative), path=relative, sha256=sha, size_bytes=before.st_size,
                         identity=dict(dev=info.st_dev, ino=info.st_ino, type='file')), index, previous, issued)
                     index += 1
+                if diagnostic_references is not None:
+                    diagnostic_references.guard()
                 files.location(source_parent)
                 files.proof(fd)
                 _require(owners._metadata(os.stat(source_name, dir_fd=source_parent, follow_symlinks=False)) == owners._metadata(os.fstat(fd)),
                          'experiment_restore_stage_changed')
+                if diagnostic_references is not None:
+                    diagnostic_references.budget.tick()
+                files.check_long()
+                _require(now() < action['expires_at_epoch'], 'experiment_restore_expired')
                 os.unlink(source_name, dir_fd=source_parent)
                 files.location(source_parent)
                 os.fsync(source_parent)

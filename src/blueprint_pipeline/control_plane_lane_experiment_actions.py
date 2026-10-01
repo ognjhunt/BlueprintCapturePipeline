@@ -879,6 +879,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                         files.proof(fd)
                         _require(owners._metadata(os.fstat(fd)) == owners._metadata(info)
                                  == owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)), "experiment_member_changed")
+                        if diagnostic_references is not None:
+                            diagnostic_references.budget.tick()
+                        files.check_long()
+                        _require(now() < action["expires_at_epoch"], "experiment_action_expired")
                         if row[1] == "directory":
                             os.rmdir(name, dir_fd=parent)
                             files.removed_directory(target / row[0], fd)
