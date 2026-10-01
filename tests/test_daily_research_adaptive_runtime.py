@@ -1,6 +1,9 @@
 """One-time claim/recovery rehearsal with the real private pipe; zero live calls."""
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from copy import copy, deepcopy
 from datetime import timedelta
 from pathlib import Path
@@ -224,3 +227,13 @@ def test_late_control_or_deadline_change_after_claim_prevents_post(fixture,tmp_p
         with pytest.raises(Refusal,match="before_input"):
             scoped.input("research",row["test_intent"]["event"],"synthetic-once",row["research_deadline_ms"])
         assert not f.posted
+
+
+def test_entrypoint_requires_actual_bounded_timeout_parent_without_provider_access():
+    root=Path(__file__).resolve().parents[1]
+    probe="from tools.daily_research.adaptive_runtime import verify_process_watchdog;verify_process_watchdog()"
+    refused=subprocess.run([sys.executable,"-c",probe],cwd=root,capture_output=True,check=False,env={"PATH":os.environ["PATH"]})
+    assert refused.returncode!=0 and b"watchdog_required" in refused.stderr
+    admitted=subprocess.run(["timeout","--signal=TERM","--kill-after=60s","1860s",sys.executable,"-c",probe],
+                            cwd=root,capture_output=True,check=False,env={"PATH":os.environ["PATH"]})
+    assert admitted.returncode==0, admitted.stderr

@@ -93,7 +93,7 @@ QA event for an existing test. Use an immutable reviewed package:
 
 ```bash
 python -m tools.daily_research.adaptive_runtime status
-python -m tools.daily_research.adaptive_runtime reconcile --profile /private/admitted-test.json
+timeout --signal=TERM --kill-after=60s 1860s python -m tools.daily_research.adaptive_runtime reconcile --profile /private/admitted-test.json
 ```
 
 The observer stops on disabled control, interruption, unknown/invalid turn
@@ -101,8 +101,9 @@ usage, $8 cumulative model estimate, research deadline or total QA deadline. It
 cancels only the exact bound session. The observer loop stops at the original total
 deadline plus 60 seconds of cancellation/collection grace. Provider reads can
 paginate, so the operator must also bound the entire process group with GNU
-`timeout --signal=TERM --kill-after=60s 1860s` when invoking execute/reconcile;
-this is an independent wall-time watchdog. A forced stop cannot prove remote
+`timeout --signal=TERM --kill-after=60s 1860s` when invoking execute/reconcile.
+The Linux entrypoint verifies that exact parent command before connector or
+provider access. This is an independent wall-time watchdog. A forced stop cannot prove remote
 cancellation: retain the durable unresolved record and reconcile its exact
 session/turns after the lease expires, without another research input. Unverified terminal
 cancellation remains unresolved with cleanup held. Usage can lag; the test may

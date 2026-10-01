@@ -35,6 +35,20 @@ INSTRUCTIONS = "84aeea7cec9eb6e20d0d2fba10dcb269a615174e48ed91a60ff7a6a83ca37938
 FINAL = {"failed", "cancelled", "test_qa_validated", "test_qa_blocked"}
 
 
+def verify_process_watchdog():
+    """Render/Linux entrypoint must be a child of the exact bounded timeout."""
+    try:
+        with open(f"/proc/{os.getppid()}/cmdline", "rb") as parent:
+            command = parent.read(8193)
+        parts = command.split(b"\0")
+        valid = (len(command) <= 8192 and len(parts) >= 5 and Path(os.fsdecode(parts[0])).name == "timeout"
+                 and parts[1:4] == [b"--signal=TERM", b"--kill-after=60s", b"1860s"])
+    except (OSError, ValueError):
+        valid = False
+    if not valid:
+        raise Refusal("adaptive_independent_process_watchdog_required")
+
+
 class TestLedger(FirestoreLedger):
     def get(self, day):
         if day != "2026-10-01":
@@ -254,6 +268,8 @@ def main(argv=None):
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.update(requested=True))
     try:
+        if args.command != "status":
+            verify_process_watchdog()  # Refuse before any connector/provider action.
         manifest = read_json(Path(__file__).resolve().parents[2] / "manifest.json")
         bridge = Bridge()
         if args.command == "status":
