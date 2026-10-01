@@ -141,7 +141,7 @@ test('payload, plan, QA and destination drift refuse before external writes',asy
 
 test('CRM duplicates, occupied/formula targets and changed snapshots block append',async()=>{
   const f=await fixture();
-  const existing=['BP-000012','Example Plant','Facility / site','North','','','','','','','','','','','Depositing'];
+  const existing=['BP-000012','Example Plant','Facility / site','North','','','','','','https://plant.example/tasks','','','','','Depositing'];
   f.values.push(existing);assert.throws(()=>planSheets(f.r,f.snapshot()),/duplicate_changed/);f.values.pop();
   f.publisher.google=async()=>({sheets:[{data:[{rowData:[{values:[{dataValidation:{condition:{type:'ONE_OF_LIST'}}}]}]}]}]});
   await assert.rejects(f.publisher.prepare(f.r,'sheets'),/not_plain_empty/);
@@ -153,8 +153,89 @@ test('readback conflict and incomplete Notion scans never record a receipt',asyn
   const f=await fixture();await f.store.publish(f.r.date);
   f.pages[0].body.children[0].paragraph.rich_text[0].text.content='corrupt';
   await assert.rejects(f.store.publish(f.r.date),/readback_conflict/);
-  f.publisher.notion=async()=>({has_more:true,next_cursor:'cursor',results:[]});
+  let cursor=0;
+  f.publisher.notion=async()=>({has_more:true,next_cursor:'cursor-'+(++cursor),results:[]});
   await assert.rejects(f.publisher.reconcile(f.r,'notion',planNotion(f.r)),/scan_incomplete/);
+  assert.equal(cursor,100);
+});
+
+for (const column of [1,3,9,14]) for (const missing of ['', '  ', undefined, 7]) {
+  test(`incomplete CRM field ${column} (${String(missing)}) blocks a post-QA publication plan`,async()=>{
+    const f=await fixture();
+    const existing=['BP-000012','Example Plant','Facility / site','North','','','','','','https://plant.example/tasks','','','','','Depositing'];
+    existing[column]=missing;f.values.push(existing);
+    assert.throws(()=>planSheets(f.r,f.snapshot()),/crm_identity_incomplete/);
+    await assert.rejects(f.publisher.prepare(f.r,'sheets'),/crm_identity_incomplete/);
+    assert.equal(f.writes.length,0);
+    assert.equal((await f.store.get(f.r.date)).delivery.sheets.plan,undefined);
+  });
+}
+
+test('a truncated CRM identity also blocks verified publication readback',async()=>{
+  const f=await fixture(),plan=planSheets(f.r,f.snapshot());
+  await f.store.publish(f.r.date);
+  const r=await f.store.get(f.r.date);r.delivery.notion.state='acknowledged';await f.store.put(r);
+  await f.store.publish(f.r.date);
+  f.values.push(['BP-000012','Other']);
+  await assert.rejects(f.publisher.reconcile(f.r,'sheets',plan),/crm_identity_incomplete/);
+  assert.equal(f.writes.filter(w=>w.destination==='sheets').length,1);
+});
+
+function pagedParent(f,count) {
+  const original=f.publisher.notion,parentReads=[];
+  f.publisher.notion=async(method,path,...args)=>{
+    if(method==='GET'&&path.startsWith(`/blocks/${NOTION}/children`)) {
+      const url=new URL(path,'https://api.notion.com');
+      const offset=Number(url.searchParams.get('start_cursor')||0);
+      const blocks=[...Array.from({length:count},(_,i)=>({id:'old-'+i,type:'paragraph'})),
+        ...f.pages.map(p=>({id:p.id,type:'child_page',child_page:{title:p.body.properties.title.title[0].text.content}}))];
+      parentReads.push(offset);
+      return {results:blocks.slice(offset,offset+100),has_more:offset+100<blocks.length,next_cursor:String(offset+100)};
+    }
+    return original(method,path,...args);
+  };
+  return parentReads;
+}
+
+test('publication scans beyond 200 Notion children and verifies a report on the third page',async()=>{
+  const f=await fixture(),reads=pagedParent(f,250);
+  const receipt=await f.store.publish(f.r.date);
+  assert.equal(receipt.readback_verified,true);assert.equal(receipt.reference,'notion:page-new');
+  assert.deepEqual(reads,[0,100,200,0,100,200]);
+  assert.equal(f.writes.length,1);
+});
+
+test('a lost Notion write reply reconciles a report beyond 200 children without another POST',async()=>{
+  const f=await fixture();pagedParent(f,250);f.faults.lost=true;
+  await assert.rejects(f.store.publish(f.r.date),/publication_attempt_unresolved/);
+  const receipt=await f.store.publish(f.r.date);
+  assert.equal(receipt.readback_verified,true);assert.equal(f.writes.length,1);
+});
+
+test('Notion duplicate reports on later pages refuse a readback receipt',async()=>{
+  const f=await fixture();await f.store.publish(f.r.date);
+  f.pages.push({...f.pages[0],id:'duplicate'});pagedParent(f,250);
+  await assert.rejects(f.publisher.reconcile(f.r,'notion',planNotion(f.r)),/duplicate_pages/);
+});
+
+test('Notion cursor loops fail immediately without treating an incomplete scan as absence',async()=>{
+  const f=await fixture();let reads=0;
+  f.publisher.notion=async()=>{reads++;return {has_more:true,next_cursor:'same',results:[]};};
+  await assert.rejects(f.publisher.reconcile(f.r,'notion',planNotion(f.r)),/pagination_invalid/);
+  assert.equal(reads,2);assert.equal(f.writes.length,0);
+});
+
+test('Notion read budget covers both pagination and exact report verification',async()=>{
+  const f=await fixture();let now=0;f.publisher.clock=()=>now;
+  const original=f.publisher.notion;let reads=0;
+  f.publisher.notion=async(method,path,body,options)=>{
+    assert.ok(options.timeoutMs<=12000);reads++;
+    if(reads===1){now=24000;return {has_more:true,next_cursor:'second',results:[]};}
+    assert.equal(options.timeoutMs,1000);now=25000;
+    return original(method,path,body);
+  };
+  await assert.rejects(f.publisher.reconcile(f.r,'notion',planNotion(f.r)),/scan_incomplete/);
+  assert.equal(reads,2);assert.equal(f.writes.length,0);
 });
 
 test('no accepted candidates yields no Sheets write and a verified empty receipt',async()=>{

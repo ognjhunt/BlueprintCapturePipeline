@@ -112,17 +112,26 @@ Failed or conflicting readback blocks the result for Blueprint review.
   New rows stay `Research` / `Needs recheck` / `Unverified`. No contact drafting
   or outreach occurs. Human concurrent edits can cause an ID/readback conflict;
   the consumer refuses success and never repeats an uncertain append.
+  Existing nonblank rows must retain string values for organization, site,
+  task evidence URL and task, matching the runner's identity-completeness gate.
+  Incomplete identities also refuse a publication readback receipt.
 - Notion creates one marked report child under Knowledge page
   `3eb80154161d8116858ed5f376b4b7a9`. It verifies the exact parent and report
   paragraphs before recording its receipt. The worker needs an authorized
   existing Blueprint integration in `NOTION_API_TOKEN` or `NOTION_API_KEY`, with
   **Read content + Insert content** and this page shared to it. Update content,
   workspace-wide access and new keys are not required by this publisher.
+  Reconciliation scans the whole parent until `has_more=false`, bounded by
+  100 pages of 100 children and a shared 25-second read budget including exact
+  report verification. Missing/repeated cursors or an exhausted bound refuse
+  publication; an incomplete scan never proves that a report is absent.
 
-The existing service account has verified **Viewer** access to the canonical
-Sheet (HTTP200, complete 11-row CRM at 2026-10-01 01:19:46 UTC). Editor access is
-not granted or verified. Notion worker binding is absent. These are live
-activation blockers, not code prerequisites. The native MCP setup preparation is
+The existing service account's complete canonical Sheet read was verified
+(HTTP200, complete 11-row CRM at 2026-10-01 01:19:46 UTC), followed by an
+owner-approved, independently read-back **Editor** grant on that exact file.
+The owner saved a narrowly scoped Notion worker key; its runtime page read is
+still pending. Both services' actual publication writes/readbacks remain
+unverified. These are live activation gates, not code prerequisites. The native MCP setup preparation is
 separate; ChatGPT connections do not supply worker credentials. No live write,
 QA event, canary or automatic consumer execution has yet been verified.
 

@@ -12,6 +12,20 @@ const fail = code => {throw new Error(code);};
 const rich = text => [{type:'text', text:{content:text}}];
 const normalized = x => String(x).toLowerCase().replace(/[^\p{L}\p{N}_]+/gu,' ').trim();
 const identity = x => [x.organization,x.site,x.task].map(normalized).join('\n');
+const NOTION_PARENT_PAGE_LIMIT = 100, NOTION_READ_BUDGET_MS = 25000;
+
+function crmRows(snapshot) {
+  const values = snapshot.values;
+  if (snapshot.sheet_id !== SHEET || snapshot.complete !== true || !Array.isArray(values)
+      || !isDeepStrictEqual(values[4]?.slice(0,19), HEADERS)) fail('publication_crm_schema_mismatch');
+  const used = values.slice(5).filter(r => r.some(x => String(x).trim()));
+  if (used.some(r => r.length < 15 || [1,3,9,14].some(i => typeof r[i] !== 'string' || !r[i].trim())))
+    fail('publication_crm_identity_incomplete');
+  const ids = used.map(r => r[0]);
+  if (ids.some(id => !/^BP-\d{6}$/.test(id)) || new Set(ids).size !== ids.length)
+    fail('publication_crm_ids_invalid');
+  return used;
+}
 
 function bind(row, destination) {
   const delivery = row.delivery?.[destination];
@@ -31,12 +45,8 @@ function bind(row, destination) {
 
 export function planSheets(row, snapshot) {
   const d = bind(row, 'sheets'), values = snapshot.values;
-  if (snapshot.sheet_id !== SHEET || snapshot.complete !== true || !Array.isArray(values)
-      || !isDeepStrictEqual(values[4]?.slice(0,19), HEADERS)) fail('publication_crm_schema_mismatch');
-  const used = values.slice(5).filter(r => r.some(x => String(x).trim()));
+  const used = crmRows(snapshot);
   const ids = used.map(r => r[0]);
-  if (ids.some(id => !/^BP-\d{6}$/.test(id)) || new Set(ids).size !== ids.length)
-    fail('publication_crm_ids_invalid');
   const existing = new Set(used.map(r => identity({organization:r[1],site:r[3],task:r[14]})));
   if (d.payload.candidates.some(c => existing.has(identity(c)))) fail('publication_crm_duplicate_changed');
   let sequence = Math.max(0, ...ids.map(id => Number(id.slice(3))));
@@ -71,7 +81,7 @@ export function planNotion(row) {
 }
 
 export class Publisher {
-  constructor({crmReader,google,notion}) {Object.assign(this,{crmReader,google,notion});}
+  constructor({crmReader,google,notion,clock=Date.now}) {Object.assign(this,{crmReader,google,notion,clock});}
   async prepare(row,destination) {
     if (destination === 'notion') {
       const parent = await this.notion('GET',`/pages/${NOTION}`);
@@ -111,29 +121,41 @@ export class Publisher {
     this.validate(row,destination,plan);
     if (destination === 'sheets') {
       const snapshot = await this.crmReader();
-      if (!isDeepStrictEqual(snapshot.values[4]?.slice(0,19),HEADERS)) fail('publication_crm_schema_mismatch');
+      const used = crmRows(snapshot);
       const marked = snapshot.values.slice(5).filter(r=>typeof r[12]==='string' && r[12].includes(plan.marker));
       if (!marked.length && plan.sheet_rows.length) return null;
       if (!isDeepStrictEqual(marked.map(r=>r.slice(0,19)),plan.sheet_rows)) fail('publication_readback_conflict');
-      const ids = snapshot.values.slice(5).filter(r=>r.some(x=>String(x).trim())).map(r=>r[0]);
+      const ids = used.map(r=>r[0]);
       if (new Set(ids).size!==ids.length) fail('publication_crm_id_collision');
       return {destination,key:plan.key,payload_digest:plan.payload_digest,readback_verified:true,
         reference:`sheets:${SHEET}:Prospects:${plan.sheet_rows.map(r=>r[0]).join(',') || 'no_candidates'}`};
     }
-    const matches = []; let cursor = null;
-    for (let page=0;page<2;page++) {
-      const children = await this.notion('GET',`/blocks/${NOTION}/children?page_size=100${cursor?'&start_cursor='+encodeURIComponent(cursor):''}`);
-      for (const block of children.results || []) if (block.type==='child_page' && block.child_page?.title===plan.title) matches.push(block.id);
+    const matches = [], seen = new Set(), deadline = this.clock()+NOTION_READ_BUDGET_MS;
+    const read = async path => {
+      const remaining = deadline-this.clock();
+      if (remaining <= 0) fail('publication_notion_parent_scan_incomplete');
+      const result = await this.notion('GET',path,undefined,{timeoutMs:Math.min(12000,remaining)});
+      if (this.clock() >= deadline) fail('publication_notion_parent_scan_incomplete');
+      return result;
+    };
+    let cursor = null;
+    for (let page=0;page<NOTION_PARENT_PAGE_LIMIT;page++) {
+      const children = await read(`/blocks/${NOTION}/children?page_size=100${cursor?'&start_cursor='+encodeURIComponent(cursor):''}`);
+      if (typeof children.has_more !== 'boolean' || !Array.isArray(children.results) || children.results.length>100)
+        fail('publication_notion_pagination_invalid');
+      for (const block of children.results) if (block.type==='child_page' && block.child_page?.title===plan.title) matches.push(block.id);
       if (!children.has_more) {cursor=null;break;}
       cursor=children.next_cursor;
-      if (!cursor) fail('publication_notion_pagination_invalid');
+      if (typeof cursor !== 'string' || !cursor || cursor.length>2048 || seen.has(cursor))
+        fail('publication_notion_pagination_invalid');
+      seen.add(cursor);
     }
     if (cursor) fail('publication_notion_parent_scan_incomplete');
     if (matches.length>1) fail('publication_notion_duplicate_pages');
     if (!matches.length) return null;
-    const page = await this.notion('GET',`/pages/${matches[0]}`);
+    const page = await read(`/pages/${matches[0]}`);
     if (page.parent?.page_id?.replaceAll('-','')!==NOTION) fail('publication_notion_parent_mismatch');
-    const content = await this.notion('GET',`/blocks/${matches[0]}/children?page_size=100`);
+    const content = await read(`/blocks/${matches[0]}/children?page_size=100`);
     if (content.has_more) fail('publication_notion_report_scan_incomplete');
     const paragraphs=(content.results || []).map(b=>b.type==='paragraph' ? b.paragraph.rich_text.map(x=>x.plain_text??x.text?.content??'').join('') : null);
     if (!isDeepStrictEqual(paragraphs,plan.paragraphs)) fail('publication_readback_conflict');
@@ -151,9 +173,9 @@ export async function livePublisher(account,crmReader,token) {
       method,data,timeout:12000,retry:false,retryConfig:{retry:0},maxRedirects:0});
     return result.data;
   };
-  const notion = async(method,path,body)=>{
+  const notion = async(method,path,body,{timeoutMs=12000}={})=>{
     if (!token) fail('publication_notion_binding_absent');
-    const response=await fetch('https://api.notion.com/v1'+path,{method,redirect:'error',signal:AbortSignal.timeout(12000),
+    const response=await fetch('https://api.notion.com/v1'+path,{method,redirect:'error',signal:AbortSignal.timeout(timeoutMs),
       headers:{Authorization:'Bearer '+token,'Notion-Version':'2022-06-28','Content-Type':'application/json'},
       ...(body?{body:JSON.stringify(body)}:{})});
     if (!response.ok) fail(response.status===401||response.status===403?'publication_notion_permission_denied':'publication_notion_unavailable');
