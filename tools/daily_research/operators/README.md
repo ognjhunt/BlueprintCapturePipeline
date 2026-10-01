@@ -88,13 +88,17 @@ Same-name retries read and compare, never overwrite. The manifest references
 Blueprint IDs; no Library ID or provider session ID is a canonical identity or
 required consumer lookup. Retain local/Library copies as secondary copies only.
 
-## Fresh Perplexity canary under preparation
+## Fresh Perplexity canary
 
-The private one-time adapter is being tested and independently reviewed. It is
-not yet an approved execution command. It reuses the reviewed Store, leases,
-Runner, Consumer and publisher, mapping only to
+The private one-time adapter reuses the reviewed Store, leases, Runner, Consumer
+and publisher, mapping only to
 `blueprintDailyResearch/sites-first/canaries/perplexity-fast-20261001`.
 It must leave normal control, the failed Oct1 run and Oct2 slot unchanged.
+Stable test identity is `blueprint-research-canary:perplexity-fast-20261001`;
+provider session, turn and environment IDs are provenance. Date-scoped Store
+internals retain the reviewed `blueprint-researcher:2026-10-01` key. The test
+input explicitly labels the brief as a test and prioritizes publicly verified
+named decision contacts without expanding the strict output schema.
 
 Required admission: exact existing $25 one-time approval reference, freshly
 checked package/agent/template/tool/instruction/skills bindings, complete CRM,
@@ -118,3 +122,113 @@ must verify exact terminal turns, downloaded immutable artifacts, canonical
 Sheets/Notion receipts and no duplicate publication. No Dot review/publication
 dependency, outreach or permanent deletion. Cleanup needs its own exact
 action-time approval; $25 test approval does not authorize deletion.
+
+Use the exact reviewed GitHub commit containing `research-perplexity-canary.py`,
+its sibling `.mjs`, and the unchanged `research-oct2-control.py`. Materialize all
+three ordinary source files into `/tmp/blueprint-oct2-reviewed` through the
+existing authenticated operator route and compare their reviewed SHA256 before
+execution. Do not install the Pipeline application or deploy to a Pipeline host.
+The adapter verifies the exact installed package receipt before every command.
+Keep the production worker settings and normal research control disabled.
+
+Create a private approval JSON file from the **existing** one-time $25 receipt;
+use its exact evidence reference, never invent one or reuse recurring/deletion
+authority. Required fields (the example reference must be replaced by the
+actual already-approved receipt) are:
+
+```json
+{
+  "schema_version": "blueprint.perplexity-canary-admission.v1",
+  "test_id": "perplexity-fast-20261001",
+  "authority_reference": "PENDING-actual-existing-one-time-25-receipt",
+  "ceiling_usd": 25,
+  "scope": "one-time-fresh-research-agent-qa-canonical-publication-no-outreach"
+}
+```
+
+The fixed admission expires at `2026-10-02T10:00:00Z`; starting a new test after
+that time refuses. Existing uncertain intent remains reconcilable and never
+allows another create. The code does not change a template, account connection,
+credentials, network policy, or production scheduler.
+
+From `/opt/render/project/src`, run the complete read-only admission first:
+
+```sh
+PYTHONPATH=/opt/render/project/src/dist/daily-research/release \
+  /opt/render/project/src/dist/daily-research/venv/bin/python \
+  /tmp/blueprint-oct2-reviewed/research-perplexity-canary.py inspect \
+  --package /opt/render/project/src/dist/daily-research/release \
+  --archive /opt/render/project/src/vendor/daily-research/blueprint-research.tar \
+  --approval /tmp/blueprint-oct2-reviewed/canary-approval.json \
+  --output /tmp/blueprint-oct2-reviewed/canary-plan.json
+```
+
+`inspect` reads the complete canonical CRM, checks its digest and identity keys,
+validates current knowledge/refresh policy and saved-agent/template/instruction/
+four inline skill-file bindings using the pinned package's real preflight.
+It verifies original cleanup and migrated controls. It makes no Firestore
+writes or paid provider calls; only the new private plan file is written.
+Read access alone does not prove publication writes or final report quality.
+The authenticated runtime owner must also retain current exact canonical
+Sheets Editor and Notion parent/integration permission evidence before execution.
+
+Stage the same unedited plan (Firestore writes to the private canary namespace,
+no provider inference or changes to normal control):
+
+```sh
+PYTHONPATH=/opt/render/project/src/dist/daily-research/release \
+  /opt/render/project/src/dist/daily-research/venv/bin/python \
+  /tmp/blueprint-oct2-reviewed/research-perplexity-canary.py stage \
+  --package /opt/render/project/src/dist/daily-research/release \
+  --archive /opt/render/project/src/vendor/daily-research/blueprint-research.tar \
+  --plan /tmp/blueprint-oct2-reviewed/canary-plan.json
+```
+
+Under the existing one-time test authorization, execute once with the exact
+independent watchdog. The direct parent must be `timeout` with these arguments;
+an unbounded invocation refuses before provider creation:
+
+```sh
+PYTHONPATH=/opt/render/project/src/dist/daily-research/release \
+  timeout --signal=TERM --kill-after=60s 1860s \
+  /opt/render/project/src/dist/daily-research/venv/bin/python \
+  /tmp/blueprint-oct2-reviewed/research-perplexity-canary.py execute \
+  --package /opt/render/project/src/dist/daily-research/release \
+  --archive /opt/render/project/src/vendor/daily-research/blueprint-research.tar
+```
+
+For lost replies, interruption or restart, use the same bounded command with
+`reconcile` in place of `execute`. It never creates a new session; it may finish
+the already-authorized research tool responses, one QA turn, canonical
+publication and authenticated readback. This recovery command is not read-only.
+Use `status` with the same package/archive arguments for read-only sanitized
+state, exact root/QA turn IDs and terminal states, artifact SHA256, cleanup
+guard and destination readback receipts. Do not treat an idle session or process
+exit as successful research.
+
+For a new private standard-file export use `export` with
+`--output /tmp/blueprint-oct2-reviewed/canary-export`. It is read-only for
+Firestore and writes an exclusive private directory. It reuses the package's
+artifact/evidence/QA/tool binding verification. Require complete terminal root
+and QA artifacts, acknowledged canonical Sheets and Notion readbacks, and
+reported missing-file review before calling the test successful.
+
+Archive that export with a standard hash manifest to the authorized existing
+company storage destination, read back the exact generation and hashes, then
+obtain separate action-time approval for the exact test session's permanent
+deletion. Record cleanup only after authenticated session and environment GETs
+prove absence: use `record-cleanup` with the same package/archive arguments and
+`--receipt /tmp/blueprint-oct2-reviewed/canary-cleanup-receipt.json`. The receipt
+must name the exact test `session_id`, `environment_id`, and separate actual
+`action_time_approval_reference`; retain stable Blueprint ID and private backup
+manifest/URI/generation/hash evidence alongside it. This command reuses
+`Runner.record_cleanup`, makes authenticated absence GETs, verifies retained
+artifact/QA/evidence bindings, then writes only the private test cleanup record.
+It never deletes a provider resource. The normal `render record-cleanup` CLI
+addresses normal history and must not be used for this isolated test.
+
+Before daily cutover, verify this private canary's cleanup guard
+as well as normal dated history; normal production Store does not query the
+private test namespace. Verify Oct2 remains unopened, the old Dot trigger stays
+disabled, and only the standalone 07:00 America/Chicago trigger is enabled.
+No canonical publication through Dot or ChatGPT Library is required.
