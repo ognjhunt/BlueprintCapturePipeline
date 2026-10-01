@@ -273,7 +273,8 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 #: authorizations, retention bindings (with their sidecar leases) and the
 #: configuration files that name runtime paths.  Nothing is grepped.
 DEFAULT_RELEASE_PROTECTION_SOURCES = DEFAULT_PROTECTION_SOURCES
-#: The latest deploy's retirement summary, written under ``<state_root>/release-retention``
+#: The latest actual retirement summary; the historical deploy-named file is retained.
+#: Written under ``<state_root>/release-retention``
 #: (0644) so capacity paging can read its alerts without root.
 RELEASE_RETIREMENT_SUMMARY_NAME = "latest-deploy-retirement.json"
 RELEASE_RETIREMENT_SUMMARY_SCHEMA = "control_plane_release_retirement_summary.v1"
@@ -1062,10 +1063,10 @@ def _retire_superseded_release_trees(
     source_repo: str | Path | None = None,
     defer_deletion: bool = False,
 ) -> dict[str, Any]:
-    """Retire release and runtime trees this deploy has superseded.
+    """Explicitly retire superseded release and runtime trees.
 
-    Deploy is the only event that creates per-commit trees, so it is where
-    they are retired.  Every release-reference publisher takes the reference
+    This compatibility helper requires separate retirement authority; ordinary
+    deployment never calls it. Every release-reference publisher takes the reference
     lock shared on its root: queue writers, the launch-profile publisher, the
     standing-authorization materializer, release activation and the SAM
     prefix binding writer.  Retirement holds each of those roots exclusively
@@ -3165,6 +3166,10 @@ def deploy_control_plane_commit(
 
     With ``break_glass_notes_root`` (the CLI always passes it), the receipt
     also reports every break-glass note no earlier deploy reported.
+
+    Deployment never retires existing release/runtime trees, including
+    interrupted ``.retiring`` trees. Retirement is a separate explicit action;
+    its protection/keep-last arguments remain accepted for caller compatibility.
     """
 
     global _DEPLOY_ACTIVE_TRANSITION
@@ -3268,11 +3273,6 @@ def deploy_control_plane_commit(
         provenance_receipt = dict(provenance_receipt)
         provenance_receipt.setdefault("promotion_eligible", True)
 
-    # Trees an interrupted retirement moved aside are unreachable already;
-    # deleting them first gives this deploy's own disk reservation the space.
-    # No lock is needed for that.
-    retiring_roots = _release_retiring_roots(releases, scene_configuration_runtime_root)
-    startup_sweep = _sweep_retiring_trees(retiring_roots)
     disk_reservation = None
     disk_reservation_runtime = None
     disk_reservation_estimate = None
@@ -3552,34 +3552,22 @@ def deploy_control_plane_commit(
             automation_unit_state_receipts, door_holds_dir=door_holds_dir,
         )
         door_holds_warning = door_holds_warning or verification_warning
-        # Last, with the new release proven live: retire the trees this deploy
-        # superseded, so per-commit growth is bounded by keep_last instead of
-        # by the number of deploys ever made.
-        release_retirement = _retire_superseded_release_trees(
-            release_root=releases,
-            runtime_root=scene_configuration_runtime_root,
-            active_link=active,
-            current_commit=commit,
-            protection_sources=release_protection_sources,
-            keep_last=release_retirement_keep_last,
-            state_root=state,
-            extra_config_files=(bootstrap,),
-            source_repo=source,
-            defer_deletion=True,
-        )
-        _mark_stage("release_retirement")
 
-    # The paid-launch gate and the disk reservation are released: delete what
-    # retirement moved aside without holding new launches out meanwhile.
-    release_retirement = _finish_release_retirement(
-        release_retirement,
-        retiring_roots=retiring_roots,
-        source_repo=source,
-        current_commit=commit,
-        summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME,
-        startup_sweep=startup_sweep,
-    )
-    _mark_stage("release_retirement_deletion")
+    # Deployment authority does not authorize deletion. Leave even interrupted
+    # retirement trees untouched, and preserve the last actual retirement summary.
+    release_retirement = {
+        "status": "not_requested",
+        "reason": "requires_separate_action",
+        "retired_bytes": 0,
+        "retired_commits": [],
+        "renamed": [],
+        "direct_delete_fallback": [],
+        "deleted": [],
+        "swept": [],
+        "startup_swept": [],
+        "worktree_prune": {"status": "not_requested"},
+        "alerts": [],
+    }
 
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
