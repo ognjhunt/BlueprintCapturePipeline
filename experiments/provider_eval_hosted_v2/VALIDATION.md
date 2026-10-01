@@ -1,7 +1,8 @@
 # Offline validation
 
 Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
-Result: **106 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
+Result: **116 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
+10 explicit-retry cases,
 and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
@@ -62,6 +63,15 @@ Verified boundaries include:
   HTTP route is used. The historical creation-unresolved state is preserved;
   deletion anchors stop local container-age growth without releasing holds or
   claiming final teardown/billing. Tampered/incomplete evidence is refused.
+- Explicit $2 total-soft retry scope uses new durable task/session/evidence
+  identities while preserving the old deletion/history and original ledger.
+  The $0.341335 prior hosted soft basis plus new model/search/review/cleanup
+  exposure produces $1.870315, with $6.294900 projected aggregate holds.
+  The same four-mode wire-shaped lifecycle finishes/replays without duplicate
+  creates; prior spend omission, approval/target/baseline resets, changed cleanup,
+  mutable Python scope and extra-cohort receipts are refused. High observed usage
+  stops before another arm/tool/model reply. Selective range instructions retain
+  full evidence access and identical criteria under Sol/Default.
 
 Remaining limitations are documented in README: hosted inference/write access
 is not verified by read-only saved-agent access; managed hidden-loop usage lacks

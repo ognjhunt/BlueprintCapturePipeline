@@ -1,5 +1,8 @@
 # Authorized one-case hosted pilot
 
+For the later explicitly approved $2 retry, use [RETRY_PILOT.md](RETRY_PILOT.md).
+The original cohort and its cleanup commands below remain preserved history.
+
 The user explicitly approved one real case across all four search modes with a
 **$1 incremental soft target**, understanding hosted costs are not hard-capped.
 Approval references are recorded in `soft_pilot.py`: assistant proposal

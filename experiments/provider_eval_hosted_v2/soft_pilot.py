@@ -155,6 +155,12 @@ def validate_receipt(root, owner, expected_hash, *, readonly_previous=False):
 
 
 class SoftMonitor:
+    target, stop_threshold = TARGET, STOP
+    model_hold, container_hold = MODEL_HOLD, CONTAINER_HOLD
+    review_hold, base_hold, search_hold = REVIEW_HOLD, BASE_HOLD, SEARCH_HOLD
+    protocol = PROTOCOL
+    task_options = {}
+
     def __init__(self, root, receipt, *, clock=time.time, notify=print):
         self.root, self.receipt = Path(root).resolve(), receipt
         self.path = self.root / "protocols" / PROTOCOL / "soft_pilot"
@@ -164,15 +170,22 @@ class SoftMonitor:
     def task_id(self, mode):
         return "hosted_pilot_01_" + mode + "_" + self.sha[:16]
 
+    def search_accounting_events(self, ledger):
+        return ledger.events
+
+    def prior_soft_exposure(self):
+        return Decimal(0)
+
     def reserve(self):
         key = digest({"soft_receipt": self.sha, "kind": "model_container_review_allowance"})
-        proof = {"soft_receipt": self.sha, "amount_usd": str(BASE_HOLD), "paid_call": False,
-                 "model_usd": "0.220", "container_carry_usd": "0.36", "independent_review_allowance_usd": str(REVIEW_HOLD)}
+        proof = {"soft_receipt": self.sha, "amount_usd": str(self.base_hold), "paid_call": False,
+                 "model_usd": str(4 * self.model_hold), "container_carry_usd": str(4 * self.container_hold),
+                 "independent_review_allowance_usd": str(self.review_hold)}
         with exclusive(self.root):
             ledger = Ledger(self.root / "live_journal.jsonl", "10.00")
             if key not in ledger.states:
                 write_once(self.path / "allowance.json", proof)
-                ledger.append("reserved", key, amount_usd=str(BASE_HOLD), protocol=PROTOCOL,
+                ledger.append("reserved", key, amount_usd=str(self.base_hold), protocol=self.protocol,
                     role="soft_pilot_allowance", soft_receipt=self.sha, dispatch_kind="accounting_reserve_only")
                 ledger.append("completed", key, raw_sha256=digest(proof))
             elif ledger.states[key] != "completed":
@@ -219,12 +232,12 @@ class SoftMonitor:
             observed = [o for o in self.observations() if o["task_id"] == task_id]
             latest = max(observed, key=lambda o: o["at"]) if observed else {}
             costs = [Decimal(o["model_estimate_usd"]) for o in observed if o["model_estimate_usd"] is not None]
-            model_cost = max([MODEL_HOLD, *costs])
+            model_cost = max([self.model_hold, *costs])
             from .reconcile import retained_cleanup
             cleanup = retained_cleanup(journal, self.path, task_id, self.sha, known.get("task_digest"), started)
             until = cleanup["deleted_at"] if cleanup else self.clock()
             carry = Decimal(max(1, math.ceil(max(0, until - started) / 1200))) * Decimal("0.03")
-            overage += max(Decimal(0), model_cost - MODEL_HOLD) + max(Decimal(0), carry - CONTAINER_HOLD)
+            overage += max(Decimal(0), model_cost - self.model_hold) + max(Decimal(0), carry - self.container_hold)
             sessions.append({"mode": mode, "task_id": task_id, "session_id": known.get("session_id") or latest.get("session_id"),
                 "environment_id": latest.get("environment_id"), "usage": latest.get("usage"),
                 "model_high_water_estimate_usd": str(model_cost), "container_elapsed_estimate_usd": str(carry),
@@ -243,22 +256,24 @@ class SoftMonitor:
                 with exclusive(self.root):
                     ledger = Ledger(self.root / "live_journal.jsonl", "10.00")
                     if key not in ledger.states:
-                        ledger.append("reserved", key, amount_usd=str(shortfall), protocol=PROTOCOL,
+                        ledger.append("reserved", key, amount_usd=str(shortfall), protocol=self.protocol,
                             role="soft_pilot_upward_hold", soft_receipt=self.sha, dispatch_kind="accounting_reserve_only")
                         ledger.append("completed", key, raw_sha256=digest(proof))
                 shortfall = Decimal(0)
             else:
                 self.stop("observed_overrun_beyond_original_aggregate_ceiling")
         # Full remaining search opportunity is included, never treated as zero.
-        actual_searches = sum((ledger.reservations[e["attempt_id"]] for e in ledger.events if e["kind"] == "reserved"
+        actual_searches = sum((ledger.reservations[e["attempt_id"]] for e in self.search_accounting_events(ledger) if e["kind"] == "reserved"
             and e.get("protocol") == PROTOCOL and e.get("role") == PROTOCOL + ":search"), Decimal(0))
         incremental = ledger.exposure - Decimal(self.receipt["baseline_reserved_usd"]) + shortfall
-        projected = incremental + max(Decimal(0), SEARCH_HOLD - actual_searches)
-        if projected >= STOP:
+        prior_soft = self.prior_soft_exposure()
+        projected = prior_soft + incremental + max(Decimal(0), self.search_hold - actual_searches)
+        if projected >= self.stop_threshold:
             self.stop("soft_target_approaching_stop_threshold")
-        return {"soft_target_usd": str(TARGET), "stop_threshold_usd": str(STOP), "hard_cap": False,
+        return {"soft_target_usd": str(self.target), "stop_threshold_usd": str(self.stop_threshold), "hard_cap": False,
             "aggregate_reserved_usd": str(ledger.exposure), "incremental_held_or_observed_usd": str(incremental),
             "projected_with_remaining_search_opportunity_usd": str(projected), "unreserved_observed_overrun_usd": str(shortfall),
+            "prior_hosted_soft_exposure_usd": str(prior_soft),
             "sessions": sessions, "stopped": (self.path / "stop.json").exists(),
             "stop": read_json(self.path / "stop.json") if (self.path / "stop.json").exists() else None,
             "final_billing_cache_writes_tax_and_container_lifetime_unreconciled": True}
@@ -341,7 +356,7 @@ class MonitoredRuntime(HostedRuntime):
 
 def make_runtime(root, receipt, monitor, mode, *, transport=None):
     public = load_public(PUBLIC)[0]
-    evidence = Evidence(root / "protocols", public["cases"][0], mode)
+    evidence = Evidence(getattr(monitor, "evidence_root", root / "protocols"), public["cases"][0], mode)
     evidence.reuse(root)
     journal = AgentJournal(monitor.path / "agent_journal")
     def grant(context):
@@ -368,10 +383,10 @@ def make_runtime(root, receipt, monitor, mode, *, transport=None):
             project_id=PROJECT, runtime="openai_agents_api", disclosure_scope="frozen_public_case1_same_provider_arm",
             allowed_input_digests=(task_digest(inputs), task_digest(runtime.files())), allowed_tool_ids=tuple(t.tool_id for t in tools.tools()),
             session_retention="until_deleted", trace_retention="provider_default", region="us",
-            budget_policy="project_guard_accepted_uncertainty", inference_budget_usd=float(TARGET),
+            budget_policy="project_guard_accepted_uncertainty", inference_budget_usd=float(monitor.target),
             project_guard_receipt_digest=task_digest(receipt), expires_at=receipt["expires_at"])
         task = prepare_task(runtime, admission, task_id=task_id, source_commit=receipt["source_commit"],
-                            deadline=min(monitor.clock() + ARM_SECONDS, receipt["expires_at"]))
+                            deadline=min(monitor.clock() + ARM_SECONDS, receipt["expires_at"]), **monitor.task_options)
     return runtime, task
 
 
@@ -428,7 +443,7 @@ def _run_owned(root, receipt, monitor, *, sleep, notify, factory):
             break
         if monitor.report()["stopped"]:
             break
-    result = {"protocol": PROTOCOL, "case": "BP-EVAL-01", "outcomes": outcomes, "budget": monitor.report(),
+    result = {"protocol": monitor.protocol, "case": "BP-EVAL-01", "outcomes": outcomes, "budget": monitor.report(),
               "no_session_deleted": True, "no_further_cases_authorized": True}
     write_once(monitor.path / "reports" / (digest(result) + ".json"), result)
     notify(json.dumps(result))

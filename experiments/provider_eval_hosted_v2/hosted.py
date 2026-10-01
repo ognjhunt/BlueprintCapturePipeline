@@ -128,7 +128,8 @@ class HostedRuntime(OpenAIAgentsRuntime):
         raise AgentExecutionError("benchmark_session_permanent_deletion_not_authorized")
 
 
-def prepare_task(runtime, admission, *, task_id, source_commit, deadline):
+def prepare_task(runtime, admission, *, task_id, source_commit, deadline, protocol=PROTOCOL,
+                 instructions=INSTRUCTIONS, max_input_tokens=12000, max_output_tokens=2500):
     """Caller supplies trusted admission; this function never manufactures it."""
     files = runtime.files()
     inputs = [{"role": "user", "content": [{"type": "input_text", "text":
@@ -137,12 +138,12 @@ def prepare_task(runtime, admission, *, task_id, source_commit, deadline):
     tools = tuple(runtime.operations.tools.values())
     if admission.project_id != PROJECT:
         raise AgentExecutionError("existing_default_project_admission_required")
-    return AgentTask(task_id=task_id, run_id=PROTOCOL, capability="provider_comparison_hosted",
+    return AgentTask(task_id=task_id, run_id=protocol, capability="provider_comparison_hosted",
         context_revision=task_digest({"case": runtime.evidence.case, "mode": runtime.evidence.mode, "files": files}),
-        source_commit=source_commit, instructions=INSTRUCTIONS, model=MODEL, reasoning_effort="low", input=inputs,
+        source_commit=source_commit, instructions=instructions, model=MODEL, reasoning_effort="low", input=inputs,
         input_digests=(task_digest(inputs), task_digest(files)), output_schema=OUTPUT_SCHEMA,
         tool_ids=tuple(tool.tool_id for tool in tools), tool_digests={tool.tool_id: tool.tool_digest for tool in tools},
-        admission=admission, max_tool_calls=48, max_model_turns=1, max_input_tokens=12000, max_output_tokens=2500,
+        admission=admission, max_tool_calls=48, max_model_turns=1, max_input_tokens=max_input_tokens, max_output_tokens=max_output_tokens,
         max_tool_output_bytes=2000000, deadline=deadline)
 
 
