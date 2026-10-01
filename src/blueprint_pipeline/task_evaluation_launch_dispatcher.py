@@ -63,7 +63,7 @@ from .task_evaluation_immutable_input_resolver import (
 from .task_evaluation_launch_context import is_identifier as _is_identifier
 from .task_evaluation_launch_context import validate_task_evaluation_run_context
 from .task_evaluation_launch_evidence_contracts import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
-from .task_evaluation_launch_terminal_evidence import terminal_evidence as _build_terminal_evidence
+from .task_evaluation_launch_terminal_evidence import (terminal_evidence as _build_terminal_evidence)
 from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     validate_policy_run_setup,
