@@ -152,6 +152,55 @@ def _current_queue_keeps(value, action, pins, report, *, directory_alias=False):
             alias.unlink()  # Only this exact owned temporary alias.
 
 
+def _restore_conflict_before_publication(value, restore, pins, report, *, now=time.time):
+    """Keep a real foreign destination byte-exact, then remove only our fixture."""
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    actual_event = actions._event
+    conflicts = []
+    def event(*args, **kwargs):
+        result = actual_event(*args, **kwargs)
+        if args[3] == 'restore_stage_ready' and not conflicts:
+            # First admission authenticates the unchanged retired directory.
+            # Introduce the collision only after the actual owned stage and its
+            # exact byte manifest have a durable receipt. Resume must validate
+            # that original stage/namespace union, never amend retired tokens.
+            assert not report.exists()
+            files = args[0]
+            stage_fd = files._diagnostic_references.stage
+            files.proof(stage_fd)
+            files.location(stage_fd)
+            assert files.bindings[stage_fd][0] == files._diagnostic_references.target_fd
+            stage_report = report.parent / files.bindings[stage_fd][1] / report.name
+            staged_info = stage_report.stat()
+            staged_bytes = stage_report.read_bytes()
+            fd = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(b'owned-foreign-fixture')
+            conflicts.append(((report.stat().st_dev, report.stat().st_ino),
+                              stage_report, (staged_info.st_dev, staged_info.st_ino), staged_bytes))
+        return result
+    actions._event = event
+    try:
+        try:
+            refused = issuer.restore_registered_experiment(restore['action_id'], expected_restore_intent=restore['restore_intent'],
+                installed_config_path=value['config'], now=now, _pins_root=pins)
+        except ValueError as error:
+            assert str(error) in {'experiment_restore_destination_unproven',
+                                  'experiment_diagnostic_namespace_changed'}, error
+        else:
+            raise AssertionError('restore accepted an unowned destination: ' + str(refused))
+        assert len(conflicts) == 1
+        foreign_identity, stage_report, stage_identity, staged_bytes = conflicts[0]
+        info = report.stat()
+        assert (info.st_dev, info.st_ino) == foreign_identity and report.read_bytes() == b'owned-foreign-fixture'
+        staged_info = stage_report.stat()
+        assert (staged_info.st_dev, staged_info.st_ino) == stage_identity and stage_report.read_bytes() == staged_bytes
+    finally:
+        actions._event = actual_event
+    report.unlink()
+
+
 def _restore_reference_after_publication(value, restore, pins, target, account, original):
     """Expose a real foreign FD after journaled link, before staged unlink."""
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
@@ -306,21 +355,7 @@ def run(root):
             ledger = root / 'actual-diagnostic-reservation-ledger'
             ledger.mkdir(mode=0o700)
             restoration.reserve_control_plane_disk = functools.partial(disk.reserve_control_plane_disk, reservation_root=ledger)
-            # This is an owned temporary foreign file. Refusal must preserve its
-            # bytes/inode; remove that same fixture inode only before replay.
-            fd = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write(b'owned-foreign-fixture')
-            foreign_inode = report.stat().st_ino
-            try:
-                refused = issuer.restore_registered_experiment(restore['action_id'], expected_restore_intent=restore['restore_intent'],
-                    installed_config_path=value['config'], now=time.time, _pins_root=pins)
-            except ValueError:
-                pass
-            else:
-                assert refused['decision'] in {'kept', 'refused'}, refused
-            assert report.stat().st_ino == foreign_inode and report.read_bytes() == b'owned-foreign-fixture'
-            report.unlink()
+            _restore_conflict_before_publication(value, restore, pins, report)
             _restore_reference_after_publication(value, restore, pins, target, account, before)
             outcome = issuer.restore_registered_experiment(restore['action_id'], expected_restore_intent=restore['restore_intent'],
                 installed_config_path=value['config'], now=time.time, _pins_root=pins)
