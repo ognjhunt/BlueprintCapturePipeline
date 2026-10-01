@@ -111,6 +111,40 @@ def test_required_native_proof_still_gates_the_pr_on_success() -> None:
     assert 'if test "${NATIVE_REQUIRED}" = "true"; then\n  test "${NATIVE_RESULT}" = "success"' in step["run"]
 
 
+@pytest.mark.parametrize('mismatch', [None, 'source', 'contracts'])
+def test_full_lane_binds_actual_source_and_contracts_before_locked_sdk_proof(tmp_path, mismatch):
+    shard = _jobs('full-test-lane.yml')['full-pytest-shard']
+    steps = shard['steps']
+    step = next(row for row in steps if row['name'] == 'Bind actual native scene SDK inputs')
+    assert steps.index(step) > next(index for index, row in enumerate(steps)
+                                   if row['name'] == 'Checkout BlueprintContracts')
+    # Execute the real shell block against immutable observed git identities.
+    # A mismatched checkout must fail before exporting any proof selectors.
+    source = 'a' * 40
+    contracts = shard['env']['CONTRACTS_REF']
+    git = tmp_path / 'git'
+    git.write_text('#!/bin/sh\nif [ "$1" = "-C" ]; then\n'
+                   '  printf "%s\\n" "$OBSERVED_CONTRACTS"\n'
+                   'else\n  printf "%s\\n" "$OBSERVED_SOURCE"\nfi\n')
+    git.chmod(0o755)
+    output = tmp_path / 'github-env'
+    result = subprocess.run(['bash', '-c', step['run']], cwd=tmp_path,
+        env=os.environ | dict(PATH=str(tmp_path) + os.pathsep + os.environ['PATH'],
+            GITHUB_WORKSPACE=str(tmp_path), GITHUB_ENV=str(output), GITHUB_SHA=source,
+            CONTRACTS_REF=contracts, OBSERVED_SOURCE='b' * 40 if mismatch == 'source' else source,
+            OBSERVED_CONTRACTS='b' * 40 if mismatch == 'contracts' else contracts),
+        capture_output=True, text=True, check=False)
+    if mismatch:
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text().splitlines() == [
+            f'BLUEPRINT_NATIVE_SOURCE_ROOT={tmp_path}',
+            f'BLUEPRINT_NATIVE_SOURCE_COMMIT={source}',
+            f'BLUEPRINT_NATIVE_CONTRACTS_ROOT={tmp_path}/BlueprintContracts']
+
+
 def test_diagnostic_native_failure_stops_before_unrelated_cases_without_reducing_acceptance() -> None:
     run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
