@@ -389,6 +389,30 @@ def test_controller_refusals_are_separate_from_actual_durable_receipt():
     assert native._durable_receipt(dict(decorated, other='unexpected')) != receipt
 
 
+def test_outer_native_scan_failure_retains_actual_errno_and_original_counters(tmp_path):
+    """Actual EBADF diagnostic only, never a successful native census."""
+    import errno
+    import os
+    from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    scan = processes._Scan(lambda: None)
+    descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    os.close(descriptor)
+    try:
+        try:
+            scan.names(descriptor, 10)
+        except OSError:
+            raise processes.HistoricalProcessError('historical_generation_process_unknown') from None
+    except processes.HistoricalProcessError as error:
+        observed = native._outer_scan_failure(error, processes)
+    assert observed['outer_scan_errors'][1]['error_type'] == 'OSError'
+    assert observed['outer_scan_errors'][1]['errno'] == errno.EBADF
+    row = observed['outer_scan_errors'][1]
+    assert row['frames'] == [dict(function='names', line=processes._Scan.names.__code__.co_firstlineno + 2)]
+    assert row['scan']['entries'] == row['scan']['raw_bytes'] == 0
+    assert row['scan']['elapsed_seconds'] >= 0
+    assert observed.get('references_clear') is None
+
+
 @pytest.mark.parametrize('expected', ['recovered_stage', 'recovered_split', 'recovered_prefix'])
 def test_actual_later_restore_observation_may_follow_refused_boundary(tmp_path, expected):
     import hashlib

@@ -94,6 +94,30 @@ def _namespace(root):
         ledger.DEFAULT_RESERVATION_ROOT.chmod(0o2770)
 
 
+def _outer_scan_failure(error, processes):
+    """Retain an already failed real scan, without collecting another view."""
+    errors, seen = [], set()
+    while error is not None and id(error) not in seen and len(errors) < 8:
+        seen.add(id(error))
+        row = dict(error_type=type(error).__name__, errno=getattr(error, 'errno', None), frames=[])
+        trace = error.__traceback__
+        while trace is not None:
+            frame = trace.tb_frame
+            if frame.f_code.co_filename == processes.__file__ and len(row['frames']) < 16:
+                row['frames'].append(dict(function=frame.f_code.co_name, line=trace.tb_lineno))
+                pid = frame.f_locals.get('pid')
+                if type(pid) is str and pid.isdecimal():
+                    row['pid_selector'] = int(pid)
+                scan = frame.f_locals.get('scan', frame.f_locals.get('self'))
+                if type(scan) is processes._Scan:
+                    row['scan'] = dict(entries=scan.entries, raw_bytes=scan.raw_bytes,
+                        elapsed_seconds=time.monotonic() - scan.started)
+            trace = trace.tb_next
+        errors.append(row)
+        error = error.__context__
+    return dict(outer_scan_errors=errors)
+
+
 def worker_main(root, action_id):
     root = Path(root)
     # The controller retains its startup and cgroup descriptors before allowing
@@ -377,6 +401,7 @@ def worker_main(root, action_id):
         receipt = run_historical_action(installed_config_path=root / 'door.json',
                                        action_id=action_id, now=time.time())
     except BaseException as error:
+        scan_failure.update(_outer_scan_failure(error, processes))
         emit(dict(status='failed', error_type=type(error).__name__, code=str(error),
                   **({'_fixture_scan_failure': scan_failure} if scan_failure else {})))
         # The original class/code and safe observation location are retained.
