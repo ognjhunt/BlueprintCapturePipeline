@@ -1,0 +1,29 @@
+{
+  "schema_version": "argus_shadow_cost_proposal.v1",
+  "admitted_episode_count": 0,
+  "footage_seconds": 0,
+  "argus_arms": 2,
+  "current_replay_usd": 0,
+  "estimated_argus_usd": 0.0,
+  "paid_execution_authorized": false,
+  "target_model": "openai/gpt-6.1-sol",
+  "reasoning_effort": "medium",
+  "spend_status": "deferred_billing_incident_no_new_paid_approval_requested",
+  "illustrative_rate_comparison_only": {
+    "episodes": 12,
+    "seconds_per_episode_assumed": 60,
+    "success_failure_ambiguous_each": 4,
+    "argus_requests": 24,
+    "sol61_research_page_estimated_usd": 2.0,
+    "sol61_readme_ratio_estimated_usd": 2.08,
+    "astra_research_page_estimated_usd": 10.8,
+    "astra_readme_teleop_estimated_usd": 10.4,
+    "proposed_aggregate_cap_usd": null,
+    "sol61_token_bound_usd": null,
+    "retry_count": 0
+  },
+  "estimate_basis": "Pantheon research page: GPT-6.1 Sol medium ~$5/footage hour vs Astra ~$27. Pinned README: Astra teleop ~$26/hour and Sol6.1 medium 20% of Astra per episode. Neither is an official quote.",
+  "execution_gate": "Paid work is deferred during billing incident. Trace/admit actual footage and independent labels first; current official Sol6.1 quote, disclosure terms and aggregate/request reservations are required before any later approval or send.",
+  "unrelated_budgets_available_usd": 0,
+  "model_calls": 0
+}

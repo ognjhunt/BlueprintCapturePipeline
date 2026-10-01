@@ -1,0 +1,25 @@
+{
+  "schema_version": "policy_canary_episode_interpreter_profile.v3",
+  "status": "prepared_offline",
+  "interpreter_id": "argus_adapted_video_explainer_v1",
+  "provider_id": "openai",
+  "runtime": "argus_offline_specification",
+  "model": "gpt-6.1-sol",
+  "model_version": "gpt-6.1-sol",
+  "model_version_is_alias": true,
+  "reasoning_effort": "medium",
+  "argus_commit": "6c99686a3d93027c517f02f37f24b5b68532e12a",
+  "prompt_contract_version": "argus_acceptance_video_explanation.v1",
+  "adapted_prompt": {
+    "path": "docs/experiments/argus_shadow_20261001/argus_adapted_teleop.txt",
+    "sha256": "sha256:308ffb611d39636709e57e2aad7f76259ff5bbb32fe5931386973c021b5f99d9",
+    "size_bytes": 30013
+  },
+  "advisory_only": true,
+  "live_processing_enabled": false,
+  "paid_execution_authorized": false,
+  "max_cost_usd": 0,
+  "authoritative_grader_switch_authorized": false,
+  "validated_on_blueprint_footage": false,
+  "profile_digest": "sha256:8df162d8ab87d016058b514840c50f38fd8837d71f7bd0ecc9f4f9393eb82e90"
+}
