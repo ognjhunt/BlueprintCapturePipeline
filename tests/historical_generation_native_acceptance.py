@@ -1631,7 +1631,12 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 reconciled = [event for event in restore_events if event['kind'] == 'restore_intent'
                               and event['body'].get('phase') == 'reconciled']
                 assert len(reconciled) == 1 + len(additional_reconciliations)
-                planned_id = (initial_discard if delete_expiry else reconciliation)['decision_id']
+                # Only an actually consumed pending intent retains the old
+                # decision. A grant expiring before any reconcile_intent is
+                # recorded remains unused; the fresh owner decision is selected.
+                planned_id = (initial_discard if delete_expiry
+                              and reconciliation['packet']['resume_from'] is not None
+                              else reconciliation)['decision_id']
                 reconciled = [event for event in reconciled if event['body']['decision_id'] == planned_id]
                 assert len(reconciled) == 1 and reconciled[0]['body']['uncertain'] is True
                 assert reconciled[0]['body']['credited_removed_allocated_bytes'] == 0
