@@ -24,6 +24,42 @@ def test_fixture_store_streams_and_reads_back_exact_bytes(tmp_path):
     assert (tmp_path / "fixtures/scene/data").read_bytes() == payload
 
 
+def test_object_is_visible_only_after_all_bytes_are_committed(tmp_path):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    opened, release = threading.Event(), threading.Event()
+    class Paused(io.BytesIO):
+        def read(self, size=-1):
+            opened.set()
+            assert release.wait(5)
+            return super().read(size)
+    store = FilesystemObjectStore(tmp_path)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(store.put_object, Bucket="fixtures", Key="atomic",
+                              Body=Paused(b"complete"), ContentLength=8)
+        assert opened.wait(5)
+        try:
+            with pytest.raises(KeyError): store.head_object(Bucket="fixtures", Key="atomic")
+        finally:
+            release.set()
+        pending.result(timeout=5)
+    assert (tmp_path / "fixtures/atomic").read_bytes() == b"complete"
+
+
+def test_same_fixture_filename_has_distinct_digest_bound_publications(tmp_path):
+    from scripts.control_plane_concurrency_provider import fixture_publisher
+    objects = tmp_path / "objects"
+    objects.mkdir()
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.write_bytes(b"scene one")
+    second.write_bytes(b"scene two")
+    publish = fixture_publisher(objects)
+    a = publish(path=first, object_name="same.json")
+    b = publish(path=second, object_name="same.json")
+    assert a["uri"] != b["uri"]
+    assert publish(path=first, object_name="same.json")["uri"] == a["uri"]
+
+
 def test_fixture_transport_refuses_escape_symlinks_and_bad_lengths(tmp_path):
     objects = tmp_path / "objects"
     objects.mkdir()

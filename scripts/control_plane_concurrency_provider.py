@@ -28,14 +28,19 @@ def fixture_publisher(object_root: Path):
     store = FilesystemObjectStore(object_root)
 
     def publish(*, path: Path, object_name: str) -> dict:
-        key = "task-evaluation/fixture-publications/" + object_name
         expected = file_record(path)
+        key = "task-evaluation/fixture-publications/" + expected["digest"][7:] + "/" + object_name
         try:
             store.head_object(Bucket="blueprint", Key=key)
         except KeyError:
-            with path.open("rb") as source:
-                store.put_object(Bucket="blueprint", Key=key, Body=source,
-                                 ContentLength=expected["size_bytes"])
+            try:
+                with path.open("rb") as source:
+                    store.put_object(Bucket="blueprint", Key=key, Body=source,
+                                     ContentLength=expected["size_bytes"])
+            except FileExistsError:
+                # The atomic object commit won a race. Verify its full bytes
+                # below before sharing this digest-bound reference.
+                pass
         digest, size = hashlib.sha256(), 0
         with store.get_object(Bucket="blueprint", Key=key)["Body"] as stream:
             while chunk := stream.read(1024 * 1024):

@@ -114,7 +114,8 @@ class FilesystemObjectStore:
             raise ValueError("fixture_object_size_invalid")
         path = self._path(Bucket, Key)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        temporary = path.parent / (".put-" + uuid.uuid4().hex)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         digest, written = hashlib.sha256(), 0
         try:
             with os.fdopen(descriptor, "wb") as destination:
@@ -128,10 +129,12 @@ class FilesystemObjectStore:
                     raise ValueError("fixture_object_size_mismatch")
                 destination.flush()
                 os.fsync(destination.fileno())
-        except BaseException:
-            # Only the exclusive file opened by this call is eligible.
-            path.unlink()
-            raise
+            # Linking creates the final name exclusively and atomically. A
+            # reader can never observe a partially written object, and a losing
+            # publisher cannot remove another publisher's committed bytes.
+            os.link(temporary, path, follow_symlinks=False)
+        finally:
+            temporary.unlink()
         self.uploaded_bytes += written
         return {"ETag": digest.hexdigest()}
 
