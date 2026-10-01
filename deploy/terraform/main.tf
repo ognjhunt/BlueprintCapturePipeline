@@ -2271,6 +2271,12 @@ data "google_iam_policy" "remote_cpu_project" {
     role    = "roles/owner"
     members = ["user:ohstnhunt@gmail.com"]
   }
+  # Owner omits iam.denypolicies.create/update/delete. Terraform needs these
+  # permissions to install and refresh the lane's mandatory deny fences.
+  binding {
+    role    = "roles/iam.denyAdmin"
+    members = ["user:ohstnhunt@gmail.com"]
+  }
   binding {
     role    = "roles/run.serviceAgent"
     members = ["serviceAccount:${google_project_service_identity.remote_cpu_run[0].email}"]
@@ -2323,7 +2329,9 @@ resource "google_tags_tag_binding" "remote_cpu_identity" {
     worker     = google_service_account.remote_cpu_worker[0].unique_id
     dispatcher = google_service_account.remote_cpu_dispatcher[0].unique_id
   } : {}
-  parent    = "//iam.googleapis.com/projects/${google_project.remote_cpu[0].project_id}/serviceAccounts/${each.value}"
+  # The API canonicalizes this parent to the project number. Use its returned
+  # identity so a provider refresh never proposes deleting the safety tag.
+  parent    = "//iam.googleapis.com/projects/${google_project.remote_cpu[0].number}/serviceAccounts/${each.value}"
   tag_value = google_tags_tag_value.remote_cpu_isolation[each.key].id
 }
 

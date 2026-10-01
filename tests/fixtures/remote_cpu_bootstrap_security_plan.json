@@ -4,10 +4,11 @@
       "resources": [
         {
           "address": "google_artifact_registry_repository_iam_member.remote_cpu_image_reader",
-          "mode": "managed",
-          "type": "google_artifact_registry_repository_iam_member",
-          "name": "remote_cpu_image_reader",
-          "provider_config_key": "google",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
           "expressions": {
             "location": {
               "constant_value": "us"
@@ -31,19 +32,23 @@
               "constant_value": "roles/artifactregistry.reader"
             }
           },
+          "mode": "managed",
+          "name": "remote_cpu_image_reader",
+          "provider_config_key": "google",
           "schema_version": 0,
+          "type": "google_artifact_registry_repository_iam_member"
+        },
+        {
+          "address": "google_iam_deny_policy.remote_cpu_isolation",
           "count_expression": {
             "references": [
               "var.remote_cpu_workers_enabled"
             ]
-          }
-        },
-        {
-          "address": "google_iam_deny_policy.remote_cpu_isolation",
-          "mode": "managed",
-          "type": "google_iam_deny_policy",
-          "name": "remote_cpu_isolation",
-          "provider_config_key": "google",
+          },
+          "depends_on": [
+            "google_tags_tag_binding.remote_cpu_identity",
+            "google_tags_location_tag_binding.remote_cpu_transport"
+          ],
           "expressions": {
             "display_name": {
               "constant_value": "Blueprint Remote CPU Identity and Transport Isolation"
@@ -195,23 +200,19 @@
               }
             ]
           },
+          "mode": "managed",
+          "name": "remote_cpu_isolation",
+          "provider_config_key": "google",
           "schema_version": 0,
+          "type": "google_iam_deny_policy"
+        },
+        {
+          "address": "google_project_iam_policy.remote_cpu",
           "count_expression": {
             "references": [
               "var.remote_cpu_workers_enabled"
             ]
           },
-          "depends_on": [
-            "google_tags_tag_binding.remote_cpu_identity",
-            "google_tags_location_tag_binding.remote_cpu_transport"
-          ]
-        },
-        {
-          "address": "google_project_iam_policy.remote_cpu",
-          "mode": "managed",
-          "type": "google_project_iam_policy",
-          "name": "remote_cpu",
-          "provider_config_key": "google",
           "expressions": {
             "policy_data": {
               "references": [
@@ -228,19 +229,19 @@
               ]
             }
           },
+          "mode": "managed",
+          "name": "remote_cpu",
+          "provider_config_key": "google",
           "schema_version": 0,
+          "type": "google_project_iam_policy"
+        },
+        {
+          "address": "data.google_iam_policy.remote_cpu_project",
           "count_expression": {
             "references": [
               "var.remote_cpu_workers_enabled"
             ]
-          }
-        },
-        {
-          "address": "data.google_iam_policy.remote_cpu_project",
-          "mode": "data",
-          "type": "google_iam_policy",
-          "name": "remote_cpu_project",
-          "provider_config_key": "google",
+          },
           "expressions": {
             "binding": [
               {
@@ -251,6 +252,16 @@
                 },
                 "role": {
                   "constant_value": "roles/owner"
+                }
+              },
+              {
+                "members": {
+                  "constant_value": [
+                    "user:ohstnhunt@gmail.com"
+                  ]
+                },
+                "role": {
+                  "constant_value": "roles/iam.denyAdmin"
                 }
               },
               {
@@ -267,46 +278,30 @@
               }
             ]
           },
+          "mode": "data",
+          "name": "remote_cpu_project",
+          "provider_config_key": "google",
           "schema_version": 0,
-          "count_expression": {
-            "references": [
-              "var.remote_cpu_workers_enabled"
-            ]
-          }
+          "type": "google_iam_policy"
         }
       ]
     }
   },
   "values": {
-    "data.google_iam_policy.remote_cpu_project[0]": {
-      "audit_config": [],
-      "binding": [
-        {
-          "condition": [],
-          "members": [
-            "user:ohstnhunt@gmail.com"
-          ],
-          "role": "roles/owner"
-        },
-        {
-          "condition": [],
-          "members": [
-            null
-          ],
-          "role": "roles/run.serviceAgent"
-        }
-      ]
-    },
     "google_artifact_registry_repository_iam_member.remote_cpu_image_reader[0]": {
       "condition": [],
+      "etag": "BwZcvRu4RUo=",
+      "id": "projects/blueprint-8c1ca/locations/us/repositories/gcr.io/roles/artifactregistry.reader/serviceAccount:service-653671516677@serverless-robot-prod.iam.gserviceaccount.com",
       "location": "us",
+      "member": "serviceAccount:service-653671516677@serverless-robot-prod.iam.gserviceaccount.com",
       "project": "blueprint-8c1ca",
-      "repository": "gcr.io",
+      "repository": "projects/blueprint-8c1ca/locations/us/repositories/gcr.io",
       "role": "roles/artifactregistry.reader"
     },
     "google_iam_deny_policy.remote_cpu_isolation[0]": {
       "display_name": "Blueprint Remote CPU Identity and Transport Isolation",
       "name": "remote-cpu-isolation",
+      "parent": "cloudresourcemanager.googleapis.com%2Fprojects%2F653671516677",
       "rules": [
         {
           "deny_rule": [
@@ -314,6 +309,7 @@
               "denial_condition": [
                 {
                   "description": null,
+                  "expression": "resource.matchTagId('tagKeys/281479606050559', 'tagValues/281481102395054')",
                   "location": null,
                   "title": null
                 }
@@ -350,6 +346,7 @@
               "denial_condition": [
                 {
                   "description": null,
+                  "expression": "resource.matchTagId('tagKeys/281479606050559', 'tagValues/281480085608803')",
                   "location": null,
                   "title": null
                 }
@@ -360,7 +357,12 @@
               "denied_principals": [
                 "principalSet://goog/public:all"
               ],
-              "exception_permissions": null
+              "exception_permissions": null,
+              "exception_principals": [
+                "principal://goog/subject/ohstnhunt@gmail.com",
+                "principal://iam.googleapis.com/projects/-/serviceAccounts/100589344848479244279",
+                "principal://iam.googleapis.com/projects/-/serviceAccounts/111296861720994798887"
+              ]
             }
           ],
           "description": "Transport objects are readable only by the two lane identities and founder."
@@ -371,6 +373,7 @@
               "denial_condition": [
                 {
                   "description": null,
+                  "expression": "resource.matchTagId('tagKeys/281479606050559', 'tagValues/281480085608803')",
                   "location": null,
                   "title": null
                 }
@@ -382,7 +385,11 @@
               "denied_principals": [
                 "principalSet://goog/public:all"
               ],
-              "exception_permissions": null
+              "exception_permissions": null,
+              "exception_principals": [
+                "principal://goog/subject/ohstnhunt@gmail.com",
+                "principal://iam.googleapis.com/projects/-/serviceAccounts/111296861720994798887"
+              ]
             }
           ],
           "description": "Only the dispatcher and founder can write transport objects."
@@ -391,6 +398,9 @@
       "timeouts": null
     },
     "google_project_iam_policy.remote_cpu[0]": {
+      "etag": "BwZcvRusAmU=",
+      "id": "blueprint-remote-cpu-8c1ca",
+      "policy_data": "{\"bindings\":[{\"members\":[\"user:ohstnhunt@gmail.com\"],\"role\":\"roles/iam.denyAdmin\"},{\"members\":[\"user:ohstnhunt@gmail.com\"],\"role\":\"roles/owner\"},{\"members\":[\"serviceAccount:service-653671516677@serverless-robot-prod.iam.gserviceaccount.com\"],\"role\":\"roles/run.serviceAgent\"}]}",
       "project": "blueprint-remote-cpu-8c1ca"
     }
   }

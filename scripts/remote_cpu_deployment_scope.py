@@ -61,9 +61,12 @@ def _security_blockers(plan: Mapping, resources: Mapping) -> list[str]:
     blockers = []
     reader = resources.get('google_artifact_registry_repository_iam_member.remote_cpu_image_reader[0]', {})
     expressions = config.get("google_artifact_registry_repository_iam_member.remote_cpu_image_reader", {})
-    if (reader.get("location"), reader.get("repository"), reader.get("role")) != (
-        "us", "gcr.io", "roles/artifactregistry.reader"
-    ) or expressions.get("member") != {"references": RUN_AGENT_REFERENCES}:
+    # Artifact Registry reads back the fully qualified repository after apply.
+    # Both forms must identify this exact existing repository in the old project.
+    repositories = {"gcr.io", f"projects/{SOURCE_PROJECT}/locations/us/repositories/gcr.io"}
+    if ((reader.get("location"), reader.get("role")) != ("us", "roles/artifactregistry.reader")
+            or reader.get("repository") not in repositories
+            or expressions.get("member") != {"references": RUN_AGENT_REFERENCES}):
         blockers.append("old_project_repository_grant_drift")
     project_number = resources.get('google_project.remote_cpu[0]', {}).get("number")
     if project_number and reader.get("member") != (
@@ -83,6 +86,8 @@ def _security_blockers(plan: Mapping, resources: Mapping) -> list[str]:
     policy = config.get("data.google_iam_policy.remote_cpu_project", {})
     if policy.get("binding") != [
         {"role": {"constant_value": "roles/owner"},
+         "members": {"constant_value": ["user:ohstnhunt@gmail.com"]}},
+        {"role": {"constant_value": "roles/iam.denyAdmin"},
          "members": {"constant_value": ["user:ohstnhunt@gmail.com"]}},
         {"role": {"constant_value": "roles/run.serviceAgent"},
          "members": {"references": RUN_AGENT_REFERENCES}},
@@ -120,6 +125,7 @@ def _security_blockers(plan: Mapping, resources: Mapping) -> list[str]:
 def check_project_iam(policy: Mapping, project_number: str) -> list[str]:
     expected = {
         "roles/owner": {"user:ohstnhunt@gmail.com"},
+        "roles/iam.denyAdmin": {"user:ohstnhunt@gmail.com"},
         "roles/run.serviceAgent": {
             f"serviceAccount:service-{project_number}@serverless-robot-prod.iam.gserviceaccount.com"},
     }
@@ -127,7 +133,11 @@ def check_project_iam(policy: Mapping, project_number: str) -> list[str]:
     for row in policy.get("bindings", []):
         if row.get("condition") or row["role"] in actual:
             return ["unexpected_project_principal"]
-        actual[row["role"]] = set(row.get("members", []))
+        # Resource Manager returns the account's original display casing.
+        # Google user email addresses denote the same identity in either case;
+        # keep service-account and other principal spellings exact.
+        actual[row["role"]] = {member.lower() if member.startswith("user:") else member
+                               for member in row.get("members", [])}
     return [] if actual == expected else ["unexpected_project_principal"]
 
 
