@@ -70,7 +70,7 @@ def _sealed(path: Path, field: str) -> dict[str, Any]:
 
 
 def launch_id_for_preparation(preparation_id: str) -> str:
-    from .task_evaluation_scene_configuration_activation_automation import _activation_id, _bounded_launch_id
+    from .task_evaluation_scene_configuration_activation_identity import _activation_id, _bounded_launch_id
 
     _require(preparation_id.endswith("-preparation"), "preparation_id_invalid")
     return _bounded_launch_id(_activation_id(preparation_id))
@@ -365,7 +365,7 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
             intake.write_exclusive(target, receipt)
         settled.append({"attempt_id": attempt["attempt_id"], "status": "settled"})
 
-    from .task_evaluation_scene_preparation_attempts import preparation_attempt_path, SCHEMA as PREPARATION_SCHEMA
+    from .task_evaluation_scene_preparation_identity import preparation_attempt_path, SCHEMA as PREPARATION_SCHEMA
     source_path = preparation_attempt_path(directory, retired["attempt_id"])
     source_row = intake._read(source_path, "attempt_digest")
     _require(source_row["attempt_digest"] == retired["attempt_digest"], "retired_attempt_digest_mismatch")

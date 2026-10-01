@@ -6,7 +6,7 @@ from typing import Any, Literal, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_sam31_parent_evidence import _parent, configured_parent_route, retained_parent
-from .task_evaluation_sam31_preparation_queue import verify_evidence_reference
+from .task_evaluation_sam31_progress_evidence import verify_evidence_reference
 from .task_evaluation_scene_construction_recipe import validate_scene_construction_recipe
 from .task_evaluation_sam31_phase_queue import JOB_SCHEMA, PHASES, _read, _ref, _require
 

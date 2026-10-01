@@ -2,22 +2,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
 from scripts.full_lane_sharding import (
     FullLaneShardError,
-    _validate_baseline,
     _plan_expected_nodeids,
+    _validate_baseline,
     aggregate_shards,
     build_duration_baseline,
     build_shard_plan,
-    main as sharding_main,
     validate_sharded_artifact,
     verify_shard,
 )
-
+from scripts.full_lane_sharding import (
+    main as sharding_main,
+)
 
 SHA = "a" * 40
 SOURCE_RUN_ID = 123456
@@ -230,6 +232,25 @@ def test_shard_verification_fails_closed_on_failure_skip_or_substitution(
 
     assert receipt["status"] == "blocked"
     assert "shard_junit_failures:1" in receipt["blockers"]
+
+    _junit(junit, expected)
+    tree = ET.parse(junit)
+    tree.getroot().find("testsuite").set("skipped", "1")
+    ET.SubElement(next(tree.getroot().iter("testcase")), "skipped", {
+        "message": "mandatory disposable hosted Linux proof unavailable",
+    })
+    tree.write(junit)
+    receipt = verify_shard(
+        planned_path=planned_path,
+        duration_baseline_path=baseline_path,
+        plan_path=plan_path,
+        executed_path=executed,
+        junit_path=junit,
+        repository_sha=SHA,
+        shard_index=0,
+    )
+    assert receipt["status"] == "blocked"
+    assert "shard_junit_skipped:1" in receipt["blockers"]
 
     substituted = list(expected)
     substituted[-1] = "tests/test_other.py::test_substituted"

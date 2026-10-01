@@ -1,4 +1,8 @@
-"""Actual finite registered batch; tiny payloads, no paid/provider operation."""
+"""ADP-009D/day28: finite registered batches preserve unsealed producer bytes.
+
+These refusal tests do not prove positive retirement throughput; ordinary
+producer completion and its durable no-future-writes seal remain required.
+"""
 
 # ruff: noqa: F811
 # Covers (for impacted-test selection):
@@ -7,9 +11,11 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from tests.test_owner_target_version_publication import root_metadata  # noqa: F401
-from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_birth import birth
+from tests.test_registered_experiment_issuer import installation, issue  # noqa: F401
 from tests.test_registered_experiment_retirement_flow import retirement_installation  # noqa: F401
 
 
@@ -44,15 +50,19 @@ def test_actual_sixteen_authentic_experiments_keep_independent_owner_generation(
     assert all(path.stat().st_ino == inode for path, inode, _ in targets)
 
 
-def test_actual_sixteen_expired_experiments_retire_two_per_tick_without_rebinding(
+def test_actual_sixteen_expired_unsealed_experiments_are_kept_without_rebinding(
     retirement_installation, monkeypatch
 ):
     from blueprint_pipeline import control_plane_lane_experiment_work as work
-    from blueprint_pipeline import control_plane_lane_scratch as scratch
-    from tests.test_registered_experiment_retirement_flow import _issue_action, _gc, _current_entry
+    from tests.test_registered_experiment_retirement_flow import (
+        _current_entry,
+        _gc,
+        _issue_action,
+        _payload_snapshot,
+    )
 
     setup = retirement_installation
-    selected, peaks = {}, []
+    selected, peaks = [], []
     original_slot = work._ActionFiles.slot
 
     def observed(self):
@@ -66,34 +76,26 @@ def test_actual_sixteen_expired_experiments_retire_two_per_tick_without_rebindin
         target = Path(born["path"])
         payload = f"bounded-result-{index:02d}".encode()
         (target / "result.bin").write_bytes(payload)
-        action = _issue_action(setup, grant)
-        selected[action["action_id"]] = (
-            grant,
-            born,
-            target,
-            target.stat().st_ino,
-            (target / scratch.LEASE_FILE).read_bytes(),
-            len(payload),
-        )
-    seen = set()
-    for _ in range(8):
-        outcomes = _gc(setup)["registered_experiments"]["outcomes"]
-        assert len(outcomes) == 2
-        for outcome in outcomes:
-            action_id = outcome["action_id"]
-            assert action_id in selected and action_id not in seen
-            seen.add(action_id)
-            grant, born, target, inode, lease, logical_bytes = selected[action_id]
-            assert outcome["decision"] == "retired", outcome
-            assert outcome["removed_logical_bytes"] == logical_bytes
-            assert outcome["receipt"] is not None
-            assert target.stat().st_ino == inode
-            assert (target / scratch.LEASE_FILE).read_bytes() == lease
-            assert not (target / "result.bin").exists()
+        entry = _current_entry(setup, grant["intent_id"])
+        assert entry["state"] == "active" and entry["completion"] is None
+        snapshot = _payload_snapshot(target)
+        records = {path.relative_to(setup[2]): path.read_bytes()
+                   for path in setup[2].rglob("*") if path.is_file()}
+        with pytest.raises(ValueError, match="^experiment_producer_completion_missing$"):
+            _issue_action(setup, grant)
+        assert {path.relative_to(setup[2]): path.read_bytes()
+                for path in setup[2].rglob("*") if path.is_file()} == records
+        assert _current_entry(setup, grant["intent_id"]) == entry
+        assert _payload_snapshot(target) == snapshot
+        selected.append((grant, born, target, snapshot, entry))
+    for _ in range(2):
+        phase = _gc(setup)["registered_experiments"]
+        assert phase["enabled"] is True and phase["outcomes"] == []
+        for grant, born, target, snapshot, original_entry in selected:
+            assert _payload_snapshot(target) == snapshot
             entry = _current_entry(setup, grant["intent_id"])
-            assert entry["state"] == "retired" and entry["generation"] == born["generation"]
-    assert seen == set(selected)
-    assert _gc(setup)["registered_experiments"]["outcomes"] == []
+            assert entry == original_entry and entry["generation"] == born["generation"]
+    assert not list(setup[2].glob("*.action.json"))
     assert peaks and max(peaks) < 128
 
 

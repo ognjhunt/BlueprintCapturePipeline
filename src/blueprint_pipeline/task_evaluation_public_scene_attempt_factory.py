@@ -12,6 +12,11 @@ from pathlib import Path
 import tempfile
 import time
 
+from .task_evaluation_scene_attempt_evidence import (
+    record,
+    RELEASE_SCHEMA,
+)
+
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .validation_file_digests import file_digest_scope
 from .validation_progress import heartbeat
@@ -25,7 +30,6 @@ from .task_evaluation_scene_owner_authority import (
 
 BINDING_SCHEMA = "task_evaluation_public_source_binding.v1"
 MACHINERY_SCHEMA = "task_evaluation_public_scene_machinery.v1"
-RELEASE_SCHEMA = "task_evaluation_public_scene_release_binding.v1"
 FACTORY_SCHEMA = "task_evaluation_public_scene_attempt_factory.v1"
 SOURCE_ROLES = {"appearance_3dgs", "semantic_metadata", "scene_structure", "collision_usd", "publisher_scene_usdz"}
 PURPOSES = ("exact_source_calibration_gpu_render", "released_code_segment_contribution_sweep",
@@ -45,9 +49,6 @@ def source_reference_names(task):
         if task.get("destination", {}).get("kind") == "green_region" else set())
 
 
-def record(path):
-    path = Path(path)
-    return {"path": str(path), "sha256": sha(path), "size_bytes": path.stat().st_size}
 
 
 def _reference(ref):

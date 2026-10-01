@@ -1,0 +1,29 @@
+{
+  "schema_version": "blueprint.research-control.v1",
+  "enabled": false,
+  "workflow": {
+    "enabled": false,
+    "qa_authority_reference": "PENDING-reviewed-agent-workflow",
+    "publication_authority_reference": "PENDING-scoped-Sheets-and-Notion-access"
+  },
+  "project_id": "proj_F2tFJuxLaovJru8RrtXRaqNj",
+  "agent_id": "agent_5a01ec367d1042ef8632bb5f2e6af8b4919909d2abed48ed95",
+  "model": "gpt-6.1-sol",
+  "template_id": "envtmpl_0ae967c7bf17424095b6d233c48397a248eca32ecbba404786",
+  "source_commit": "PENDING-reviewed-package",
+  "legacy_attempts_reconciled_reference": "PENDING-old-attempt-ledger",
+  "config": {
+    "enabled": false,
+    "first_date": "2026-09-30",
+    "approval_reference": "owner-2026-09-30-recurring-soft-1-usd-research",
+    "scheduler_authority_reference": "PENDING-canary-and-cutover",
+    "crm_snapshot": "crm.json",
+    "knowledge_snapshot": "knowledge.json",
+    "knowledge_refresh_policy": "refresh-policy.json",
+    "research_contract_version": 3,
+    "expected_agent_instructions_sha256": "84aeea7cec9eb6e20d0d2fba10dcb269a615174e48ed91a60ff7a6a83ca37938",
+    "max_runtime_seconds": 180,
+    "soft_target_usd": 1,
+    "slack_channel_id": null
+  }
+}

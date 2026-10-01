@@ -176,8 +176,25 @@ def test_authority_is_consumed_once_per_attempt(tmp_path: Path, monkeypatch) -> 
     assert len(world.rest.runs(validate_only=False)) <= 1
 
 
+def test_six_gib_logical_output_reserves_every_byte_under_original_owner_caps(tmp_path: Path, monkeypatch) -> None:
+    world = RemoteCpuWorld(tmp_path, monkeypatch)
+    limits = allocator.stage_limits(world.config, "episode_compilation")
+    rates = world.config["rate_table"]
+    assert limits["max_output_bytes"] == 6 * 1024**3
+    worst = allocator.worst_case_usd(limits=limits, rate_table=rates)
+    assert worst == 0.9072
+    authority = standing_authority()
+    assert (authority["max_attempt_usd"], authority["max_daily_usd"], authority["max_total_usd"]) == (1, 5, 25)
+    assert allocator.spend_ledger_blockers(authority=authority, worst_case_usd=worst, now=T0) == []
+    higher = allocator.worst_case_usd(limits=limits, rate_table={**rates, "usd_per_egress_gib": 0.14})
+    assert higher > 1
+    assert allocator.spend_ledger_blockers(authority=authority, worst_case_usd=higher, now=T0) == [
+        "remote_cpu_attempt_cap_exceeded"]
+    world.assert_untouched()
+
+
 def test_caps_count_unsettled_attempts_at_worst_case(tmp_path: Path, monkeypatch) -> None:
-    authority = standing_authority(max_attempt_usd=1.0, max_daily_usd=1.5, max_total_usd=2.0, max_executions=4)
+    authority = standing_authority(max_attempt_usd=1.0, max_daily_usd=2.0, max_total_usd=2.5, max_executions=4)
     world = RemoteCpuWorld(tmp_path, monkeypatch, authority=authority)
     world.record_environment()
     limits = allocator.stage_limits(world.config, "episode_compilation")
@@ -198,10 +215,10 @@ def test_caps_count_unsettled_attempts_at_worst_case(tmp_path: Path, monkeypatch
     assert blockers(T0) == []
     assert blockers(T0, max_attempt_usd=0.5) == ["remote_cpu_attempt_cap_exceeded"]
     first, _second = consume("prep-a", T0), consume("prep-b", T0 + 1)
-    # Two unsettled attempts count at their worst case: a third would pass $1.5 in a day and $2 in total.
+    # Two unsettled attempts fit these test caps; a third would pass $2 daily and $2.5 total.
     assert blockers(T0 + 2) == ["remote_cpu_daily_cap_exceeded", "remote_cpu_total_cap_exceeded"]
     # Re-issuing the authority (here only its date changes) never resets what earlier attempts spent.
-    reissued = standing_authority(max_attempt_usd=1.0, max_daily_usd=1.5, max_total_usd=2.0, max_executions=4,
+    reissued = standing_authority(max_attempt_usd=1.0, max_daily_usd=2.0, max_total_usd=2.5, max_executions=4,
                                   authorized_on="2026-09-29")
     assert allocator.spend_ledger_blockers(authority=reissued, worst_case_usd=worst, now=T0 + 2) == [
         "remote_cpu_daily_cap_exceeded", "remote_cpu_total_cap_exceeded"]
@@ -698,8 +715,10 @@ def test_preflight_probe_is_a_granted_leased_and_torn_down_attempt(tmp_path: Pat
     recorded = json.loads((world.root / "environment" / "episode_compilation.json").read_text(encoding="utf-8"))
     assert (recorded["environment_digest"], recorded["image"], recorded["probe_attempt_id"]) == (
         worker["environment_digest"], IMAGE, probe["attempt_id"])
+    # The CPU class is recorded, and compared by nothing but an inline NuRec descriptor (plan 14 §5).
     assert recorded["parity"] == {"python_version_info": True, "golden_deflate": True, "golden_simd": True,
-                                  "distributions": True, "cpu_class": False}
+                                  "distributions": True}
+    assert recorded["cpu_class"] == worker["cpu_class"] != HOST_RECORD["cpu_class"]
     dispatched = world.run("dispatch", descriptor=world.descriptor(environment_digest=worker["environment_digest"]))
     assert dispatched["status"] == "dispatched"
 

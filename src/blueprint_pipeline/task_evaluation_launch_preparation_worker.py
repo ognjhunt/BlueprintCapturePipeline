@@ -54,6 +54,9 @@ from .control_plane_storage_pins import (
 )
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
+    TaskEvaluationLaunchPreparationWorkerError,
+    collect_preparation_references,
+    validate_recipe_request_binding,
 )
 from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
@@ -119,8 +122,6 @@ SceneRenderInputMaterializer = Callable[..., dict[str, Any]]
 ALLOWED_REFERENCE_SCHEMES = frozenset({"gs", "https", "s3"})
 
 
-class TaskEvaluationLaunchPreparationWorkerError(RuntimeError):
-    """A claimed no-spend preparation could not be completed safely."""
 
 
 # The exact release identity lives in one shared module; the historical name stays exported.
@@ -137,39 +138,6 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
     return "sha256:" + digest.hexdigest(), size
 
 
-def collect_preparation_references(value: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Collect every typed immutable reference with its JSON contract path."""
-
-    references: list[dict[str, Any]] = []
-
-    def visit(node: Any, path: tuple[str, ...]) -> None:
-        if isinstance(node, Mapping):
-            if set(node) == {"uri", "digest", "size_bytes"}:
-                references.append(
-                    {
-                        "contract_path": ".".join(path),
-                        "uri": str(node["uri"]),
-                        "digest": str(node["digest"]),
-                        "size_bytes": int(node["size_bytes"]),
-                    }
-                )
-                return
-            for key, child in node.items():
-                visit(child, (*path, str(key)))
-        elif isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
-            for index, child in enumerate(node):
-                visit(child, (*path, str(index)))
-
-    visit(value, ())
-    identities: dict[str, tuple[str, int]] = {}
-    for reference in references:
-        identity = (reference["digest"], reference["size_bytes"])
-        prior = identities.setdefault(reference["uri"], identity)
-        if prior != identity:
-            raise TaskEvaluationLaunchPreparationWorkerError(
-                "launch_preparation_reference_uri_identity_conflict"
-            )
-    return references
 
 
 def validate_allowed_uri_prefixes(prefixes: Sequence[str]) -> tuple[str, ...]:
@@ -797,55 +765,6 @@ def _validated_production_recipe(
     return validate_recipe_request_binding(request=request, recipe=recipe)
 
 
-def validate_recipe_request_binding(
-    *, request: Mapping[str, Any], recipe: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Check the worker's immutable request identity against already validated recipe bytes."""
-    recipe = validate_scene_construction_recipe(recipe)
-    # ``revision.source_commit`` identifies the historical configuration
-    # release and is already protected by the revision digest.  The current
-    # evaluator release is independently bound by the preparation request and
-    # worker source-commit check; requiring those two identities to be equal
-    # would make every immutable configured scene expire when main advances.
-    expected = {
-        "team_namespace": request["team_namespace"],
-        "scene_identity": request["scene"]["identity"],
-        "task_identity": request["task"]["identity"],
-        "subject_identity": request["task"]["subject"]["identity"],
-        "source_manifest_digest": request["scene"]["source_manifest"]["digest"],
-        "rights_admission_digest": request["scene"]["rights"]["admission"]["digest"],
-        "output_identity": request["construction"]["output_identity"],
-    }
-    if any(recipe.get(key) != expected_value for key, expected_value in expected.items()):
-        raise TaskEvaluationLaunchPreparationWorkerError(
-            "launch_preparation_construction_recipe_binding_mismatch"
-        )
-    # A pick_and_place request declares its supplemental destination once; the
-    # recipe must bind the same identity, relation, and exact asset, static
-    # qualification, and rights bytes, and may not smuggle in a destination the
-    # request never declared.
-    destination = request["task"].get("destination")
-    supplemental = recipe.get("supplemental_destination")
-    if (destination is None) != (supplemental is None):
-        raise TaskEvaluationLaunchPreparationWorkerError(
-            "launch_preparation_supplemental_destination_binding_mismatch"
-        )
-    if supplemental is not None:
-        expected_binding = {
-            "identity": destination["identity"],
-            "relation": destination["relation"],
-            "asset": destination["asset"],
-            "static_qualification": destination["static_qualification"],
-            "rights_admission": destination["rights_admission"],
-        }
-        if any(
-            supplemental.get(key) != expected_value
-            for key, expected_value in expected_binding.items()
-        ):
-            raise TaskEvaluationLaunchPreparationWorkerError(
-                "launch_preparation_supplemental_destination_binding_mismatch"
-            )
-    return recipe
 
 
 def _validated_configured_scene_revision(

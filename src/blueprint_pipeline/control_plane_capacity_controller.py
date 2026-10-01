@@ -35,14 +35,25 @@ import math
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import time
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+from .control_plane_capacity_evidence import (
+    CHAIN_ROLES,
+    CRITICAL_FRACTION,
+    WARNING_FRACTION,
+    _read_attention_summary,
+    capacity_eta,
+    chain_footprints,
+    footprint_basis,
+    measure_mount,
+    whole_chain_admission,  # noqa: F401 - compatibility re-export
+)
 
 from . import control_plane_disk_budget as disk_budget
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
@@ -61,6 +72,7 @@ SUMMARY_FILENAME = "summary.json"
 SUMMARY_MAX_BYTES = 128 * 1024
 DEFAULT_SURVEY_INTERVAL_SECONDS = 60 * 60
 USAGE_UNCLASSIFIED_ALERT_BYTES = 1024**3
+USAGE_CONTAINER_RUNTIME_ALERT_BYTES = 20 * 1024**3
 ORPHAN_SCRATCH_AGGREGATE_PAGE_BYTES = 5 * 1024**3
 ORPHAN_SCRATCH_SINGLE_PAGE_BYTES = 2 * 1024**3
 USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
@@ -78,15 +90,25 @@ GC_SUMMARY_INTERVAL_SECONDS = 3600
 DEFAULT_MOUNTS: tuple[str, ...] = ("/var/lib/blueprint",)
 WORK_VOLUME_MOUNT = "/mnt/blueprint-work"
 _DEFAULT_SURVEY = object()
-WARNING_FRACTION = 0.70
-CRITICAL_FRACTION = 0.85
 FORECAST_WINDOW_SECONDS = 7 * 24 * 60 * 60
 ALERT_REPEAT_SECONDS = 60 * 60
 RESIZE_ACK = "grow-control-plane-volume"
 DEFAULT_RESIZE_STEP_GIB = 50
 GIB = 1024**3
+# The week trend averages a burst away, and a reclaim inside the week makes it
+# read ``not_growing`` while a writer fills the disk (2026-10-01: a local image
+# unpack took root from 55 to 31 GB with the floor hours away, and nothing paged).
+# The recent window projects only the last hour of ticks, and only growth the
+# reservation ledger does not explain (admitted writers are already budgeted).
+# A page set below six hours clears at twelve, so a writer near the threshold
+# does not post on every tick.
+RECENT_FORECAST_WINDOW_SECONDS = 60 * 60
+RECENT_FORECAST_MIN_SECONDS = 30 * 60
+RECENT_DECLINE_MIN_BYTES = 2 * GIB
+FLOOR_WITHIN_HOURS_PAGE = 6.0
+FLOOR_WITHIN_HOURS_CLEAR = 12.0
 PAGE_ALERT_CODES = frozenset({
-    "floor_within_three_days", "admission_refused", "critical_admission_refused",
+    "floor_within_three_days", "floor_within_hours", "admission_refused", "critical_admission_refused",
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
     "reclaim_ineffective",
     "orphan_scratch_large",
@@ -112,40 +134,6 @@ def alert_fingerprint(report: Mapping[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
 
-def capacity_eta(shortfall_bytes: int, *, summary: Mapping[str, Any] | None, now: float) -> dict[str, Any]:
-    """Bound a capacity wait to a measured growth or reclaim plan when known."""
-    unknown = {"eta_epoch": None, "eta_basis": "unknown"}
-    if not isinstance(summary, Mapping):
-        return unknown
-    outlook = summary.get("reclaim_outlook")
-    if not isinstance(outlook, Mapping):
-        return unknown
-    growth = outlook.get("volume_growth")
-    if not isinstance(growth, str):
-        return unknown
-    if growth in {"planned", "applied"}:
-        return {"eta_epoch": float(now) + 600, "eta_basis": "volume_growth"}
-    reclaimable = outlook.get("reclaimable_bytes")
-    next_reclaim = outlook.get("next_reclaim_epoch")
-    for value in (reclaimable, next_reclaim):
-        if value is None:
-            continue
-        if type(value) not in (int, float):
-            return unknown
-        try:
-            finite = math.isfinite(value)
-        except OverflowError:
-            return unknown
-        if not finite:
-            return unknown
-    if type(reclaimable) not in (int, float) or reclaimable < 0:
-        return unknown
-    if (isinstance(reclaimable, (int, float)) and not isinstance(reclaimable, bool)
-            and reclaimable >= max(0, shortfall_bytes)
-            and isinstance(next_reclaim, (int, float)) and not isinstance(next_reclaim, bool)
-            and next_reclaim > now):
-        return {"eta_epoch": float(next_reclaim), "eta_basis": "reclaim_scheduled"}
-    return {"eta_epoch": None, "eta_basis": "operator_action_required"}
 
 MOUNTS_ENV = "BLUEPRINT_CAPACITY_MOUNTS"
 REPORT_ROOT_ENV = "BLUEPRINT_CAPACITY_REPORT_ROOT"
@@ -161,13 +149,6 @@ SURVEY_INTERVAL_ENV = "BLUEPRINT_CAPACITY_SURVEY_INTERVAL_SECONDS"
 DO_TOKEN_FILE_ENV = "DIGITALOCEAN_API_TOKEN_FILE"
 DO_VOLUME_ACTIONS_URL = "https://api.digitalocean.com/v2/volumes/{volume_id}/actions"
 
-CHAIN_ROLES: tuple[str, ...] = (
-    "launch_preparation",
-    "episode_compilation",
-    "launch_activation",
-    "launch_dispatch",
-    "policy_canary_dispatch",
-)
 
 
 class ControlPlaneCapacityError(RuntimeError):
@@ -182,29 +163,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def _read_attention_summary(path: Path, *, max_bytes: int = 128 * 1024) -> dict[str, Any] | None:
-    """Read a small local summary; distinguish absence from malformed evidence."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except FileNotFoundError:
-        return None
-    except OSError:
-        return {"status": "unreadable"}
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return {"status": "unreadable"}
-        raw = os.read(fd, max_bytes + 1)
-    except OSError:
-        return {"status": "unreadable"}
-    finally:
-        os.close(fd)
-    if len(raw) > max_bytes:
-        return {"status": "unreadable"}
-    try:
-        value = json.loads(raw)
-    except ValueError:
-        return {"status": "unreadable"}
-    return value if isinstance(value, dict) else {"status": "unreadable"}
 
 
 def _finite_number(value: int | float) -> bool:
@@ -354,179 +312,60 @@ def live_reserved_bytes(
     )
 
 
-def chain_footprints(
-    reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
-) -> dict[str, dict[str, Any]]:
-    """Each chain role's footprint, computed exactly as its own reservation will."""
-
-    return disk_budget.role_footprints(CHAIN_ROLES, reservation_root=reservation_root)
 
 
-def footprint_basis(footprints: Mapping[str, Mapping[str, Any]]) -> str:
-    """measured_p95 if every role is measured, declared_default if none is, else mixed."""
-
-    measured = [row.get("basis") == "measured_p95" for row in footprints.values()]
-    if measured and all(measured):
-        return "measured_p95"
-    return "mixed" if any(measured) else "declared_default"
 
 
-def measure_mount(
-    mount: str | Path,
-    *,
-    reservation_root: str | Path = DEFAULT_RESERVATION_ROOT,
-    disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
-    now: float | None = None,
-    pid_alive: Callable[[int], bool] = disk_budget._pid_alive,
-) -> dict[str, Any]:
-    """One mount's admission projection, computed with the ledger's own functions.
-
-    The floor, the live reservations on this mount's device and each chain
-    role's measured footprint are the values a reservation on this mount would
-    see, so a projected refusal is a refusal intake and the workers will make.
-    """
-
-    observed = time.time() if now is None else float(now)
-    path = Path(mount)
-    try:
-        usage = disk_usage(path)
-        device = disk_budget.target_device(path)
-    except OSError as exc:
-        status = "absent" if isinstance(exc, FileNotFoundError) and not path.exists() else "unreadable"
-        return {"mount": str(path), "status": status, "errno": exc.errno}
-    try:
-        floor = disk_budget.floor_bytes(int(usage.total))
-        footprints = chain_footprints(reservation_root)
-        critical_floor = disk_budget.floor_bytes(int(usage.total), role="control_plane_deploy")
-        critical_footprints = disk_budget.role_footprints(
-            disk_budget.CRITICAL_ROLES, reservation_root=reservation_root,
-        )
-    except disk_budget.ControlPlaneDiskBudgetError as exc:
-        # The ledger refuses every reservation under this configuration too.
-        return {"mount": str(path), "status": "configuration_invalid", "blocker": str(exc)}
-    try:
-        reserved, live = disk_budget.live_reservations(
-            reservation_root, device=device, now=observed, pid_alive=pid_alive
-        )
-    except disk_budget.ControlPlaneDiskBudgetError as exc:
-        # Reservations that cannot be read are not zero reservations.
-        return {"mount": str(path), "status": "unreadable", "blocker": str(exc)}
-    available = max(0, int(usage.free) - floor - reserved)
-    critical_available = max(0, int(usage.free) - critical_floor - reserved)
-    refused = sorted(role for role, row in footprints.items() if row["bytes"] > available)
-    critical_refused = sorted(
-        role for role, row in critical_footprints.items() if row["bytes"] > critical_available
-    )
-    used_fraction = 0.0 if not usage.total else (usage.total - usage.free) / usage.total
-    if used_fraction >= CRITICAL_FRACTION or refused or critical_refused:
-        level = "critical"
-    elif used_fraction >= WARNING_FRACTION:
-        level = "warning"
-    else:
-        level = "ok"
-    return {
-        "mount": str(path),
-        "status": "measured",
-        "total_bytes": int(usage.total),
-        "free_bytes": int(usage.free),
-        "used_fraction": round(used_fraction, 4),
-        "floor_bytes": floor,
-        "critical_floor_bytes": critical_floor,
-        "reserved_bytes": reserved,
-        "live_reservations": live,
-        "available_bytes": available,
-        "critical_available_bytes": critical_available,
-        "refused_roles": refused,
-        "critical_roles_refused": critical_refused,
-        "footprints": footprints,
-        "free_needed_for_one_role_bytes": floor + footprints["launch_preparation"]["bytes"],
-        "free_needed_for_whole_chain_bytes": floor
-        + sum(row["bytes"] for row in footprints.values()),
-        "level": level,
-    }
 
 
-def whole_chain_admission(
-    mount,
-    *,
-    reservation_root=DEFAULT_RESERVATION_ROOT,
-    now=None,
-    disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
-    role_targets: Mapping[str, str | Path] | None = None,
-    device_of: Callable[[Path], int] = disk_budget.target_device,
-):
-    """Check the complete chain workspace before a new scene attempt starts.
 
-    Each role counts at the footprint its own reservation will hold: the measured
-    p95 once the role has history, its declared ceiling until then.  Per-stage
-    reservations remain authoritative during execution. This earlier gate
-    prevents starting a chain that already exceeds available headroom.
-    """
-    measured = measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=now)
-    if not Path(mount).is_dir():
-        measured = {"mount": str(mount), "status": "absent"}
-    footprints = measured.get("footprints")
-    if not isinstance(footprints, Mapping):
-        try:
-            footprints = chain_footprints(reservation_root)
-        except disk_budget.ControlPlaneDiskBudgetError:
-            # The measurement already failed closed, so this chain cannot be
-            # admitted; report the declared ceilings and wait instead of raising
-            # out of the caller's progression pass.
-            footprints = {
-                role: {"bytes": int(disk_budget.ROLE_FOOTPRINT_BYTES[role]),
-                       "basis": "declared_default", "sample_count": None}
-                for role in CHAIN_ROLES
-            }
-    required = sum(int(row["bytes"]) for row in footprints.values())
-    devices: dict[int, dict[str, Any]] = {}
-    admission_error = measured.get("status") != "measured"
-    try:
-        configured = (disk_budget.parse_role_targets(os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS"))
-                      if role_targets is None else {role: Path(path) for role, path in role_targets.items()})
-        if any(not path.is_dir() for path in configured.values()):
-            raise disk_budget.ControlPlaneDiskBudgetError(
-                "control_plane_disk_budget_role_target_unavailable"
-            )
-        projected = disk_budget.disk_headroom(
-            target_root=mount, role_targets=configured, reservation_root=reservation_root,
-            disk_usage=disk_usage, now=lambda: time.time() if now is None else float(now),
-            device_of=device_of,
-        )
-        for target in projected["targets"]:
-            role = target["role"]
-            if role not in CHAIN_ROLES:
-                continue
-            device = target["device"]
-            group = devices.setdefault(device, {
-                "device": device, "path": str(configured.get(role, mount)),
-                "roles": [], "required_bytes": 0,
-                "available_bytes": target["available_bytes"],
-            })
-            group["roles"].append(role)
-            group["required_bytes"] += int(footprints[role]["bytes"])
-    except (disk_budget.ControlPlaneDiskBudgetError, OSError, TypeError, ValueError) as exc:
-        admission_error = True
-        measured = {"mount": str(mount), "status": "configuration_invalid", "blocker": str(exc)}
-    for group in devices.values():
-        group["roles"].sort()
-        group["passed"] = group["available_bytes"] >= group["required_bytes"]
-    passed = not admission_error and bool(devices) and all(group["passed"] for group in devices.values())
-    return {
-        'schema_version': 'control_plane_whole_chain_admission.v1',
-        'status': 'admitted' if passed else 'waiting_for_capacity',
-        'required_workspace_bytes': required,
-        'required_workspace_basis': footprint_basis(footprints),
-        'footprints': footprints,
-        'measurement': measured,
-        'devices': sorted(devices.values(), key=lambda row: row['device']),
-        'provider_mutation_performed': False,
-        'reservation_granted': False,
-    }
+
+def _recent_forecast(rows: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *,
+                     now: float) -> dict[str, Any]:
+    """The last hour's decline in free bytes, and hours until admission headroom is
+    gone if the part the reservation ledger does not explain continues."""
+
+    def epoch(row: Mapping[str, Any]) -> float:
+        return float(row["observed_at_epoch"])
+
+    recent = [row for row in rows if now - epoch(row) <= RECENT_FORECAST_WINDOW_SECONDS]
+    if not recent:
+        return {"status": "insufficient_history"}
+    oldest = min(recent, key=epoch)
+    elapsed = now - epoch(oldest)
+    later = [row for row in recent if epoch(row) > epoch(oldest)]
+    if elapsed < RECENT_FORECAST_MIN_SECONDS or not later:
+        return {"status": "insufficient_history"}
+    middle = min(later, key=lambda row: abs(epoch(row) - (epoch(oldest) + now) / 2))
+    free = int(current["free_bytes"])
+    decline = int(oldest["free_bytes"]) - free
+    # Bytes written under a reservation were admitted against the floor; the
+    # largest reservation the window saw bounds what admitted writers explain.
+    reserved = max([value for value in (row.get("reserved_bytes") for row in [*recent, current])
+                    if type(value) is int] or [0])
+    result: dict[str, Any] = {"status": "not_declining", "window_seconds": int(elapsed),
+                              "decline_bytes_per_hour": int(decline / elapsed * 3600),
+                              "reserved_bytes": reserved}
+    if decline < RECENT_DECLINE_MIN_BYTES:
+        return result
+    if decline - reserved < RECENT_DECLINE_MIN_BYTES:
+        result["status"] = "explained_by_reservations"
+        return result
+    halves = (int(oldest["free_bytes"]) - int(middle["free_bytes"]), int(middle["free_bytes"]) - free)
+    if min(halves) < RECENT_DECLINE_MIN_BYTES / 2:
+        result["status"] = "not_sustained"
+        return result
+    available = current.get("available_bytes")
+    if type(available) is not int:
+        available = free - int(current["floor_bytes"]) - int(current.get("reserved_bytes") or 0)
+    result["status"] = "declining"
+    result["hours_until_floor"] = round(max(0, available) / ((decline - reserved) / elapsed * 3600), 2)
+    return result
 
 
 def forecast(history: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *, now: float) -> dict[str, Any]:
-    """Growth per day and days until the floor, from the oldest row inside the window."""
+    """Growth per day and days until the floor, from the oldest row inside the window,
+    and under ``recent`` the same projection from the last hour alone."""
 
     mount = current.get("mount")
     rows = [
@@ -536,22 +375,27 @@ def forecast(history: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *
         and row.get("mount") == mount
         and row.get("status") == "measured"
         and isinstance(row.get("observed_at_epoch"), (int, float))
+        and type(row.get("free_bytes")) is int
         and now - float(row["observed_at_epoch"]) <= FORECAST_WINDOW_SECONDS
     ]
-    if not rows or current.get("status") != "measured":
+    if current.get("status") != "measured":
         return {"status": "insufficient_history"}
+    recent = _recent_forecast(rows, current, now=now)
+    if not rows:
+        return {"status": "insufficient_history", "recent": recent}
     oldest = min(rows, key=lambda row: float(row["observed_at_epoch"]))
     elapsed = now - float(oldest["observed_at_epoch"])
     if elapsed < 3600:
-        return {"status": "insufficient_history"}
+        return {"status": "insufficient_history", "recent": recent}
     growth_per_day = (int(oldest["free_bytes"]) - int(current["free_bytes"])) / elapsed * 86400
     headroom = int(current["free_bytes"]) - int(current["floor_bytes"])
     if growth_per_day <= 0:
-        return {"status": "not_growing", "growth_bytes_per_day": int(growth_per_day)}
+        return {"status": "not_growing", "growth_bytes_per_day": int(growth_per_day), "recent": recent}
     return {
         "status": "growing",
         "growth_bytes_per_day": int(growth_per_day),
         "days_until_floor": round(max(0.0, headroom / growth_per_day), 2),
+        "recent": recent,
     }
 
 
@@ -581,7 +425,10 @@ def build_capacity_report(
     history: Sequence[Mapping[str, Any]] = (),
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
+    burst_paging: Collection[str] = (),
 ) -> dict[str, Any]:
+    """``burst_paging`` names mounts whose previous report paged ``floor_within_hours``."""
+
     observed = time.time() if now is None else float(now)
     measured = [
         measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=observed)
@@ -605,6 +452,13 @@ def build_capacity_report(
         if row["critical_roles_refused"]:
             alerts.append({"mount": row["mount"], "code": "critical_admission_refused",
                            "roles": row["critical_roles_refused"]})
+        recent = row["forecast"].get("recent") or {}
+        hours = recent.get("hours_until_floor")
+        limit = FLOOR_WITHIN_HOURS_CLEAR if row["mount"] in burst_paging else FLOOR_WITHIN_HOURS_PAGE
+        if isinstance(hours, (int, float)) and hours < limit:
+            alerts.append({"mount": row["mount"], "code": "floor_within_hours", "hours_until_floor": hours,
+                           "decline_bytes_per_hour": recent["decline_bytes_per_hour"],
+                           "window_seconds": recent["window_seconds"]})
         if row["level"] != "ok":
             alerts.append({"mount": row["mount"], "code": f"utilization_{row['level']}", "used_fraction": row["used_fraction"]})
         days = row["forecast"].get("days_until_floor")
@@ -771,6 +625,9 @@ def usage_projection(
             "orphan_scratch_roots": list(survey.get("orphan_scratch_roots") or [])[
                 :USAGE_PROJECTED_UNCLASSIFIED_ROOTS
             ],
+            "container_runtime_bytes": survey.get("container_runtime_bytes"),
+            "container_runtime_complete": survey.get("container_runtime_complete"),
+            "container_runtime_roots": list(survey.get("container_runtime_roots") or []),
         }
     if error:
         projection["error"] = error
@@ -799,6 +656,11 @@ def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
             continue  # one aggregate page; raw scratch folder names stay out of alerts
         if number(size) and size > USAGE_UNCLASSIFIED_ALERT_BYTES:
             alerts.append({"code": "usage_unclassified_root", "root": root, "allocated_bytes": size})
+    for row in survey.get("container_runtime_roots") or []:
+        size = row.get("allocated_bytes") if isinstance(row, Mapping) else None
+        if number(size) and size > USAGE_CONTAINER_RUNTIME_ALERT_BYTES:
+            alerts.append({"code": "usage_container_runtime_large", "root": row.get("root"),
+                           "allocated_bytes": size})
     for row in survey.get("mounts") or []:
         fraction = row.get("attributed_fraction") if isinstance(row, Mapping) else None
         if number(fraction) and fraction < USAGE_ATTRIBUTION_ALERT_FRACTION:
@@ -816,6 +678,7 @@ _SUMMARY_ALERT_KEYS = (
     "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
     "largest_bytes",
     "top_retained_reasons",
+    "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
 )
 
 
@@ -941,6 +804,10 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     summary = f"{first.get('mount') or 'control plane'}: {first.get('code') or report.get('level')}"
     if first.get("code") == "floor_within_three_days":
         summary = f"{first.get('mount')}: floor in {float(first.get('days_until_floor') or 0):.1f} days"
+    elif first.get("code") == "floor_within_hours":
+        minutes = round(float(first.get("window_seconds") or 0) / 60)
+        summary = (f"{first.get('mount')}: floor in {float(first.get('hours_until_floor') or 0):.1f} hours"
+                   f" at the last {minutes} minutes' rate")
     elif first.get("code") == "volume_growth_blocked":
         summary = f"{first.get('mount')}: volume growth blocked ({first.get('reason')})"
     elif first.get("code") == "orphan_scratch_large":
@@ -973,7 +840,10 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
         "text": "control-plane capacity "
         + str(report.get("level"))
         + ": "
-        + "; ".join(f"{a.get('mount')} {a.get('code')}" for a in report.get("alerts") or []),
+        + "; ".join(f"{a.get('mount')} {a.get('code')}"
+                    + (f" {float(a.get('hours_until_floor') or 0):.1f}h"
+                       if a.get("code") == "floor_within_hours" else "")
+                    for a in report.get("alerts") or []),
     }
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST"
@@ -1124,14 +994,23 @@ def run_controller(
         history=load_history(report_root),
         disk_usage=disk_usage,
         now=observed,
+        burst_paging={
+            str(alert.get("mount")) for alert in (previous or {}).get("alerts") or []
+            if isinstance(alert, Mapping) and alert.get("code") == "floor_within_hours"
+        },
     )
-    from .task_evaluation_scene_spend import refresh_configured_scene_project_spend
+    from .task_evaluation_scene_spend import observe_configured_scene_project_spend
     try:
-        if project_spend := refresh_configured_scene_project_spend():
+        if project_spend := observe_configured_scene_project_spend(now=observed):
             report["project_spend"] = project_spend
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError) as exc:
         report["level"] = "critical"
-        report["alerts"].append({"code": "project_spend_refresh_blocked"})
+        reason = str(exc) if str(exc) in {
+            "scene_spend_monitor_config_invalid", "scene_spend_monitor_seed_reference_invalid",
+            "scene_spend_pointer_invalid_or_stale", "scene_spend_pointer_source_changed",
+            "scene_spend_pointer_outside_output_root",
+        } else "scene_spend_snapshot_unreadable_or_invalid"
+        report["alerts"].append({"code": "project_spend_observation_blocked", "reason": reason})
     if credit_collector is not None:
         from .provider_credit_admission import credit_admission
 

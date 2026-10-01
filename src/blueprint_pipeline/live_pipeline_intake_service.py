@@ -107,7 +107,7 @@ from .control_plane_disk_budget import (
     disk_headroom,
     parse_role_targets,
 )
-from .control_plane_capacity_controller import CHAIN_ROLES
+from .control_plane_capacity_evidence import CHAIN_ROLES
 from .scene_placement.robot_profile import default_robot_id_for_embodiment
 from .scene_object_discovery_contract import SceneObjectDiscoveryContractError
 from .scene_object_discovery_queue import (

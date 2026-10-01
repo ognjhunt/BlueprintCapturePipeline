@@ -109,6 +109,8 @@ else:
                             env=environment, capture_output=True, text=True, timeout=30)
     assert _credentials(credentials) == before
     assert caddy.read_text() == "development-only Caddy fixture\n"
+    for name in ('historical-generation-actions', 'historical-generation-journals'):
+        assert not (tmp_path / 'state' / 'requests' / name).exists()
     # Stubbing ownership tools must not conceal any attempted credential ownership change.
     assert all(str(path) not in calls.read_text() for path in credentials)
     assert door.is_dir(), result.stderr

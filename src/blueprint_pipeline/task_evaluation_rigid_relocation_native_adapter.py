@@ -71,6 +71,13 @@ SOURCE_SCHEMAS = {
         "task_evaluation_replacement_native_import_result.v1"
     ),
 }
+# The completed-scene producer emits the same bound geometry fields with its
+# own provenance-bearing schemas. Accept those exact producer contracts rather
+# than rewriting their bytes or requiring a capture-era schema at consumption.
+COMPLETED_SCENE_SOURCE_SCHEMAS = {
+    SUPPORT_PLANE_CONTRACT_PATH: "task_evaluation_completed_scene_support_plane_input.v1",
+    SOURCE_OBJECT_CONTRACT_PATH: "task_evaluation_completed_scene_object_selection.v1",
+}
 NATIVE_PHYSICS_FREQUENCY_HZ = 120
 # Closed-hand geometry of the fixed DROID Robotiq 2F-85 embodiment, measured
 # from paid-run readbacks rather than assumed from the vendor model.  Scene
@@ -161,10 +168,16 @@ def _source_document(
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             f"rigid_relocation_native_adapter_source_json_invalid:{contract_path}"
         ) from exc
+    accepted_schemas = (
+        {expected_schema} if expected_schema is not None
+        else {SOURCE_SCHEMAS[contract_path]} | (
+            {COMPLETED_SCENE_SOURCE_SCHEMAS[contract_path]}
+            if contract_path in COMPLETED_SCENE_SOURCE_SCHEMAS else set()
+        )
+    )
     if (
         not isinstance(value, Mapping)
-        or value.get("schema_version")
-        != (expected_schema if expected_schema is not None else SOURCE_SCHEMAS[contract_path])
+        or value.get("schema_version") not in accepted_schemas
     ):
         raise TaskEvaluationRigidRelocationNativeAdapterError(
             f"rigid_relocation_native_adapter_source_contract_invalid:{contract_path}"

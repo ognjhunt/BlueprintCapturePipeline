@@ -497,7 +497,7 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
 
 
 def _record_capacity_wait(state, admission, *, now):
-    from .control_plane_capacity_controller import _read_attention_summary, capacity_eta
+    from .control_plane_capacity_evidence import _read_attention_summary, capacity_eta
 
     devices = [
         {key: row[key] for key in ("device", "required_bytes", "available_bytes", "passed") if key in row}

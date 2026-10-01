@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -130,3 +131,128 @@ def test_refresh_without_now_still_stamps_wall_clock(tmp_path, monkeypatch):
     before = time.time()
     observed = refresh_configured_scene_project_spend()["pointer"]["observed_at_epoch"]
     assert before <= observed <= time.time()
+
+
+def observed_monitor(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent)
+    prior = seed(tmp_path)
+    args = dict(scene_root=root, seed_reconciliation_path=prior,
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    publication = publish_current_scene_project_spend(**args, now=1000)
+    monitor = {"schema_version": "task_evaluation_scene_project_spend_monitor.v1",
+               **{key: str(value) for key, value in args.items()}}
+    monitor["config_digest"] = canonical_digest(monitor, digest_field="config_digest")
+    config = tmp_path / "monitor.json"
+    config.write_text(json.dumps(monitor))
+    monkeypatch.setenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", str(config))
+    return publication, args
+
+
+def test_capacity_observation_reopens_evidence_without_writes_or_restamping(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_scene_spend as spend
+    publication, args = observed_monitor(tmp_path, monkeypatch)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr(spend, "publish_current_scene_project_spend",
+                        lambda **kwargs: pytest.fail("read-only capacity observation tried publication"))
+    observed = spend.observe_configured_scene_project_spend(now=1100)
+    assert observed["total_cost_usd"] == publication["total_cost_usd"]
+    assert observed["pointer"] == publication["pointer"]
+    assert observed["pointer"]["observed_at_epoch"] == 1000
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert args["current_path"].is_file()
+
+
+@pytest.mark.parametrize("now", [999, 1901, float("nan")])
+def test_capacity_observation_refuses_stale_or_future_publication(tmp_path, monkeypatch, now):
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    observed_monitor(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="scene_spend_pointer_invalid_or_stale"):
+        observe_configured_scene_project_spend(now=now)
+
+
+def test_capacity_observation_refuses_source_changed_after_publication(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    publication, _ = observed_monitor(tmp_path, monkeypatch)
+    source = Path(publication["pointer"]["path"])
+    source.chmod(0o640)
+    source.write_text("{}")
+    with pytest.raises(ValueError, match="scene_spend_pointer_source_changed"):
+        observe_configured_scene_project_spend(now=1100)
+
+
+@pytest.mark.parametrize("escape", ["traversal", "symlink"])
+def test_capacity_observation_rejects_resealed_pointer_escape(tmp_path, monkeypatch, escape):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    publication, args = observed_monitor(tmp_path, monkeypatch)
+    outside = tmp_path / "project_spend_reconciliation.json"
+    outside.write_bytes(Path(publication["pointer"]["path"]).read_bytes())
+    if escape == "traversal":
+        candidate = args["output_root"] / ".." / outside.name
+    else:
+        link = args["output_root"] / "linked"
+        link.symlink_to(tmp_path, target_is_directory=True)
+        candidate = link / outside.name
+    pointer = {**publication["pointer"], "path": str(candidate)}
+    pointer["receipt_digest"] = canonical_digest(pointer, digest_field="receipt_digest")
+    args["current_path"].chmod(0o640)
+    args["current_path"].write_text(json.dumps(pointer))
+    with pytest.raises(ValueError, match="scene_spend_pointer_outside_output_root"):
+        observe_configured_scene_project_spend(now=1100)
+
+
+def test_capacity_observation_rejects_nonobject_monitor_and_reopens_baseline(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    observed_monitor(tmp_path, monkeypatch)
+    baseline = tmp_path / "baseline.json"
+    baseline.chmod(0o640)
+    baseline.write_text("{}")
+    with pytest.raises(ValueError):
+        observe_configured_scene_project_spend(now=1100)
+    (tmp_path / "monitor.json").write_text("[]")
+    with pytest.raises(ValueError, match="scene_spend_monitor_config_invalid"):
+        observe_configured_scene_project_spend(now=1100)
+
+
+def test_monitor_rejects_present_null_seed_reference(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.task_evaluation_scene_spend import observe_configured_scene_project_spend
+    observed_monitor(tmp_path, monkeypatch)
+    path = tmp_path / "monitor.json"
+    monitor = json.loads(path.read_text())
+    monitor["seed_reconciliation_reference"] = None
+    monitor["config_digest"] = canonical_digest(monitor, digest_field="config_digest")
+    path.write_text(json.dumps(monitor))
+    with pytest.raises(ValueError, match="scene_spend_monitor_seed_reference_invalid"):
+        observe_configured_scene_project_spend(now=1100)
+
+
+def test_publisher_reuses_large_artifact_hashes_only_within_one_pass(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_evaluation_retained_controls_evidence as retained
+    from blueprint_pipeline import task_evaluation_configured_controls_autostart_support as support
+    from blueprint_pipeline import validation_file_digests as digests
+    root = tmp_path / "intents"
+    intent = stage(root)
+    attempt(root, intent, "first")
+    attempt(root, intent, "second")
+    robot = tmp_path / "robot.usd"
+    robot.write_bytes(b"a" * digests.MINIMUM_BYTES)
+    observations = []
+
+    def cancellation(_directory, _attempt):
+        support._sha256(robot)
+        observations.append(digests.digest_scope_stats())
+        return None
+
+    monkeypatch.setattr(retained, "validated_cancellation", cancellation)
+    args = dict(scene_root=root, seed_reconciliation_path=seed(tmp_path),
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    for now in (1000, 1100):
+        result = publish_current_scene_project_spend(**args, now=now)
+        assert result["scene_reservation_count"] == 2
+        assert digests.digest_scope_stats() is None
+    assert [row["bytes_hashed"] for row in observations] == [robot.stat().st_size] * 4
+    assert [row["cache_hits"] for row in observations] == [0, 1, 0, 1]

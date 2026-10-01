@@ -104,7 +104,7 @@ from .control_plane_storage_references import (  # noqa: F401 - re-exported
     settlement_reference_text as _settlement_reference_text,
     settlement_reopens_beyond_retained_receipts,
 )
-from .control_plane_storage_roots import require_storage_class
+from .control_plane_storage_roots import require_storage_class, DEFAULT_MINIMUM_AGE_SECONDS
 from .control_plane_pin_proofs import activation_queue_root_of, launch_queue_root_of, preparation_queue_root_of
 from .control_plane_terminal_cache_pins import extended_pin_proofs_setting, reconcile_terminal_cache_pins
 from .decision_evidence_contracts import canonical_digest
@@ -119,7 +119,6 @@ DERIVED_RECEIPT_SCHEMA_VERSION = "control_plane_derived_directory_receipt.v1"
 DERIVED_ACK = "retire-terminal-derived-directories"
 RUN_SCHEMA_VERSION = "control_plane_storage_gc_run.v1"
 RUN_ACK = "reclaim-control-plane-storage"
-DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 # Failed and superseded policy-canary builds can create 10+ GiB of fully
 # reproducible prepared/compiled caches in a single attempt.  Six hours keeps
 # a debugging window while ensuring the six-hourly timer reclaims terminal,
@@ -1632,6 +1631,17 @@ def run_storage_gc(
             return {"enabled": False, "outcomes": [], "blockers": ["experiment_configuration_unavailable"]}
 
     _isolated(report, "registered_experiments", registered_experiment_phase)
+    def historical_generation_phase() -> Any:
+        from .control_plane_lane_historical_gc import gc_historical_actions
+        try:
+            return gc_historical_actions(installed_config_path=_experiment_config_path,
+                                         apply=apply, now=clock)
+        except (OSError, ValueError) as error:
+            return {"enabled": False, "units_started": 0, "mutations": 0, "removed_bytes": 0,
+                    "outcomes": [], "blockers": [getattr(error, "code",
+                                                   "historical_configuration_unavailable")]}
+
+    _isolated(report, "historical_generations", historical_generation_phase)
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
 

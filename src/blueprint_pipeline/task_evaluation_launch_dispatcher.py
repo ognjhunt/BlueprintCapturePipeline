@@ -24,64 +24,64 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from . import task_evaluation_policy_canary_setup as policy_canary_setup
 from .adp_articulated_task_success_contract import (
     confirmed_task_success_contract_matches_published,
     task_kind_of_contract,
     validate_task_success_contract,
 )
 from .adp_task_scoring import TaskNeutralScoringError
-from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .control_plane_disk_budget import (
-    ControlPlaneDiskBudgetError,
     DEFAULT_RESERVATION_ROOT,
+    ControlPlaneDiskBudgetError,
     reserve_control_plane_disk,
 )
+from .control_plane_registered_reference_gate import (
+    _finish_publisher_admission,
+    _profile_refusal,
+    _publisher_checkpoint,
+    _publisher_observation,
+)
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .episode_interpretation_batch_authority import validate_episode_interpretation_batch_authority_shape
 from .host_resident_launch_inputs import launch_profile_residency_blockers
-from .paid_attempt_authority import (
-    JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
-    validate_bound_lane_prior_spend,
-)
-from .task_evaluation_standing_launch_authorization import (
-    STANDING_AUTHORIZATION_DIR_ENV,
-    StandingAuthorizationError,
-    consume_standing_authorization_once,
-    standing_authorization_decision,
-)
-from .task_evaluation_scene_execution_authority import scene_execution_authority_blockers
-from .task_evaluation_immutable_input_resolver import (
-    STAGING_RECEIPT_ENV,
-    STAGING_SCHEMA_VERSION,
-)
-from .task_evaluation_launch_terminal_evidence import (
-    terminal_evidence as _build_terminal_evidence,
-)
-from .task_evaluation_launch_context import (
-    is_identifier as _is_identifier,
-    validate_task_evaluation_run_context,
-)
-from .task_evaluation_scene_configuration_publication_readiness import (
-    scene_configuration_publication_readiness_decision,
-)
-from .task_evaluation_policy_run_contract import (
-    TaskEvaluationPolicyRunContractError,
-    validate_policy_run_setup,
-)
-from .launch_profile_immutable_inputs import immutable_input_digest
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
     stage_directory_projections,
     write_immutable_launch_record,
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
 )
-from . import task_evaluation_policy_canary_setup as policy_canary_setup
-
-from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint, _finish_publisher_admission, _profile_refusal
+from .launch_profile_immutable_inputs import immutable_input_digest
+from .paid_attempt_authority import (
+    JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
+    validate_bound_lane_prior_spend,
+)
+from .task_evaluation_immutable_input_resolver import (
+    STAGING_RECEIPT_ENV,
+    STAGING_SCHEMA_VERSION,
+)
+from .task_evaluation_launch_context import is_identifier as _is_identifier
+from .task_evaluation_launch_context import validate_task_evaluation_run_context
+from .task_evaluation_launch_evidence_contracts import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
+from .task_evaluation_launch_terminal_evidence import terminal_evidence as _build_terminal_evidence
+from .task_evaluation_policy_run_contract import (
+    TaskEvaluationPolicyRunContractError,
+    validate_policy_run_setup,
+)
+from .task_evaluation_scene_configuration_publication_readiness import (
+    scene_configuration_publication_readiness_decision,
+)
+from .task_evaluation_scene_execution_authority import scene_execution_authority_blockers
+from .task_evaluation_standing_launch_authorization import (
+    STANDING_AUTHORIZATION_DIR_ENV,
+    StandingAuthorizationError,
+    consume_standing_authorization_once,
+    standing_authorization_decision,
+)
 
 LAUNCH_REQUEST_SCHEMA_VERSION = "task_evaluation_launch_request.v1"
 LAUNCH_PROFILE_SCHEMA_VERSION = "task_evaluation_launch_profile.v1"
 LAUNCH_RECEIPT_SCHEMA_VERSION = "task_evaluation_launch_receipt.v1"
-LAUNCH_RECEIPT_DIGEST_CANONICALIZATION = "rfc8785"
 LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION = "task_evaluation_launch_profile_catalog.v1"
 IMMUTABLE_INPUT_STAGING_SCHEMA_VERSION = STAGING_SCHEMA_VERSION
 CANONICAL_ALLOCATOR_ENTRYPOINT = "python -m blueprint_pipeline.paid_resource_allocator gpu-canary"

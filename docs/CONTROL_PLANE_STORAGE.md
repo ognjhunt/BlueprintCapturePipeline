@@ -49,7 +49,7 @@ and never a host path.
 | `handoff_staging` | 4 GiB | sizes of the capture blobs being downloaded plus 64 MiB | listener before downloading; refusal remains retryable and unacknowledged |
 | `launch_dispatch` | 2 GiB | unique immutable input file sizes, each allocator directory projection copy, plus 64 MiB | dispatcher before copying and before any allocator call |
 | `scene_configuration_output` | 2 GiB | under measured output admission, the default since 2026-09-30 (unset, empty or `BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ADMISSION=measured`; `=ceiling` opts out to the 5U + 512 MiB free-space check), for a production website scene configuration: the provider's upload ceiling U plus 512 MiB, bound to the job directory, from before the paid allocation until the result is sealed. A CPU prefix leaves archives in the job directory, estimated at one unpacked bundle (an estimate, not a proven bound). When it shares the volume, admission checks the larger of its own need and the hold plus those archives up front, and the hold is taken after the prefix releases; otherwise one reservation holds both. Extracting the returned zip, sized from its central directory, takes a growth reservation for whatever the hold no longer covers | scene-configuration lane before staging (`scene_configuration_provider_output_disk_budget_exceeded`) and before extraction (`scene_configuration_provider_output_extraction_budget_exceeded`, with the zip already durable in B2) |
-| `policy_canary_output` | 1 GiB | only with `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`: a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
+| `policy_canary_output` | 1 GiB | only when the Quick-10 streams (`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream`, or unset with the B2 store configured and the host's needed-set measurement recorded within budget): a forecast hold of the needed-set budget's hold for up to 20,000 archive members (about 695 MiB, capped at the declared footprint) taken by the Quick-10 session before its authority is consumed, shrunk in place (no admission) to the needed set plus 1 KiB per archive member, the index and 16 MiB once the promoted archive is indexed, released with the lane's outcome; its sample is the materialized bytes. Growth is never admitted after the paid run (review I3) | Quick-10 session before consumption (`policy_canary_output_disk_admission_refused`, zero mutations) and after indexing (`…_provider_output_needed_set_over_budget` or `…_provider_output_disk_budget_exceeded_after_run`, with the archive already durable in B2) |
 
 A measured output hold refused after the CPU prefix is sealed like one refused
 before staging: exactly `scene_configuration_provider_output_disk_budget_exceeded`,
@@ -249,7 +249,7 @@ configured root whose class is not the one they may touch.
 
 | Where | What |
 |---|---|
-| Root disk | The OS, the `/opt/blueprint` releases, and small durable state: `evidence_hot` (spend guard, deploy receipts, standing authorizations, the manifest), `ledger` (disk reservations, pins, locks) and the queues. |
+| Root disk | The OS, the `/opt/blueprint` releases, and small durable state: `evidence_hot` (spend guard, deploy receipts, standing authorizations, the manifest), `ledger` (disk reservations, pins, locks) and the queues. Docker's image layers and build cache (`/var/lib/containerd`, `/var/lib/docker`) also stay here; see the [capacity runbook](runbooks/control-plane-capacity.md#container-image-storage-on-the-root-disk). |
 | Scratch volume, `/mnt/blueprint-work`, growable | Every `cache`, `evidence_cold` and `scratch` root. Also the handoff spool `pubsub-handoffs` (every scene's raw capture and workspace), native run work (`native-g1-team-campaign-work` and `native-g1-team-policy-work`, where a team policy run reserves 32 GB), the whole `task-evaluation-inputs` tree, and `/workspace`. |
 
 Each moved root is bound back at its original path (`/mnt/blueprint-work/<rel>`
@@ -443,7 +443,10 @@ because the content stores and the trees built from them share bytes through
 hardlinks. Bytes on the work volume are attributed at the paths the pipeline uses
 (`/mnt/blueprint-work/workspace` → `/workspace`, any other
 `/mnt/blueprint-work/<rel>` → `/var/lib/blueprint/<rel>`). The walk stops after
-3,000,000 entries or 240 s with `status: "truncated"`. A 20,000-entry memory
+3,000,000 entries or 240 s with `status: "truncated"`. Each surveyed root has a
+reserved share of the entry, time and memory limits; exhausting the root-disk
+share cannot prevent the work-volume scan. Hardlinks still count once across
+roots, and a partial scan remains explicitly truncated. A 20,000-entry memory
 bound on buffered directory entries, pending directories, owner rows and shared
 inodes also truncates the survey before the capacity unit's 512 MiB limit is
 at risk. Unreadable entries are counted. Paths the unit's sandbox hides
@@ -456,7 +459,11 @@ process cannot be attributed. These gaps lower `attributed_fraction`.
 directory it matched. A path under a `container`, or under `/var/lib/blueprint`,
 `/opt/blueprint` or `/workspace`, that no row claims is `unclassified`, rooted at
 the child it lies in. Everything else is `host`, rooted at its first two
-components (`/var/log`, `/usr/lib`).
+components (`/var/log`, `/usr/lib`), except the container runtime stores, which
+keep their own root (`/var/lib/containerd`, `/var/lib/docker`). The survey also
+totals them in `container_runtime_roots` and `container_runtime_bytes`. When the
+walk is truncated, `container_runtime_complete` is `false` and those totals are
+lower bounds: a store the walk never reached is unknown, not empty.
 
 **Owner.** The first matching rule wins:
 
@@ -491,10 +498,12 @@ report. Existing surveys are sanitized when the controller reads them.
 
 `latest.json` and `summary.json` carry the same `usage` projection: the survey's
 age and status, its filesystem rows, bytes per class, the top ten roots and
-owners, and the 20 largest unclassified roots. The controller warns with
-`usage_unclassified_root` for each unclassified root over 1 GiB, and with
+owners, the 20 largest unclassified roots, and the container runtime stores. The
+controller warns with `usage_unclassified_root` for each unclassified root over
+1 GiB, with `usage_container_runtime_large` for a container runtime store over
+20 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
-over used bytes, capped at 1) is under 0.9. Either warning raises an `ok` report
+over used bytes, capped at 1) is under 0.9. Any of these warnings raises an `ok` report
 to `warning`. A survey exception keeps the last result and names the error
 (`usage_survey_failed:<type>`) without stopping the capacity tick. Failed and
 interrupted attempts do not retry on every ten-minute tick. A new non-usage
@@ -510,7 +519,7 @@ from door `status` as tables ([`OPERATOR_DOOR.md`](OPERATOR_DOOR.md)):
   truncated walk, unreadable or sandbox-hidden paths, or deleted files still held
   open by a process.
 - The owner table says what to retire. `scene:` workspaces, `run:` evidence
-  (offloadable by the reclaim timer), `release:` trees (retired by deploy) and
+  (offloadable by the reclaim timer), `release:` trees (explicit retirement) and
   `store:` blobs (reaped once nothing hardlinks them) each have their own
   retention rule.
 - An unclassified root is a tree the storage table does not know. Classify it in
@@ -1079,14 +1088,21 @@ files from ordinary completed captures go to the existing private artifact store
 (B2). Authority-ended captures stay local (`authority_ended_capture_kept_local`)
 until the owner approves a revocation and deletion lifecycle for those derivatives.
 
-## Release retirement at deploy
+## Release retirement as a separate action
 
-Deploy is the only event that creates per-commit release worktrees and runtime
-trees, so deploy retires them. After the new release is proven live, a commit's
-trees (release, `splat-render`, `scene-configuration` and their publication
-receipts) stay only while the commit is:
+Deployment creates per-commit release and runtime trees but preserves every
+existing tree, including interrupted `.retiring` trees and generated/untracked
+files. Its receipt records `release_retirement.status = not_requested`, reason
+`requires_separate_action`, and zero retired bytes. It neither plans nor applies
+retirement, sweeps leftovers, nor rewrites the last actual retirement summary.
+Insufficient disk headroom refuses deployment rather than deleting old trees.
 
-- the active release or the commit being deployed;
+Retirement remains a separate explicit operation. The existing plan/apply tools
+and their protection checks are unchanged. A commit's trees (release,
+`splat-render`, `scene-configuration` and their publication receipts) are kept
+while the commit is:
+
+- the active release or the current commit named by the retirement operation;
 - among the newest three releases;
 - in use by a live process (its cwd, executable or an argv path lies in the
   commit's release or runtime tree), checked when planning and again just before
@@ -1095,43 +1111,25 @@ receipts) stay only while the commit is:
 - held by a typed protection row: a lease (`live_queue`, `standing_authorization`,
   `retention_binding`) or current configuration (`configured_runtime`).
 
-Protection no longer comes from searching every JSON file for 40-hex tokens.
-That search protected git tree ids, commits embedded in profile ids and the
-consumption records of expired authorizations; on 2026-09-26 it protected 513
-commits and retired none of 95 trees. Every lease now has an owner, a reason,
-the run it serves and an expiry, and lapses when that run ends. Leases for
-immutable retention bindings live in sidecars under
-`/var/lib/blueprint/pipeline-control-plane/release-leases/bindings` (a root-only
-`ledger` root). The runbook
+Protection comes from typed leases and configuration, rather than searching
+all JSON files for commit-like tokens. Every lease has an owner, a reason, the
+run it serves and an expiry, and lapses when that run ends. Immutable retention
+binding leases live in sidecars under
+`/var/lib/blueprint/pipeline-control-plane/release-leases/bindings`. The runbook
 [`runbooks/task-evaluation-release-retention.md`](runbooks/task-evaluation-release-retention.md)
-covers the lease rules, migration, and how an owner renews or ends a lease.
+describes the separate reviewed operation, lease rules and how an owner renews
+or ends a lease.
 
-Every release-reference publisher (queue writers, the profile publisher, the
-standing-authorization materializer, release activation and the SAM prefix
-binding writer) locks the control-plane root shared. Retirement holds it
-exclusively, waiting at most 300 seconds for it, only while it collects
-protection, plans and renames each candidate into `<its root>/.retiring` (on a
-filesystem too full for that, it deletes the candidate directly). It deletes
-and measures the moved trees only after the deploy has released the lock, its
-paid-launch gate and its disk reservation, prunes the source clone's worktree
-registrations so a retired commit can be redeployed, and sweeps `.retiring`
-leftovers of an interrupted run before the deploy reserves disk.
-`retired_bytes` counts only bytes actually freed (each inode once, and only
-when its last link was deleted); hardlinked bytes are reported as
-`shared_bytes`. Any protection
-blocker (an unreadable or unsettled queue, a missing protection source, an
-unreadable configuration file, a live reference to a missing profile, a
-malformed standing authorization, an invalid or changed binding) retires
-nothing.
-
-The deploy receipt records `release_retirement`: `applied`, `skipped` with
-blockers, or `blocked`, together with `protected_by_kind` (tree counts per
-kind), `protected_tree_count`, `lease_protected_tree_count`, `lapsed_count`,
-`migrated_binding_count` and `alerts`. The same summary is written to
-`release-retention/latest-deploy-retirement.json` (0644). More than 20 trees
-held only by leases raises `release_retirement_lease_protected_trees:<n>`; a
-blocked or skipped retirement raises `release_retirement_blocked:<blocker>`. A
-retirement problem never fails a deploy whose surfaces already moved.
+Explicit retirement holds the publishers' reference locks exclusively while
+collecting protection, planning and renaming candidates into `<root>/.retiring`.
+On ENOSPC/EDQUOT its existing apply tool can delete candidates directly; after
+releasing the locks it deletes staged trees, including interrupted leftovers.
+These deletion effects require separate retirement authority and review.
+`retired_bytes` counts only bytes actually freed (each inode once, only when its
+last link was deleted); hardlinked bytes are reported as `shared_bytes`.
+Unreadable or unsettled queues, missing protection sources, unreadable
+configuration, missing profiles and malformed/changed authorizations or
+bindings block retirement. Deployment does not invoke any of these actions.
 
 
 ## Streaming offload and whole-chain admission (2026-09-08)
@@ -1252,7 +1250,8 @@ path it reads; without one (download mode) it runs exactly its old code.
   `python -m blueprint_pipeline.provider_output_member_view materialize --evidence-root <attempt>/immutable_execution --prefix cell_runs/NN/ --output-root <scratch>`.
 
 **Rollback rule.** Once any streamed run exists, roll back only by setting
-`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` back to `download`. Never revert these
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download` (unset is auto, which streams
+while the host's needed-set measurement fits). Never revert these
 readers: a streamed run's registry, downloads, interpretation, rescoring,
 adoption, closeout and billing all depend on them for as long as the run is
 retained, and without them its members that stay in the archive read as
@@ -1276,17 +1275,99 @@ Two stream-mode records look alarming and are not:
 ## Streamed provider output: the Quick-10 lane (2026-09-29)
 
 `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY` selects how a Quick-10's provider
-archive reaches the host. Unset, empty or `download` is today's path, byte for
-byte (a test pins the lane result and artifact manifest to digests taken before
-the stream path existed). `stream` is read only by the Quick-10 session, before
-its authority is consumed; any other value, or `stream` unless all five
-dedicated B2 settings name readable regular files, refuses there with zero
-provider mutations
+archive reaches the host. **The default is auto** (2026-09-30), and **the
+host's needed-set measurement is the switch, not the deploy**: unset or empty
+streams only when both of these hold, and downloads otherwise.
+
+- **Promotion would accept the dedicated B2 store.** This is promotion's own
+  check (`verify_dedicated_artifact_store`). All five
+  `BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_*_FILE` settings must name regular
+  files, not symlinks, of mode within 0640, each holding non-empty UTF-8 of at
+  most 4 KiB. The client must then build from them exactly as promotion builds
+  it, which is when botocore refuses a malformed endpoint or region; no request
+  is made. The bucket must be `…_EXPECTED_BUCKET` when that is set. The
+  canary dispatcher and the existing-run continuation units bind the store, as
+  the intake unit does. An explicit `stream` and the session's re-check use the
+  same check, so a store promotion would refuse never reaches a paid run.
+- **The host has recorded a needed set that fits.** This is a sealed
+  `policy_canary_output_needed_set_measurement.v1` record at
+  `/var/lib/blueprint/pipeline-control-plane/policy-canary-output/needed-set-measurement.v1.json`,
+  a hot-evidence root the dispatcher reads as `blueprint`. It must name the
+  current contract and selection version
+  (`policy_canary_output_member_contract.v1`). It must come from a Quick-10:
+  its sealed `quick10_shape` records the aggregate result, all ten
+  `cell_runs/NN/native_task_arena_policy_canary_session_result.v1.json` child
+  results and `cell_runs/00/policy_canary_static_startup_preflight.v1.json`,
+  and its needed set is not empty. And it must describe a run the contract
+  admits: materialized bytes within `NEEDED_SET_BUDGET_BYTES`, and a hold,
+  counting its archive's members, within the hold the session actually takes
+  (the forecast, capped at the `policy_canary_output` footprint or its
+  override).
+
+Neither check raises. A setting or record that cannot be read is a reason to
+download; below Python 3.13 that includes one under a directory the dispatcher
+cannot traverse. An explicit value overrides auto: `download` always
+downloads. `stream` is the owner's override: it needs no record, and it streams
+or, without the store, refuses. Only the Quick-10 session resolves the
+setting, before its authority is consumed. Any other value (`auto` included),
+or `stream` without the store, refuses there with zero provider mutations
 (`policy_canary_output_delivery_mode_invalid`,
 `policy_canary_output_stream_artifact_store_not_configured`). Every other arena
-caller keeps the lane's `download` default. The canary dispatcher and the
-existing-run continuation units bind the B2 store explicitly, as the intake
-unit does.
+caller keeps the lane's `download` default.
+
+| Setting | B2 store | Needed-set record | Effective mode | Recorded `reason` |
+|---|---|---|---|---|
+| unset or empty | none of the five set | any | `download` | `auto_artifact_store_not_configured` |
+| unset or empty | set, but promotion would refuse it | any | `download` | `auto_artifact_store_invalid` |
+| unset or empty | accepted | absent | `download` | `auto_needed_set_unmeasured` |
+| unset or empty | accepted | unreadable, unsealed, tampered, another contract or selection version, or not of a Quick-10 | `download` | `auto_needed_set_record_invalid` |
+| unset or empty | accepted | over the budget, or a hold beyond what the session can take | `download` | `auto_needed_set_over_budget` |
+| unset or empty | accepted | sealed, current, within budget | `stream` | `auto_needed_set_within_budget` |
+| `download` | any | any | `download` | `explicit` |
+| `stream` | accepted | any | `stream` | `explicit` |
+| `stream` | not accepted | any | refused, zero mutations | `explicit` |
+| anything else | any | any | refused, zero mutations | none (nothing resolved) |
+
+**The switch: measure one retained Quick-10 on the host.** As `blueprint`,
+with `<zip>` a retained `vast_provider_runtime_output.zip`, run:
+
+```bash
+python -m blueprint_pipeline.provider_output_member_view plan --archive <zip> --contract policy_canary_output_member_contract.v1 --record
+```
+
+It prints the plan: members, bytes by class, and bytes by disposition. It then
+seals the measurement, with the archive's sha256, at the fixed path above;
+`--record <path>` writes elsewhere. Finally it prints the record and the reason
+auto reads back from it:
+
+- `auto_needed_set_within_budget`: the next Quick-10 streams.
+- `auto_needed_set_over_budget`: Quick-10s keep downloading until the budget is
+  raised or a selection v2 lands.
+
+Until the record exists, auto downloads, so a deploy never starts streaming on
+its own. To hold a measured host on download, set
+`BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`. An archive the index would
+refuse is never recorded (`provider_output_member_plan_record_archive_refused`),
+nor one without the Quick-10 shape or with an empty needed set
+(`provider_output_member_plan_record_not_quick10_shaped`), so a measurement of
+the wrong archive cannot switch a host to streaming.
+Re-measuring replaces the record whole. After a contract or selection-version
+change the old record is invalid, and the host downloads until it is measured
+again.
+
+**Why a run streamed or downloaded** is on its records. Every result the
+session returns once the mode is resolved records
+`provider_output_delivery_resolution`, `{"mode": …, "reason": …}`: the lane
+result (`<attempt>/adp_arena_vast_result.json`, the job root's copy, and the
+dispatcher's `allocator_result.json`), whether it ran, was blocked before the
+provider or is a dry run, and the session's own refusals (store missing, disk
+admission, consumption). The ingestion receipt does not carry it: the generic
+ingester writes that receipt, the door's resume writes it later without a
+session, and a downloaded run has none. Download mode is otherwise today's
+path, byte for byte: a test pins the lane result and artifact manifest to
+digests taken before the stream path existed, and another pins the session's
+download result, with the setting unset and no store, to one taken before auto
+(that lane result gains only this record; its artifact manifest is unchanged).
 
 **What a streamed run does.**
 
@@ -1322,11 +1403,12 @@ unit does.
 a Quick-10-shaped fixture: the lifecycle rehearsal's real worker output, whose
 needed set is 2.29 times its aggregate, scaled to production's measured
 190,573,875-byte aggregate. The children would have added 191,208,330 bytes.
-**Before flipping the flag, measure one retained Quick-10**:
-`python -m blueprint_pipeline.provider_output_member_view plan --archive <retained vast_provider_runtime_output.zip> --contract policy_canary_output_member_contract.v1`
-prints `dispositions.materialized.bytes`. If it is over the budget, streamed
-runs would block after the run with their archive durable; raise the budget
-or move to a selection v2 before flipping.
+That is an estimate, which is why auto streams only on the host's own
+measurement of a retained Quick-10 (*The switch*, above). The measurement is
+checked against this budget every time auto resolves. A needed set over it
+would block after the paid run with its archive durable, so auto keeps
+downloading (`auto_needed_set_over_budget`) until the budget is raised or a
+selection v2 lands.
 
 **After-run outcomes.** Each seals `blocked` like a failed download, with
 `archive_durable` saying whether B2 holds the output:
@@ -1379,8 +1461,9 @@ re-binds the durable receipt for the same output key and observed (size, ETag)
 (`rebound_from_staging_manifest_sha256`), and a durable receipt it cannot
 re-bind is renamed aside, never overwritten.
 
-**Owner rehearsal (no provider, no spend).** Before flipping the flag, promote
-and ingest one retained Quick-10 into the dev bucket on the host:
+**Owner rehearsal (no provider, no spend).** Before recording the measurement
+that lets the host stream, promote and ingest one retained Quick-10 into the
+dev bucket on the host:
 
 1. As `blueprint` with umask 0077, lay out a scratch attempt:
    `<scratch>/attempt_001/vast_provider_run/vast_provider_runtime_output.zip`, a
@@ -1404,26 +1487,78 @@ and ingest one retained Quick-10 into the dev bucket on the host:
 rows and the streamed roles), and with it the records billing's terminal
 evidence binds for the manifest and the lane result;
 `provider_runtime_output_zip_inspection` (`zip_path`, no ffprobe rows); the
-stream-only lane-result fields (`provider_output_*`, `archive_durable`,
-`provider_output_host_bytes` = M1); `provider_runtime_output_zip_path` naming no
-file; and host bytes. The native result and its digest, the joined terminal
-result, the registry rows, the public delivery and projection, the strict
+stream-only lane-result fields (`provider_output_*` but the resolution,
+`archive_durable`, `provider_output_host_bytes` = M1) and the resolution's
+`mode`; `provider_runtime_output_zip_path` naming no file; and host bytes. The
+native result and its digest, the joined terminal result, the registry rows,
+the public delivery and projection, the strict
 controls' cell archives (`result_delivery/controls/cell-NN.zip`, whose frames
 and videos a streamed run reads through the member view), the interpretation
 receipts, the billing verdict, teardown, provider-zero and the cleanup rows are
 the same (`tests/test_policy_canary_output_streaming.py`).
 
-**Rollback.** Unset the flag or set `download`. Never revert the readers of
-the section above while a streamed run is retained.
+**Rollback.** Set `BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=download`. Unsetting
+it is not a rollback: auto streams again while the host's measurement fits.
+Never revert the readers of the section above while a streamed run is
+retained.
 
 ## Remote episode compilation (plan 14, 2026-09-29)
 
 `BLUEPRINT_EPISODE_COMPILATION_EXECUTION` picks where an episode compiles: `host`
-(the default, today's path), `cloud_run_shadow` or `cloud_run`. An unset or
-invalid value runs as `host`, and so does `cloud_run` until the owner census
-accepts the output pointer (it exports `REMOTE_OUTPUT_POINTER_SCHEMAS`); the
-chain preflight warns `episode_compilation_execution_mode_invalid` or
-`episode_compilation_cloud_run_requires_census_pointer_support`.
+(today's path), `cloud_run_shadow` or `cloud_run`. Unset or empty is auto
+(owner decision 2026-09-30, everything on by default): `cloud_run` once
+`/etc/blueprint/remote-cpu-workers.json` (`BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG`)
+is there and usable for this stage exactly as the paid unit loads it (a regular
+file the `blueprint` account can read, mode 0640 at most, at most 256 KiB,
+sealed, without blockers, naming `episode_compilation`), and `host` without it,
+which is today's path byte for byte: no marker, and, with nothing left to
+drain, no paid-unit start and no network. A set value keeps its name. An
+invalid value runs as `host`, and so does `cloud_run`, set or auto, until the
+owner census accepts the output pointer (it exports
+`REMOTE_OUTPUT_POINTER_SCHEMAS`). Auto relaxes no other gate: the
+census, `absent_inline_only`, environment parity and image drift, the
+allocator's admission, the standing authority and its daily and total caps all
+apply exactly as they do to a set `cloud_run`.
+
+**Output bound.** The code fixes the maximum logical output at 6 GiB, including
+every path that references a host-known blob; those blobs still stay out of the
+upload archive. A genuine retained development compile indexed 4,297,047,466
+bytes, including the 4,287,162,924-byte runtime ZIP, exceeding the earlier
+4 GiB bound. Descriptors may choose a stricter bound but cannot raise it past
+6 GiB. The input, path, phase, memory and ephemeral limits remain unchanged.
+The allocator conservatively reserves egress for all 6 GiB: with 4 CPUs,
+16 GiB memory, 1,800 seconds and the configured rates of $0.000018 per CPU
+second, $0.000002 per GiB second and $0.12 per egress GiB, the worst case is
+$0.9072. The original $1 attempt, $5 daily and $25 total authority still
+controls admission; higher rates can refuse an attempt. This bound establishes
+no worker qualification: fresh output must fit it and each closure still needs
+three actual parity passes before authoritative routing.
+
+A config that cannot be read at all (a directory at the path, deep nesting, an
+escaped lone surrogate) is no config: the no-spend unit compiles on the host,
+the ExecCondition skips unless something is left to drain, and a paid-unit run
+that loads it drains with a typed `remote_cpu_config_invalid:*` blocker.
+
+The chain preflight reports the mode under `episode_compilation_execution`:
+`requested` (a mode, `invalid`, or `null` when unset), `effective`, `reason`
+(`explicit`, `auto_with_config` or `auto_without_config`) and the config path,
+resolved for the `blueprint` account rather than root: its mode bits, its
+primary and supplementary groups, and search on every parent directory (POSIX
+ACLs and the unit's sandbox are not modelled). It warns
+`episode_compilation_execution_mode_invalid`,
+`episode_compilation_cloud_run_requires_census_pointer_support`, or, when a
+config is there that auto cannot use (written with the default umask, say),
+`episode_compilation_auto_config_unusable`.
+
+**The CPU class.** Dispatch requires the worker's environment to equal the
+host's on everything but the CPU class (plan 14 §5): `environment_digest`
+covers CPython, the golden deflate and SIMD outputs and the compile's
+distributions, and records the CPU class beside it. A worker Cloud Run places
+on another machine therefore runs and is compared. Only inline NuRec
+conversion pins a CPU class, through the descriptor's `allowed_cpu_classes`,
+and only its shadow passes are counted per CPU class. A probe recorded under
+the earlier digest, which included the CPU class, is treated as unrecorded
+until the allocator's preflight probes again.
 
 **Who owns what.** The no-spend unit (`blueprint-task-evaluation-episode-compilation`)
 owns `pending/` in every mode and empties it each run: it recovers the claims
@@ -1432,13 +1567,54 @@ a dead run left, compiles the rows the paid unit handed back (at most
 for the queue lock included; the rest
 wait for the next run, which the unit's five-minute timer backstops), then
 claims pending rows.
-An eligible row in `cloud_run` gets a hand-off and stays in `processing/`; any
-other row compiles on the host. In `cloud_run_shadow` every row compiles on the
-host and an eligible one also gets a shadow marker. Rows never leave the four
-queue states. The paid unit (`blueprint-task-evaluation-episode-compilation-remote`)
-never compiles: it dispatches through `paid_resource_allocator remote-cpu-job`,
-follows, collects and tears down. A refused dispatch writes the fallback, then
-drops the hand-off, and a hand-off whose row was given up, handed back or moved
+In `cloud_run` an eligible row whose closure class has its three shadow passes
+gets a hand-off and stays in `processing/`. `cloud_run` progresses by itself: an
+eligible row whose class lacks them compiles on the host, authoritatively, and
+gets a shadow marker, exactly as in `cloud_run_shadow`, so the class earns its
+passes and its later rows go remote; a failed comparison sends the class back
+to shadowing. It pays only for shadows that can move a class: a row the host
+blocked is not shadowed (`shadow_skipped: host_compile_blocked`), a class never
+has more than three shadows outstanding (`shadow_backlog_full`), and the paid
+unit retires, undispatched, a waiting shadow whose class already has its passes.
+The per-class gate is the last check, so no other refusal is ever shadowed,
+and an inline NuRec row stays on the host with no marker in every mode. Any
+other row compiles on the host. In `cloud_run_shadow` every row compiles on
+the host and an eligible one also gets a shadow marker, blocked or not. A
+shadow marker is the same record in both modes and changes nothing a consumer
+reads.
+
+**The per-class breaker.** Every shadow outcome is sealed per closure class and
+commit: `passed`, `failed`, `inconclusive` (nothing compiled on both sides) or
+`abandoned` (a shadow that ran but was never compared). Three outcomes in a row
+that are not passes, on one class and one `source_commit`, open the class's
+breaker in both remote modes: its rows compile on the host with no plan
+(`remote_ineligible:shadow_breaker_open:<class>`), and the paid unit retires any
+waiting shadow of it, undispatched. A pass in between, or a new commit, closes
+it. A shadow that never ran spent nothing and is no outcome. A hand-off can wait
+while its class's outcomes move (a shadow already running fails, say), so the
+paid unit asks the planner's gates again before its first dispatch and before a
+retry: a hand-off whose class's breaker is open on its commit
+(`remote_cpu_shadow_breaker_open`) or whose class no longer has its three
+passes (`remote_cpu_shadow_parity_unproven`) goes back to the host as a refused
+dispatch does, and no new attempt of it is staged or run. An attempt already
+started is never stopped for this: it runs on to its teardown.
+
+Rows never leave the four queue states. The paid unit
+(`blueprint-task-evaluation-episode-compilation-remote`) never compiles: it
+dispatches through `paid_resource_allocator remote-cpu-job`, follows, collects
+and tears down. Before it stages anything for a new attempt, it asks, read-only,
+what the allocator's admission would refuse: the standing authority (missing,
+invalid, expired, another stage) and the ledger's attempt, daily, total and
+execution caps at the attempt's worst case. A refusal hands the row back (a
+shadow is simply retired) with nothing uploaded to B2; the allocator checks
+again at dispatch. Its ExecCondition, standard library only, starts it while a
+live lease or a marker waits, or when the effective mode is remote, set or
+auto, in that order. For auto it checks the config's file, mode, size, JSON,
+schema, seal, shape, stage and US region; a sealed config that fails a deeper
+check (an image not pinned by digest, say) starts a run that loads it as the
+allocator does and only drains, without a provider connection. A refused
+dispatch writes the fallback, then drops the hand-off,
+and a hand-off whose row was given up, handed back or moved
 on is never dispatched again. A commit that cannot finish after compute-zero (a
 result or pointer already there that is not this attempt's, or the row gone)
 hands the row back and still tears the attempt down to provider-zero; its lease
@@ -1487,9 +1663,9 @@ marker directories below it for the service account.
 | `descriptors/`, `leases/`, `live/`, `teardowns/` | paid unit, allocator | plan 14 §3, §7, §11 |
 | `receipts/<attempt>.json` | paid unit | the fenced receipt, kept because provider-zero deletes staging early |
 | `rows/episode_compilation/<row>` | paid unit | promotion and landing retries, and a row given up |
-| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow comparison, per closure class: `passed` only when both sides compiled and match byte for byte; two blocked compiles are `inconclusive`, which neither counts toward nor breaks a class's three passes |
+| `parity/episode_compilation/<attempt>.json` | paid unit | one shadow outcome, per closure class and `source_commit`: `passed` only when both sides compiled and match byte for byte; two blocked compiles are `inconclusive`, and a shadow that ran but was never compared is `abandoned`; neither counts toward nor breaks a class's three passes, but both count toward its breaker |
 | `environment/`, `drift/episode_compilation.json` | allocator, paid unit | the probed worker environment and the job template's image |
-| `summary.json` (0644) | paid unit | door-readable counts: drift, unproven teardowns, orphans cancelled, parity |
+| `summary.json` (0644) | paid unit | door-readable: the mode (`execution_mode`: requested, effective, reason, findings) and counts: drift, unproven teardowns, orphans cancelled, parity |
 
 **Claim recovery.** At the start of each run, a `processing/` row with no
 hand-off, shadow or fallback marker and no lease record was left by a run that
@@ -1507,9 +1683,11 @@ counts. A handed-back row is never requeued: if its compile wrote the result
 before dying, the next run moves the row as that result says; otherwise the
 output it left at `<id>` is set aside and counted against the same three.
 
-**Rollback.** Unset the flag. The no-spend unit compiles everything; the paid
-unit's ExecCondition keeps it running only to drain live leases and to hand
-undispatched rows back. Without a provider connection (an unusable config or
-dispatcher credential) the paid unit still hands back every hand-off that never
-dispatched and writes `summary.json`; a started attempt keeps its hand-off
-until a connected run tears it down.
+**Rollback.** Set `BLUEPRINT_EPISODE_COMPILATION_EXECUTION=host` in the shared
+environment file: an unset flag is auto, which the config turns back on. The
+no-spend unit compiles everything; the paid unit's ExecCondition keeps it
+running only to drain live leases and to hand undispatched rows back. Leave the
+config in place until that drain ends. Without a provider connection (an
+unusable config or dispatcher credential) the paid unit still hands back every
+hand-off that never dispatched and writes `summary.json`; a started attempt
+keeps its hand-off until a connected run tears it down.

@@ -10,8 +10,10 @@ configured.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from math import isfinite
@@ -28,6 +30,11 @@ OPERATOR_ALERT_REQUIRE_WEBHOOK_ENV = "BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK"
 DEFAULT_MANIFEST_PATH = (
     "/var/lib/blueprint/pipeline-control-plane/live_pipeline_control_plane_manifest.json"
 )
+SPEND_ADMISSION_LOCK_SCHEMA_VERSION = "blueprint.paid_spend_admission_lock.v1"
+# The control-plane timer runs every five minutes. An unchanged blocked pass is
+# re-sent hourly, as capacity pages are; a changed status or blocker set is sent
+# at once.
+ALERT_REPEAT_SECONDS = 60 * 60
 
 
 def _string(value: Any) -> str:
@@ -39,7 +46,7 @@ def _mapping(value: Any) -> Dict[str, Any]:
 
 
 def _string_list(value: Any, *, limit: int = 12) -> list[str]:
-    if not isinstance(value, list):
+    if not isinstance(value, list) or limit <= 0:
         return []
     result: list[str] = []
     for item in value:
@@ -62,19 +69,21 @@ def _read_manifest(path: Path) -> Dict[str, Any]:
     return dict(payload)
 
 
-def _manifest_blockers(manifest: Mapping[str, Any]) -> list[str]:
-    blockers = _string_list(manifest.get("blockers"))
+def _all_manifest_blockers(manifest: Mapping[str, Any]) -> list[str]:
+    # Live runs project setup blockers at the top level rather than embedding
+    # the setup manifest. Preserve those reasons in the operator notification.
     setup = _mapping(manifest.get("setup"))
-    blockers.extend(_string_list(setup.get("blockers"), limit=12 - len(blockers)))
-    if len(blockers) < 12:
-        external_input_packet = _mapping(manifest.get("external_input_packet"))
-        blockers.extend(
-            _string_list(
-                external_input_packet.get("blockers"),
-                limit=12 - len(blockers),
-            )
-        )
-    return blockers[:12]
+    external_input_packet = _mapping(manifest.get("external_input_packet"))
+    blockers: list[str] = []
+    for value in (manifest.get("blockers"), manifest.get("setup_blockers"),
+                  setup.get("blockers"), external_input_packet.get("blockers")):
+        if isinstance(value, list):
+            blockers.extend(_string_list(value, limit=len(value)))
+    return blockers
+
+
+def _manifest_blockers(manifest: Mapping[str, Any]) -> list[str]:
+    return _all_manifest_blockers(manifest)[:12]
 
 
 def _alert_required(manifest: Mapping[str, Any]) -> bool:
@@ -91,6 +100,7 @@ def _message_text(
     manifest_path: Path,
     manifest: Mapping[str, Any],
     blockers: Sequence[str],
+    blocker_count: int,
 ) -> str:
     status = _string(manifest.get("status")) or "unknown"
     job_id = _string(manifest.get("job_id"))
@@ -105,7 +115,9 @@ def _message_text(
             else "status contains blocked"
         )
     )
-    if manifest.get("schema_version") == "blueprint.paid_spend_admission_lock.v1":
+    if blocker_count > len(blockers[:5]):
+        blocker_text += f" (+{blocker_count - len(blockers[:5])} more)"
+    if manifest.get("schema_version") == SPEND_ADMISSION_LOCK_SCHEMA_VERSION:
         effective_spend = manifest.get("effective_spend_usd")
         hard_stop = manifest.get("hard_stop_usd")
         if status == "override_open":
@@ -172,6 +184,30 @@ def _post_webhook(url: str, payload: Mapping[str, Any], *, timeout_seconds: floa
             raise RuntimeError(f"webhook returned HTTP {status}")
 
 
+def _alert_fingerprint(manifest: Mapping[str, Any], blockers: Sequence[str]) -> str:
+    identity = {
+        "schema_version": _string(manifest.get("schema_version")),
+        "status": _string(manifest.get("status")),
+        "job_id": _string(manifest.get("job_id")),
+        "capture_root": _string(manifest.get("capture_root")),
+        "blockers": list(blockers),
+    }
+    return "sha256:" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _last_sent_epoch(output_path: Path, fingerprint: str) -> float | None:
+    """When this exact alert was last delivered, from the previous pass's audit."""
+
+    try:
+        previous = read_json_any(output_path)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(previous, Mapping) or previous.get("alert_fingerprint") != fingerprint:
+        return None
+    sent = previous.get("last_sent_at_epoch")
+    return float(sent) if isinstance(sent, (int, float)) and not isinstance(sent, bool) else None
+
+
 def build_live_pipeline_manifest_alert(
     *,
     manifest_path: Path,
@@ -180,7 +216,9 @@ def build_live_pipeline_manifest_alert(
     require_webhook: bool | None = None,
     dry_run: bool = False,
     timeout_seconds: float = 10.0,
+    now: float | None = None,
 ) -> Dict[str, Any]:
+    observed = time.time() if now is None else float(now)
     resolved_manifest_path = Path(manifest_path).expanduser().resolve()
     resolved_output_path = (
         Path(output_path).expanduser().resolve()
@@ -188,8 +226,16 @@ def build_live_pipeline_manifest_alert(
         else resolved_manifest_path.parent / "live_pipeline_manifest_alert.json"
     )
     manifest = _read_manifest(resolved_manifest_path)
-    blockers = _manifest_blockers(manifest)
+    all_blockers = _all_manifest_blockers(manifest)
+    blockers = all_blockers[:12]
     alert_required = _alert_required(manifest)
+    fingerprint = _alert_fingerprint(manifest, all_blockers)
+    # Spend-lock and threshold-crossing pages keep paging on every pass.
+    repeat_suppressible = (
+        manifest.get("schema_version") != SPEND_ADMISSION_LOCK_SCHEMA_VERSION
+        and _mapping(manifest.get("page_event")).get("required") is not True
+    )
+    last_sent = _last_sent_epoch(resolved_output_path, fingerprint) if repeat_suppressible else None
     resolved_webhook_url = _string(webhook_url or os.getenv(OPERATOR_ALERT_WEBHOOK_URL_ENV))
     webhook_required = (
         bool(require_webhook)
@@ -200,12 +246,16 @@ def build_live_pipeline_manifest_alert(
         manifest_path=resolved_manifest_path,
         manifest=manifest,
         blockers=blockers,
+        blocker_count=len(all_blockers),
     )
 
     notification_status = "not_required"
     notification_error = ""
     attempted = False
-    if alert_required and resolved_webhook_url and not dry_run:
+    if (alert_required and resolved_webhook_url and not dry_run and last_sent is not None
+            and 0 <= observed - last_sent < ALERT_REPEAT_SECONDS):
+        notification_status = "suppressed_unchanged"
+    elif alert_required and resolved_webhook_url and not dry_run:
         attempted = True
         try:
             _post_webhook(
@@ -214,6 +264,7 @@ def build_live_pipeline_manifest_alert(
                 timeout_seconds=timeout_seconds,
             )
             notification_status = "sent"
+            last_sent = observed
         except (OSError, RuntimeError, urllib.error.URLError) as exc:
             notification_status = "failed"
             notification_error = f"{type(exc).__name__}: {exc}"[:500]
@@ -233,6 +284,9 @@ def build_live_pipeline_manifest_alert(
         "manifest_status": _string(manifest.get("status")) or "unknown",
         "alert_required": alert_required,
         "blockers": blockers,
+        "blocker_count": len(all_blockers),
+        "alert_fingerprint": fingerprint,
+        "last_sent_at_epoch": last_sent,
         "webhook_configured": bool(resolved_webhook_url),
         "webhook_required": webhook_required,
         "notification_attempted": attempted,
@@ -255,7 +309,7 @@ def _exit_code(audit: Mapping[str, Any]) -> int:
     if not audit.get("alert_required"):
         return 0
     status = _string(audit.get("notification_status"))
-    if status in {"sent", "dry_run"}:
+    if status in {"sent", "dry_run", "suppressed_unchanged"}:
         return 0
     return 2 if status == "blocked_missing_required_webhook" else 1
 

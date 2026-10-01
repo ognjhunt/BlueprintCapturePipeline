@@ -1,8 +1,10 @@
 """Stream a Quick-10's provider output instead of downloading it (plan 15, 15.C3).
 
-The arena lane's ``stream`` path, which only the Quick-10 session takes
-(``BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream``). Download mode never
-reaches this module.
+The arena lane's ``stream`` path, which only the Quick-10 session takes: with
+``BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY=stream``, or with the setting unset
+(auto, the default), the dedicated B2 store configured and the host's
+needed-set measurement recorded within budget (``policy_canary_output_members``).
+Download mode never reaches this module.
 
 1. Before the session authority is consumed, ``reserve_forecast_hold`` takes
    a ``policy_canary_output`` hold of the contract's forecast (review I3 and
@@ -55,11 +57,16 @@ from .control_plane_disk_budget import (
     DiskReservation,
     reserve_control_plane_disk,
 )
-from .control_plane_disk_ledger import footprint_bytes
 from .control_plane_disk_usage import tree_usage
-from .policy_canary_output_members import NOT_INGESTED_GAP, POLICY_CANARY_OUTPUT_CONTRACT, PolicyCanaryOutputContract
+from .policy_canary_output_members import (
+    NOT_INGESTED_GAP,
+    OUTPUT_ROLE,
+    POLICY_CANARY_OUTPUT_CONTRACT,
+    STARTUP_PREFLIGHT_MEMBER,
+    PolicyCanaryOutputContract,
+    forecast_hold_cap_bytes,
+)
 
-OUTPUT_ROLE = "policy_canary_output"
 WORKLOAD = "quick10_needed_members"
 RESERVATION_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
 EVIDENCE_DIRNAME = "immutable_execution"
@@ -70,7 +77,7 @@ DESCRIPTOR_NAME = EVIDENCE_DIRNAME + ".member_view.v1.json"
 LANE_RESULT_NAME = "adp_arena_vast_result.json"
 # Each isolated cell's worker seals its static startup preflight at its own root, all ten
 # bound to the session's run and runtime inputs; the first cell's stands for the run.
-IDENTITY_DOCUMENT = "cell_runs/00/policy_canary_static_startup_preflight.v1.json"
+IDENTITY_DOCUMENT = STARTUP_PREFLIGHT_MEMBER
 _BINDING_FIELDS = ("identity_document", "result_document", "run_id", "runtime_inputs_digest")
 # The Quick-10 session's output upload bound (native_task_arena_vast: 8 GB plus
 # the paired witness's own capacity); the output alone never exceeds it.
@@ -84,15 +91,16 @@ def reserve_forecast_hold(*, job_dir: str | Path, environ: Mapping[str, str] | N
                           contract: PolicyCanaryOutputContract = POLICY_CANARY_OUTPUT_CONTRACT) -> DiskReservation:
     """The ``policy_canary_output`` forecast hold, taken before the session authority is consumed.
 
-    It holds ``contract.forecast_hold_bytes()`` (about 695 MiB), capped at the
-    role's declared footprint (1 GiB, or the operator's
-    ``BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_POLICY_CANARY_OUTPUT_BYTES``), and
-    is only ever shrunk afterwards. Raises ``ControlPlaneDiskBudgetError``.
+    It holds ``forecast_hold_cap_bytes(contract)``: the contract's forecast
+    (about 695 MiB) capped at the role's declared footprint (1 GiB, or the
+    operator's ``BLUEPRINT_CONTROL_PLANE_DISK_FOOTPRINT_POLICY_CANARY_OUTPUT_BYTES``),
+    the same hold auto delivery measures a recorded needed set against. It is
+    only ever shrunk afterwards. Raises ``ControlPlaneDiskBudgetError``.
     """
     values = os.environ if environ is None else environ
     return reserve_control_plane_disk(
         OUTPUT_ROLE, target_root=Path(job_dir),
-        expected_bytes=min(contract.forecast_hold_bytes(), footprint_bytes(OUTPUT_ROLE)),
+        expected_bytes=forecast_hold_cap_bytes(contract),
         reservation_root=values.get(RESERVATION_ROOT_ENV) or DEFAULT_RESERVATION_ROOT,
         disk_usage=lambda path: disk_usage_provider(path), workload=WORKLOAD)
 

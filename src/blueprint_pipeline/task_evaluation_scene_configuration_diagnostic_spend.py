@@ -20,7 +20,7 @@ import tempfile
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .task_evaluation_scene_configuration_bundle import (
+from .task_evaluation_scene_configuration_bundle_evidence import (
     load_scene_configuration_provider_bundle_receipt,
 )
 from .task_evaluation_scene_configuration_paid_authority import (

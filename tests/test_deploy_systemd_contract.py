@@ -103,10 +103,13 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
             "blueprint-pipeline-control-plane.service",
             "blueprint-pubsub-handoff-listener.service",
         }:
+            # The credential EnvironmentFile overrides Environment= and names an
+            # archived checkout in BLUEPRINT_PIPELINE_REPO, so the release is
+            # located through a unit-owned key and exported to the children.
             repo_key = (
                 "BLUEPRINT_PUBSUB_HANDOFF_REPO"
                 if unit == "blueprint-pubsub-handoff-listener.service"
-                else "BLUEPRINT_PIPELINE_REPO"
+                else "BLUEPRINT_LIVE_CONTROL_PLANE_REPO"
             )
             assert f"{repo_key}=/opt/blueprint/task-evaluation-control-plane" in text
             assert (
@@ -127,6 +130,11 @@ def test_production_systemd_units_set_fail_closed_runtime_posture():
             assert text.count('cd -P "$${BLUEPRINT_PUBSUB_HANDOFF_REPO}"') == 2
             assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
             assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 2
+        if unit == "blueprint-pipeline-control-plane.service":
+            assert "Environment=BLUEPRINT_PIPELINE_REPO=" not in text
+            assert "$${BLUEPRINT_PIPELINE_REPO}" not in text
+            assert text.count('cd -P "$${BLUEPRINT_LIVE_CONTROL_PLANE_REPO}"') == 3
+            assert text.count('export BLUEPRINT_PIPELINE_REPO="$${PWD}"') == 3
         assert "BLUEPRINT_LAUNCH_PROOF_MODE=production" in text
         assert "PRIVACY_PIPELINE_ENABLED=true" in text
         assert "PRIVACY_FAIL_CLOSED=true" in text
@@ -569,7 +577,7 @@ def test_privacy_runner_auth_tokens_fail_closed_before_deploy() -> None:
     privacy_secret = _terraform_variable_body(terraform, "privacy_runner_token_secret_name")
     video_secret = _terraform_variable_body(terraform, "video_to_world_runner_token_secret_name")
 
-    assert 'default     = ""' not in privacy_secret
+    assert 'var.deployment_scope == "remote_cpu" && var.privacy_runner_token_secret_name == ""' in privacy_secret
     assert "^[A-Za-z0-9_-]{1,255}$" in privacy_secret
     assert "video_to_world_runner_token_secret_name" in video_secret
     assert 'variable "privacy_runner_token"' not in terraform
@@ -817,7 +825,7 @@ def test_full_test_lane_is_explicit_or_nightly_and_gates_deploy_contract():
     assert "schedule:" in event_block
     assert 'cron: "17 8 * * *"' in event_block
     assert "workflow_dispatch:" in event_block
-    assert "uv run scripts/pytest_full.sh" in workflow
+    assert "uv run --no-sync scripts/pytest_full.sh" in workflow
     assert (
         '--junitxml="${{ runner.temp }}/blueprint-ci/full-test-lane-shard-junit.xml"'
         in workflow
@@ -873,7 +881,10 @@ def test_release_images_are_versioned_manifested_and_rejected_if_latest():
 
     for variable in image_variables:
         body = _terraform_variable_body(terraform, variable)
-        assert "default" not in body
+        if variable == "docker_image":
+            assert "default" not in body
+        else:
+            assert f'var.deployment_scope == "remote_cpu" && var.{variable} == ""' in body
         assert "nullable    = false" in body
         assert "^.+@sha256:[0-9a-f]{64}$" in body
         assert "non-latest versioned release tag" not in body

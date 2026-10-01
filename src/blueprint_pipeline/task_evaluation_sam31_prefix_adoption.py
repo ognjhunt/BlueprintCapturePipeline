@@ -347,8 +347,8 @@ def publish_adoption_release_binding(adoption_path, *, binding_root=None):
     parent, the directory deploy retirement holds exclusively from collecting
     protection to moving trees aside, so a binding never appears in between.
     """
+    from .task_evaluation_release_binding_storage import DEFAULT_EVIDENCE_BINDING_ROOT
     from .task_evaluation_release_reference_lock import release_reference_lock
-    from .task_evaluation_release_retention import DEFAULT_EVIDENCE_BINDING_ROOT
     root = Path(binding_root) if binding_root is not None else DEFAULT_EVIDENCE_BINDING_ROOT
     require(root.is_absolute() and root.is_dir() and not any(p.is_symlink() for p in (root, *root.parents)),
             "sam31_adoption_retention_root_invalid")
@@ -358,7 +358,10 @@ def publish_adoption_release_binding(adoption_path, *, binding_root=None):
 
 def _publish_adoption_release_binding_locked(adoption_path, *, binding_root):
     """Publish one binding and, first, its ancestors', under the caller's lock."""
-    from .task_evaluation_release_retention import EVIDENCE_BINDING_SCHEMA_VERSION, _write_exclusive
+    from .task_evaluation_release_binding_storage import (
+        EVIDENCE_BINDING_SCHEMA_VERSION,
+        _write_exclusive,
+    )
     value = read(adoption_path, digest_field="adoption_digest")
     require(value.get("schema_version") == SCHEMA and value.get("status") == "verified_completed_prefix",
             "sam31_adoption_retention_binding_invalid")

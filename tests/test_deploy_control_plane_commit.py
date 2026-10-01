@@ -962,7 +962,8 @@ def test_failed_deploy_rechecks_a_hold_created_after_unit_snapshot(tmp_path, mon
         unit: {"enabled": "enabled", "state": "active"}
     })
     monkeypatch.setattr(deploy, "_quiesce_active_path_units", lambda _before: [])
-    monkeypatch.setattr(deploy, "_restore_installed_path_units", lambda _units, **kwargs: restored.append(kwargs))
+    monkeypatch.setattr(deploy, "_restore_installed_path_units",
+                        lambda _units, **kwargs: restored.append(kwargs) or [])
 
     with pytest.raises(ValueError, match="deploy_failed"):
         with deploy._restore_path_unit_states_on_deploy_failure(
@@ -1310,8 +1311,6 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
         "_activate_agent_execution": lambda **_kwargs: {},
         "_restore_installed_path_units": lambda _installed, **_kwargs: [],
-        "_retire_superseded_release_trees": lambda **_kwargs: {},
-        "_finish_release_retirement": lambda retirement, **_kwargs: retirement,
     }
     for name, stub in stubs.items():
         monkeypatch.setattr(deploy, name, stub)
@@ -1328,6 +1327,116 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "scene_preparation_bootstrap_file": tmp_path / "absent-bootstrap.json",
         "controls_autoprovision_bootstrap_file": tmp_path / "absent-controls-bootstrap.json",
     }
+
+
+@pytest.mark.parametrize("failure", [None, "disk_admission", "paid_gate", "intake_identity"])
+def test_deploy_preserves_superseded_and_interrupted_retirement_trees(
+    tmp_path, monkeypatch, failure,
+) -> None:
+    """Deployment preserves old bytes even when deletion would free admission space."""
+
+    commit = "d" * 40
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    releases = arguments["release_root"]
+    runtimes = arguments["scene_configuration_runtime_root"]
+    current = releases / commit
+    current.mkdir(parents=True)
+    arguments["active_link"].unlink()
+    arguments["active_link"].symlink_to(current, target_is_directory=True)
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", lambda **_kwargs: {
+        "source_commit": commit, "release_path": str(current), "created_release_checkout": False,
+    })
+    retained = []
+    for root in (releases, *(runtimes / name for name in deploy.RELEASE_RUNTIME_COMPONENTS)):
+        for index, old in enumerate(("a" * 40, "b" * 40, "c" * 40, "e" * 40)):
+            tree = root / old
+            (tree / "generated").mkdir(parents=True)
+            (tree / "generated/receipt.json").write_bytes(b'{"generated":"retained"}\n')
+            (tree / "untracked.bin").write_bytes(b"untracked bytes\x00\xff")
+            (tree / "untracked.bin").chmod(0o600)
+            os.link(tree / "untracked.bin", tree / "hardlinked.bin")
+            stamp = time.time() - (10 + index) * 86_400
+            os.utime(tree, (stamp, stamp))
+            retained.append(tree)
+            if root != releases:
+                publication = root / f"{old}.publication.v1.json"
+                publication.write_bytes(b'{"publication":"retained"}\n')
+                os.utime(publication, (stamp, stamp))
+                retained.append(publication)
+        leftover = root / ".retiring" / f"{'f' * 40}-0123456789ab"
+        leftover.mkdir(parents=True)
+        (leftover / "generated.bin").write_bytes(b"interrupted retirement bytes")
+        retained.append(leftover.parent)
+
+    sources = _protection_sources(tmp_path / "protection")
+    arguments["release_protection_sources"] = sources
+    plan = deploy.build_release_retirement_plan(
+        release_root=releases, runtime_root=runtimes, active_link=arguments["active_link"],
+        current_commit=commit,
+        protections=deploy.collect_release_protections(sources, now=time.time(), migrate=False),
+    )
+    assert plan["status"] == "dry_run" and plan["candidates"]
+    for candidate in plan["candidates"]:
+        old = candidate["commit"]
+        expected = {str(releases / old)}
+        for component in deploy.RELEASE_RUNTIME_COMPONENTS:
+            expected.update({str(runtimes / component / old),
+                             str(runtimes / component / f"{old}.publication.v1.json")})
+        assert set(candidate["paths"]) == expected
+    summary = arguments["state_root"] / "release-retention/latest-deploy-retirement.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_bytes(b'{"status":"blocked","alerts":["previous_retirement_failure"]}\n')
+    retained.append(summary)
+
+    def snapshot():
+        result = {}
+        for root in retained:
+            for path in (root, *root.rglob("*")):
+                info = path.lstat()
+                result[str(path)] = (
+                    info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+                    info.st_mtime_ns, path.read_bytes() if path.is_file() else None,
+                )
+        return result
+
+    before = snapshot()
+    for name in ("_sweep_retiring_trees", "_retire_superseded_release_trees", "_finish_release_retirement"):
+        monkeypatch.setattr(deploy, name, lambda *args, **kwargs: pytest.fail("deployment requested retirement"))
+
+    if failure == "disk_admission":
+        arguments["disk_reservation_root"] = tmp_path / "disk-reservations"
+        monkeypatch.setattr(deploy, "_install_disk_reservation_runtime_prerequisites", lambda _root: {})
+        monkeypatch.setattr(deploy, "_release_footprint_estimate", lambda *_args, **_kwargs: {
+            "bytes": 4096, "basis": "test_estimate",
+        })
+
+        def refuse_disk(*_args, **_kwargs):
+            raise deploy.ControlPlaneDiskBudgetError("insufficient_headroom")
+
+        monkeypatch.setattr(deploy, "reserve_control_plane_disk", refuse_disk)
+    elif failure:
+        def refuse(*_args, **_kwargs):
+            raise deploy.ControlPlaneDeployError(f"test_{failure}_refused")
+
+        monkeypatch.setattr(deploy, "_holding_paid_launch_gate" if failure == "paid_gate"
+                            else "_verify_intake_runtime", refuse)
+
+    if failure:
+        code = "deploy_disk_budget_exceeded:insufficient_headroom" if failure == "disk_admission" else f"test_{failure}_refused"
+        with pytest.raises(deploy.ControlPlaneDeployError, match=code):
+            deploy.deploy_control_plane_commit(**arguments)
+    else:
+        receipt = deploy.deploy_control_plane_commit(**arguments)
+        retirement = receipt["release_retirement"]
+        assert receipt["status"] == "deployed"
+        assert retirement["status"] == "not_requested"
+        assert retirement["reason"] == "requires_separate_action"
+        assert retirement["retired_bytes"] == 0
+        for key in ("retired_commits", "renamed", "deleted", "direct_delete_fallback", "swept", "startup_swept"):
+            assert retirement[key] == []
+        assert retirement["worktree_prune"]["status"] == "not_requested"
+    assert snapshot() == before
+    assert arguments["active_link"].resolve() == current
 
 
 def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> None:
@@ -1389,6 +1498,256 @@ def test_deploy_reads_held_units_at_restore_and_warns_on_unreadable_records(tmp_
     bad.write_text("", encoding="utf-8")
     receipt = deploy.deploy_control_plane_commit(**args, door_holds_dir=bad)
     assert "door_holds_unreadable" in receipt["alerts"]
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_timer_restore_allows_hold_sweep_to_take_its_lock(tmp_path, monkeypatch, rollback):
+    """A real flock must not be held while systemd waits for the sweep dependency."""
+    import fcntl
+
+    sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
+    from operator_door import holds as door_holds
+
+    restore = deploy._restore_installed_path_units
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    timer = "blueprint-pubsub-handoff-listener.timer"
+    held = "blueprint-agent-run-dispatcher.timer"
+    root = tmp_path / "holds"
+    root.mkdir()
+    record = {
+        "schema": door_holds.SCHEMA, "unit": held, "owner": "release-owner",
+        "reason": "compatibility review", "request_id": "20260927T000000Z-hold-0000abcd",
+        "requested_by": "cloud", "status": "active", "enabled_before": True,
+        "expires_at": "2099-01-01T00:00:00+00:00", "expires_at_epoch": 4070908800,
+    }
+    record_path = root / f"{held}.json"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    original_record = record_path.read_bytes()
+    states = {
+        timer: {"enabled": "enabled", "state": "inactive"},
+        held: {"enabled": "disabled", "state": "inactive"},
+    }
+    queued = []
+    sweep_calls = []
+    commands = []
+    paid_lock = tmp_path / "vast_paid_launch.lock"
+    paid_lock.touch()
+
+    @contextlib.contextmanager
+    def paid_gate(_locks):
+        with deploy._holding_paid_launch_locks([str(paid_lock)]):
+            yield []
+
+    def sweep_dependency():
+        with paid_lock.open("r") as paid_contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(paid_contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Independent open descriptions exercise the kernel lock, even in one PID.
+        with (root / ".lock").open("a") as contender:
+            try:
+                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise subprocess.TimeoutExpired("hold-sweep dependency waiting for deploy lock", 0.1)
+        assert door_holds.sweep(root) == 0
+        sweep_calls.append(True)
+
+    def systemctl(argv, **_kwargs):
+        commands.append(tuple(argv))
+        assert argv[0] == "systemctl", "No real host command is allowed"
+        verb, unit = [item for item in argv[1:] if not item.startswith("--")]
+        if verb == "restart":
+            if "--no-block" in argv:
+                queued.append(unit)
+            else:
+                sweep_dependency()
+                states[unit]["state"] = "active"
+        elif verb in {"enable", "disable"}:
+            states[unit]["enabled"] = "enabled" if verb == "enable" else "disabled"
+        elif verb == "stop":
+            states[unit]["state"] = "inactive"
+        else:
+            raise AssertionError(f"Unexpected host operation: {verb}")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def complete_jobs(_seconds):
+        if queued:
+            sweep_dependency()
+            for unit in queued:
+                states[unit]["state"] = "active"
+            queued.clear()
+
+    monkeypatch.setattr(deploy, "DEFAULT_DEPLOYED_SYSTEMD_UNITS", (timer, held))
+    monkeypatch.setattr(deploy, "_holding_paid_launch_gate", paid_gate)
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", restore)
+    monkeypatch.setattr(deploy, "_install_release_systemd_units",
+                        lambda **_kwargs: [{"unit": timer}, {"unit": held}])
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", lambda _units: {
+        timer: {"enabled": "enabled", "state": "active"},
+        held: {"enabled": "disabled", "state": "inactive"},
+    })
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda unit, **_kwargs: dict(states[unit]))
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    monkeypatch.setattr(deploy.time, "sleep", complete_jobs)
+    if rollback:
+        def fail_runtime(*_args, **_kwargs):
+            raise ValueError("runtime_identity_refused")
+        monkeypatch.setattr(deploy, "_verify_intake_runtime", fail_runtime)
+        with pytest.raises(ValueError, match="^runtime_identity_refused$"):
+            deploy.deploy_control_plane_commit(**arguments, door_holds_dir=root)
+    else:
+        receipt = deploy.deploy_control_plane_commit(**arguments, door_holds_dir=root)
+        assert receipt["status"] == "deployed"
+        restored = next(row for row in receipt["timer_unit_states"] if row["unit"] == held)
+        assert restored["held"] and restored["owner"] == record["owner"]
+    assert sweep_calls == [True]
+    assert states[timer] == {"enabled": "enabled", "state": "active"}
+    assert states[held] == {"enabled": "disabled", "state": "inactive"}
+    assert record_path.read_bytes() == original_record
+    assert not any(command[-1] == held and "restart" in command for command in commands)
+    with paid_lock.open("r") as paid_contender:
+        fcntl.flock(paid_contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_owner_hold_cancels_a_queued_timer_restore(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    root = tmp_path / "holds"
+    root.mkdir()
+    state = {"enabled": "enabled", "state": "inactive"}
+    commands = []
+
+    def systemctl(argv, **_kwargs):
+        commands.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", systemctl)
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit, **_kwargs: dict(state))
+    with deploy._locked_door_holds(root) as (held_units, warning):
+        assert warning is None
+        restored = deploy._restore_installed_path_units(
+            [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "active"}},
+            arm_path_units=False, held_units=held_units, defer_start_verification=True,
+        )
+    assert commands == [("systemctl", "enable", unit),
+                        ("systemctl", "--no-block", "restart", unit)]
+    # An owner can obtain the lock between enqueue and completion and cancel the job.
+    record = {
+        "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "new-owner",
+        "reason": "inspect", "request_id": "20260927T000000Z-hold-0000abcd",
+        "status": "active", "expires_at": "2099-01-01T00:00:00+00:00",
+        "expires_at_epoch": 4070908800,
+    }
+    path = root / f"{unit}.json"
+    with deploy._locked_door_holds(root):
+        state.update(enabled="disabled", state="inactive")
+        path.write_text(json.dumps(record), encoding="utf-8")
+    original = path.read_bytes()
+    assert deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=root) is None
+    assert restored[0]["held"] and restored[0]["owner"] == "new-owner"
+    assert restored[0]["after"] == state
+    assert "_start_pending" not in restored[0]
+    assert len(commands) == 2 and path.read_bytes() == original
+
+
+def test_queued_timer_start_has_a_bounded_verification_timeout(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    state = {"enabled": "enabled", "state": "inactive"}
+    restored = [{"unit": unit, "after": state, "_start_pending": True}]
+    clock = iter([0.0, *([1.0] * 10)])
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit, **_kwargs: dict(state))
+    monkeypatch.setattr(deploy.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("host mutation"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_path_unit_start_timeout:"):
+        deploy._verify_deferred_path_unit_starts(
+            restored, door_holds_dir=tmp_path / "absent", timeout_seconds=0.5,
+        )
+
+
+def test_timer_verification_preserves_boot_policy_check(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    restored = [{"unit": unit, "after": {"enabled": "enabled"}, "_start_pending": True}]
+    monkeypatch.setattr(deploy, "_systemd_unit_state",
+                        lambda _unit, **_kwargs: {"enabled": "disabled", "state": "active"})
+    with pytest.raises(deploy.ControlPlaneDeployError, match="enabled_state_mismatch"):
+        deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=tmp_path / "absent")
+
+
+def test_timer_verification_state_probe_is_bounded(monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+
+    def timeout(argv, **kwargs):
+        assert kwargs["timeout"] == 15
+        raise subprocess.TimeoutExpired(argv, 15)
+
+    monkeypatch.setattr(deploy.subprocess, "run", timeout)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_systemd_state_probe_failed:"):
+        deploy._systemd_unit_state(unit)
+
+
+def test_timer_verification_bounds_contended_hold_lock(tmp_path, monkeypatch):
+    import fcntl
+
+    root = tmp_path / "holds"
+    root.mkdir()
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    restored = [{"unit": unit, "after": {"enabled": "enabled"}, "_start_pending": True}]
+    clock = [0.0]
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(deploy.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda *_args, **_kwargs: pytest.fail("probe under contended lock"))
+    with (root / ".lock").open("a") as contender:
+        fcntl.flock(contender.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_door_holds_lock_timeout$"):
+            deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=root, timeout_seconds=0.2)
+    # The timed-out reader closes its descriptor rather than retaining the lock.
+    with deploy._locked_door_holds(root):
+        pass
+    assert restored[0]["_start_pending"]
+
+
+def test_timer_verification_rejects_late_final_active_probe(tmp_path, monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    restored = [{"unit": unit, "after": {"enabled": "enabled"}, "_start_pending": True}]
+    clock = [0.0]
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+
+    def late_probe(_unit, *, deadline):
+        clock[0] = deadline
+        return {"enabled": "enabled", "state": "active"}
+
+    monkeypatch.setattr(deploy, "_systemd_unit_state", late_probe)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_path_unit_start_timeout:"):
+        deploy._verify_deferred_path_unit_starts(restored, door_holds_dir=tmp_path / "absent", timeout_seconds=0.2)
+    assert restored[0]["_start_pending"]
+
+
+def test_timer_verification_probes_share_the_remaining_budget(monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    clock = [0.0]
+    timeouts = []
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+
+    def probe(argv, *, timeout, **_kwargs):
+        timeouts.append(timeout)
+        clock[0] += 0.1
+        return subprocess.CompletedProcess(argv, 0, stdout="enabled" if argv[1] == "is-enabled" else "active")
+
+    monkeypatch.setattr(deploy.subprocess, "run", probe)
+    assert deploy._systemd_unit_state(unit, deadline=0.3) == {"enabled": "enabled", "state": "active"}
+    assert timeouts == pytest.approx([0.3, 0.2])
+
+
+def test_timer_verification_probe_deadline_prevents_late_success(monkeypatch):
+    unit = "blueprint-pubsub-handoff-listener.timer"
+    clock = [0.0]
+    monkeypatch.setattr(deploy.time, "monotonic", lambda: clock[0])
+
+    def late_probe(argv, **_kwargs):
+        clock[0] = 0.3
+        return subprocess.CompletedProcess(argv, 0, stdout="enabled")
+
+    monkeypatch.setattr(deploy.subprocess, "run", late_probe)
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_systemd_state_probe_failed:"):
+        deploy._systemd_unit_state(unit, deadline=0.3)
 
 
 def test_unreadable_break_glass_notes_never_fail_a_finished_deploy(tmp_path, monkeypatch) -> None:
@@ -2238,29 +2597,6 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         ),
     )
 
-    # Retirement runs for real, but only against this test's own tree: never
-    # the host's protection sources, runtime root or process table.
-    monkeypatch.setattr(deploy, "_live_release_commits", lambda *args, **kwargs: [])
-    protection = _protection_sources(tmp_path / "protection")
-    # A previous deploy stopped between moving a tree aside and deleting it.
-    leftover = tmp_path / "releases" / ".retiring" / f"{'e' * 40}-0123456789ab"
-    leftover.mkdir(parents=True)
-    (leftover / "payload").write_bytes(b"x" * 32)
-    paid_gate_held_while_deleting: list[bool] = []
-    delete_retiring_trees = deploy.delete_retiring_trees
-
-    def observed_delete(roots):
-        with lock.open("r", encoding="utf-8") as probe:
-            try:
-                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                paid_gate_held_while_deleting.append(True)
-            else:
-                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
-                paid_gate_held_while_deleting.append(False)
-        return delete_retiring_trees(roots)
-
-    monkeypatch.setattr(deploy, "delete_retiring_trees", observed_delete)
     receipt = deploy.deploy_control_plane_commit(
         source_repo=source,
         source_commit=commit,
@@ -2275,7 +2611,6 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         scene_preparation_bootstrap_file=tmp_path / "absent-bootstrap.json",
         controls_autoprovision_bootstrap_file=tmp_path / "absent-controls-bootstrap.json",
         disk_reservation_root=tmp_path / "disk-reservations",
-        release_protection_sources=protection,
     )
 
     assert observed == [
@@ -2318,25 +2653,9 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     ]
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
-    # The synthetic active link points outside the release root, so the plan
-    # cannot prove the active release: retirement is reported, never fatal,
-    # and its summary still lands under the state root.
-    retirement = receipt["release_retirement"]
-    assert retirement["status"] == "skipped"
-    assert retirement["blockers"] == ["release_retirement_active_target_outside_root"]
-    assert retirement["lock_roots"] == sorted(
-        str(path.resolve()) for path in (tmp_path / "state", protection.control_plane_root)
-    )
-    summary = tmp_path / "state" / "release-retention" / "latest-deploy-retirement.json"
-    assert json.loads(summary.read_text(encoding="utf-8"))["alerts"] == [
-        "release_retirement_blocked:release_retirement_active_target_outside_root"
-    ]
-    # Leftovers go before the disk reservation; this deploy's own deletion waits
-    # until the paid-launch gate is open again, so launches are not held out.
-    assert retirement["startup_swept"] == [
-        {"path": str(leftover.resolve()), "bytes": 32, "shared_bytes": 0}
-    ]
-    assert paid_gate_held_while_deleting == [False, True, False]
+    assert receipt["release_retirement"]["status"] == "not_requested"
+    assert receipt["release_retirement"]["retired_bytes"] == 0
+    assert not (tmp_path / "state/release-retention/latest-deploy-retirement.json").exists()
 
 
 def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
@@ -2942,7 +3261,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
         "_restore_installed_path_units",
         lambda installed, **kwargs: restored.append(
             {"installed": installed, **kwargs}
-        ),
+        ) or [],
     )
     monkeypatch.setattr(
         deploy,
@@ -2996,6 +3315,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
             "arm_path_units": False,
             "always_arm_units": (),
             "held_units": {},
+            "defer_start_verification": True,
         }
     ]
 
@@ -3263,7 +3583,7 @@ def _release_trees(releases: Path, ages: dict[str, float], *, now: float) -> Non
 def test_release_retirement_is_skipped_without_protection_sources_and_applied_with_them(
     tmp_path: Path,
 ) -> None:
-    """Deploy retires superseded trees only when it can prove what is still live."""
+    """The explicit compatibility helper retires only provably unused trees."""
 
     import time as _time
 
@@ -3315,11 +3635,6 @@ def test_release_retirement_is_skipped_without_protection_sources_and_applied_wi
     assert applied["alerts"] == []
     assert not (releases / superseded).exists()
     assert (releases / current).is_dir()
-    source = Path(deploy.__file__).read_text(encoding="utf-8")
-    assert '"release_retirement": release_retirement,' in source
-    assert source.index("release_retirement = _retire_superseded_release_trees(") > source.index(
-        "automation_unit_state_receipts = _restore_installed_path_units("
-    )
 
 
 def test_deploy_retirement_honors_required_historical_evidence_binding(tmp_path: Path) -> None:
@@ -3490,10 +3805,6 @@ def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
     assert summary["source_commit"] == current
     assert summary["retired_commits"] == [superseded]
     assert summary["alerts"] == [] and summary["lease_protected_tree_count"] == 0
-    # The deploy passes its own state root to both.
-    source = Path(deploy.__file__).read_text(encoding="utf-8")
-    assert "            state_root=state,\n" in source
-    assert 'summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME' in source
 
 
 def test_deploy_retirement_reports_what_it_moved_deleted_and_swept(

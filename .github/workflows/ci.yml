@@ -54,7 +54,8 @@ jobs:
           assert isinstance(selected, list) and all(isinstance(row, str) for row in selected)
           changed = plan["changed_files"]
           assert isinstance(changed, list) and all(isinstance(row, str) for row in changed)
-          native_tests = {"tests/test_registered_feature_linux.py", "tests/test_legacy_owner_linux.py"}
+          native_tests = {"tests/test_registered_feature_linux.py", "tests/test_legacy_owner_linux.py",
+                          "tests/test_historical_generation_linux.py"}
           required = bool(native_tests.intersection(changed)) or any(row.split("::", 1)[0] in native_tests for row in selected)
           with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
               output.write("required=" + str(required).lower() + "\n")
@@ -183,6 +184,14 @@ jobs:
           # runner. Keep the CUDA runtime out of the ordinary PR dependency set.
           uv pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
 
+      - name: Install isolated daily research SDK for wire proof
+        if: hashFiles('tools/daily_research/requirements.txt') != ''
+        run: |
+          uv venv "${RUNNER_TEMP}/daily-research-sdk-proof" --python 3.12
+          uv pip install --python "${RUNNER_TEMP}/daily-research-sdk-proof/bin/python" \
+            -r tools/daily_research/requirements.txt pytest==9.1.1
+          printf '%s\n' "BLUEPRINT_RESEARCH_SDK_PYTHON=${RUNNER_TEMP}/daily-research-sdk-proof/bin/python" >> "${GITHUB_ENV}"
+
       - name: Verify approved CPU model runner with real inference
         run: |
           uv run --no-sync python -c 'import onnx, onnxruntime; assert onnx.__version__ == "1.23.0"; assert onnxruntime.__version__ == "1.30.0"'
@@ -300,7 +309,9 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
-      UV_PROJECT_ENVIRONMENT: /opt/blueprint-native-test-venv
+      # The privileged loader requires protected ancestry. Runner /opt can be
+      # 0777 even when the interpreter itself is sealed root-owned.
+      UV_PROJECT_ENVIRONMENT: /var/lib/blueprint-native-test-venv
     steps:
       - name: Checkout exact feature sources
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -371,15 +382,17 @@ jobs:
           printf 'PID 1 executable: %s\n' "$manager"
           test "$manager" = /usr/lib/systemd/systemd
           test -f /sys/fs/cgroup/cgroup.controllers
-          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-native-test-venv
-          uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/blueprint-native-test-venv
+          uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
           uv lock --check
-          uv sync --frozen --extra dev --python /usr/bin/python3
-          uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts
-          uv pip install --python /opt/blueprint-native-test-venv/bin/python --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
+          # Privileged SDK imports reject aliases to a user-owned package cache.
+          # Give this root-sealed disposable distribution independent inodes.
+          uv sync --frozen --extra dev --python /usr/bin/python3 --link-mode copy
+          uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts
+          uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
           # ProtectHome hides /home/runner from the actual different-UID child.
           # Seal only this new disposable interpreter, with a root-owned base.
-          sudo chown -hR root:root /opt/blueprint-native-test-venv
+          sudo chown -hR root:root /var/lib/blueprint-native-test-venv
 
       - name: Prove actual root and ordinary-UID lifecycle
         env:
@@ -390,16 +403,21 @@ jobs:
           mkdir -p "$evidence"
           test_temp="$(mktemp -d "${RUNNER_TEMP}/blueprint-native-tests.XXXXXX")"
           trap 'rm -rf -- "$test_temp"' EXIT
-          /opt/blueprint-native-test-venv/bin/python -m pytest \
+          /var/lib/blueprint-native-test-venv/bin/python -m pytest \
+            tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption \
             tests/test_registered_feature_linux.py::test_actual_root_blueprint_uid_cache_lifetime_and_revoke \
             tests/test_registered_feature_linux.py::test_actual_contained_blueprint_native_pair_child_and_kernel_completion \
             tests/test_legacy_owner_linux.py::test_actual_legacy_owner_door_privilege_and_revocation \
+            tests/test_historical_generation_linux.py::test_actual_historical_target_only_write_and_foreign_reference_visibility \
+            tests/test_historical_generation_linux.py::test_actual_private_restore_member_permission_interruption \
+            tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_default_off_delete_and_second_tick \
+            tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_offload_and_restore \
             -m 'slow or not slow' --basetemp="$test_temp" \
-            --junitxml="$evidence/native-junit.xml" -q
-          /opt/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
+            --junitxml="$evidence/native-junit.xml" --maxfail=1 -q
+          /var/lib/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
-          assert len(cases) == 3, "all three exact native selectors must execute"
+          assert len(cases) == 45, "all original boundaries, admitted escaped paths and maximum-depth restore, private-prefix, split-publication, unfinished-owner reconciliation, expired observation and DELETE attempts and SIGKILL recovery cases must execute"
           assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "native skips and refusals do not prove acceptance"
           PYTHON
 

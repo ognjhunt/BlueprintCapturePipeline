@@ -42,7 +42,10 @@ Environment=BLUEPRINT_TASK_EVALUATION_EPISODE_COMPILATION_OUTPUT_ROOT=/var/lib/b
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
 # Plan 14 §1: this unit owns pending/ in every mode and holds no credential.  BLUEPRINT_EPISODE_COMPILATION_EXECUTION
-# (host, the default; cloud_run_shadow; cloud_run) comes from the shared environment file.
+# (host, cloud_run_shadow or cloud_run) comes from the shared environment file.  Unset or empty it is auto (owner
+# decision 2026-09-30): cloud_run once the config below is there and usable for this stage, host (today's path,
+# byte for byte) without it.  cloud_run shadows each row of a class still earning its three shadow passes while
+# compiling it here, then hands that class's rows off.  Set host to keep every row here, config or not.
 Environment=BLUEPRINT_REMOTE_CPU_JOBS_ROOT=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs
 Environment=BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG=/etc/blueprint/remote-cpu-workers.json
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env

@@ -296,6 +296,7 @@ def build_published_scene_configuration_toolchain(
             0o444,
         )
         with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o444)
             stream.write((canonical_json(receipt) + "\n").encode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())

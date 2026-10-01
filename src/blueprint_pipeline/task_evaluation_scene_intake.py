@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from .task_evaluation_scene_retirement_access import scene_participant
 import fcntl
-import json
-import math
 import os
 import re
 from collections.abc import Mapping
@@ -20,23 +18,44 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .decision_evidence_contracts import cross_runtime_canonical_digest as canonical_digest
-from .validation_file_digests import file_digest_scope
-from .task_evaluation_scene_execution_window import effective_execution_expiry
-from .task_evaluation_scene_execution_budget import (
-    ATTEMPT_GRANT_FIELD, effective_execution_budget, validate_attempt_execution_budget,
+from .task_evaluation_scene_intent_storage import (
+    _scene_publisher_checkpoint,
+    write_exclusive,
 )
+
+from .control_plane_registered_reference_gate import _publisher_checkpoint, _publisher_observation  # noqa: F401 - compatibility re-export
 from .task_evaluation_launch_preparation_queue import (
-    _write_launch_preparation_record_exclusive_locked as _write_exclusive_native,
+    _write_launch_preparation_record_exclusive_locked as _write_exclusive_native,  # noqa: F401
 )
+from .task_evaluation_scene_execution_budget_evidence import (
+    ATTEMPT_GRANT_FIELD,
+    effective_execution_budget,
+    validate_attempt_execution_budget,
+)
+from .task_evaluation_scene_execution_window_evidence import effective_execution_expiry
+from .task_evaluation_scene_intent_contracts import (
+    _COMMIT,
+    _DIGEST,
+    _ID,
+    ARTICULATION_JOINT_TYPES,
+    ATTEMPT_SCHEMA,
+    CLIENTS_ENV,
+    INTENT_SCHEMA,
+    REQUEST_SCHEMA,
+    ROOT_ENV,
+    SUPPORTED_POLICY_CANDIDATE_IDS,
+    TASK_STRATEGIES,
+    SceneIntakeError,
+    _identifier,
+    _number,
+    _read,
+    _require,
+    _seal,
+    canonical_digest,
+    validate_request,
+)
+from .validation_file_digests import file_digest_scope
 
-from .control_plane_registered_reference_gate import _publisher_observation, _publisher_checkpoint
-
-TASK_STRATEGIES = ("pick_and_place", "articulated_open_close")
-ARTICULATION_JOINT_TYPES = ("prismatic", "revolute")
-REQUEST_SCHEMA = "task_evaluation_scene_intake_request.v1"
-INTENT_SCHEMA = "task_evaluation_scene_intent.v1"
-ATTEMPT_SCHEMA = "task_evaluation_scene_attempt.v1"
 TERMINAL_SETTLEMENT_SCHEMA = "task_evaluation_terminal_scene_attempt_settlement.v1"
 _DEPENDENT_ROW_PREFIXES = ("scene-configuration-", "controls-")
 
@@ -44,122 +63,10 @@ _DEPENDENT_ROW_PREFIXES = ("scene-configuration-", "controls-")
 def _dependent_row_id(attempt_id: str) -> bool:
     """Rows a scene attempt reserves for its own scene-configuration and controls phases."""
     return attempt_id.startswith(_DEPENDENT_ROW_PREFIXES)
-ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"
-CLIENTS_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS"
-_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_COMMIT = re.compile(r"[0-9a-f]{40}\Z")
-#: The two frozen policy candidates this ADP-009D run actually supports end to
-#: end (scene setup CANDIDATE_IDS, policy-canary handoff, dispatch). Intake
-#: rejects any other pair up front instead of accepting it and failing late,
-#: after construction spend, at the handoff (A10). Do not broaden this here.
-SUPPORTED_POLICY_CANDIDATE_IDS = ("pi05_droid", "groot_n17_droid")
 
 
-class SceneIntakeError(ValueError):
-    pass
 
 
-def _require(condition: bool, code: str) -> None:
-    if not condition:
-        raise SceneIntakeError("scene_intake_" + code)
-
-
-def _identifier(value: Any) -> bool:
-    return isinstance(value, str) and _ID.fullmatch(value) is not None
-
-
-def _number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
-def _seal(value: Mapping[str, Any], field: str) -> dict[str, Any]:
-    result = dict(value)
-    result[field] = canonical_digest(result, digest_field=field)
-    return result
-
-
-def validate_request(value: Mapping[str, Any], *, now: float) -> dict[str, Any]:
-    _require(set(value) == {"schema_version", "submission_id", "owner", "source", "task",
-                            "execution", "consent"}, "request_fields_invalid")
-    _require(value.get("schema_version") == REQUEST_SCHEMA, "schema_invalid")
-    _require(_identifier(value.get("submission_id")), "submission_id_invalid")
-    owner = value.get("owner")
-    _require(isinstance(owner, Mapping) and set(owner) == {"user_id", "organization_id"}
-             and all(isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._@-]{0,127}", v)
-                     for v in owner.values()), "owner_invalid")
-    source = value.get("source")
-    _require(isinstance(source, Mapping) and set(source) - {"collision_mesh"} == {"kind", "binding_id", "content_digest"},
-             "source_invalid")
-    _require(source["kind"] in {"capture_bundle", "mesh", "gaussian_splat", "public_scene"}
-             and _identifier(source["binding_id"])
-             and isinstance(source["content_digest"], str)
-             and _DIGEST.fullmatch(source["content_digest"]) is not None, "source_invalid")
-    if "collision_mesh" in source:
-        companion = source["collision_mesh"]
-        _require(source["kind"] == "gaussian_splat" and isinstance(companion, Mapping)
-                 and set(companion) == {"binding_id", "content_digest", "rights_reference", "frame_relation"}
-                 and _identifier(companion.get("binding_id")) and companion["binding_id"] != source["binding_id"]
-                 and isinstance(companion.get("content_digest"), str)
-                 and _DIGEST.fullmatch(companion["content_digest"]) is not None
-                 and isinstance(companion.get("rights_reference"), str)
-                 and _DIGEST.fullmatch(companion["rights_reference"]) is not None
-                 and companion.get("frame_relation") == "owner_declared_common_frame", "collision_mesh_binding_invalid")
-    task = value.get("task")
-    _require(isinstance(task, Mapping) and task.get("strategy") in TASK_STRATEGIES
-             and _identifier(task.get("task_id")), "task_invalid")
-    _require(type(task.get("reuse_completed_stages", True)) is bool, "task_reuse_mode_invalid")
-    # A relocation binds a destination; an articulated open/close binds the
-    # mechanism instead (the moving part never leaves its assembly).
-    required = (("subject", "support", "articulation", "success")
-                if task["strategy"] == "articulated_open_close"
-                else ("subject", "support", "destination", "success"))
-    for key in required:
-        _require(isinstance(task.get(key), Mapping) and bool(task[key]), "task_" + key + "_missing")
-    if task["strategy"] == "articulated_open_close":
-        _require(task["articulation"].get("joint_type") in ARTICULATION_JOINT_TYPES
-                 and isinstance(task["articulation"].get("part_label"), str)
-                 and task["articulation"]["part_label"].strip() != "", "task_articulation_invalid")
-    from .task_evaluation_scene_execution_scope import validate_execution
-    validate_execution(value, now=now)
-    consent = value.get("consent")
-    _require(isinstance(consent, Mapping) and set(consent) == {
-        "accepted_by", "accepted_at_epoch", "rights_reference", "provider_terms_reference",
-        "private_processing_authorized", "provider_training_authorized", "task_confirmed",
-        "spend_authorized"}, "consent_invalid")
-    _require(consent["accepted_by"] == owner["user_id"]
-             and _number(consent["accepted_at_epoch"])
-             and now - 86400 <= consent["accepted_at_epoch"] <= now, "consent_actor_or_time_invalid")
-    _require(all(isinstance(consent[k], str) and 1 <= len(consent[k]) <= 1000
-                 for k in ("rights_reference", "provider_terms_reference")), "consent_references_missing")
-    _require(consent["private_processing_authorized"] is True
-             and consent["provider_training_authorized"] is False
-             and consent["task_confirmed"] is True and consent["spend_authorized"] is True,
-             "consent_missing")
-    # Detach mutable caller state and reject non-JSON/NaN task values.
-    try:
-        detached = json.loads(json.dumps(value, allow_nan=False))
-        canonical_digest(detached)
-        return detached
-    except (TypeError, ValueError) as exc:
-        raise SceneIntakeError("scene_intake_json_invalid") from exc
-
-
-def _scene_publisher_checkpoint():
-    from .control_plane_lane_experiment_errors import OwnerTargetVersionError
-    try:
-        _publisher_checkpoint()
-    except OwnerTargetVersionError as exc:
-        raise SceneIntakeError(exc.code) from None
-
-
-def write_exclusive(path, value):
-    from .control_plane_lane_experiment_errors import OwnerTargetVersionError
-    _scene_publisher_checkpoint()
-    try:
-        return _write_exclusive_native(path, value)
-    except OwnerTargetVersionError as exc:
-        raise SceneIntakeError(exc.code) from None
 
 
 def _root(root: Path) -> Path:
@@ -181,24 +88,13 @@ def _lock(root: Path):
         os.close(descriptor)
 
 
-def _read(path: Path, field: str) -> dict[str, Any]:
-    _require(not path.is_symlink(), "record_unsafe")
-    try:
-        value = json.loads(path.read_text())
-    except (OSError, ValueError) as exc:
-        raise SceneIntakeError("scene_intake_record_unreadable") from exc
-    _require(isinstance(value, dict) and value.get(field) == canonical_digest(value, digest_field=field),
-             "record_digest_invalid")
-    return value
-
-
 @scene_participant('queue_root')
 @_publisher_observation
 def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                        authenticated_client: str, trusted_clients: set[str],
                        now: float | None = None) -> dict[str, Any]:
-    from .control_plane_registered_reference_gate import refuse_registered_references
     from .control_plane_lane_experiment_errors import OwnerTargetVersionError
+    from .control_plane_registered_reference_gate import refuse_registered_references
     try:
         refuse_registered_references(value, queue_root)
     except OwnerTargetVersionError as exc:
@@ -313,7 +209,9 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
             _require(not any(row.get("recovery", {}).get("prior_attempt_id") == recovery_from_attempt_id
                              for row in rows), "recovery_successor_already_reserved")
             from .task_evaluation_scene_recovery import (
-                MAX_MARKET_MISS_RECOVERIES, MAX_PREALLOCATION_CAPACITY_RECOVERIES, validate_recovery_evidence,
+                MAX_MARKET_MISS_RECOVERIES,
+                MAX_PREALLOCATION_CAPACITY_RECOVERIES,
+                validate_recovery_evidence,
             )
             recovery = validate_recovery_evidence(recovery_evidence,
                 prior_attempt=prior, provider=provider, now=moment)
@@ -499,3 +397,37 @@ def revoke_scene_intent(*, queue_root: str | Path, intent_id: str, intent_digest
             "scope": "future_execution", "provider_mutation_performed": False}, "receipt_digest")
         write_exclusive(path, receipt)
         return receipt
+
+
+# Preserve the original import surface while validation lives in pure readers.
+__all__ = [
+    'ARTICULATION_JOINT_TYPES',
+    'ATTEMPT_GRANT_FIELD',
+    'ATTEMPT_SCHEMA',
+    'CLIENTS_ENV',
+    'INTENT_SCHEMA',
+    'REQUEST_SCHEMA',
+    'ROOT_ENV',
+    'SUPPORTED_POLICY_CANDIDATE_IDS',
+    'TASK_STRATEGIES',
+    'TERMINAL_SETTLEMENT_SCHEMA',
+    '_COMMIT',
+    '_DIGEST',
+    '_ID',
+    'SceneIntakeError',
+    '_identifier',
+    '_number',
+    '_read',
+    '_require',
+    '_seal',
+    'canonical_digest',
+    'effective_execution_budget',
+    'effective_execution_expiry',
+    'reserve_scene_attempt',
+    'revoke_scene_intent',
+    'scene_intent_status',
+    'stage_scene_intent',
+    'validate_attempt_execution_budget',
+    'validate_request',
+    'write_exclusive',
+]

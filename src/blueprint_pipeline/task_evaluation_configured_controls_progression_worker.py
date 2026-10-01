@@ -10,10 +10,6 @@ an allocator or provider directly.
 
 from __future__ import annotations
 
-from .configured_scene_run_identity import episode_namespace, progression_directory
-
-from .configured_controls_plan_validation import TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError
-
 import argparse
 import hashlib
 import json
@@ -26,11 +22,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from . import task_evaluation_policy_canary_handoff as policy_canary_handoff
 from . import (
     task_evaluation_scene_configuration_activation_automation as scene_configuration_activation,
 )
+from .configured_controls_plan_validation import (
+    TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError,  # noqa: PLC0414 - compatibility reexport
+)
+from .configured_controls_plan_validation import (
+    load_configured_controls_plan as _load_progression_plan,
+)
+from .configured_scene_run_identity import episode_namespace, progression_directory
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .configured_controls_plan_validation import load_configured_controls_plan as _load_progression_plan
 from .task_evaluation_configured_controls_progression import (
     PROGRESSION_SCHEMA_VERSION,
     TaskEvaluationConfiguredControlsCapacityDeferred,
@@ -41,11 +44,28 @@ from .task_evaluation_configured_controls_progression import (
     stage_configured_controls_episode_preparation,
     submit_authorized_progression_launch,
 )
+from .task_evaluation_configured_controls_source_evidence import (
+    _load as _load,  # noqa: PLC0414 - compatibility reexport
+)
+from .task_evaluation_configured_controls_source_evidence import (
+    _sha256 as _sha256,  # noqa: PLC0414 - compatibility reexport
+)
+from .task_evaluation_configured_controls_source_evidence import (
+    validate_source as _validate_source_evidence,
+)
+from .task_evaluation_configured_scene_object_store import (
+    configured_scene_object_store_publisher,
+)
 from .task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
     validate_launch_activation_request,
 )
 from .task_evaluation_launch_activation_queue import stage_launch_activation_request
+from .task_evaluation_launch_dispatcher import (
+    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
+    validate_launch_request,
+)
+from .task_evaluation_launch_evidence_contracts import validated_succeeded_webapp_sync_row
 from .task_evaluation_launch_preparation_contract import (
     TaskEvaluationLaunchPreparationContractError,
     validate_launch_preparation_request,
@@ -54,24 +74,14 @@ from .task_evaluation_policy_canary_preparation_dispatch import (
     validate_policy_canary_execution_plan,
 )
 from .task_evaluation_policy_canary_setup import validate_policy_canary_setup
+from .task_evaluation_release_identity import bound_to_other_release, running_release_commit
 from .task_evaluation_shared_mutation_window import (
     TaskEvaluationSharedMutationWindowError,
     materialize_shared_mutation_window,
     validate_shared_mutation_window,
     validate_shared_mutation_window_template,
 )
-from .task_evaluation_configured_scene_object_store import (
-    configured_scene_object_store_publisher,
-)
-from .task_evaluation_launch_dispatcher import (
-    LAUNCH_RECEIPT_DIGEST_CANONICALIZATION,
-    validate_launch_request,
-)
-from .task_evaluation_launch_reconciler import validated_succeeded_webapp_sync_row
-from . import task_evaluation_policy_canary_handoff as policy_canary_handoff
-from .task_evaluation_release_identity import bound_to_other_release, running_release_commit
-from .validation_file_digests import file_digest_scope, sha256_file
-
+from .validation_file_digests import file_digest_scope
 
 PLAN_SCHEMA_VERSION = "task_evaluation_configured_controls_progression_plan.v2"
 DESTINATION_PLAN_SCHEMA_VERSION = (
@@ -103,20 +113,6 @@ def configured_controls_release_window_publisher() -> Callable[..., Mapping[str,
     return configured_scene_object_store_publisher(
         key_prefix=CONFIGURED_CONTROLS_RELEASE_WINDOW_KEY_PREFIX
     )
-
-
-def _load(path: Path, *, blocker: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker) from exc
-    if path.is_symlink() or not isinstance(value, Mapping):
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker)
-    return dict(value)
-
-
-def _sha256(path: Path) -> str:
-    return sha256_file(path)
 
 
 def _write_immutable(path: Path, value: Mapping[str, Any]) -> None:
@@ -163,73 +159,7 @@ def _input(path_value: Any, *, blocker: str) -> dict[str, Any]:
 
 
 def _validate_source(run_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    receipt = _load(
-        run_root / "launch_receipt.json", blocker="configured_controls_worker_launch_receipt_invalid"
-    )
-    expected = (
-        cross_runtime_canonical_digest(receipt, digest_field="receipt_digest")
-        if receipt.get("receipt_digest_canonicalization")
-        == LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
-        else canonical_digest(receipt, digest_field="receipt_digest")
-    )
-    terminal = receipt.get("terminal_evidence")
-    result_artifact = terminal.get("result") if isinstance(terminal, Mapping) else None
-    if (
-        receipt.get("schema_version") != "task_evaluation_launch_receipt.v1"
-        or receipt.get("status") != "completed"
-        or receipt.get("receipt_digest") != expected
-        or not isinstance(terminal, Mapping)
-        or terminal.get("status") != "passed"
-        or not isinstance(terminal.get("scene_configuration"), Mapping)
-        or not isinstance(result_artifact, Mapping)
-        or result_artifact.get("exists") is not True
-    ):
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_qualifying_terminal_missing"
-        )
-    result_path = Path(str(result_artifact.get("path") or "")).expanduser()
-    if (
-        result_path.is_symlink()
-        or not result_path.is_file()
-        or _sha256(result_path) != result_artifact.get("digest")
-    ):
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_terminal_artifact_invalid"
-        )
-    sync = _load(
-        run_root / "webapp_sync_succeeded.json",
-        blocker="configured_controls_worker_webapp_sync_missing",
-    )
-    try:
-        validated_succeeded_webapp_sync_row(receipt=receipt, attempt=sync)
-    except Exception as exc:
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_webapp_sync_invalid"
-        ) from exc
-    zero = _load(
-        run_root / "post_teardown_provider_zero_receipt.json",
-        blocker="configured_controls_worker_post_teardown_provider_zero_missing",
-    )
-    if (
-        zero.get("schema_version") != "task_evaluation_post_teardown_provider_zero.v1"
-        or zero.get("status") != "provider_zero_confirmed"
-        or zero.get("provider_zero_verified") is not True
-        or zero.get("continuing_spend_from_this_run") is not False
-        or zero.get("allocator_invoked") is not False
-        or zero.get("provider_mutation_performed") is not False
-        or zero.get("automatic_retry_performed") is not False
-        or zero.get("blockers") != []
-        or zero.get("provider_zero_receipt_digest")
-        != canonical_digest(zero, digest_field="provider_zero_receipt_digest")
-        or any(
-            zero.get(field) != receipt.get(field)
-            for field in ("launch_id", "run_id", "request_digest", "receipt_digest", "launch_profile_digest")
-        )
-    ):
-        raise TaskEvaluationConfiguredControlsProgressionWorkerError(
-            "configured_controls_worker_post_teardown_provider_zero_invalid"
-        )
-    return _load(result_path, blocker="configured_controls_worker_terminal_result_invalid"), receipt, zero
+    return _validate_source_evidence(run_root, load_json=_load, sha256=_sha256)
 
 
 def _phase(plan: Mapping[str, Any], name: str) -> dict[str, Any]:
@@ -396,7 +326,8 @@ def _activation_capacity_ready(queue_root: Path) -> bool:
     ledger = os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT")
     if not ledger:
         return True  # The activation worker always retains its own disk gate.
-    from .control_plane_disk_budget import disk_headroom, effective_footprint_bytes as held  # the least activation reserves
+    from .control_plane_disk_budget import disk_headroom  # the least activation reserves
+    from .control_plane_disk_budget import effective_footprint_bytes as held
     return disk_headroom(target_root=queue_root, reservation_root=ledger)["available_bytes"] >= held("launch_activation", reservation_root=ledger)
 
 
@@ -1578,7 +1509,8 @@ def advance_configured_controls_plan(
 
     from .task_evaluation_controls_autoprovision import CONFIG_ENV
     if plan.get("evaluation_run_id") and os.getenv(CONFIG_ENV) and construction_activation["lane"] == "native_task_arena_construction":
-        from .task_evaluation_native_startup_recovery import advance as recover_startup, configuration as retry_configuration
+        from .task_evaluation_native_startup_recovery import advance as recover_startup
+        from .task_evaluation_native_startup_recovery import configuration as retry_configuration
         from .task_evaluation_scene_progression import CONFIG_ENV as PROGRESSION_CONFIG_ENV
 
         def retry_submitter():
@@ -1808,7 +1740,9 @@ def process_plans(**kwargs: Any) -> dict[str, Any]:
         registered_adoption = False
         task_run_for_adoption = profile.get("task_evaluation_run")
         if intent_root is not None and isinstance(task_run_for_adoption, Mapping):
-            from .task_evaluation_configured_controls_autostart import configured_controls_autostart_adoption_registry_name
+            from .task_evaluation_configured_controls_autostart import (
+                configured_controls_autostart_adoption_registry_name,
+            )
             registered_adoption = (intent_root / configured_controls_autostart_adoption_registry_name(
                 team_namespace=str(task_run_for_adoption.get("team_namespace") or ""),
                 scene_id=str(task_run_for_adoption.get("scene_id") or ""),

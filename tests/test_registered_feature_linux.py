@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import errno
+import functools
 import grp
 import hashlib
 import io
@@ -28,6 +29,61 @@ import pytest
 
 def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
+def _cache_fixture_disk_reservation(root):
+    from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+
+    # A real root fixture must not create the production ledger: its surviving
+    # /var/lib/blueprint parent would enable residency checks for later tests.
+    return functools.partial(
+        reserve_control_plane_disk,
+        reservation_root=root / "actual-cache-reservation-ledger",
+    )
+
+
+def test_cache_fixture_reservation_keeps_admission_and_history_in_its_installation(
+    tmp_path, monkeypatch
+):
+    from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+    from blueprint_pipeline.host_resident_launch_inputs import configured_launch_input_roots
+
+    roots_before = configured_launch_input_roots(env={})
+    # Use the real small sandbox filesystem; retain the proportional floor.
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES", "0")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    reserve = _cache_fixture_disk_reservation(tmp_path)
+    reservation = reserve(
+        "g1_checkpoint_cache",
+        target_root=workspace,
+        expected_bytes=4096,
+        minimum_bytes=4096,
+        workspace=workspace,
+        fresh=True,
+        evictor=None,
+    )
+    with reservation:
+        assert reservation.path.parent == tmp_path / "actual-cache-reservation-ledger"
+        entry = json.loads(reservation.path.read_bytes())
+        assert entry["role"] == "g1_checkpoint_cache"
+        assert entry["expected_bytes"] == 4096
+        assert entry["device"] == workspace.stat().st_dev
+        reservation.renew()
+        (workspace / "payload").write_bytes(b"cache bytes")
+        with pytest.raises(ControlPlaneDiskBudgetError, match="disk_budget_exceeded"):
+            reserve(
+                "g1_checkpoint_cache",
+                target_root=workspace,
+                expected_bytes=shutil.disk_usage(workspace).total + 1,
+                evictor=None,
+            )
+    assert not reservation.path.exists()
+    samples = (reservation.reservation_root / "history/g1_checkpoint_cache.jsonl").read_text()
+    sample = json.loads(samples.strip())
+    assert sample["outcome"] == "completed"
+    assert sample["observed_bytes"] > 0
+    assert configured_launch_input_roots(env={}) == roots_before
 
 
 def _substitute_gc_paths(line, replacements):
@@ -203,6 +259,7 @@ def _linux_cache_roundtrip():
         cache._PUBLIC_REGISTRATION = value["public"]
         cache._PUBLIC_INVENTORY = value["inventory_path"]
         cache._REGISTERED_ROOTS = (value["work"],)
+        cache.reserve_control_plane_disk = _cache_fixture_disk_reservation(root)
         inventory_raw = value["inventory_path"].read_bytes()
         grant = cache.issue_needed_checkpoint_cache_intent(
             principal="operator",

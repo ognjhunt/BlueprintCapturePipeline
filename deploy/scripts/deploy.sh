@@ -35,6 +35,7 @@ set -euo pipefail
 
 # Default values (override with environment variables)
 PROJECT_ID="${PROJECT_ID:-blueprint-8c1ca}"
+DEPLOYMENT_SCOPE=full
 PRIMARY_REGION="${PRIMARY_REGION:-us-central1}"
 SECONDARY_REGIONS="${SECONDARY_REGIONS:-us-east1}"
 STORAGE_BUCKET="${STORAGE_BUCKET:-${PROJECT_ID}.appspot.com}"
@@ -427,7 +428,9 @@ check_prerequisites() {
     verify_clean_release_source
     check_full_test_lane_deploy_gate
     validate_release_image_tag
-    validate_runtime_secret_references
+    if [[ "$DEPLOYMENT_SCOPE" == "full" ]]; then
+        validate_runtime_secret_references
+    fi
     validate_beta_data_residency
 
     # Check gcloud authentication
@@ -685,6 +688,14 @@ apply_terraform() {
 
     # Initialize Terraform
     terraform "${terraform_init_args[@]}"
+
+    # A worker bootstrap does not adopt the existing legacy topology. A later
+    # full deployment needs a reviewed adoption before it can create resources.
+    local guarded_state
+    guarded_state="$(mktemp)"
+    terraform show -json > "$guarded_state"
+    python3 "$PROJECT_ROOT/scripts/remote_cpu_deployment_scope.py" full-state "$guarded_state"
+    rm -f "$guarded_state"
 
     # Plan and apply
     terraform plan -input=false -out=tfplan
@@ -1114,6 +1125,10 @@ main() {
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
+            --remote-cpu-only)
+                DEPLOYMENT_SCOPE=remote_cpu
+                shift
+                ;;
             --docker-only)
                 DOCKER_ONLY=true
                 shift
@@ -1168,6 +1183,7 @@ main() {
                 echo "Options:"
                 echo "  --docker-only     Only build and push Docker image"
                 echo "  --terraform-only  Only apply Terraform configuration"
+                echo "  --remote-cpu-only Deploy only the isolated CPU worker infrastructure"
                 echo "  --function-only   Removed; Terraform owns Cloud Function topology"
                 echo "  --skip-docker     Skip Docker build (use existing image)"
                 echo "  --rollback        Roll Cloud Run jobs back to --rollback-image-tag"
@@ -1193,6 +1209,13 @@ main() {
     # Export for child functions
     export DRY_RUN
 
+    # Reject conflicting scopes before rollback or any provider command.
+    if [[ "$DEPLOYMENT_SCOPE" == "remote_cpu" ]] && \
+        [[ "$DOCKER_ONLY" == "true" || "$TERRAFORM_ONLY" == "true" || "$ROLLBACK" == "true" ]]; then
+        log_error "--remote-cpu-only cannot be combined with another deployment scope."
+        exit 2
+    fi
+
     if [[ "$DRY_RUN" == "true" ]]; then
         log_warning "DRY-RUN mode - no changes will be made"
     fi
@@ -1204,6 +1227,12 @@ main() {
 
     # Run deployment steps
     check_prerequisites
+
+    if [[ "$DEPLOYMENT_SCOPE" == "remote_cpu" ]]; then
+        source "$SCRIPT_DIR/remote-cpu-bootstrap.sh"
+        apply_remote_cpu_bootstrap
+        exit 0
+    fi
 
     if [[ "$DOCKER_ONLY" == "true" ]]; then
         build_docker_image

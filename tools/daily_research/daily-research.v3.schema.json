@@ -1,0 +1,634 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "blueprint.daily-research.v3.schema.json",
+  "title": "Blueprint agent-reviewed research v3",
+  "description": "Explicit dated background and approved refresh eligibility. Runtime enforces positive task capability coverage, live operational/deployment-critical gates, exact policy/fact/source bindings and source dates.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "blueprint.daily-research.v3"
+    },
+    "snapshot_content_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "checked_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    },
+    "proposed_next_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/candidate"
+      },
+      "maxItems": 100
+    },
+    "proposed_knowledge_deltas": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/delta"
+      },
+      "maxItems": 10
+    },
+    "refresh_policy_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "search_queries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "pages_opened": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "branches_checked": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "rejection_reasons": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "stop_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "shortfall_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "search_queries",
+        "pages_opened",
+        "branches_checked",
+        "rejection_reasons",
+        "stop_reason",
+        "shortfall_reason"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "snapshot_content_hash",
+    "checked_date",
+    "findings",
+    "blockers",
+    "proposed_next_actions",
+    "candidates",
+    "proposed_knowledge_deltas",
+    "refresh_policy_hash"
+  ],
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "publisher": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "source_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checked_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "classification": {
+          "enum": [
+            "operator",
+            "vendor",
+            "independent"
+          ]
+        },
+        "claim_kind": {
+          "enum": [
+            "fact",
+            "vendor_claim",
+            "hypothesis"
+          ]
+        },
+        "role": {
+          "enum": [
+            "task",
+            "capability",
+            "geography",
+            "background"
+          ]
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "origin": {
+          "enum": [
+            "live",
+            "snapshot"
+          ]
+        },
+        "evidence_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "current_availability",
+                "demonstrated_capability",
+                "named_deployment",
+                "unknown",
+                "vendor_claim"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_checked_at": {
+          "type": "string",
+          "anyOf": [
+            {
+              "format": "date"
+            },
+            {
+              "format": "date-time"
+            }
+          ]
+        },
+        "snapshot_loaded_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revalidated_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "anyOf": [
+                {
+                  "format": "date"
+                },
+                {
+                  "format": "date-time"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot_record_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot_fact_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "assertion_scope": {
+          "enum": [
+            "as_of_background",
+            "current_operational",
+            "deployment_critical"
+          ]
+        }
+      },
+      "required": [
+        "claim",
+        "url",
+        "publisher",
+        "source_date",
+        "checked_date",
+        "classification",
+        "claim_kind",
+        "role",
+        "quote",
+        "origin",
+        "evidence_level",
+        "source_checked_at",
+        "snapshot_loaded_at",
+        "revalidated_at",
+        "snapshot_record_id",
+        "snapshot_fact_id",
+        "assertion_scope"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "live"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "snapshot_loaded_at": {
+                "type": "null"
+              },
+              "snapshot_record_id": {
+                "type": "null"
+              },
+              "snapshot_fact_id": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "role": {
+                "enum": [
+                  "capability",
+                  "background"
+                ]
+              },
+              "snapshot_loaded_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "snapshot_record_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "snapshot_fact_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "assertion_scope": {
+                "const": "as_of_background"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "enum": [
+                  "capability",
+                  "background"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence_level": {
+                "enum": [
+                  "current_availability",
+                  "demonstrated_capability",
+                  "named_deployment",
+                  "vendor_claim"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "evidence_level": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "organization": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "organization_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "site": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "potential_robot_match": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "proposed_next_action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "qualification_status": {
+          "enum": [
+            "unqualified",
+            "needs_review"
+          ]
+        },
+        "confidence": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "maxItems": 20,
+          "minItems": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "maxItems": 12,
+          "minItems": 3
+        }
+      },
+      "required": [
+        "organization",
+        "organization_url",
+        "site",
+        "location",
+        "task",
+        "potential_robot_match",
+        "proposed_next_action",
+        "qualification_status",
+        "confidence",
+        "unknowns",
+        "evidence"
+      ]
+    },
+    "deltaEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "publisher": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "publication_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_checked_at": {
+          "type": "string",
+          "anyOf": [
+            {
+              "format": "date"
+            },
+            {
+              "format": "date-time"
+            }
+          ]
+        },
+        "classification": {
+          "enum": [
+            "operator",
+            "vendor",
+            "independent"
+          ]
+        },
+        "evidence_level": {
+          "enum": [
+            "current_availability",
+            "demonstrated_capability",
+            "named_deployment",
+            "unknown",
+            "vendor_claim"
+          ]
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "assertion_scope": {
+          "enum": [
+            "as_of_background",
+            "current_operational",
+            "deployment_critical"
+          ]
+        }
+      },
+      "required": [
+        "url",
+        "publisher",
+        "publication_date",
+        "source_checked_at",
+        "classification",
+        "evidence_level",
+        "quote"
+      ]
+    },
+    "delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "record_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fact_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "enum": [
+            "gap",
+            "conflict",
+            "refresh_due",
+            "unsupported",
+            "discovery",
+            "consequential"
+          ]
+        },
+        "proposed_statement": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "maxItems": 20,
+          "minItems": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/deltaEvidence"
+          },
+          "maxItems": 4,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "record_id",
+        "fact_id",
+        "reason",
+        "proposed_statement",
+        "unknowns",
+        "evidence"
+      ]
+    }
+  }
+}

@@ -56,6 +56,10 @@ DEFAULT_SURVEY_ALIASES: Mapping[str, str] = {
 BLUEPRINT_PREFIXES: tuple[str, ...] = (
     "/var/lib/blueprint", "/opt/blueprint", "/workspace", "/mnt/blueprint-work",
 )
+# Image layers and build cache live here, outside every Blueprint root. On
+# 2026-10-01 a local image unpack put about 80 GB on the root disk that the survey
+# could only call host ``/var/lib``. These host roots keep their own names.
+CONTAINER_RUNTIME_ROOTS: tuple[str, ...] = ("/var/lib/containerd", "/var/lib/docker")
 DEFAULT_SURVEY_MAX_ENTRIES = 3_000_000
 DEFAULT_SURVEY_MAX_SECONDS = 240.0
 # The capacity unit has MemoryMax=512M. Bound every growing walk container;
@@ -280,7 +284,7 @@ def _classification(
     only classified children, so a path below one that no deeper row claims is
     ``unclassified``, rooted at the child it lies in; so is a path under a Blueprint
     prefix that the table does not know. Everything else is ``host``, rooted at its
-    first two components.
+    first two components, or at its container runtime store.
     """
 
     base: tuple[str, ...] | None = None
@@ -293,6 +297,10 @@ def _classification(
         if (base is None or len(prefix) > len(base)) and parts[: len(prefix)] == prefix:
             base = prefix
     if base is None:
+        for runtime in CONTAINER_RUNTIME_ROOTS:
+            runtime_parts = _parts(runtime)
+            if parts[: len(runtime_parts)] == runtime_parts:
+                return "host", runtime_parts
         return "host", parts[:3]
     if len(parts) <= len(base):
         return "container", base
@@ -414,7 +422,8 @@ class _UsageWalk:
         self.unclassified_mtime: dict[str, float] = {}
         # st_dev -> [surveyed bytes, classified bytes]
         self.devices: dict[int, list[int]] = {}
-        # (st_dev, st_ino) -> [(not in a store, canonical name), attribution, allocated, apparent, st_dev]
+        # Shared rows also retain whether their owner slot was reserved while
+        # that root's memory share was active, before deferred byte accounting.
         self.shared: dict[tuple[int, int], list[Any]] = {}
         self.entries = 0
         self.unreadable = 0
@@ -467,14 +476,20 @@ class _UsageWalk:
             directory.file_attribution = attribution
         return attribution
 
-    def _add(self, attribution: tuple[str, str, str], allocated: int, apparent: int, files: int,
-             device: int) -> None:
+    def _reserve_owner(self, attribution: tuple[str, str, str]) -> bool:
         row = self.totals.get(attribution)
         if row is None:
             if len(self.totals) >= self.buffer_limit:
                 self.truncated = True
-                return
-            row = self.totals[attribution] = [0, 0, 0]
+                return False
+            self.totals[attribution] = [0, 0, 0]
+        return True
+
+    def _add(self, attribution: tuple[str, str, str], allocated: int, apparent: int, files: int,
+             device: int) -> None:
+        if not self._reserve_owner(attribution):
+            return
+        row = self.totals[attribution]
         row[0] += allocated
         row[1] += apparent
         row[2] += files
@@ -508,11 +523,12 @@ class _UsageWalk:
                 self.truncated = True
                 return
             self.shared[key] = [rank, attribution, allocated_bytes(metadata),
-                                int(metadata.st_size), device]
+                                int(metadata.st_size), device, self._reserve_owner(attribution)]
             return
         self.duplicates += 1
         if rank < held[0]:
             held[0], held[1] = rank, attribution
+            held[5] = self._reserve_owner(attribution)
 
     def walk(self, path: str, metadata: os.stat_result) -> None:
         """Walk one mount within its own filesystem, in ascending name order."""
@@ -534,11 +550,18 @@ class _UsageWalk:
                 with os.scandir(directory.path) as iterator:
                     entries = []
                     overflow = False
+                    # Keep time for stat/attribution of the partial, sorted batch.
+                    # A filesystem call itself cannot be preempted, but a large
+                    # directory must not consume every later mount's share.
+                    buffer_deadline = (self.clock() + self.deadline) / 2
                     for entry in iterator:
                         if len(entries) >= self.buffer_limit:
                             overflow = True
                             break
                         entries.append(entry)
+                        if self.clock() >= buffer_deadline:
+                            overflow = True
+                            break
                     entries.sort(key=lambda entry: entry.name)
             except OSError:
                 self.unreadable += 1
@@ -576,8 +599,9 @@ class _UsageWalk:
             stack.extend(reversed(subdirectories))
 
     def finish(self) -> None:
-        for _rank, attribution, allocated, apparent, device in self.shared.values():
-            self._add(attribution, allocated, apparent, 1, device)
+        for _rank, attribution, allocated, apparent, device, reserved in self.shared.values():
+            if reserved:
+                self._add(attribution, allocated, apparent, 1, device)
 
 
 def _mount_row(mount: str, used: int | None, surveyed: int, classified: int) -> dict[str, Any]:
@@ -660,8 +684,9 @@ def survey_usage(
     followed. Every inode is counted once, in allocated bytes, and attributed at its
     canonical path (``aliases`` applied, longest prefix first). The walk stops at
     ``max_entries`` or ``max_seconds`` with ``status: "truncated"``; unreadable
-    entries are counted, never raised. One row per filesystem says how much of its
-    used bytes the survey attributed.
+    entries are counted, never raised. Each root gets a reserved share of the
+    entry, time and memory budgets so a busy first disk cannot hide later disks.
+    One row per filesystem says how much of its used bytes the survey attributed.
     """
 
     started = clock()
@@ -703,8 +728,19 @@ def survey_usage(
             seen.add(key)
             walks.append((path, metadata))
     walk.walk_roots = frozenset(seen)
-    for path, metadata in walks:
+    root_count = max(1, len(walks))
+    entry_share, extra_entries = divmod(max_entries, root_count)
+    buffer_cap, shared_cap = walk.buffer_limit, walk.shared_limit
+    truncated = False
+    for index, (path, metadata) in enumerate(walks):
+        walk.max_entries = walk.entries + entry_share + (index < extra_entries)
+        walk.deadline = min(started + max_seconds, clock() + max_seconds / root_count)
+        walk.buffer_limit = buffer_cap * (index + 1) // root_count
+        walk.shared_limit = shared_cap * (index + 1) // root_count
+        walk.truncated = False
         walk.walk(path, metadata)
+        truncated |= walk.truncated
+    walk.truncated = truncated
     walk.finish()
 
     filesystems: dict[int, list[str]] = {}
@@ -730,6 +766,8 @@ def survey_usage(
                     if storage_class == "unclassified"]
     orphan_scratch = [(root, allocated) for root, allocated in unclassified
                       if is_orphan_scratch_root(root)]
+    container_runtime = [(root, allocated) for (root, storage_class), allocated in roots
+                         if storage_class == "host" and root in CONTAINER_RUNTIME_ROOTS]
     owners = sorted(walk.totals.items(),
                     key=lambda item: (-item[1][0], item[0][2], item[0][1], item[0][0]))
     survey: dict[str, Any] = {
@@ -769,6 +807,13 @@ def survey_usage(
              "newest_mtime_epoch": walk.unclassified_mtime.get(root)}
             for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_ROWS]
         ],
+        "container_runtime_roots": [
+            {"root": root, "allocated_bytes": allocated} for root, allocated in container_runtime
+        ],
+        "container_runtime_bytes": sum(allocated for _root, allocated in container_runtime),
+        # A truncated walk may stop before these stores: their totals are then
+        # lower bounds, and an absent store is unknown rather than empty.
+        "container_runtime_complete": not walk.truncated,
         "hardlinks": {
             "shared_inodes": len(walk.shared),
             "shared_bytes": sum(held[2] for held in walk.shared.values()),
@@ -783,6 +828,7 @@ def survey_usage(
 
 __all__ = [
     "BLUEPRINT_PREFIXES",
+    "CONTAINER_RUNTIME_ROOTS",
     "DEFAULT_SURVEY_ALIASES",
     "SURVEY_SCHEMA_VERSION",
     "is_orphan_scratch_root",

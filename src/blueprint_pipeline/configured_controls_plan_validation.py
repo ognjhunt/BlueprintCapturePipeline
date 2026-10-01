@@ -6,16 +6,18 @@ checks; service progression and pause/omission decisions remain in the worker.
 from __future__ import annotations
 
 import json
-import hashlib
-
-from pathlib import Path
 import re
 import stat
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .decision_evidence_contracts import canonical_digest
 from .configured_scene_run_identity import evaluation_scope
+from .decision_evidence_contracts import canonical_digest
+from .task_evaluation_configured_controls_source_evidence import (
+    TaskEvaluationConfiguredControlsProgressionWorkerError as TaskEvaluationConfiguredControlsProgressionWorkerError,  # noqa: PLC0414 - compatibility reexport
+)
 from .task_evaluation_team_run_authority import authority_scope
+from .validation_file_digests import sha256_file
 
 
 def load_configured_controls_plan(
@@ -143,10 +145,6 @@ def load_configured_controls_plan(
     return value
 
 
-class TaskEvaluationConfiguredControlsProgressionWorkerError(RuntimeError):
-    """The automatic progression worker refused an unsafe transition."""
-
-
 def read_configured_controls_plan(path: Path) -> dict[str, Any]:
     """Reopen the same complete plan contract without importing its execution worker."""
     def load(path: Path, *, blocker: str) -> dict[str, Any]:
@@ -158,14 +156,7 @@ def read_configured_controls_plan(path: Path) -> dict[str, Any]:
             raise TaskEvaluationConfiguredControlsProgressionWorkerError(blocker)
         return dict(value)
 
-    def sha256(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return "sha256:" + digest.hexdigest()
-
-    return load_configured_controls_plan(path, load_json=load, sha256=sha256,
+    return load_configured_controls_plan(path, load_json=load, sha256=sha256_file,
         error_factory=TaskEvaluationConfiguredControlsProgressionWorkerError,
         plan_schema="task_evaluation_configured_controls_progression_plan.v2",
         destination_plan_schema="task_evaluation_configured_controls_progression_plan.v3",

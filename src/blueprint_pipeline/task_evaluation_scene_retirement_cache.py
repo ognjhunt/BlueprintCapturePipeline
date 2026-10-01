@@ -93,7 +93,7 @@ def _validate(value,request,*,now):
     attempt=selected_document(value['attempt_raw_ref'],maximum=65536)
     parent,preparation_only=_attempt_identity(value,intent,attempt)
     if not preparation_only:
-        from .task_evaluation_scene_execution_budget import validate_attempt_execution_budget
+        from .task_evaluation_scene_execution_budget_evidence import validate_attempt_execution_budget
         validate_attempt_execution_budget(parent,intent,attempt)
     factory=selected_document(value['factory_raw_ref'],maximum=65536)
     supplied=selected_document(value['submission_request_raw_ref'],maximum=65536)
@@ -108,7 +108,7 @@ def _storage_history(value,allowance):
     are separate. Expiry/revocation prevents producers from reopening authority;
     it does not rewrite the original accepted actor or immutable request bytes.
     """
-    from .task_evaluation_scene_intake import validate_request
+    from .task_evaluation_scene_intent_contracts import validate_request
     _sidecar(value)
     records=[]
     for key in ('intent_raw_ref','attempt_raw_ref','factory_raw_ref','submission_request_raw_ref'):
@@ -504,7 +504,7 @@ def _selected_queue_document(fresh,path,role,seal,allowance):
 def _recipe_stage_authority(source,request,source_ref,fresh,consent,allowance):
     """Derive transitive stage identities only from selected original recipe bytes."""
     from .task_evaluation_scene_construction_recipe import validate_scene_construction_recipe, CAPABILITY_ORDER
-    from .task_evaluation_launch_preparation_worker import validate_recipe_request_binding
+    from .task_evaluation_launch_preparation_contract import validate_recipe_request_binding
     context=fresh.get('planner_context',{}).get('roots',{})
     prep=request.get('preparation_id')
     recipe_ref=request.get('construction',{}).get('recipe')
@@ -605,8 +605,8 @@ def _recipe_stage_authority(source,request,source_ref,fresh,consent,allowance):
 
 def validate_cache_objects(policy,consent,allowance,*,fresh=None):
     """Exact target/publication proof only; native current-reference closure is separate."""
-    from .control_plane_storage_gc import DEFAULT_MINIMUM_AGE_SECONDS
-    from .task_evaluation_launch_preparation_worker import collect_preparation_references
+    from .control_plane_storage_roots import DEFAULT_MINIMUM_AGE_SECONDS
+    from .task_evaluation_launch_preparation_contract import collect_preparation_references
     objects=consent.get('cache_objects',[])
     _require(type(objects) is list and len(objects)<=256,'scene_retirement_inventory_limit')
     selected=[]

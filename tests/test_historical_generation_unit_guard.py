@@ -1,0 +1,100 @@
+"""ADP-009D/day28: unit labels and supplied claims never prove native rights."""
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_lane_historical_unit.py
+import sys
+import os
+import subprocess
+
+import pytest
+
+
+def test_restore_mounts_only_the_fixed_shared_reservation_ledger():
+    from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
+    from blueprint_pipeline.control_plane_disk_ledger import DEFAULT_RESERVATION_ROOT
+    normal = dispatch._unit_properties('/work/selected', '/private/journals')
+    restore = dispatch._unit_properties('/work/selected', '/private/journals', restore=True)
+    assert normal['ReadWritePaths'] == ['/work/selected', '/private/journals']
+    assert restore['ReadWritePaths'] == ['/work/selected', '/private/journals', str(DEFAULT_RESERVATION_ROOT)]
+    assert {key: value for key, value in restore.items() if key != 'ReadWritePaths'} == {
+        key: value for key, value in normal.items() if key != 'ReadWritePaths'}
+    with pytest.raises(ValueError):
+        dispatch._unit_property_assignments('/work/selected', '/private/journals', restore='/work')
+
+
+def test_bounded_manager_readback_needs_no_writable_device_open(monkeypatch):
+    from blueprint_pipeline import control_plane_lane_historical_unit as unit
+    # Exercise the actual Popen pipe/read lifecycle under denied writable
+    # device opens. The child only supplies parser bytes; it proves no unit.
+    popen, open_file = subprocess.Popen, os.open
+    fields = {name: 'parser-only' for name in unit._FIELDS}
+    raw = ''.join(name + '=' + value + '\n' for name, value in fields.items())
+    def parser_child(argv, **kwargs):
+        return popen([sys.executable, '-c', 'import sys;sys.stdout.write(' + repr(raw) + ')'], **kwargs)
+    def read_only_device(path, flags, *args, **kwargs):
+        if path == os.devnull and flags & os.O_ACCMODE != os.O_RDONLY:
+            raise PermissionError('writable device denied')
+        return open_file(path, flags, *args, **kwargs)
+    monkeypatch.setattr(unit.subprocess, 'Popen', parser_child)
+    monkeypatch.setattr(os, 'open', read_only_device)
+    assert unit._manager_fields('parser-only.service') == fields
+
+
+def test_non_linux_or_ordinary_uid_never_reads_claimed_unit(monkeypatch):
+    from blueprint_pipeline.control_plane_lane_historical_unit import prove_historical_unit
+    import os
+    monkeypatch.setattr(os, 'geteuid', lambda: 501)
+    with pytest.raises(ValueError, match='native_unavailable'):
+        prove_historical_unit('a' * 32, '/work/selected', '/private/journals')
+
+
+@pytest.mark.parametrize('platform', ['darwin', 'win32', 'freebsd13'])
+def test_non_linux_classifier_refuses_before_observing_claimed_root_unit(monkeypatch, platform):
+    from blueprint_pipeline import control_plane_lane_historical_unit as unit
+    # Parser-only platform/UID inputs exercise the early rejection classifier
+    # on every runner. This never supplies native observations or positive proof.
+    monkeypatch.setattr(unit.sys, 'platform', platform)
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    def unexpected(*_):
+        raise AssertionError('non-Linux classifier reached native observations')
+    monkeypatch.setattr(unit, '_manager_fields', unexpected)
+    with pytest.raises(ValueError, match='native_unavailable'):
+        unit.prove_historical_unit('a' * 32, '/work/selected', '/private/journals')
+
+
+@pytest.mark.parametrize('changed', ['uid', 'caps', 'pid', 'mount', 'command', 'readonly', 'namespace', 'bootstrap'])
+def test_kernel_or_manager_drift_cannot_clear_installed_rights(changed):
+    from blueprint_pipeline.control_plane_lane_historical_unit import _validate_unit_observation, _REQUIREMENTS
+    action = 'a' * 32
+    unit = 'blueprint-historical-generation-' + action + '.service'
+    status = {'Uid': '0\t0\t0\t0', 'Gid': '0\t0\t0\t0', 'CapEff': '000000000008000f',
+              'CapBnd': '000000000008000f', 'NoNewPrivs': '1', 'Seccomp': '2'}
+    fields = _REQUIREMENTS | dict(Id=unit, MainPID='1234', ControlGroup='/system.slice/' + unit,
+        ReadWritePaths='/work/selected /private/journals', TimeoutStartUSec='4h',
+        SystemCallFilter='read write openat close seccomp landlock_create_ruleset landlock_add_rule landlock_restrict_self',
+        CapabilityBoundingSet='cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_sys_ptrace',
+        ExecStart='{ path=/opt/blueprint/operator-door/bin/blueprint-historical-generation-action ; '
+                  'argv[]=/opt/blueprint/operator-door/bin/blueprint-historical-generation-action '
+                  + action + ' ; ignore_errors=no ; pid=1234 ; }')
+    cgroup = '0::/system.slice/' + unit + '\n'
+    # Parser baseline is accepted; supplied facts alone are not native proof.
+    _validate_unit_observation(action, '/work/selected', '/private/journals',
+                               fields, status, cgroup, pid=1234)
+    if changed == 'uid':
+        status['Uid'] = '0\t501\t0\t0'
+    elif changed == 'caps':
+        status['CapEff'] = '000000000028000f'  # Additional CAP_SYS_ADMIN.
+    elif changed == 'pid':
+        fields['MainPID'] = '9999'
+    elif changed == 'mount':
+        fields['ReadWritePaths'] += ' /work'
+    elif changed == 'command':
+        fields['ExecStart'] = fields['ExecStart'].replace(' ; ignore_errors', ' extra ; ignore_errors')
+    elif changed == 'readonly':
+        fields['ProtectSystem'] = 'no'
+    elif changed == 'bootstrap':
+        fields['SystemCallFilter'] = fields['SystemCallFilter'].replace('seccomp ', '')
+    else:
+        cgroup = '0::/user.slice/fake.service\n'
+    with pytest.raises(ValueError, match='unit_rights_unknown'):
+        _validate_unit_observation(action, '/work/selected', '/private/journals',
+                                   fields, status, cgroup, pid=1234)

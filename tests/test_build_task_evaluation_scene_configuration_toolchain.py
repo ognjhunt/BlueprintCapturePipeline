@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -145,11 +147,15 @@ def _component_packages(tmp_path: Path) -> dict[str, Path]:
     return packages
 
 
-def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path) -> None:
+@pytest.mark.parametrize("private_umask", [False, True])
+def test_builds_exclusive_read_only_full_byte_readback_toolchain(
+    tmp_path: Path, private_umask: bool,
+) -> None:
     commit = "a" * 40
     output = tmp_path / "runtime" / commit
     observed: list[Path] = []
     component_packages = _component_packages(tmp_path)
+    output.parent.mkdir(mode=0o755)
 
     def readback(path: Path) -> bytes:
         publication_root = next(
@@ -160,13 +166,21 @@ def test_builds_exclusive_read_only_full_byte_readback_toolchain(tmp_path: Path)
         observed.append(path)
         return path.read_bytes()
 
-    receipt = build_published_scene_configuration_toolchain(
-        source_commit=commit,
-        output_root=output,
-        readback=readback,
-        readback_actor="service-account:test-runner",
-        component_packages=component_packages,
-    )
+    previous = os.umask(0o077 if private_umask else 0o022)
+    try:
+        receipt = build_published_scene_configuration_toolchain(
+            source_commit=commit,
+            output_root=output,
+            readback=readback,
+            readback_actor="service-account:test-runner",
+            component_packages=component_packages,
+        )
+    finally:
+        os.umask(previous)
+
+    publication = output.parent / f"{commit}.publication.v1.json"
+    assert stat.S_IMODE(publication.stat().st_mode) == 0o444
+    assert json.loads(publication.read_text()) == receipt
 
     manifest = validate_scene_configuration_toolchain(
         root=output,

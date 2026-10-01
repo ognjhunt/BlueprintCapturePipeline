@@ -12,7 +12,13 @@ def scene_preparation_only(request):
 
 
 def validate_execution(value, *, now):
-    from .task_evaluation_scene_intake import _require, _number, _identifier, _DIGEST, SUPPORTED_POLICY_CANDIDATE_IDS
+    from .task_evaluation_scene_intent_contracts import (
+        _DIGEST,
+        SUPPORTED_POLICY_CANDIDATE_IDS,
+        _identifier,
+        _number,
+        _require,
+    )
     execution = value.get("execution")
     _require(isinstance(execution, Mapping) and set(execution) - {"purpose"} == {
         "max_total_spend_usd", "max_paid_attempts", "max_retries", "expires_at_epoch",

@@ -227,9 +227,10 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
-    # Remote episode compilation dispatches only with the mode flag set, a remote
-    # CPU config, the owner's standing authority and the dispatcher credential;
-    # while the flag is unset its ExecCondition skips it except to drain.
+    # Remote episode compilation dispatches only in a remote mode (set, or auto
+    # once the remote CPU config is there), with that config, the owner's
+    # standing authority and the dispatcher credential; in host mode, which an
+    # unset flag without a config is, its ExecCondition skips it except to drain.
     "blueprint-task-evaluation-episode-compilation-remote.path",
 )
 #: This fixed timer advances only a sealed, qualifying configured-scene plan
@@ -272,7 +273,8 @@ CONFIGURED_CONTROLS_AUTOMATION_UNITS = (
 #: authorizations, retention bindings (with their sidecar leases) and the
 #: configuration files that name runtime paths.  Nothing is grepped.
 DEFAULT_RELEASE_PROTECTION_SOURCES = DEFAULT_PROTECTION_SOURCES
-#: The latest deploy's retirement summary, written under ``<state_root>/release-retention``
+#: The latest actual retirement summary; the historical deploy-named file is retained.
+#: Written under ``<state_root>/release-retention``
 #: (0644) so capacity paging can read its alerts without root.
 RELEASE_RETIREMENT_SUMMARY_NAME = "latest-deploy-retirement.json"
 RELEASE_RETIREMENT_SUMMARY_SCHEMA = "control_plane_release_retirement_summary.v1"
@@ -1061,10 +1063,10 @@ def _retire_superseded_release_trees(
     source_repo: str | Path | None = None,
     defer_deletion: bool = False,
 ) -> dict[str, Any]:
-    """Retire release and runtime trees this deploy has superseded.
+    """Explicitly retire superseded release and runtime trees.
 
-    Deploy is the only event that creates per-commit trees, so it is where
-    they are retired.  Every release-reference publisher takes the reference
+    This compatibility helper requires separate retirement authority; ordinary
+    deployment never calls it. Every release-reference publisher takes the reference
     lock shared on its root: queue writers, the launch-profile publisher, the
     standing-authorization materializer, release activation and the SAM
     prefix binding writer.  Retirement holds each of those roots exclusively
@@ -2320,22 +2322,28 @@ def _install_release_systemd_units(
     return receipts
 
 
-def _systemd_unit_state(unit: str) -> dict[str, str]:
+def _systemd_unit_state(unit: str, *, deadline: float | None = None) -> dict[str, str]:
     """Read enabled/active state without changing the unit."""
 
     states: dict[str, str] = {}
     for probe in ("is-enabled", "is-active"):
+        timeout = 15.0 if deadline is None else min(15.0, deadline - time.monotonic())
+        if timeout <= 0:
+            raise ControlPlaneDeployError(f"deploy_systemd_state_probe_failed:{unit}:{probe}")
         try:
             result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
                 ["systemctl", probe, unit],
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=timeout,
             )
-        except OSError as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             raise ControlPlaneDeployError(
                 f"deploy_systemd_state_probe_failed:{unit}:{probe}"
             ) from exc
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ControlPlaneDeployError(f"deploy_systemd_state_probe_failed:{unit}:{probe}")
         state = result.stdout.strip() or (
             "disabled" if probe == "is-enabled" else "inactive"
         )
@@ -2435,7 +2443,7 @@ def _active_door_holds(root: str | Path, *, now: float | None = None) -> tuple[d
 
 
 @contextlib.contextmanager
-def _locked_door_holds(root: str | Path):
+def _locked_door_holds(root: str | Path, *, deadline: float | None = None):
     """Keep a matching expiry or new hold from racing the deploy's unit restore."""
 
     directory = Path(root)
@@ -2447,7 +2455,22 @@ def _locked_door_holds(root: str | Path):
         fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(errno.EINVAL, "unsafe hold lock")
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        if deadline is None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ControlPlaneDeployError("deploy_door_holds_lock_timeout")
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.1, remaining))
+    except ControlPlaneDeployError:
+        if fd is not None:
+            os.close(fd)
+        raise
     except OSError:
         if fd is not None:
             os.close(fd)
@@ -2469,6 +2492,7 @@ def _restore_installed_path_units(
     always_arm_timer_units: Sequence[str] = (),
     preserve_configured_controls_state: bool = False,
     held_units: Mapping[str, Mapping[str, Any]] | None = None,
+    defer_start_verification: bool = False,
 ) -> list[dict[str, Any]]:
     """Restore path/timer intent without widening arbitrary launch authority.
 
@@ -2532,11 +2556,13 @@ def _restore_installed_path_units(
         commands = ["enable" if should_enable else "disable"]
         commands.append("restart" if should_start else "stop")
         for verb in commands:
+            deferred = defer_start_verification and verb == "restart"
             result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
-                ["systemctl", verb, unit],
+                ["systemctl", *(["--no-block"] if deferred else []), verb, unit],
                 capture_output=True,
                 text=True,
                 check=False,
+                **({"timeout": 15} if deferred else {}),
             )
             if result.returncode != 0:
                 observed = _systemd_unit_state(unit)
@@ -2556,7 +2582,7 @@ def _restore_installed_path_units(
                 f"deploy_path_unit_enabled_state_mismatch:{unit}:"
                 f"{after['enabled']}:{expected_enabled}"
             )
-        if after["state"] != expected_state:
+        if after["state"] != expected_state and not (defer_start_verification and should_start):
             raise ControlPlaneDeployError(
                 f"deploy_path_unit_active_state_mismatch:{unit}:"
                 f"{after['state']}:{expected_state}"
@@ -2584,9 +2610,62 @@ def _restore_installed_path_units(
                     and not arm_progression
                     and not should_start
                 ),
+                **({"_start_pending": True} if defer_start_verification and should_start else {}),
             }
         )
     return receipts
+
+
+def _verify_deferred_path_unit_starts(
+    receipts: Sequence[dict[str, Any]], *, door_holds_dir: str | Path,
+    timeout_seconds: float = 60,
+) -> str | None:
+    """Wait outside the hold lock so a timer's hold-sweep dependency can run.
+
+    Starts are enqueued under the lock to serialize them with new holds. Each
+    probe rechecks current holds under that same lock: a subsequent owner hold
+    may cancel a queued start and must still be reported as held, never rearmed.
+    """
+    pending = [row for row in receipts if row.get("_start_pending")]
+    deadline = time.monotonic() + timeout_seconds
+    warning = None
+    while pending:
+        with _locked_door_holds(door_holds_dir, deadline=deadline) as (held_units, hold_warning):
+            warning = warning or hold_warning
+            for row in pending[:]:
+                unit = row["unit"]
+                hold = held_units.get(unit)
+                if time.monotonic() >= deadline:
+                    raise ControlPlaneDeployError(f"deploy_path_unit_start_timeout:{unit}")
+                after = _systemd_unit_state(unit, deadline=deadline)
+                if time.monotonic() >= deadline:
+                    raise ControlPlaneDeployError(f"deploy_path_unit_start_timeout:{unit}")
+                if hold is not None:
+                    if after["state"] != "inactive":
+                        continue
+                    row.update(requested_intent="hold", operator_freeze_preserved=True,
+                               held=True, owner=hold["owner"], reason=hold["reason"],
+                               expires_at=hold["expires_at"])
+                else:
+                    expected_enabled = row["after"]["enabled"]
+                    if after["enabled"] != expected_enabled:
+                        raise ControlPlaneDeployError(
+                            f"deploy_path_unit_enabled_state_mismatch:{unit}:"
+                            f"{after['enabled']}:{expected_enabled}"
+                        )
+                    if after["state"] != "active":
+                        continue
+                row["after"] = after
+                row.pop("_start_pending")
+                pending.remove(row)
+        if pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ControlPlaneDeployError(
+                    "deploy_path_unit_start_timeout:" + ",".join(row["unit"] for row in pending)
+                )
+            time.sleep(min(0.1, remaining))
+    return warning
 
 
 @contextlib.contextmanager
@@ -2613,13 +2692,15 @@ def _restore_path_unit_states_on_deploy_failure(
     except BaseException as deployment_error:
         try:
             with _locked_door_holds(door_holds_dir) as (held_units, _warning):
-                _restore_installed_path_units(
+                restored = _restore_installed_path_units(
                     installed_units,
                     before=before,
                     arm_path_units=False,
                     always_arm_units=(),
                     held_units=held_units,
+                    defer_start_verification=True,
                 )
+            _verify_deferred_path_unit_starts(restored, door_holds_dir=door_holds_dir)
         except Exception as restore_error:
             raise ControlPlaneDeployError(
                 "deploy_failed_path_unit_restore_failed:"
@@ -3289,6 +3370,10 @@ def deploy_control_plane_commit(
 
     With ``break_glass_notes_root`` (the CLI always passes it), the receipt
     also reports every break-glass note no earlier deploy reported.
+
+    Deployment never retires existing release/runtime trees, including
+    interrupted ``.retiring`` trees. Retirement is a separate explicit action;
+    its protection/keep-last arguments remain accepted for caller compatibility.
     """
 
     global _DEPLOY_ACTIVE_TRANSITION
@@ -3392,11 +3477,6 @@ def deploy_control_plane_commit(
         provenance_receipt = dict(provenance_receipt)
         provenance_receipt.setdefault("promotion_eligible", True)
 
-    # Trees an interrupted retirement moved aside are unreachable already;
-    # deleting them first gives this deploy's own disk reservation the space.
-    # No lock is needed for that.
-    retiring_roots = _release_retiring_roots(releases, scene_configuration_runtime_root)
-    startup_sweep = _sweep_retiring_trees(retiring_roots)
     disk_reservation = None
     disk_reservation_runtime = None
     disk_reservation_estimate = None
@@ -3673,35 +3753,28 @@ def deploy_control_plane_commit(
                 always_arm_timer_units=DEFAULT_ALWAYS_ARM_TIMER_UNITS,
                 preserve_configured_controls_state=preserve_configured_controls_state,
                 held_units=held_units,
+                defer_start_verification=True,
             )
-        # Last, with the new release proven live: retire the trees this deploy
-        # superseded, so per-commit growth is bounded by keep_last instead of
-        # by the number of deploys ever made.
-        release_retirement = _retire_superseded_release_trees(
-            release_root=releases,
-            runtime_root=scene_configuration_runtime_root,
-            active_link=active,
-            current_commit=commit,
-            protection_sources=release_protection_sources,
-            keep_last=release_retirement_keep_last,
-            state_root=state,
-            extra_config_files=(bootstrap,),
-            source_repo=source,
-            defer_deletion=True,
+        verification_warning = _verify_deferred_path_unit_starts(
+            automation_unit_state_receipts, door_holds_dir=door_holds_dir,
         )
-        _mark_stage("release_retirement")
+        door_holds_warning = door_holds_warning or verification_warning
 
-    # The paid-launch gate and the disk reservation are released: delete what
-    # retirement moved aside without holding new launches out meanwhile.
-    release_retirement = _finish_release_retirement(
-        release_retirement,
-        retiring_roots=retiring_roots,
-        source_repo=source,
-        current_commit=commit,
-        summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME,
-        startup_sweep=startup_sweep,
-    )
-    _mark_stage("release_retirement_deletion")
+    # Deployment authority does not authorize deletion. Leave even interrupted
+    # retirement trees untouched, and preserve the last actual retirement summary.
+    release_retirement = {
+        "status": "not_requested",
+        "reason": "requires_separate_action",
+        "retired_bytes": 0,
+        "retired_commits": [],
+        "renamed": [],
+        "direct_delete_fallback": [],
+        "deleted": [],
+        "swept": [],
+        "startup_swept": [],
+        "worktree_prune": {"status": "not_requested"},
+        "alerts": [],
+    }
 
     receipt: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

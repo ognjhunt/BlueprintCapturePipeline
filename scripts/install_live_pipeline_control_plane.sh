@@ -739,17 +739,14 @@ else
     echo "ERROR: production service virtualenv is missing at ${RUNTIME_PYTHON}" >&2
     exit 1
   fi
-  if runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
-       'import importlib.metadata as m; raise SystemExit(m.version("rfc8785") != "0.1.4")'; then
-    echo "production runtime dependency rfc8785==0.1.4 already present"
-  else
-    run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -m pip install \
-      --disable-pip-version-check --no-deps --only-binary=:all: \
-      --require-hashes --requirement "${RUNTIME_REQUIREMENTS}"
-    run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
-      'import importlib.metadata as m; assert m.version("rfc8785") == "0.1.4"'
-    echo "installed and verified hash-pinned production runtime dependencies"
-  fi
+  # pip leaves exact installed pins alone. Checking only rfc8785 would skip
+  # newly added compiler pins on an otherwise provisioned host.
+  run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -m pip install \
+    --disable-pip-version-check --no-deps --only-binary=:all: \
+    --require-hashes --requirement "${RUNTIME_REQUIREMENTS}"
+  run runuser -u "${SERVICE_USER}" -- "${RUNTIME_PYTHON}" -c \
+    'import importlib.metadata as m; assert m.version("rfc8785") == "0.1.4"'
+  echo "synchronized hash-pinned production runtime dependencies"
 fi
 
 # Build the Windows worker package from the exact promoted commit and bind the

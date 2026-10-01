@@ -167,7 +167,7 @@ def birth_member(path, *, owner_intent_id, owner_raw_ref, birth_request_raw_ref,
     _require(rows, 'scene_retirement_birth_outside_roots')
     with scene_access():
         from .task_evaluation_scene_owner_authority import reopen_scene_intent
-        from .task_evaluation_scene_intake import ATTEMPT_SCHEMA
+        from .task_evaluation_scene_intent_contracts import ATTEMPT_SCHEMA
         owner = _raw_reference(owner_raw_ref)
         authenticated = reopen_scene_intent(owner_raw_ref, now=now)
         _require(owner == authenticated and owner['intent_id'] == owner_intent_id)

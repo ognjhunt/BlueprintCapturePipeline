@@ -231,6 +231,30 @@ def _rewrite(
     )
 
 
+@pytest.mark.parametrize("schema_suffix", ["v1", "v2", None])
+def test_completed_scene_source_contracts_are_exact_and_byte_verified(tmp_path, schema_suffix):
+    launch, configured, references, docs = _case(tmp_path)
+    for contract, prefix in ((SUPPORT, "task_evaluation_completed_scene_support_plane_input"),
+                             (SOURCE_OBJECT, "task_evaluation_completed_scene_object_selection")):
+        document = copy.deepcopy(docs[contract])
+        document["schema_version"] = f"{prefix}.{schema_suffix}" if schema_suffix else None
+        _rewrite(tmp_path=tmp_path, configured=configured, references=references,
+                 contract_path=contract, document=document)
+    launch["task"]["configured_scene_revision_digest"] = configured["revision_digest"]
+    if schema_suffix != "v1":
+        with pytest.raises(TaskEvaluationRigidRelocationNativeAdapterError, match="source_contract_invalid"):
+            adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
+                                                materialized_references=references)
+        return
+    result = adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
+                                                materialized_references=references)
+    assert result["status"] == "adapted"
+    Path(references[SUPPORT]["materialized_path"]).write_text("tampered")
+    with pytest.raises(TaskEvaluationRigidRelocationNativeAdapterError, match="source_invalid"):
+        adapt_rigid_relocation_task_template(request=launch, configured_revision=configured,
+                                            materialized_references=references)
+
+
 @pytest.mark.parametrize("invalid", [None, "center", "status", "authority", "origin"])
 def test_retained_website_bounds_reach_native_adapter_without_rewriting_source(tmp_path, invalid):
     launch, configured, references, docs = _case(tmp_path)

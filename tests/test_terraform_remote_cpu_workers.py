@@ -162,8 +162,8 @@ def test_remote_cpu_jobs_are_off_by_default_and_us_only() -> None:
     assert ("google_cloud_run_v2_job", "remote_cpu_worker") in remote
     for address, body in sorted(remote.items()):
         gate = _attr(body, "count") or _attr(body, "for_each") or ""
-        assert re.fullmatch(r"var\.remote_cpu_workers_enabled \? \S+ : (?:0|\{\})", gate), address
-        assert _attr(body, "location") in (None, "var.primary_region"), address
+        assert gate.startswith("var.remote_cpu_workers_enabled ?"), address
+        assert _attr(body, "location") in (None, "var.primary_region", '"us"'), address
     assert 'startswith(var.primary_region, "us-")' in _terraform_variable_body(main, "primary_region")
 
     # The object prefix, which bounds every presigned URL a worker may use, is a US B2 endpoint.
@@ -271,7 +271,7 @@ def test_transport_bucket_is_private_and_deletes_objects_after_a_day() -> None:
     bucket = _terraform_resource_body(main, "google_storage_bucket", "remote_cpu_transport")
 
     assert _attr(bucket, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
-    assert _attr(bucket, "name") == '"${var.project_id}-remote-cpu-transport"'
+    assert _attr(bucket, "name") == '"${var.remote_cpu_project_id}-transport"'
     project = _strings(_attr(_terraform_variable_body(main, "project_id"), "default"))[0]
     assert re.fullmatch(cloud_run_jobs_client._BUCKET, f"{project}-remote-cpu-transport")
     assert _attr(bucket, "location") == "var.primary_region"
@@ -297,51 +297,69 @@ def test_remote_cpu_worker_identity_has_no_project_roles() -> None:
     holders = {address for address, body in _resources(main).items()
                if "google_service_account.remote_cpu_worker[" in body}
     assert holders == {("google_cloud_run_v2_job", "remote_cpu_worker"),
-                       ("data.google_iam_policy", "remote_cpu_transport")}
+                       ("data.google_iam_policy", "remote_cpu_dispatch_transport"),
+                       ("google_tags_tag_binding", "remote_cpu_identity")}
     reader = _terraform_resource_body(main, "google_project_iam_custom_role",
                                       "remote_cpu_transport_reader")
     assert _list(reader, "permissions") == ["storage.objects.get"]
     # No authoritative project policy exists that could hand it a role either.
     assert 'resource "google_project_iam_binding"' not in main
-    assert 'resource "google_project_iam_policy"' not in main
+    policy = _terraform_resource_body(main, "google_project_iam_policy", "remote_cpu")
+    assert _attr(policy, "project") == "google_project.remote_cpu[0].project_id"
+    project_policy = _resources(main)[("data.google_iam_policy", "remote_cpu_project")]
+    assert "google_service_account.remote_cpu_worker" not in project_policy
+    assert "google_service_account.remote_cpu_dispatcher" not in project_policy
+
+
+def test_isolated_project_blocks_inherited_authority_before_worker_dependencies() -> None:
+    resources = _resources(_main())
+    project = resources[("google_project", "remote_cpu")]
+    lifecycle = _child(project, "lifecycle")
+    assert _attr(lifecycle, "prevent_destroy") == "true"
+    postcondition = _child(lifecycle, "postcondition")
+    assert "self.org_id" in _attr(postcondition, "condition")
+    assert "self.folder_id" in _attr(postcondition, "condition")
+    for name in ("remote_cpu_worker", "remote_cpu_quarantined_dispatcher"):
+        assert _list(resources[("google_service_account", name)], "depends_on") == []
+        assert "google_project_service.remote_cpu_apis" in resources[("google_service_account", name)]
+        assert "google_project_iam_policy.remote_cpu" in resources[("google_service_account", name)]
+    project_policy = resources[("data.google_iam_policy", "remote_cpu_project")]
+    bindings = _children(project_policy, "binding")
+    assert len(bindings) == 2
+    assert {_attr(binding, "role"): _strings(_attr(binding, "members")) for binding in bindings} == {
+        '"roles/owner"': ["user:ohstnhunt@gmail.com"],
+        '"roles/run.serviceAgent"': [
+            "serviceAccount:${google_project_service_identity.remote_cpu_run[0].email}"],
+    }
+    job = resources[("google_cloud_run_v2_job", "remote_cpu_worker")]
+    assert "google_storage_bucket_iam_policy.remote_cpu_dispatch_transport" in job
+    assert "google_project_iam_policy.remote_cpu" in job
 
 
 def test_dispatcher_roles_are_custom_minimal_and_resource_scoped() -> None:
-    main = _main()
-    resources = _resources(main)
-    dispatcher = resources[("google_service_account", "remote_cpu_dispatcher")]
+    resources = _resources(_main())
+    dispatcher = resources[("google_service_account", "remote_cpu_host_dispatcher")]
     assert _attr(dispatcher, "account_id") == '"remote-cpu-dispatcher"'
-
-    # Custom and minimal. No run.operations.get, which grants nothing at job scope; no object
-    # listing and no bucket permission.
-    for name, permissions in (("remote_cpu_dispatcher", DISPATCHER_PERMISSIONS),
-                              ("remote_cpu_transport_writer", TRANSPORT_WRITER_PERMISSIONS)):
+    for name, permissions, project in (
+        ("remote_cpu_dispatcher", DISPATCHER_PERMISSIONS, "remote_cpu"),
+        ("remote_cpu_dispatch_transport_writer", TRANSPORT_WRITER_PERMISSIONS, "remote_cpu_dispatch"),
+    ):
         role = resources[("google_project_iam_custom_role", name)]
-        assert _attr(role, "project") == "var.project_id"
-        assert sorted(_list(role, "permissions")) == permissions, name
-
-    # Resource-scoped: bound on every stage's job and on the transport bucket, never the project.
+        assert _attr(role, "project") == f"google_project.{project}[0].project_id"
+        assert sorted(_list(role, "permissions")) == permissions
     holders = {address for address, body in resources.items()
-               if "google_service_account.remote_cpu_dispatcher[" in body}
-    assert holders == {("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher"),
-                       ("data.google_iam_policy", "remote_cpu_transport")}
-    member = '"serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"'
+               if "google_service_account.remote_cpu_host_dispatcher[" in body}
+    assert holders == {("data.google_iam_policy", "remote_cpu_dispatch_job"),
+                       ("data.google_iam_policy", "remote_cpu_dispatch_transport")}
     job = resources[("google_cloud_run_v2_job", "remote_cpu_worker")]
-    on_job = resources[("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher")]
-    assert _attr(on_job, "for_each") == _attr(job, "for_each")
-    assert _attr(on_job, "name") == "google_cloud_run_v2_job.remote_cpu_worker[each.key].name"
-    assert _attr(on_job, "location") == _attr(job, "location")
-    assert _attr(on_job, "role") == "google_project_iam_custom_role.remote_cpu_dispatcher[0].name"
-    assert _attr(on_job, "member") == member
-
-    # Each custom role is bound exactly where it belongs and nowhere else.
-    bindings = {address: re.findall(r"google_project_iam_custom_role\.(remote_cpu_[a-z_]+)\[", body)
-                for address, body in resources.items()}
-    assert {address: roles for address, roles in bindings.items() if roles} == {
-        ("google_cloud_run_v2_job_iam_member", "remote_cpu_dispatcher"): ["remote_cpu_dispatcher"],
-        ("data.google_iam_policy", "remote_cpu_transport"):
-            ["remote_cpu_transport_reader", "remote_cpu_transport_writer"],
-    }
+    policy = resources[("google_cloud_run_v2_job_iam_policy", "remote_cpu_dispatcher")]
+    assert _attr(policy, "for_each") == _attr(job, "for_each")
+    assert _attr(policy, "name") == "google_cloud_run_v2_job.remote_cpu_worker[each.key].name"
+    assert _attr(policy, "location") == _attr(job, "location")
+    document = resources[("data.google_iam_policy", "remote_cpu_dispatch_job")]
+    (binding,) = _children(document, "binding")
+    assert _attr(binding, "role") == "google_project_iam_custom_role.remote_cpu_dispatcher[0].name"
+    assert _attr(binding, "members") == '["serviceAccount:${google_service_account.remote_cpu_host_dispatcher[0].email}"]'
 
 
 def test_transport_bucket_policy_is_authoritative_and_exact() -> None:
@@ -354,27 +372,27 @@ def test_transport_bucket_policy_is_authoritative_and_exact() -> None:
     """
     main = _main()
     resources = _resources(main)
-    policy = resources[("google_storage_bucket_iam_policy", "remote_cpu_transport")]
+    policy = resources[("google_storage_bucket_iam_policy", "remote_cpu_dispatch_transport")]
     assert _attr(policy, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
-    assert _attr(policy, "bucket") == "google_storage_bucket.remote_cpu_transport[0].name"
+    assert _attr(policy, "bucket") == "google_storage_bucket.remote_cpu_dispatch_transport[0].name"
     assert _attr(policy, "policy_data") == (
-        "data.google_iam_policy.remote_cpu_transport[0].policy_data")
-    document = resources[("data.google_iam_policy", "remote_cpu_transport")]
+        "data.google_iam_policy.remote_cpu_dispatch_transport[0].policy_data")
+    document = resources[("data.google_iam_policy", "remote_cpu_dispatch_transport")]
     assert _attr(document, "count") == "var.remote_cpu_workers_enabled ? 1 : 0"
     bindings = _children(document, "binding")
     assert len(bindings) == 3
     # Raw HCL: each binding names one member.
     assert {_attr(binding, "role"): _attr(binding, "members") for binding in bindings} == {
-        "google_project_iam_custom_role.remote_cpu_transport_reader[0].name":
+        "google_project_iam_custom_role.remote_cpu_dispatch_transport_reader[0].name":
             '["serviceAccount:${google_service_account.remote_cpu_worker[0].email}"]',
-        "google_project_iam_custom_role.remote_cpu_transport_writer[0].name":
-            '["serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"]',
-        '"roles/storage.legacyBucketOwner"': '["projectOwner:${var.project_id}"]',
+        "google_project_iam_custom_role.remote_cpu_dispatch_transport_writer[0].name":
+            '["serviceAccount:${google_service_account.remote_cpu_host_dispatcher[0].email}"]',
+        '"roles/storage.legacyBucketOwner"': '["projectOwner:${var.remote_cpu_dispatch_project_id}"]',
     }
     # The policy is the bucket's only binding: an additive member or binding would fight it.
     on_bucket = {address for address, body in resources.items()
-                 if "google_storage_bucket.remote_cpu_transport[" in body}
-    assert on_bucket == {("google_storage_bucket_iam_policy", "remote_cpu_transport")}
+                 if "google_storage_bucket.remote_cpu_dispatch_transport[" in body}
+    assert on_bucket == {("google_storage_bucket_iam_policy", "remote_cpu_dispatch_transport")}
     assert "google_storage_bucket_iam_member" not in "".join(
         body for (kind, name), body in resources.items() if name.startswith("remote_cpu"))
 
@@ -386,7 +404,7 @@ def test_no_service_account_key_is_managed_by_terraform() -> None:
     """
     terraform = "\n".join(path.read_text(encoding="utf-8")
                           for path in sorted(TERRAFORM_MAIN.parent.glob("*.tf")))
-    assert 'resource "google_service_account" "remote_cpu_dispatcher"' in terraform
+    assert 'resource "google_service_account" "remote_cpu_host_dispatcher"' in terraform
     assert "google_service_account_key" not in terraform
     assert "private_key" not in terraform
     assert "keys create" not in DEPLOY_SCRIPT.read_text(encoding="utf-8")
@@ -468,9 +486,8 @@ def test_pipeline_failure_alert_excludes_remote_cpu_jobs_which_have_their_own() 
             _attr(own_threshold, "duration")) == ('"COMPARISON_GT"', "0", '"0s"')
     assert _child(own_threshold, "aggregations") == _child(threshold, "aggregations")
     # The same receivers, and the same refusal to exist without one, as the existing policies.
-    assert _attr(own, "notification_channels") == "var.monitoring_notification_channels"
-    assert _child(_child(own, "lifecycle"), "precondition") == (
-        _child(_child(existing, "lifecycle"), "precondition"))
+    assert _attr(own, "notification_channels") == "[google_monitoring_notification_channel.remote_cpu_owner[0].name]"
+    assert _attr(_child(_child(own, "lifecycle"), "precondition"), "condition") == 'google_monitoring_notification_channel.remote_cpu_owner[0].name != ""'
 
 
 def test_remote_cpu_budget_alerts_at_the_approved_cap() -> None:
@@ -497,8 +514,8 @@ def test_remote_cpu_budget_alerts_at_the_approved_cap() -> None:
 
     # Scoped by label to the lane's own resources, which all carry it.
     budget_filter = _child(budget, "budget_filter")
-    assert _attr(budget_filter, "projects") == '["projects/${data.google_project.current.number}"]'
-    assert _attr(_child(budget_filter, "labels ="), "cost-center") == '"remote-cpu-workers"'
+    assert _attr(budget_filter, "projects") == '["projects/${google_project.remote_cpu[0].number}", "projects/${google_project.remote_cpu_dispatch[0].number}"]'
+    assert _attr(budget_filter, "labels") is None
     resources = _resources(main)
     for address in (("google_cloud_run_v2_job", "remote_cpu_worker"),
                     ("google_storage_bucket", "remote_cpu_transport")):

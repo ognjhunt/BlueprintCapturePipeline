@@ -455,6 +455,7 @@ def run_arena_native_control_vast(
     provider_output_delivery: str = "download",
     provider_output_member_contract: Any | None = None,
     provider_output_reservation: Any | None = None,
+    provider_output_delivery_resolution: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
 
@@ -463,6 +464,11 @@ def run_arena_native_control_vast(
     which only the Quick-10 session passes, with its member contract and the
     ``policy_canary_output`` forecast hold it took before consuming its
     authority (``arena_provider_output_streaming``).
+
+    ``provider_output_delivery_resolution`` is the Quick-10 session's record of
+    that mode and why it was chosen (``policy_canary_output_members``); every
+    result this call seals carries it. Without it, as for every other caller,
+    the result records nothing and is byte for byte what it always was.
     """
 
     if retain_warm_instance and not require_independent_watchdog:
@@ -474,6 +480,18 @@ def run_arena_native_control_vast(
                 or provider_bundle_kind != "native_task_arena_policy_canary_session"):
             raise ValueError("adp_arena_provider_output_stream_contract_missing")
     streaming = provider_output_delivery == "stream"
+    delivery_record: dict[str, Any] = {}
+    if provider_output_delivery_resolution is not None:
+        from .policy_canary_output_members import REASON_MODES, RESOLUTION_FIELD
+
+        resolution = (dict(provider_output_delivery_resolution)
+                      if isinstance(provider_output_delivery_resolution, Mapping) else {})
+        # The record names this lane's mode, and a reason that can explain that mode.
+        if (set(resolution) != {"mode", "reason"} or resolution["mode"] != provider_output_delivery
+                or not isinstance(resolution["reason"], str)
+                or provider_output_delivery not in REASON_MODES.get(resolution["reason"], ())):
+            raise ValueError("adp_arena_provider_output_delivery_resolution_invalid")
+        delivery_record[RESOLUTION_FIELD] = resolution
 
     job = Path(job_dir).expanduser().resolve()
     ensure_dir(job)
@@ -501,6 +519,7 @@ def run_arena_native_control_vast(
             "provider_mutations_performed": 0,
             "retry_cap": 0,
             "blockers": [],
+            **delivery_record,
         }
         write_json(job / "adp_arena_vast_result.json", result)
         return result
@@ -527,6 +546,7 @@ def run_arena_native_control_vast(
             "remaining_live_minutes": remaining_live_minutes,
             "provider_mutations_performed": 0,
             "blockers": ["adp_arena_cumulative_budget_below_minimum_live_window"],
+            **delivery_record,
         }
         _write_run_result(job, attempt_root, result)
         return result
@@ -618,6 +638,7 @@ def run_arena_native_control_vast(
             "pre_spend_preflight": exc.preflight,
             "blockers": preflight_blockers,
             "raw_secret_values_recorded": False,
+            **delivery_record,
         }
         result = seal_lane_terminal_artifacts(
             result,
@@ -657,6 +678,7 @@ def run_arena_native_control_vast(
             "attempt_root": str(attempt_root),
             "provider_mutations_performed": 0,
             "blockers": staging.get("blockers") or ["adp_arena_object_store_staging_blocked"],
+            **delivery_record,
         }
         _write_run_result(job, attempt_root, result)
         return result
@@ -705,6 +727,7 @@ def run_arena_native_control_vast(
                 "all_staged_objects_absent": cleanup.get("all_objects_absent"),
                 "blockers": runtime_dependency.get("blockers")
                 or ["adp_arena_runtime_dependency_cache_blocked"],
+                **delivery_record,
             }
             _write_run_result(job, attempt_root, result)
             return result
@@ -753,6 +776,7 @@ def run_arena_native_control_vast(
                 "independent_watchdog": watchdog_handoff,
                 "all_staged_objects_absent": cleanup.get("all_objects_absent"),
                 "blockers": [f"{blocker_prefix}_independent_watchdog_not_armed"],
+                **delivery_record,
             }
             _write_run_result(job, attempt_root, result)
             return result
@@ -1131,6 +1155,7 @@ def run_arena_native_control_vast(
             attempt_root=attempt_root, promotion=promotion, outcome=extracted,
             reservation=provider_output_reservation, contract=provider_output_member_contract,
             inventory_binding=inventory_binding))
+    result.update(delivery_record)
     _write_run_result(job, attempt_root, result)
     return result
 

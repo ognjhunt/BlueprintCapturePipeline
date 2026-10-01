@@ -431,6 +431,24 @@ def tree_snapshot(root: Path) -> dict[str, Any]:
     return {"root_mode": oct(stat_module.S_IMODE(root.lstat().st_mode)), "files": files, "directories": folders}
 
 
+def prove_class(jobs: Path, plan: Any) -> None:
+    """The three shadow passes ``cloud_run`` needs before the no-spend unit hands a row of ``plan``'s class off,
+    sealed as the oldest outcomes on record unless the class already has them: a hand-off exists only for a proven
+    class, and the paid unit asks again before it dispatches one."""
+
+    from blueprint_pipeline import task_evaluation_episode_compilation_remote as remote
+
+    key = remote.shadow_class(plan)
+    if remote.shadow_passes(jobs, **key) >= remote.SHADOW_PASSES_REQUIRED:
+        return
+    for index in range(1, remote.SHADOW_PASSES_REQUIRED + 1):
+        remote.record_shadow_parity(jobs, {
+            **key, "attempt_id": f"rcj-ec-proof-{plan.compilation_id}-{index}",
+            "queue_row": {"queue": remote.QUEUE, "name": f"proof-{index}.json", "envelope_digest": "sha256:" + "0" * 64},
+            "worker_environment_digest": plan.environment_digest, "parity": "passed", "mismatches": [],
+            "source_commit": plan.source_commit, "compared_at_epoch": float(index)})
+
+
 class RemoteWorld:
     """One B2 account, transport bucket and Cloud Run execution environment for a remote compile attempt.
 
@@ -541,7 +559,8 @@ class Crash(BaseException):
 
 class CollectorWorld:
     """A host with one handed-off row, a project of fakes (PR 2's ``RemoteCpuWorld``) and the paid unit's
-    collector, whose Cloud Run executions run PR 3's worker at the host's own paths.
+    collector, whose Cloud Run executions run PR 3's worker at the host's own paths.  An authoritative row's
+    class is proven first (``prove_class``), as the no-spend unit requires before it writes a hand-off.
 
     While an execution's worker runs, the host tree moves aside, exactly as a Cloud Run execution's
     in-memory ``/var/lib/blueprint`` starts empty; the worker's tree is kept under ``workers/`` afterwards.
@@ -562,6 +581,8 @@ class CollectorWorld:
         self.host.record_worker_environment()
         self.compiler = install_compile_stand_ins(monkeypatch.setattr)
         self.stage_override: Any = None
+        # What each execution's worker measures of its own environment (the host's, unless a test moves it).
+        self.worker_record: dict[str, Any] = HOST_RECORD
         self.executed: list[str] = []
         self.results: list[dict[str, Any]] = []
         if plan is None:
@@ -577,6 +598,8 @@ class CollectorWorld:
         self.plan, self.name = plan, plan.queue_row["name"]
         if marker == "shadow":
             self.host_compile(self.name)
+        else:
+            prove_class(self.host.jobs, plan)
         remote.write_handoff(self.host.jobs, plan, mode=marker, now=self.clock.now)
 
     def host_compile(self, name: str) -> dict[str, Any]:
@@ -609,6 +632,8 @@ class CollectorWorld:
         assert isinstance(plan, remote.RemotePlan), plan
         if marker == "shadow":
             self.host_compile(name)
+        else:
+            prove_class(self.host.jobs, plan)
         remote.write_handoff(self.host.jobs, plan, mode=marker, now=self.clock.now)
         return plan
 
@@ -701,7 +726,7 @@ class CollectorWorld:
             os.rename(self.host.fs, aside)
             try:
                 common = {"environ": environ, "http": RecordingHttp(self.store), "filesystem_root": self.host.fs,
-                          "clock": self.clock, "measure": lambda: HOST_RECORD, "log": lambda line: None}
+                          "clock": self.clock, "measure": lambda: self.worker_record, "log": lambda line: None}
                 if behaviour == "hang":
                     common["launch"] = lambda handoff: (_ for _ in ()).throw(Crash("worker stopped"))
                     runtime = worker.WorkerRuntime(**common, reader=self.bucket.reader())
@@ -715,7 +740,8 @@ class CollectorWorld:
                     **common, reader=self.bucket.reader(),
                     launch=lambda handoff: worker.execute_attempt(handoff, execute))) == 0
             finally:
-                os.rename(self.host.fs, tree)
+                if self.host.fs.exists():  # a worker refused before it wrote anything leaves no tree
+                    os.rename(self.host.fs, tree)
                 os.rename(aside, self.host.fs)
 
     def advance(self, seconds: float) -> None:

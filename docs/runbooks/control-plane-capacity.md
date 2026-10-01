@@ -17,11 +17,18 @@ there is nothing to free.
 
 The controller warns at 70% utilization and marks a mount critical at 85%, or
 when any stage would be refused. A `page` alert requires a person to act: floor
-within three days, admission refused, unreadable mount, blocked volume growth,
-an unconfigured alert route, or critical capacity with fresh GC evidence showing
-no candidates and no bytes reclaimed. `warn` alerts include utilization, poor
-usage attribution, release-retirement attention, and unreported break-glass
-notes. A new page fingerprint posts immediately; a persisting page repeats
+within three days at the week's trend, floor within six hours at the last hour's
+rate (`floor_within_hours`), admission refused, unreadable mount, blocked volume
+growth, an unconfigured alert route, or critical capacity with fresh GC evidence
+showing no candidates and no bytes reclaimed. The week's trend starts at its
+oldest row, so a reclaim inside the week can hide a fast writer. The recent rate
+needs at least 30 minutes of ticks, at least 1 GiB lost in each half of the
+window, and a decline at least 2 GiB beyond the largest live reservation that
+window saw, since admitted writers were budgeted against the floor. It projects
+that unreserved rate against the admission headroom. Once paging, it clears only
+when the projection reaches twelve hours or the decline stops. `warn` alerts include
+utilization, poor usage attribution, a container runtime store over 20 GiB,
+release-retirement attention, and unreported break-glass notes. A new page fingerprint posts immediately; a persisting page repeats
 hourly. The webhook must reach a person, not merely accept a request.
 
 The scene-intake HTTP route accepts a signed intent even if launch preparation
@@ -73,6 +80,38 @@ had to bypass the door, record a sealed break-glass note immediately with
 `python -m blueprint_pipeline.control_plane_break_glass record` and verify it
 appears in the next deploy receipt. A note is an audit record, not cleanup
 permission.
+
+## Container image storage on the root disk
+
+Docker on the host keeps image layers and BuildKit cache in the containerd
+image store, `/var/lib/containerd`, with metadata in `/var/lib/docker`. Both stay
+on the root disk: `deploy/host/mount_work_volume.sh` moves Blueprint roots only,
+and no storage-GC phase touches them. With the default `docker` driver and the
+containerd image store, as on this host, a local `docker buildx build --push`
+still unpacks the image into that store. On 2026-10-01 one worker-image build
+grew the store to about 80 GB and took root from 55 to 31 GB free within hours.
+
+When the hourly walk reaches them, the survey names both stores as host roots
+and warns `usage_container_runtime_large` above 20 GiB. A truncated walk marks
+their totals as lower bounds (`container_runtime_complete: false`). On this host
+the root walk has been stopping before `/var/lib`. A fast unreserved decline
+pages `floor_within_hours` whatever the writer. The door cannot read these
+paths, so the host owner reads `docker system df` and the store's size directly.
+
+Freeing or moving this space is an owner decision. Nothing reclaims it
+automatically:
+
+- Once the pushed image's registry digest and revision label are verified, its
+  local copy and build cache are reproducible. Removing them still needs the
+  owner's approval, like any cleanup.
+- To bound the cache, configure the daemon's BuildKit garbage collection
+  (`builder.gc` in `/etc/docker/daemon.json`; key names vary by Docker
+  version), or build worker images off the host.
+- To keep image bytes off the root disk, move the containerd root onto the work
+  volume while both Docker and containerd are stopped. Register the new path
+  first, with a storage-table row and a survey alias. Otherwise the survey
+  counts it as orphan scratch, and that pages. The volume then carries each
+  build's peak, so check its headroom first.
 
 ## Owner's Phase 0 checklist
 
