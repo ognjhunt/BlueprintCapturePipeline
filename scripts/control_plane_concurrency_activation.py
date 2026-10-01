@@ -233,7 +233,21 @@ def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
     if len(rows) != 1:
         raise ValueError("harness_native_configuration_activation_ambiguous")
     first = json.loads(rows[0].read_text())["request"]
-    authorization = first["authorization"]
+    authorization = dict(first["authorization"])
+    from blueprint_pipeline.task_evaluation_scene_intake import reserve_scene_attempt
+    from blueprint_pipeline.task_evaluation_scene_execution_authority import bind_scene_attempt
+    from blueprint_pipeline.task_evaluation_scene_owner_attempt_profiles import make_owner_attempt_record
+    request = episode["episode_preparation_request"]
+    with fixture_environment(intake["environment"]):
+        attempt = reserve_scene_attempt(queue_root=intake["intent_path"].parent.parent,
+            intent_id=intake["intent"]["intent_id"], attempt_id=request["run_id"] + "-construction",
+            source_commit=source, runtime_digest=request["execution_adapter"]["runtime_source_bundle"]["digest"],
+            input_digest=episode["episode_preparation_request_digest"],
+            provider=request["spend"]["selected_provider"], maximum_spend_usd=request["spend"]["hard_cap_usd"])
+    authorization["scene_owner_attempt"] = make_owner_attempt_record(owner_fields=bind_scene_attempt(attempt),
+        phase="construction", team_namespace=request["team_namespace"], scene_id=request["scene"]["identity"]["id"],
+        task_id=request["task"]["identity"]["id"],
+        runtime_source_bundle_digest=request["execution_adapter"]["runtime_source_bundle"]["digest"])
     lineage = first["lineage"]
     prep_result = preparation["run"]["results"][0]
     base = build_configured_controls_activation_request(progression=episode,

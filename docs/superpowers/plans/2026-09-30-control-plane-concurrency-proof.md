@@ -142,3 +142,19 @@ active owner and cannot be made safe by this harness. Actual Cloud Run IAM,
 environment preflight, three shadow passes per closure class, settlement and
 transport-expiry teardown have their own live gates; passing this no-paid
 load test cannot stand in for them.
+
+## Fixture retirement boundary clarification (October 1)
+
+Independent specification review and a different quality review approved the
+plan boundary only: the short benchmark cannot prove the six-hour automatic
+terminal-pin reconciliation. After all producers stop and join, verify owned
+queues, requests, readers and leases, terminate future fixture execution through
+an explicit development_only owner-cancellation record, and validate every
+owned pin and its dependency cascade. Then release enumerated fixture pins
+through the real release_storage_pin API and run production GC with recorded
+zero-age parameters and strict namespace translation through require_storage_class.
+Report this as **fixture-owner release followed by production GC**, excluding
+automatic terminal reconciliation and normal retention timing from acceptance.
+Never invent launch consumption or settlement, change clocks, manually clear
+directories or retire failed artifacts. Automatic terminal retention remains a
+separate unproven gate until its real age and proof requirements are observed.
