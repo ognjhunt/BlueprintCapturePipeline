@@ -69,6 +69,56 @@ def _statvfs(free_blocks=5 * 10**5):
     return lambda _mount: os.statvfs_result((4096, 4096, 10**6, free_blocks, free_blocks, 0, 0, 0, 0, 255))
 
 
+def test_container_runtime_stores_are_attributed_at_their_own_root(tmp_path):
+    """2026-10-01: about 80 GB of image layers in /var/lib/containerd surveyed as host
+    ``/var/lib``, so nothing named the root disk's largest consumer."""
+    var_lib = tmp_path / "var-lib"
+    layer = var_lib / "containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/7/fs/usr/lib/libtorch.so"
+    layer.parent.mkdir(parents=True)
+    layer.write_bytes(b"x" * 65536)
+    buildkit = var_lib / "docker/buildkit/cache.db"
+    buildkit.parent.mkdir(parents=True)
+    buildkit.write_bytes(b"y" * 8192)
+    apt = var_lib / "apt/lists/index"
+    apt.parent.mkdir(parents=True)
+    apt.write_bytes(b"z" * 4096)
+
+    survey = survey_usage([str(var_lib)], aliases={str(var_lib): "/var/lib"},
+                          statvfs=_statvfs(), mountinfo=str(tmp_path / "no-mountinfo"))
+
+    roots = {row["root"]: row for row in survey["top_roots"]}
+    assert roots["/var/lib/containerd"]["storage_class"] == "host"
+    assert roots["/var/lib/containerd"]["allocated_bytes"] >= 65536
+    assert roots["/var/lib/docker"]["storage_class"] == "host"
+    assert roots["/var/lib"]["allocated_bytes"] >= 4096  # other host state keeps its root
+    assert survey["container_runtime_roots"] == [
+        {"root": root, "allocated_bytes": roots[root]["allocated_bytes"]}
+        for root in ("/var/lib/containerd", "/var/lib/docker")
+    ]
+    assert survey["container_runtime_bytes"] == sum(
+        roots[root]["allocated_bytes"] for root in ("/var/lib/containerd", "/var/lib/docker"))
+    assert survey["container_runtime_complete"] is True
+
+
+def test_a_truncated_walk_reports_container_stores_as_incomplete_not_empty(tmp_path):
+    """Production's root walk ran out before /var/lib; zero there is unknown, not measured."""
+    var_lib = tmp_path / "var-lib"
+    for index in range(20):
+        path = var_lib / f"apt/lists/index-{index:02d}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"z" * 4096)
+    layer = var_lib / "containerd/snapshots/7/fs/libtorch.so"
+    layer.parent.mkdir(parents=True)
+    layer.write_bytes(b"x" * 65536)
+
+    survey = survey_usage([str(var_lib)], aliases={str(var_lib): "/var/lib"}, max_entries=8,
+                          statvfs=_statvfs(), mountinfo=str(tmp_path / "no-mountinfo"))
+
+    assert survey["status"] == "truncated"
+    assert survey["container_runtime_complete"] is False
+    assert survey["container_runtime_bytes"] < 65536
+
+
 def test_hardlinks_count_once_and_are_attributed_to_the_first_path(tmp_path):
     base = tmp_path / "var/lib/blueprint"
     store = base / "task-evaluation-inputs/prepared-references/content-addressed/sha256"
