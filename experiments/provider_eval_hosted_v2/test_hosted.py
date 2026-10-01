@@ -125,13 +125,33 @@ def test_model_project_file_binding_and_environment_fail_closed(tmp_path):
         runtime.step(task.task_id)
 
 
-@pytest.mark.parametrize("policy", [None, {"access": "enabled"}, {"access": "restricted"}])
+@pytest.mark.parametrize("policy", [None, {}, {"allowed_domains": []}, {"access": "enabled"},
+    {"access": "restricted", "allowed_domains": []},
+    {"access": "disabled", "allowed_domains": ["example.com"]},
+    {"access": "disabled", "allowed_domains": None},
+    {"access": "disabled", "allowed_domains": ""},
+    {"access": "disabled", "other": True}])
 def test_hosted_returned_network_policy_must_be_explicitly_disabled(tmp_path, policy):
     runtime, api, task, _, _ = fixture(tmp_path)
     runtime.start(task)
     api.session["environment"]["network"] = policy
     with pytest.raises(AgentExecutionError, match="isolated_small_hosted"):
         runtime.step(task.task_id)
+
+
+def test_disabled_network_empty_returned_default_is_equivalent(tmp_path):
+    runtime, api, task, _, _ = fixture(tmp_path)
+    create = api.request
+    def request(method, path, **kwargs):
+        response = create(method, path, **kwargs)
+        if path == "/agents/sessions" and method == "POST":
+            response["environment"]["network"]["allowed_domains"] = []
+        return response
+    api.request = request
+    state = runtime.start(task)
+    assert state["session_id"] == "session_1" and state["state"] == "running"
+    api.turn_status = "completed"
+    assert runtime.step(task.task_id)["state"] == "completed"
 
 
 def test_same_queries_preserve_ordinary_ampersand_product_names():

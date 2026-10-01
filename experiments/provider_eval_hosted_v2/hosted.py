@@ -69,6 +69,13 @@ def live_admission(*_):
     raise AgentExecutionError("hosted_agents_hard_spend_bound_unverified_no_paid_dispatch")
 
 
+def disabled_network(policy):
+    """Normalize only the documented disabled policy and its empty list default."""
+    return (isinstance(policy, dict) and policy.get("access") == "disabled"
+            and not set(policy) - {"access", "allowed_domains"}
+            and ("allowed_domains" not in policy or policy["allowed_domains"] == []))
+
+
 class HostedRuntime(OpenAIAgentsRuntime):
     """The managed harness chooses the research loop; app only responds to tools."""
     def __init__(self, *, evidence, common_prompt, **kwargs):
@@ -112,7 +119,7 @@ class HostedRuntime(OpenAIAgentsRuntime):
         environment = session.get("environment")
         if (not isinstance(environment, dict) or environment.get("type") != "openai_hosted"
                 or environment.get("container_size") != "small"
-                or environment.get("network") != {"access": "disabled"}):
+                or not disabled_network(environment.get("network"))):
             raise AgentExecutionError("isolated_small_hosted_environment_required")
         # Reuse unchanged metadata, model, ownership and no-delegation checks.
         return super()._validate_session(task, {**session, "environment": {"type": "none"}})

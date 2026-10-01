@@ -38,6 +38,8 @@ REVIEW_HOLD = Decimal("0.05548")
 BASE_HOLD = 4 * (MODEL_HOLD + CONTAINER_HOLD) + REVIEW_HOLD
 SEARCH_HOLD = Decimal("0.0735")
 ARM_SECONDS, POLL_SECONDS = 300, 5
+PREVIOUS_SOURCE_IDENTITY = ("a3b583a93446d444a20b67279f71bf416802d28c",
+    "8c704a8582aea0a7a1ed51a8399a5ab76a0b326cded647919f98252e2552f84a")
 
 
 def code_identity():
@@ -113,11 +115,14 @@ def prepare_receipt(root, owner, *, clock=time.time):
     return receipt, digest(receipt)
 
 
-def validate_receipt(root, owner, expected_hash):
+def validate_receipt(root, owner, expected_hash, *, readonly_previous=False):
     root = Path(root).resolve()
     public, access_hash, original_hash = scope_inputs(root, owner)
     receipt = read_json(root / "protocols" / PROTOCOL / "soft_pilot_approval.json")
-    commit, code_hash = code_identity()
+    current_identity = code_identity()
+    # This exact previous receipt may only be observed/reconciled. Execute still
+    # requires the current code identity; no scope/approval is migrated or reset.
+    commit, code_hash = PREVIOUS_SOURCE_IDENTITY if readonly_previous else current_identity
     required = {"schema": "hosted_one_case_soft_pilot.v1", "approval": APPROVAL, "protocol": PROTOCOL,
         "case_id": "BP-EVAL-01", "case_sha256": digest(public["cases"][0]), "arms": list(MODES),
         "public_inputs_sha256": DECLARED_ORIGINAL_SHA256, "model": MODEL, "project": PROJECT, "execution_owner": OWNER,
@@ -434,6 +439,7 @@ def main():
     action.add_argument("--check-access", action="store_true")
     action.add_argument("--execute", action="store_true")
     action.add_argument("--status", action="store_true")
+    action.add_argument("--reconcile-session", metavar="EXACT_SESSION_ID")
     args = parser.parse_args()
     root = args.aggregate_root.resolve()
     try:
@@ -445,6 +451,14 @@ def main():
         if args.status:
             receipt = validate_receipt(root, args.execution_owner_task_id, args.soft_receipt_sha256)
             print(json.dumps(SoftMonitor(root, receipt).report(), indent=2))
+            return
+        if args.reconcile_session:
+            from .reconcile import reconcile_session
+            receipt = validate_receipt(root, args.execution_owner_task_id, args.soft_receipt_sha256,
+                                       readonly_previous=True)
+            result = reconcile_session(root, receipt, args.reconcile_session,
+                transport=OpenAIAgentsHTTP(api_key=existing_key("openai"), project_id=PROJECT))
+            print(json.dumps(result, indent=2))
             return
         if version("openai") != SDK_VERSION or version("openai-agents") != AGENTS_SDK_VERSION:
             raise AgentExecutionError("install_reviewed_sdk_pair_openai_3.22.1_openai_agents_0.22.3")

@@ -1,7 +1,7 @@
 # Offline validation
 
 Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
-Result: **75 passed**, comprising 23 hosted cohort instances, 16 soft-pilot cases,
+Result: **95 passed**, comprising 30 hosted cohort instances, 29 soft-pilot cases,
 and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
@@ -47,6 +47,15 @@ Verified boundaries include:
   using a mock HTTP transport; compatible Agents SDK 0.22.3 installed from PyPI.
 - Canonical paid-model grant refusal stops session creation before HTTP; the same
   chokepoint applies to model resumption, separately from native search grants.
+- Explicit disabled networking accepts only the absent/empty allowed-domain list
+  default; unknown policy keys, malformed/nonempty domains and enabled/restricted
+  access remain refused. A wire-shaped create response binds successfully.
+- GET-only reconciliation of the original used/stopped receipt preserves failure,
+  raw evidence, old journal prefix and holds; validates exact task/session/creation
+  proof before binding; refuses mutations/other sessions and never admits the old
+  receipt for patched paid execution. The retained 49,484/261 token checkpoint
+  reproduces $4.765920/$0.905315. Idle without a terminal root turn, any earlier
+  active root, or outstanding required action keeps cancellation unresolved.
 
 Remaining limitations are documented in README: hosted inference/write access
 is not verified by read-only saved-agent access; managed hidden-loop usage lacks

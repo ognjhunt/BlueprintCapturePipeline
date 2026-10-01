@@ -251,3 +251,146 @@ def test_canonical_paid_model_gate_refusal_prevents_session_dispatch(admitted, m
     result = soft.run_pilot(root, receipt, clock=clock, sleep=clock.sleep, notify=lambda _: None, factory=factory)
     assert result["budget"]["stopped"] and len(apis) == 1
     assert not any(m == "POST" and p == "/agents/sessions" for m, p, _ in apis[0].calls)
+
+
+def test_previous_receipt_is_readonly_not_a_paid_scope_migration(admitted):
+    root, receipt, _, _ = admitted
+    previous = {**receipt, "source_commit": soft.PREVIOUS_SOURCE_IDENTITY[0],
+                "code_sha256": soft.PREVIOUS_SOURCE_IDENTITY[1]}
+    (root / "protocols" / soft.PROTOCOL / "soft_pilot_approval.json").write_text(json.dumps(previous))
+    assert soft.validate_receipt(root, soft.OWNER, digest(previous), readonly_previous=True) == previous
+    with pytest.raises(AgentExecutionError, match="exact_reviewed"):
+        soft.validate_receipt(root, soft.OWNER, digest(previous))
+
+
+@pytest.fixture
+def unresolved_stopped(admitted):
+    root, receipt, _, clock = admitted
+    monitor = soft.SoftMonitor(root, receipt, clock=clock)
+    monitor.reserve()
+    api = API("parallel_fast", clock, usage={"input_tokens": 49484, "output_tokens": 261})
+    original = api.request
+    def request(method, path, **kwargs):
+        value = original(method, path, **kwargs)
+        if method == "POST" and path == "/agents/sessions":
+            value["environment"]["network"]["allowed_domains"] = []
+        return value
+    api.request = request
+    runtime, task = soft.make_runtime(root, receipt, monitor, "parallel_fast", transport=api)
+    runtime._validate_session = lambda *_: (_ for _ in ()).throw(AgentExecutionError("old_exact_policy_comparison"))
+    with pytest.raises(AgentExecutionError, match="old_exact"):
+        runtime.start(task)
+    monitor.stop("pilot_interrupted_no_additional_paid_dispatch")
+    api.cancelled = True  # Execution owner already cancelled remotely.
+    assert runtime.journal.task(task.task_id)["state"] == "creation_unresolved"
+    api.calls.clear()
+    return root, receipt, clock, api, task
+
+
+def test_getonly_reconciliation_binds_old_id_preserves_receipt_and_cost(unresolved_stopped):
+    from .reconcile import reconcile_session
+    root, receipt, clock, api, task = unresolved_stopped
+    receipt_bytes = (root / "protocols" / soft.PROTOCOL / "soft_pilot_approval.json").read_bytes()
+    original_prefix = (root / "live_journal.jsonl").read_bytes()
+    result = reconcile_session(root, receipt, api.session["id"], transport=api, clock=clock)
+    assert result["local_state"] == "cancelled" and result["cancellation_settled"]
+    assert result["budget"]["aggregate_reserved_usd"] == "4.765920"
+    assert result["budget"]["projected_with_remaining_search_opportunity_usd"] == "0.905315"
+    assert result["budget"]["stopped"] and result["new_paid_calls"] == 0
+    assert all(method == "GET" for method, _, _ in api.calls)
+    assert (root / "live_journal.jsonl").read_bytes().startswith(original_prefix)
+    assert (root / "protocols" / soft.PROTOCOL / "soft_pilot_approval.json").read_bytes() == receipt_bytes
+    retained = json.loads((Path(result["raw_evidence_directory"]) / "snapshot.json").read_text())
+    assert retained["original_state"]["state"] == "creation_unresolved"
+    assert retained["session"]["environment"]["network"]["allowed_domains"] == []
+    held = result["budget"]["aggregate_reserved_usd"]
+    again = reconcile_session(root, receipt, api.session["id"], transport=api, clock=clock)
+    assert again["budget"]["aggregate_reserved_usd"] == held
+    assert all(method == "GET" for method, _, _ in api.calls)
+    assert len(soft.AgentJournal(soft.SoftMonitor(root, receipt).path / "agent_journal").tasks(active_only=False)) == 1
+
+
+@pytest.mark.parametrize("tamper", ["wrong_id", "enabled_network", "nonempty_domains", "wrong_metadata", "lost_start"])
+def test_reconciliation_invalid_identity_or_policy_never_binds(unresolved_stopped, tamper):
+    from .reconcile import reconcile_session
+    root, receipt, clock, api, task = unresolved_stopped
+    session_id = api.session["id"]
+    if tamper == "wrong_id":
+        session_id = "other_session"
+    elif tamper == "enabled_network":
+        api.session["environment"]["network"]["access"] = "enabled"
+    elif tamper == "nonempty_domains":
+        api.session["environment"]["network"]["allowed_domains"] = ["example.com"]
+    elif tamper == "wrong_metadata":
+        api.session["metadata"]["blueprint_task_digest"] = "wrong"
+    else:
+        (soft.SoftMonitor(root, receipt).path / task.task_id / "started.json").unlink()
+    with pytest.raises(AgentExecutionError):
+        reconcile_session(root, receipt, session_id, transport=api, clock=clock)
+    state = soft.AgentJournal(soft.SoftMonitor(root, receipt).path / "agent_journal").task(task.task_id)
+    assert state["session_id"] is None and state["state"] == "creation_unresolved"
+    assert all(method == "GET" for method, _, _ in api.calls)
+
+
+def test_remote_idle_alone_does_not_prove_cancellation(unresolved_stopped):
+    from .reconcile import reconcile_session
+    root, receipt, clock, api, _ = unresolved_stopped
+    original = api.request
+    def no_turns(method, path, **kwargs):
+        response = original(method, path, **kwargs)
+        if path.endswith("/turns"):
+            return {"data": [], "has_more": False}
+        return response
+    api.request = no_turns
+    result = reconcile_session(root, receipt, api.session["id"], transport=api, clock=clock)
+    assert not result["cancellation_settled"] and result["local_state"] == "cancelling"
+    assert all(method == "GET" for method, _, _ in api.calls)
+
+
+@pytest.mark.parametrize("pending", ["earlier_root", "required_action"])
+def test_any_active_remote_work_prevents_cancellation_settlement(unresolved_stopped, pending):
+    from .reconcile import reconcile_session
+    root, receipt, clock, api, _ = unresolved_stopped
+    original = api.request
+    def active(method, path, **kwargs):
+        response = original(method, path, **kwargs)
+        if pending == "earlier_root" and path.endswith("/turns"):
+            response["data"].insert(0, {**response["data"][0], "id": "earlier", "status": "in_progress"})
+        elif pending == "required_action" and path == "/agents/sessions/" + api.session["id"]:
+            response["required_actions"] = [{"type": "function_call", "call_id": "pending"}]
+        return response
+    api.request = active
+    result = reconcile_session(root, receipt, api.session["id"], transport=api, clock=clock)
+    assert not result["cancellation_settled"] and result["local_state"] == "reconciling"
+    assert all(method == "GET" for method, _, _ in api.calls)
+
+
+@pytest.mark.parametrize("fresh", ["active", "missing"])
+def test_local_cancelled_cannot_override_fresh_remote_uncertainty(unresolved_stopped, fresh):
+    from .reconcile import reconcile_session
+    root, receipt, clock, api, _ = unresolved_stopped
+    assert reconcile_session(root, receipt, api.session["id"], transport=api, clock=clock)["cancellation_settled"]
+    original = api.request
+    def response(method, path, **kwargs):
+        value = original(method, path, **kwargs)
+        if path.endswith("/turns"):
+            if fresh == "active":
+                value["data"][0]["status"] = "in_progress"
+            else:
+                value["data"] = []
+        return value
+    api.request = response
+    result = reconcile_session(root, receipt, api.session["id"], transport=api, clock=clock)
+    assert result["local_state"] == "cancelled" and not result["cancellation_settled"]
+    assert all(method == "GET" for method, _, _ in api.calls)
+
+
+def test_readonly_transport_blocks_every_mutation_and_other_session():
+    from .reconcile import ReadOnlySession
+    api = API("parallel_fast", Clock())
+    readonly = ReadOnlySession(api, "session_parallel_fast")
+    for method, path in (("POST", "/agents/sessions"), ("POST", "/agents/sessions/session_parallel_fast/events"),
+                         ("DELETE", "/agents/sessions/session_parallel_fast"), ("GET", "/agents/sessions/other")):
+        with pytest.raises(AgentExecutionError, match="mutations_and_other"):
+            readonly.request(method, path)
+    assert api.calls == []

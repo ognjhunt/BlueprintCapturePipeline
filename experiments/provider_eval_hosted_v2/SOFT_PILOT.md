@@ -125,6 +125,43 @@ uses the parent-isolated oracle and the reserved review allowance; this CLI does
 not send the oracle to a controller or execute that later review. No winner is
 claimed before source/unknown/citation grading and billing reconciliation.
 
+## Stopped first-session read-only reconciliation
+
+The first accepted session returned `network: {access: "disabled",
+allowed_domains: []}`. The old exact-dictionary validator rejected this harmless
+empty API default after session creation. Creation includes the initial input,
+so the hosted agent can start before the create response is validated locally.
+Binding occurred after validation, leaving `creation_unresolved` locally while
+the usage observation retained the known session ID. This is a local validator
+failure, not proof that the create was unaccepted or safe to retry.
+
+The repair accepts only explicit `disabled`, with `allowed_domains` omitted or
+an empty list. Enabled/restricted/missing access, nonempty domains, malformed
+defaults and unknown policy keys remain refused. No production runtime is edited.
+
+For the already stopped cohort, the execution owner may run this GET-only command
+from the patched reviewed checkout, substituting the **original** approval SHA:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_hosted_v2.soft_pilot --aggregate-root /workspace/provider-eval-private-live-20260930 --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce --soft-receipt-sha256 ORIGINAL_APPROVAL_SHA --reconcile-session sess_0efe74876b1df856006abdb27f210881979445fa9da044cf87
+```
+
+This narrow route accepts only the original `a3b583a93446d444a20b67279f71bf416802d28c`
+code identity, still verifies the exact original receipt hash/root/journal prefix,
+and requires an existing stop plus the retained creation/usage proof for the exact
+session. It does not migrate the paid scope or change the approval. POST, DELETE,
+other sessions and provider routes are blocked by the transport wrapper. Original
+failure state, raw session, full turns/items and reconciliation reports are retained
+under `soft_pilot/readonly_reconciliation/`, with hashes anchored in AgentJournal.
+
+Only validated terminal root-turn evidence settles cancellation. Remote `idle`
+alone leaves cancellation unresolved. Completed-after-stop output remains evidence,
+never a successful benchmark answer. Repeated reads do not create another session,
+repeat a search or release prior holds. Conservative usage/carry accounting may
+increase; the supplied checkpoint reproduces $4.765920 reserved and $0.905315
+projected, above the $0.80 stop threshold. The remaining three arms stay stopped.
+No permanent deletion is performed; exact-session cleanup approval remains needed.
+
 Primary references: [official SDK registry](https://pypi.org/project/openai/3.22.1/),
 [compatible Agents SDK](https://pypi.org/project/openai-agents/0.22.3/),
 [hosted lifetime and cleanup](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted),
