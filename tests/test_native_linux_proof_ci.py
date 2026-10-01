@@ -111,6 +111,18 @@ def test_required_native_proof_still_gates_the_pr_on_success() -> None:
     assert 'if test "${NATIVE_REQUIRED}" = "true"; then\n  test "${NATIVE_RESULT}" = "success"' in step["run"]
 
 
+def test_retained_failed_restore_paths_execute_before_remaining_native_cases():
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    assert [row[0] for row in CONNECTED_CASES[:4]] == [
+        'before_restore_final', 'unwritten_stage', 'unlogged_directory', 'reconcile_resume_remove']
+    assert len(CONNECTED_CASES) == len(dict(CONNECTED_CASES)) == 38
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    first = run.split('python -m pytest', 1)[1].splitlines()[1].strip()
+    assert first.startswith('tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption')
+    assert '--maxfail=1' in run and '--deselect' not in run and '-k ' not in run
+
+
 def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> None:
     from tests.historical_generation_native_acceptance import CONNECTED_CASES
     assert dict(CONNECTED_CASES)['reconcile_absent_expiry'] == dict(action='offload',

@@ -44,3 +44,24 @@ def test_terminal_assertion_selects_actual_consumed_approval(scenario, wrong_sel
             _assert_selected_row(values)
     else:
         assert _assert_selected_row(values) == [row]
+
+
+def test_full_unwritten_call_site_accepts_exact_later_prefix_increment():
+    from tests import historical_generation_native_acceptance as native
+    source = Path(native.__file__)
+    tree = ast.parse(source.read_text())
+    candidates = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+                  and ast.unparse(node.test).startswith("restore_interruption == 'unwritten_stage'")
+                  and any(isinstance(child, ast.Assert)
+                          and "restored['restored_files']" in ast.unparse(child)
+                          for child in ast.walk(node))]
+    assert len(candidates) == 1
+    # Execute the actual full call-site branch, which the helper-only tests
+    # missed. This parser projection supplies no native or producer authority.
+    result = dict(recovered_prefix=True, restored_files=1, restored_logical_bytes=2,
+                  reused_files=1, reused_logical_bytes=1)
+    values = dict(restore_interruption='unwritten_stage', restored=result,
+                  original={'one': b'a', 'two': b'bc'})
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[deepcopy(candidates[0])], type_ignores=[])),
+                 str(source), 'exec'), values)
+    native._assert_restore_increment(result, values['original'])

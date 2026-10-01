@@ -304,16 +304,16 @@ jobs:
           test_temp="$(mktemp -d "${RUNNER_TEMP}/blueprint-native-tests.XXXXXX")"
           trap 'rm -rf -- "$test_temp"' EXIT
           /var/lib/blueprint-native-test-venv/bin/python -m pytest \
+            tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption \
             tests/test_registered_feature_linux.py::test_actual_root_blueprint_uid_cache_lifetime_and_revoke \
             tests/test_registered_feature_linux.py::test_actual_contained_blueprint_native_pair_child_and_kernel_completion \
             tests/test_legacy_owner_linux.py::test_actual_legacy_owner_door_privilege_and_revocation \
             tests/test_historical_generation_linux.py::test_actual_historical_target_only_write_and_foreign_reference_visibility \
-            tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption \
             tests/test_historical_generation_linux.py::test_actual_private_restore_member_permission_interruption \
             tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_default_off_delete_and_second_tick \
             tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_offload_and_restore \
             -m 'slow or not slow' --basetemp="$test_temp" \
-            --junitxml="$evidence/native-junit.xml" -q
+            --junitxml="$evidence/native-junit.xml" --maxfail=1 -q
           /var/lib/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))

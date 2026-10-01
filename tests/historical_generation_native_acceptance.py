@@ -1637,9 +1637,12 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                         interrupted_prefix['e-00000.json'])
                 else:
                     assert restored[recovery[restore_interruption]] is True
-                if restore_interruption == 'unwritten_stage' and restored.get('restarted_unwritten') is True:
-                    assert restored['restored_files'] == len(original)
-                    assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
+                if restore_interruption == 'unwritten_stage':
+                    if restored.get('restarted_unwritten') is True:
+                        assert restored['restored_files'] == len(original)
+                        assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
+                    # A later authentic unit may reuse prior durable births.
+                    # _assert_restore_increment below verifies its exact credit.
                 elif restore_interruption.startswith('unlogged_'):
                     if restore_interruption == 'unlogged_member':
                         assert ((target / 'nested').stat().st_dev, (target / 'nested').stat().st_ino) \
@@ -1755,6 +1758,12 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
 
 
 CONNECTED_CASES = (
+    # Replay the four actual failures retained from 7ca attempt4 first. The
+    # native job stops on failure and reaches every other case only afterward.
+    ('before_restore_final', dict(action='offload', restore_interruption='before_restore_final')),
+    ('unwritten_stage', dict(action='offload', restore_interruption='unwritten_stage')),
+    ('unlogged_directory', dict(action='offload', restore_interruption='unlogged_directory')),
+    ('reconcile_resume_remove', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True)),
     ('delete', dict(interruption=None)),
     ('escaped_path_restore', dict(action='offload', controlled_names=True)),
     ('maximum_depth_restore', dict(action='offload', deep_tree=True, restore_interruption='stage_complete')),
@@ -1767,14 +1776,11 @@ CONNECTED_CASES = (
     ('removed', dict(interruption='removed')),
     ('unlink', dict(interruption='unlink')),
     ('offload', dict(action='offload')),
-    ('before_restore_final', dict(action='offload', restore_interruption='before_restore_final')),
-    ('unwritten_stage', dict(action='offload', restore_interruption='unwritten_stage')),
     ('access_intent', dict(action='offload', restore_interruption='access_intent')),
     ('stage_removed', dict(action='offload', restore_interruption='stage_removed')),
     ('stage_complete', dict(action='offload', restore_interruption='stage_complete')),
     ('restore_directory', dict(action='offload', restore_interruption='restore_directory')),
     ('restore_member', dict(action='offload', restore_interruption='restore_member')),
-    ('unlogged_directory', dict(action='offload', restore_interruption='unlogged_directory')),
     ('unlogged_member', dict(action='offload', restore_interruption='unlogged_member')),
     ('reconcile_intent', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent')),
     ('reconcile_remove', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove')),
@@ -1783,7 +1789,6 @@ CONNECTED_CASES = (
     ('reconcile_delete_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption=None, delete_expiry=True, resume_delete_expiry=False)),
     ('reconcile_pending_delete_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_delete_expiry=False)),
     ('reconcile_resume_delete_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_delete_expiry=True)),
-    ('reconcile_resume_remove', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True)),
     ('reconcile_resume_absent_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True, resume_absent_expiry=True)),
     ('reconcile_absent_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove', absent_expiry=True)),
     ('reconcile_observation_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove', absent_expiry=True, observation_expiry=True)),
