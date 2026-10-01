@@ -274,3 +274,14 @@ with `reconcile`, preserve every ledger/output/receipt, and restore only the
 previous reviewed research release link if needed. Never delete/reinitialize the
 state directory, switch projects/models, reactivate dot as the permanent trigger,
 or assume a local service stop closes the hosted sandbox.
+# Blueprint ownership and portability
+
+Research code and instructions live in Blueprint's GitHub repository; durable
+state and immutable evidence live in the existing Blueprint database, with
+verified standard JSON/JSONL exports to authorized company object storage.
+Stable Blueprint workflow/run IDs identify records; model-provider session IDs
+are provenance. Dot and ChatGPT Library are optional observers/copies, never a
+required research, QA, publication or recovery step. Any replacement agent must
+be able to consume code, manifests and exports without them. Preserve existing
+approval, privacy, one-create, publication and cleanup safeguards. Scoped
+operator commands are documented in [operators/README.md](operators/README.md).
