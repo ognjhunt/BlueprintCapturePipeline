@@ -240,7 +240,7 @@ def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
     request = episode["episode_preparation_request"]
     with fixture_environment(intake["environment"]):
         attempt = reserve_scene_attempt(queue_root=intake["intent_path"].parent.parent,
-            intent_id=intake["intent"]["intent_id"], attempt_id=request["run_id"] + "-construction",
+            intent_id=intake["intent"]["intent_id"], attempt_id="fixture-native-construction-" + episode["episode_preparation_request_digest"][7:31],
             source_commit=source, runtime_digest=request["execution_adapter"]["runtime_source_bundle"]["digest"],
             input_digest=episode["episode_preparation_request_digest"],
             provider=request["spend"]["selected_provider"], maximum_spend_usd=request["spend"]["hard_cap_usd"])
