@@ -77,6 +77,23 @@ test('automatic publication persists each plan/claim before one write and reads 
   assert.deepEqual(f.writes.map(x=>x.destination),['notion','sheets']);
 });
 
+test('ten agent-approved discoveries publish under the same durable claims with no three-row truncation',async()=>{
+  const f=await fixture();
+  const candidates=Array.from({length:10},(_,i)=>({...candidate(),organization:`Synthetic operator ${i}`,site:`Site ${i}`}));
+  await f.store.put(row(candidates));
+  const notion=await f.store.publish(f.r.date);
+  assert.equal(notion.readback_verified,true);
+  const saved=await f.store.get(f.r.date);saved.delivery.notion.state='acknowledged';await f.store.put(saved);
+  const sheets=await f.store.publish(f.r.date);
+  assert.equal(sheets.readback_verified,true);
+  assert.equal(f.values.length,15);
+  assert.deepEqual(f.values.slice(5).map(r=>r[0]),Array.from({length:10},(_,i)=>`BP-${String(i+1).padStart(6,'0')}`));
+  assert.equal(f.writes.filter(x=>x.destination==='sheets').length,1);
+  assert.ok(f.pages[0].body.children.some(b=>b.paragraph.rich_text[0].text.content.includes('Synthetic operator 9')));
+  assert.ok(f.values.slice(5).every(r=>r[10]==='Research'&&r[16]==='Unverified'));
+  assert.throws(()=>planSheets(row(Array.from({length:101},candidate)),f.snapshot()),/publication_candidates_invalid/);
+});
+
 for(const destination of ['notion','sheets']) test(`lost ${destination} reply restarts with GET-only reconciliation`,async()=>{
   const f=await fixture();
   if(destination==='sheets') {

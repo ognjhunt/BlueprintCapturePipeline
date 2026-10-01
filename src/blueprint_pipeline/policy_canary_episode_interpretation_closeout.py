@@ -237,7 +237,8 @@ def _load_profile(environment: Mapping[str, str]) -> tuple[dict[str, Any] | None
         environment.get("BLUEPRINT_POLICY_CANARY_EPISODE_INTERPRETER_PROFILE_FILE") or ""
     ).strip()
     if not raw:
-        return None, "interpreter_profile_unavailable"
+        from .argus_video_explanation import OFFLINE_REASON, default_video_profile
+        return default_video_profile(), OFFLINE_REASON
     try:
         path = Path(raw).expanduser()
         if not path.is_absolute():
@@ -245,6 +246,9 @@ def _load_profile(environment: Mapping[str, str]) -> tuple[dict[str, Any] | None
         value = _read(path)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return None, "interpreter_profile_invalid"
+    from .argus_video_explanation import OFFLINE_REASON, PROFILE_SCHEMA, default_video_profile
+    if value.get("schema_version") == PROFILE_SCHEMA:
+        return (value, OFFLINE_REASON) if value == default_video_profile() else (None, "interpreter_profile_invalid")
     numbers = ("max_frames", "max_input_tokens", "max_output_tokens")
     if (
         value.get("schema_version") != PROFILE_SCHEMA_VERSION
@@ -442,6 +446,12 @@ def materialize_policy_canary_episode_interpretations(
             profile=managed_profile, authority=managed_authority, service=configured_service(), unavailable=receipts)
 
     identity: InterpreterIdentity | None = getattr(selected_runner, "identity", None)
+    offline_argus_default = False
+    if profile is not None:
+        from .argus_video_explanation import ADAPTER_ID, default_video_identity
+        if profile.get("interpreter_id") == ADAPTER_ID:
+            identity = default_video_identity()
+            offline_argus_default = True
     interpreter: OpenAIMultimodalEpisodeInterpreter | None = None
     cost_gate = None
     audit: InferenceReservationAudit | None = None
@@ -636,7 +646,7 @@ def materialize_policy_canary_episode_interpretations(
                 reason = "candidate_policy_self_grading_forbidden"
             if marker_path.exists():
                 reason = "prior_interpretation_execution_ambiguous"
-            elif rights_path is None or not rights_path.is_file():
+            elif not offline_argus_default and (rights_path is None or not rights_path.is_file()):
                 reason = "rights_attestation_unavailable"
             plan = {
                 "schema_version": PLAN_SCHEMA_VERSION,

@@ -19,6 +19,22 @@ test('disabled startup never spawns', async () => {
   await startDailyResearchWorker({enabled: false, spawnImpl: () => {spawned = true;}}).stop();
   assert.equal(spawned, false);
 });
+test('Perplexity secret passes only to the application worker, never logs', async () => {
+  const previous = process.env.PERPLEXITY_API_KEY;
+  process.env.PERPLEXITY_API_KEY = 'offline-placeholder';
+  let captured;
+  const logs = [], child = new EventEmitter(); child.stdout = new EventEmitter(); child.pid = 100;
+  const handle = startDailyResearchWorker({bundleRoot: '/isolated', python: '/venv/python', enabled: true,
+    log: line => logs.push(line), killGroup: () => {}, spawnImpl: (python, args, options) => {
+    captured = options;
+    return child;
+  }});
+  assert.equal(captured.env.PERPLEXITY_API_KEY, 'offline-placeholder');
+  assert.deepEqual(logs, []);
+  const stop = handle.stop(); child.emit('exit'); await stop;
+  if (previous === undefined) delete process.env.PERPLEXITY_API_KEY;
+  else process.env.PERPLEXITY_API_KEY = previous;
+});
 test('split and coalesced JSON status frames survive without forwarding raw output', async () => {
   const {handle, children, logs} = fixture(); const out = children[0].stdout;
   out.emit('data', '{"state":"await');

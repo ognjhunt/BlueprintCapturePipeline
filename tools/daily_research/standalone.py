@@ -10,8 +10,10 @@ import tarfile
 from pathlib import Path
 
 FILES = (
-    "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "standalone.py", "runner.py", "knowledge.py",
-    "contracts.py", "freshness.py", "capabilities.py", "consumer.py", "publisher.mjs", "requirements.txt", "standalone.config.example.json",
+    "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "ADAPTIVE.md", "standalone.py", "runner.py", "knowledge.py",
+    "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "adaptive.py", "adaptive_runtime.py", "search.py", "SEARCH.md",
+    "adaptive-test.config.example.json", "adaptive-daily.config.example.json", "perplexity-daily.config.example.json",
+    "consumer.py", "publisher.mjs", "requirements.txt", "standalone.config.example.json",
     "capabilities/blueprint-evidence-qualification/SKILL.md",
     "capabilities/blueprint-evidence-qualification/references/prospect-contract.md",
     "capabilities/deep-research/SKILL.md", "capabilities/deep-research/LICENSE",

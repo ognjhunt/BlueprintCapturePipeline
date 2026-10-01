@@ -119,6 +119,8 @@ def _target(files, config, entry, *, lock=True):
     info = os.fstat(parent)
     _require(stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino)
              == (entry["target_identity"]["dev"], entry["target_identity"]["ino"]), "experiment_target_changed")
+    if entry['lane'] == 'diagnostics':
+        _diagnostic_rights(files, target, parent)
     files.location(parent)
     files.proof(parent)
     if lock:
@@ -127,6 +129,35 @@ def _target(files, config, entry, *, lock=True):
         except BlockingIOError:
             raise OwnerTargetVersionError("experiment_target_busy") from None
     return target, parent
+
+
+def _diagnostic_rights(files, target, target_fd):
+    """Root-only access is a current kernel fence, never a historical seal."""
+    info = os.fstat(target_fd)
+    _require(stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0
+             and stat.S_IMODE(info.st_mode) == 0o700,
+             'experiment_diagnostic_rights_changed')
+    files.parent(target / scratch.LEASE_FILE, protected=True)
+    files.location(target_fd)
+
+
+def _diagnostic_namespace(files, target, target_fd, remaining):
+    """Compare the complete current set to the authenticated remaining rows."""
+    _diagnostic_rights(files, target, target_fd)
+    expected = set(_METADATA)
+    for row in remaining:
+        _require(row[0] == 'disk-capacity-report.v1.json' and row[1] == 'file',
+                 'experiment_diagnostic_namespace_changed')
+        expected.add(row[0])
+    names = set()
+    with os.scandir(target_fd) as entries:
+        for item in entries:
+            files.budget.charge('entries')
+            _require(item.name in expected and item.name not in names,
+                     'experiment_diagnostic_namespace_changed')
+            names.add(item.name)
+    _require(names == expected, 'experiment_diagnostic_namespace_changed')
+    files.location(target_fd)
 
 
 def _selected(files, config, intent_id, issued, gid):
@@ -348,6 +379,38 @@ def _require_disposable_producer_completion():
     raise OwnerTargetVersionError("experiment_producer_completion_missing")
 
 
+def _action_completion(files, config, entry, original, lease, action):
+    """Finite profile admission; expiry and owner intent cannot mint a seal."""
+    from . import control_plane_lane_disk_diagnostic as diagnostic
+    from .control_plane_lane_experiment_completion import selected_completion
+    profile = original['participant_profile']
+    if action == 'delete':
+        _require(profile in {'local_root_disposable.v1', 'root_disk_diagnostic_disposable.v1'}
+                 and lease['class_intent'] == 'scratch' and lease['cleanup'] == 'delete',
+                 'experiment_delete_ineligible')
+        if profile == 'local_root_disposable.v1':
+            _require_disposable_producer_completion()
+            return None
+    else:
+        _require(action == 'offload' and lease['class_intent'] == 'evidence',
+                 'experiment_action_profile_unsupported')
+        if profile in diagnostic.PROFILES:
+            _require(profile == 'root_disk_diagnostic_evidence.v1' and lease['cleanup'] == 'offload',
+                     'experiment_action_profile_unsupported')
+    closure = selected_completion(files, config, entry)
+    if profile in diagnostic.PROFILES:
+        _require(closure['schema_version'] == 'control_plane_lane_disk_diagnostic_completion.v1'
+                 and closure['participant_profile'] == profile, 'experiment_completion_changed')
+        return closure
+    return None
+
+
+def _validate_completion_manifest(closure, manifest):
+    if closure is not None:
+        from .control_plane_lane_disk_diagnostic import validate_manifest
+        validate_manifest(closure, manifest)
+
+
 def _hash_manifest(files, target, target_fd, manifest, *, role):
     """One declared full payload pass, retaining one original member at a time."""
     _require(type(files) is _ActionFiles and len(manifest['members']) <= 4096,
@@ -402,15 +465,8 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         origin = _birth(files, public, entry, gid)
         _require(origin["participant_profile"] != "arena_owner_review.v1" or action == "owner_review",
                  "experiment_action_profile_unsupported")
-        if action == "delete":
-            _require(origin["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
-                     and lease["cleanup"] == "delete", "experiment_delete_ineligible")
-            _require_disposable_producer_completion()
-        if action == "offload":
-            _require(lease["class_intent"] == "evidence" and entry["completion"] is not None,
-                     "experiment_completion_required")
-            from .control_plane_lane_experiment_completion import selected_completion
-            selected_completion(files, config, entry)
+        closure = None if action == 'owner_review' else _action_completion(
+            files, config, entry, origin, lease, action)
         policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
                                              protected=True, mode=0o600)
         policy = owners._policy(policy_raw, principal, files.budget)
@@ -432,6 +488,7 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
                                  restorable=action == 'offload')
             files.budget.measure(manifest, cap=1048576 - 100)
             _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
+            _validate_completion_manifest(closure, manifest)
             files.phase('finalize')
             manifest_raw = _encoded(manifest, "manifest_digest", 1048576)
             _require(owners._matches(action_id, owners._CONSENT_ID) and action_id != intent_id,
@@ -688,6 +745,7 @@ def _member(files, target, row, current_directory_metadata=None, *, hash_payload
 
 def run_action(action_id, *, expected_action_intent, installed_config_path, now, _pins_root):
     files = _ActionFiles(now=now)
+    diagnostic_references = None
     try:
         issued = now()
         config, gid = _context(files, installed_config_path, issued)
@@ -719,17 +777,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         lease, lease_record = _lease(files, target, entry)
         _require(issued >= lease["expires_at_epoch"] and lease["released_at_epoch"] is None, "experiment_not_expired")
         original = _birth(files, public, entry, gid)
-        if action["action"] == "delete":
-            _require(original["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
-                     and lease["cleanup"] == "delete", "experiment_action_profile_unsupported")
-            try:
-                _require_disposable_producer_completion()
-            except OwnerTargetVersionError as error:
-                return _outcome(action, "kept", error.code)
-        else:
-            _require(action["action"] == "offload" and lease["class_intent"] == "evidence", "experiment_action_profile_unsupported")
-            from .control_plane_lane_experiment_completion import selected_completion
-            selected_completion(files, config, entry)
+        try:
+            closure = _action_completion(files, config, entry, original, lease, action['action'])
+        except OwnerTargetVersionError as error:
+            return _outcome(action, 'kept', error.code)
         if _pins_root is None:
             return _outcome(action, "kept", "experiment_reference_authority_missing")
         reference, reference_fd = _pin_fence(files, config, _pins_root, target, issued)
@@ -742,11 +793,19 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                                     cap=1048576, protected=True, mode=0o600)
         _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")
         manifest = _manifest_record(files, manifest_raw, entry, restorable=action['action'] == 'offload')
+        _validate_completion_manifest(closure, manifest)
         _require(manifest["schema_version"] == MANIFEST_SCHEMA and manifest["manifest_digest"]
                  == canonical_digest(manifest, digest_field="manifest_digest"), "experiment_manifest_invalid")
         _require(len(manifest["members"]) <= 4096, "experiment_manifest_limit")
         from . import control_plane_lane_experiment_recovery as recovery
         rows = sorted(manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+        if entry['lane'] == 'diagnostics' and entry['state'] == 'active':
+            _diagnostic_namespace(files, target, target_fd, rows)
+        if entry['lane'] == 'diagnostics':
+            from .control_plane_lane_disk_diagnostic_references import DiagnosticReferences
+            diagnostic_references = DiagnosticReferences(files, config, target, target_fd, manifest,
+                issued=issued, held_pins=(files, reference, reference_fd))
+            files._diagnostic_references = diagnostic_references
         files._store_path = config.experiment_record_store
         _preflight_row_events(files, action, rows)
         files.phase("event_admission_done")
@@ -760,6 +819,8 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         operation, retiring, previous, logical, allocated, changed_directories, removed_count, receipt, preservation = recovery.begin(
             files, config, action, expected_action_intent, entry, current, refreshed, public, store,
             target, rows, reference, issued, gid)
+        if entry['lane'] == 'diagnostics':
+            _diagnostic_namespace(files, target, target_fd, rows[removed_count:])
         offset = int(action["action"] == "offload")
         if offset:
             from . import control_plane_lane_experiment_archive as archive
@@ -769,6 +830,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                 files.location(target_fd)
                 files.location(reference_fd)
                 files.verify_record(retiring[2])
+                if diagnostic_references is not None:
+                    # Copy/readback preserves payload; the destructive boundary
+                    # below still performs a complete current process census.
+                    diagnostic_references.guard(processes=False)
             if preservation is None:
                 archived = archive.preserve(files, config, target, rows, manifest_raw, archive_guard)
                 files.phase("ready")
@@ -804,6 +869,9 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                     files.location(reference_fd)
                     files.proof(reference_fd)
                     files.verify_record(retiring[2])
+                    if entry['lane'] == 'diagnostics':
+                        _diagnostic_namespace(files, target, target_fd, rows[index - 1:])
+                        diagnostic_references.guard()
                     parent, name, fd, info = held.pop(index) if row[1] == "file" else _member(
                         files, target, row, changed_directories.get(row[0]), hash_payload=False)
                     try:
@@ -811,6 +879,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                         files.proof(fd)
                         _require(owners._metadata(os.fstat(fd)) == owners._metadata(info)
                                  == owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False)), "experiment_member_changed")
+                        if diagnostic_references is not None:
+                            diagnostic_references.budget.tick()
+                        files.check_long()
+                        _require(now() < action["expires_at_epoch"], "experiment_action_expired")
                         if row[1] == "directory":
                             os.rmdir(name, dir_fd=parent)
                             files.removed_directory(target / row[0], fd)
@@ -837,6 +909,8 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                     files.close(fd)
                 files.trim_payload()
         files.location(target_fd)
+        if diagnostic_references is not None:
+            diagnostic_references.guard()
         os.fsync(target_fd)
         if receipt is None:
             receipt = _event(files, operation, action, "retired", dict(preservation=preservation[0] if preservation else None, manifest=action["manifest"],
@@ -851,9 +925,13 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         raise OwnerTargetVersionError("experiment_action_io_failed") from None
     finally:
         try:
-            files.finish()
+            if diagnostic_references is not None:
+                diagnostic_references.close()
         finally:
-            files.budget.close()
+            try:
+                files.finish()
+            finally:
+                files.budget.close()
 
 
 def _is_selected_restoration(files, public, entry, gid):
@@ -967,7 +1045,14 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                         continue
                     if candidate['action'] == 'delete':
                         try:
-                            _require_disposable_producer_completion()
+                            if entry['lane'] == 'diagnostics':
+                                original = _birth(files, public, entry, gid)
+                                _require(original['participant_profile'] == 'root_disk_diagnostic_disposable.v1',
+                                         'experiment_delete_ineligible')
+                                from .control_plane_lane_experiment_completion import selected_completion
+                                selected_completion(files, config, entry)
+                            else:
+                                _require_disposable_producer_completion()
                         except OwnerTargetVersionError as error:
                             expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
                                                 decision='kept', reason=error.code, receipt=None,

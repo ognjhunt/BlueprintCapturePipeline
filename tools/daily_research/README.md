@@ -1,5 +1,20 @@
 # Standalone daily research
 
+The selected production search default is Perplexity Search API Fast, called by
+the existing Sol agent through application function tools. The disabled profile
+and exact binding/recovery/evidence contract are in [SEARCH.md](SEARCH.md).
+Existing admitted native-search rows and the failed October 1 intent retain
+their original guards; shipping this adapter does not activate or reset them.
+
+The selected profile retains **all defensible new commercial site/task
+opportunities** within a defined run scope. Count is never the stopping rule;
+report actual coverage, unresolved branches and evidence-based or interrupted
+stopping reasons.
+See [ADAPTIVE.md](ADAPTIVE.md) for the disabled daily opt-in, evidence/duplicate
+rules and separate one-time test preparation. Legacy native rows keep their historical $1 soft total planning target. The new
+profile stays disabled until an explicit recurring budget is chosen. Existing
+legacy rows retain their admitted guards.
+
 **2026-09-30 Render route:** the selected deployment is the existing Render
 worker plus existing Firestore, using the recovered adapter. See
 [RENDER.md](RENDER.md) for the current deployment and agent-owned QA/publication
@@ -74,7 +89,9 @@ Freshness eligibility is field-specific; export time does not renew source
 checks. The example applies no task/geography filter, so Austin-only or
 portioning-only scope is not silently introduced. Missing/conflicted/unsupported
 knowledge remains a gap, and consequential availability/geography claims need
-live evidence. The runner returns fewer than three candidates when warranted.
+live evidence. The adaptive profile records why fewer than ten new candidates
+withstood research instead of padding the result. Legacy configurations below
+retain their original narrow scan envelope until explicitly replaced.
 
 CRM authority: [existing Sheet](https://docs.google.com/spreadsheets/d/1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY/edit).
 Reviewed knowledge is private input, not bundled evidence. The reviewed Library

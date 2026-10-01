@@ -1,0 +1,244 @@
+{
+  "schema_version": "argus_shadow_inventory.v1",
+  "scope": "Local checkout media and archive inventory only; read-only remote trace is separate and pinned in the comparison manifest",
+  "current_grader_repository_pin": "35f5c9ad43f84aa053aa7616a63a9aa4f6e32a61",
+  "available_eligible_episode_count": 0,
+  "available_eligible_categories": {
+    "success": 0,
+    "failure": 0,
+    "ambiguous": 0,
+    "subtle_failure": 0,
+    "occlusion": 0,
+    "success_then_undone": 0
+  },
+  "local_media_entries": [
+    {
+      "path": "docs/experiments/policy_ranking_successor_experiment_20260727/exact_main_attempt_v11/provider_job/vast_provider_runtime_output_videos/000_direct.mp4",
+      "sha256": "sha256:75bbd8d19d4275fe4b360363a5c7fd79e3af0a4becce3a294a362e51350f2c2a",
+      "size_bytes": 278794,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos WAM canary, not independently labeled recorded robot episode"
+    },
+    {
+      "path": "tests/fixtures/new_site_loading_bay_v1/raw/retained.mov",
+      "sha256": "sha256:1f1f34ddbd9326cda660aa2bb0ac113aa8b9989c4cc06288d8ed313ff845f04f",
+      "size_bytes": 59,
+      "kind": "synthetic_placeholder",
+      "eligible": false,
+      "reason": "Explicit fixture text, not a playable retained episode"
+    },
+    {
+      "path": "tests/fixtures/sim_only_beta_local_capture/local-blueprint-fixtures/scenes/sim-only-beta-fixture-site/captures/capture-001/raw/walkthrough.mp4",
+      "sha256": "sha256:1eca152f09f86ccd78d26aa2194bd241ba14036e936f946f4492dad3bcbec8a9",
+      "size_bytes": 23,
+      "kind": "synthetic_placeholder",
+      "eligible": false,
+      "reason": "Explicit fixture text, not a playable retained episode"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "canary/blueprint_wrapper.mp4",
+      "sha256": "sha256:4a9b07077418c2da8c39e897e97f04436521e908eb7f1d9b03d3650dd2584de8",
+      "size_bytes": 281922,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "canary/direct.mp4",
+      "sha256": "sha256:4a9b07077418c2da8c39e897e97f04436521e908eb7f1d9b03d3650dd2584de8",
+      "size_bytes": 281922,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/3e480e4f8a1e0d2e586c7c46313b1ab08c020ce5e188169f6ffa1b76428f4fa9.mp4",
+      "sha256": "sha256:b2397a5ba4ba7abb4fc795ef25bd355dace22a8de30a31aeadd65af16ff1d482",
+      "size_bytes": 285347,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/3f768d6f777b1b5f2f3d647044ef573231c462a66a56638d2f2911aa982fb996.mp4",
+      "sha256": "sha256:9de1e6d57eaece71dbb56622af80366ce996d75ece97f1db8aba8b7fcf91c92d",
+      "size_bytes": 290494,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/40dc2b4b20d7cd6f083a71580551defc6eb243b01983bdcc58c9fcd34b076e8b.mp4",
+      "sha256": "sha256:b9d26c39c9c82829a8a713253367fda8623c7b643805247d0925a40909bccad9",
+      "size_bytes": 291739,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/4413ba5a2e6cbcdcaa45071841b6b8443f784167dc8572c3fb8d8427e37a901f.mp4",
+      "sha256": "sha256:825dabfaeb247202c09c320370e867ab1ca50bb9f11fd81d5a9aa215920401d4",
+      "size_bytes": 385371,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/58dcb40a4783fe638511ca767ca220b076bfb7b1d6f8bfc8fef5c8a2cc9ad606.mp4",
+      "sha256": "sha256:ee6b53dafbf7fed4dc8b6c6398c1134e3d96b4d279105b1ccd31e2ba58825801",
+      "size_bytes": 286970,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/71b6ac10944480b93397ec5a05100988a1130df4240c90bfa9327834d5c3965b.mp4",
+      "sha256": "sha256:bfd25fecf8c5dadcf5cc56eb7b9e23bbc8221b50ef1aa950d1755dce5e1c9398",
+      "size_bytes": 290047,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/bc2b696714150b62c42671144e7b0beb0c52dbad6c094f88505643baacc4815c.mp4",
+      "sha256": "sha256:067ffbee50b33ecd127d49bb235d724614d29f0e2d55aae4cf4c5f5aa3098cfa",
+      "size_bytes": 291394,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/d116fe4559ed45167df8c97394d263dad24c5aadcef7363fe2bf00b6392f9686.mp4",
+      "sha256": "sha256:0d9bf070d9c726e58e96c3b32f0d4d87cc29056a2f82dcde394b836b62f81214",
+      "size_bytes": 314747,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/d8fc5e14bdccb15b2d2cfdd5e321d062d4701f74ec33dcda27b316917b7633e0.mp4",
+      "sha256": "sha256:16eb1b33d055ca72aece788d61bda7f4787e22b7034dff0b99fae08152eb0207",
+      "size_bytes": 282736,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_cosmos3_followup_20260728/allocation_3_live_evidence/runtime_output.zip",
+      "member": "videos/fcb95e7fe3c60d15c7819daf4561eea1629f960755bbab27ec372b20198078b4.mp4",
+      "sha256": "sha256:7b78e49f6b439ad149580fc8c9c55c9d228faca448765abf665922964ef574f4",
+      "size_bytes": 399456,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "docs/experiments/policy_ranking_successor_experiment_20260727/exact_main_attempt_v11/runtime_output.zip",
+      "member": "canary/direct.mp4",
+      "sha256": "sha256:75bbd8d19d4275fe4b360363a5c7fd79e3af0a4becce3a294a362e51350f2c2a",
+      "size_bytes": 278794,
+      "kind": "generated_video",
+      "eligible": false,
+      "reason": "Cosmos-generated matrix/canary; causal gate abstained before evaluator and label access"
+    },
+    {
+      "archive": "tests/fixtures/app_clip_recorded_v3_2/bundles.tar.gz",
+      "member": "lidar/raw/walkthrough.mov",
+      "sha256": "sha256:dc6534f4e2927f657a696005d8eac94ca376979f69ae36ee3929cf5dee0c599e",
+      "size_bytes": 53699,
+      "kind": "capture_fixture_ungraded",
+      "eligible": false,
+      "reason": "Recorded-capture contract fixture without robot task episode, current grade or independent outcome label"
+    },
+    {
+      "archive": "tests/fixtures/app_clip_recorded_v3_2/bundles.tar.gz",
+      "member": "nonlidar/raw/walkthrough.mov",
+      "sha256": "sha256:0ddeb7079d535f45743c1872b98b59ccbeefc657c107c6257fea865964c0f1b3",
+      "size_bytes": 53695,
+      "kind": "capture_fixture_ungraded",
+      "eligible": false,
+      "reason": "Recorded-capture contract fixture without robot task episode, current grade or independent outcome label"
+    }
+  ],
+  "media_entry_counts": {
+    "generated_video": 14,
+    "synthetic_placeholder": 2,
+    "capture_fixture_ungraded": 2
+  },
+  "unique_generated_video_digests": 12,
+  "zero_episode_indexes": [
+    {
+      "path": "docs/arm_decision_proof_v1/evidence/second_scene_840796/episode_evidence_index.v1.json",
+      "sha256": "sha256:6116a6c47432010faee915dbbf60c823243f6643c2543884244c8acfc086743d",
+      "size_bytes": 3778,
+      "episode_count": 0,
+      "episode_media_exists": false
+    },
+    {
+      "path": "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_a/episode_evidence_index.v1.json",
+      "sha256": "sha256:c8e4b1e0bc5f38da77803355659a7afc6c7a60caad49d56f7eaffe139375185d",
+      "size_bytes": 4765,
+      "episode_count": 0,
+      "episode_media_exists": false
+    },
+    {
+      "path": "docs/arm_decision_proof_v1/third_scene_dual_task_evidence/task_b/episode_evidence_index.v1.json",
+      "sha256": "sha256:4990070380729d98959f1c884c70d45330f5994ca2e3b04ceb05a8ee11aeac0b",
+      "size_bytes": 4771,
+      "episode_count": 0,
+      "episode_media_exists": false
+    }
+  ],
+  "historical_remote_references": [
+    {
+      "path": "docs/arm_decision_proof_v1/OVERNIGHT_RESULTS_2026-08-08.md",
+      "reference": "v65: 3 pi0.5 episodes, moved/grasped/moved, none placed; v82 and v84: 3 GR00T episodes each",
+      "evidence_quality": "Narrative pointer only here, no corresponding video/trace/score bundle; not a current paired corpus"
+    },
+    {
+      "path": "docs/arm_decision_proof_v1/OPERATOR_CANARY_ARTIFACT_SERVING_2026_09_10.md",
+      "reference": "Retained V25 video and score in authenticated operator result store",
+      "evidence_quality": "Historical delivery-fix report, not retrieved byte-bound episode evidence"
+    }
+  ],
+  "rights_findings": {
+    "argus_code": "Apache-2.0; only inspected source and extracted prompt text; license retained",
+    "hand_pose": "Not used: ACE-Ego-Hand checkpoints, MANO and smplx have separate noncommercial restrictions",
+    "retained_robot_episode_upload_rights": "No exact-input/provider disclosure attestation available in local corpus",
+    "generative_diagnostics": "Retained historical rights ledger does not establish robot-task truth or new external disclosure authority"
+  },
+  "live_deployment_configuration_inspected": false,
+  "model_calls": 0,
+  "gpu_runs": 0,
+  "remote_trace_summary": {
+    "projection_rows": 40,
+    "completed_rollouts_with_video_references": 8,
+    "existing_grader_reported_successes": 0,
+    "existing_grader_reported_failures": 8,
+    "blocked_attempts_with_video_references": 6,
+    "unexecuted_rows_without_video": 26,
+    "registered_review_video_references": 14,
+    "independently_reviewed_labels_found_in_inspected_records": 0,
+    "independently_admitted_success_failure_ambiguous_subtle_occlusion_undo_counts": {
+      "success": 0,
+      "failure": 0,
+      "ambiguous": 0,
+      "subtle_failure": 0,
+      "occlusion": 0,
+      "success_then_undone": 0
+    }
+  },
+  "remote_trace_path": "docs/experiments/argus_shadow_20261001/argus_shadow_remote_evidence_trace.v1.json"
+}

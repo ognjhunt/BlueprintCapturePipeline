@@ -15,6 +15,7 @@ from .control_plane_disk_usage import DEFAULT_SURVEY_ALIASES, allocated_bytes, s
 from .control_plane_lane_scratch import LaneScratchError, read_lane_scratch_folder
 from .control_plane_storage_pins import PIN_KINDS, SCHEMA_VERSION as PIN_SCHEMA_VERSION, pin_status
 from .control_plane_storage_roots import classify_path
+from .control_plane_kernel_process import kernel_has_no_user_memory
 
 DEFAULT_WORK_ROOT = Path("/mnt/blueprint-work")
 DEFAULT_INPUTS_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs")
@@ -362,6 +363,16 @@ def _process_references(paths: Sequence[Path], process_root: Path, errors: list[
             break
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
+        def kernel_channel(name, cap):
+            nonlocal remaining
+            if _expired(deadline, errors):
+                raise ValueError('process_inventory_truncated')
+            with (process / name).open('rb') as stream:
+                raw = stream.read(min(cap, remaining) + 1)
+            if len(raw) > min(cap, remaining):
+                raise ValueError('process_inventory_truncated')
+            remaining -= len(raw)
+            return raw
         for name in ("cmdline", "environ"):
             if _expired(deadline, errors):
                 break
@@ -377,6 +388,15 @@ def _process_references(paths: Sequence[Path], process_root: Path, errors: list[
                     continue
             except FileNotFoundError:
                 continue  # exited during the scan
+            except ProcessLookupError:
+                # Linux exposes ESRCH for environ on an actual kernel task
+                # without an mm. A task flag alone does not qualify: observe
+                # status, empty user channels and the same start identity.
+                # Every available cwd/FD is still inspected below.
+                if name == 'environ' and kernel_has_no_user_memory(kernel_channel, process.name):
+                    continue
+                errors.append("process_inventory_unreadable")
+                continue
             except OSError:
                 errors.append("process_inventory_unreadable")
                 continue

@@ -1017,15 +1017,18 @@ def _gc_sandbox_report_root(root, action_id):
     return root / 'sandbox-control-plane/storage-gc' / action_id
 
 
-def _run_shipped_gc_sandbox(value, action, clock, pins):
+def _run_shipped_gc_sandbox(value, action, clock, pins, *, realtime=False, invocation=0):
     """Run actual GC under the shipped unit's protections and finite RW roots."""
     root = value['config'].parent
     installed = root / 'installed'
     report_root = _gc_sandbox_report_root(root, action['action_id'])
+    if invocation:
+        assert type(invocation) is int and 0 < invocation <= 3
+        report_root = report_root / ('attempt-' + str(invocation))
     report_root.mkdir(parents=True, mode=0o700)
     selected = report_root / 'selected.json'
     selected.write_bytes(encoded(dict(config=str(value['config']), pins=str(pins), now=clock,
-                                     action_id=action['action_id'])))
+                                     action_id=action['action_id'], realtime=realtime)))
     selected.chmod(0o600)
     wrapper = root / 'fixture-gc-python'
     dependencies = installed / 'dependencies'
@@ -1042,6 +1045,8 @@ def _run_shipped_gc_sandbox(value, action, clock, pins):
         '/var/lib/blueprint-operator-door/requests/experiment-records': str(root / 'state/requests/experiment-records'),
         '/var/lib/blueprint-operator-door/experiment-authority': str(root / 'state/experiment-authority'),
         '/mnt/blueprint-work/lanes/g1': str(value['work'] / 'g1'),
+        '/mnt/blueprint-work/lanes/diagnostics': str(value['work'] / 'diagnostics'),
+        '/var/lib/blueprint/task-evaluation-inputs/lanes/diagnostics': str(root / 'inputs/lanes/diagnostics'),
         '/var/lib/blueprint/task-evaluation-inputs/lanes/g1': str(root / 'inputs/lanes/g1'),
         '/var/lib/blueprint/pipeline-control-plane/storage-pins': str(pins),
         '/var/lib/blueprint/pipeline-control-plane': str(root / 'sandbox-control-plane'),
@@ -1088,19 +1093,44 @@ def _run_shipped_gc_sandbox(value, action, clock, pins):
         subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=True)
 
 
+def _retain_native_limit(method, failures):
+    """Observe an actual failed native method without changing its refusal."""
+    def observed(files, *args, **kwargs):
+        try:
+            return method(files, *args, **kwargs)
+        except ValueError as error:
+            if str(error) == 'owner_target_resource_exhausted' and len(failures) < 8:
+                trace, frames = error.__traceback__, []
+                while trace is not None and len(frames) < 16:
+                    frames.append(dict(function=trace.tb_frame.f_code.co_name, line=trace.tb_lineno))
+                    trace = trace.tb_next
+                failures.append(dict(owner_class=type(files).__name__, method=method.__name__,
+                    code=str(error), frames=frames, owned=len(files.owned), probes=len(files.probe_owned),
+                    raw_cap=files.raw_cap, metadata_bytes=getattr(files, 'metadata_bytes', None),
+                    budget_counts=dict(files.budget.counts), budget_limits=dict(files.budget.limits),
+                    budget_last=files.budget.last, budget_deadline=files.budget.deadline))
+            raise
+    return observed
+
+
 def _gc_sandbox_main(selected):
     """Root fixture entry: real GC, fake archive service, actual kernel sandbox."""
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
     from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
     from tests.test_registered_experiment_offload import Cloud
+    from blueprint_pipeline.control_plane_lane_owner_target_io import _TargetFiles
+    from blueprint_pipeline.control_plane_lane_disk_diagnostic_references import _ReferenceFiles
 
     selected = Path(selected)
     assert os.geteuid() == 0 and selected.name == 'selected.json'
-    root = selected.parents[3]
-    assert root.parent == Path('/var/lib') and root.name.startswith('blueprint-adp-contained-')
+    roots = [path for path in selected.parents if path.parent == Path('/var/lib')
+             and path.name.startswith('blueprint-adp-contained-')]
+    assert len(roots) == 1
+    root = roots[0]
     selection = json.loads(selected.read_bytes())
-    assert set(selection) == {'config', 'pins', 'now', 'action_id'}
+    assert set(selection) == {'config', 'pins', 'now', 'action_id', 'realtime'}
+    assert type(selection['realtime']) is bool
     assert selection['config'] == str(root / 'door.json')
     owners.INSTALLED_PACKAGE_ROOT = root / 'installed'
     settings = json.loads((root / 'door.json').read_bytes())
@@ -1117,20 +1147,31 @@ def _gc_sandbox_main(selected):
         raise AssertionError('shipped ProtectSystem=strict failed to fence unlisted writes')
     cloud = Cloud()
     archive._client = lambda *args: (cloud, 'development-only')
+    native_limit_failures = []
+    # Metadata-only observers execute and rethrow the actual original methods.
+    # No process view, descriptor, clock or allowance is replaced here.
+    _TargetFiles.slot = _retain_native_limit(_TargetFiles.slot, native_limit_failures)
+    _TargetFiles.read_bytes = _retain_native_limit(_TargetFiles.read_bytes, native_limit_failures)
+    _ReferenceFiles.read_bytes = _retain_native_limit(_ReferenceFiles.read_bytes, native_limit_failures)
     report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
         pins_root=Path(selection['pins']), apply=True, ack=RUN_ACK,
         lane_scratch_roots=(settings['lane_scratch_work_root'], settings['lane_scratch_inputs_root']),
         lane_scratch_enabled=True, _experiment_config_path=root / 'door.json',
-        now=lambda: selection['now'])
+        now=time.time if selection['realtime'] else lambda: selection['now'])
     outcomes = report['registered_experiments']['outcomes']
-    chosen = next(row for row in outcomes if row['action_id'] == selection['action_id'])
-    if chosen['decision'] == 'retired':
-        assert cloud.objects and all(body.closed for body in cloud.bodies)
+    chosen = next((row for row in outcomes if row['action_id'] == selection['action_id']), None)
+    if chosen is None:
+        assert not outcomes and not cloud.objects and not cloud.bodies
+    elif chosen['decision'] == 'retired':
+        action = json.loads((root / 'state/requests/experiment-records' / (selection['action_id'] + '.action.json')).read_bytes())
+        assert bool(cloud.objects) == (action['action'] == 'offload')
+        assert all(body.closed for body in cloud.bodies)
     else:
-        assert chosen['decision'] == 'kept' and chosen['reason'] == 'owner_review'
+        assert chosen['decision'] == 'kept'
         assert chosen['removed_logical_bytes'] == chosen['removed_allocated_bytes'] == 0
         assert not cloud.objects and not cloud.bodies
     result = dict(report={'registered_experiments': report['registered_experiments']},
+        native_limit_failures=native_limit_failures,
         objects=[dict(key=key, payload=base64.b64encode(raw).decode('ascii'))
                  for key, raw in cloud.objects.items()], object_metadata=cloud.metadata,
         all_native_responses_closed=True, actual_shipped_sandbox=True,
@@ -1145,7 +1186,7 @@ def _gc_sandbox_main(selected):
         os.fsync(stream.fileno())
 
 
-def _linux_contained_roundtrip():
+def _linux_contained_roundtrip(*, phase="--contained-root-phase"):
     """Install only disposable protected code/input paths, never a live host."""
     assert sys.platform == "linux" and os.geteuid() == 0
     created_account = False
@@ -1194,6 +1235,7 @@ def _linux_contained_roundtrip():
         shipped_gc.write_bytes((source / 'deploy/systemd/blueprint-control-plane-storage-gc.service').read_bytes())
         shipped_gc.chmod(0o644)
         substitutions = {
+            '/etc/systemd/system/blueprint-control-plane-storage-gc.service': str(shipped_gc),
             "/mnt/blueprint-work/lanes": str(root / "work/lanes"),
             "/var/lib/blueprint/task-evaluation-inputs/lanes": str(root / "inputs/lanes"),
             "/var/lib/blueprint-operator-door/experiment-authority": str(
@@ -1210,6 +1252,7 @@ def _linux_contained_roundtrip():
             "control_plane_lane_scratch_retention",
             "native_g1_development_pair",
             "native_g1_registered_containment",
+            'control_plane_lane_legacy_owner',
         ):
             path = installed / "blueprint_pipeline" / (name + ".py")
             text = path.read_text()
@@ -1241,7 +1284,7 @@ def _linux_contained_roundtrip():
         code = installed / "tests/test_registered_feature_linux.py"
         env = os.environ | {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(installed)}
         value = subprocess.run(
-            [sys.executable, str(code), "--contained-root-phase", str(root)],
+            [sys.executable, str(code), phase, str(root)],
             capture_output=True,
             text=True,
             timeout=240,
@@ -1321,6 +1364,26 @@ def test_actual_contained_blueprint_native_pair_child_and_kernel_completion():
     assert receipt["arena_expired_shipped_gc_owner_review_kept"]
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != 'linux' or os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') != '1',
+    reason='mandatory installed root diagnostic, real expiry, shipped GC and distinct UID; Mac skip unmet')
+def test_actual_registered_disk_diagnostic_delete_offload_and_restore():
+    command = [sys.executable, str(Path(__file__).resolve()), '--diagnostic-root-fixture']
+    if os.geteuid() != 0:
+        command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
+                   'PYTHONDONTWRITEBYTECODE=1', *command]
+    result = subprocess.run(command, cwd=Path(__file__).parents[1], capture_output=True, text=True,
+        timeout=300, env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads(result.stdout.strip().splitlines()[-1])
+    assert receipt['status'] == 'passed' and receipt['actual_ordinary_uid'] != 0
+    assert receipt['real_lease_expiry'] and receipt['default_off_kept']
+    assert receipt['actual_delete'] and receipt['actual_offload'] and receipt['full_readback_before_remove']
+    assert receipt['actual_restore'] and receipt['restore_no_overwrite'] and receipt['sealed_writer_denied']
+    assert receipt['actual_open_fd_kept'] and receipt['zero_repeat_credit'] and receipt['shipped_gc_sandbox']
+    assert receipt['actual_encoded_queue_kept'] and receipt['actual_directory_alias_kept']
+
+
 if __name__ == "__main__":
     assert os.environ.get("BLUEPRINT_DISPOSABLE_LINUX_TEST") == "1", (
         "disposable fixture opt-in required"
@@ -1331,7 +1394,14 @@ if __name__ == "__main__":
         value = _linux_cache_roundtrip()
     elif sys.argv[1:] == ["--contained-root-fixture"]:
         value = _linux_contained_roundtrip()
+    elif sys.argv[1:] == ["--diagnostic-root-fixture"]:
+        value = _linux_contained_roundtrip(phase="--diagnostic-root-phase")
     else:
-        assert len(sys.argv) == 3 and sys.argv[1] == "--contained-root-phase"
-        value = _linux_contained_phase(Path(sys.argv[2]))
+        assert len(sys.argv) == 3
+        if sys.argv[1] == "--diagnostic-root-phase":
+            from tests.registered_disk_diagnostic_native_acceptance import run
+            value = run(Path(sys.argv[2]))
+        else:
+            assert sys.argv[1] == "--contained-root-phase"
+            value = _linux_contained_phase(Path(sys.argv[2]))
     print(json.dumps(value, sort_keys=True))

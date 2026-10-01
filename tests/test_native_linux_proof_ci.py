@@ -71,7 +71,7 @@ def test_full_shards_reuse_the_protected_native_environment_without_reducing_col
         "sudo --non-interactive true",
         'test "$manager" = /usr/lib/systemd/systemd',
         "test -f /sys/fs/cgroup/cgroup.controllers",
-        "uv venv --python /usr/bin/python3 /opt/blueprint-native-test-venv",
+        "uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv",
     )
     for command in preflight:
         assert command in install
@@ -79,8 +79,11 @@ def test_full_shards_reuse_the_protected_native_environment_without_reducing_col
     sync = install.split("uv sync --frozen", 1)[1].split("uv pip install", 1)[0]
     assert "--python /usr/bin/python3" in sync
     assert "--no-editable" in sync
-    assert "uv pip install --python /opt/blueprint-native-test-venv/bin/python ./BlueprintContracts" in install
-    seal = "sudo chown -hR root:root /opt/blueprint-native-test-venv"
+    # The protected installed entry requires single-link imported source;
+    # uv's cache hardlinks fail that native safety check even after chown.
+    assert "--link-mode copy" in sync
+    assert "uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts" in install
+    seal = "sudo chown -hR root:root /var/lib/blueprint-native-test-venv"
     assert install.index(seal) > install.index("uv pip install")
     for step in shard["steps"]:
         for line in step.get("run", "").splitlines():
@@ -106,3 +109,67 @@ def test_required_native_proof_still_gates_the_pr_on_success() -> None:
     assert step["env"]["NATIVE_REQUIRED"] == "${{ needs.impact.outputs.native_feature_required }}"
     assert step["env"]["NATIVE_RESULT"] == "${{ needs.native-feature-linux.result }}"
     assert 'if test "${NATIVE_REQUIRED}" = "true"; then\n  test "${NATIVE_RESULT}" = "success"' in step["run"]
+
+
+def test_diagnostic_native_failure_stops_before_unrelated_cases_without_reducing_acceptance() -> None:
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
+    assert selected[0] == 'tests/test_registered_feature_linux.py::test_actual_registered_disk_diagnostic_delete_offload_and_restore'
+    assert len(selected) == len(set(selected)) == 9
+    assert '--maxfail=1' in run
+    assert 'assert len(cases) == 46' in run
+    assert not any(flag in run for flag in ('--deselect', '--ignore', '-k '))
+
+
+def test_retained_failed_restore_paths_execute_before_remaining_native_cases():
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    assert [row[0] for row in CONNECTED_CASES[:5]] == [
+        'maximum_depth_restore', 'before_restore_final', 'unwritten_stage', 'unlogged_directory', 'reconcile_resume_remove']
+    assert len(CONNECTED_CASES) == len(dict(CONNECTED_CASES)) == 38
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
+    assert selected[1] == 'tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption'
+    assert '--maxfail=1' in run and '--deselect' not in run and '-k ' not in run
+
+
+def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> None:
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    assert dict(CONNECTED_CASES)['reconcile_absent_expiry'] == dict(action='offload',
+        restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove', absent_expiry=True)
+    assert dict(CONNECTED_CASES)['reconcile_observation_expiry'] == dict(action='offload',
+        restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove',
+        absent_expiry=True, observation_expiry=True)
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    assert 'assert len(cases) == 46' in run
+    assert 'case.find(tag)' in run and 'for tag in ("skipped", "error", "failure")' in run
+
+
+def test_admitted_path_boundaries_need_real_native_restore_cases():
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    cases = dict(CONNECTED_CASES)
+    assert cases['escaped_path_restore'] == dict(action='offload', controlled_names=True)
+    assert cases['maximum_depth_restore'] == dict(action='offload', deep_tree=True,
+                                                  restore_interruption='stage_complete')
+
+
+def test_present_delete_expiry_requires_each_actual_original_operation_boundary() -> None:
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    cases = dict(CONNECTED_CASES)
+    for name, phase, resume in (('reconcile_delete_expiry', None, False),
+        ('reconcile_pending_delete_expiry', 'reconcile_intent', False),
+        ('reconcile_resume_delete_expiry', 'reconcile_intent', True)):
+        assert cases[name] == dict(action='offload', restore_interruption='unlogged_member',
+            reconciliation_interruption=phase, delete_expiry=True, resume_delete_expiry=resume)
+
+
+def test_resumed_unlink_has_actual_current_and_expired_absence_cases() -> None:
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    for case, expired in [('reconcile_resume_remove', False), ('reconcile_resume_absent_expiry', True)]:
+        options = dict(action='offload', restore_interruption='unlogged_member',
+            reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True)
+        if expired:
+            options['resume_absent_expiry'] = True
+        assert dict(CONNECTED_CASES)[case] == options

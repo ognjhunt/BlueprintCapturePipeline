@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {Store, ROOT, LeaseChannel} from '../tools/daily_research/firestore_bridge.mjs';
+import {Store, ROOT, LeaseChannel, ADAPTIVE_TEST} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 
 async function fixture() {
@@ -12,6 +12,31 @@ async function fixture() {
 }
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
+
+test('Perplexity row overflow is refused before a durable run or publication claim', async () => {
+  const {db, store} = await fixture();
+  await assert.rejects(store.put({...row(), search_provider:'perplexity-fast-v1', payload:'x'.repeat(7000000)}), /record_resource_ceiling/);
+  assert.equal(db.values.has(`${ROOT}/runs/${row().date}`), false);
+});
+
+test('fresh recurring budget gates both model create and QA claims', async () => {
+  const {db, store} = await fixture();
+  const config = {search_provider:'perplexity-fast-v1', soft_target_usd:2, recurring_budget_authority_reference:'owner-test-budget'};
+  Object.assign(db.values.get(ROOT), {config, workflow:{enabled:true, qa_authority_reference:'owner-qa', publication_authority_reference:'owner-publication'}});
+  const value = {...row(), ...config}; await store.put(value);
+  db.values.get(ROOT).config = {...config, soft_target_usd:3};
+  await assert.rejects(store.createCheck(value.date,value.metadata), /budget_authority_changed/);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).create_attempt_claimed,false);
+  db.values.get(ROOT).config = config;
+  await store.createCheck(value.date,value.metadata);
+  const deadline = Date.now()+60000, digest = 'a'.repeat(64);
+  await store.put({...value,state:'awaiting_review',qa:{state:'qa_input_unresolved',request_digest:digest,deadline_ms:deadline}});
+  db.values.get(ROOT).config = {...config,recurring_budget_authority_reference:'different-authority'};
+  await assert.rejects(store.qaCheck(value.date,digest,deadline), /budget_authority_changed/);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).qa_request_claimed,false);
+  db.values.get(ROOT).config = config;
+  await store.qaCheck(value.date,digest,deadline);
+});
 
 test('overlap refuses and late release cannot clear the successor lease', async () => {
   const {db, store, time} = await fixture();
@@ -91,4 +116,55 @@ test('imported legacy review packets reach the agent queue without rerunning res
   await store.importRun(legacy);
   assert.equal(db.values.get(`${ROOT}/workItems/${row().date}`).stage, 'agent_qa_pending');
   assert.equal(db.values.get(`${ROOT}/runs/${row().date}`).create_attempt_claimed, true);
+});
+
+async function adaptiveFixture() {
+  const f = await fixture(), origin = {...row(), date:'2026-10-01',run_key:'blueprint-researcher:2026-10-01'};
+  await f.store.put(origin);
+  await f.store.put({...origin,state:'failed',raw_output_digest:'d'.repeat(64),delivery:{}});
+  const daily = await f.store.adaptiveOrigin();
+  const intent = {test_id:ADAPTIVE_TEST,intent_digest:'a'.repeat(64),request_digest:'b'.repeat(64),session_id:'sess_1',
+    environment_id:'env_1',admission_blockers:[],provider_calls:0,profile:{enabled:false,publication_enabled:false,
+      new_session_create_allowed:false,daily_state_reset_allowed:false,permanent_deletion_allowed:false}};
+  const testRow = {date:'2026-10-01',test_id:ADAPTIVE_TEST,test_intent:intent,daily_blob:daily.blob,
+    session_id:'sess_1',environment_id:'env_1',state:'research_input_unresolved',research_deadline_ms:f.time.now+1200000};
+  await f.store.adaptivePut(testRow);
+  return {...f, testRow, daily};
+}
+
+test('adaptive claim stays separate, survives lease replacement, and cannot repeat uncertain input', async () => {
+  const {store,db,time,testRow,daily} = await adaptiveFixture();
+  db.replay=true;
+  await store.adaptiveClaim('research','b'.repeat(64),testRow.research_deadline_ms);
+  const second=new Store(db,()=>time.now,'replacement');
+  await assert.rejects(second.acquire(),/runner_overlap/);
+  await store.release();await second.acquire();
+  assert.equal((await second.adaptiveGet()).test_intent.intent_digest,'a'.repeat(64));
+  await assert.rejects(second.adaptiveClaim('research','b'.repeat(64),testRow.research_deadline_ms),/not_admitted/);
+  assert.deepEqual(await second.adaptiveOrigin(),daily);
+  assert.equal(db.values.has(`${ROOT}/workItems/2026-10-01`),false);
+});
+
+test('adaptive admission, exact original, deadlines and immutable intent bind both claims', async () => {
+  const {store,db,time,testRow,daily} = await adaptiveFixture();
+  await assert.rejects(store.adaptivePut({...testRow,test_intent:{...testRow.test_intent,request_digest:'c'.repeat(64)}}),/intent_conflict/);
+  await assert.rejects(store.adaptiveClaim('research','c'.repeat(64),testRow.research_deadline_ms),/not_admitted/);
+  const qa={request_digest:'c'.repeat(64),deadline_ms:time.now+1800000};
+  await store.adaptivePut({...testRow,state:'awaiting_review',qa});
+  await store.adaptiveClaim('qa',qa.request_digest,qa.deadline_ms);
+  await assert.rejects(store.adaptiveClaim('qa',qa.request_digest,qa.deadline_ms),/not_admitted/);
+  db.values.get(`${ROOT}/runs/2026-10-01`).blob='e'.repeat(64);
+  await assert.rejects(store.adaptivePut({...testRow,state:'running'}),/original_intent_changed/);
+  db.values.get(`${ROOT}/runs/2026-10-01`).blob=daily.blob;
+  time.now+=1800001;
+  await assert.rejects(store.adaptiveClaim('qa',qa.request_digest,qa.deadline_ms),/lease_lost/);
+});
+
+test('adaptive artifact files are immutable in their own namespace and preserve daily bytes', async () => {
+  const {store}=await adaptiveFixture(), name='2026-10-01-artifact.json';
+  await store.filePut(name,Buffer.from('original').toString('base64'));
+  await store.adaptiveFilePut(name,Buffer.from('test result').toString('base64'));
+  assert.equal(Buffer.from(await store.fileGet(name),'base64').toString(),'original');
+  assert.equal(Buffer.from(await store.adaptiveFileGet(name),'base64').toString(),'test result');
+  await assert.rejects(store.adaptiveFilePut(name,Buffer.from('replacement').toString('base64')),/identity_conflict/);
 });

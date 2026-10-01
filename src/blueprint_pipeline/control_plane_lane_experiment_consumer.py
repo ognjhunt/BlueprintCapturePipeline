@@ -192,6 +192,10 @@ class RegisteredExperimentUse(LeasedScratchUse):
                     and entry["name"] == target.name and entry["lane"] == target.parent.name]
             _require(len(rows) == 1, "experiment_consumer_authority_required")
             entry = rows[0]
+            # The fixed root diagnostic has one private executor and finalizer.
+            # Generic readers/writers cannot reopen either a running or sealed
+            # generation, including a subsequently restored evidence folder.
+            _require(entry['lane'] != 'diagnostics', 'diagnostic_consumer_unsupported')
             _require(entry["state"] == "active" and issued < entry["expires_at_epoch"]
                      and (expected_birth is None or expected_birth == entry["birth"])
                      and (expected_generation is None or expected_generation == entry["generation"]),

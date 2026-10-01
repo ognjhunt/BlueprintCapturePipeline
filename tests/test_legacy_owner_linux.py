@@ -116,6 +116,7 @@ def _root_fixture() -> dict:
         package.mkdir(parents=True)
         sources = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
         for name in ("__init__", "control_plane_lane_scratch_census",
+                     "control_plane_kernel_process",
                      "control_plane_disk_usage", "control_plane_lane_scratch",
                      "control_plane_storage_pins", "control_plane_storage_roots",
                      "decision_evidence_contracts", "control_plane_lane_legacy_owner",

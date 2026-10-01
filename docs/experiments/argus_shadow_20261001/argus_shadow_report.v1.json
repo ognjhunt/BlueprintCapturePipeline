@@ -1,0 +1,204 @@
+{
+  "schema_version": "argus_shadow_report.v1",
+  "manifest_digest": "sha256:6178d8cf836e49d880d963757fd4a2a24b07e4ea14738a08a17ec0d6fd1dbca4",
+  "status": "blocked_no_retained_episodes",
+  "episode_count": 0,
+  "real_episode_count": 0,
+  "ground_truth_counts": {},
+  "metrics": {
+    "current": {
+      "confusion": {
+        "failure": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        },
+        "success": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        },
+        "unclear": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        }
+      },
+      "false_success": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "missed_failure": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "missed_success": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "failure_abstention": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "unsupported_success_on_ambiguous_truth": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "abstention": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "timestamp_matched_event_count": 0,
+      "timestamp_reference_event_count": 0,
+      "timestamp_missing_event_count": 0,
+      "timestamp_mean_absolute_error_s": null,
+      "brier_score": null,
+      "calibration_sample_count": 0,
+      "parse_failure_count": 0,
+      "calibration_limit": "No calibrated-probability claim; unclear truth excluded; small selected samples are descriptive.",
+      "explanation_usefulness": "Requires blinded human review against cited evidence; text presence is not usefulness."
+    },
+    "argus_adapted": {
+      "confusion": {
+        "failure": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        },
+        "success": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        },
+        "unclear": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        }
+      },
+      "false_success": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "missed_failure": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "missed_success": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "failure_abstention": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "unsupported_success_on_ambiguous_truth": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "abstention": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "timestamp_matched_event_count": 0,
+      "timestamp_reference_event_count": 0,
+      "timestamp_missing_event_count": 0,
+      "timestamp_mean_absolute_error_s": null,
+      "brier_score": null,
+      "calibration_sample_count": 0,
+      "parse_failure_count": 0,
+      "calibration_limit": "No calibrated-probability claim; unclear truth excluded; small selected samples are descriptive.",
+      "explanation_usefulness": "Requires blinded human review against cited evidence; text presence is not usefulness."
+    },
+    "argus_vanilla": {
+      "confusion": {
+        "failure": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        },
+        "success": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        },
+        "unclear": {
+          "failure": 0,
+          "success": 0,
+          "unclear": 0
+        }
+      },
+      "false_success": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "missed_failure": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "missed_success": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "failure_abstention": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "unsupported_success_on_ambiguous_truth": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "abstention": {
+        "count": 0,
+        "denominator": 0,
+        "rate": null
+      },
+      "timestamp_matched_event_count": 0,
+      "timestamp_reference_event_count": 0,
+      "timestamp_missing_event_count": 0,
+      "timestamp_mean_absolute_error_s": null,
+      "brier_score": null,
+      "calibration_sample_count": 0,
+      "parse_failure_count": 0,
+      "calibration_limit": "No calibrated-probability claim; unclear truth excluded; small selected samples are descriptive.",
+      "explanation_usefulness": "Requires blinded human review against cited evidence; text presence is not usefulness."
+    }
+  },
+  "episodes": [],
+  "category_metrics": {},
+  "explanation_review_required": {
+    "blinding": "Randomize arm order and conceal model identity before human review",
+    "rubric": [
+      "evidence accuracy",
+      "criterion coverage",
+      "useful failure cause",
+      "timestamp accuracy",
+      "uncertainty honesty"
+    ],
+    "reviewed_explanations": 0
+  },
+  "policy_ranking": {
+    "status": "not_supported",
+    "reason": "No preregistered, powered, paired policy sample admitted."
+  },
+  "claim_ceiling": "Retained evidence comparison; no physical validity or evaluator replacement",
+  "production_grader_changed": false,
+  "model_calls": 0
+}

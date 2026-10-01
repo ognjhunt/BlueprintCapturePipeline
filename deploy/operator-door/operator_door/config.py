@@ -60,6 +60,7 @@ class DoorConfig:
     owner_census_decisions_enabled: int = 0
     experiment_creation_enabled: bool = False
     experiment_retirement_enabled: bool = False
+    historical_generation_actions_enabled: bool = False
     experiment_gc_environment_file: str = "/etc/blueprint/pipeline-control-plane.env"
     needed_checkpoint_cache_creation_enabled: bool = False
     needed_checkpoint_cache_inventory_file: str = "/opt/blueprint/control-plane-config-tools/operator-door-source/configs/g1_humanoidarena_checkpoint_inventory.v1.json"

@@ -89,7 +89,9 @@ _NO_FOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def prepare_ledger_root(root: Path) -> Path:
-    root.mkdir(parents=True, exist_ok=True, mode=0o2770)
+    # Runtime units forbid privilege bits in mkdir; the installer supplies
+    # setgid on shared roots. Owner-only mode repair below remains best effort.
+    root.mkdir(parents=True, exist_ok=True, mode=0o770)
     try:
         descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | _NO_FOLLOW)
     except OSError as exc:

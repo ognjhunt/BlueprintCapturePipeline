@@ -27,6 +27,7 @@ from tools.daily_research.runner import (
     configuration,
     digest,
     due_date,
+    observation_seconds,
     preflight,
     read_json,
     save_bytes,
@@ -94,14 +95,14 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         from tools.daily_research.runner import crm_snapshot, load_knowledge_bundle
         crm_snapshot(cfg["crm_snapshot"], datetime.now(timezone.utc))
         load_knowledge_bundle(cfg, datetime.now(timezone.utc))
-        return {**preflight(api, cfg.get("expected_agent_instructions_sha256")), "enabled": cfg["enabled"],
+        return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider")), "enabled": cfg["enabled"],
                 "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
     if command in {"review", "receipt", "record-cleanup"}:
         if not day or decision is None:
             raise Refusal("date_and_input_required")
         return getattr(runner, command.replace("-", "_"))(day, decision)
     result = runner.start_or_resume(allow_create=command == "run")
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + observation_seconds(result, cfg, "research")
     while result["state"] in {"running", "cancel_pending", "collecting"} and time.monotonic() < deadline:
         if stopped() or bridge.call("control").get("enabled") is not True:
             result = runner.cancel_current(result["date"], "observer_interrupted_or_disabled")
@@ -125,7 +126,12 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
     consumer = Consumer(ledger, cfg, api, stopped=stopped)
     consumer.active_day = day
     try:
-        until = time.monotonic() + 200
+        active_day = day or bridge.call("active_qa") or bridge.call("work_item")
+        # work_item is a projection object, active_qa is a date string.
+        if isinstance(active_day, dict):
+            active_day = active_day.get("date")
+        row = ledger.get(active_day) if active_day else None
+        until = time.monotonic() + observation_seconds(row, cfg, "qa")
         while True:
             result = consumer.step()
             if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_cancel_pending", "reviewed"}:
@@ -162,6 +168,24 @@ def export_snapshot(bridge, day, destination):
             actual = hashlib.sha256(files[kind]).hexdigest() if kind == "qa" else digest(json.loads(files[kind]))
             if actual != row.get("qa", {}).get(field):
                 raise Refusal("agent_qa_export_digest_mismatch")
+    if (row.get("qa", {}).get("input_file") and (row["qa"]["input_file"] != day + "-qa-input.json" or "qa-input" not in files
+            or digest(json.loads(files["qa-input"])) != row["qa"].get("request_digest"))):
+        raise Refusal("agent_qa_export_digest_mismatch")
+    for cid, call in row.get("application_tool_calls", {}).items():
+        if not call.get("result_file"):
+            continue
+        raw = files.get("tool-" + cid)
+        expected_turn = row.get("turn_id") if call.get("phase") == "research" else row.get("qa", {}).get("turn_id")
+        if (call["result_file"] != day + "-tool-" + cid + ".json" or raw is None
+                or hashlib.sha256(raw).hexdigest() != call.get("result_sha256")
+                or len(raw) != call.get("result_bytes") or digest(call.get("request")) != call.get("request_digest")):
+            raise Refusal("research_tool_result_digest_mismatch")
+        event = json.loads(raw)
+        if (digest(event) != call.get("result_digest") or event.get("turn_id") != expected_turn
+                or event.get("call_id") != cid or call["request"].get("call_id") != cid
+                or call["request"].get("turn_id") != expected_turn
+                or event.get("type") != "agent.session.input.tool_result"):
+            raise Refusal("research_tool_result_digest_mismatch")
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     save_bytes(destination / "status.json", canonical(row).encode())

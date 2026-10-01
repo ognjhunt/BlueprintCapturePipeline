@@ -125,6 +125,31 @@ def test_automatic_qa_exact_artifact_review_and_private_export(fixture, tmp_path
     assert render.export_snapshot(bridge, DAY, tmp_path / "export")["missing_files"] == []
 
 
+def test_adaptive_qa_uses_reserved_total_time_and_checks_quota_without_legacy_activity_cap(fixture):
+    consumer, api, ledger, _, _ = fixture
+    with ledger.lock():
+        row = ledger.get(DAY)
+        row.update(discovery_profile="adaptive-sites-v1", total_runtime_seconds=1800,
+                   research_runtime_seconds=1200, web_tool_activities=17)
+        ledger.put(row)
+    original_listing = api.listing
+    def listing(resource, session_id=None):
+        values = original_listing(resource, session_id)
+        if resource == "turns":
+            for value in values:
+                if value["id"] == "turn_qa":
+                    value["completed_at"] = int((NOW + timedelta(seconds=320)).timestamp())
+        return values
+    api.listing = listing
+    consumer.clock = lambda: NOW + timedelta(seconds=300)
+    assert consumer.step()["state"] == "reviewed"
+    saved = ledger.get(DAY)
+    assert saved["qa"]["state"] == "validated" and len(api.inputs) == 1
+    text = saved["qa"]["event"]["input"][0]["content"][0]["text"]
+    assert "target of 10 new" in text and "Existing deployments" in text
+    assert "At most" not in text and "shortfall" in text
+
+
 def test_run_entrypoint_automatically_finishes_qa_and_both_publication_receipts(fixture, monkeypatch, tmp_path):
     consumer, api, ledger, bridge, _ = fixture
     monkeypatch.setattr(render, "configured", lambda *args: consumer.config)
