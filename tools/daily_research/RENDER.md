@@ -203,3 +203,14 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
 Rollback: disable the research worker flag and Firestore control, preserve all
 dated state and artifacts, and return to the previous WebApp release if needed.
 Never restore an empty ledger or an older snapshot of run state.
+
+## Disabled adaptive preparation
+
+The adaptive daily profile targets >=10 new distinct site/task opportunities;
+existing deployments and CRM matches do not fill quota. It admits new v3 rows
+with pinned1800-second total/1200-second research/600-second QA-reserved durations.
+Daily $1 soft TOTAL unchanged. Legacy rows keep their original guards; collection
+still requires supported primary evidence, explicit hypothesis/unknowns and agent
+QA before durable one-use publication. No outreach or dot step. See ADAPTIVE.md.
+This code does not alter live control, reset the failed Oct1 intent or launch the
+separate authorized $25 test. Its durable claim/paid observer is still unfinished.
