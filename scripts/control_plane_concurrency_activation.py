@@ -53,11 +53,22 @@ def _fixture_s3(store):
     def client(service, **kwargs):
         if service != "s3":
             raise PermissionError("harness_external_client_denied")
+        if (
+            kwargs.get("endpoint_url") != "https://object-store.fixture.invalid"
+            or kwargs.get("aws_access_key_id") != "fixture-access"
+            or kwargs.get("aws_secret_access_key") != "fixture-secret"
+        ):
+            raise PermissionError("harness_object_store_fixture_binding_invalid")
         return store
 
     boto3.client = client
     try:
-        yield
+        with fixture_environment({
+            "BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL": "https://object-store.fixture.invalid",
+            "AWS_ACCESS_KEY_ID": "fixture-access",
+            "AWS_SECRET_ACCESS_KEY": "fixture-secret",
+        }):
+            yield
     finally:
         boto3.client = original
         OpenAIOrganizationCostsClient._default_transport = original_cost_transport

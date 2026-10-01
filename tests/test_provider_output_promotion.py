@@ -549,7 +549,11 @@ def test_promotion_resume_is_idempotent_and_records_no_url(paired_world):
     assert world.spaces.whole_object_gets(world.keys["output"]) == reads and world.cas.uploads == uploads
     for path in world.files():
         data = path.read_bytes()
-        assert SECRET.encode() not in data and b"X-Amz" not in data and b"https://" not in data, path
+        assert SECRET.encode() not in data and b"X-Amz" not in data, path
+        if path == world.tmp_path / "b2-endpoint":
+            assert data == b"https://s3.us-west-004.backblazeb2.com\n"
+        else:
+            assert b"https://" not in data, path
 
 
 def test_promotion_refuses_without_an_explicit_artifact_store(world, monkeypatch):
