@@ -283,6 +283,12 @@ for label, action in [
  try:action()
  except PermissionError:blocked.append(label)
 (root/"receipt.json").write_text(json.dumps(blocked))
+checkout=pathlib.Path.cwd().resolve()
+probe=subprocess.run(["git","-c","safe.directory="+str(checkout),"-C",str(checkout),"rev-parse","HEAD"],
+                     capture_output=True,text=True,check=True)
+assert len(probe.stdout.strip())==40
+try:subprocess.run(["git","-c","core.pager=cat","show","HEAD"],check=True)
+except PermissionError:blocked.append("foreign-git-configuration")
 owned=root/"temporary";owned.mkdir();(owned/"data").write_text("owned temporary")
 shutil.rmtree(owned)
 foreign=os.open(outside.parent,os.O_RDONLY)
@@ -308,4 +314,5 @@ print(json.dumps(blocked))
     assert result.returncode == 0, result.stderr
     assert '"network", "provider", "write", "delete"' in result.stdout
     assert '"foreign-directory-fd"' in result.stdout
+    assert '"foreign-git-configuration"' in result.stdout
     assert outside.read_text() == "user-owned"

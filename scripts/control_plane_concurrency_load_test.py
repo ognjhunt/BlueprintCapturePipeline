@@ -84,6 +84,11 @@ def install_child_fences(owned_roots: Sequence[Path]) -> None:
         if event == "subprocess.Popen":
             command = args[1]
             arguments = list(command[1:]) if isinstance(command, (list, tuple)) else []
+            if len(arguments) >= 2 and arguments[0] == "-c":
+                checkout = Path(__file__).resolve().parents[1]
+                if arguments[1] != "safe.directory=" + str(checkout):
+                    raise PermissionError("concurrency_harness_git_configuration_denied")
+                arguments = arguments[2:]
             if len(arguments) >= 3 and arguments[0] == "-C":
                 arguments = arguments[2:]
             if (
