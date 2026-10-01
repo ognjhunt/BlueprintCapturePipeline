@@ -60,6 +60,27 @@ def _native(command, *, timeout=30):
     return value.stdout
 
 
+def _create_native_configuration_parent():
+    parent = _POLICY.parent
+    try:
+        parent.mkdir(mode=0o755)
+    except FileExistsError:
+        assert parent.is_dir() and not parent.is_symlink(), 'preserve pre-existing native configuration'
+        return None
+    info = parent.lstat()
+    return parent, (info.st_dev, info.st_ino)
+
+
+def _remove_native_configuration_parent(created):
+    if created is None:
+        return
+    parent, identity = created
+    info = parent.lstat()
+    assert not parent.is_symlink() and (info.st_dev, info.st_ino) == identity
+    # Empty-directory removal refuses any contents another installation owns.
+    parent.rmdir()
+
+
 def _checkout_git(source, *arguments):
     # This hermetic job has already selected the exact immutable feature/lock
     # checkout. Root reads its data without a global or wildcard trust change.
@@ -240,6 +261,7 @@ def _enabled_sdk_native_phase():
     original = (root.stat().st_dev,root.stat().st_ino)
     installed = {}
     installed_units = {}
+    configuration_parent = None
     try:
         # The private checkout token exists only in the preceding CI checkout
         # step. Root receives protected Git object data, with no token/env/key.
@@ -301,7 +323,7 @@ def _enabled_sdk_native_phase():
             coordinator_path=str(root/'coordination'),generation_store=str(root/'generations'),journal_store=str(retirement_state/'journals'),
             consumer_cohort=cohort,principals=[],private_archive_allowed_classes=[],limits={})
         policy['policy_digest']='sha256:'+hashlib.sha256(json.dumps(policy,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
-        _POLICY.parent.mkdir(mode=0o755,exist_ok=True)
+        configuration_parent = _create_native_configuration_parent()
         _POLICY.write_text(json.dumps(policy))
         _POLICY.chmod(0o644)
         # ExecStartPre executes the real guard as blueprint with only the
@@ -377,6 +399,7 @@ def _enabled_sdk_native_phase():
         for path in (_POLICY,environment):
             if path.exists():
                 path.unlink()
+        _remove_native_configuration_parent(configuration_parent)
         for path in (_RUNTIME,_BOOT,sdk_inputs):
             if path.exists():
                 if path in installed:
@@ -426,6 +449,65 @@ def test_native_fixture_git_access_is_scoped_to_exact_checkout(tmp_path):
         "safe.directory=" + str(source.resolve()), "-C", str(source.resolve()),
         "cat-file", "blob", "a" * 40 + ":installer.py"]
     assert "safe.directory=*" not in command
+
+
+@pytest.mark.parametrize('preexisting', [False, True])
+def test_native_configuration_cleanup_preserves_launch_residency(tmp_path, monkeypatch, preexisting):
+    # ADP-009D/day28: installing the SDK must not turn later workstation
+    # launches into control-plane launches by leaving /etc/blueprint behind.
+    from blueprint_pipeline import host_resident_launch_inputs as residency
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import dispatch_launch_request
+    from tests.test_task_evaluation_policy_canary_preparation_dispatch import _profile_and_request
+    parent = tmp_path / 'etc-blueprint'
+    monkeypatch.setattr(sys.modules[__name__], '_POLICY', parent / 'policy.json')
+    monkeypatch.setattr(residency, 'PRODUCTION_LAUNCH_INPUT_ROOTS', (str(parent),))
+    if preexisting:
+        parent.mkdir()
+    created = _create_native_configuration_parent()
+    _POLICY.write_bytes(b'fixture policy')
+    _POLICY.unlink()
+    _remove_native_configuration_parent(created)
+    assert parent.exists() is preexisting
+    profile, request = _profile_and_request(tmp_path)
+    profiles = tmp_path / 'profiles'
+    profiles.mkdir()
+    (profiles / (profile['profile_id'] + '.json')).write_text(json.dumps(profile))
+    request_path = tmp_path / 'request.json'
+    request_path.write_text(json.dumps(request))
+    monkeypatch.setenv('BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_QUEUE_ROOT', str(tmp_path / 'queue'))
+    receipt = dispatch_launch_request(request_path=request_path, profile_dir=profiles,
+        state_root=tmp_path / 'runs', execute=True,
+        allocator_runner=lambda _: (_ for _ in ()).throw(AssertionError('provider forbidden')))
+    assert receipt['status'] == ('blocked' if preexisting else 'queued_for_no_spend_preparation'), receipt
+    if preexisting:
+        assert 'launch_profile_input_not_host_resident:immutable_input:source_bundle_manifest' in receipt['blockers']
+
+
+def test_native_configuration_cleanup_refuses_unowned_contents(tmp_path, monkeypatch):
+    parent = tmp_path / 'etc-blueprint'
+    monkeypatch.setattr(sys.modules[__name__], '_POLICY', parent / 'policy.json')
+    created = _create_native_configuration_parent()
+    other = parent / 'other-installation'
+    other.write_bytes(b'preserve')
+    with pytest.raises(OSError):
+        _remove_native_configuration_parent(created)
+    assert other.read_bytes() == b'preserve'
+
+
+@pytest.mark.parametrize('replacement', ['directory', 'symlink'])
+def test_native_configuration_cleanup_refuses_replaced_parent(tmp_path, monkeypatch, replacement):
+    parent = tmp_path / 'etc-blueprint'
+    monkeypatch.setattr(sys.modules[__name__], '_POLICY', parent / 'policy.json')
+    created = _create_native_configuration_parent()
+    original = tmp_path / 'original'
+    parent.rename(original)
+    if replacement == 'directory':
+        parent.mkdir()
+    else:
+        parent.symlink_to(original, target_is_directory=True)
+    with pytest.raises(AssertionError):
+        _remove_native_configuration_parent(created)
+    assert original.is_dir() and parent.exists()
 
 
 @pytest.mark.parametrize('existing', [None, 'blueprint-agent-execution.service'])
