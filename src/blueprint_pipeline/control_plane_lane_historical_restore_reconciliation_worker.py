@@ -15,7 +15,28 @@ from .control_plane_lane_historical_restore_reconciliation_authority import deci
 from .control_plane_lane_historical_restore_reconciliation_scope import reconciled_parent, unknown_creation_scope
 
 
-def _remove(held, worker, scope):
+def _effect_pin(worker, selected):
+    """The held syscall cannot silently switch to a newer owner grant."""
+    effect = worker.effect_selected[-1]
+    generation._require(selected == dict(decision_id=effect[0]['decision_id'], decision=effect[2]),
+                        'restore_reconciliation_approval_invalid')
+    extra = worker.resume_selected[-1]
+    if extra is not None:
+        recorded = worker.reconciliations[-1][3]
+        generation._require(extra[0]['action'] == 'discard_unfinished_restore_row'
+            and recorded and recorded[-1]['body'].get('phase') == 'reconcile_delete_resume'
+            and recorded[-1]['body'].get('delete_resume') == selected,
+            'restore_reconciliation_approval_invalid')
+
+
+def _resume_effect_scope(present, pending, recorded, selected):
+    """Absence cannot acquire a new DELETE intent; exact prior effect may finish."""
+    generation._require(pending and (present or recorded
+        and recorded[-1]['body'].get('phase') == 'reconcile_delete_resume'
+        and recorded[-1]['body'].get('delete_resume') == selected), 'restore_reconciliation_scope_invalid')
+
+
+def _remove(held, worker, scope, selected):
     relative, parent_path = scope['remove_member']['path'], scope['parent_path']
     row = scope['remove_member']
     with held._opened(relative) as (fd, guard):
@@ -23,6 +44,7 @@ def _remove(held, worker, scope):
             digest, size = hashlib.sha256(), 0
             while True:
                 with worker.mutation_authority(readers=True):
+                    _effect_pin(worker, selected)
                     guard()
                     block = os.read(fd, 1024**2)
                     guard()
@@ -35,6 +57,7 @@ def _remove(held, worker, scope):
                                 'restore_reconciliation_scope_invalid')
         with held._opened(parent_path) as (parent, parent_guard):
             with worker.mutation_authority(readers=True):
+                _effect_pin(worker, selected)
                 held.verify()
                 guard()
                 parent_guard()
@@ -68,7 +91,7 @@ def _remove(held, worker, scope):
 
 def reconcile_unlogged_creation(worker, events, observed, roots, monotonic):
     from .control_plane_lane_historical_restore_worker import _readback, _resources
-    pending_cleanup = events[-1]['kind'] == 'restore_intent' and events[-1]['body'].get('phase') == 'reconcile_intent'
+    pending_cleanup = events[-1]['kind'] == 'restore_intent' and events[-1]['body'].get('phase') in ('reconcile_intent', 'reconcile_delete_resume')
     if pending_cleanup:
         generation._require(worker.reconciliations, 'restore_reconciliation_approval_invalid')
         prefix, identifier, selected, _ = worker.reconciliations[-1]
@@ -83,28 +106,56 @@ def reconcile_unlogged_creation(worker, events, observed, roots, monotonic):
         worker.reconciliations.append((prefix, identifier, selected, None))
     with worker.checkpoint(journal=True):
         approval, approved, selected = worker.reconciliation_selected[-1]
-    worker.reconciliations[-1] = (prefix, identifier, selected, None)
-    scope = approval['packet']['scope']
+        observation = worker.resume_selected[-1]
+    if not pending_cleanup:
+        identifier = approval['decision_id']
+    recorded = worker.reconciliations[-1][3]
+    worker.reconciliations[-1] = (prefix, identifier, selected, recorded)
+    observe_only = observation is not None and observation[0]['action'] == 'observe_unfinished_restore_row_absence'
+    effect = worker.effect_selected[-1]
+    scope = effect[0]['packet']['scope']
+    approved = effect[1]
     present = observed == approved
     if not present:
         generation._require(pending_cleanup, 'restore_reconciliation_scope_invalid')
         reconciled_parent(approved, observed, scope, tick=worker.operation.remaining)
+    if observe_only:
+        # Observation approval can never reach removal, even if old DELETE is
+        # still current. The whole current absence observation must be exact.
+        generation._require(not present and pending_cleanup and observed == observation[1],
+                            'restore_absent_observation_approval_invalid')
+    if observation is not None and not observe_only:
+        _resume_effect_scope(present, pending_cleanup, recorded,
+            dict(decision_id=observation[0]['decision_id'], decision=observation[2]))
     _readback(worker, observed, roots, monotonic)
     binding = dict(decision_id=identifier, decision=selected,
                    original_head_event_digest=prefix[-1]['event_digest'])
     with _resources(worker, observed) as (held, _):
         if not pending_cleanup:
-            worker.record('restore_intent', dict(phase='reconcile_intent', **binding))
+            intent = worker.record('restore_intent', dict(phase='reconcile_intent', **binding))
+            recorded = (intent,)
+            worker.reconciliations[-1] = (prefix, identifier, selected, recorded)
+        if observation is not None and not observe_only:
+            grant = dict(decision_id=observation[0]['decision_id'], decision=observation[2])
+            if recorded[-1]['body'].get('delete_resume') != grant:
+                resumed = worker.record('restore_intent', dict(phase='reconcile_delete_resume', **binding, delete_resume=grant))
+                recorded = (*recorded, resumed)
+                worker.reconciliations[-1] = (prefix, identifier, selected, recorded)
         if present:
-            parent = _remove(held, worker, scope)
+            parent = _remove(held, worker, scope,
+                dict(decision_id=effect[0]['decision_id'], decision=effect[2]))
         else:
             with worker.mutation_authority(readers=True):
                 held.verify()
                 held.sync_directory(scope['parent_path'])
             parent = held.versions[scope['parent_path']].copy()
-        worker.record('restore_intent', dict(phase='reconciled', **binding,
+        extra = ({('observation_resume' if observe_only else 'delete_resume'):
+                  dict(decision_id=observation[0]['decision_id'], decision=observation[2])}
+                 if observation is not None else {})
+        completed = worker.record('restore_intent', dict(phase='reconciled', **binding, **extra,
             parent_path=scope['parent_path'], parent_version=parent, uncertain=True,
             credited_removed_allocated_bytes=0))
+        worker.reconciliations[-1] = (prefix, identifier, selected, (*recorded, completed))
     # Fresh inventory and whole replay observe the effects; no original packet,
     # decision, birth, archive, journal prefix or clock is rewritten.
     current = generation.inventory_historical_generation(worker.selected[2]['target_path'], allowed_roots=roots,

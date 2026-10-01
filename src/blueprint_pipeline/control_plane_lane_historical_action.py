@@ -40,6 +40,8 @@ class _Worker:
         self.reservation = None
         self.reconciliations = []
         self.reconciliation_selected = []
+        self.resume_selected = []
+        self.effect_selected = []
 
     @contextmanager
     def checkpoint(self, *, journal=False):
@@ -52,11 +54,22 @@ class _Worker:
             else:
                 _require(current == self.selected, 'authority_changed')
             if self.reconciliations:
-                from .control_plane_lane_historical_restore_reconciliation_authority import select_reconciliation
+                from .control_plane_lane_historical_restore_absent_authority import select_worker_reconciliation
                 self.reconciliation_selected = []
+                self.resume_selected = []
+                self.effect_selected = []
                 for events, identifier, selector, consumed in self.reconciliations:
-                    self.reconciliation_selected.append(select_reconciliation(files, config, store,
-                        self.config_path, current, events, identifier, selector, self.operation.moment(), consumed=consumed))
+                    original, observation, effect = select_worker_reconciliation(files, config, store,
+                        self.config_path, current, events, identifier, selector, self.operation.moment(), recorded=consumed)
+                    self.reconciliation_selected.append(original)
+                    self.resume_selected.append(observation)
+                    self.effect_selected.append(effect)
+            # Current grants must remain unexpired through the caller.
+            # Authenticated consumed effects use their historical grant only.
+            active_expiries = [(observation or original)[0]['expires_at_epoch']
+                for (_, _, _, recorded), original, observation in zip(
+                    self.reconciliations, self.reconciliation_selected, self.resume_selected)
+                if recorded is None or recorded[-1]['body'].get('phase') != 'reconciled']
             target = current[2]['target_path']
             restore = current[1]['action'] == 'restore'
             prove_historical_unit(self.action_id, target, str(journal_root(config)), restore=restore)
@@ -72,6 +85,7 @@ class _Worker:
                                          self.action_id, self.operation.moment())
             _require(again == current, 'authority_changed')
             prove_historical_unit(self.action_id, target, str(journal_root(config)), restore=restore)
+            _require(all(self.operation.moment() < expiry for expiry in active_expiries), 'authority_changed')
             self.operation.remaining()
 
     @contextmanager
@@ -95,7 +109,34 @@ class _Worker:
     def record(self, kind, body):
         with self.checkpoint(journal=True) as (_, _, journal):
             head = journal.head
-            event = journal.append(kind, body, previous=head['event_digest'])
+            options = {}
+            if kind == 'restore_intent' and body.get('phase') in ('reconcile_intent', 'reconcile_delete_resume', 'reconciled'):
+                _require(self.reconciliation_selected and self.resume_selected, 'authority_changed')
+                original = self.reconciliation_selected[-1]
+                expected = dict(decision_id=original[0]['decision_id'], decision=original[2],
+                    original_head_event_digest=self.reconciliations[-1][0][-1]['event_digest'])
+                _require(all(body.get(key) == value for key, value in expected.items()), 'authority_changed')
+                grant = self.resume_selected[-1] or self.reconciliation_selected[-1]
+                extra = self.resume_selected[-1]
+                field = ('observation_resume' if extra is not None
+                    and extra[0]['action'] == 'observe_unfinished_restore_row_absence' else 'delete_resume')
+                expected_resume = dict(decision_id=grant[0]['decision_id'], decision=grant[2]) if extra is not None else None
+                _require(body.get(field) == expected_resume
+                    and ('delete_resume' if field == 'observation_resume' else 'observation_resume') not in body,
+                    'authority_changed')
+                if body['phase'] == 'reconcile_delete_resume':
+                    _require(field == 'delete_resume' and expected_resume is not None
+                        and body == dict(phase='reconcile_delete_resume', **expected, delete_resume=expected_resume)
+                        and grant[0]['packet']['resume_from']['event_digest'] == head['event_digest']
+                        and grant[0]['packet']['resume_from']['sequence'] == head['sequence'], 'authority_changed')
+                if body['phase'] == 'reconcile_intent':
+                    _require(expected_resume is None and body == dict(phase='reconcile_intent', **expected),
+                             'authority_changed')
+                options['observation_expires_at_epoch'] = grant[0]['expires_at_epoch']
+            # Capture the actual observation after append's own head reads,
+            # before any new inode/link. A late grant leaves the pending intent
+            # unchanged; no earlier caller timestamp substitutes for this time.
+            event = journal.append(kind, body, previous=head['event_digest'], **options)
             self.head = event['event_digest']
             return event
 

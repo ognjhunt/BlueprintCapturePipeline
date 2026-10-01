@@ -9,7 +9,7 @@ import stat
 
 from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_fence import _members
-from .control_plane_lane_historical_restore_reconciliation_replay import binding, parent_observation
+from .control_plane_lane_historical_restore_reconciliation_replay import binding, parent_observation, observation_binding
 from .decision_evidence_contracts import canonical_digest
 
 
@@ -39,11 +39,16 @@ def stage_birth_versions(original, decision, events, action_id, *, complete, tic
             continue
         if kind == 'restore_intent':
             phase = body.get('phase')
-            _require(phase in ('reservation', 'directory', 'member', 'reconcile_intent', 'reconciled'))
+            _require(phase in ('reservation', 'directory', 'member', 'reconcile_intent', 'reconcile_delete_resume', 'reconciled'))
             if phase == 'reconcile_intent':
                 _require(pending is not None and reconciliation is None)
                 reconciliation = binding(body)
                 _require(body == dict(phase=phase, **reconciliation))
+                continue
+            if phase == 'reconcile_delete_resume':
+                _require(pending is not None and reconciliation is not None and binding(body) == reconciliation)
+                _require(body == dict(phase=phase, **reconciliation,
+                    delete_resume=observation_binding(body.get('delete_resume'))))
                 continue
             if phase == 'reconciled':
                 _require(pending is not None and reconciliation is not None)
