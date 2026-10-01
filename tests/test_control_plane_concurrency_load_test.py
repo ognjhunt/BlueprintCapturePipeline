@@ -191,7 +191,7 @@ def test_child_fence_blocks_network_provider_launch_and_external_writes(tmp_path
     root.mkdir()
     outside = tmp_path / "keep"
     outside.write_text("user-owned")
-    program = '''import json,pathlib,socket,subprocess,sys
+    program = '''import json,pathlib,socket,subprocess,sys,os,shutil
 from scripts.control_plane_concurrency_load_test import install_child_fences
 root=pathlib.Path(sys.argv[1]); outside=pathlib.Path(sys.argv[2]); blocked=[]
 install_child_fences([root])
@@ -203,10 +203,19 @@ for label, action in [
  try:action()
  except PermissionError:blocked.append(label)
 (root/"receipt.json").write_text(json.dumps(blocked))
+owned=root/"temporary";owned.mkdir();(owned/"data").write_text("owned temporary")
+shutil.rmtree(owned)
+foreign=os.open(outside.parent,os.O_RDONLY)
+try:
+ try:os.unlink(outside.name,dir_fd=foreign)
+ except PermissionError:blocked.append("foreign-directory-fd")
+finally:os.close(foreign)
 print(json.dumps(blocked))
 '''
     result = subprocess.run([sys.executable, "-c", program, str(root), str(outside)],
-                            cwd=SCRIPT.parent.parent, capture_output=True, text=True, timeout=10)
+                            cwd=SCRIPT.parent.parent, capture_output=True, text=True, timeout=10,
+                            env={"PATH":os.environ["PATH"],"PYTHONPATH":str(SCRIPT.parent.parent/'src')+os.pathsep+str(SCRIPT.parent.parent)})
     assert result.returncode == 0, result.stderr
     assert '"network", "provider", "write", "delete"' in result.stdout
+    assert '"foreign-directory-fd"' in result.stdout
     assert outside.read_text() == "user-owned"

@@ -13,6 +13,8 @@ import sys
 import socket
 import threading
 import time
+import stat
+import fcntl
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -34,19 +36,28 @@ def install_child_fences(owned_roots: Sequence[Path]) -> None:
     """A fresh benchmark child has no network, provider subprocess or live writer."""
     roots = tuple(Path(root).resolve(strict=True) for root in owned_roots)
 
-    def owned(path: Any) -> bool:
-        if isinstance(path, int):
-            # Only standard streams and descriptors already opened by this
-            # fresh child arrive here; every path open was audited separately.
-            return True
+    def descriptor_path(descriptor: int) -> Path:
+        if sys.platform=='darwin':
+            raw=fcntl.fcntl(descriptor,50,bytes(1024)).split(b'\0',1)[0]
+            return Path(os.fsdecode(raw))
+        return Path(os.readlink('/proc/self/fd/'+str(descriptor)))
+
+    def owned(path: Any, dir_fd=None) -> bool:
         try:
-            target = Path(os.fsdecode(path)).resolve()
-        except (TypeError, ValueError):
+            if isinstance(path,int):
+                target=descriptor_path(path).resolve()
+            else:
+                target=Path(os.fsdecode(path))
+                if dir_fd not in (None,-1) and not target.is_absolute():
+                    if not stat.S_ISDIR(os.fstat(dir_fd).st_mode):return False
+                    target=descriptor_path(dir_fd)/target
+                target=target.resolve()
+        except (TypeError, ValueError, OSError):
             return False
         return any(target == root or target.is_relative_to(root) for root in roots)
 
-    def check(path: Any) -> None:
-        if not owned(path):
+    def check(path: Any, dir_fd=None) -> None:
+        if not owned(path,dir_fd):
             raise PermissionError("concurrency_harness_write_outside_owned_roots")
 
     def audit(event: str, args: tuple[Any, ...]) -> None:
@@ -75,13 +86,16 @@ def install_child_fences(owned_roots: Sequence[Path]) -> None:
                     raise PermissionError("concurrency_harness_live_credentials_denied")
             if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
                 check(path)
-        if event in {"os.mkdir", "os.remove", "os.rmdir", "os.chmod", "os.chown", "os.utime"}:
+        descriptor_index={'os.mkdir':2,'os.remove':1,'os.rmdir':1,'os.chmod':2,'os.chown':3,'os.utime':3}
+        if event in descriptor_index:
+            check(args[0],args[descriptor_index[event]])
+        if event=='os.truncate':
             check(args[0])
         if event in {"os.rename", "os.link"}:
-            check(args[0])
-            check(args[1])
+            check(args[0],args[2])
+            check(args[1],args[3])
         if event == "os.symlink":
-            check(args[1])
+            check(args[1],args[2])
 
     sys.addaudithook(audit)
 
