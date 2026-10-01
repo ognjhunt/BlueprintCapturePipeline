@@ -138,6 +138,7 @@ class ContinuationRuntime(base.MonitoredRuntime):
                 "instruction": "Continue the same authorized case after reporting-lag cancellation."})}]}
             payload = {"events": [{"type": "agent.session.input.message", "input": [marker, *task.input]}]}
             self.journal.prepare_continuation(task.task_id, payload, [TURN])
+            self.prepare_event(task, "/agents/sessions/" + SESSION + "/events", payload)
             self.journal.bind_session(task.task_id, SESSION)
             self.monitor.guard()
             if self.clock() >= task.deadline:

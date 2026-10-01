@@ -378,6 +378,10 @@ class MonitoredRuntime(HostedRuntime):
         self.monitor = monitor
         super().__init__(**kwargs)
 
+    def prepare_event(self, task, path, body):
+        if hasattr(self.transport, "prepare"):
+            self.transport.prepare(path, body, task=task)
+
     def _request(self, method, path, **kwargs):
         self.monitor.before(method, path, kwargs.get("body") or {})
         result = super()._request(method, path, **kwargs)
@@ -409,6 +413,12 @@ def make_runtime(root, receipt, monitor, mode, *, transport=None, runtime_class=
     evidence = Evidence(getattr(monitor, "evidence_root", root / "protocols"), public["cases"][0], mode)
     evidence.reuse(root)
     journal = AgentJournal(monitor.path / "agent_journal")
+    if transport is None:
+        from .event_transport import DurableEvents, sdk_client
+        api_key = existing_key("openai")
+        transport = DurableEvents(fallback=OpenAIAgentsHTTP(api_key=api_key, project_id=PROJECT),
+            journal=journal, receipt_root=monitor.path / "future_events",
+            client_factory=lambda: sdk_client(api_key, PROJECT), clock=monitor.clock)
     def grant(context):
         monitor.guard()
         monitor.require_fresh_usage()
@@ -423,7 +433,7 @@ def make_runtime(root, receipt, monitor, mode, *, transport=None, runtime_class=
         monitor.require_fresh_usage()
     ops = AgentOperations(journal, tools.tools(), authorize=authorize, clock=monitor.clock)
     runtime = runtime_class(evidence=evidence, common_prompt=public["common_prompt"], monitor=monitor,
-        transport=transport or OpenAIAgentsHTTP(api_key=existing_key("openai"), project_id=PROJECT),
+        transport=transport,
         project_id=PROJECT, journal=journal, operations=ops, validate_admission=lambda _: monitor.guard(), clock=monitor.clock)
     task_id = monitor.task_id(mode)
     try:

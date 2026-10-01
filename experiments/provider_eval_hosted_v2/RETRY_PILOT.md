@@ -154,3 +154,44 @@ status/network values are unknown, not reconstructed. This retention gap is
 documented in `fixtures/usage_lag_retained.json` and does not block the reviewed
 preparation, which retains current full responses before continuation. No material
 API-contract difference was found. Implementation made no live calls.
+
+## Future event sends; existing uncertain input stays unresolved
+
+The already attempted follow-up had no idempotency key. Its `sent_unknown` journal
+state is retained. Exhausted paginated item/turn reads and an idle session do not
+prove nonacceptance. Do not resend that payload, assign it a retroactive key,
+create a replacement session, or adopt this commit over the used recovery proof.
+The original proof binds both its source commit and runtime hash.
+
+For future admitted event sends only, `event_transport.py` uses the official
+OpenAI SDK 3.22.1 `beta.agents.sessions.events.with_raw_response.create`. Before
+dispatch it persists the exact canonical payload, scope-bound deterministic
+`Idempotency-Key`, and transmission intent in the journal and private sidecar.
+SDK automatic retries are disabled. An explicit retry retains the original
+payload and key, permits at most two transmissions within 60 seconds of the first
+intent, and still passes the existing admission, usage, deadline and budget gates.
+An acknowledged event is not sent again; acknowledgement is not turn completion.
+Safe receipts retain exception class/cause class, HTTP status, request ID and
+latency without exception prose, credential values or response-body dumps. The
+endpoint remains pinned to `api.openai.com/v1`, the existing Default project is
+retained, and authorization redirects are refused.
+
+No new cohort, receipt migration, paid retry or launch command is added. In
+particular, these future safeguards cannot resolve the current unkeyed timeout.
+
+The smallest supported resource-close option is permanent deletion of the exact
+retained session after archiving all available conversation items, turns, source
+files, outputs and local uncertainty receipts. Current session:
+`sess_09118c760a810004006abdc1869c9c8194844ab4a80b431ad5`.
+Its deletion has **not** been approved. The execution coordinator must obtain
+action-time approval naming that exact session. Existing budget approval and
+permission to delete the earlier, different session do not authorize this delete.
+
+After exact approval, use the existing SDK/binding and `sessions.delete` on only
+that ID with automatic retries disabled, retain the deletion response, and make
+bounded read-only checks of that session and its known environment. A conflict or
+uncertain DELETE remains unresolved; do not blindly resend uncertain mutations.
+Physical cleanup is asynchronous. Resource retirement does not establish whether
+the earlier message was accepted, settle billing, release retained allowances or
+rewrite the historical `sent_unknown` state. Cancellation alone is not permanent
+resource retirement. Leaving the session idle does not prove zero container cost.

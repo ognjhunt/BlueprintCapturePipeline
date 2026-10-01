@@ -1,8 +1,8 @@
 # Offline validation
 
 Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
-Result: **134 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
-10 explicit-retry cases, 18 usage-lag/recovery cases,
+Result: **145 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
+10 explicit-retry cases, 18 usage-lag/recovery cases, 11 future-event transport cases,
 and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
@@ -104,3 +104,10 @@ PDF/redirect/binary inspection and direct artifact-content downloading are absen
 The SDK pair is an experiment override of the unchanged project metadata's older
 Agents SDK constraint, not a production dependency update. The new cohort is not
 a completed provider comparison or a quality score; no paid calls ran here.
+
+Future event regressions use the actual pinned OpenAI SDK and a mock HTTP transport.
+They verify durable payload/key before dispatch, identical explicit second transmissions,
+fixed retry windows, task expiry, acknowledgement replay, a two-transmission ceiling,
+safe exception/status/request-ID/latency receipts, pinned API/project and refusal of
+authorization redirects. Historical unkeyed `sent_unknown` inputs remain refused
+without a retroactive key or journal/state rewrite. No live calls occurred.
