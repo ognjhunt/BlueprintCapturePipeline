@@ -106,9 +106,11 @@ total spend nor ten accepted prospects.
 
 ## Spend admission limits
 
-The token estimate charges all input at $5/M (long-context cache-write upper
-rate), all output including reasoning at $15/M, then includes the documented
-10% regional premium. Reasoning is not counted twice. Standard service tier is
+The token estimate charges all input at $9/M (the sum of long-context input
+and cache-write rates), all output including reasoning at $15/M, then includes the documented
+10% regional premium. This deliberately reserves both input and cache-write
+charges because SDK usage does not expose separate cache writes; it does not
+claim both are always billed. Reasoning is not counted twice. Standard service tier is
 required; no cache discount is assumed. This is a conservative token estimate,
 **not settled total spend**: it excludes unreported/lagged usage, web-search tool
 fees and hosted-environment charges. Null/invalid usage is unknown. Preparation

@@ -63,7 +63,7 @@ def validate_coverage(value, candidate_count):
 def estimated_model_cost(usage):
     """Upper-rate token estimate, never a bound on unsettled total provider cost.
 
-    Charge all input at the long-context cache-write rate ($5/M), all output
+    Charge all input at combined long-context input + cache-write rates ($9/M), all output
     including reasoning at $15/M, and add the documented 10% regional premium.
     This ignores cache discounts conservatively. Standard service is required
     by test admission; fast mode is excluded. SDK usage can lag or be absent.
@@ -71,6 +71,6 @@ def estimated_model_cost(usage):
     if (not isinstance(usage, dict) or any(type(usage.get(k)) is not int or usage[k] < 0
                                          for k in ("input_tokens", "output_tokens"))):
         return {"known": False, "estimate_usd": None, "hard_total_cap": False}
-    price = (Decimal(usage["input_tokens"]) * 5 + Decimal(usage["output_tokens"]) * 15) * Decimal("1.1") / 1000000
+    price = (Decimal(usage["input_tokens"]) * 9 + Decimal(usage["output_tokens"]) * 15) * Decimal("1.1") / 1000000
     return {"known": True, "estimate_usd": str(price), "hard_total_cap": False,
             "excludes": ["unreported_or_lagged_usage", "tool_fees", "hosted_environment"]}
