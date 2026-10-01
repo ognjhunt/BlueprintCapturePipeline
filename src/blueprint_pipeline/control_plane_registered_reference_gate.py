@@ -16,7 +16,7 @@ from urllib.parse import unquote, urlsplit
 from .control_plane_lane_experiment_errors import OwnerTargetVersionError
 from .control_plane_reference_budget import ReferenceCollectionBudget, ReferenceCollectionBudgetError
 
-_RESERVED = re.compile(r'(?:^|/) (?:g1|arena)/registered-', re.X)
+_RESERVED = re.compile(r'(?:^|/) (?:g1|arena|diagnostics)/registered-', re.X)
 _RAW_LIMIT = 256 * 1024
 _SCALAR_RAW_LIMIT = 65536
 _PUBLISHER_BUDGET = ContextVar("registered_publisher_observation_budget", default=None)

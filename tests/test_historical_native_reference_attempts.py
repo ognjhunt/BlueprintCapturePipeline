@@ -4,6 +4,7 @@ This supplies no native observations or successful worker receipt. Actual
 subsequent units and original clocks are proved by disposable Linux acceptance.
 """
 # Covers: tests/historical_generation_native_acceptance.py
+# Covers: tests/test_historical_generation_linux.py
 import json
 
 import pytest
@@ -491,3 +492,34 @@ def test_native_prefix_credit_requires_the_exact_preceding_birth_set(change):
         receipt.update(reused_files=2, reused_logical_bytes=2, restored_files=0, restored_logical_bytes=1)
     with pytest.raises(AssertionError):
         native._assert_restore_increment(receipt, original)
+
+@pytest.mark.parametrize('case_id, expected_observation_seconds', [
+    ('reconcile_absent_expiry', 90),
+    ('delete', 60),
+])
+def test_expiry_recovery_observer_classifies_case_before_privileged_execution(
+    monkeypatch, case_id, expected_observation_seconds
+):
+    """Probe controller arguments; execute no unit and create no worker receipt."""
+    from tests import test_historical_generation_linux as linux
+
+    class InvocationObserved(Exception):
+        pass
+
+    calls = []
+    properties = []
+
+    def observe(command, **options):
+        calls.append((command, options))
+        raise InvocationObserved
+
+    monkeypatch.setattr(linux.subprocess, 'run', observe)
+    with pytest.raises(InvocationObserved):
+        linux.test_actual_connected_historical_interruption(
+            case_id, lambda *value: properties.append(value)
+        )
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command[-2:] == ['--connected-case', case_id]
+    assert options['timeout'] == expected_observation_seconds
+    assert properties == []

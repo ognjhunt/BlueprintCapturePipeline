@@ -31,7 +31,7 @@ _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
-_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|scan-reservation|retiring-head|retired-head))?\.json\Z")
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-invocation|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|scan-reservation|retiring-head|retired-head))?\.json\Z")
 _ARENA_TAG = re.compile(r"arena-launch-(r[1-9][0-9]{0,5})\Z")
 _ARENA_CLAIM_NAME = re.compile(r"arena-launch-r[1-9][0-9]{0,5}\.arena-claim\.json\Z")
 _ISSUE_SELECTION_NAME = re.compile(r'[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json\Z')
@@ -40,7 +40,17 @@ _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
     "g1_local_contained_completed.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
+    "root_disk_diagnostic_disposable.v1": ("disk_capacity_diagnostic", "scratch", "delete", "fixed_root_disk_diagnostic.v1", 1),
+    "root_disk_diagnostic_evidence.v1": ("disk_capacity_diagnostic", "evidence", "offload", "fixed_root_disk_diagnostic.v1", 1),
 }
+
+
+def _profile_lane(profile):
+    if profile == "arena_owner_review.v1":
+        return "arena"
+    if profile in ("root_disk_diagnostic_disposable.v1", "root_disk_diagnostic_evidence.v1"):
+        return "diagnostics"
+    return "g1"
 
 
 def _selector(raw, budget):
@@ -165,6 +175,15 @@ def _capacity(files, parent, *, adding_registration=True):
             if match is not None and match.group(2) is None:
                 count += 1
             total += info.st_size
+            if match is not None and match.group(2) == "producer-invocation":
+                from .control_plane_lane_disk_diagnostic import _reserved_bytes
+                fd = files.open(item.name, os.O_RDONLY | os.O_NONBLOCK, parent=parent)
+                try:
+                    value = retained._document(files.read_bytes(fd, 32768), 32768, _work_budget=files.budget)
+                    _require(value['intent_id'] == match.group(1), "experiment_store_unsafe")
+                    total += _reserved_bytes(value)
+                finally:
+                    files.close(fd)
             _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 12
                      and count <= MAX_EXPERIMENT_REGISTRATIONS - int(adding_registration)
                      and 0 < info.st_size <= (4096 if selection or arena_claim else 1048576 if match.group(2) in ("manifest", "stage-manifest", "payload-manifest") else _MAX_INTENT)
@@ -201,6 +220,10 @@ def _issue(files, *, installed_config_path, principal, owner, root, reference_va
         raw, _ = files.read(request[0], cap=owners.MAX_POLICY_BYTES, protected=True)
         owners._identity(raw, request[1]["sha256"], request[1]["size_bytes"], files.budget)
         retained._document(raw, owners.MAX_POLICY_BYTES, _work_budget=files.budget)
+        if _profile_lane(participant_profile) == "diagnostics":
+            from .control_plane_lane_disk_diagnostic import validate_request
+            validate_request(files, raw, config=config, installed_config_path=installed_config_path,
+                             run_ref=reference_value)
         selectors.append(_selector(raw, files.budget))
     parent = _store(files, config.experiment_record_store)
     occupied = _capacity(files, parent)
@@ -217,7 +240,7 @@ def _issue(files, *, installed_config_path, principal, owner, root, reference_va
     _require(owners._matches(intent_id, owners._CONSENT_ID) and owners._matches(generation, owners._CONSENT_ID)
              and intent_id != generation, "experiment_creation_invalid")
     record = dict(schema_version=CREATION_SCHEMA, intent_id=intent_id, generation=generation, issuer_uid=0,
-        principal=principal, owner=owner, root=root, lane="arena" if arena else "g1", name="registered-" + intent_id,
+        principal=principal, owner=owner, root=root, lane=_profile_lane(participant_profile), name="registered-" + intent_id,
         reference_kind="run_ref", reference_value=reference_value, reason=reason, class_intent=class_intent,
         cleanup=cleanup, lease_ttl_seconds=lease_ttl_seconds, issued_at_epoch=issued, expires_at_epoch=expiry,
         policy=_selector(policy_raw, files.budget), request_records=selectors,
@@ -411,7 +434,7 @@ def _command_parser():
     recover.add_argument("tag")
     recover.add_argument("--principal", required=True)
     recover.add_argument("--owner", required=True)
-    for operation in ("issue-create", "create", "issue-action", "apply", "issue-restore", "restore", "bootstrap", "run"):
+    for operation in ("issue-create", "create", "issue-action", "apply", "issue-restore", "restore", "bootstrap", "run", "run-diagnostic"):
         command = commands.add_parser(operation, allow_abbrev=False)
         if operation != "issue-create":
             command.add_argument("intent_id")
@@ -422,7 +445,7 @@ def _command_parser():
             command.add_argument("--expires-at", required=True, type=float)
         if operation in ("issue-create", "issue-restore"):
             command.add_argument("--ttl", required=True, type=int)
-        if operation in ("create", "apply", "restore", "bootstrap", "run"):
+        if operation in ("create", "apply", "restore", "bootstrap", "run", "run-diagnostic"):
             command.add_argument("--sha256", required=True)
             command.add_argument("--size-bytes", required=True, type=int)
         if operation == "issue-create":
@@ -432,8 +455,8 @@ def _command_parser():
             command.add_argument("--request", nargs=3, action="append", default=[], metavar=("SEALED_PATH", "SHA256", "SIZE"))
         if operation == "issue-action":
             command.add_argument("--action", required=True, choices=("delete", "offload", "owner_review"))
-        if operation == "bootstrap":
-            command.add_argument("--request-path", action="append", required=True)
+        if operation in ("bootstrap", "run-diagnostic"):
+            command.add_argument("--request-path", action="append" if operation == "bootstrap" else "store", required=True)
     return parser
 
 
@@ -490,6 +513,10 @@ def _dispatch_fixed_command(arguments):
     if operation == "restore":
         return restore_registered_experiment(arguments.intent_id, expected_restore_intent=selector,
             _pins_root=_installed_pin_root(), **fixed)
+    if operation == "run-diagnostic":
+        from .control_plane_lane_disk_diagnostic import run_registered_disk_diagnostic
+        return run_registered_disk_diagnostic(arguments.intent_id, expected_intent=selector,
+            request_path=arguments.request_path, **fixed)
     if operation == "bootstrap":
         return issue_experiment_producer_bootstrap(arguments.intent_id, expected_intent_sha256=arguments.sha256,
             expected_intent_size_bytes=arguments.size_bytes, request_paths=tuple(arguments.request_path), **fixed)

@@ -40,6 +40,7 @@ ReadOnlyPaths=/etc/blueprint/provider-secrets
 # Flags and current authenticated owner/action/reader checks remain default-off.
 # Missing installation directories do not alter ordinary GC startup.
 ReadWritePaths=-/mnt/blueprint-work/lanes/g1 -/var/lib/blueprint/task-evaluation-inputs/lanes/g1
+ReadWritePaths=-/mnt/blueprint-work/lanes/diagnostics -/var/lib/blueprint/task-evaluation-inputs/lanes/diagnostics
 ReadWritePaths=-/var/lib/blueprint-operator-door/requests/experiment-records -/var/lib/blueprint-operator-door/experiment-authority
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/semantic-pretraining

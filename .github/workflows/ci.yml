@@ -404,6 +404,7 @@ jobs:
           test_temp="$(mktemp -d "${RUNNER_TEMP}/blueprint-native-tests.XXXXXX")"
           trap 'rm -rf -- "$test_temp"' EXIT
           /var/lib/blueprint-native-test-venv/bin/python -m pytest \
+            tests/test_registered_feature_linux.py::test_actual_registered_disk_diagnostic_delete_offload_and_restore \
             tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption \
             tests/test_registered_feature_linux.py::test_actual_root_blueprint_uid_cache_lifetime_and_revoke \
             tests/test_registered_feature_linux.py::test_actual_contained_blueprint_native_pair_child_and_kernel_completion \
@@ -413,11 +414,11 @@ jobs:
             tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_default_off_delete_and_second_tick \
             tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_offload_and_restore \
             -m 'slow or not slow' --basetemp="$test_temp" \
-            --junitxml="$evidence/native-junit.xml" --maxfail=1 -q
+            --maxfail=1 --junitxml="$evidence/native-junit.xml" -q
           /var/lib/blueprint-native-test-venv/bin/python - "$evidence/native-junit.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
-          assert len(cases) == 45, "all original boundaries, admitted escaped paths and maximum-depth restore, private-prefix, split-publication, unfinished-owner reconciliation, expired observation and DELETE attempts and SIGKILL recovery cases must execute"
+          assert len(cases) == 46, "all original boundaries, admitted escaped paths and maximum-depth restore, private-prefix, split-publication, unfinished-owner reconciliation, expired observation and DELETE attempts and SIGKILL recovery cases must execute"
           assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "native skips and refusals do not prove acceptance"
           PYTHON
 

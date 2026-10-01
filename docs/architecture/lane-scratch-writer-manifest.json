@@ -138,11 +138,12 @@
         "tests/test_registered_experiment_birth.py",
         "tests/test_registered_experiment_issuer.py",
         "tests/test_registered_experiment_producer.py",
-        "tests/test_registered_arena_experiments.py"
+        "tests/test_registered_arena_experiments.py",
+        "tests/test_registered_disk_diagnostic_birth.py"
       ],
       "historical_exceptions": [],
-      "sha256": "9460de77a17cf5bfffd96bcc61a2a6302810acf7ebdbf385321280a93aded749",
-      "review_reference": "2026-09-29: independent exact-source SPEC at dde688e800cff7bfc5466a41b0aa339ccdc88adc in 12-two-unregistered-writers-independent-SPEC-GO-dde688e80-20260929.md; different QUALITY in 12-eight-writer-independent-QUALITY-GO-dde688e80-20260929.md; hosted CI and native Linux remain separate gates"
+      "sha256": "241ffb5c5bc5c2e936758ead6a9c4df0d0b7ab9142ef599228d9003e54d61fb6",
+      "review_reference": "2026-10-01: whole connected ordinary SOURCE SPEC GO by plan12h_spec_review, followed by different whole SOURCE QUALITY GO by plan12_connected_quality_review at exact f61c52cfc3f69f53947bef1719fa818df6bf9b6e; retained handoff evidence 20261001-ordinary-f61-ordered-whole-source-review-go.json; hosted CI and actual installed Linux acceptance remain separate pending gates"
     },
     {
       "path": "src/blueprint_pipeline/control_plane_registered_checkpoint_cache.py",
@@ -159,6 +160,24 @@
       ],
       "sha256": "13296b8738933940c3f545479d4d55c6ee8039635b8fd01e185d41bca96ec731",
       "review_reference": "2026-09-29: independent exact-source SPEC at dde688e800cff7bfc5466a41b0aa339ccdc88adc in 12-two-unregistered-writers-independent-SPEC-GO-dde688e80-20260929.md; different QUALITY in 12-eight-writer-independent-QUALITY-GO-dde688e80-20260929.md; hosted CI and native Linux remain separate gates"
+    },
+    {
+      "path": "src/blueprint_pipeline/control_plane_lane_disk_diagnostic.py",
+      "sha256": "ff4e3a4d201840d9098926ca96e4c495a1c4a900a9353005467d2f6b33e9217e",
+      "responsibility": "payload_consumer",
+      "output_class": "lane_scratch",
+      "admission_method": "exact root-only creation intent/profile and current owner/lease/authority; protected 36-module source selection and original owned directory FDs; actual two-root fstatvfs report, descriptor closure and distinct completion publication under original budget and expiry",
+      "characterization_tests": [
+        "tests/test_registered_disk_diagnostic_request.py",
+        "tests/test_registered_disk_diagnostic_birth.py",
+        "tests/test_registered_disk_diagnostic_producer.py",
+        "tests/test_registered_disk_diagnostic_actions.py",
+        "tests/test_registered_feature_linux.py"
+      ],
+      "review_reference": "2026-10-01: whole connected ordinary SOURCE SPEC GO by plan12h_spec_review, followed by different whole SOURCE QUALITY GO by plan12_connected_quality_review at exact f61c52cfc3f69f53947bef1719fa818df6bf9b6e; retained handoff evidence 20261001-ordinary-f61-ordered-whole-source-review-go.json; hosted CI and actual installed Linux acceptance remain separate pending gates",
+      "historical_exceptions": [
+        "Existing unsealed diagnostic folders remain KEEP; source review is not actual installed Linux acceptance or owner cleanup authority."
+      ]
     }
   ]
 }
