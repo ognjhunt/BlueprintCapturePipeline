@@ -1,0 +1,143 @@
+"""ADP-009D/day28: original archive extraction into a private no-replace stage."""
+# Covers (for impacted-test selection):
+#   src/blueprint_pipeline/control_plane_lane_historical_restore_archive.py
+import os
+from contextlib import contextmanager
+
+import pytest
+
+from tests.historical_generation_fake_cloud import Cloud
+from tests.test_historical_generation_archive import source  # noqa: F401
+
+
+class PrivateStage:
+    """Actual tiny files; no native authority, publication or access claim."""
+    def __init__(self, root):
+        self.root = root
+        root.mkdir(mode=0o700)
+
+    def directory(self, row):
+        if row['path']:
+            (self.root / row['path']).mkdir(mode=0o700)
+
+    @contextmanager
+    def member(self, row):
+        fd = os.open(self.root / row['path'], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb', buffering=0) as output:
+            yield output
+
+
+def prepared(source):  # noqa: F811
+    from blueprint_pipeline.control_plane_lane_historical_archive import preserve
+    held, manifest, raw, original = source
+    cloud = Cloud()
+    pointer = preserve(held, manifest, raw, cloud, 'development-only', lambda: None)
+    current = Cloud()
+    current.objects, current.metadata = dict(cloud.objects), dict(cloud.metadata)
+    return manifest, raw, original, pointer, current
+
+
+def test_extracts_every_original_byte_without_republishing_cloud(source, tmp_path):  # noqa: F811
+    from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
+    manifest, raw, original, pointer, cloud = prepared(source)
+    stage = PrivateStage(tmp_path / 'stage')
+    result = extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', stage, lambda: None)
+    assert result == dict(archive_sha256=pointer['sha256'], archive_size_bytes=pointer['size_bytes'],
+                         restored_files=2, restored_logical_bytes=sum(map(len, original.values())))
+    assert all((stage.root / name).read_bytes() == value for name, value in original.items())
+    assert cloud.calls == ['head', 'readback', 'head', 'client_closed']
+    assert all(body.closed for body in cloud.bodies)
+
+
+@pytest.mark.parametrize('change', ['member', 'prefix', 'suffix', 'missing', 'owner_refused'])
+def test_changed_archive_or_owner_never_reports_complete_stage(source, tmp_path, change):  # noqa: F811
+    from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
+    manifest, raw, _, pointer, cloud = prepared(source)
+    key = next(iter(cloud.objects))
+    if change == 'member':
+        cloud.objects[key] = cloud.objects[key][:-1] + b'x'
+    elif change == 'prefix':
+        cloud.objects[key] = b'x' + cloud.objects[key][1:]
+    elif change == 'suffix':
+        cloud.corrupt = True
+    elif change == 'missing':
+        cloud.objects.clear()
+    def guard():
+        if change == 'owner_refused':
+            raise ValueError('current_owner_refused')
+    with pytest.raises(ValueError):
+        extract_preserved_members(manifest, raw, pointer, cloud, 'development-only',
+                                 PrivateStage(tmp_path / 'stage'), guard)
+    assert cloud.calls[-1] == 'client_closed' and all(body.closed for body in cloud.bodies)
+
+
+def test_existing_private_member_is_never_overwritten(source, tmp_path):  # noqa: F811
+    from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
+    manifest, raw, _, pointer, cloud = prepared(source)
+    stage = PrivateStage(tmp_path / 'stage')
+    stage.directory(dict(path='nested'))
+    sentinel = stage.root / 'nested/two'
+    sentinel.write_bytes(b'keep existing destination')
+    with pytest.raises((ValueError, OSError)):
+        extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', stage, lambda: None)
+    assert sentinel.read_bytes() == b'keep existing destination' and cloud.calls[-1] == 'client_closed'
+
+
+@pytest.mark.parametrize('code', ['process_unknown', 'process_reference', 'fixture_interrupted_after_restore_member'])
+def test_native_reference_refusal_keeps_its_type_and_closes_archive(source, tmp_path, code):  # noqa: F811
+    from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
+    from blueprint_pipeline.control_plane_lane_historical_processes import HistoricalProcessError
+    manifest, raw, _, pointer, cloud = prepared(source)
+    from blueprint_pipeline.control_plane_lane_historical_generation import HistoricalGenerationError
+    error_class = HistoricalGenerationError if code.startswith('fixture_') else HistoricalProcessError
+    refusal = error_class('historical_generation_' + code)
+    class RefusedStage(PrivateStage):
+        def directory(self, row):
+            raise refusal
+    stage = RefusedStage(tmp_path / 'stage')
+    with pytest.raises(error_class) as caught:
+        extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', stage, lambda: None)
+    assert caught.value is refusal
+    assert list(stage.root.iterdir()) == []
+    assert cloud.calls[-1] == 'client_closed' and all(body.closed for body in cloud.bodies)
+
+
+@pytest.mark.parametrize('change', [None, 'bytes', 'tail'])
+def test_archive_reuses_exact_private_file_through_read_only_descriptor(source, tmp_path, change):  # noqa: F811
+    from types import SimpleNamespace
+    from blueprint_pipeline.control_plane_lane_historical_restore_archive import extract_preserved_members
+    from blueprint_pipeline.control_plane_lane_historical_restore_prefix import _PrefixTree
+    manifest, raw, original, pointer, cloud = prepared(source)
+    stage = PrivateStage(tmp_path / 'stage')
+    stage.directory(dict(path='nested'))
+    selected = stage.root / 'nested/two'
+    selected.write_bytes(original['nested/two'])
+    if change:
+        selected.write_bytes(b'wrong' if change == 'bytes' else original['nested/two'] + b'extra')
+    before = selected.stat(), selected.read_bytes()
+    @contextmanager
+    def opened(relative):
+        fd = os.open(stage.root.parent / relative, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            yield fd, lambda: None
+        finally:
+            os.close(fd)
+    @contextmanager
+    def authority(**options):
+        # Parser transport only; this context grants no native authority.
+        yield
+    stage.name = stage.root.name
+    stage.held = SimpleNamespace(_opened=opened)
+    stage.worker = SimpleNamespace(mutation_authority=authority)
+    wrapped = _PrefixTree(stage, {'', 'nested', 'nested/two'})
+    if change:
+        with pytest.raises(ValueError, match='restore_payload_changed'):
+            extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', wrapped, lambda: None)
+    else:
+        result = extract_preserved_members(manifest, raw, pointer, cloud, 'development-only', wrapped, lambda: None)
+        assert result['restored_files'] == 2
+        assert all((stage.root / name).read_bytes() == value for name, value in original.items())
+    after = selected.stat()
+    assert (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns, selected.read_bytes()) == (
+        before[0].st_dev, before[0].st_ino, before[0].st_mtime_ns, before[0].st_ctime_ns, before[1])
+    assert cloud.calls[-1] == 'client_closed' and all(body.closed for body in cloud.bodies)

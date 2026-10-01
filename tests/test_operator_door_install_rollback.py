@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,10 @@ def test_restricted_installer_preserves_credentials_and_recovers_old_door(
     binary.mkdir()
     _stub(binary / "id", "import sys\nprint('0') if sys.argv[1:] == ['-u'] else None\n")
     _stub(binary / "getent", "pass\n")
+    # Preserve the actual interpreter/version/import checks, rather than
+    # accidentally selecting the Mac's unsupported /usr/bin/python3 (3.9).
+    _stub(binary / 'python3', 'import os, sys\nos.execv(' + repr(sys.executable)
+          + ', [' + repr(sys.executable) + ', *sys.argv[1:]])\n')
     calls = tmp_path / "calls"
     log = ("import sys\nfrom pathlib import Path\np=Path(" + repr(str(calls)) + ")\n"
            "with p.open('a') as f: f.write(' '.join(sys.argv)+'\\n')\n")
@@ -104,6 +109,8 @@ else:
                             env=environment, capture_output=True, text=True, timeout=30)
     assert _credentials(credentials) == before
     assert caddy.read_text() == "development-only Caddy fixture\n"
+    for name in ('historical-generation-actions', 'historical-generation-journals'):
+        assert not (tmp_path / 'state' / 'requests' / name).exists()
     # Stubbing ownership tools must not conceal any attempted credential ownership change.
     assert all(str(path) not in calls.read_text() for path in credentials)
     assert door.is_dir(), result.stderr

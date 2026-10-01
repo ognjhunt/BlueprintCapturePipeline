@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -91,6 +92,11 @@ def _installer_preflight(tmp_path, *, marker=BASELINE, fenced=False, missing=Fal
         path = stub_dir / name
         path.write_text("#!/bin/sh\n[ \"$1\" = -u ] && echo 0\nexit 0\n")
         path.chmod(0o700)
+    # Run the installer's real >=3.10 check with the actual test interpreter;
+    # macOS's /usr/bin/python3 may be 3.9 even when this suite uses Python 3.12.
+    interpreter = stub_dir / 'python3'
+    interpreter.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    interpreter.chmod(0o700)
     # Execute only the prerequisite section, before staging or any host write.
     prefix = (DOOR / "install.sh").read_text().split("# 1. Stage and check", 1)[0]
     prefix = prefix.replace('source_dir="$(cd "$(dirname "$0")" && pwd)"',

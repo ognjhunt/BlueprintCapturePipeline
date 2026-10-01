@@ -27,6 +27,31 @@ Usage = namedtuple("Usage", "total used free")
 GIB = 1024**3
 
 
+def test_restore_admission_and_renewal_refuse_a_busy_shared_ledger(tmp_path):
+    import fcntl
+    ledger = disk_budget._prepare_ledger_root(tmp_path / 'ledger')
+    options = dict(target_root=tmp_path, expected_bytes=4096, reservation_root=ledger,
+        disk_usage=lambda _: Usage(100 * GIB, 60 * GIB, 40 * GIB), lock_nonblocking=True)
+    descriptor = disk_budget.open_ledger_lock(ledger, require_mode=True)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ControlPlaneDiskBudgetError, match='lock_busy'):
+            reserve_control_plane_disk('experiment_restore', **options)
+    finally:
+        os.close(descriptor)
+    reservation = reserve_control_plane_disk('experiment_restore', **options)
+    before = reservation.path.read_bytes()
+    descriptor = disk_budget.open_ledger_lock(ledger, require_mode=True)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ControlPlaneDiskBudgetError, match='lock_busy'):
+            reservation.renew()
+        assert reservation.path.read_bytes() == before
+    finally:
+        os.close(descriptor)
+        reservation.release()
+
+
 def test_preinstalled_group_writable_lock_is_not_rechmodded(
     tmp_path, monkeypatch
 ) -> None:
