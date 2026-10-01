@@ -14,6 +14,17 @@ def test_fixture_namespace_keeps_production_retention_classes(tmp_path):
     with pytest.raises(ValueError):classify(str(owned),expected='cache',code='wrong_class')
     with pytest.raises(ValueError):classify(str(tmp_path),expected='cache',code='wrong_class')
     with pytest.raises(ValueError):classify(str(cache),expected='evidence_hot',code='wrong_class')
+    with pytest.raises(ValueError):classify(str(owned/'..'/'outside'),expected='cache',code='wrong_class')
+
+
+def test_fixture_namespace_rejects_traversal_back_into_an_allowed_root(tmp_path):
+    from scripts.control_plane_concurrency_retirement import namespace_classifier
+    owned=tmp_path/'owned';owned.mkdir()
+    cache=owned/'prepared-references';cache.mkdir()
+    classify=namespace_classifier(owned_root=owned,mapping={
+        cache:'/var/lib/blueprint/task-evaluation-inputs/prepared-references'})
+    with pytest.raises(ValueError,match='retirement_path_not_owned'):
+        classify(str(cache/'..'/'prepared-references'/'outside'),expected='cache',code='wrong_class')
 
 
 def test_failed_chain_cannot_release_pins_or_delete_bytes(tmp_path):

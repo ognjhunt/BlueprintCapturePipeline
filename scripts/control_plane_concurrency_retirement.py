@@ -24,7 +24,8 @@ from scripts.control_plane_concurrency_provider import file_record
 
 def _safe(path, root):
     path=Path(path)
-    if (not path.is_absolute() or not path.is_relative_to(root)
+    if (not path.is_absolute() or '..' in path.parts or not path.is_relative_to(root)
+            or not path.resolve().is_relative_to(root)
             or any(p.is_symlink() for p in (path,*path.parents))):
         raise ValueError('retirement_path_not_owned')
     return path
@@ -77,6 +78,7 @@ def retire_fixture_chains(*, control_root: Path, scenes: list, source_commit: st
         if not isinstance(key,str) or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',key) is None:
             raise ValueError('retirement_scene_key_invalid')
         intake=scene['intake'];first=scene['preparation'];ready=scene['episode_preparation']
+        _safe(intake['intent_path'],root)
         compiled=scene['compiled']
         if (scene['source_commit']!=source_commit or intake['source_commit']!=source_commit
                 or compiled.get('source_commit')!=source_commit
