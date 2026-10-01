@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from blueprint_pipeline.task_evaluation_splat_render_runtime import (
     validate_splat_render_runtime,
@@ -50,11 +54,8 @@ def _repository(root: Path) -> tuple[Path, str]:
     return repository, commit
 
 
-def test_publishes_exact_release_renderer_with_full_byte_readback(
-    tmp_path: Path,
-) -> None:
-    repository, commit = _repository(tmp_path)
-    prerequisites = tmp_path / "prerequisites"
+def _prerequisites(root: Path) -> tuple[Path, Path, Path, Path]:
+    prerequisites = root / "prerequisites"
     node = prerequisites / "node"
     browser_root = prerequisites / "chromium"
     browser = browser_root / "chrome"
@@ -78,6 +79,14 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
         marker.chmod(0o444)
     (modules / "three/empty.js").write_bytes(b"")
     (modules / "three/empty.js").chmod(0o444)
+    return node, browser_root, browser, modules
+
+
+def test_publishes_exact_release_renderer_with_full_byte_readback(
+    tmp_path: Path,
+) -> None:
+    repository, commit = _repository(tmp_path)
+    node, browser_root, browser, modules = _prerequisites(tmp_path)
     destination = tmp_path / "system-runtimes" / "splat-render" / commit
 
     def readback(path: Path) -> bytes:
@@ -131,3 +140,81 @@ def test_publishes_exact_release_renderer_with_full_byte_readback(
     assert (
         destination / "renderer/tools/splat_render/node_modules/three/index.js"
     ).stat().st_ino == (modules / "three/index.js").stat().st_ino
+
+
+@pytest.mark.parametrize("failure_phase", ["staging", "installed"])
+def test_failed_readback_preserves_shared_prerequisite_and_existing_runtime_modes(
+    tmp_path: Path, failure_phase: str,
+) -> None:
+    repository, commit = _repository(tmp_path)
+    node, browser_root, browser, modules = _prerequisites(tmp_path)
+    sources = [node, browser, *sorted(p for p in modules.rglob("*") if p.is_file())]
+    aliases = tmp_path / "existing-runtime"
+    aliases.mkdir()
+    prior = {}
+    for number, source in enumerate(sources):
+        alias = aliases / str(number)
+        os.link(source, alias)
+        info = source.stat()
+        prior[source] = (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+                         info.st_mtime_ns, source.read_bytes(), alias)
+    destination = tmp_path / "runtimes" / commit
+
+    def readback(path: Path) -> bytes:
+        installed = path.is_relative_to(destination)
+        if installed == (failure_phase == "installed"):
+            raise PermissionError("injected_service_readback_failure")
+        return path.read_bytes()
+
+    with pytest.raises(PermissionError, match="injected_service_readback_failure"):
+        build_published_splat_render_runtime(
+            repository_root=repository, source_commit=commit,
+            node_executable=node, browser_root=browser_root,
+            browser_executable=browser, node_modules_root=modules,
+            output_root=destination, readback=readback,
+            readback_actor="service-account:blueprint",
+        )
+
+    assert not destination.exists()
+    assert not list(destination.parent.iterdir())
+    for source, expected in prior.items():
+        info = source.stat()
+        assert (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+                info.st_mtime_ns, source.read_bytes()) == expected[:5]
+        assert expected[5].stat().st_ino == info.st_ino
+        assert stat.S_IMODE(expected[5].stat().st_mode) == expected[2]
+        assert info.st_nlink == 2
+
+
+def test_public_runtime_readback_traverses_every_directory_under_private_umask(
+    tmp_path: Path,
+) -> None:
+    repository, commit = _repository(tmp_path)
+    node, browser_root, browser, modules = _prerequisites(tmp_path)
+    destination = tmp_path / "runtimes" / commit
+    destination.parent.mkdir(mode=0o755)
+
+    def readback(path: Path) -> bytes:
+        for parent in path.parents:
+            if parent == destination.parent:
+                break
+            assert stat.S_IMODE(parent.stat().st_mode) & 0o005 == 0o005
+        assert stat.S_IMODE(path.stat().st_mode) & 0o004
+        return path.read_bytes()
+
+    previous = os.umask(0o077)
+    try:
+        receipt = build_published_splat_render_runtime(
+            repository_root=repository, source_commit=commit,
+            node_executable=node, browser_root=browser_root,
+            browser_executable=browser, node_modules_root=modules,
+            output_root=destination, readback=readback,
+            readback_actor="service-account:blueprint",
+        )
+    finally:
+        os.umask(previous)
+    assert receipt["full_byte_service_account_readback_passed"] is True
+    assert validate_splat_render_runtime(
+        runtime_root=destination, repo_root=repository,
+        allowed_roots=(destination.parent,),
+    )["identity"]["runtime_digest"] == receipt["runtime_digest"]

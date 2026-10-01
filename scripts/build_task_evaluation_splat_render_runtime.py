@@ -178,6 +178,11 @@ def build_published_splat_render_runtime(
             for path in sorted(staging.rglob("*"))
             if path.is_file()
         ]
+        # Readback runs as the service account. A private caller umask must
+        # not leave any directory in this public runtime closure untraversable.
+        for path in staging.rglob("*"):
+            if path.is_dir():
+                path.chmod(0o555)
         staging.chmod(0o755)
         for row in files:
             observed = readback(staging / row["relative_path"])
@@ -256,7 +261,10 @@ def build_published_splat_render_runtime(
         owned = destination if installed else staging
         if owned.exists() and not owned.is_symlink():
             for path in sorted(owned.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-                path.chmod(0o700 if path.is_dir() else 0o600)
+                # Files can share inodes with immutable prerequisites and
+                # existing releases. Unlink needs writable directories only.
+                if path.is_dir():
+                    path.chmod(0o700)
             owned.chmod(0o700)
             shutil.rmtree(owned)
         raise
