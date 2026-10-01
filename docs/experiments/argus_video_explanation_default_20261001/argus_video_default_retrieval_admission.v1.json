@@ -1,0 +1,41 @@
+{
+  "schema_version": "argus_shadow_retrieval_admission_inspection.v1",
+  "inspection_kind": "read_only_documented_client_and_presence_checks_only",
+  "documented_sources": [
+    "docs/task_evaluation_result_delivery.md",
+    "src/blueprint_pipeline/task_evaluation_delivery_readback.py",
+    "src/blueprint_pipeline/task_evaluation_launch_webapp_sync.py",
+    "src/blueprint_pipeline/live_pipeline_intake_service.py"
+  ],
+  "documented_method": "Existing owner-authenticated WebApp proxy/full evidence download, or canonical signed Website delivery readback that obtains ephemeral same-origin download tickets after owner-index and exact run/delivery/projection identity checks",
+  "canonical_readback_binding_presence_only": {
+    "PIPELINE_SYNC_TOKEN": false,
+    "PIPELINE_SYNC_TOKEN_FILE": false,
+    "PIPELINE_TASK_EVALUATION_DELIVERY_READBACK_URL": false,
+    "PIPELINE_TASK_EVALUATION_RUN_WEBAPP_URL": false,
+    "BLUEPRINT_LIVE_PIPELINE_INTAKE_TOKEN": false,
+    "BLUEPRINT_LIVE_PIPELINE_CLIENT_SECRETS_JSON": false,
+    "BLUEPRINT_OPERATOR_DOOR_TOKEN": true
+  },
+  "canonical_sync_loader_result": "pipeline_sync_token_missing",
+  "legacy_forwarding_env_file_present": false,
+  "webapp_submit_secret_file_present": false,
+  "observed_previous_denial": "HTTP 401, intake requires HMAC signature and nonce headers",
+  "denied_download_retried": false,
+  "storage_uri_request_attempted": false,
+  "credential_setup_or_access_changes": false,
+  "credentials_printed": false,
+  "admitted_episodes": 0,
+  "registered_video_references_preserved": 14,
+  "minimum_operator_input": "Use an existing authorized WebApp owner/operator session to export the full-evidence packs for the exact retained runs, or an already-authorized canonical readback environment; provide digest-bound bundle bytes without transferring raw secrets or creating credentials",
+  "minimum_label_and_rights_input": "Exact selected success/failure/ambiguous episode IDs, independent criterion/predicate reviews with supporting artifact digests/timestamps, and owner-confirmed source/footage/state use plus exact model-provider disclosure/retention/training rights",
+  "paid_execution": "deferred; no approval requested",
+  "inspection_date": "2026-10-01",
+  "source_code_base_commit": "9b754881845adf9ae2a871f40eab7ae1ec1233ea",
+  "exact_retained_run_ids": [
+    "operator-policy-841757-ed97253b9dbe-verified-candidate-failure",
+    "operator-policy-841757-c92ea670efac-astra-book-tray"
+  ],
+  "retrieval_invoked_during_binding_inspection": false,
+  "inspection_digest": "sha256:0a460e9bee8ef5df59ff70d5f526c7451dc934ac223ef95d8c30b3cedda4fb32"
+}
