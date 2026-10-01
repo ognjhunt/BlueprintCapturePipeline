@@ -31,14 +31,26 @@ makes the report fail.
 The implementation must join these production transitions: signed
 `stage_scene_intent` -> `process_scene_intents` factory/publication and sealed
 preparation request -> `run_preparation_service` /
-`process_launch_preparation_queue` sealed references and compilation envelope
--> `process_episode_compilation_queue` real compiler result and packet ->
-`process_scene_intents` activation link -> `process_launch_activation_queue`
-validated prepared launch -> fixture policy execution ->
+`process_launch_preparation_queue` sealed references and pending construction
+envelope -> `process_scene_intents` configuration activation link ->
+`process_launch_activation_queue` canonical no-allocation configuration launch
+preparation -> external configuration fixture through real publication and
+finalization -> real configured-controls readiness/episode preparation ->
+`process_launch_preparation_queue` sealed compilation envelope ->
+`process_episode_compilation_queue` real compiler result and packet ->
+`stage_configured_controls_activation` initial native construction activation
+-> `process_launch_activation_queue` canonical no-allocation native launch
+preparation -> fixture policy execution ->
 `provider_output_range_ingestion.ingest_selected_members` selected members ->
 `task_evaluation_policy_canary_result_projection.build_policy_canary_result_projection`
 validated terminal result
 projection -> `control_plane_storage_gc.run_storage_gc` authorized retirement.
+Keep both activation receipts and their exact preparation bindings. The first
+activation must consume a pending/processing construction envelope. A terminal
+construction envelope cannot be reopened, have its preparation status rewritten,
+or be accepted by a synthetic successful preparer. Native controls activation
+requires real predecessor lineage; start with initial construction. This ordering
+correction was independently checked against the production worker on October 1.
 Fixture scene-configuration output enters the existing publication validator
 at the provider return boundary; policy fixture output enters the existing
 archive/member ingestion boundary. The fixture must bind each returned object

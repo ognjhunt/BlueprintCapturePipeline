@@ -138,6 +138,36 @@ def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_pa
         except ValueError as exc:
             raise AssertionError(getattr(exc, "errors", str(exc))) from exc
     assert compiled["results"][0]["status"] == "compiled_for_production_launch", json.dumps(compiled, indent=2)
+    from scripts.control_plane_concurrency_policy import prepare_policy_fixture, ingest_policy_fixture, deliver_policy_fixture
+    from scripts import control_plane_concurrency_policy as policy
+    monkeypatch.setattr(policy, "reserve_control_plane_disk", measured_test_reservation)
+    output = prepare_policy_fixture(compiled=compiled["results"][0],
+        preparation_request=ready["compilation_envelope"]["request"], object_root=objects,
+        worker_root=tmp_path / "policy-worker")
+    collected = ingest_policy_fixture(provider=output, object_root=objects,
+        output_root=tmp_path / "policy-result", reservation_root=tmp_path / "reservations")
+    assert collected["ingestion"]["status"] == "materialized", collected
+    assert collected["ingestion"]["local_archive_copy_created"] is False
+    assert collected["host_transport_bytes"] < output["archive"]["size_bytes"]
+    assert not (collected["evidence_root"] / "unneeded-provider-buffer.bin").exists()
+    delivered = deliver_policy_fixture(collected=collected)
+    assert delivered["projection"]["run_id"] == output["result"]["run_id"]
+    assert delivered["projection"]["configuration_digest"] == compiled["results"][0]["result_digest"]
+    assert delivered["projection"]["reproducibility"]["scene_revision_digest"] == revision["revision_digest"]
+    assert delivered["projection"]["counts"]["completed_learned_policy_rollout_count"] == 20
+    assert delivered["fixture_provider"] is True
+    with pytest.raises(ValueError, match="harness_policy_compilation_binding_invalid"):
+        prepare_policy_fixture(compiled={**compiled["results"][0], "result_digest": "sha256:" + "0" * 64},
+            preparation_request=ready["compilation_envelope"]["request"], object_root=objects,
+            worker_root=tmp_path / "foreign-policy-worker")
+    assert not (tmp_path / "foreign-policy-worker").exists()
+    corrupted = collected["evidence_root"] / "episode-one.state_trace.json"
+    corrupted.chmod(0o600)
+    corrupted.write_text("corrupt retained provider bytes")
+    from blueprint_pipeline.task_evaluation_result_delivery import TaskEvaluationResultDeliveryError
+    with pytest.raises(TaskEvaluationResultDeliveryError):
+        deliver_policy_fixture(collected=collected)
+    assert corrupted.read_text() == "corrupt retained provider bytes"
     from scripts.control_plane_concurrency_provider import fixture_scene_artifacts
     from blueprint_pipeline.task_evaluation_scene_configuration_publication import TaskEvaluationSceneConfigurationPublicationError
 
