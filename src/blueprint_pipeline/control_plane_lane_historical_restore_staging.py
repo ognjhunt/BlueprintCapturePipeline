@@ -5,6 +5,8 @@ readback, current original authority, reservation, references and native rights.
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import restore_members
+
 import stat
 
 from . import control_plane_lane_historical_generation as generation
@@ -108,7 +110,7 @@ def stage_birth_versions(original, decision, events, action_id, *, complete, tic
 
 
 def _validate_stage(original, observed, decision, events, action_id, *, complete, tick):
-    originals, rows = _members(original), _members(observed)
+    originals, rows = _members(original), restore_members(original, observed, action_id, 'restore_stage_changed')
     stage = '.historical-restore-' + action_id
     versions, births = stage_birth_versions(original, decision, events, action_id, complete=complete, tick=tick)
     _require(type(observed) is dict and set(observed) == set(original)

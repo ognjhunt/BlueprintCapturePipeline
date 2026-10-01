@@ -6,6 +6,8 @@ then still needs current owner, archive, reservation, reference and native gates
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import restore_members
+
 import stat
 
 from . import control_plane_lane_historical_generation as generation
@@ -46,7 +48,7 @@ def validate_publication(original, observed, decision, events, action_id, *,
         and all(observed[key] == original[key] for key in ('target_path', 'parent_path',
                                                          'member_count', 'logical_payload_bytes'))
         and observed['root_version'] == decision['parent_version'])
-    rows = _members(observed)
+    rows = restore_members(original, observed, action_id, 'restore_publication_changed')
     _require(set(rows) == set(originals) and observed['target_version'] == rows['']['version']
         and rows['']['version'][:5] == decision['tombstone_version'][:5]
         and rows['']['version'][:2] == originals['']['version'][:2])

@@ -311,12 +311,15 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
     return channels
 
 
-def refuse_historical_process_references(manifest, *, tick):
+def refuse_historical_process_references(manifest, *, tick, restore_bounds=None):
     """Fixed real /proc, same PID/user namespace, finite complete current scan."""
     _require(sys.platform == 'linux' and os.geteuid() == 0, 'native_unavailable')
     scan = _Scan(tick)
+    if restore_bounds is not None:
+        from .control_plane_lane_historical_fence import _members
+        _members(manifest, restore_bounds=restore_bounds)
     identities = {(row['version'][0], row['version'][1]) for row in manifest['members']}
-    _require(0 < len(identities) <= 4096)
+    _require(0 < len(identities) <= (restore_bounds.member_count if restore_bounds is not None else 4096))
     target = manifest['target_path']
     proc = os.open('/proc', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:

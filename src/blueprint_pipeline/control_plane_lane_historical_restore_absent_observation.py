@@ -12,6 +12,7 @@ import re
 from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_restore_reconciliation_replay import binding, reconciliation_bindings
 from .control_plane_lane_historical_restore_reconciliation_scope import unknown_creation_scope, reconciled_parent
+from .control_plane_lane_historical_restore_limits import RestoreObservationBounds
 
 
 def absent_observation_scope(original, approved, observed, decision, events, action_id, *, tick=lambda: None):
@@ -27,7 +28,8 @@ def absent_observation_scope(original, approved, observed, decision, events, act
         and type(event.get('event_digest')) is str
         and re.fullmatch('sha256:[0-9a-f]{64}', event['event_digest']), 'restore_absent_observation_invalid')
     scope = unknown_creation_scope(original, approved, decision, prefix, action_id, tick=tick)
-    parent = reconciled_parent(approved, observed, scope, tick=tick)
+    parent = reconciled_parent(approved, observed, scope, tick=tick,
+        restore_bounds=RestoreObservationBounds(original, action_id))
     return copy.deepcopy(dict(execution_authorized=False, observation_only=True, permits_removal=False,
         action_id=action_id, original_generation_digest=original['generation_digest'],
         original_reconciliation_intent_digest=event['event_digest'],

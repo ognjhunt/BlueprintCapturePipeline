@@ -1,6 +1,8 @@
 """Resume original publication without replacement births or fresh clocks."""
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import selected_restore_bounds
+
 import os
 
 from . import control_plane_lane_historical_generation as generation
@@ -12,7 +14,7 @@ def recover_split_stage(worker, events, roots, monotonic):
     from .control_plane_lane_historical_restore_worker import _readback, _resources, _finish_restore
     manifest, decision = worker.selected[2], worker.selected[1]
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
-        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+        max_seconds=worker.operation.remaining(), monotonic=monotonic, _restore_bounds=selected_restore_bounds(worker))
     selection = validate_split_stage(manifest, observed, decision, events, worker.action_id,
                                      tick=worker.operation.remaining)
     _readback(worker, observed, roots, monotonic)

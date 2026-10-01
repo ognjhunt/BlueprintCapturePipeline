@@ -5,6 +5,8 @@ reservation, reader and native fences remain the worker's independent gates.
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import restore_members
+
 from . import control_plane_lane_historical_generation as generation
 from .control_plane_lane_historical_fence import _members
 from .control_plane_lane_historical_restore_staging import stage_birth_versions
@@ -78,7 +80,7 @@ def _replay(original, decision, events, action_id, tick):
 
 def validate_split_stage(original, observed, decision, events, action_id, *, tick=lambda: None):
     """Exactly one side of every top-level subtree, with only journaled renames."""
-    originals, rows = _members(original), _members(observed)
+    originals, rows = _members(original), restore_members(original, observed, action_id, 'restore_split_changed')
     stage = '.historical-restore-' + action_id
     _require(set(observed) == set(original)
         and observed['schema_version'] == original['schema_version']

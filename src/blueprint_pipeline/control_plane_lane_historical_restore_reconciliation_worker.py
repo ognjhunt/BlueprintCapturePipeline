@@ -6,6 +6,8 @@ readers are rechecked. An absent row is uncertainty, never freed-byte credit.
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import selected_restore_bounds
+
 import hashlib
 import os
 
@@ -138,7 +140,8 @@ def reconcile_unlogged_creation(worker, events, observed, roots, monotonic):
     present = observed == approved
     if not present:
         generation._require(pending_cleanup, 'restore_reconciliation_scope_invalid')
-        reconciled_parent(approved, observed, scope, tick=worker.operation.remaining)
+        reconciled_parent(approved, observed, scope, tick=worker.operation.remaining,
+            restore_bounds=selected_restore_bounds(worker))
     if observe_only:
         # Observation approval can never reach removal, even if old DELETE is
         # still current. The whole current absence observation must be exact.
@@ -180,5 +183,5 @@ def reconcile_unlogged_creation(worker, events, observed, roots, monotonic):
     # Fresh inventory and whole replay observe the effects; no original packet,
     # decision, birth, archive, journal prefix or clock is rewritten.
     current = generation.inventory_historical_generation(worker.selected[2]['target_path'], allowed_roots=roots,
-        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+        max_seconds=worker.operation.remaining(), monotonic=monotonic, _restore_bounds=selected_restore_bounds(worker))
     return worker.replay(), current

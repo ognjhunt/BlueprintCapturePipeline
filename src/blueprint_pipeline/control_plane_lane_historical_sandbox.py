@@ -159,7 +159,7 @@ def _verify_inherited_reads():
 class HistoricalNativeSandbox:
     """One fixed immutable manifest and one bounded current scan per request."""
 
-    def __init__(self, target, journal, manifest, *, tick, reservation=None):
+    def __init__(self, target, journal, manifest, *, tick, reservation=None, restore_bounds=None):
         _require(sys.platform == 'linux' and os.geteuid() == 0, 'native_unavailable')
         _require(os.listdir('/proc/self/task') == [str(os.getpid())], 'sandbox_unknown')
         self.requests, self.answers = queue.Queue(1), queue.Queue(1)
@@ -168,6 +168,7 @@ class HistoricalNativeSandbox:
             with tick_lock:
                 return tick()
         self.tick, self.closed = synchronized_tick, False
+        self.restore_bounds = restore_bounds
         self.thread = threading.Thread(target=self._observe, args=(manifest,),
                                        name='historical-read-only-observer', daemon=True)
         self.thread.start()
@@ -190,7 +191,7 @@ class HistoricalNativeSandbox:
         self.answers.put(None)
         while self.requests.get():
             try:
-                refuse_historical_process_references(manifest, tick=self.tick)
+                refuse_historical_process_references(manifest, tick=self.tick, restore_bounds=self.restore_bounds)
             except Exception as error:
                 self.answers.put(error)
             else:

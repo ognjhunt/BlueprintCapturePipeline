@@ -35,21 +35,28 @@ def _acl(fd):
              and not any('acl' in name.lower() for name in names), 'acl_unknown')
 
 
-def _members(manifest):
+def _members(manifest, *, restore_bounds=None):
     rows = manifest.get('members')
+    if restore_bounds is not None:
+        from .control_plane_lane_historical_restore_limits import RestoreObservationBounds
+        _require(type(restore_bounds) is RestoreObservationBounds, 'manifest_invalid')
+    limit = restore_bounds.member_count if restore_bounds is not None else 4096
+    _require(restore_bounds is None or manifest.get('target_path') == restore_bounds.target_path, 'manifest_invalid')
     _require(isinstance(rows, list) and type(manifest.get('member_count')) is int
-             and 0 < len(rows) == manifest['member_count'] <= 4096, 'manifest_invalid')
+             and 0 < len(rows) == manifest['member_count'] <= limit, 'manifest_invalid')
     selected = {}
     for row in rows:
         _require(type(row) is dict and isinstance(row.get('path'), str), 'manifest_invalid')
         relative = row['path']
-        _require(len(os.fsencode(relative)) <= 1024 and (relative == '' or
-            len(relative.split('/')) <= 16 and all(part not in ('', '.', '..')
+        _require(len(os.fsencode(relative)) <= (1076 if restore_bounds else 1024) and (relative == '' or
+            len(relative.split('/')) <= (16 if row.get('kind') == 'directory' else 17) + bool(restore_bounds)
+            and all(part not in ('', '.', '..')
               and len(os.fsencode(part)) <= 255 for part in relative.split('/')))
             and relative not in selected and row.get('kind') in ('directory', 'file')
             and isinstance(row.get('version'), list) and len(row['version']) == 10
             and all(type(value) is int for value in row['version'])
             and not row['version'][2] & (stat.S_ISUID | stat.S_ISGID), 'manifest_invalid')
+        _require(restore_bounds is None or restore_bounds.accepts(relative, row['kind']), 'manifest_invalid')
         selected[relative] = row
     _require('' in selected and selected['']['kind'] == 'directory'
              and all(name == '' or name.rpartition('/')[0] in selected
@@ -61,10 +68,11 @@ def _members(manifest):
 class _HistoricalGenerationFence:
     """Bounded retained ancestry. Caller holds authority, deadline and journal."""
 
-    def __init__(self, manifest, *, tick):
+    def __init__(self, manifest, *, tick, restore_bounds=None):
         _require(sys.platform == 'linux' and os.geteuid() == 0, 'native_unavailable')
         self.tick, self.stack = tick, ExitStack()
-        self.rows = _members(manifest)
+        self.rows = _members(manifest, restore_bounds=restore_bounds)
+        self.member_limit = restore_bounds.member_count if restore_bounds is not None else 4096
         self.children = {name: set() for name, row in self.rows.items() if row['kind'] == 'directory'}
         for name in self.rows:
             if name:
@@ -176,7 +184,7 @@ class _HistoricalGenerationFence:
                     with os.scandir(fd) as entries:
                         for entry in entries:
                             self.tick()
-                            _require(len(names) < 4096, 'fence_changed')
+                            _require(len(names) < self.member_limit, 'fence_changed')
                             names.add(entry.name)
                     _require(names == self.children[relative], 'fence_changed')
                 guard()

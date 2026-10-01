@@ -5,6 +5,8 @@ publication and durable final. Unknown partial recovery remains a typed KEEP.
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import selected_restore_bounds
+
 import os
 from contextlib import contextmanager
 
@@ -57,13 +59,14 @@ def _readback(worker, expected, roots, monotonic):
     manifest, decision = worker.selected[2], worker.selected[1]
     def guard():
         with worker.checkpoint(journal=True):
-            generation.verify_historical_member_versions(expected, tick=worker.operation.remaining)
+            generation.verify_historical_member_versions(expected, tick=worker.operation.remaining,
+                _restore_bounds=selected_restore_bounds(worker))
     guard()
     with worker.checkpoint(journal=True) as (files, config, _):
         client, bucket = transport._client(files, config)
     archive.verify_preservation(decision['archive'], client, bucket, guard, origin=worker.operation.started)
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
-        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+        max_seconds=worker.operation.remaining(), monotonic=monotonic, _restore_bounds=selected_restore_bounds(worker))
     generation._require(observed == expected, 'restore_snapshot_changed')
     guard()
 
@@ -89,7 +92,7 @@ def _resources(worker, observed):
     """Real exclusive generation fence, fresh reservation and fixed sandbox."""
     operation, manifest = worker.operation, worker.selected[2]
     outcome = 'failed'
-    with _HistoricalGenerationFence(observed, tick=operation.remaining) as held:
+    with _HistoricalGenerationFence(observed, tick=operation.remaining, restore_bounds=selected_restore_bounds(worker)) as held:
         quantum = os.fstatvfs(held.root).f_frsize
         generation._require(type(quantum) is int and 0 < quantum <= 1024**2, 'restore_reservation_unknown')
         need = 8 * 1024**2 + sum(((row['size_bytes'] + quantum - 1) // quantum) * quantum
@@ -107,7 +110,7 @@ def _resources(worker, observed):
             resource = os.open(ledger.DEFAULT_RESERVATION_ROOT,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
             with HistoricalNativeSandbox(held.root, private, observed, tick=operation.remaining,
-                                         reservation=resource) as sandbox:
+                                         reservation=resource, restore_bounds=selected_restore_bounds(worker)) as sandbox:
                 worker.sandbox = sandbox
                 yield held, reservation
                 outcome = 'completed'
@@ -185,7 +188,8 @@ def _recover_before_final(worker, events, roots, monotonic):
             protected_root_version=held.versions[''], restored_snapshot=selector, owner_access_reopened=False)
         with worker.checkpoint(journal=True):
             held.verify()
-            generation.verify_historical_member_versions(snapshot, tick=worker.operation.remaining)
+            generation.verify_historical_member_versions(snapshot, tick=worker.operation.remaining,
+                _restore_bounds=selected_restore_bounds(worker))
         final = worker.record('restore_final', receipt)
         tree.reopen()
         return dict(receipt, recovered_before_final=True, owner_access_reopened=True,
@@ -202,14 +206,15 @@ def _finish_restore(worker, tree, held, roots, monotonic, extracted):
         held.verify()
         worker.reservation.renew()
     snapshot = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
-        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+        max_seconds=worker.operation.remaining(), monotonic=monotonic, _restore_bounds=selected_restore_bounds(worker))
     generation._require(all(row['version'] == held.versions[row['path']]
         for row in snapshot['members']) and len(snapshot['members']) == len(manifest['members']),
         'restore_snapshot_changed')
     validate_private(manifest, snapshot)
     with worker.checkpoint(journal=True) as (_, _, journal):
         held.verify()
-        generation.verify_historical_member_versions(snapshot, tick=worker.operation.remaining)
+        generation.verify_historical_member_versions(snapshot, tick=worker.operation.remaining,
+                _restore_bounds=selected_restore_bounds(worker))
         selected_snapshot = journal.publish_restore_snapshot(snapshot)
     receipt = dict(status='completed', action='restore', action_id=worker.action_id,
         owner=decision['owner'], generation_digest=manifest['generation_digest'],
@@ -226,7 +231,7 @@ def _recover_publication(worker, events, roots, monotonic):
     """Actual published births and planned member rights behind a private root."""
     manifest, decision = worker.selected[2], worker.selected[1]
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
-        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+        max_seconds=worker.operation.remaining(), monotonic=monotonic, _restore_bounds=selected_restore_bounds(worker))
     validate_publication(manifest, observed, decision, events, worker.action_id,
                          tick=worker.operation.remaining, pending_owner_rights=True)
     _readback(worker, observed, roots, monotonic)
@@ -248,7 +253,7 @@ def _recover_complete_stage(worker, events, roots, monotonic):
     """Resume fully journaled private bytes; never create replacement births."""
     manifest, decision = worker.selected[2], worker.selected[1]
     observed = generation.inventory_historical_generation(manifest['target_path'], allowed_roots=roots,
-        max_seconds=worker.operation.remaining(), monotonic=monotonic)
+        max_seconds=worker.operation.remaining(), monotonic=monotonic, _restore_bounds=selected_restore_bounds(worker))
     validate_complete_stage(manifest, observed, decision, events, worker.action_id,
                             tick=worker.operation.remaining)
     _readback(worker, observed, roots, monotonic)

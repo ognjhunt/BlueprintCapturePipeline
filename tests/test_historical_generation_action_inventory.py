@@ -71,6 +71,32 @@ def test_inventory_refuses_before_exceeding_finite_original_bounds(historical_tr
         inventory(parent, target, **options)
 
 
+def test_admitted_depth_sixteen_directory_and_seventeen_component_file_are_fence_members(tmp_path):
+    # Actual tiny filesystem inventory; the parser check grants no native rights.
+    from blueprint_pipeline.control_plane_lane_historical_fence import _members
+    target = tmp_path / 'original'
+    target.mkdir()
+    leaf = target
+    for number in range(16):
+        leaf = leaf / str(number)
+        leaf.mkdir()
+    (leaf / 'last.bin').write_bytes(b'original bytes')
+    observed = inventory(tmp_path, target)
+    assert observed['member_count'] == 18
+    assert len(_members(observed)) == 18
+
+
+def test_directory_at_depth_seventeen_remains_outside_original_admission(tmp_path):
+    target = tmp_path / 'original'
+    target.mkdir()
+    leaf = target
+    for number in range(17):
+        leaf = leaf / str(number)
+        leaf.mkdir()
+    with pytest.raises(ValueError, match='historical_generation_member_unsupported'):
+        inventory(tmp_path, target)
+
+
 def test_changed_payload_during_hash_is_not_a_reviewable_generation(historical_tree, monkeypatch):
     parent, target = historical_tree
     from blueprint_pipeline import control_plane_lane_historical_generation as module

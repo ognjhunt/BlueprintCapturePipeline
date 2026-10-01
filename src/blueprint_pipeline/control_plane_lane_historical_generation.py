@@ -65,23 +65,29 @@ def _chain(path, stack):
     return result
 
 
-def verify_historical_member_versions(manifest, *, tick):
+def verify_historical_member_versions(manifest, *, tick, _restore_bounds=None):
     """Recheck the entire original namespace without rereading payload bytes.
 
     This closes metadata drift since hashing; it does not fence future writers
     or confer mutation authority. The caller supplies its original deadline.
     """
     rows = manifest['members']
-    _require(0 < len(rows) == manifest['member_count'] <= MAX_MEMBERS, 'manifest_invalid')
+    if _restore_bounds is not None:
+        from .control_plane_lane_historical_restore_limits import RestoreObservationBounds
+        _require(type(_restore_bounds) is RestoreObservationBounds, 'manifest_invalid')
+    limit = _restore_bounds.member_count if _restore_bounds is not None else MAX_MEMBERS
+    _require(_restore_bounds is None or manifest['target_path'] == _restore_bounds.target_path, 'manifest_invalid')
+    _require(0 < len(rows) == manifest['member_count'] <= limit, 'manifest_invalid')
     expected, children = {}, {}
     for row in rows:
         tick()
         relative = row['path']
-        _require(isinstance(relative, str) and len(os.fsencode(relative)) <= 1024
+        _require(isinstance(relative, str) and len(os.fsencode(relative)) <= (1076 if _restore_bounds else 1024)
                  and (relative == '' or all(part not in ('', '.', '..')
                                            for part in relative.split('/')))
-                 and len(relative.split('/')) <= 17 and relative not in expected
+                 and len(relative.split('/')) <= (18 if _restore_bounds else 17) and relative not in expected
                  and row['kind'] in ('directory', 'file'), 'manifest_invalid')
+        _require(_restore_bounds is None or _restore_bounds.accepts(relative, row['kind']), 'manifest_invalid')
         expected[relative] = row
         if relative:
             parent, _, name = relative.rpartition('/')
@@ -103,7 +109,7 @@ def verify_historical_member_versions(manifest, *, tick):
         with os.scandir(fd) as stream:
             for row in stream:
                 tick()
-                _require(len(found) < MAX_MEMBERS, 'changed')
+                _require(len(found) < limit, 'changed')
                 found.append(row.name)
         return sorted(found)
 
@@ -147,7 +153,7 @@ def verify_historical_member_versions(manifest, *, tick):
 
 def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMBERS,
                                     max_payload_bytes=MAX_PAYLOAD_BYTES,
-                                    max_seconds=MAX_SECONDS, monotonic=time.monotonic):
+                                    max_seconds=MAX_SECONDS, monotonic=time.monotonic, _restore_bounds=None):
     """One direct configured child, retained no-follow identities and exact hashes."""
     _require(isinstance(path, (str, Path)) and isinstance(allowed_roots, (tuple, list))
              and 1 <= len(allowed_roots) <= 2, 'scope_invalid')
@@ -165,6 +171,15 @@ def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMB
              and type(max_payload_bytes) is int and 0 < max_payload_bytes <= MAX_PAYLOAD_BYTES
              and type(max_seconds) in (int, float) and math.isfinite(max_seconds)
              and 0 < max_seconds <= MAX_SECONDS, 'options_invalid')
+    encoded_limit, path_limit, depth_limit = MAX_MANIFEST_BYTES, 1024, 16
+    if _restore_bounds is not None:
+        from .control_plane_lane_historical_restore_limits import RestoreObservationBounds
+        _require(type(_restore_bounds) is RestoreObservationBounds
+            and str(target) == _restore_bounds.target_path, 'options_invalid')
+        max_members = (_restore_bounds.member_count if max_members == MAX_MEMBERS
+                       else min(max_members, _restore_bounds.member_count))
+        max_payload_bytes = min(max_payload_bytes, _restore_bounds.payload_bytes)
+        encoded_limit, path_limit, depth_limit = _restore_bounds.encoded_bytes, 1076, 17
     started = monotonic()
     _require(type(started) in (int, float) and math.isfinite(started), 'deadline')
     last = started
@@ -191,7 +206,8 @@ def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMB
     def add(relative, kind, info, digest):
         nonlocal retained_bytes, allocated
         tick()
-        _require(len(members) < max_members and len(os.fsencode(relative)) <= 1024, 'limit')
+        _require(len(members) < max_members and len(os.fsencode(relative)) <= path_limit, 'limit')
+        _require(_restore_bounds is None or _restore_bounds.accepts(relative, kind), 'restore_snapshot_changed')
         row = dict(path=relative, kind=kind, version=list(legacy._version(info)),
                    size_bytes=info.st_size if kind == 'file' else 0, sha256=digest)
         try:
@@ -199,7 +215,7 @@ def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMB
         except (UnicodeError, ValueError):
             raise HistoricalGenerationError('historical_generation_member_unsupported') from None
         retained_bytes += len(encoded) + 1
-        _require(retained_bytes <= MAX_MANIFEST_BYTES, 'limit')
+        _require(retained_bytes <= encoded_limit, 'limit')
         members.append(row)
         allocated += legacy.allocated_bytes(info)
 
@@ -214,7 +230,7 @@ def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMB
         nonlocal logical
         tick()
         initial = os.fstat(fd)
-        _require(depth <= 16 and initial.st_dev == device and stat.S_ISDIR(initial.st_mode),
+        _require(depth <= depth_limit and initial.st_dev == device and stat.S_ISDIR(initial.st_mode),
                  'member_unsupported')
         add(relative, 'directory', initial, None)
         selected = names(fd)
@@ -228,7 +244,7 @@ def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMB
             _require(kind is not None and info.st_dev == device
                      and (kind == 'directory' or info.st_nlink == 1), 'member_unsupported')
             child_path = relative + '/' + name if relative else name
-            _require(len(os.fsencode(child_path)) <= 1024, 'limit')
+            _require(len(os.fsencode(child_path)) <= path_limit, 'limit')
             flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
             child = os.open(name, flags | (os.O_DIRECTORY if kind == 'directory' else 0), dir_fd=fd)
             try:
@@ -277,7 +293,7 @@ def inventory_historical_generation(path, *, allowed_roots, max_members=MAX_MEMB
                 members=members, member_count=len(members), logical_payload_bytes=logical,
                 observed_allocated_bytes=allocated, execution_authorized=False)
             _require(len(json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode('utf-8'))
-                     <= MAX_MANIFEST_BYTES - 100, 'limit')
+                     <= encoded_limit - 100, 'limit')
             tick()
             value['generation_digest'] = canonical_digest(value, digest_field='generation_digest')
             tick()

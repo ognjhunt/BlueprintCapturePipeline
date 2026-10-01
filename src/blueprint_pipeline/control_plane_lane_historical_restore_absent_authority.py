@@ -6,6 +6,8 @@ under the original restore, with no replacement birth or freed-byte credit.
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import RestoreObservationBounds
+
 import hashlib
 import math
 import time
@@ -166,7 +168,8 @@ def select_absent_observation(files, config, store, config_path, selected, event
             (selected[1]['installed_config'], selected[1]['policy']))
     if completed is None:
         moment_for_rights = moment
-        generation.verify_historical_member_versions(observed, tick=files.budget.tick)
+        generation.verify_historical_member_versions(observed, tick=files.budget.tick,
+            _restore_bounds=RestoreObservationBounds(selected[2], selected[1]['action_id']))
     else:
         expected = dict(decision_id=identifier, decision=authority._selector(raw))
         _require(completed['kind'] == 'restore_intent' and completed['body'].get('phase') == 'reconciled'
@@ -205,7 +208,8 @@ def approve_historical_restore_absence(*, installed_config_path, action_id, ack_
             operation.moment()), operation.moment()) == (packet['attempt'], packet['prior_observations']))
         configured, policy = _current_observation(files, config, installed_config_path, principal, owner,
             operation.moment(), expires_at_epoch, selected[1]['expires_at_epoch'])
-        generation.verify_historical_member_versions(observed, tick=files.budget.tick)
+        generation.verify_historical_member_versions(observed, tick=files.budget.tick,
+            _restore_bounds=RestoreObservationBounds(selected[2], selected[1]['action_id']))
         pending = reconciliation_bindings(events)[-1]
         _, old = discard.historical_effect_grant(files, config, store, installed_config_path, selected,
             *pending, operation.moment())

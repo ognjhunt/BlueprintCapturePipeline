@@ -6,6 +6,8 @@ before any discard or same-operation retry can use this reviewable scope.
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import restore_members
+
 import copy
 import re
 import stat
@@ -22,7 +24,7 @@ def _require(value):
 
 def unknown_creation_scope(original, observed, decision, events, action_id, *, tick=lambda: None):
     """Exactly one pending unlogged row; no selected or published inode discard."""
-    originals, rows = _members(original), _members(observed)
+    originals, rows = _members(original), restore_members(original, observed, action_id, 'restore_reconciliation_scope_invalid')
     stage = '.historical-restore-' + action_id
     _require(type(events) is list and events and events[-1]['kind'] == 'restore_intent')
     pending = events[-1]['body']
@@ -74,9 +76,9 @@ def unknown_creation_scope(original, observed, decision, events, action_id, *, t
         remove_member=unknown, parent_path=parent, parent_before=before, parent_after=after))
 
 
-def reconciled_parent(approved, observed, scope, *, tick=lambda: None):
+def reconciled_parent(approved, observed, scope, *, tick=lambda: None, restore_bounds=None):
     """One exact absent dentry and its parent transition; never freed credit."""
-    before, rows = _members(approved), _members(observed)
+    before, rows = _members(approved, restore_bounds=restore_bounds), _members(observed, restore_bounds=restore_bounds)
     relative, parent = scope['remove_member']['path'], scope['parent_path']
     _require(before.get(relative) == scope['remove_member']
         and before[parent]['version'] == scope['parent_after']

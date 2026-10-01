@@ -35,6 +35,7 @@ class _Worker:
     def __init__(self, config_path, action_id, operation):
         self.config_path, self.action_id, self.operation = config_path, action_id, operation
         self.selected = None
+        self.restore_bounds = None
         self.head = None
         self.sandbox = None
         self.reservation = None
@@ -51,6 +52,9 @@ class _Worker:
                                            self.action_id, self.operation.moment())
             if self.selected is None:
                 self.selected = current
+                if current[1]['action'] == 'restore':
+                    from .control_plane_lane_historical_restore_limits import RestoreObservationBounds
+                    self.restore_bounds = RestoreObservationBounds(current[2], self.action_id)
             else:
                 _require(current == self.selected, 'authority_changed')
             if self.reconciliations:
