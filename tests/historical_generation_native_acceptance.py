@@ -843,6 +843,17 @@ def _installed_entry(root, entry):
     dispatch._ACTION_EXECUTABLE = str(entry)
 
 
+def _current_fixture_approval(options, original_expiry, ttl, changes=None):
+    """Observe the actual issuance time, retaining the original restore bound.
+
+    Earlier negative requests issue nothing. Their elapsed validation time must
+    not backdate a later owner request or consume its unissued short lifetime.
+    Explicit negative fields are applied last so expiry refusals remain tested.
+    """
+    moment = time.time()
+    return options | dict(now=moment, expires_at_epoch=min(moment + ttl, original_expiry)) | (changes or {})
+
+
 def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *, short_expiry=False):
     """Actual tiny owner decision; original restore principal cannot DELETE."""
     from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_authority import (
@@ -866,22 +877,24 @@ def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *,
                                                    size_bytes=len(before['e-00000.json']))
     options = dict(installed_config_path=config, action_id=action_id,
         ack_packet_digest=packet['packet_digest'], principal='operator', owner='owner',
-        discard_unfinished_row=True, no_future_writers=True, no_future_readers=True,
-        expires_at_epoch=min(time.time() + (12 if short_expiry else 300), restore['expires_at_epoch']), now=time.time())
+        discard_unfinished_row=True, no_future_writers=True, no_future_readers=True)
+    ttl = 12 if short_expiry else 300
     store = root / 'state/requests/historical-generation-actions'
     records = {path.name: path.read_bytes() for path in store.iterdir()}
     for changes in (dict(principal='restore-operator'), dict(owner='different-owner'),
         dict(ack_packet_digest='sha256:' + 'f' * 64), dict(no_future_writers=False),
         dict(expires_at_epoch=restore['expires_at_epoch'] + 1)):
         try:
-            approve_historical_restore_reconciliation(**(options | changes))
+            approve_historical_restore_reconciliation(**_current_fixture_approval(
+                options, restore['expires_at_epoch'], ttl, changes))
         except ValueError:
             pass
         else:
             raise AssertionError('unfinished discard accepted without exact current owner DELETE')
         assert {path.name: path.read_bytes() for path in store.iterdir()} == records
         assert unchanged() == original
-    approved = approve_historical_restore_reconciliation(**options)
+    approved = approve_historical_restore_reconciliation(**_current_fixture_approval(
+        options, restore['expires_at_epoch'], ttl))
     assert approved['packet'] == packet and approved['execution_authorized'] is False
     assert approved['discard_unfinished_row_approved'] is True
     assert unchanged() == original
@@ -927,19 +940,21 @@ def _approve_fresh_discard_fixture(root, config, entry, restore, target, journal
         assert packet['resume_from']['event_digest'] == head['event_digest']
     options = dict(installed_config_path=config, action_id=restore['action_id'], ack_packet_digest=packet['packet_digest'],
         principal='operator', owner='owner', discard_unfinished_row=True, no_future_writers=True,
-        no_future_readers=True, expires_at_epoch=min(time.time() + (12 if short_expiry else 300),
-            restore['expires_at_epoch']), now=time.time())
+        no_future_readers=True)
+    ttl = 12 if short_expiry else 300
     for change in (dict(principal='restore-operator'), dict(owner='other'), dict(no_future_readers=False),
         dict(ack_packet_digest='sha256:' + 'f' * 64), dict(expires_at_epoch=restore['expires_at_epoch'] + 1)):
         try:
-            approve_historical_restore_reconciliation(**(options | change))
+            approve_historical_restore_reconciliation(**_current_fixture_approval(
+                options, restore['expires_at_epoch'], ttl, change))
         except ValueError:
             pass
         else:
             raise AssertionError('fresh discard bypassed exact current owner DELETE')
         assert namespace() == original and {path.name: path.read_bytes() for path in directory.iterdir()} == journal
         assert {path.name: path.read_bytes() for path in store.iterdir()} == retained
-    approved = approve_historical_restore_reconciliation(**options)
+    approved = approve_historical_restore_reconciliation(**_current_fixture_approval(
+        options, restore['expires_at_epoch'], ttl))
     assert approved['packet'] == packet and approved['decision_id'] != previous['decision_id']
     assert approved['attempt'] == packet['attempt'] and approved['execution_authorized'] is False
     assert namespace() == original and {path.name: path.read_bytes() for path in directory.iterdir()} == journal
@@ -1008,20 +1023,21 @@ def _approve_absent_fixture(root, config, entry, restore, target, journals, old,
     assert packet['observation_only'] is True
     options = dict(installed_config_path=config, action_id=action_id, ack_packet_digest=packet['packet_digest'],
         principal='restore-operator', owner='owner', observe_absence_only=True,
-        no_future_writers=True, no_future_readers=True,
-        expires_at_epoch=min(time.time() + 4, restore['expires_at_epoch']) if repeat_expiry else restore['expires_at_epoch'],
-        now=time.time())
+        no_future_writers=True, no_future_readers=True)
+    ttl = 4 if repeat_expiry else restore['expires_at_epoch'] - time.time()
     for changes in (dict(principal='unknown'), dict(owner='different-owner'),
         dict(ack_packet_digest='sha256:' + 'f' * 64), dict(observe_absence_only=False),
         dict(no_future_writers=False), dict(expires_at_epoch=restore['expires_at_epoch'] + 1)):
         try:
-            approve_historical_restore_absence(**(options | changes))
+            approve_historical_restore_absence(**_current_fixture_approval(
+                options, restore['expires_at_epoch'], ttl, changes))
         except ValueError:
             pass
         else:
             raise AssertionError('absence observation accepted without exact current owner handling')
         assert {path.name: path.read_bytes() for path in store.iterdir()} == records
-    approved = approve_historical_restore_absence(**options)
+    approved = approve_historical_restore_absence(**_current_fixture_approval(
+        options, restore['expires_at_epoch'], ttl))
     if repeat_expiry:
         records = {path.name: path.read_bytes() for path in store.iterdir()}
         first, first_raw = approved, (store / (approved['decision_id'] + '.json')).read_bytes()
