@@ -111,6 +111,9 @@ def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_pa
     from tests.test_task_evaluation_configured_controls_progression import _runtime
     from scripts.control_plane_concurrency_provider import fixture_publisher
     runtime = _runtime()
+    # Author the fixture's spend before it enters any sealed request. Native
+    # authority permits at most $2; the legacy unit-data builder uses $2.25.
+    runtime["spend"]["hard_cap_usd"] = 2.0
     fixture_source = _runtime_source_packet(tmp_path)
     bundle = tmp_path / "runtime-source.zip"
     build_task_evaluation_runtime_source_bundle(source_root=fixture_source.parent, output_path=bundle,
