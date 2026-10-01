@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from tools.daily_research import contracts, freshness, knowledge
+from tools.daily_research import capabilities, contracts, freshness, knowledge
 
 PROJECT = "proj_F2tFJuxLaovJru8RrtXRaqNj"
 AGENT = "agent_5a01ec367d1042ef8632bb5f2e6af8b4919909d2abed48ed95"
@@ -399,13 +399,16 @@ def preflight(api, expected_instructions_sha256=None):
     instructions_hash = hashlib.sha256(instructions.encode()).hexdigest() if isinstance(instructions, str) else None
     if expected_instructions_sha256 and instructions_hash != expected_instructions_sha256:
         raise Refusal("agent_instructions_pin_mismatch")
-    if (template.get("id") != TEMPLATE or template.get("network", {}).get("access") != "disabled"
-            or template.get("capability_directories") != ["/workspace/capabilities/blueprint"]
-            or sorted(x.get("name", "") for x in template.get("skills", [])) != ["blueprint-evidence-qualification", "deep-research"]):
+    if template.get("id") != TEMPLATE or template.get("network", {}).get("access") != "disabled":
         raise Refusal("template_configuration_mismatch")
+    try:
+        skill_binding = capabilities.check_template(template)
+    except (ValueError, OSError) as exc:
+        raise Refusal(str(exc) if isinstance(exc, ValueError) else "reviewed_skill_file_unavailable") from None
     return {"project_id": PROJECT, "agent_id": AGENT, "template_id": TEMPLATE,
             "model": MODEL, "agent_digest": digest(agent), "template_digest": digest(template),
             "instructions_sha256": instructions_hash,
+            "skill_binding": skill_binding,
             "inference_started": False, "actual_container_size_verified": False}
 
 
@@ -535,7 +538,9 @@ class Runner:
             if self.stop_requested():
                 return {"date": day, "state": "stopped_before_create"}
             body = {"agent_id": AGENT, "environment": {"type": "openai_hosted", "container_size": "small",
-                    "environment_template_id": TEMPLATE}, "input": prompt(day, context, version), "stream": False,
+                    "environment_template_id": TEMPLATE, "network": {"access": "disabled"},
+                    "capability_directories": [capabilities.ROOT], "files": capabilities.inline_files()},
+                    "input": prompt(day, context, version), "stream": False,
                     "metadata": {"purpose": "daily_blueprint_sites_research", "run_key": "blueprint-researcher:" + day}}
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),

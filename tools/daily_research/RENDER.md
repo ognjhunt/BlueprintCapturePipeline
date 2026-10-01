@@ -7,12 +7,18 @@ Existing operator hold `20260930T132640Z-hold-354d4ae6` remains held.
 
 ## Runtime and controls
 
-Use existing worker `srv-d9t8gg1t0dsc73am9q70`, Node 24 and Python 3.11.
+Use existing worker `srv-d9t8gg1t0dsc73am9q70` and Node 24. Python 3.11, 3.12 and
+3.14 are tested; the verified disabled release uses Python 3.14.3.
 The WebApp build validates and extracts the pinned portable archive, then creates
 `dist/daily-research/venv` with only `openai==3.22.1`. Firebase Admin and Google
 auth resolve from the existing WebApp dependencies. Python accesses Firestore
 through a private Node pipe; credentials stay in memory/environment, never in
 the archive, inputs, argv, logs or provider sandbox.
+
+The saved template discovers the exact mounted instruction files through
+capability directories, with empty attached-skills/plugins lists. See
+[SKILLS.md](SKILLS.md) for reviewed hashes, session byte binding and the limits
+of a read-only template GET. Do not re-register skills to repair preflight.
 
 Two independent controls must permit creation:
 
