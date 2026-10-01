@@ -151,7 +151,8 @@ def _recover_before_final(worker, events, roots, monotonic):
         return recover_split_stage(worker, events, roots, monotonic)
     if all(event['kind'] in ('intent', 'restore_directory', 'restore_member')
            or event['kind'] == 'restore_intent' and event['body'].get('phase') in
-               ('reservation', 'directory', 'member', 'reconcile_intent', 'reconciled') for event in events):
+               ('reservation', 'directory', 'member', 'reconcile_intent',
+                'reconcile_delete_resume', 'reconciled') for event in events):
         from .control_plane_lane_historical_restore_prefix import recover_private_prefix
         return recover_private_prefix(worker, events, roots, monotonic)
     generation._require(events[-1]['kind'] == 'restore_intent'
