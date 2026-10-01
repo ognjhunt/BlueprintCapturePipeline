@@ -126,6 +126,8 @@ def test_duplicate_credit_corrections_and_posting_changes():
     conflict = _snapshot(inputs)
     assert _vast(conflict)["amount"] is None and _vast(conflict)["billed_cost"] is None
     assert conflict["observed_daily_slices"] == []
+    inputs[2][0][1]["results"].append(inputs[2][0][1]["results"][0])
+    assert _vast(_snapshot(inputs))["amount"] is None  # A later identical row cannot erase the conflict.
 
 
 @pytest.mark.parametrize(
