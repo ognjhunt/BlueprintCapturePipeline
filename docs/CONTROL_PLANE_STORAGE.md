@@ -249,7 +249,7 @@ configured root whose class is not the one they may touch.
 
 | Where | What |
 |---|---|
-| Root disk | The OS, the `/opt/blueprint` releases, and small durable state: `evidence_hot` (spend guard, deploy receipts, standing authorizations, the manifest), `ledger` (disk reservations, pins, locks) and the queues. |
+| Root disk | The OS, the `/opt/blueprint` releases, and small durable state: `evidence_hot` (spend guard, deploy receipts, standing authorizations, the manifest), `ledger` (disk reservations, pins, locks) and the queues. Docker's image layers and build cache (`/var/lib/containerd`, `/var/lib/docker`) also stay here; see the [capacity runbook](runbooks/control-plane-capacity.md#container-image-storage-on-the-root-disk). |
 | Scratch volume, `/mnt/blueprint-work`, growable | Every `cache`, `evidence_cold` and `scratch` root. Also the handoff spool `pubsub-handoffs` (every scene's raw capture and workspace), native run work (`native-g1-team-campaign-work` and `native-g1-team-policy-work`, where a team policy run reserves 32 GB), the whole `task-evaluation-inputs` tree, and `/workspace`. |
 
 Each moved root is bound back at its original path (`/mnt/blueprint-work/<rel>`
@@ -459,7 +459,9 @@ process cannot be attributed. These gaps lower `attributed_fraction`.
 directory it matched. A path under a `container`, or under `/var/lib/blueprint`,
 `/opt/blueprint` or `/workspace`, that no row claims is `unclassified`, rooted at
 the child it lies in. Everything else is `host`, rooted at its first two
-components (`/var/log`, `/usr/lib`).
+components (`/var/log`, `/usr/lib`), except the container runtime stores, which
+keep their own root (`/var/lib/containerd`, `/var/lib/docker`). The survey also
+totals them in `container_runtime_roots` and `container_runtime_bytes`.
 
 **Owner.** The first matching rule wins:
 
@@ -494,8 +496,10 @@ report. Existing surveys are sanitized when the controller reads them.
 
 `latest.json` and `summary.json` carry the same `usage` projection: the survey's
 age and status, its filesystem rows, bytes per class, the top ten roots and
-owners, and the 20 largest unclassified roots. The controller warns with
-`usage_unclassified_root` for each unclassified root over 1 GiB, and with
+owners, the 20 largest unclassified roots, and the container runtime stores. The
+controller warns with `usage_unclassified_root` for each unclassified root over
+1 GiB, with `usage_container_runtime_large` for a container runtime store over
+20 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
 over used bytes, capped at 1) is under 0.9. Either warning raises an `ok` report
 to `warning`. A survey exception keeps the last result and names the error

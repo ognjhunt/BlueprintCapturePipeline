@@ -63,7 +63,16 @@ manifest and either sends `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL` or fails the
 unit when `BLUEPRINT_OPERATOR_ALERT_REQUIRE_WEBHOOK=true` and a blocked pass has
 no configured webhook. Missing capture roots, inboxes, simulator commands,
 vision commands, delivery commands, or proof inputs are recorded as manifest
-blockers. It also writes:
+blockers. The message names the first five blockers and how many more remain.
+An unchanged blocked pass is re-sent hourly rather than on every five-minute
+pass. A changed status, job or blocker set is sent at once, and a failed
+delivery is retried on the next pass. Spend-lock and threshold pages are never
+held back.
+
+The production unit runs the active release, located through
+`BLUEPRINT_LIVE_CONTROL_PLANE_REPO`. The credential env file's
+`BLUEPRINT_PIPELINE_REPO` overrides `Environment=` and names an archived
+checkout, so the unit exports the resolved release in its place. It also writes:
 
 ```text
 pipeline/live_pipeline_control_plane/live_pipeline_external_input_packet.json

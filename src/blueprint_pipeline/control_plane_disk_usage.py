@@ -56,6 +56,10 @@ DEFAULT_SURVEY_ALIASES: Mapping[str, str] = {
 BLUEPRINT_PREFIXES: tuple[str, ...] = (
     "/var/lib/blueprint", "/opt/blueprint", "/workspace", "/mnt/blueprint-work",
 )
+# Image layers and build cache live here, outside every Blueprint root. On
+# 2026-10-01 a local image unpack put about 80 GB on the root disk that the survey
+# could only call host ``/var/lib``. These host roots keep their own names.
+CONTAINER_RUNTIME_ROOTS: tuple[str, ...] = ("/var/lib/containerd", "/var/lib/docker")
 DEFAULT_SURVEY_MAX_ENTRIES = 3_000_000
 DEFAULT_SURVEY_MAX_SECONDS = 240.0
 # The capacity unit has MemoryMax=512M. Bound every growing walk container;
@@ -280,7 +284,7 @@ def _classification(
     only classified children, so a path below one that no deeper row claims is
     ``unclassified``, rooted at the child it lies in; so is a path under a Blueprint
     prefix that the table does not know. Everything else is ``host``, rooted at its
-    first two components.
+    first two components, or at its container runtime store.
     """
 
     base: tuple[str, ...] | None = None
@@ -293,6 +297,10 @@ def _classification(
         if (base is None or len(prefix) > len(base)) and parts[: len(prefix)] == prefix:
             base = prefix
     if base is None:
+        for runtime in CONTAINER_RUNTIME_ROOTS:
+            runtime_parts = _parts(runtime)
+            if parts[: len(runtime_parts)] == runtime_parts:
+                return "host", runtime_parts
         return "host", parts[:3]
     if len(parts) <= len(base):
         return "container", base
@@ -758,6 +766,8 @@ def survey_usage(
                     if storage_class == "unclassified"]
     orphan_scratch = [(root, allocated) for root, allocated in unclassified
                       if is_orphan_scratch_root(root)]
+    container_runtime = [(root, allocated) for (root, storage_class), allocated in roots
+                         if storage_class == "host" and root in CONTAINER_RUNTIME_ROOTS]
     owners = sorted(walk.totals.items(),
                     key=lambda item: (-item[1][0], item[0][2], item[0][1], item[0][0]))
     survey: dict[str, Any] = {
@@ -797,6 +807,10 @@ def survey_usage(
              "newest_mtime_epoch": walk.unclassified_mtime.get(root)}
             for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_ROWS]
         ],
+        "container_runtime_roots": [
+            {"root": root, "allocated_bytes": allocated} for root, allocated in container_runtime
+        ],
+        "container_runtime_bytes": sum(allocated for _root, allocated in container_runtime),
         "hardlinks": {
             "shared_inodes": len(walk.shared),
             "shared_bytes": sum(held[2] for held in walk.shared.values()),
@@ -811,6 +825,7 @@ def survey_usage(
 
 __all__ = [
     "BLUEPRINT_PREFIXES",
+    "CONTAINER_RUNTIME_ROOTS",
     "DEFAULT_SURVEY_ALIASES",
     "SURVEY_SCHEMA_VERSION",
     "is_orphan_scratch_root",
