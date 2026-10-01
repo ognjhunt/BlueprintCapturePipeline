@@ -37,6 +37,13 @@ def test_checkout_accepts_generated_metadata_but_refuses_changed_or_untracked_co
     with pytest.raises(ValueError, match="harness_untracked_code"):
         require_clean_checkout(tmp_path)
     extra.unlink()
+    package = tmp_path / "blueprint_pipeline"
+    package.mkdir()
+    shadow = package / "__init__.py"
+    shadow.write_text("shadow = True\n")
+    with pytest.raises(ValueError, match="harness_untracked_code"):
+        require_clean_checkout(tmp_path)
+    shadow.unlink()
     source.write_text("original = False\n")
     with pytest.raises(ValueError, match="harness_checkout_dirty"):
         require_clean_checkout(tmp_path)

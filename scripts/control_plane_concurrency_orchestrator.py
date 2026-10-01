@@ -48,9 +48,9 @@ def require_clean_checkout(repo):
             "src",
             "scripts",
             "tests",
-            ":(top,glob)*.py",
-            ":(top,glob)*.pyc",
-            ":(top,glob)*.so",
+            ":(glob)**/*.py",
+            ":(glob)**/*.pyc",
+            ":(glob)**/*.so",
         ]
     ):
         raise ValueError("harness_untracked_code")
