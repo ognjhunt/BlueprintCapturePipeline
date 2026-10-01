@@ -5,6 +5,8 @@ renew the original restore permission or start a new operation clock.
 """
 from __future__ import annotations
 
+from .control_plane_lane_historical_restore_limits import RestoreObservationBounds
+
 import hashlib
 import math
 import time
@@ -16,7 +18,7 @@ from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_experiment_work as work
 from . import control_plane_lane_scratch_decisions as retained
-from .control_plane_lane_historical_journal import HistoricalJournalObservation, journal_root, MAX_EVENT_BYTES
+from .control_plane_lane_historical_journal import HistoricalJournalObservation, journal_root, MAX_SUPPORTED_EVENT_BYTES as MAX_EVENT_BYTES
 from .control_plane_lane_historical_restore_reconciliation_scope import unknown_creation_scope
 from .decision_evidence_contracts import canonical_digest
 
@@ -187,13 +189,15 @@ def _observe(config_path, action_id, operation, *, build_packet=None):
                 byte_selectors = _event_selectors(files, config, action_id, events)
                 break
     observed = generation.inventory_historical_generation(selected[2]['target_path'], allowed_roots=roots,
-        max_seconds=operation.remaining(), monotonic=operation.monotonic)
+        max_seconds=operation.remaining(), monotonic=operation.monotonic,
+        _restore_bounds=RestoreObservationBounds(selected[2], action_id))
     packet = None
     with authority._session(config_path, operation) as (files, config, store):
         _require(restore.select_restore(files, config, store, config_path, action_id, operation.moment()) == selected
             and HistoricalJournalObservation(files, config, selected, operation).head['event_digest'] == head)
         _require(_event_selectors(files, config, action_id, events) == byte_selectors)
-        generation.verify_historical_member_versions(observed, tick=files.budget.tick)
+        generation.verify_historical_member_versions(observed, tick=files.budget.tick,
+            _restore_bounds=RestoreObservationBounds(selected[2], selected[1]['action_id']))
         if build_packet is None:
             build_packet = _build_packet
         if build_packet is not None:
@@ -362,7 +366,8 @@ def approve_historical_restore_reconciliation(*, installed_config_path, action_i
             operation.moment()), operation.moment()) == (packet['attempt'], packet['prior_decisions']))
         configured, policy = _current_delete(files, config, installed_config_path, principal, owner,
             operation.moment(), expires_at_epoch, selected[1]['expires_at_epoch'])
-        generation.verify_historical_member_versions(observed, tick=files.budget.tick)
+        generation.verify_historical_member_versions(observed, tick=files.budget.tick,
+            _restore_bounds=RestoreObservationBounds(selected[2], selected[1]['action_id']))
         try:
             previous, _ = store.read(identifier)
         except FileNotFoundError:

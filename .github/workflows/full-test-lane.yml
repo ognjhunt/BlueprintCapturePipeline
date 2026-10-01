@@ -186,8 +186,8 @@ jobs:
           uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
           uv lock --check
           uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
-            --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3
-          uv pip install --python /var/lib/blueprint-native-test-venv/bin/python ./BlueprintContracts
+            --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3 --link-mode copy
+          uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts
           # Noneditable policy CLIs resolve retained documents beside their
           # installed package. Preserve those exact committed bytes outside
           # runner home, where the different-UID child can read them safely.

@@ -7,6 +7,7 @@ current owner authority, reader checks or the payload generation fence.
 from __future__ import annotations
 
 import math
+import json
 import os
 import re
 import stat
@@ -23,6 +24,7 @@ from .decision_evidence_contracts import canonical_digest
 MAX_OPERATIONS = 512
 MAX_EVENTS = 4 * generation.MAX_MEMBERS + 64
 MAX_EVENT_BYTES = 4096
+MAX_SUPPORTED_EVENT_BYTES = MAX_EVENT_BYTES + 3 * (6 * 1024 + 54)
 MAX_JOURNAL_BYTES = 64 * 1024**2
 _EVENT_NAME = re.compile(r'e-([0-9]{5})\.json\Z')
 _KINDS = frozenset({'intent', 'fence_intent', 'fenced', 'preservation', 'removal_intent',
@@ -50,6 +52,20 @@ def _scope(selected):
         expires_at_epoch=decision['expires_at_epoch'])
 
 
+def event_byte_limit(selected):
+    """Restore birth records contain path, stage_path and parent_path.
+
+    JSON escapes a control byte to six ASCII bytes. Keep an explicit finite
+    envelope allowance, plus the exact longest selected path and stage prefix.
+    This changes no journal count, aggregate byte or acquisition deadline cap.
+    """
+    paths = [row['path'] for row in selected[2]['members']]
+    largest = max(len(json.dumps(path, ensure_ascii=False).encode('utf-8')) for path in paths)
+    cap = MAX_EVENT_BYTES + 3 * (largest + 52)
+    _require(MAX_EVENT_BYTES <= cap <= MAX_SUPPORTED_EVENT_BYTES, 'invalid')
+    return cap
+
+
 class HistoricalActionJournal:
     """One fixed protected action ID; append-only no-replace records and deadline."""
 
@@ -59,6 +75,7 @@ class HistoricalActionJournal:
         self.action_id = decision['action_id']
         _require(authority._ID.fullmatch(self.action_id), 'invalid')
         self.scope = _scope(selected)
+        self.event_bytes = event_byte_limit(selected)
         self.scope_digest = canonical_digest(self.scope)
         root = journal_root(config)
         parent, _ = files.parent(root / self.action_id, protected=True)
@@ -119,7 +136,7 @@ class HistoricalActionJournal:
                 _require(match and count < MAX_EVENTS, 'store_unsafe')
                 info = os.stat(entry.name, dir_fd=self.directory, follow_symlinks=False)
                 owners._protected(info, mode=0o600)
-                _require(0 < info.st_size <= MAX_EVENT_BYTES, 'store_unsafe')
+                _require(0 < info.st_size <= self.event_bytes, 'store_unsafe')
                 count, size = count + 1, size + info.st_size
                 maximum = max(maximum, int(match[1]))
                 _require(size <= MAX_JOURNAL_BYTES, 'store_full')
@@ -131,8 +148,8 @@ class HistoricalActionJournal:
 
     def _read(self, index):
         path = self.root / f'e-{index:05d}.json'
-        raw, record = self.files.read(path, cap=MAX_EVENT_BYTES, protected=True, mode=0o600)
-        value = retained._document(raw, MAX_EVENT_BYTES, _work_budget=self.files.budget)
+        raw, record = self.files.read(path, cap=self.event_bytes, protected=True, mode=0o600)
+        value = retained._document(raw, self.event_bytes, _work_budget=self.files.budget)
         _require(type(value) is dict and set(value) == _FIELDS
             and value['schema_version'] == 'control_plane_historical_action_event.v1'
             and value['action_id'] == self.action_id and value['scope_digest'] == self.scope_digest
@@ -223,7 +240,7 @@ class HistoricalActionJournal:
             previous_event_digest=previous, observed_at_epoch=moment,
             execution_authorized=False)
         value['event_digest'] = canonical_digest(value, digest_field='event_digest')
-        raw = owners._encoded(value, self.files.budget, cap=MAX_EVENT_BYTES)
+        raw = owners._encoded(value, self.files.budget, cap=self.event_bytes)
         _publish(self.files, self.directory, f'e-{sequence:05d}.json', raw, kind='event')
         _require(self._read(sequence) == value, 'changed')
         self._count += 1
@@ -236,7 +253,7 @@ class HistoricalActionJournal:
         head = self._load()
         _require(previous == head['event_digest'], 'changed')
         count, size = self._count, self._size
-        _require(count < MAX_EVENTS and size <= MAX_JOURNAL_BYTES - MAX_EVENT_BYTES, 'store_full')
+        _require(count < MAX_EVENTS and size <= MAX_JOURNAL_BYTES - self.event_bytes, 'store_full')
         return self._publish(kind, body, count, previous,
                              observation_expires_at_epoch=observation_expires_at_epoch)
 
@@ -308,6 +325,7 @@ class HistoricalJournalObservation:
         self.action_id = selected[1]['action_id']
         _require(isinstance(self.action_id, str) and authority._ID.fullmatch(self.action_id), 'invalid')
         self.scope = _scope(selected)
+        self.event_bytes = event_byte_limit(selected)
         self.scope_digest = canonical_digest(self.scope)
         self.root = journal_root(config) / self.action_id
         self.directory, _ = files.parent(self.root / 'e-00000.json', protected=True)

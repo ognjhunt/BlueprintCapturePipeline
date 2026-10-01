@@ -282,18 +282,14 @@ def worker_main(root, action_id):
                 os.write = write
             else:
                 original_unlink, original_sync = os.unlink, os.fsync
-                from blueprint_pipeline.control_plane_lane_historical_action import _Worker
+                from blueprint_pipeline import control_plane_lane_historical_restore_reconciliation_worker as reconciliation_code
                 from blueprint_pipeline.control_plane_lane_historical_fence import _version
-                original_record = _Worker.record
+                original_pin = reconciliation_code._effect_pin
                 selected, removed_parent = None, None
-                def reconciliation_record(self, kind, body):
+                def reconciliation_pin(worker, binding):
                     nonlocal selected
-                    result = original_record(self, kind, body)
-                    if kind == 'restore_intent' and body.get('phase') in ('reconcile_intent', 'reconcile_delete_resume'):
-                        approved, _, _ = self.effect_selected[-1]
-                        selected = approved['packet']['scope']
-                    return result
-                _Worker.record = reconciliation_record
+                    selected = _observe_reconciliation_pin(worker, binding, original_pin)
+                reconciliation_code._effect_pin = reconciliation_pin
                 def unlink(name, *args, **kwargs):
                     nonlocal removed_parent
                     parent = kwargs.get('dir_fd')
@@ -402,9 +398,27 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     return dict(result, _fixture_prior_member_births=births) if receipt.get('recovered_prefix') is True else result
 
 
+def _observe_reconciliation_pin(worker, binding, verify):
+    """Observe the actual held grant only after its syscall pin succeeds.
+
+    A resumed unit may already have a durable original resume event; the fault
+    must not require another event or replace the worker's authorization.
+    """
+    verify(worker, binding)
+    return worker.effect_selected[-1][0]['packet']['scope']
+
+
+def _launch_death_worker(entry, action_id, target, journals):
+    """Same three-unit cadence; each None must come from fresh real SIGKILL."""
+    result = _later_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
+        restore=True, process_death=True), journals, action_id)
+    assert result is None, result
+
+
 def _capture_restore_births(journals, action_id):
     """Actual protected whole-chain births immediately before the next unit."""
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.control_plane_lane_historical_journal import MAX_SUPPORTED_EVENT_BYTES
     directory = journals / action_id
     if not directory.exists():
         return []
@@ -420,8 +434,8 @@ def _capture_restore_births(journals, action_id):
             try:
                 info = os.fstat(record)
                 assert stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
-                assert info.st_uid == info.st_gid == 0 and info.st_nlink == 1 and 0 < info.st_size <= 4096
-                raw = os.read(record, 4097)
+                assert info.st_uid == info.st_gid == 0 and info.st_nlink == 1 and 0 < info.st_size <= MAX_SUPPORTED_EVENT_BYTES
+                raw = os.read(record, MAX_SUPPORTED_EVENT_BYTES + 1)
                 assert len(raw) == info.st_size and not os.read(record, 1)
                 assert os.fstat(record) == os.stat(name, dir_fd=fd, follow_symlinks=False)
             finally:
@@ -470,6 +484,10 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None)
         receipt = invoke()
         current = prefix()
         assert all(current.get(name) == raw for name, raw in original.items()), 'original_journal_changed'
+        if receipt is None:
+            # This is an observed fixture death, never a worker success receipt.
+            # Ordinary callers still require an actual completed worker result.
+            return None
         if receipt.get('status') not in ('kept', 'failed') or receipt.get('code') != \
                 'historical_generation_process_unknown':
             return receipt
@@ -550,15 +568,49 @@ def _assert_boundary_recovery(receipt, expected, observations, action_id, origin
         for index, row in enumerate(observations))
 
 
+def _unit_cursor(unit):
+    """Actual journald position before a new same-ID unit, never a receipt."""
+    log = subprocess.run(['/usr/bin/journalctl', '--unit=' + unit, '--output=json',
+        '--no-pager', '--lines=1'], capture_output=True, text=True, timeout=5)
+    assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
+    lines = log.stdout.splitlines()
+    if not lines or lines == ['-- No entries --']:
+        return None
+    assert len(lines) == 1
+    cursor = json.loads(lines[0]).get('__CURSOR')
+    assert type(cursor) is str and 0 < len(cursor) <= 4096
+    assert all(char.isascii() and (char.isalnum() or char in ';=_-') for char in cursor)
+    return cursor
+
+
+def _unit_output(unit, cursor):
+    argv = ['/usr/bin/journalctl', '--unit=' + unit, '--output=json', '--no-pager', '--lines=65']
+    if cursor is not None:
+        argv.append('--after-cursor=' + cursor)
+    log = subprocess.run(argv, capture_output=True, text=True, timeout=5)
+    assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
+    lines = log.stdout.splitlines()
+    if lines == ['-- No entries --']:
+        return ''
+    assert len(lines) <= 64, 'journal_delta_overflow'
+    messages = []
+    for line in lines:
+        record = json.loads(line)
+        message = record.get('MESSAGE')
+        assert type(message) is str, 'journal_delta_message_unknown'
+        messages.append(message)
+    return '\n'.join(messages)
+
+
 def _launch_worker_once(entry, action_id, target, journals, *, restore=False, launch=None, process_death=False):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
+    cursor = None
     def observations():
-        log = subprocess.run(['/usr/bin/journalctl', '--unit=' + unit, '--output=cat',
-            '--no-pager', '--lines=64'], capture_output=True, text=True, timeout=5)
-        assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
-        return [json.loads(line) for line in log.stdout.splitlines() if line.startswith('{')]
-    previous = observations()
+        return [json.loads(line) for line in _unit_output(unit, cursor).splitlines() if line.startswith('{')]
+    history = observations()
+    cursor = _unit_cursor(unit)
+    previous = []
     ready = entry.parent / ('.fixture-unit-ready-' + action_id)
     _write(ready, b'')
     startup = os.open(ready, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -618,12 +670,18 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
     if process_death:
         # No worker receipt is manufactured after SIGKILL. The actual emptied
         # cgroup above and service-manager signal record prove this boundary.
-        log = subprocess.run(['/usr/bin/journalctl', '--unit=' + unit, '--output=cat',
-            '--no-pager', '--lines=64'], capture_output=True, text=True, timeout=5)
-        assert log.returncode == 0 and len(log.stdout.encode()) <= 32768
-        assert 'code=killed, status=9/KILL' in log.stdout, log.stdout
-        assert observations() == previous, 'killed worker must not emit a terminal receipt'
-        return None
+        output = _unit_output(unit, cursor)
+        current = observations()
+        if len(current) == 1 and current[0].get('status') in ('kept', 'failed') \
+                and current[0].get('code') == 'historical_generation_process_unknown':
+            # The real fault was not reached. Preserve its actual refusal for
+            # the existing bounded SAME-e0 cadence, with no clock/authority edit.
+            assert 'code=killed, status=9/KILL' not in output, dict(cursor=cursor, records=current)
+        else:
+            assert 'code=killed, status=9/KILL' in output, dict(cursor=cursor, output=output, records=current)
+            assert current == previous, dict(failure='killed worker must not emit a terminal receipt',
+                cursor=cursor, history=history, current=current)
+            return None
     receipt_deadline = time.monotonic() + 2
     current = observations()
     while current == previous and time.monotonic() < receipt_deadline:
@@ -638,7 +696,7 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
         print(json.dumps(dict(fixture_installed_entry_refusal=entry_failure, action_id=action_id)))
     metadata_proof = receipt.pop('_fixture_metadata_proof', None)
     if (entry.parent / 'metadata-boundary-probe').exists() and not any(
-            '_fixture_metadata_proof' in row for row in previous):
+            '_fixture_metadata_proof' in row for row in history):
         assert metadata_proof == dict(records=2, bytes_per_record=1048576,
             full_comparisons=6, no_replace_conflicts=2, actual_landlock=True), metadata_proof
     else:
@@ -987,7 +1045,8 @@ def _approve_absent_fixture(root, config, entry, restore, target, journals, old,
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
                      restore_interruption='restore_final', installed=False, destination_conflict=False, metadata_probe=False,
                      reconciliation_interruption=None, absent_expiry=False, observation_expiry=False,
-                     delete_expiry=False, resume_delete_expiry=False, resume_remove=False, resume_absent_expiry=False):
+                     delete_expiry=False, resume_delete_expiry=False, resume_remove=False, resume_absent_expiry=False,
+                     controlled_names=False, deep_tree=False):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
@@ -998,6 +1057,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
     assert not resume_delete_expiry or delete_expiry and reconciliation_interruption == 'reconcile_intent'
     assert not resume_remove or delete_expiry and reconciliation_interruption == 'reconcile_intent'
     assert not resume_absent_expiry or resume_remove
+    assert not (controlled_names and deep_tree)
     with tempfile.TemporaryDirectory(prefix='blueprint-historical-connected-', dir='/var/lib') as temporary:
         root = Path(temporary)
         root.chmod(0o755)
@@ -1051,12 +1111,14 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
         config = root / 'door.json'
         _write(config, _encoded(settings))
         target = root / 'work/old-owner-diagnostics'
-        (target / 'nested').mkdir(parents=True, mode=0o700)
-        original = {'one.log': b'original diagnostics\n', 'nested/two.log': b'nested owner bytes\n'}
+        nested = ('/'.join('\x01' * size for size in (255, 255, 255, 254)) if controlled_names else
+                  '/'.join(map(str, range(16))) if deep_tree else 'nested')
+        (target / nested).mkdir(parents=True, mode=0o700)
+        original = {'one.log': b'original diagnostics\n', nested + ('/f' if controlled_names else '/two.log'): b'nested owner bytes\n'}
         foreign = pwd.getpwnam('nobody')
         for relative, raw in original.items():
             _write(target / relative, raw)
-        for path in (target, target / 'nested', *(target / name for name in original)):
+        for path in (target, *target.rglob('*')):
             os.chown(path, foreign.pw_uid, foreign.pw_gid)
         if installed:
             # This sibling exists before the real parent-generation packet;
@@ -1258,8 +1320,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             if restore_interruption is not None:
                 _write(root / 'interrupt-once', restore_interruption.encode())
                 if restore_interruption.startswith('unlogged_'):
-                    assert _launch_worker_once(entry, restore['action_id'], target, journals,
-                                              restore=True, process_death=True) is None
+                    _launch_death_worker(entry, restore['action_id'], target, journals)
                 else:
                     interrupted = _launch_worker(entry, restore['action_id'], target, journals,
                                                  restore=True, expected='failed')
@@ -1534,6 +1595,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
 
 CONNECTED_CASES = (
     ('delete', dict(interruption=None)),
+    ('escaped_path_restore', dict(action='offload', controlled_names=True)),
+    ('maximum_depth_restore', dict(action='offload', deep_tree=True, restore_interruption='stage_complete')),
     ('metadata_bounds', dict(metadata_probe=True)),
     ('metadata_before_link', dict(interruption='metadata_before_link')),
     ('metadata_after_link', dict(interruption='metadata_after_link')),

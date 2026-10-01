@@ -79,7 +79,10 @@ def test_full_shards_reuse_the_protected_native_environment_without_reducing_col
     sync = install.split("uv sync --frozen", 1)[1].split("uv pip install", 1)[0]
     assert "--python /usr/bin/python3" in sync
     assert "--no-editable" in sync
-    assert "uv pip install --python /var/lib/blueprint-native-test-venv/bin/python ./BlueprintContracts" in install
+    # The protected installed entry requires single-link imported source;
+    # uv's cache hardlinks fail that native safety check even after chown.
+    assert "--link-mode copy" in sync
+    assert "uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts" in install
     seal = "sudo chown -hR root:root /var/lib/blueprint-native-test-venv"
     assert install.index(seal) > install.index("uv pip install")
     for step in shard["steps"]:
@@ -117,8 +120,16 @@ def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> No
         absent_expiry=True, observation_expiry=True)
     run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
-    assert 'assert len(cases) == 43' in run
+    assert 'assert len(cases) == 45' in run
     assert 'case.find(tag)' in run and 'for tag in ("skipped", "error", "failure")' in run
+
+
+def test_admitted_path_boundaries_need_real_native_restore_cases():
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    cases = dict(CONNECTED_CASES)
+    assert cases['escaped_path_restore'] == dict(action='offload', controlled_names=True)
+    assert cases['maximum_depth_restore'] == dict(action='offload', deep_tree=True,
+                                                  restore_interruption='stage_complete')
 
 
 def test_present_delete_expiry_requires_each_actual_original_operation_boundary() -> None:

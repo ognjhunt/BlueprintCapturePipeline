@@ -2,6 +2,7 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/control_plane_lane_historical_journal.py
 import json
+import os
 
 import pytest
 
@@ -60,6 +61,56 @@ def test_event_publication_is_no_replace_and_binds_original_action_chain(histori
         journal_call(historical_installation, approved,
             lambda journal: journal.append('fenced', {'member_index': 0}, previous=intent['event_digest']))
     assert path.read_bytes() == before
+
+
+def test_admitted_escaped_paths_fit_the_immutable_journal_codec(historical_installation):
+    # CPU journal codec projection only; this is not a valid restore action,
+    # producer birth or payload authorization. The real Linux restore case
+    # separately exercises the directory-intent body emitted by RestoreTree.
+    target = historical_installation[1]
+    relative = ('\x01' * 200) + '/' + ('\x01' * 200)
+    (target / relative).mkdir(parents=True)
+    approved = decision(historical_installation, packet(historical_installation))
+    body = dict(phase='directory', path=relative,
+        stage_path='.historical-restore-' + ('a' * 32) + '/' + relative)
+    assert len(json.dumps(body).encode()) > 4096
+    original = (target / 'one.log').read_bytes()
+    event = journal_call(historical_installation, approved,
+        lambda journal: journal.append('restore_intent', body, previous=journal.head['event_digest']))
+    assert event['body'] == body
+    assert journal_call(historical_installation, approved, lambda journal: journal.head) == event
+    assert (target / 'one.log').read_bytes() == original
+
+
+def test_longest_admitted_escaped_birth_paths_fit_journal_codec(historical_installation):
+    # Ordinary-UID journal codec projection, not a restore/birth authority.
+    target = historical_installation[1]
+    parent = '/'.join('\x01' * size for size in (255, 255, 255, 254))
+    relative = parent + '/f'
+    assert len(relative.encode()) == 1024
+    fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for name in parent.split('/'):
+            os.mkdir(name, dir_fd=fd)
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        leaf = os.open('f', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd)
+        try:
+            os.write(leaf, b'x')
+        finally:
+            os.close(leaf)
+    finally:
+        os.close(fd)
+    approved = decision(historical_installation, packet(historical_installation))
+    stage = '.historical-restore-' + ('a' * 32)
+    body = dict(path=relative, stage_path=stage + '/' + relative,
+        parent_path=stage + '/' + parent, version=[0] * 10,
+        parent_version=[0] * 10, size_bytes=1, sha256='sha256:' + '0' * 64)
+    assert len(json.dumps(body).encode()) > 16492
+    event = journal_call(historical_installation, approved,
+        lambda journal: journal.append('restore_member', body, previous=journal.head['event_digest']))
+    assert journal_call(historical_installation, approved, lambda journal: journal.head) == event
 
 
 @pytest.mark.parametrize('change', ['mode', 'symlink', 'unknown', 'gap', 'digest'])

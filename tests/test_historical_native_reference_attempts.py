@@ -15,6 +15,111 @@ ACTION = 'a' * 32
 REFUSED = dict(status='kept', code='historical_generation_process_unknown')
 
 
+def test_same_unit_journal_observation_uses_actual_prelaunch_cursor(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    cursor = 's=abc;i=123;b=def;m=456;t=789;x=abc'
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if '--lines=1' in argv:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(dict(__CURSOR=cursor)))
+        assert '--after-cursor=' + cursor in argv
+        return SimpleNamespace(returncode=0, stdout=json.dumps(dict(MESSAGE=json.dumps(dict(status='failed', code='actual_refusal')))))
+    monkeypatch.setattr(native.subprocess, 'run', run)
+    observed = native._unit_cursor('actual-unit')
+    records = [json.loads(line) for line in native._unit_output('actual-unit', observed).splitlines()]
+    assert observed == cursor and records == [dict(status='failed', code='actual_refusal')]
+    assert all('--unit=actual-unit' in argv for argv in calls)
+
+
+@pytest.mark.parametrize('value', [None, '', 'invented cursor', 's=bad\ncommand'])
+def test_unknown_journald_cursor_cannot_select_a_receipt_window(monkeypatch, value):
+    from types import SimpleNamespace
+    monkeypatch.setattr(native.subprocess, 'run', lambda *args, **kwargs:
+        SimpleNamespace(returncode=0, stdout=json.dumps(dict(__CURSOR=value))))
+    with pytest.raises(AssertionError):
+        native._unit_cursor('actual-unit')
+
+
+def test_journal_delta_refuses_overflow_instead_of_losing_new_receipts(monkeypatch):
+    from types import SimpleNamespace
+    def run(argv, **kwargs):
+        assert '--lines=65' in argv
+        return SimpleNamespace(returncode=0, stdout='\n'.join(
+            json.dumps(dict(MESSAGE='manager line')) for _ in range(65)))
+    monkeypatch.setattr(native.subprocess, 'run', run)
+    with pytest.raises(AssertionError, match='journal_delta_overflow'):
+        native._unit_output('actual-unit', 's=abc')
+
+
+def test_reconciliation_fault_observes_held_pin_without_a_new_journal_event():
+    from types import SimpleNamespace
+    scope = dict(remove_member=dict(path='actual pending row'))
+    worker = SimpleNamespace(effect_selected=[(dict(packet=dict(scope=scope)), None, None)])
+    calls = []
+    binding = dict(decision_id='actual selected ID')
+    def pin(current, selected):
+        assert current is worker and selected is binding
+        calls.append(selected)
+    assert native._observe_reconciliation_pin(worker, binding, pin) is scope
+    assert calls == [binding]
+    def refused(*args):
+        raise ValueError('real grant refused')
+    with pytest.raises(ValueError, match='real grant refused'):
+        native._observe_reconciliation_pin(worker, binding, refused)
+
+
+@pytest.mark.parametrize('new_record', [None, dict(status='failed', code='current_real_refusal'),
+                                      dict(unknown_json='must refuse')])
+def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(tmp_path, monkeypatch, new_record):
+    # Controller-flow projection only: no native worker, death or cgroup proof.
+    # The old receipt falls out of the last64 lines after new manager messages.
+    import os
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_lane_historical_dispatch as dispatch
+    monkeypatch.setattr(dispatch, '_unit_property_assignments', lambda *args, **kwargs: ())
+    entry = tmp_path / 'entry'
+    entry.write_bytes(b'')
+    group = tmp_path / 'simulated-cgroup-events'
+    group.write_bytes(b'populated 1\n')
+    opened, reads, journal_reads = [], [], []
+    real_open, real_pread = os.open, os.pread
+    def open_file(path, *args, **kwargs):
+        if str(path).startswith('/sys/fs/cgroup/'):
+            fd = real_open(group, *args, **kwargs)
+            opened.append(fd)
+            return fd
+        return real_open(path, *args, **kwargs)
+    def pread(fd, *args):
+        if fd in opened:
+            reads.append(fd)
+            return b'populated 1\n' if len(reads) == 1 else b'populated 0\n'
+        return real_pread(fd, *args)
+    def run(argv, **kwargs):
+        if argv[0].endswith('systemd-run'):
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        assert argv[0].endswith('journalctl')
+        if '--lines=1' in argv:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(dict(__CURSOR='s=abc;i=123')))
+        journal_reads.append(argv)
+        text = (json.dumps(dict(status='failed', code='prior_real_refusal'))
+                if len(journal_reads) == 1 else 'code=killed, status=9/KILL\n')
+        if len(journal_reads) > 1 and new_record is not None:
+            text += json.dumps(new_record) + '\n'
+        return SimpleNamespace(returncode=0, stdout='\n'.join(json.dumps(dict(MESSAGE=line)) for line in text.splitlines()))
+    monkeypatch.setattr(native.os, 'open', open_file)
+    monkeypatch.setattr(native.os, 'pread', pread)
+    monkeypatch.setattr(native.subprocess, 'run', run)
+    if new_record is None:
+        assert native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals',
+            process_death=True) is None
+    else:
+        with pytest.raises(AssertionError, match='killed worker must not emit a terminal receipt'):
+            native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals', process_death=True)
+    assert len(reads) == 2
+    assert all('--after-cursor=s=abc;i=123' in argv for argv in journal_reads[1:])
+
+
 def original_journal(tmp_path):
     path = tmp_path / ACTION
     path.mkdir()
@@ -32,6 +137,18 @@ def test_repeated_unknowns_remain_refused_under_the_same_original_intent(tmp_pat
         return dict(REFUSED)
     result = native._later_reference_attempts(invoke, tmp_path, ACTION)
     assert result == REFUSED and calls == [ACTION] * 3
+    assert (path / 'e-00000.json').read_bytes() == raw
+
+
+@pytest.mark.parametrize('refusals', [0, 1, 2])
+def test_observed_death_ends_bounded_same_intent_cadence_without_a_success_receipt(tmp_path, refusals):
+    path, raw = original_journal(tmp_path)
+    calls = []
+    def invoke():
+        calls.append(ACTION)
+        return dict(REFUSED) if len(calls) <= refusals else None
+    assert native._later_reference_attempts(invoke, tmp_path, ACTION) is None
+    assert len(calls) == refusals + 1
     assert (path / 'e-00000.json').read_bytes() == raw
 
 
