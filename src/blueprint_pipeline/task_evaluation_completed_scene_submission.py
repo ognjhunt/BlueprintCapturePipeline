@@ -302,6 +302,7 @@ def materialize_completed_scene_submission(
         {"schema_version": "task_evaluation_completed_scene_support_plane_input.v1",
          "status": "frozen_candidate_pending_production_validation", "scene_id": scene_id,
          "source_object_id": support["source_object_id"], "review_label": support.get("label", ""),
+         "sage_prim_path": support["runtime_prim_path"],
          "bounds_min_xyz_m": [float(v) for v in support["aabb_min_xyz_m"]],
          "bounds_max_xyz_m": [float(v) for v in support["aabb_max_xyz_m"]],
          "top_z_m": float(support["aabb_max_xyz_m"][2]),
