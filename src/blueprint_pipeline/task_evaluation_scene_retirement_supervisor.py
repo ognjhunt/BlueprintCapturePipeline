@@ -347,6 +347,9 @@ def _proc_fields(pid, native):
             status[key] = value.strip()
         required = {'Uid', 'Gid', 'Threads', 'CapEff', 'CapPrm', 'CapInh', 'CapAmb', 'CapBnd', 'NoNewPrivs', 'Groups'}
         _require(required <= set(status), _READER_ERROR)
+        _require(all(re.fullmatch(r'[0-9a-fA-F]{1,16}', status[key])
+                     for key in ('CapEff', 'CapPrm', 'CapInh', 'CapAmb', 'CapBnd'))
+                 and status['NoNewPrivs'] in {'0', '1'}, _READER_ERROR)
         uid, gid = status['Uid'].split(), status['Gid'].split()
         groups = status['Groups'].split()
         _require(len(uid) == len(gid) == 4 and len(groups) <= 64
@@ -843,7 +846,10 @@ def _platform_processes(rows, snapshot, native):
 def _outside_service_identity(row, service_uid, service_gid):
     """An unrelated UID alone does not prove absence of service access."""
     return (0 not in row['uid'] and service_uid not in row['uid']
-            and service_gid not in row['gid'] and service_gid not in row['groups'])
+            and service_gid not in row['gid'] and service_gid not in row['groups']
+            and all(int(row['status'][key], 16) == 0
+                    for key in ('CapEff', 'CapPrm', 'CapInh', 'CapAmb'))
+            and (row['status']['NoNewPrivs'] == '1' or int(row['status']['CapBnd'], 16) == 0))
 
 
 def _require_current_reader_closure(policy, allowance):

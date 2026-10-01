@@ -154,7 +154,8 @@ def test_mount_route_projection_requires_actual_root_inode_and_complete_view(
 @pytest.mark.parametrize('access_group', ['primary', 'effective', 'saved', 'filesystem', 'supplementary'])
 def test_manual_foreign_uid_with_service_group_has_unclosed_access_lifetime(access_group):
     service_uid, service_gid = os.getuid(), os.getgid()
-    foreign = {'uid': [service_uid + 10000] * 4, 'gid': [service_gid + 10000] * 4, 'groups': []}
+    foreign = {'uid': [service_uid + 10000] * 4, 'gid': [service_gid + 10000] * 4, 'groups': [],
+               'status': dict(CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd='0', NoNewPrivs='1')}
     if access_group == 'supplementary':
         foreign['groups'] = [service_gid]
     else:
@@ -165,7 +166,10 @@ def test_manual_foreign_uid_with_service_group_has_unclosed_access_lifetime(acce
 
 
 @pytest.mark.parametrize('groups', ['20 21', '', 'unknown', '4294967296', ' '.join(['20'] * 65), None])
-def test_proc_group_projection_is_complete_bounded_and_retained(tmp_path, monkeypatch, groups):
+@pytest.mark.parametrize('cap_field,cap_value', [(None, None), ('CapEff', 'xyz'),
+    ('CapPrm', '-1'), ('CapInh', '0x4'), ('CapAmb', '1' * 17), ('CapBnd', '４'),
+    ('NoNewPrivs', 'unknown')])
+def test_proc_group_projection_is_complete_bounded_and_retained(tmp_path, monkeypatch, groups, cap_field, cap_value):
     proc = tmp_path / 'proc-group-projection'
     proc.mkdir()
     fields = ['S', '1', *(['0'] * 18)]
@@ -173,6 +177,8 @@ def test_proc_group_projection_is_complete_bounded_and_retained(tmp_path, monkey
     (proc / 'stat').write_text('54321 (group-fixture) ' + ' '.join(fields) + '\n')
     status = dict(Uid='1000 1000 1000 1000', Gid='1001 1001 1001 1001', Threads='1',
                   CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd='0', NoNewPrivs='1')
+    if cap_field is not None:
+        status[cap_field] = cap_value
     if groups is not None:
         status['Groups'] = groups
     (proc / 'status').write_text(''.join(key + ': ' + value + '\n' for key, value in status.items()))
@@ -189,7 +195,7 @@ def test_proc_group_projection_is_complete_bounded_and_retained(tmp_path, monkey
     monkeypatch.setattr(supervisor, '_opened', opened)
     native = supervisor._NativeObservation(ActionAllowance(expires_at=3600, now=lambda: 100,
                                                            monotonic=lambda: 0))
-    if groups in ('20 21', ''):
+    if groups in ('20 21', '') and cap_field is None:
         row = supervisor._proc_fields(54321, native)
         assert row['groups'] == ([20, 21] if groups else [])
         assert row['status']['Groups'] == groups
@@ -197,3 +203,21 @@ def test_proc_group_projection_is_complete_bounded_and_retained(tmp_path, monkey
     else:
         with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
             supervisor._proc_fields(54321, native)
+
+
+@pytest.mark.parametrize('field', ['CapEff', 'CapPrm', 'CapInh', 'CapAmb'])
+@pytest.mark.parametrize('capability', [1, 2, 4, 64, 128, 256, 2**21])
+def test_unknown_capable_reader_has_unclosed_access_lifetime(field, capability):
+    status = dict(CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd='0', NoNewPrivs='1')
+    status[field] = format(capability, '016x')
+    row = dict(uid=[10001] * 4, gid=[10002] * 4, groups=[], status=status)
+    # Actual capability-enabled access need not already have a current FD.
+    # This projection pins admission logic; it is not native reader clearance.
+    assert not supervisor._outside_service_identity(row, 1000, 1001)
+
+
+@pytest.mark.parametrize('no_new_privs,bound,closed', [('0', '4', False), ('1', '4', True), ('0', '0', True)])
+def test_unknown_reader_cannot_acquire_executable_capabilities(no_new_privs, bound, closed):
+    status = dict(CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd=bound, NoNewPrivs=no_new_privs)
+    row = dict(uid=[10001] * 4, gid=[10002] * 4, groups=[], status=status)
+    assert supervisor._outside_service_identity(row, 1000, 1001) is closed
