@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -14,14 +15,25 @@ from scripts.control_plane_concurrency_load_test import install_child_fences, RE
 def seal_document(path: Path, value: dict) -> dict:
     value=json.loads(json.dumps(value,default=str))
     value['receipt_digest']=canonical_digest(value,digest_field='receipt_digest')
-    descriptor=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-    with os.fdopen(descriptor,'w') as stream:
-        json.dump(value,stream,sort_keys=True);stream.flush();os.fsync(stream.fileno())
+    temporary=path.parent/('.receipt-'+uuid.uuid4().hex)
+    descriptor=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    try:
+        with os.fdopen(descriptor,'w') as stream:
+            json.dump(value,stream,sort_keys=True);stream.flush();os.fsync(stream.fileno())
+        os.link(temporary,path,follow_symlinks=False)
+        directory=os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(directory)
+        finally:os.close(directory)
+    finally:temporary.unlink()
     return value
 
 
 def observe_overlap(*, children: list, ready_root: Path, reservation_root: Path) -> int:
     """Read the original live positive holds; a flag or ready file alone is insufficient."""
+    if reservation_root.is_symlink():raise ValueError('overlap_reservation_not_owned')
+    if not reservation_root.exists():
+        if any(ready_root.glob('*.json')):raise ValueError('overlap_reservation_not_owned')
+        return 0
     root=reservation_root.resolve(strict=True)
     if (not children or len({row['pid'] for row in children})!=len(children)
             or len({row['scene_key'] for row in children})!=len(children)):
@@ -79,6 +91,8 @@ def run_child(spec_path:Path)->int:
     deadline=time.monotonic()+spec['child_timeout_seconds']
     stages=[]
     try:
+        seal_document(Path(spec['startup_ready_root'])/(spec['scene_key']+'.json'),{
+            'pid':os.getpid(),'scene_key':spec['scene_key']})
         _wait(Path(spec['start_barrier']),deadline)
         registry=json.loads((roots[0]/'producer-registry.json').read_text())
         if not any(row=={'pid':os.getpid(),'scene_key':spec['scene_key']} for row in registry['producers']):

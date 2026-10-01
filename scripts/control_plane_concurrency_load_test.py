@@ -136,6 +136,7 @@ class AllocationSampler:
         self.errors: list[Exception] = []
         self.sample_count = self.peak_bytes = self.final_bytes = 0
         self.incomplete_scan_count = 0
+        self.samples: list[dict] = []
 
     def sample(self):
         # A production toolchain publication renames a whole temporary tree.
@@ -154,6 +155,9 @@ class AllocationSampler:
         self.final_bytes = value
         self.peak_bytes = max(self.peak_bytes, value)
         self.sample_count += 1
+        usage=os.statvfs(self.root)
+        self.samples.append({'observed_at_epoch':time.time(),'allocated_bytes':value,
+            'filesystem_free_bytes':usage.f_bavail*usage.f_frsize})
 
     def __enter__(self):
         self.sample()
