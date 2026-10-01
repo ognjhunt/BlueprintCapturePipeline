@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import json
 import math
 import os
 import re
@@ -122,7 +123,7 @@ class _Store:
         cap = generation.MAX_MANIFEST_BYTES if manifest else 32768
         name = identifier + ('.manifest.json' if manifest else '.json')
         raw, _ = self.files.read(self.root / name, cap=cap, protected=True, mode=0o600)
-        value = retained._document(raw, cap, _work_budget=self.files.budget)
+        value = self.files.document(raw, cap=cap)
         _require(type(value) is dict, 'record_invalid')
         return value, raw
 
@@ -149,6 +150,43 @@ class _HistoricalFiles(_BirthFiles):
         # remain conserved. Generic registered metadata retains its 2 MiB cap.
         self.raw_cap = 8 * generation.MAX_MANIFEST_BYTES
         self.metadata_records = {}
+        self.document_nodes = {}
+        self.document_bytes = 0
+
+    def document(self, raw, *, cap):
+        """Reuse only intrinsic validation of identical immutable JSON bytes.
+
+        Store.read always acquires fresh protected bytes before this call. Each
+        hit charges the complete allocation before creating a fresh graph;
+        current selection, owner, expiry and inode checks still run normally.
+        Neither a decoded object nor authorization survives a call.
+        """
+        self.budget.tick()
+        _require(type(raw) is bytes and len(raw) <= cap, 'record_invalid')
+        proof = self.document_nodes.get(raw)
+        if proof is not None:
+            nodes, encoded_bytes = proof
+            _require(encoded_bytes <= cap, 'record_invalid')
+            self.budget.charge('values', nodes)
+            value = json.loads(raw)
+            self.budget.tick()
+            return value
+        value = retained._document(raw, cap, _work_budget=self.budget)
+        before = self.budget.counts['values']
+        encoded_bytes = self.budget.measure(value, cap=cap)
+        nodes = self.budget.counts['values'] - before
+        if self.document_bytes + len(raw) <= self.raw_cap:
+            self.document_nodes[raw] = (nodes, encoded_bytes)
+            self.document_bytes += len(raw)
+        self.budget.tick()
+        return value
+
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            self.document_nodes.clear()
+            self.document_bytes = 0
 
     def read(self, path, *, cap, protected=False, mode=None):
         """Fresh bytes on the original retained FD, with unchanged full metadata.
