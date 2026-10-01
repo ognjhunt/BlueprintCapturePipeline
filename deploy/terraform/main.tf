@@ -35,7 +35,7 @@ terraform {
 # =============================================================================
 
 variable "deployment_scope" {
-  description = "full owns the legacy topology; remote_cpu bootstraps only the isolated worker project."
+  description = "full owns the legacy topology; remote_cpu bootstraps only the isolated worker and dispatch projects."
   type        = string
   default     = "full"
   validation {
@@ -2230,6 +2230,112 @@ variable "remote_cpu_project_id" {
   }
 }
 
+variable "remote_cpu_dispatch_project_id" {
+  type    = string
+  default = "blueprint-cpu-dispatch-8c1ca"
+  validation {
+    condition     = var.remote_cpu_dispatch_project_id == "blueprint-cpu-dispatch-8c1ca" && var.remote_cpu_dispatch_project_id != var.remote_cpu_project_id && var.remote_cpu_dispatch_project_id != var.project_id
+    error_message = "Dispatch uses the separate parentless blueprint-cpu-dispatch-8c1ca project."
+  }
+}
+
+resource "google_project" "remote_cpu_dispatch" {
+  count               = var.remote_cpu_workers_enabled ? 1 : 0
+  project_id          = var.remote_cpu_dispatch_project_id
+  name                = "Blueprint CPU Dispatch"
+  billing_account     = var.billing_account_id
+  auto_create_network = false
+  deletion_policy     = "ABANDON"
+  lifecycle {
+    prevent_destroy = true
+    postcondition {
+      condition     = coalesce(self.org_id, "none") == "none" && coalesce(self.folder_id, "none") == "none"
+      error_message = "Dispatch must have no organization or folder parent."
+    }
+  }
+}
+
+resource "google_project_service" "remote_cpu_dispatch_apis" {
+  for_each = var.remote_cpu_workers_enabled ? toset([
+    "iam.googleapis.com", "iamcredentials.googleapis.com", "cloudresourcemanager.googleapis.com",
+    "storage.googleapis.com", "billingbudgets.googleapis.com",
+  ]) : toset([])
+  project            = google_project.remote_cpu_dispatch[0].project_id
+  service            = each.key
+  disable_on_destroy = false
+}
+
+data "google_iam_policy" "remote_cpu_dispatch_project" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+  binding {
+    role    = "roles/owner"
+    members = ["user:ohstnhunt@gmail.com"]
+  }
+}
+
+resource "google_project_iam_policy" "remote_cpu_dispatch" {
+  count       = var.remote_cpu_workers_enabled ? 1 : 0
+  project     = google_project.remote_cpu_dispatch[0].project_id
+  policy_data = data.google_iam_policy.remote_cpu_dispatch_project[0].policy_data
+}
+
+resource "google_storage_bucket" "remote_cpu_dispatch_transport" {
+  count                       = var.remote_cpu_workers_enabled ? 1 : 0
+  project                     = google_project.remote_cpu_dispatch[0].project_id
+  name                        = "${var.remote_cpu_dispatch_project_id}-transport"
+  location                    = var.primary_region
+  labels                      = merge(local.common_labels, { cost-center = "remote-cpu-workers" })
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+  versioning { enabled = false }
+  soft_delete_policy { retention_duration_seconds = 0 }
+  lifecycle_rule {
+    condition { age = 1 }
+    action { type = "Delete" }
+  }
+  depends_on = [google_project_service.remote_cpu_dispatch_apis, google_project_iam_policy.remote_cpu_dispatch]
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_dispatch_transport_reader" {
+  count       = var.remote_cpu_workers_enabled ? 1 : 0
+  project     = google_project.remote_cpu_dispatch[0].project_id
+  role_id     = "remoteCpuTransportReader"
+  title       = "Blueprint Remote CPU Transport Reader"
+  permissions = ["storage.objects.get"]
+  depends_on  = [google_project_service.remote_cpu_dispatch_apis, google_project_iam_policy.remote_cpu_dispatch]
+}
+
+resource "google_project_iam_custom_role" "remote_cpu_dispatch_transport_writer" {
+  count       = var.remote_cpu_workers_enabled ? 1 : 0
+  project     = google_project.remote_cpu_dispatch[0].project_id
+  role_id     = "remoteCpuTransportWriter"
+  title       = "Blueprint Remote CPU Transport Writer"
+  permissions = ["storage.objects.create", "storage.objects.delete", "storage.objects.get"]
+  depends_on  = [google_project_service.remote_cpu_dispatch_apis, google_project_iam_policy.remote_cpu_dispatch]
+}
+
+data "google_iam_policy" "remote_cpu_dispatch_transport" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+  binding {
+    role    = google_project_iam_custom_role.remote_cpu_dispatch_transport_reader[0].name
+    members = ["serviceAccount:${google_service_account.remote_cpu_worker[0].email}"]
+  }
+  binding {
+    role    = google_project_iam_custom_role.remote_cpu_dispatch_transport_writer[0].name
+    members = ["serviceAccount:${google_service_account.remote_cpu_host_dispatcher[0].email}"]
+  }
+  binding {
+    role    = "roles/storage.legacyBucketOwner"
+    members = ["projectOwner:${var.remote_cpu_dispatch_project_id}"]
+  }
+}
+
+resource "google_storage_bucket_iam_policy" "remote_cpu_dispatch_transport" {
+  count       = var.remote_cpu_workers_enabled ? 1 : 0
+  bucket      = google_storage_bucket.remote_cpu_dispatch_transport[0].name
+  policy_data = data.google_iam_policy.remote_cpu_dispatch_transport[0].policy_data
+}
+
 resource "google_project" "remote_cpu" {
   count               = var.remote_cpu_workers_enabled ? 1 : 0
   project_id          = var.remote_cpu_project_id
@@ -2269,12 +2375,6 @@ data "google_iam_policy" "remote_cpu_project" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
   binding {
     role    = "roles/owner"
-    members = ["user:ohstnhunt@gmail.com"]
-  }
-  # Owner omits iam.denypolicies.create/update/delete. Terraform needs these
-  # permissions to install and refresh the lane's mandatory deny fences.
-  binding {
-    role    = "roles/iam.denyAdmin"
     members = ["user:ohstnhunt@gmail.com"]
   }
   binding {
@@ -2327,7 +2427,7 @@ resource "google_tags_tag_value" "remote_cpu_isolation" {
 resource "google_tags_tag_binding" "remote_cpu_identity" {
   for_each = var.remote_cpu_workers_enabled ? {
     worker     = google_service_account.remote_cpu_worker[0].unique_id
-    dispatcher = google_service_account.remote_cpu_dispatcher[0].unique_id
+    dispatcher = google_service_account.remote_cpu_quarantined_dispatcher[0].unique_id
   } : {}
   # The API canonicalizes this parent to the project number. Use its returned
   # identity so a provider refresh never proposes deleting the safety tag.
@@ -2349,71 +2449,10 @@ resource "google_tags_location_tag_binding" "remote_cpu_job" {
   tag_value = google_tags_tag_value.remote_cpu_isolation["job"].id
 }
 
-resource "google_iam_deny_policy" "remote_cpu_isolation" {
-  count        = var.remote_cpu_workers_enabled ? 1 : 0
-  parent       = urlencode("cloudresourcemanager.googleapis.com/projects/${google_project.remote_cpu[0].number}")
-  name         = "remote-cpu-isolation"
-  display_name = "Blueprint Remote CPU Identity and Transport Isolation"
-
-  # The managed Cloud Run agent may impersonate the worker, never the host's
-  # dispatcher. Tags cannot be removed by either SA or the managed agent:
-  # none has tag administration in this isolated project.
-  rules {
-    description = "Only the founder can impersonate or mutate the dispatcher identity."
-    deny_rule {
-      denied_principals    = ["principalSet://goog/public:all"]
-      exception_principals = ["principal://goog/subject/ohstnhunt@gmail.com"]
-      denied_permissions = [
-        "iam.googleapis.com/serviceAccounts.actAs",
-        "iam.googleapis.com/serviceAccounts.getAccessToken",
-        "iam.googleapis.com/serviceAccounts.getOpenIdToken",
-        "iam.googleapis.com/serviceAccounts.signBlob",
-        "iam.googleapis.com/serviceAccounts.signJwt",
-        "iam.googleapis.com/serviceAccounts.implicitDelegation",
-        "iam.googleapis.com/serviceAccounts.setIamPolicy",
-        "iam.googleapis.com/serviceAccounts.delete",
-        "iam.googleapis.com/serviceAccounts.disable",
-        "iam.googleapis.com/serviceAccounts.enable",
-        "iam.googleapis.com/serviceAccounts.update",
-        "iam.googleapis.com/serviceAccounts.undelete",
-        "iam.googleapis.com/serviceAccountKeys.create",
-      ]
-      denial_condition {
-        expression = "resource.matchTagId('${google_tags_tag_key.remote_cpu_isolation[0].id}', '${google_tags_tag_value.remote_cpu_isolation["dispatcher"].id}')"
-      }
-    }
-  }
-  rules {
-    description = "Transport objects are readable only by the two lane identities and founder."
-    deny_rule {
-      denied_principals = ["principalSet://goog/public:all"]
-      exception_principals = [
-        "principal://goog/subject/ohstnhunt@gmail.com",
-        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.remote_cpu_worker[0].unique_id}",
-        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.remote_cpu_dispatcher[0].unique_id}",
-      ]
-      denied_permissions = ["storage.googleapis.com/objects.get"]
-      denial_condition {
-        expression = "resource.matchTagId('${google_tags_tag_key.remote_cpu_isolation[0].id}', '${google_tags_tag_value.remote_cpu_isolation["transport"].id}')"
-      }
-    }
-  }
-  rules {
-    description = "Only the dispatcher and founder can write transport objects."
-    deny_rule {
-      denied_principals = ["principalSet://goog/public:all"]
-      exception_principals = [
-        "principal://goog/subject/ohstnhunt@gmail.com",
-        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.remote_cpu_dispatcher[0].unique_id}",
-      ]
-      denied_permissions = ["storage.googleapis.com/objects.create", "storage.googleapis.com/objects.delete"]
-      denial_condition {
-        expression = "resource.matchTagId('${google_tags_tag_key.remote_cpu_isolation[0].id}', '${google_tags_tag_value.remote_cpu_isolation["transport"].id}')"
-      }
-    }
-  }
-  depends_on = [google_tags_tag_binding.remote_cpu_identity, google_tags_location_tag_binding.remote_cpu_transport]
-}
+# The parentless account cannot grant Deny Admin (organization-only).
+# Dispatch credentials and transport therefore live in another parentless
+# project. The trusted Run agent may impersonate Worker to READ inputs; neither
+# identity can mutate transport or run jobs. Retained tags are inventory only.
 
 # Each attempt's transport (its descriptor and presigned links) is one object
 # written with if_generation_match=0 and read at that generation. The host
@@ -2475,7 +2514,13 @@ resource "google_project_iam_custom_role" "remote_cpu_transport_reader" {
 # bound only on the stage jobs and the transport bucket. Its key is created by
 # the owner and loaded into that unit alone with LoadCredential=; Terraform
 # never manages a service account key.
-resource "google_service_account" "remote_cpu_dispatcher" {
+# Preserve the first bootstrap's keyless identity, with no effective grants.
+moved {
+  from = google_service_account.remote_cpu_dispatcher[0]
+  to   = google_service_account.remote_cpu_quarantined_dispatcher[0]
+}
+
+resource "google_service_account" "remote_cpu_quarantined_dispatcher" {
   project = google_project.remote_cpu[0].project_id
   count   = var.remote_cpu_workers_enabled ? 1 : 0
 
@@ -2483,6 +2528,18 @@ resource "google_service_account" "remote_cpu_dispatcher" {
   display_name = "Blueprint Remote CPU Dispatcher"
   description  = "Runs remote CPU worker jobs with attempt overrides and cancels their executions"
   depends_on   = [google_project_service.remote_cpu_apis, google_project_iam_policy.remote_cpu]
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_service_account" "remote_cpu_host_dispatcher" {
+  project      = google_project.remote_cpu_dispatch[0].project_id
+  count        = var.remote_cpu_workers_enabled ? 1 : 0
+  account_id   = "remote-cpu-dispatcher"
+  display_name = "Blueprint Remote CPU Host Dispatcher"
+  description  = "Job-scoped dispatch and transport writes; no runtime project credentials"
+  depends_on   = [google_project_service.remote_cpu_dispatch_apis, google_project_iam_policy.remote_cpu_dispatch]
 }
 
 resource "google_project_iam_custom_role" "remote_cpu_dispatcher" {
@@ -2524,19 +2581,9 @@ resource "google_project_iam_custom_role" "remote_cpu_transport_writer" {
 # members would leave those in place, so any of them could read or replace
 # live presigned links. Here only the worker reads and only the dispatcher
 # writes; project Owners keep bucket management, which reads no object.
+# Quarantine the original bucket. It is retained, never destroyed or emptied.
 data "google_iam_policy" "remote_cpu_transport" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
-
-  binding {
-    role    = google_project_iam_custom_role.remote_cpu_transport_reader[0].name
-    members = ["serviceAccount:${google_service_account.remote_cpu_worker[0].email}"]
-  }
-
-  binding {
-    role    = google_project_iam_custom_role.remote_cpu_transport_writer[0].name
-    members = ["serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"]
-  }
-
   binding {
     role    = "roles/storage.legacyBucketOwner"
     members = ["projectOwner:${var.remote_cpu_project_id}"]
@@ -2618,19 +2665,26 @@ resource "google_cloud_run_v2_job" "remote_cpu_worker" {
   depends_on = [
     google_project_service.remote_cpu_apis["run.googleapis.com"],
     google_project_iam_policy.remote_cpu,
-    google_iam_deny_policy.remote_cpu_isolation,
+    google_project_iam_policy.remote_cpu_dispatch,
+    google_storage_bucket_iam_policy.remote_cpu_dispatch_transport,
     google_artifact_registry_repository_iam_member.remote_cpu_image_reader,
   ]
 }
 
-resource "google_cloud_run_v2_job_iam_member" "remote_cpu_dispatcher" {
-  for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
+data "google_iam_policy" "remote_cpu_dispatch_job" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+  binding {
+    role    = google_project_iam_custom_role.remote_cpu_dispatcher[0].name
+    members = ["serviceAccount:${google_service_account.remote_cpu_host_dispatcher[0].email}"]
+  }
+}
 
-  project  = google_project.remote_cpu[0].project_id
-  location = var.primary_region
-  name     = google_cloud_run_v2_job.remote_cpu_worker[each.key].name
-  role     = google_project_iam_custom_role.remote_cpu_dispatcher[0].name
-  member   = "serviceAccount:${google_service_account.remote_cpu_dispatcher[0].email}"
+resource "google_cloud_run_v2_job_iam_policy" "remote_cpu_dispatcher" {
+  for_each    = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
+  project     = google_project.remote_cpu[0].project_id
+  location    = var.primary_region
+  name        = google_cloud_run_v2_job.remote_cpu_worker[each.key].name
+  policy_data = data.google_iam_policy.remote_cpu_dispatch_job[0].policy_data
 }
 
 # Every failed remote CPU task attempt alerts: the jobs never retry, so no
@@ -2685,10 +2739,8 @@ resource "google_billing_budget" "remote_cpu_workers" {
   display_name    = "Blueprint Remote CPU Workers Budget"
 
   budget_filter {
-    projects = ["projects/${google_project.remote_cpu[0].number}"]
-    labels = {
-      cost-center = "remote-cpu-workers"
-    }
+    # Count all costs, including unlabeled transport and API operations.
+    projects = ["projects/${google_project.remote_cpu[0].number}", "projects/${google_project.remote_cpu_dispatch[0].number}"]
   }
 
   amount {
@@ -2726,12 +2778,16 @@ resource "google_billing_budget" "remote_cpu_workers" {
 output "remote_cpu_bootstrap_scope" {
   description = "A scoped bootstrap cannot claim adoption or zero drift of the unrelated legacy topology."
   value = var.deployment_scope == "remote_cpu" ? {
-    schema_version = "remote_cpu_bootstrap_scope.v1"
-    scope          = "remote_cpu"
-    project        = var.remote_cpu_project_id
-    source_project = var.project_id
-    image          = var.docker_image
-    claim_boundary = "Isolated CPU workers only; legacy topology adoption is still required before a full apply."
+    schema_version   = "remote_cpu_bootstrap_scope.v1"
+    scope            = "remote_cpu"
+    project          = var.remote_cpu_project_id
+    dispatch_project = var.remote_cpu_dispatch_project_id
+    transport_bucket = google_storage_bucket.remote_cpu_dispatch_transport[0].name
+    dispatcher       = google_service_account.remote_cpu_host_dispatcher[0].email
+    trust_boundary   = "The managed runtime agent may read inputs as Worker; it cannot mutate transport, impersonate Dispatcher or execute jobs."
+    source_project   = var.project_id
+    image            = var.docker_image
+    claim_boundary   = "Isolated CPU workers only; legacy topology adoption is still required before a full apply."
   } : null
 }
 
