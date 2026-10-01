@@ -13,6 +13,31 @@ async function fixture() {
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
 
+test('Perplexity row overflow is refused before a durable run or publication claim', async () => {
+  const {db, store} = await fixture();
+  await assert.rejects(store.put({...row(), search_provider:'perplexity-fast-v1', payload:'x'.repeat(7000000)}), /record_resource_ceiling/);
+  assert.equal(db.values.has(`${ROOT}/runs/${row().date}`), false);
+});
+
+test('fresh recurring budget gates both model create and QA claims', async () => {
+  const {db, store} = await fixture();
+  const config = {search_provider:'perplexity-fast-v1', soft_target_usd:2, recurring_budget_authority_reference:'owner-test-budget'};
+  Object.assign(db.values.get(ROOT), {config, workflow:{enabled:true, qa_authority_reference:'owner-qa', publication_authority_reference:'owner-publication'}});
+  const value = {...row(), ...config}; await store.put(value);
+  db.values.get(ROOT).config = {...config, soft_target_usd:3};
+  await assert.rejects(store.createCheck(value.date,value.metadata), /budget_authority_changed/);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).create_attempt_claimed,false);
+  db.values.get(ROOT).config = config;
+  await store.createCheck(value.date,value.metadata);
+  const deadline = Date.now()+60000, digest = 'a'.repeat(64);
+  await store.put({...value,state:'awaiting_review',qa:{state:'qa_input_unresolved',request_digest:digest,deadline_ms:deadline}});
+  db.values.get(ROOT).config = {...config,recurring_budget_authority_reference:'different-authority'};
+  await assert.rejects(store.qaCheck(value.date,digest,deadline), /budget_authority_changed/);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).qa_request_claimed,false);
+  db.values.get(ROOT).config = config;
+  await store.qaCheck(value.date,digest,deadline);
+});
+
 test('overlap refuses and late release cannot clear the successor lease', async () => {
   const {db, store, time} = await fixture();
   const second = new Store(db, () => time.now, 'second');
