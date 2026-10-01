@@ -150,6 +150,16 @@ def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_pa
         except ValueError as exc:
             raise AssertionError(getattr(exc, "errors", str(exc))) from exc
     assert compiled["results"][0]["status"] == "compiled_for_production_launch", json.dumps(compiled, indent=2)
+    from scripts.control_plane_concurrency_activation import advance_fixture_native_activation
+    native = advance_fixture_native_activation(intake=first, episode=episode,
+        preparation=ready, compiled=compiled["results"][0], configuration_activation=activated,
+        object_root=objects, output_root=tmp_path / "native-activation",
+        reservation_root=tmp_path / "reservations")
+    assert native["staged"]["status"] == "construction_activation_queued"
+    assert native["worker"]["results"][0]["status"] == "profile_authority_materialized_no_execution", native
+    assert native["worker"]["results"][0]["preparation_result_digest"] == ready["run"]["results"][0]["result_digest"]
+    assert native["preparer"]["status"] == "prepared"
+    assert native["preparer"]["provider_allocation_performed"] is False
     from scripts.control_plane_concurrency_policy import prepare_policy_fixture, ingest_policy_fixture, deliver_policy_fixture
     from scripts import control_plane_concurrency_policy as policy
     monkeypatch.setattr(policy, "reserve_control_plane_disk", measured_test_reservation)
