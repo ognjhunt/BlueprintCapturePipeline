@@ -138,7 +138,9 @@ class AllocationSampler:
         self.incomplete_scan_count = 0
 
     def sample(self):
-        for attempt in range(3):
+        # A production toolchain publication renames a whole temporary tree.
+        # Retry for at most 380ms and retain the incomplete-scan count.
+        for attempt in range(20):
             try:
                 value = allocated_tree_bytes(self.root)
                 break
@@ -146,9 +148,9 @@ class AllocationSampler:
                 if str(exc) != "allocation_measurement_incomplete":
                     raise
                 self.incomplete_scan_count += 1
-                if attempt == 2:
+                if attempt == 19:
                     raise
-                time.sleep(0.01)
+                time.sleep(0.02)
         self.final_bytes = value
         self.peak_bytes = max(self.peak_bytes, value)
         self.sample_count += 1
