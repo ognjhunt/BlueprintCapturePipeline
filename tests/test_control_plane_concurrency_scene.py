@@ -47,6 +47,18 @@ def test_intake_fixture_cannot_replace_the_actual_checkout_validator(tmp_path):
 
 
 @pytest.mark.slow
+def test_scene_keys_produce_distinct_immutable_scene_identity(tmp_path):
+    source = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    objects = tmp_path / "objects"
+    objects.mkdir()
+    rows = [advance_fixture_intake(host_root=tmp_path / key, object_root=objects,
+                                  source_commit=source, scene_key=key)
+            for key in ("scene-1", "scene-2")]
+    assert len({row["intent"]["request"]["source"]["content_digest"] for row in rows}) == 2
+    assert len({json.loads(row["request_path"].read_text())["scene"]["identity"]["id"] for row in rows}) == 2
+
+
+@pytest.mark.slow
 def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_path, monkeypatch):
     from blueprint_pipeline import task_evaluation_launch_preparation_worker as worker
     from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
