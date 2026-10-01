@@ -148,6 +148,39 @@ class _HistoricalFiles(_BirthFiles):
         # The same actual counters, global 20 MiB cap and five-second deadline
         # remain conserved. Generic registered metadata retains its 2 MiB cap.
         self.raw_cap = 8 * generation.MAX_MANIFEST_BYTES
+        self.metadata_records = {}
+
+    def read(self, path, *, cap, protected=False, mode=None):
+        """Fresh bytes on the original retained FD, with unchanged full metadata.
+
+        Repeated authority/head checks must not consume another live descriptor
+        for the same inode. Raw bytes and observation entries are still charged;
+        no decoded value or authorization is cached here.
+        """
+        parent, name = self.parent(path, protected=protected)
+        record = self.metadata_records.get((parent, name))
+        if record is None:
+            raw, record = super().read(path, cap=cap, protected=protected, mode=mode)
+            self.metadata_records[(parent, name)] = record
+            return raw, record
+        self.location(parent)
+        self.verify_record(record)
+        if protected:
+            owners._protected(record.info, mode=mode)
+        owners._require(0 <= record.info.st_size <= cap, 'owner_consent_resource_exhausted')
+        os.lseek(record.fd, 0, os.SEEK_SET)
+        raw = self.read_bytes(record.fd, cap)
+        self.verify_record(record)
+        owners._require(len(raw) == record.info.st_size, 'owner_consent_record_changed')
+        self.budget.charge('entries')
+        self.location(parent)
+        return raw, record
+
+    def close(self, fd):
+        super().close(fd)
+        if fd not in self.owned:
+            for key in [key for key, record in self.metadata_records.items() if record.fd == fd]:
+                del self.metadata_records[key]
 
 
 @contextmanager
