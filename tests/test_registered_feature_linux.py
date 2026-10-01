@@ -1093,12 +1093,34 @@ def _run_shipped_gc_sandbox(value, action, clock, pins, *, realtime=False, invoc
         subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=True)
 
 
+def _retain_native_limit(method, failures):
+    """Observe an actual failed native method without changing its refusal."""
+    def observed(files, *args, **kwargs):
+        try:
+            return method(files, *args, **kwargs)
+        except ValueError as error:
+            if str(error) == 'owner_target_resource_exhausted' and len(failures) < 8:
+                trace, frames = error.__traceback__, []
+                while trace is not None and len(frames) < 16:
+                    frames.append(dict(function=trace.tb_frame.f_code.co_name, line=trace.tb_lineno))
+                    trace = trace.tb_next
+                failures.append(dict(owner_class=type(files).__name__, method=method.__name__,
+                    code=str(error), frames=frames, owned=len(files.owned), probes=len(files.probe_owned),
+                    raw_cap=files.raw_cap, metadata_bytes=getattr(files, 'metadata_bytes', None),
+                    budget_counts=dict(files.budget.counts), budget_limits=dict(files.budget.limits),
+                    budget_last=files.budget.last, budget_deadline=files.budget.deadline))
+            raise
+    return observed
+
+
 def _gc_sandbox_main(selected):
     """Root fixture entry: real GC, fake archive service, actual kernel sandbox."""
     from blueprint_pipeline import control_plane_lane_owner_consents as owners
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
     from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
     from tests.test_registered_experiment_offload import Cloud
+    from blueprint_pipeline.control_plane_lane_owner_target_io import _TargetFiles
+    from blueprint_pipeline.control_plane_lane_disk_diagnostic_references import _ReferenceFiles
 
     selected = Path(selected)
     assert os.geteuid() == 0 and selected.name == 'selected.json'
@@ -1125,6 +1147,12 @@ def _gc_sandbox_main(selected):
         raise AssertionError('shipped ProtectSystem=strict failed to fence unlisted writes')
     cloud = Cloud()
     archive._client = lambda *args: (cloud, 'development-only')
+    native_limit_failures = []
+    # Metadata-only observers execute and rethrow the actual original methods.
+    # No process view, descriptor, clock or allowance is replaced here.
+    _TargetFiles.slot = _retain_native_limit(_TargetFiles.slot, native_limit_failures)
+    _TargetFiles.read_bytes = _retain_native_limit(_TargetFiles.read_bytes, native_limit_failures)
+    _ReferenceFiles.read_bytes = _retain_native_limit(_ReferenceFiles.read_bytes, native_limit_failures)
     report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
         pins_root=Path(selection['pins']), apply=True, ack=RUN_ACK,
         lane_scratch_roots=(settings['lane_scratch_work_root'], settings['lane_scratch_inputs_root']),
@@ -1143,6 +1171,7 @@ def _gc_sandbox_main(selected):
         assert chosen['removed_logical_bytes'] == chosen['removed_allocated_bytes'] == 0
         assert not cloud.objects and not cloud.bodies
     result = dict(report={'registered_experiments': report['registered_experiments']},
+        native_limit_failures=native_limit_failures,
         objects=[dict(key=key, payload=base64.b64encode(raw).decode('ascii'))
                  for key, raw in cloud.objects.items()], object_metadata=cloud.metadata,
         all_native_responses_closed=True, actual_shipped_sandbox=True,

@@ -238,7 +238,7 @@ def run(root):
         _held_fd_keeps(value, action, pins, report, account)
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=1)
         row = next(row for row in result['report']['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
-        assert row['decision'] == 'retired' and row['receipt'] and row['removed_logical_bytes'] == len(before), row
+        assert row['decision'] == 'retired' and row['receipt'] and row['removed_logical_bytes'] == len(before), (row, result.get('native_limit_failures'))
         assert target.stat().st_ino == original_inode
         assert {p.name for p in target.iterdir()} == {'.lane-scratch.v1.json', '.registered-experiment.v1.json'}
         repeated = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=2)

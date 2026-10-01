@@ -31,7 +31,34 @@ class _ReferenceFiles(_BirthFiles):
     def __init__(self, budget, action_files):
         self.action_files = action_files
         self.selected_reads = {}
+        self.metadata_bytes = 0
         super().__init__(budget)
+
+    def read_bytes(self, fd, cap):
+        # Kernel and protected metadata observations share the original B.
+        # Its kernel bytes must not consume this owner's separate two-MiB
+        # metadata ceiling; every metadata reread still charges both ceilings.
+        pieces, size = [], 0
+        while True:
+            self.budget.tick()
+            self.proof(fd)
+            remaining = min(self.raw_cap - self.metadata_bytes,
+                            self.budget.limits['raw_bytes'] - self.budget.counts['raw_bytes'])
+            amount = min(65536, cap + 1 - size, remaining)
+            _require(amount > 0, 'owner_target_resource_exhausted')
+            self.budget.available('raw_bytes', amount)
+            part = os.read(fd, amount)
+            self.metadata_bytes += len(part)
+            self.budget.charge('raw_bytes', len(part))
+            self.budget.tick()
+            self.proof(fd)
+            size += len(part)
+            _require(size <= cap, 'owner_target_resource_exhausted')
+            if not part:
+                break
+            pieces.append(part)
+        self.budget.tick()
+        return b''.join(pieces)
 
     def read(self, path, *, cap, protected=False, mode=None):
         key = os.fspath(path)
