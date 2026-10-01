@@ -15,18 +15,22 @@ from scripts.control_plane_concurrency_load_test import allocated_tree_bytes, bu
 from scripts.control_plane_concurrency_protocol import seal_document
 
 
+class HarnessDeadlineExceeded(BaseException):
+    """Only the harness supervisor may catch this cancellation, not production phases."""
+
+
 @contextmanager
 def whole_run_deadline(deadline):
     """A main-thread POSIX watchdog covers synchronous building and retirement too."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise TimeoutError("global_timeout")
+        raise HarnessDeadlineExceeded("global_timeout")
     if signal.getitimer(signal.ITIMER_REAL) != (0, 0):
         raise ValueError("harness_existing_alarm_not_owned")
     previous = signal.getsignal(signal.SIGALRM)
 
     def expired(signum, frame):
-        raise TimeoutError("global_timeout")
+        raise HarnessDeadlineExceeded("global_timeout")
 
     signal.signal(signal.SIGALRM, expired)
     try:
@@ -62,7 +66,7 @@ def failed_child_scenes(children, blockers):
             ):
                 raise ValueError("child_receipt_shape_invalid")
             scenes.append(value)
-        except TimeoutError:
+        except HarnessDeadlineExceeded:
             raise
         except Exception as exc:
             blockers.extend(_error(exc))
@@ -95,11 +99,11 @@ def finish_report(
             for name, root in roots.items():
                 try:
                     measurements[name] = measure(root)
-                except TimeoutError:
+                except HarnessDeadlineExceeded:
                     raise
                 except Exception as exc:
                     blockers.extend(_error(exc))
-    except Exception as exc:
+    except (Exception, HarnessDeadlineExceeded) as exc:
         blockers.extend(_error(exc))
     arguments = dict(
         source_commit=source,
@@ -116,7 +120,7 @@ def finish_report(
     )
     try:
         summary = build_summary(**arguments)
-    except Exception as exc:
+    except (Exception, HarnessDeadlineExceeded) as exc:
         blockers.extend(_error(exc))
         # Invalid stage metrics must fail while retaining the original stage receipts.
         summary = build_summary(**{**arguments, "scenes": []})

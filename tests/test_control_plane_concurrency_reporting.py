@@ -10,11 +10,14 @@ import pytest
 
 def test_whole_run_deadline_interrupts_synchronous_work_and_restores_alarm():
     import signal
-    from scripts.control_plane_concurrency_reporting import whole_run_deadline
+    from scripts.control_plane_concurrency_reporting import (
+        HarnessDeadlineExceeded,
+        whole_run_deadline,
+    )
 
     previous = signal.getsignal(signal.SIGALRM)
     started = time.monotonic()
-    with pytest.raises(TimeoutError, match="global_timeout"):
+    with pytest.raises(HarnessDeadlineExceeded, match="global_timeout"):
         with whole_run_deadline(time.monotonic() + 0.05):
             time.sleep(2)
     assert time.monotonic() - started < 1
@@ -85,3 +88,18 @@ def test_retained_failed_child_receipt_must_have_original_digest(tmp_path):
     blockers = []
     assert failed_child_scenes([{"result_path": child, "scene_key": "one"}], blockers) == []
     assert any("child_receipt_changed" in value for value in blockers)
+
+
+def test_original_gc_phase_isolation_cannot_swallow_harness_watchdog():
+    from blueprint_pipeline.control_plane_storage_gc import _isolated
+    from scripts.control_plane_concurrency_reporting import (
+        HarnessDeadlineExceeded,
+        whole_run_deadline,
+    )
+
+    later_phases = []
+    with pytest.raises(HarnessDeadlineExceeded, match="global_timeout"):
+        with whole_run_deadline(time.monotonic() + 0.05):
+            _isolated({}, "slow", lambda: time.sleep(2))
+            later_phases.append("must_not_run")
+    assert later_phases == []

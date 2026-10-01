@@ -22,7 +22,11 @@ from scripts.control_plane_concurrency_load_test import (
     create_run_roots,
 )
 from scripts.control_plane_concurrency_protocol import observe_overlap, seal_document
-from scripts.control_plane_concurrency_reporting import finish_report, whole_run_deadline
+from scripts.control_plane_concurrency_reporting import (
+    HarnessDeadlineExceeded,
+    finish_report,
+    whole_run_deadline,
+)
 
 
 def require_kernel_confinement(*, process_root=Path("/proc")):
@@ -373,7 +377,7 @@ def run_benchmark(args):
                 residual_pins=retirement["residual_pins"],
                 residual_leases=retirement["residual_leases"],
             )
-    except Exception as exc:
+    except (Exception, HarnessDeadlineExceeded) as exc:
         blockers = getattr(exc, "errors", None) or [type(exc).__name__ + ":" + str(exc)]
     finally:
         if watchdog_started:
@@ -383,7 +387,7 @@ def run_benchmark(args):
             try:
                 with whole_run_deadline(time.monotonic() + 5):
                     sampler.__exit__(None, None, None)
-            except Exception as exc:
+            except (Exception, HarnessDeadlineExceeded) as exc:
                 blockers.append(type(exc).__name__ + ":" + str(exc))
     return finish_report(
         args=args,
