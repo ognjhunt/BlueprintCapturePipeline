@@ -296,4 +296,3 @@ def scene_participant(*path_arguments):
         admitted.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'
         return admitted
     return decorate
-
