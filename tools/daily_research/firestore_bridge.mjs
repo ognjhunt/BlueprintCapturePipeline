@@ -139,6 +139,8 @@ export class Store {
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
         qa_request_digest: row.qa?.request_digest || null, qa_state: row.qa?.state || null,
         qa_deadline_ms: row.qa?.deadline_ms || null,
+        search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
+        recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
         publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
       this.projectWorkItem(tx, row, hash);
@@ -214,6 +216,7 @@ export class Store {
       const snap = await tx.get(this.db.doc(`${ROOT}/runs/${day}`));
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
+      this.budgetGate(control, snap.data());
       tx.set(this.db.doc(`${ROOT}/runs/${day}`), {create_attempt_claimed: true}, {merge: true});
       return true;
     });
@@ -233,6 +236,16 @@ export class Store {
     if (control?.enabled !== true || workflow?.enabled !== true
         || ['qa_authority_reference','publication_authority_reference'].some(k=>typeof workflow[k]!=='string'
           || !workflow[k].trim() || workflow[k].startsWith('PENDING'))) refuse('workflow_authority_missing');
+  }
+  budgetGate(control, row) {
+    if (row.search_provider !== 'perplexity-fast-v1') return;
+    const authority = row.recurring_budget_authority_reference, target = row.soft_target_usd;
+    if (typeof authority !== 'string' || !authority.trim() || authority.trim().startsWith('PENDING')
+        || typeof target !== 'number' || !Number.isFinite(target) || target <= 0)
+      refuse('research_tool_budget_authority_not_pinned');
+    if (control.config?.search_provider !== row.search_provider || control.config?.soft_target_usd !== target
+        || control.config?.recurring_budget_authority_reference !== authority)
+      refuse('research_tool_budget_authority_changed');
   }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
@@ -257,6 +270,7 @@ export class Store {
           || run.qa_request_digest!==requestDigest || run.qa_request_claimed
           || !Number.isSafeInteger(deadlineMS) || run.qa_deadline_ms!==deadlineMS
           || this.clock()>=deadlineMS) refuse('agent_qa_input_not_admitted');
+      this.budgetGate(control, run);
       tx.set(ref,{qa_request_claimed:true},{merge:true});return true;
     });
   }

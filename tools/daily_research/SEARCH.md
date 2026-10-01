@@ -5,6 +5,9 @@ The selected production default is `search_provider=perplexity-fast-v1` with
 `perplexity-daily.config.example.json`. This is an agent-owned discovery loop:
 the existing GPT6.1Sol researcher chooses queries, contradictions, source reads
 and follow-ups across a defined task/industry/region hypothesis scope.
+Recurring activation is disabled and its soft target is pending an explicit owner
+budget decision (`soft_target_usd=null`, pending budget-authority reference).
+One-time test authorization is separate from recurring authorization.
 There is no count-based stopping rule or outer-runner prospect/query shortlist.
 Ten findings do not mean done; retain fifteen or fifty defensible findings when
 the evidence supports them. Coverage and diminishing returns govern completion.
@@ -28,9 +31,8 @@ robot deployments never count toward the target. Incomplete coverage is honest.
 
 Preflight checks secret presence without exposing its value and refuses before
 session creation if it is absent. Presence does not prove provider access.
-Production `PERPLEXITY_API_KEY` presence was verified on October 1 at 16:51:50 UTC
-after the owner privately saved it. That proves presence only, not a successful
-provider request or this new profile's activation. Never copy a comparison-executor key,
+Binding presence alone does not prove a successful provider request or profile
+activation. Never copy a comparison-executor key,
 create a credential, alter grants, or mount a key in the hosted environment.
 Any new persistent credential binding needs the owner's separate approval.
 
@@ -100,7 +102,10 @@ unresolved promising branches and evidence-based or interrupted stopping reason.
 No exhaustive global-market claim is supported. Standard search costs
 are never substituted: Fast is estimated at $0.001 per successful request, with
 attempts counted conservatively and unsettled billing explicit. Model, search
-and hosted-environment target remains $1 total, soft; no hard total cap is claimed.
+and hosted-environment costs are additional. The legacy native profile retains
+its historical $1 soft planning target. The new profile requires a chosen positive
+soft target and non-pending recurring-budget authority before activation; changed
+budget authority fences further tool calls. No hard total-dollar cap is claimed.
 
 Sources: [Perplexity Fast Search](https://docs.perplexity.ai/docs/search/fast-search),
 [Search request/response schema](https://docs.perplexity.ai/api-reference/search-post),

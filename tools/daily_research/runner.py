@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import signal
@@ -119,7 +120,8 @@ def configuration(value):
     allowed = {"enabled", "first_date", "approval_reference", "scheduler_authority_reference",
                "crm_snapshot", "slack_channel_id", "max_runtime_seconds", "soft_target_usd",
                "research_contract_version", "knowledge_snapshot", "knowledge_filters", "knowledge_refresh_policy",
-               "expected_agent_instructions_sha256", "discovery_profile", "qa_reserved_seconds", "search_provider"}
+               "expected_agent_instructions_sha256", "discovery_profile", "qa_reserved_seconds", "search_provider",
+               "recurring_budget_authority_reference"}
     if set(value) - allowed or type(value.get("enabled")) is not bool:
         raise Refusal("config_invalid")
     date.fromisoformat(value["first_date"])
@@ -128,8 +130,20 @@ def configuration(value):
         raise Refusal("discovery_profile_invalid")
     if value.get("search_provider") not in (None, search.PROFILE) or value.get("search_provider") and not adaptive:
         raise Refusal("search_profile_invalid")
+    selected_search = value.get("search_provider") == search.PROFILE
+    target = value.get("soft_target_usd")
+    if selected_search:
+        valid_target = type(target) in {int, float} and 0 < target <= 1_000_000 and math.isfinite(target)
+        reference = value.get("recurring_budget_authority_reference")
+        if (not isinstance(reference, str) or not reference.strip()
+                or value["enabled"] and (not valid_target or reference.strip().startswith("PENDING"))):
+            raise Refusal("recurring_research_budget_not_approved")
+        if target is not None and not valid_target:
+            raise Refusal("approved_envelope_mismatch")
+    elif "recurring_budget_authority_reference" in value:
+        raise Refusal("recurring_budget_requires_selected_search_profile")
     runtime = value.get("max_runtime_seconds", 180)
-    if (type(value.get("soft_target_usd")) not in {int, float} or value["soft_target_usd"] != 1
+    if (not selected_search and (type(target) not in {int, float} or target != 1)
             or type(runtime) is not int or not 30 <= runtime <= (1800 if adaptive else 180)):
         raise Refusal("approved_envelope_mismatch")
     if adaptive and (value.get("research_contract_version") != 3 or type(value.get("qa_reserved_seconds")) is not int
@@ -379,6 +393,11 @@ class Provider:
         # Disk runner already owns its process lock; Render adds a fresh fence.
         if row.get("search_provider") != search.PROFILE:
             raise Refusal("research_tool_profile_not_admitted")
+        target = row.get("soft_target_usd")
+        reference = row.get("recurring_budget_authority_reference")
+        if (type(target) not in {int, float} or not 0 < target <= 1_000_000 or not math.isfinite(target)
+                or not isinstance(reference, str) or not reference.strip() or reference.strip().startswith("PENDING")):
+            raise Refusal("research_tool_budget_authority_not_pinned")
 
     def tool_result(self, session_id, event, key):
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
@@ -631,6 +650,7 @@ class Runner:
                     "environment_template_id": TEMPLATE, "network": {"access": "disabled"},
                     "capability_directories": [capabilities.ROOT], "files": capabilities.inline_files()},
                     "input": prompt(day, context, version, adaptive=self.config.get("discovery_profile") == "adaptive-sites-v1",
+                                    target_usd=self.config["soft_target_usd"],
                                     search_provider=self.config.get("search_provider")), "stream": False,
                     "metadata": {"purpose": "daily_blueprint_sites_research", "run_key": "blueprint-researcher:" + day}}
             if self.config.get("search_provider") == search.PROFILE:
@@ -640,7 +660,7 @@ class Runner:
                    "run_key": body["metadata"]["run_key"], "metadata": body["metadata"],
                    "preflight": checked, "crm_snapshot": snapshot, "create_payload": body, "session_id": None, "turn_id": None,
                    "environment_id": None, "cleanup_required": True, "cancel_attempted": False,
-                   "soft_target_usd": 1, "budget_is_hard_cap": False, "usage": None,
+                   "soft_target_usd": self.config["soft_target_usd"], "budget_is_hard_cap": False, "usage": None,
                    "cost_status": "unknown_pending_billing_reconciliation", "delivery": {}}
             if version in {2, 3}:
                 row.update(research_contract_version=version, knowledge_context=context,
@@ -654,6 +674,7 @@ class Runner:
                 row["research_runtime_seconds"] -= self.config["qa_reserved_seconds"]
             if self.config.get("search_provider") == search.PROFILE:
                 row["search_provider"] = search.PROFILE
+                row["recurring_budget_authority_reference"] = self.config["recurring_budget_authority_reference"]
                 if len(canonical(row).encode()) > search.MAX_INTENT:
                     raise Refusal("research_profile_intent_resource_ceiling")
             self.ledger.put(row)  # Durable intent BEFORE the only create attempt.

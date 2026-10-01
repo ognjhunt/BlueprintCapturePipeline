@@ -48,6 +48,11 @@ cleanup is approved and verified.
 
 ## Separately authorized Oct 1 test preparation
 
+The prepared same-session restriction is an implementation choice, not an
+Agents API limit. A Perplexity-tool test needs its own reviewed execution
+procedure and approved ceiling without resetting the failed daily intent.
+One-time test authority is separate from recurring authorization.
+
 `adaptive-test.config.example.json` records the one-time **$25 total ceiling**,
 an early **$8 model-token estimate stop**, a 30-minute watchdog/ten-minute QA
 reservation and the exact existing Oct 1 session. Its enabled flag is false.

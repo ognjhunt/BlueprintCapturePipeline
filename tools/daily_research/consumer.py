@@ -74,6 +74,8 @@ def qa_text(row, snapshot, crm_digest):
                                   "Explain actual defined scope, source coverage, rejected/duplicate findings, unresolved promising branches and why work stopped; count never establishes completion.")
         trusted = trusted.replace("providers, models,", "unconfigured providers, models,")
         trusted = trusted.replace("Native web search only. ", search.instructions())
+        trusted = trusted.replace("The $1 TOTAL research+QA+search+hosted-environment target is soft.",
+                                  f"The approved ${row['soft_target_usd']} TOTAL research+QA+search+hosted-environment target is soft.")
     return trusted + canonical(canonical({"packet": row["packet"], "crm_identities": identities}))
 
 

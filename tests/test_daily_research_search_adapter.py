@@ -305,6 +305,7 @@ def test_empty_static_source_is_explicit_gap_instead_of_claiming_page_read(monke
 
 def row():
     return {"date": DAY, "started_at": NOW.isoformat(), "search_provider": search.PROFILE,
+            "soft_target_usd": 1, "recurring_budget_authority_reference": "owner-synthetic-approved-budget",
             "run_key": "blueprint-researcher:" + DAY, "session_id": "sess_offline",
             "turn_id": "turn_research", "qa": {"turn_id": "turn_qa"},
             "research_runtime_seconds": 60, "total_runtime_seconds": 90}

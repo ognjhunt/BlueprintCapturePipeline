@@ -127,6 +127,10 @@ class FencedProvider(Provider):
         if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
                 or phase == "qa" and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
+        if (
+                control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
+                or control.get("config", {}).get("soft_target_usd") != row["soft_target_usd"]):
+            raise Refusal("research_tool_budget_authority_changed")
 
     def qa_input(self, session_id, event, key, day, request_digest, deadline_ms):
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)

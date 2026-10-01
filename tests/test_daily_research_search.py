@@ -61,7 +61,8 @@ def fixture(tmp_path):
     runner, _, ledger = next(generator)
     enable_v3(runner, tmp_path)
     runner.config.update(discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800,
-                         qa_reserved_seconds=600, search_provider=search.PROFILE)
+                         qa_reserved_seconds=600, search_provider=search.PROFILE,
+                         recurring_budget_authority_reference="owner-approved-synthetic-test-target")
     api = SearchAPI()
     output = result()[0]
     output["coverage"].update(defined_run_scope=["Synthetic exact site/task industry/region scope"],
@@ -151,6 +152,12 @@ def test_sdk_shaped_resolved_functions_include_defer_loading(fixture):
 def test_profile_requires_adaptive_config_and_disabled_example():
     cfg = json.loads((Path(__file__).resolve().parents[1] / "tools/daily_research/perplexity-daily.config.example.json").read_text())
     assert configuration(cfg)["enabled"] is False
+    assert cfg["soft_target_usd"] is None
+    with pytest.raises(Refusal, match="recurring_research_budget_not_approved"):
+        configuration({**cfg, "enabled": True})
+    with pytest.raises(Refusal, match="recurring_research_budget_not_approved"):
+        configuration({**cfg, "enabled": True, "soft_target_usd": 2,
+                       "recurring_budget_authority_reference": " PENDING-owner"})
     with pytest.raises(Refusal, match="search_profile_invalid"):
         configuration({**cfg, "discovery_profile": None})
 
@@ -287,3 +294,21 @@ def test_unresolved_in_scope_branch_cannot_claim_coverage_complete():
                     unresolved_promising_branches=["Promising in-scope branch not yet examined"])
     with pytest.raises(ValueError, match="discovery_completion_has_unresolved_branches"):
         discovery.validate_coverage(coverage, 50)
+
+
+def test_approved_recurring_target_is_pinned_not_forced_to_legacy_one_dollar(fixture):
+    runner, api, _ = fixture
+    runner.config["soft_target_usd"] = 2
+    row = runner.start_or_resume()
+    assert row["soft_target_usd"] == 2 and "$2" in api.payloads[0]["input"]
+    runner.config["soft_target_usd"] = 4
+    assert runner.start_or_resume(allow_create=False)["soft_target_usd"] == 2
+
+
+def test_missing_profile_budget_pin_is_not_inferred_from_controller(fixture):
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    provider = FencedProvider.__new__(FencedProvider)
+    row.pop("recurring_budget_authority_reference")
+    with pytest.raises(Refusal, match="research_tool_budget_authority_not_pinned"):
+        provider.tool_admit(row, "research")
