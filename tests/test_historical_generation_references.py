@@ -278,6 +278,46 @@ def test_local_source_named_ancestor_replacement_during_scan_is_unknown(tmp_path
     assert row.read_bytes() == original
 
 
+def test_production_lazy_target_parent_cannot_exceed_combined_original_fd_limit(tmp_path, monkeypatch):
+    from contextlib import ExitStack
+    from blueprint_pipeline.control_plane_lane_experiment_publication import _BirthFiles
+    from blueprint_pipeline import control_plane_lane_historical_references as references
+    target = tmp_path / 'selected-diagnostics'
+    target.mkdir()
+    budget = ReferenceCollectionBudget()
+    actual_open, actual_close = os.open, os.close
+    opened, peaks = set(), []
+    def acquire(*args, **kwargs):
+        fd = actual_open(*args, **kwargs)
+        opened.add(fd)
+        peaks.append(len(opened))
+        return fd
+    def close(fd):
+        actual_close(fd)
+        opened.remove(fd)
+    monkeypatch.setattr(references.os, 'open', acquire)
+    monkeypatch.setattr(references.os, 'close', close)
+    files = _BirthFiles(budget)
+    try:
+        with ExitStack() as scope:
+            for _ in range(103):
+                files.open('/', os.O_RDONLY | os.O_DIRECTORY)
+            for _ in range(25):
+                scope.callback(os.close, os.open('/', os.O_RDONLY | os.O_DIRECTORY))
+            assert len(opened) == 128
+            def capacity(transient):
+                budget.tick()
+                if len(files.owned) + len(files.probe_owned) + transient > 128:
+                    raise ValueError('combined original descriptor limit')
+            with pytest.raises(ValueError):
+                references._target_observation(files, target, 25, capacity)
+            assert max(peaks) == 128
+    finally:
+        files.finish()
+        budget.close()
+    assert not opened
+
+
 def test_current_reference_fence_holds_real_publisher_locks(reference_installation):
     root = reference_installation[2]
     def check(guard):

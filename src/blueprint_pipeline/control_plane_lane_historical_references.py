@@ -34,6 +34,15 @@ def _pairs(values):
     return result
 
 
+def _target_observation(files, target, transient, descriptor_check):
+    """Original owner's selected namespace; this supplies no action grant."""
+    fd, _ = files.parent(target / '.historical-reference-probe',
+                         _descriptor_check=lambda additional: descriptor_check(transient + additional))
+    files.proof(fd)
+    files.location(fd)
+    return fd
+
+
 def _mentions(value, target, budget, depth=0, *, local=None):
     budget.charge('values')
     _require(depth <= 32, 'table_unknown')
@@ -110,7 +119,7 @@ def _table(root, target, budget, *, _descriptor_check=None, _target_observation=
                 target_fd = acquire(target, directory=True, active=active)[-1][2]
             else:
                 budget.tick()
-                target_fd = _target_observation()
+                target_fd = _target_observation(len(chain) + active + transient)
         budget.tick()
         target_info = os.fstat(target_fd)
         _require(stat.S_ISDIR(target_info.st_mode), 'table_unknown')
@@ -209,11 +218,8 @@ def historical_reference_fence(files, config, target, *, observed_at):
     pins, pin_directory = experiments._pin_fence(files, config, selected['pins_root'], target, observed_at)
     roots = tuple(dict.fromkeys((*selected['queue_roots'], *selected['active_run_roots'])))
     _require(0 < len(roots) <= 16, 'table_unknown')
-    def target_observation():
-        fd, _ = files.parent(target / '.historical-reference-probe')
-        files.proof(fd)
-        files.location(fd)
-        return fd
+    def target_observation(transient):
+        return _target_observation(files, target, transient, descriptor_check)
     def descriptor_check(count):
         files.budget.tick()
         _require(len(files.owned) + len(files.probe_owned) + count <= 128, 'table_unknown')
