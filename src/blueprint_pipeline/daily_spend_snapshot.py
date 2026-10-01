@@ -156,7 +156,17 @@ def project_daily_snapshot(
                 raw
             )  # Retain distinct rows; never assume a correction relationship.
         key = _hash(
-            [provider, service, kind, account, project, resource, lower, upper, charge_identity]
+            [
+                provider,
+                service,
+                kind,
+                account,
+                project,
+                resource,
+                lower,
+                None if kind == "cumulative_actual" else upper,
+                charge_identity,
+            ]
         )
         partial = (
             invalid
@@ -421,12 +431,17 @@ def project_daily_snapshot(
     for row in rows:
         history.setdefault(row["revision_id"], row)
         prior = by_key.get(row["source_key"])
-        if prior and prior["revision_id"] != row["revision_id"]:
+        if prior and (
+            prior.get("conflicting_revisions") or prior["revision_id"] != row["revision_id"]
+        ):
             prior = prior | {
                 "amount": None,
                 "billed_cost": None,
                 "partial": True,
-                "conflicting_revisions": [prior["revision_id"], row["revision_id"]],
+                "conflicting_revisions": sorted(
+                    set(prior.get("conflicting_revisions", [prior["revision_id"]]))
+                    | {row["revision_id"]}
+                ),
             }
             gaps.add("conflicting_source_rows")
             by_key[row["source_key"]] = prior
