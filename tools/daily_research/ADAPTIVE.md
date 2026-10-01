@@ -1,5 +1,11 @@
 # Adaptive commercial site discovery
 
+For newly admitted production rows, [SEARCH.md](SEARCH.md) selects Perplexity
+Fast with a separate source reader and no native-search fallback. This is a
+session-only tool override; the legacy examples and retained same-session test
+below remain unchanged. The production secret binding and a new eligible date
+must be verified before activation; the existing cleanup guard still applies.
+
 The intended daily target is **at least ten new distinct site/task opportunities**.
 An exact operating location, sourced recurring physical work, plausible labeled
 robot/task hypothesis, incumbent check, counterevidence and one useful first

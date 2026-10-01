@@ -1,5 +1,12 @@
 # Existing Render worker integration
 
+Selected new-row search profile: [Perplexity Fast application tools](SEARCH.md).
+The existing worker passes `PERPLEXITY_API_KEY` only to its application-side
+Python child; no credential enters the hosted sandbox or private Node pipe.
+The profile remains disabled until the owner-managed production binding and
+existing intent/cleanup/release gates are verified. Old admitted rows remain
+native-search rows; the failed October 1 intent is never reset or converted.
+
 Owner direction: 2026-09-30. Blueprint owns the trigger, durable execution state,
 reports, QA and publication. Dot can report outcomes; it is not a workflow step.
 This isolated research package uses no Pipeline/GPU application installation.

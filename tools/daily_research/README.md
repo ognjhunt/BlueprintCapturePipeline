@@ -1,5 +1,11 @@
 # Standalone daily research
 
+The selected production search default is Perplexity Search API Fast, called by
+the existing Sol agent through application function tools. The disabled profile
+and exact binding/recovery/evidence contract are in [SEARCH.md](SEARCH.md).
+Existing admitted native-search rows and the failed October 1 intent retain
+their original guards; shipping this adapter does not activate or reset them.
+
 The intended adaptive target is **ten or more new commercial site/task
 opportunities**, with an honest supported subset and shortfall when necessary.
 See [ADAPTIVE.md](ADAPTIVE.md) for the disabled daily opt-in, evidence/duplicate

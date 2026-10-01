@@ -13,6 +13,12 @@ async function fixture() {
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
 
+test('Perplexity row overflow is refused before a durable run or publication claim', async () => {
+  const {db, store} = await fixture();
+  await assert.rejects(store.put({...row(), search_provider:'perplexity-fast-v1', payload:'x'.repeat(7000000)}), /record_resource_ceiling/);
+  assert.equal(db.values.has(`${ROOT}/runs/${row().date}`), false);
+});
+
 test('overlap refuses and late release cannot clear the successor lease', async () => {
   const {db, store, time} = await fixture();
   const second = new Store(db, () => time.now, 'second');

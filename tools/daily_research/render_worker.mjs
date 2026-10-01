@@ -17,6 +17,7 @@ export function startDailyResearchWorker({bundleRoot, python,
       cwd: bundleRoot, detached: true, env: {
         PATH: process.env.PATH, HOME: process.env.HOME, PYTHONDONTWRITEBYTECODE: '1',
         OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+        PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
         FIREBASE_SERVICE_ACCOUNT_JSON: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
         NOTION_API_TOKEN: process.env.NOTION_API_TOKEN, NOTION_API_KEY: process.env.NOTION_API_KEY
       }, stdio: ['ignore', 'pipe', 'ignore']

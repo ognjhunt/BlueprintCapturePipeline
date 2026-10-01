@@ -87,6 +87,9 @@ class FirestoreLedger:
         return self.bridge.call("get", day=day)
 
     def put(self, row):
+        from tools.daily_research import search
+        if row.get("search_provider") == search.PROFILE and len(canonical(row).encode()) > search.MAX_RECORD:
+            raise Refusal("research_tool_record_resource_ceiling")
         self.bridge.call("put", row=row)
 
     def write_bytes(self, name, value):
@@ -116,6 +119,14 @@ class FencedProvider(Provider):
     def cancel(self, session_id, run_key):
         self.ledger.bridge.call("assert_lease")
         return super().cancel(session_id, run_key)
+
+    def tool_admit(self, row, phase):
+        super().tool_admit(row, phase)
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
+                or phase == "qa" and control.get("workflow", {}).get("enabled") is not True):
+            raise Refusal("research_tool_disabled_or_profile_changed")
 
     def qa_input(self, session_id, event, key, day, request_digest, deadline_ms):
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
