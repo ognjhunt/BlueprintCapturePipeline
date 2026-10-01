@@ -549,7 +549,7 @@ def test_stopped_before_execution_and_stopped_after_result_both_fail_closed():
     assert "result_file" in value["application_tool_calls"]["call_1"]
 
 
-@pytest.mark.parametrize("admission,change", [(1, "stop"), (1, "deadline"), (2, "stop"), (2, "deadline")])
+@pytest.mark.parametrize("admission,change", [(1, "stop"), (1, "deadline"), (2, "stop"), (2, "deadline"), (3, "stop"), (3, "deadline")])
 def test_stop_and_deadline_after_slow_admission_prevent_the_next_mutation(admission, change):
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)
@@ -564,9 +564,9 @@ def test_stop_and_deadline_after_slow_admission_prevent_the_next_mutation(admiss
     api.tool_admit = admit
     with pytest.raises(Refusal, match="^research_tool_stopped_or_expired$"):
         respond(value, [action()], ledger, api, clock=lambda: state["now"], stopped=lambda: state["stop"])
-    assert len(api.executions) == (0 if admission == 1 else 1)
+    assert len(api.executions) == (0 if admission in (1, 2) else 1)
     assert api.replies == []
-    if admission == 2:
+    if admission == 3:
         assert saved_event(value, ledger)["success"] is True
 
 

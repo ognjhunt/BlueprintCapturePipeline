@@ -512,6 +512,9 @@ def prompt(day, knowledge_context=None, contract_version=2, *, adaptive=False, t
     if adaptive:
         example["coverage"] = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
                                "stop_reason": "actual evidence-based stop reason", "shortfall_reason": "explain if fewer than 10 new opportunities"}
+        if search_provider == search.PROFILE:
+            example["coverage"].update(shortfall_reason=None, defined_run_scope=["specific task/industry/region hypotheses for this run"],
+                                       unresolved_promising_branches=[], completion_state="coverage_complete")
     result = (f"Daily Blueprint sites-first public research for {day}. Read deep-research and "
             "blueprint-evidence-qualification from /workspace/capabilities/blueprint. Find up to THREE "
             "concrete operating sites with real bounded recurring physical tasks plausible September 2026 onward. "
@@ -534,6 +537,10 @@ def prompt(day, knowledge_context=None, contract_version=2, *, adaptive=False, t
         result = result[result.index("For each candidate require task") :]
         result = f"Blueprint adaptive sites-first discovery for {day}. " + discovery.instructions(target_usd) + result
         if search_provider == search.PROFILE:
+            result = result.replace("Target at least 10 NEW distinct commercial site/task opportunities. Never pad the list.",
+                                    "Research a defined, evidence-based scope of NEW distinct commercial site/task opportunities. Never pad the list.")
+            result = result.replace("If fewer than 10 withstand research, keep the supported subset and give coverage and shortfall reasons.",
+                                    "Retain every defensible prospect within the resource envelope; explain unresolved coverage and interruptions.")
             result = result.replace("new models/providers,", "unconfigured models/providers,")
             result = result.replace("Native web_search only. ", search.instructions())
     if knowledge_context is not None:
@@ -826,6 +833,8 @@ class Runner:
                                                      knowledge_context=context, observed_at=self.clock(), refresh_policy=policy)
             if row.get("discovery_profile") == "adaptive-sites-v1":
                 discovery.validate_coverage(output.get("coverage"), len(output["candidates"]))
+                if row.get("search_provider") == search.PROFILE and "defined_run_scope" not in output["coverage"]:
+                    raise Refusal("research_scope_coverage_required")
         except (KeyError, TypeError, ValueError):
             raise Refusal("output_schema_invalid") from None
         packet = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
@@ -848,6 +857,8 @@ class Runner:
             packet["discovery_counts"] = {"target_new": discovery.TARGET_NEW, "distinct_after_exact_dedupe": len(candidates),
                                           "duplicates_excluded": len(duplicates), "shortfall": max(0, discovery.TARGET_NEW - len(candidates)),
                                           "semantic_and_deployment_qa_pending": True}
+            if row.get("search_provider") == search.PROFILE:
+                packet["discovery_counts"].update(target_new=None, shortfall=None, candidate_count_is_stopping_rule=False)
         packet["remote_completion_timestamp_verified"] = row.get("remote_completed_at") is not None
         if row.get("search_provider") == search.PROFILE and len(canonical(packet).encode()) > search.MAX_PACKET:
             raise Refusal("research_profile_packet_resource_ceiling_raw_retained")

@@ -63,7 +63,10 @@ def fixture(tmp_path):
     runner.config.update(discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800,
                          qa_reserved_seconds=600, search_provider=search.PROFILE)
     api = SearchAPI()
-    api.raw = canonical(result()[0]).encode()
+    output = result()[0]
+    output["coverage"].update(defined_run_scope=["Synthetic exact site/task industry/region scope"],
+                              unresolved_promising_branches=[], completion_state="coverage_complete")
+    api.raw = canonical(output).encode()
     runner.api = api
     yield runner, api, ledger
     try:
@@ -90,7 +93,7 @@ def test_new_session_replaces_tools_without_saved_agent_or_sandbox_changes(fixtu
     assert payload["agent"]["service_tier"] == "default"
     assert payload["environment"]["network"] == {"access": "disabled"}
     assert payload["agent_id"] == original["id"] and api.agent == original
-    assert "at least 10 NEW" in payload["input"]
+    assert "no prospect-count stopping rule" in payload["input"]
     assert "Native web_search only." not in payload["input"]
     assert "PERPLEXITY_API_KEY" not in canonical(payload)
     assert ledger.get(DAY)["create_payload"] == payload
@@ -247,3 +250,32 @@ def test_all_future_lifecycle_rows_refuse_oversize_before_durable_state_changes(
     with pytest.raises(Refusal, match="research_tool_record_resource_ceiling"):
         ledger.put(changed)
     assert ledger.get(DAY) == old
+
+
+@pytest.mark.parametrize("count", [10, 15, 50])
+def test_reaching_ten_neither_finishes_the_turn_nor_discards_later_defensible_rows(fixture, count):
+    runner, api, _ = fixture
+    output = result(count)[0]
+    output["coverage"].update(shortfall_reason=None, defined_run_scope=["Bounded synthetic task/industry/region scope"],
+                              unresolved_promising_branches=["Promising operator branch still unexamined"],
+                              completion_state="time_interrupted", stop_reason="Admitted run time exhausted; coverage remains incomplete")
+    api.raw = canonical(output).encode()
+    row = runner.start_or_resume()
+    assert row["state"] == "running" and not api.cancellations
+    api.turn_status = "completed"
+    row = runner.start_or_resume(allow_create=False)
+    assert row["state"] == "awaiting_review" and len(row["packet"]["candidates"]) == count
+    assert row["packet"]["coverage"]["completion_state"] == "time_interrupted"
+    assert row["packet"]["coverage"]["unresolved_promising_branches"]
+    assert row["packet"]["discovery_counts"]["candidate_count_is_stopping_rule"] is False
+    assert row["packet"]["discovery_counts"]["target_new"] is None
+
+
+def test_defined_coverage_can_return_fewer_than_ten_without_count_shortfall(fixture):
+    runner, api, _ = fixture
+    output = result(2)[0]
+    output["coverage"].update(shortfall_reason=None, defined_run_scope=["Specific narrow industry/location hypothesis"],
+                              unresolved_promising_branches=[], completion_state="coverage_complete")
+    api.raw, api.turn_status = canonical(output).encode(), "completed"
+    row = runner.start_or_resume()
+    assert row["state"] == "awaiting_review" and len(row["packet"]["candidates"]) == 2

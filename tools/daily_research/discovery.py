@@ -41,7 +41,8 @@ def instructions(target_usd=1):
 
 def validate_coverage(value, candidate_count):
     fields = {"search_queries", "pages_opened", "branches_checked", "rejection_reasons", "stop_reason", "shortfall_reason"}
-    if not isinstance(value, dict) or set(value) != fields:
+    scope_fields = {"defined_run_scope", "unresolved_promising_branches", "completion_state"}
+    if not isinstance(value, dict) or set(value) not in (fields, fields | scope_fields):
         raise ValueError("discovery_coverage_invalid")
     for name in ("search_queries", "pages_opened"):
         if type(value[name]) is not int or not 0 <= value[name] <= 10000:
@@ -55,7 +56,15 @@ def validate_coverage(value, candidate_count):
     reason = value["shortfall_reason"]
     if reason is not None and (not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 2000):
         raise ValueError("discovery_coverage_invalid")
-    if candidate_count < TARGET_NEW and reason is None:
+    if scope_fields <= set(value):
+        for name in ("defined_run_scope", "unresolved_promising_branches"):
+            if (not isinstance(value[name], list) or len(value[name]) > 100
+                    or any(not isinstance(x, str) or not 1 <= len(x.strip()) <= 2000 for x in value[name])):
+                raise ValueError("discovery_coverage_invalid")
+        if not value["defined_run_scope"] or value["completion_state"] not in {
+                "coverage_complete", "budget_interrupted", "time_interrupted", "access_blocked"}:
+            raise ValueError("discovery_scope_or_completion_invalid")
+    elif candidate_count < TARGET_NEW and reason is None:
         raise ValueError("discovery_shortfall_reason_required")
     return value
 

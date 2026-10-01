@@ -4,8 +4,12 @@ The selected production default is `search_provider=perplexity-fast-v1` with
 `discovery_profile=adaptive-sites-v1`. The disabled example is
 `perplexity-daily.config.example.json`. This is an agent-owned discovery loop:
 the existing GPT6.1Sol researcher chooses queries, contradictions, source reads
-and follow-ups, targeting at least ten NEW distinct site/task opportunities.
-There is no outer-runner prospect/query shortlist. Existing CRM duplicates and
+and follow-ups across a defined task/industry/region hypothesis scope.
+There is no count-based stopping rule or outer-runner prospect/query shortlist.
+Ten findings do not mean done; retain fifteen or fifty defensible findings when
+the evidence supports them. Coverage and diminishing returns govern completion.
+Budget/time interruption and access blockage remain explicitly incomplete.
+Existing CRM duplicates and
 robot deployments never count toward the target. Incomplete coverage is honest.
 
 ## Exact bindings and activation gate
@@ -91,7 +95,9 @@ overflow before durable state changes or external publication. The existing
 native lanes are unchanged.
 These are
 resource safety ceilings, not research quality/search quotas. If reached, the
-research must report the supported subset and shortfall. Standard search costs
+research must report searched scope, source coverage, duplicates/rejections,
+unresolved promising branches and evidence-based or interrupted stopping reason.
+No exhaustive global-market claim is supported. Standard search costs
 are never substituted: Fast is estimated at $0.001 per successful request, with
 attempts counted conservatively and unsettled billing explicit. Model, search
 and hosted-environment target remains $1 total, soft; no hard total cap is claimed.

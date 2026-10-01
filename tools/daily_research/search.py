@@ -79,6 +79,13 @@ def instructions():
     return ("Use blueprint_search (Perplexity Search API search_type=fast) for all public discovery and "
             "adaptive follow-up queries, then blueprint_read_source for underlying primary pages. "
             "You choose the queries, domains, contradictions and follow-ups; the controller never preselects prospects. "
+            "Define this run's concrete task/industry/region hypotheses before searching and expand promising "
+            "branches adaptively. There is no prospect-count stopping rule: ten, fifteen or fifty valid "
+            "new prospects do not prove coverage. Retain all defensible rows within the declared resource "
+            "envelope; do not stop at ten or discard later valid rows. Stop for evidence-based coverage "
+            "and diminishing returns at the defined scope, or explicitly mark budget/time/access interruption. "
+            "Record defined_run_scope, unresolved_promising_branches and completion_state in coverage. "
+            "Do not claim exhaustive global-market coverage. "
             "No native-search fallback is enabled. Search results are complete provider-extracted passages, "
             "not proof of reading a complete page. Primary-page reads return complete extracted text within a "
             "declared resource ceiling; a refusal or unsupported PDF/JS page is an explicit source gap. "
@@ -334,6 +341,9 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             if not prior["attempted"]:
                 prior["attempted"] = True
                 ledger.put(row)  # No paid POST is replayed after a lost reply/crash.
+                api.tool_admit(row, phase)
+                if stopped() or clock().timestamp() >= deadline:
+                    raise Refusal("research_tool_stopped_or_expired")
                 try:
                     with bounded_request(min(15, deadline - clock().timestamp())):
                         result = api.application_tool(action["name"], action.get("arguments"))
