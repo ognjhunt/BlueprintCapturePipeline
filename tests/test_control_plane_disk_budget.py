@@ -4,6 +4,7 @@
 #   src/blueprint_pipeline/control_plane_disk_ledger.py
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -25,6 +26,47 @@ from blueprint_pipeline.control_plane_disk_budget import (
 
 Usage = namedtuple("Usage", "total used free")
 GIB = 1024**3
+
+
+@pytest.mark.parametrize("preinstalled", [False, True])
+def test_disk_admission_works_when_runtime_denies_setgid_syscalls(
+    tmp_path, monkeypatch, preinstalled
+) -> None:
+    """RestrictSUIDSGID rejects flagged mkdir even when the directory exists."""
+    ledger = tmp_path / "ledger"
+    if preinstalled:
+        ledger.mkdir()
+        ledger.chmod(0o2770)
+        installed_mode = ledger.stat().st_mode & 0o7777
+    real_mkdir, real_fchmod = os.mkdir, os.fchmod
+
+    def restricted_mkdir(path, mode=0o777, *, dir_fd=None):
+        if mode & 0o6000:
+            raise PermissionError(errno.EPERM, "runtime denies privilege bits", path)
+        return real_mkdir(path, mode, dir_fd=dir_fd)
+
+    def restricted_fchmod(descriptor, mode):
+        if mode & 0o6000:
+            raise PermissionError(errno.EPERM, "runtime denies privilege bits")
+        return real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(os, "mkdir", restricted_mkdir)
+    monkeypatch.setattr(os, "fchmod", restricted_fchmod)
+    reservation = reserve_control_plane_disk(
+        "launch_preparation",
+        target_root=tmp_path,
+        expected_bytes=GIB,
+        reservation_root=ledger,
+        disk_usage=lambda _path: Usage(100 * GIB, 60 * GIB, 40 * GIB),
+        now=lambda: 100.0,
+        pid_alive=lambda _pid: True,
+    )
+    assert reservation.path.is_file()
+    assert (ledger / ".lock").stat().st_mode & 0o777 == 0o660
+    if preinstalled:
+        assert ledger.stat().st_mode & 0o7777 == installed_mode
+    reservation.release(outcome="blocked")
+    assert not list(ledger.glob("*.json"))
 
 
 def test_restore_admission_and_renewal_refuse_a_busy_shared_ledger(tmp_path):
