@@ -1,0 +1,469 @@
+[
+  {
+    "id": "BP20-01",
+    "category": "discovery",
+    "team_ids": [
+      "BP-TEAM-001"
+    ],
+    "title": "Prepared-meal portioning discovery",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "A prepared-meal line needs ingredient portioning into trays on an existing conveyor. Identify the relevant robot team, its task evidence and remaining pilot gates.",
+    "queries": [
+      "Chef Robotics prepared meal portioning",
+      "Chef Robotics commercial servings facilities"
+    ],
+    "requested_fields": [
+      "team",
+      "product",
+      "task",
+      "evidence_class",
+      "pilot_gates"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-02",
+    "category": "version_specs",
+    "team_ids": [
+      "BP-TEAM-001"
+    ],
+    "title": "Chef module and utility requirements",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "For a meal assembly site with 120 V power, compressed air and Wi-Fi, identify what C-001748 denotes and the documented utilities. Does that establish ready-to-deploy status?",
+    "queries": [
+      "Chef C-001748 module utilities",
+      "Chef food assembly system site scoping"
+    ],
+    "requested_fields": [
+      "product_identifier",
+      "utilities",
+      "site_fit",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-03",
+    "category": "geography",
+    "team_ids": [
+      "BP-TEAM-002"
+    ],
+    "title": "California laundry versus Texas availability",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "An illustrative Austin laundromat wants Isaac 0 installation next month. What public commercial geography and current availability are verified, and what remains unknown?",
+    "queries": [
+      "Weave Isaac 0 California shipments",
+      "Weave Robotics business installation laundry"
+    ],
+    "requested_fields": [
+      "team",
+      "product_version",
+      "availability",
+      "service_region",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-04",
+    "category": "conflict_unknown",
+    "team_ids": [
+      "BP-TEAM-002"
+    ],
+    "title": "Weave sheets and remote assistance conflict",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "An illustrative California hotel has towels, T-shirts and large bed sheets. Reconcile Isaac 0 hero/sorting copy with its FAQ and describe autonomous versus assisted operation.",
+    "queries": [
+      "Weave Isaac 0 bed sheets FAQ",
+      "Weave Isaac 0 autonomy teleoperation garments"
+    ],
+    "requested_fields": [
+      "accepted_items",
+      "excluded_items",
+      "autonomy",
+      "conflicts",
+      "pilot_gates"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-05",
+    "category": "stale_update",
+    "team_ids": [
+      "BP-TEAM-002"
+    ],
+    "title": "Isaac 0 versus Isaac 1 roadmap",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "Update a stale note that treats Isaac 1 fall deliveries as proof of installed Isaac 1 commercial operations. Separate Isaac 0 evidence from Isaac 1 status as of September 30.",
+    "queries": [
+      "Weave business Isaac 1 fall delivery",
+      "Weave Isaac 0 businesses California daily"
+    ],
+    "requested_fields": [
+      "current_version",
+      "observed_status",
+      "roadmap",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-06",
+    "category": "named_task",
+    "team_ids": [
+      "BP-TEAM-003"
+    ],
+    "title": "GXO tote transfer workflow",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "For an indoor AMR-to-conveyor tote-transfer cell, identify Digit’s named public customer workflow, agreement date and integration limits.",
+    "queries": [
+      "GXO Agility SPANX totes conveyors 2024",
+      "Agility humanoid deployment process Arc"
+    ],
+    "requested_fields": [
+      "team",
+      "product",
+      "customer_workflow",
+      "agreement_date",
+      "pilot_gates"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-07",
+    "category": "version_safety",
+    "team_ids": [
+      "BP-TEAM-003"
+    ],
+    "title": "Digit generation and shared workcell limits",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "A stale proposal says current Digit can immediately share an unbarriered conveyor workcell with staff. Check current generation-specific deployment rules and the 2027 roadmap.",
+    "queries": [
+      "Agility fourth generation sectioned off workcell",
+      "Agility cooperative safety humanoid 2027 deployment"
+    ],
+    "requested_fields": [
+      "generation",
+      "current_constraints",
+      "roadmap",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-08",
+    "category": "task_geography",
+    "team_ids": [
+      "BP-TEAM-004"
+    ],
+    "title": "Robin feeding versus complete folding",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "An illustrative US commercial laundry already has a towel folder and continuous towel supply. Is Robin a complete folding system? What procurement, colored-towel and US-service gates remain?",
+    "queries": [
+      "Laundry Robotics Robin FAQ folder dealer",
+      "Laundry Robotics coloured towels test delivery"
+    ],
+    "requested_fields": [
+      "team",
+      "product",
+      "task_boundary",
+      "procurement",
+      "service_region",
+      "pilot_gates"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-09",
+    "category": "named_deployment",
+    "team_ids": [
+      "BP-TEAM-005"
+    ],
+    "title": "Dexterity customer deployment update",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "Update an older Dexterity trailer-loading pilot note using FedEx’s July 2026 Hagerstown announcement. Identify task, customer location and what production expansion proves.",
+    "queries": [
+      "FedEx Dexterity Hagerstown July 2026",
+      "Dexterity Mech trailer loading production scale"
+    ],
+    "requested_fields": [
+      "team",
+      "product",
+      "task",
+      "customer_location",
+      "deployment_status",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-10",
+    "category": "product_scope",
+    "team_ids": [
+      "BP-TEAM-006"
+    ],
+    "title": "Ambi product scope and old customer evidence",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "An indoor parcel operation needs mixed-case pallet stacking. Distinguish AmbiStack from AmbiSort A-Series and the historical OSM sorting rollout.",
+    "queries": [
+      "AmbiStack mixed case palletizing intervention",
+      "AmbiSort OSM Atlanta Chicago Las Vegas 2023"
+    ],
+    "requested_fields": [
+      "team",
+      "matched_product",
+      "task",
+      "historical_customer",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-11",
+    "category": "site_matching",
+    "team_ids": [
+      "BP-TEAM-007"
+    ],
+    "title": "High-mix sanding cell screening",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "An illustrative composites cell needs repeated sanding of varied parts. Identify a relevant finishing team and the material, tooling, fixture and measurable-quality gates.",
+    "queries": [
+      "GrayMatter Robotics Scan Sand composites",
+      "GrayMatter solutions annual hardware software service"
+    ],
+    "requested_fields": [
+      "team",
+      "product",
+      "task",
+      "commercial_model",
+      "pilot_gates"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-12",
+    "category": "version_update",
+    "team_ids": [
+      "BP-TEAM-008"
+    ],
+    "title": "RightPick generation and compact product",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "A stale directory defaults to RightPick 3. Find the newer named piece-picking products, distinguish the compact rack-mounted option and avoid carrying old rates into a tight-footprint cell.",
+    "queries": [
+      "RightHand Robotics RightPick One rack mounted",
+      "RightHand Robotics RightPick 4 RightPick 3 news"
+    ],
+    "requested_fields": [
+      "team",
+      "product_versions",
+      "compact_product",
+      "task",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-13",
+    "category": "conflict_dates",
+    "team_ids": [
+      "BP-TEAM-009"
+    ],
+    "title": "Pickle Randa conflicting publication dates",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "A note dates Pickle’s first Randa deployment to February 2026 based on a webpage stamp. Reconcile the body dateline, operation-start wording, location and deployment-specific case weights.",
+    "queries": [
+      "Pickle Randa January 8 2025 Fort Worth",
+      "Pickle Randa February 2026 mid October cases"
+    ],
+    "requested_fields": [
+      "team",
+      "task",
+      "publication_conflict",
+      "operation_start",
+      "customer_location",
+      "task_constraints"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-14",
+    "category": "site_matching",
+    "team_ids": [
+      "BP-TEAM-010"
+    ],
+    "title": "Indoor hospitality transport boundaries",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "An illustrative San Francisco hotel wants staff-loaded trays moved between kitchen and dining area, with an outdoor patio and no confirmed network plan. Screen Bear Servi and separate documented eligibility from site gates.",
+    "queries": [
+      "Bear Robotics Servi FAQ outdoors internet",
+      "Bear Servi Q US Korea availability"
+    ],
+    "requested_fields": [
+      "team",
+      "product",
+      "task",
+      "geography",
+      "constraints",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-15",
+    "category": "freshness",
+    "team_ids": [
+      "BP-TEAM-011"
+    ],
+    "title": "Avidbots historical airport versus current site",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "A stale note claims CVG’s 2022 Neo story guarantees current Bay Area Neo 2W/Kas service. Update the evidence classes, geography and human-support boundaries for a commercial hard-floor site.",
+    "queries": [
+      "Avidbots CVG Neo 2022 customer story",
+      "Avidbots customer success Neo Kas offices"
+    ],
+    "requested_fields": [
+      "team",
+      "products",
+      "historical_evidence",
+      "current_status",
+      "support",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-16",
+    "category": "version_specs",
+    "team_ids": [
+      "BP-TEAM-019"
+    ],
+    "title": "Current UR ratings versus old installed arm",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "A machine-tending proposal quotes UR10e and assumes the newest controller. Verify the current UR12e-1300 product name, ratings and controller; keep historical customer configuration separate.",
+    "queries": [
+      "Universal Robots UR12e 1300 CB7 specifications",
+      "Universal Robots WST Fab UR10e machine tending"
+    ],
+    "requested_fields": [
+      "product_version",
+      "payload_kg",
+      "reach_mm",
+      "repeatability_mm",
+      "controller",
+      "historical_configuration"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-17",
+    "category": "site_matching",
+    "team_ids": [
+      "BP-TEAM-019"
+    ],
+    "title": "WST engineered CNC changeover",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "For an illustrative indoor CNC cell loading raw parts and unloading finished parts, explain what the WST Fab example establishes about integrator, grippers, fixtures and changeovers.",
+    "queries": [
+      "Universal Robots WST Fab PCC Robotics grippers",
+      "WST Fab machine tending dozen parts cobot"
+    ],
+    "requested_fields": [
+      "team",
+      "hardware",
+      "integrator",
+      "task",
+      "changeover",
+      "pilot_gates"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-18",
+    "category": "availability_update",
+    "team_ids": [
+      "BP-TEAM-025"
+    ],
+    "title": "Intrinsic September open-source update",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "Update a note that treats all Flowstate as proprietary or all Flowstate as open source. What exactly did Intrinsic release September 22, 2026, and does it supply a commissioned CNC cell?",
+    "queries": [
+      "Intrinsic Core September 22 2026 OMTS",
+      "Intrinsic Core Apache ROS robotics proficiency"
+    ],
+    "requested_fields": [
+      "team",
+      "released_components",
+      "license",
+      "release_date",
+      "role",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-19",
+    "category": "research_evidence",
+    "team_ids": [
+      "BP-TEAM-024"
+    ],
+    "title": "GR00T tutorial evidence ceiling",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "For a fixed-arm evaluation planning note, assess what the GR00T N1.7 G1 apple-to-plate tutorial demonstrates and whether its one-episode command establishes representative success or Franka support.",
+    "queries": [
+      "NVIDIA GR00T N1.7 G1 apple plate tutorial",
+      "GR00T end to end num episodes smoke test July 2026"
+    ],
+    "requested_fields": [
+      "team",
+      "model_version",
+      "reference_hardware",
+      "task",
+      "evidence_class",
+      "limitations"
+    ],
+    "disclosure": "public_only"
+  },
+  {
+    "id": "BP20-20",
+    "category": "stale_claim",
+    "team_ids": [
+      "BP-TEAM-026"
+    ],
+    "title": "World Labs acquisition and generated geometry",
+    "as_of": "2026-09-30",
+    "site_context": "illustrative_public_task_fixture_no_real_site_or_person",
+    "question": "Refresh a September 27 note about World Labs independence and a claim that Atlas captures unseen geometry as measured truth. Separate the September 28 transaction status from spatial research capabilities.",
+    "queries": [
+      "World Labs AMD September 28 definitive agreement",
+      "World Labs Atlas fills regions no camera saw"
+    ],
+    "requested_fields": [
+      "team",
+      "transaction_status",
+      "date",
+      "product",
+      "geometry_evidence",
+      "unknowns"
+    ],
+    "disclosure": "public_only"
+  }
+]

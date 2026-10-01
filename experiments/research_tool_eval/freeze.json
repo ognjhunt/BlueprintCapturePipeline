@@ -1,0 +1,32 @@
+{
+  "version": "blueprint-public-research-eval-v1",
+  "frozen_at": "2026-09-30T23:51:43.114942+00:00",
+  "as_of": "2026-09-30",
+  "parent_review": "pending",
+  "cases": 20,
+  "hard_subset": [
+    "BP20-04",
+    "BP20-07",
+    "BP20-08",
+    "BP20-13",
+    "BP20-16",
+    "BP20-20"
+  ],
+  "raw_order_rotation": [
+    "parallel-fast",
+    "perplexity-fast",
+    "parallel-advanced",
+    "perplexity-standard"
+  ],
+  "files": {
+    "cases.json": "128bb98f7c26126b1fbc706de3a52d06da7b1c57ac611ddcf706c821d2471f66",
+    "rubric.json": "3e2b9f8c9bccf12db4f66a605f1c693fcb4eef00e1aa76f062da8eb1c2a00815",
+    "source_evidence.json": "1bb73826ec8ce26c73cb709ac217224c52d6f5cae6b26a0620151dcdfe3c8084",
+    "prompt.txt": "2ef32291c9305496ebcff4a3b025f970d99f3f01db938e6dd5d101eca74fc5e0",
+    "provider_docs_manifest.json": "18a7e582f99c97618b84bf06f9d600266d74c926b29653e4c9fb5dbd5fd777b0",
+    "protocol.json": "ec3f868c3212a7d0e088266c2ce97758c4cdddf57bc9f9534e74409e4c794fa3",
+    "company_seeds.json": "433f5c1032a0db10aa9a7c6ee9981402773b0b2863abc16de816a9979a1eca61"
+  },
+  "grade_blinding_seed": 20260930,
+  "documentation_amended_at": "2026-10-01; case/source-fact bytes unchanged"
+}

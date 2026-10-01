@@ -1,0 +1,55 @@
+{
+  "version": "blueprint-public-research-eval-v1",
+  "as_of": "2026-09-30",
+  "grade_blinding_seed": 20260930,
+  "raw_modes": [
+    "parallel-fast",
+    "perplexity-fast",
+    "parallel-advanced",
+    "perplexity-standard"
+  ],
+  "task_modes": [
+    "parallel-core",
+    "parallel-pro"
+  ],
+  "hard_subset": [
+    "BP20-04",
+    "BP20-07",
+    "BP20-08",
+    "BP20-13",
+    "BP20-16",
+    "BP20-20"
+  ],
+  "controller": {
+    "model": "gpt-6.1-sol",
+    "input_tokens_max": 8000,
+    "output_tokens_including_reasoning_max": 1600,
+    "service_tier": "standard",
+    "external_tools": []
+  },
+  "limits": {
+    "raw_results": 10,
+    "evidence_chars": 16000,
+    "retained_response_bytes": 512000,
+    "raw_timeout_seconds": 30,
+    "controller_timeout_seconds": 60,
+    "task_poll_interval_seconds": 30,
+    "task_max_polls": 24,
+    "task_observation_deadline_seconds": 720,
+    "proved_unaccepted_dispatch_attempts": 2
+  },
+  "prices_usd": {
+    "parallel-fast": 0.001,
+    "parallel-advanced": 0.005,
+    "perplexity-fast": 0.001,
+    "perplexity-standard": 0.005,
+    "parallel-core": 0.025,
+    "parallel-pro": 0.1,
+    "sol_input_per_million": 2,
+    "sol_output_per_million": 10
+  },
+  "live_enabled": false,
+  "memory_status": "isolated per-run per-cell scope draft; parent empty-scope/retention verification required",
+  "parent_review": "pending",
+  "quality_results": "not_evaluated"
+}

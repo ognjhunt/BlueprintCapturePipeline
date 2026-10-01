@@ -1,0 +1,149 @@
+[
+  {
+    "id": "openai-agents",
+    "url": "https://developers.openai.com/api/docs/guides/agents-api/overview.md",
+    "snapshot_sha256": "86d6e3e2d71eed7819289ed0e6e8f23a415339777c1c47fd92b211b12f8f16c7",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "openai-pricing",
+    "url": "https://developers.openai.com/api/docs/pricing.md",
+    "snapshot_sha256": "0d9fb6b240209bb7b5a05d1d6ce0b8a796e0924b7e34c5ab183a3f1f890febe6",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-index",
+    "url": "https://docs.parallel.ai/llms.txt",
+    "snapshot_sha256": "10044c6cb248eb081a3a83aff7f78708a522351c16626382b10a268f10329314",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-memory",
+    "url": "https://docs.parallel.ai/resources/memory.md",
+    "snapshot_sha256": "78bf6f641472d0b26e0f406c357993e2735d5533694c4ab849162a55cec435ad",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-pricing",
+    "url": "https://docs.parallel.ai/getting-started/pricing.md",
+    "snapshot_sha256": "da9fa9f583b3fcd8f4771cacc7ddce6df676210acffdbb57083751c16f09ef9d",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-processors",
+    "url": "https://docs.parallel.ai/task-api/guides/choose-a-processor.md",
+    "snapshot_sha256": "98ea68e9e5861c7fd1dbf6e692341c54fbb58c931611b609fa65e24628b917c0",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-search",
+    "url": "https://docs.parallel.ai/api-reference/search/search.md",
+    "snapshot_sha256": "5eac13d3772d3e97a03b839553380b1b1f386e302d5861a367ca5c53281ce0e5",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-task-result",
+    "url": "https://docs.parallel.ai/api-reference/tasks/retrieve-task-run-result.md",
+    "snapshot_sha256": "7b8d9e98abc7f12518e088d2c24571668ab4999df246e9e08eb384064940b673",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-task",
+    "url": "https://docs.parallel.ai/api-reference/tasks/create-task-run.md",
+    "snapshot_sha256": "a3797a03bbb056b2e9fae6b3a821faaf87951b570f41dcfea86ca579cebe1ea0",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-agent-run",
+    "url": "https://docs.perplexity.ai/docs/agent-api/building-agents/define-the-run.md",
+    "snapshot_sha256": "75de8587a432f303c09f78877166cade7fd539048f47f321f2a2dfc4ff019fa7",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-agent-tools",
+    "url": "https://docs.perplexity.ai/docs/agent-api/tools/web-search.md",
+    "snapshot_sha256": "f5d928dbcdd3c7fb0e112391764601e51273901a0567db6d2dd70847fe9a85e5",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-agent",
+    "url": "https://docs.perplexity.ai/docs/agent-api/quickstart.md",
+    "snapshot_sha256": "d77c53dc1ba66501b863f031eaf118f3084e13854d8dfddb39547edf28f2955f",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-background",
+    "url": "https://docs.perplexity.ai/docs/agent-api/background-mode.md",
+    "snapshot_sha256": "d60924951b1940464575472b5a8b055d01799193cd38866a906c570646f7eab8",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-fast",
+    "url": "https://docs.perplexity.ai/docs/search/fast-search.md",
+    "snapshot_sha256": "73029516faf392d5d46b718790c17254191335b77bc71f30b262a60f0e72e25b",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-index",
+    "url": "https://docs.perplexity.ai/llms.txt",
+    "snapshot_sha256": "4833d5ecc9b70f31ecc6a67403943f52601fe2684dcb6571c972f3bf9e43a475",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-migration",
+    "url": "https://docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview.md",
+    "snapshot_sha256": "ec4e1d1fcf5c9bb7f4f18450e05be0c9f2fdec218b348da140f10b03d37bc1a6",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-pricing",
+    "url": "https://docs.perplexity.ai/docs/getting-started/pricing.md",
+    "snapshot_sha256": "ac31e397cc4998ddadbed91cdff6827facc1e8d86e638fc87e5fe58fd860bf84",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-search",
+    "url": "https://docs.perplexity.ai/api-reference/search-post.md",
+    "snapshot_sha256": "fa2c3dd158aa1c4b5878ffd57b4f98ea831f3ab3f94bf976df8e21210af6a3ff",
+    "checked_at": "2026-09-30",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "parallel-faq",
+    "url": "https://docs.parallel.ai/resources/faqs.md",
+    "snapshot_sha256": "e98f6e103da71a9f48e96ab30502aa048133a105e1c8fd46c1628af5d92564d7",
+    "checked_at": "2026-10-01",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-access",
+    "url": "https://docs.perplexity.ai/docs/getting-started/quickstart.md",
+    "snapshot_sha256": "7b5b8af4131a8565cde0bbae0bd02918eed58cfd77b0a0d689891388fb9718f6",
+    "checked_at": "2026-10-01",
+    "status": "retrieved_official_documentation"
+  },
+  {
+    "id": "perplexity-projects",
+    "url": "https://docs.perplexity.ai/docs/getting-started/projects.md",
+    "snapshot_sha256": "8f2367d035d315553ab5778148e90471873a379ef2baea11975d5b963463733e",
+    "checked_at": "2026-10-01",
+    "status": "retrieved_official_documentation"
+  }
+]

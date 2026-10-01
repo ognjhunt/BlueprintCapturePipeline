@@ -1,0 +1,542 @@
+[
+  {
+    "case_id": "BP20-01",
+    "expected_facts": [
+      {
+        "id": "BP20-01-F1",
+        "statement": "Chef reports 100 million servings across more than a dozen customer facilities in April 2026; these are vendor-reported production claims.",
+        "source_ids": [
+          "ddf7575641bc"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.889925+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-01-F2",
+        "statement": "Chef offers configurable tray portioning; ingredients, portions and conveyor interfaces need site acceptance.",
+        "source_ids": [
+          "ec8264368896"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.890938+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No independent throughput, partnership, site acceptance or performance guarantee."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-02",
+    "expected_facts": [
+      {
+        "id": "BP20-02-F1",
+        "statement": "C-001748 identifies the robotic module, not a software version. The listed utilities are 120 V, compressed air and Wi-Fi.",
+        "source_ids": [
+          "ec8264368896"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.890938+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Utilities alone cannot establish commissioning, sanitation, ingredient acceptance or throughput."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-03",
+    "expected_facts": [
+      {
+        "id": "BP20-03-F1",
+        "statement": "Weave says businesses across California run Isaac 0; its site offers Isaac 1 fall deliveries as a forward-looking statement.",
+        "source_ids": [
+          "ce3b2326d230"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.892046+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-03-F2",
+        "statement": "Isaac 0 shipments and orders are limited to California in the current page.",
+        "source_ids": [
+          "42932e9fdeae"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.892672+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Do not infer Austin eligibility, a Texas SLA, delivery timing or named customers."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-04",
+    "expected_facts": [
+      {
+        "id": "BP20-04-F1",
+        "statement": "Hero copy includes bed sheets but the FAQ excludes large blankets and bed sheets. Preserve the conflict; do not accept sheets.",
+        "source_ids": [
+          "42932e9fdeae"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.892672+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-04-F2",
+        "statement": "Isaac 0 blends autonomy with specialist teleoperation. The autonomous fraction depends on clothing, and stable internet is required.",
+        "source_ids": [
+          "42932e9fdeae"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.892672+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Do not claim full autonomy, a fixed autonomous fraction or no remote assistance."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-05",
+    "expected_facts": [
+      {
+        "id": "BP20-05-F1",
+        "statement": "Daily California business-operation claims concern Isaac 0. Isaac 1 fall delivery copy is a roadmap statement, not named installed operation.",
+        "source_ids": [
+          "ce3b2326d230"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.892046+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No generation substitution; no assertion that all fall deliveries have happened."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-06",
+    "expected_facts": [
+      {
+        "id": "BP20-06-F1",
+        "statement": "GXO announced a multi-year RaaS agreement on June 27, 2024 for Digit moving totes from cobots to conveyors at SPANX.",
+        "source_ids": [
+          "15d742b446e6"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.893726+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-06-F2",
+        "statement": "Agility describes workflow replication, onsite validation and 90 days of operational data during its pilot process.",
+        "source_ids": [
+          "c2ac37873891"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.900011+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "The historical agreement does not confirm September 2026 uptime or support eligibility for another site."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-07",
+    "expected_facts": [
+      {
+        "id": "BP20-07-F1",
+        "statement": "The guide keeps fourth-generation Digit in sectioned-off workcells in pilots and full RaaS; cooperative safety is future 2027 work.",
+        "source_ids": [
+          "c2ac37873891"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.900011+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No present shared-workcell safety approval or substitution of Digit 5 roadmap for deployed Digit 4."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-08",
+    "expected_facts": [
+      {
+        "id": "BP20-08-F1",
+        "statement": "Robin, Roy and Roger present towel corners to a separate folder; purchasing is through dealers, and colored towels require dealer testing.",
+        "source_ids": [
+          "68fbd89c7225"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.904800+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No end-to-end folding claim, guaranteed US service or current 12–14-week quote."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-09",
+    "expected_facts": [
+      {
+        "id": "BP20-09-F1",
+        "statement": "FedEx’s July 30, 2026 announcement expands autonomous trailer loading at Hagerstown, Maryland beyond the prior pilot to larger production scale.",
+        "source_ids": [
+          "45d2bd4d65bb"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.905893+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No prospect-wide package acceptance, throughput, customer slots or local support SLA inferred."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-10",
+    "expected_facts": [
+      {
+        "id": "BP20-10-F1",
+        "statement": "AmbiStack is mixed-case palletizing; its page acknowledges operator interventions and configurable conveyor/pallet positions.",
+        "source_ids": [
+          "6adb3b2a9a7a"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.908238+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-10-F2",
+        "statement": "The March 2023 OSM announcement concerns parcel sorting in Atlanta, Chicago and Las Vegas, not current AmbiStack site uptime.",
+        "source_ids": [
+          "0c35a8dd792c"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.907213+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Do not transfer sorting deployment evidence or universal parcel performance to stacking."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-11",
+    "expected_facts": [
+      {
+        "id": "BP20-11-F1",
+        "statement": "GrayMatter offers Scan&Sand and application-specific surface-finishing cells under an annual hardware/software/service model.",
+        "source_ids": [
+          "2214bb5c42f6"
+        ],
+        "source_checked_at": "2026-09-30T23:40:44.909552+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No universal material/geometric acceptance, guaranteed finish quality or installed-cell safety."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-12",
+    "expected_facts": [
+      {
+        "id": "BP20-12-F1",
+        "statement": "RightPick One is a compact rack-mounted piece-picking product.",
+        "source_ids": [
+          "ecd299665340"
+        ],
+        "source_checked_at": "2026-09-30T23:40:45.132201+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-12-F2",
+        "statement": "The primary news index dates RightPick One November 6, 2025 and describes RightPick 4 as newer than RightPick 3.",
+        "source_ids": [
+          "b6fc19845269"
+        ],
+        "source_checked_at": "2026-09-30T23:40:45.143460+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No SKU qualification, footprint acceptance, current quote or performance extrapolation."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-13",
+    "expected_facts": [
+      {
+        "id": "BP20-13-F1",
+        "statement": "The outer stamp says February 19, 2026 while the body dateline is January 8, 2025. The body says operation since mid-October; 2024 is an inference from that dateline.",
+        "source_ids": [
+          "aba5c7e16741"
+        ],
+        "source_checked_at": "2026-09-30T23:40:45.245670+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-13-F2",
+        "statement": "Randa’s Fort Worth example has 800–1,200 cases per container, up to 30 pounds per case, with associates managing downstream work.",
+        "source_ids": [
+          "aba5c7e16741"
+        ],
+        "source_checked_at": "2026-09-30T23:40:45.245670+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Do not date initial operation to 2026 or treat Randa conditions as a product-wide payload/rate guarantee."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-14",
+    "expected_facts": [
+      {
+        "id": "BP20-14-F1",
+        "statement": "Bear’s FAQ lists Servi food/drink transport, current US presence and Servi Q availability limited to US/Korea; it requires internet for mapping/analytics and excludes outdoor operation.",
+        "source_ids": [
+          "faaeda5b9b4f"
+        ],
+        "source_checked_at": "2026-09-30T23:40:45.571726+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Do not claim robotic food loading, arm-based clearing, patio compatibility or local SLA."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-15",
+    "expected_facts": [
+      {
+        "id": "BP20-15-F1",
+        "statement": "The CVG customer story concerns Neo and is dated April 26, 2022; it is historical named-customer evidence.",
+        "source_ids": [
+          "6b8117b2abcc"
+        ],
+        "source_checked_at": "2026-09-30T23:40:45.889420+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-15-F2",
+        "statement": "Avidbots describes training and authorized technician remote assistance in its support workflow.",
+        "source_ids": [
+          "1bc373341917"
+        ],
+        "source_checked_at": "2026-09-30T23:40:46.308848+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No September 2026 CVG uptime, Kas/Neo 2W performance transfer or Bay Area SLA inferred from a US office."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-16",
+    "expected_facts": [
+      {
+        "id": "BP20-16-F1",
+        "statement": "UR12e-1300 lists 12.5 kg payload, 1300 mm reach, ±0.05 mm repeatability and CB7/Gen 7 compute.",
+        "source_ids": [
+          "fba16ced8473"
+        ],
+        "source_checked_at": "2026-09-30T23:40:46.752867+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-16-F2",
+        "statement": "The WST Fab deployment explicitly used UR10e; present Gen 7 hardware at that customer is unverified.",
+        "source_ids": [
+          "36b6d7d05b1e"
+        ],
+        "source_checked_at": "2026-09-30T23:40:46.720837+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Do not assert current Gen 7 at WST, apply payload without tooling/CoG constraints or treat ratings as task success."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-17",
+    "expected_facts": [
+      {
+        "id": "BP20-17-F1",
+        "statement": "WST Fab’s PCC Robotics-integrated UR10e cell was reprogrammed with changed fixturing and 3D-printed grippers to run a dozen parts.",
+        "source_ids": [
+          "36b6d7d05b1e"
+        ],
+        "source_checked_at": "2026-09-30T23:40:46.720837+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No zero-shot changeover, complete-cell risk approval, installed cost or compatibility guarantee."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-18",
+    "expected_facts": [
+      {
+        "id": "BP20-18-F1",
+        "statement": "Intrinsic Core and Open Machine Tending Solution are an Apache 2.0 open release with ROS-compatible capabilities, requiring robotics proficiency and application engineering.",
+        "source_ids": [
+          "195178be9ef8"
+        ],
+        "source_checked_at": "2026-09-30T23:42:07.465433+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "Do not claim all Flowstate features are open source, universal validated hardware support or a supplied installed cell."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-19",
+    "expected_facts": [
+      {
+        "id": "BP20-19-F1",
+        "statement": "The July 2026 N1.7 workflow post-trains a G1 policy for static apple-to-plate manipulation; one episode is a smoke test, not representative success. The checkpoint is Apache 2.0.",
+        "source_ids": [
+          "56085a9d3e88"
+        ],
+        "source_checked_at": "2026-09-30T23:42:07.464595+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No field deployment, measured success rate or tutorial-proven Franka compatibility."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  },
+  {
+    "case_id": "BP20-20",
+    "expected_facts": [
+      {
+        "id": "BP20-20-F1",
+        "statement": "World Labs announced a definitive agreement to join AMD September 28, expected to close by end-2026 subject to conditions; closed status is not established.",
+        "source_ids": [
+          "c05735ac6fea"
+        ],
+        "source_checked_at": "2026-09-30T23:42:07.757754+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      },
+      {
+        "id": "BP20-20-F2",
+        "statement": "Atlas generates/fills regions no camera saw. Plausible generated geometry is not measurement-authoritative site truth.",
+        "source_ids": [
+          "555b86ad6550"
+        ],
+        "source_checked_at": "2026-09-30T23:42:07.679462+00:00",
+        "access_method": "independent_direct_public_page_read",
+        "weight": 1
+      }
+    ],
+    "forbidden_inferences": [
+      "No completed acquisition, captured truth for unseen zones, physical task fidelity or onsite robot-team inference."
+    ],
+    "required_unknowns": [
+      "Current site-specific service eligibility, sustained task metrics and provider acceptance of Blueprint evidence remain unverified where not directly supported."
+    ],
+    "review_status": "authored_before_model_evaluation_pending_parent_review"
+  }
+]

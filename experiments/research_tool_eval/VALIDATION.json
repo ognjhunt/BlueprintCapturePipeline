@@ -1,0 +1,49 @@
+{
+  "status": "offline_checks_passed_paid_not_authorized",
+  "frozen_benchmark_sha256": "6e5bc8b4e1e5fe6674d1ba2c50147bd8857b2bac3f6f8f01698f22eeb6683100",
+  "tests": {
+    "command": "python -m unittest discover -s experiments/research_tool_eval -p 'test_*.py'",
+    "passed": 38,
+    "network": "socket disabled in complete-matrix test"
+  },
+  "cache_validation": {
+    "command": "python experiments/research_tool_eval/harness.py validate --require-caches",
+    "source_hashes_verified": 23,
+    "documentation_hashes_verified": 21
+  },
+  "mock_run": {
+    "cells": 92,
+    "logical_calls": 184,
+    "provider_result_gets": 12,
+    "actual_usd": 0.0,
+    "quality_results": "not_evaluated"
+  },
+  "syntax": "compileall passed",
+  "review": "independent gpt-6.1-sol cleared offline-only draft; see REVIEW.md",
+  "live_enabled": false,
+  "changed_python_lint": {
+    "command": "ruff check experiments/research_tool_eval/{harness,review,test_harness,test_review}.py",
+    "status": "passed"
+  },
+  "repository_checks": {
+    "paid_resource_allocator_verifier": {
+      "passed": 21,
+      "command": "PYTHONPATH=src python -m pytest tests/test_paid_resource_allocator_verifier.py -q"
+    },
+    "admission_release_governance_sentinels": {
+      "passed": 6,
+      "command": "python -m pytest tests/test_paid_resource_admission.py::test_shared_chokepoint_grants_only_exact_admitted_contract tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied -q"
+    },
+    "blocked_collection": [
+      {
+        "test": "tests/test_success_claim_contracts.py::test_freshness_fails_closed_without_any_signal",
+        "reason": "replacement VM lacks Pillow (PIL)"
+      },
+      {
+        "test": "tests/test_runtime_security_controls.py::test_bounded_service_url_allows_only_loopback_plain_http",
+        "reason": "replacement VM lacks FastAPI; full pipeline runtime dependencies absent"
+      }
+    ],
+    "environment": "pytest/ruff installed only in temporary /tmp virtual environment; no project dependency changes"
+  }
+}

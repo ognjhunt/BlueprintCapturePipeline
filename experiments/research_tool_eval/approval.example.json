@@ -1,0 +1,19 @@
+{
+  "approved": false,
+  "approval_reference": null,
+  "secure_access_verified": false,
+  "canonical_paid_gate_receipt": null,
+  "terms_reviewed": false,
+  "immutable_commit": null,
+  "freeze_sha256": null,
+  "max_estimated_usd": null,
+  "controller": {
+    "model": "gpt-6.1-sol",
+    "model_snapshot": null,
+    "api": "existing Agents API researcher",
+    "service_tier": "standard",
+    "input_tokens_max": 8000,
+    "output_tokens_max_including_reasoning": 1600,
+    "hosted_compute_cost_bound_usd": null
+  }
+}

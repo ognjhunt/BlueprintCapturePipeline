@@ -1,0 +1,132 @@
+[
+  {
+    "team_id": "BP-TEAM-001",
+    "name": "Chef Robotics",
+    "urls": [
+      "https://www.chefrobotics.ai/post/100-million-servings-and-counting",
+      "https://www.chefrobotics.ai/solutions/chef-ai-enabled-system",
+      "https://www.chefrobotics.ai/post/how-chef-supports-robots-at-scale-across-two-continents"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-002",
+    "name": "Weave Robotics",
+    "urls": [
+      "https://www.weaverobotics.com/business",
+      "https://www.weaverobotics.com/isaac-0"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-003",
+    "name": "Agility Robotics",
+    "urls": [
+      "https://gxo.com/news_article/gxo-signs-industry-first-multi-year-agreement-with-agility-robotics/",
+      "https://www.agilityrobotics.com/content/agilitys-humanoid-deployment-process"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-004",
+    "name": "Laundry Robotics",
+    "urls": [
+      "https://laundry-robotics.com/faq/"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-005",
+    "name": "Dexterity",
+    "urls": [
+      "https://newsroom.fedex.com/newsroom/global-english/fedex-and-dexterity-expand-physical-ai-deployment-for-autonomous-trailer-loading-at-hagerstown-hub"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-006",
+    "name": "Ambi Robotics",
+    "urls": [
+      "https://www.ambirobotics.com/media/ambi-robotics-deploying-parcel-sorting-robots-at-osm-worldwide/",
+      "https://www.ambirobotics.com/ambistack/"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-007",
+    "name": "GrayMatter Robotics",
+    "urls": [
+      "https://graymatter-robotics.com/solutions/"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-008",
+    "name": "RightHand Robotics",
+    "urls": [
+      "https://righthandrobotics.com/the-latest/righthand-robotics-signs-multi-year-agreement-with-staples-to-deploy-ai-powered-picking-robots-in-fulfillment-centers",
+      "https://righthandrobotics.com/the-latest/meet-rightpick-one",
+      "https://righthandrobotics.com/the-latest"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-009",
+    "name": "Pickle Robot Company",
+    "urls": [
+      "https://www.picklerobot.com/news/pickle-robot-is-in-production-unloading-merchandise-for-randa-apparel-accessories",
+      "https://www.picklerobot.com/customers",
+      "https://www.picklerobot.com/news/press-release-ambi-robotics-and-pickle-robot-deliver-integrated-physical-ai-solution-to-fully-automate-inbound-logistics"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-010",
+    "name": "Bear Robotics",
+    "urls": [
+      "https://www.bearrobotics.ai/faq",
+      "https://www.bearrobotics.ai/blog/bear-robotics-introduces-servi-q"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-011",
+    "name": "Avidbots",
+    "urls": [
+      "https://avidbots.com/",
+      "https://avidbots.com/resources/customer-stories/cvg-airport-embraces-smart-robotic-floor-scrubbers-to-manage-growth/",
+      "https://avidbots.com/platform/customer-success/",
+      "https://avidbots.com/company/contact/"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-019",
+    "name": "Universal Robots",
+    "urls": [
+      "https://www.universal-robots.com/case-stories/wst-fab/",
+      "https://www.universal-robots.com/products/ur12e-1300/",
+      "https://www.universal-robots.com/insights/faq/",
+      "https://www.universal-robots.com/manuals/EN/HTML/SW10_7/Content/prod-usr-man/complianceUR10e/H_g5_sections/mechanical_interface_g5/maximum_payload_en_10e.htm"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-024",
+    "name": "NVIDIA",
+    "urls": [
+      "https://developer.nvidia.com/blog/develop-humanoid-robot-policies-end-to-end-with-nvidia-isaac-gr00t/",
+      "https://nvidianews.nvidia.com/news/nvidia-open-humanoid-robot-reference-design"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-025",
+    "name": "Intrinsic",
+    "urls": [
+      "https://www.intrinsic.ai/blog/posts/introducing-intrinsic-core",
+      "https://www.intrinsic.ai/blog/posts/accelerating-physical-ai-fanuc-integrates-with-intrinsic-and-flowstate",
+      "https://www.intrinsic.ai/blog/posts/intrinsic-and-trinity-robotics-automation-are-collaborating-on-intelligent-cnc-machine-tending-solutions",
+      "https://www.intrinsic.ai/flowstate"
+    ]
+  },
+  {
+    "team_id": "BP-TEAM-026",
+    "name": "World Labs",
+    "urls": [
+      "https://www.worldlabs.ai/blog/real-to-sim-to-real",
+      "https://www.worldlabs.ai/case-studies/1-robotics",
+      "https://www.worldlabs.ai/blog/marble-world-model",
+      "https://www.worldlabs.ai/blog/announcing-the-world-api",
+      "https://www.worldlabs.ai/blog/atlas",
+      "https://www.worldlabs.ai/blog/amd-announcement"
+    ]
+  }
+]
