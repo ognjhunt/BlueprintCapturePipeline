@@ -115,21 +115,34 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
 def _fixture_render_inputs(*, envelope: dict, stage_one_configuration: dict, output_root: Path) -> dict:
     """External renderer fixture; source/reference admission stays in the worker."""
     from PIL import Image
-    output_root.mkdir(parents=True)
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import materialize_scene_configuration_render_inputs
     seed = canonical_digest({"envelope": envelope["envelope_digest"], "stage": stage_one_configuration})
-    frames = []
-    for index in range(8):
-        path = output_root / f"fixture-{index:02d}.png"
-        Image.new("RGB", (32, 32), (index * 20, 80, 160)).save(path)
-        frames.append({"path": str(path), "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
-                       "size_bytes": path.stat().st_size})
-    value = {"schema_version": "task_evaluation_scene_configuration_render_inputs.v1",
-             "status": "derived_method_inputs_materialized", "run_id": envelope["request"]["run_id"],
-             "fixture_provider": True, "fixture_input_digest": seed, "claim_ceiling": "development_only",
-             "derived_frames": frames, "derived_frame_count": len(frames),
-             "renderer_qualified": False, "physical_truth_claimed": False,
-             "raw_interiorgs_bytes_in_provider_packet": False,
-             "provider_mutation_performed": False, "paid_execution_requested": False}
+
+    def renderer(**kwargs):
+        root = kwargs["output_dir"]
+        root.mkdir(mode=0o700)
+        rows = []
+        for index, camera in enumerate(kwargs["cameras"]):
+            path = root / f"fixture-{index:02d}.png"
+            intrinsics = camera["intrinsics"]
+            Image.new("RGB", (int(intrinsics["width"]), int(intrinsics["height"])),
+                      (index * 20, 80, 160)).save(path)
+            rows.append({"camera_id": camera["camera_id"], "relative_path": path.name,
+                         "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()})
+        value = {"status": "rendered_exact_cameras", "authorization_class": "method_input",
+            "render_count": len(rows), "splat_digest": kwargs["source_splat_digest"],
+            "renders": rows, "fixture_provider": True, "sealed_camera_render_manifest_digest": ""}
+        value["sealed_camera_render_manifest_digest"] = canonical_digest(value, digest_field="sealed_camera_render_manifest_digest")
+        return value
+
+    identity = {"fixture_provider": True, "fixture_input_digest": seed, "renderer_qualified": False}
+    value = materialize_scene_configuration_render_inputs(envelope=envelope,
+        stage_one_configuration=stage_one_configuration, output_root=output_root,
+        renderer=renderer, runtime_resolver=lambda **kwargs: {
+            "renderer_root": str(output_root), "node": "fixture-no-executable",
+            "browser_executable": "fixture-no-executable", "identity": identity})
+    value.update(fixture_provider=True, fixture_input_digest=seed, claim_ceiling="development_only",
+                 renderer_qualified=False, physical_truth_claimed=False)
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
     return value
 

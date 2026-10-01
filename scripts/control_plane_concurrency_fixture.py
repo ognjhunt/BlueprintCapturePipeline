@@ -7,6 +7,7 @@ publication and readback validators consume this transport unchanged.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -102,7 +103,13 @@ class FilesystemObjectStore:
                 "ETag": head["ETag"], "ContentRange": f"bytes {start}-{end}/{head['ContentLength']}",
                 "ResponseMetadata": {"HTTPStatusCode": 206 if Range else 200}}
 
-    def put_object(self, *, Bucket: str, Key: str, Body: BinaryIO, ContentLength: int) -> dict:
+    def put_object(self, *, Bucket: str, Key: str, Body: BinaryIO | bytes,
+                   ContentLength: int | None = None, IfNoneMatch: str | None = None) -> dict:
+        if isinstance(Body, bytes):
+            ContentLength = len(Body) if ContentLength is None else ContentLength
+            Body = io.BytesIO(Body)
+        if IfNoneMatch not in (None, "*"):
+            raise ValueError("fixture_object_create_condition_invalid")
         if type(ContentLength) is not int or not 0 < ContentLength <= OBJECT_LIMIT:
             raise ValueError("fixture_object_size_invalid")
         path = self._path(Bucket, Key)

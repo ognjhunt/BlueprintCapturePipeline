@@ -59,6 +59,7 @@ def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_pa
 
     monkeypatch.setattr(worker, "reserve_control_plane_disk", measured_test_reservation)
     from blueprint_pipeline import control_plane_disk_budget as budget
+    monkeypatch.setattr(budget, "reserve_control_plane_disk", measured_test_reservation)
     real_headroom = budget.disk_headroom
     monkeypatch.setattr(budget, "disk_headroom",
         lambda **kwargs: real_headroom(**kwargs, disk_usage=lambda _: usage))
@@ -75,6 +76,17 @@ def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_pa
     assert all(row["full_byte_service_account_readback_passed"] for row in envelope["materialized_references"])
     assert envelope["render_inputs_result"]["fixture_provider"] is True
     assert not list((tmp_path / "reservations").glob("*.json"))
+    from scripts.control_plane_concurrency_activation import advance_fixture_configuration_activation
+    activated = advance_fixture_configuration_activation(intake=first, preparation=result,
+        object_root=objects, output_root=tmp_path / "configuration-activation",
+        reservation_root=tmp_path / "reservations")
+    assert activated["progression"]["results"][0]["phase"] == "scene_configuration", activated
+    assert activated["worker"]["results"][0]["status"] == "profile_authority_materialized_no_execution", activated
+    assert activated["worker"]["results"][0]["preparation_result_digest"] == result["run"]["results"][0]["result_digest"]
+    assert activated["preparer"]["status"] == "prepared"
+    assert len(activated["preparer"]["completed_steps"]) >= 8
+    assert activated["preparer"]["provider_allocation_performed"] is False
+    assert activated["fixture_provider"] is True
     configured = advance_fixture_configuration(preparation=result, object_root=objects,
                                                output_root=tmp_path / "scene/configured")
     assert configured["publication"]["status"] == "configured_scene_published"
