@@ -211,3 +211,82 @@ def advance_fixture_configuration_activation(*, intake, preparation, object_root
     return {"progression": progressed, "staged": staged, "worker": worker,
             "preparer": receipts[0] if len(receipts) == 1 else None,
             "fixture_provider": True, "claim_ceiling": "development_only", "actual_provider_calls": 0}
+
+
+def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
+                                      configuration_activation, object_root, output_root,
+                                      reservation_root):
+    """Bind the real compiler to the original native construction launch graph."""
+    from blueprint_pipeline.task_evaluation_configured_controls_progression import (
+        build_configured_controls_activation_request, stage_configured_controls_activation)
+    from blueprint_pipeline.task_evaluation_shared_mutation_window import materialize_shared_mutation_window
+    from blueprint_pipeline.task_evaluation_launch_activation_worker import process_launch_activation_queue
+    from scripts.control_plane_concurrency_provider import fixture_publisher
+    output_root.mkdir(mode=0o700)
+    source = intake["source_commit"]
+    if (compiled.get("status") != "compiled_for_production_launch"
+            or compiled.get("result_digest") != canonical_digest(compiled, digest_field="result_digest")
+            or compiled.get("source_commit") != source):
+        raise ValueError("harness_native_compilation_invalid")
+    first_queue = Path(configuration_activation["staged"]["activation_queue_root"]) if "activation_queue_root" in configuration_activation["staged"] else output_root.parent / "configuration-activation" / "activation-queue"
+    rows = list((first_queue / "completed").glob("*.json"))
+    if len(rows) != 1:
+        raise ValueError("harness_native_configuration_activation_ambiguous")
+    first = json.loads(rows[0].read_text())["request"]
+    authorization = first["authorization"]
+    lineage = first["lineage"]
+    prep_result = preparation["run"]["results"][0]
+    base = build_configured_controls_activation_request(progression=episode,
+        preparation_result=prep_result, release_window=first["release_window"],
+        lineage=lineage, authorization=authorization, lane="native_task_arena_construction")
+    template = {"schema_version": "task_evaluation_configured_controls_release_window_template.v1",
+        "status": "authorized_for_dynamic_release", "team_namespace": base["team_namespace"],
+        "expected_production_commit": source,
+        "allowed_mutations": ["catalog_synchronization", "profile_publication", "standing_authorization"],
+        "provider_allowlist": ["vast"], "maximum_hard_cap_usd": 12.0,
+        "valid_for_seconds": 3600, "released_by": "FICTIONAL no-paid fixture coordinator",
+        "release_reference": "ADP-009D development_only local fixture",
+        "provider_resource_allocation_allowed": False, "paid_request_allowed": False}
+    template["template_digest"] = canonical_digest(template, digest_field="template_digest")
+    window = materialize_shared_mutation_window(template, activation_request=base,
+        provider_allowlist=["vast"], hard_cap_usd=12.0)
+    path = output_root / "fixture-release-window.json"
+    path.write_text(json.dumps(window))
+    published = fixture_publisher(object_root)(path=path, object_name="fixture-native-release-window.json")
+    reference = {key: published[key] for key in ("uri", "digest", "size_bytes")}
+    queue = output_root / "activation-queue"
+    staged = stage_configured_controls_activation(progression=episode,
+        preparation_result=prep_result, release_window=reference, lineage=lineage,
+        authorization=authorization, lane="native_task_arena_construction", queue_root=queue,
+        submitted_by="fictional-development-fixture")
+    account = pwd.getpwuid(os.geteuid())
+    store = FilesystemObjectStore(object_root)
+    def fetch(uri, destination, maximum_bytes):
+        parsed = urlsplit(uri)
+        if parsed.scheme != "s3" or parsed.query or parsed.fragment:
+            raise ValueError("harness_native_reference_uri_invalid")
+        kwargs = {"Bucket": parsed.netloc, "Key": parsed.path.lstrip("/")}
+        if store.head_object(**kwargs)["ContentLength"] > maximum_bytes:
+            raise ValueError("harness_native_reference_size_exceeded")
+        with store.get_object(**kwargs)["Body"] as body, destination.open("xb") as target:
+            shutil.copyfileobj(body, target, 1024 * 1024)
+    receipts = []
+    def prepare(**kwargs):
+        result = canonical_fixture_preparer(**kwargs, object_root=object_root)
+        receipts.append(result)
+        return result
+    with fixture_environment(intake["environment"]):
+        worker = process_launch_activation_queue(queue_root=queue,
+            preparation_queue_root=intake["preparation_queue"],
+            preparation_input_root=intake["config_path"].parent.parent / "prepared-references",
+            episode_compilation_queue_root=preparation["compilation_queue"],
+            activation_root=output_root / "activated", allowed_uri_prefixes=["s3://blueprint/"],
+            service_account=account.pw_name, service_group=grp.getgrgid(account.pw_gid).gr_name,
+            repository_root=Path(__file__).resolve().parents[1],
+            destination_prefix="s3://blueprint/task-evaluation/fixture-native-activated",
+            release_window_prefix="s3://blueprint/task-evaluation/",
+            profile_dir=output_root / "profiles", webapp_catalog=output_root / "catalog.json",
+            standing_authorization_dir=output_root / "authorizations", source_commit=source,
+            fetcher=fetch, preparer=prepare, disk_reservation_root=reservation_root)
+    return {"staged": staged, "worker": worker, "preparer": receipts[0] if len(receipts) == 1 else None,
+            "fixture_provider": True, "actual_provider_calls": 0, "claim_ceiling": "development_only"}
