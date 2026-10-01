@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from blueprint_pipeline.task_evaluation_episode_compilation_worker import process_episode_compilation_queue
-from scripts.control_plane_concurrency_load_test import allocated_tree_bytes
+from scripts.control_plane_concurrency_load_test import AllocationSampler
 from scripts.control_plane_concurrency_scene import (
     advance_fixture_intake, advance_fixture_preparation, advance_fixture_configuration, fixture_environment,
 )
@@ -38,13 +38,14 @@ def run_scene(*, scene_key: str, control_root: Path, object_root: Path, worker_r
     rows = []
     def measured(stage, function):
         wall, cpu = time.monotonic(), time.process_time()
-        before = allocated_tree_bytes(control_root)
-        value = function()
-        after = allocated_tree_bytes(control_root)
+        with AllocationSampler(control_root) as allocation:
+            value = function()
         rows.append({'stage':stage,'status':'completed','wall_seconds':time.monotonic()-wall,
-            'cpu_seconds':time.process_time()-cpu,'peak_allocated_bytes':max(before,after),
-            'allocation_measurement':'shared_tree_boundary_samples',
-            'allocated_delta_bytes':after-before})
+            'cpu_seconds':time.process_time()-cpu,'peak_allocated_bytes':allocation.peak_bytes,
+            'allocation_measurement':'continuous_shared_tree_samples',
+            'allocation_sample_count':allocation.sample_count,
+            'allocation_interval_seconds':allocation.interval_seconds,
+            'allocated_delta_bytes':allocation.final_bytes-allocation.initial_bytes})
         return value
     def intake():
         value = advance_fixture_intake(host_root=host,object_root=object_root,

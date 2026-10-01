@@ -24,6 +24,32 @@ def test_p95_uses_nearest_rank_and_rejects_unmeasured_values():
             harness.p95(values)
 
 
+def test_allocation_sampler_observes_a_transient_peak_and_propagates_errors(tmp_path, monkeypatch):
+    import time
+    from scripts import control_plane_concurrency_load_test as module
+    sampler = module.AllocationSampler(tmp_path, interval_seconds=0.01)
+    with sampler:
+        payload = tmp_path / "transient"
+        payload.write_bytes(b"a" * 1024**2)
+        deadline = time.monotonic() + 2
+        while sampler.peak_bytes < 1024**2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert sampler.peak_bytes >= 1024**2
+        payload.unlink()
+    assert sampler.peak_bytes > sampler.final_bytes
+    assert sampler.sample_count >= 3
+    calls = 0
+    def unreadable(root):
+        nonlocal calls
+        calls += 1
+        if calls > 1: raise ValueError("allocation_measurement_incomplete")
+        return 0
+    monkeypatch.setattr(module, "allocated_tree_bytes", unreadable)
+    with pytest.raises(ValueError, match="allocation_measurement_incomplete"):
+        with module.AllocationSampler(tmp_path, interval_seconds=0.01):
+            time.sleep(0.05)
+
+
 def test_allocated_measurement_counts_hardlinks_once_and_ignores_external_symlink(tmp_path):
     root = tmp_path / "host"
     root.mkdir()

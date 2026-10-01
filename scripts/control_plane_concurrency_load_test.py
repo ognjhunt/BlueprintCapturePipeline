@@ -11,6 +11,7 @@ import os
 import argparse
 import sys
 import socket
+import threading
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -122,6 +123,46 @@ def allocated_tree_bytes(root: Path) -> int:
     if usage.unreadable:
         raise ValueError("allocation_measurement_incomplete")
     return usage.allocated_bytes
+
+
+class AllocationSampler:
+    """Continuously measure allocated bytes, retaining every measurement error."""
+    def __init__(self, root: Path, *, interval_seconds: float = 0.1):
+        if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+            raise ValueError("allocation_sampling_interval_invalid")
+        self.root, self.interval_seconds = root, interval_seconds
+        self.stop = threading.Event()
+        self.errors: list[Exception] = []
+        self.sample_count = self.peak_bytes = self.final_bytes = 0
+
+    def sample(self):
+        value = allocated_tree_bytes(self.root)
+        self.final_bytes = value
+        self.peak_bytes = max(self.peak_bytes, value)
+        self.sample_count += 1
+
+    def __enter__(self):
+        self.sample()
+        self.initial_bytes = self.final_bytes
+        def monitor():
+            while not self.stop.wait(self.interval_seconds):
+                try:
+                    self.sample()
+                except Exception as exc:
+                    self.errors.append(exc)
+                    return
+        self.thread = threading.Thread(target=monitor, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        self.stop.set()
+        self.thread.join()
+        if kind is None:
+            if self.errors:
+                raise self.errors[0]
+            self.sample()
+        return False
 
 
 def create_run_roots(control_plane: Path, objects: Path, workers: Path) -> dict[str, Path]:
