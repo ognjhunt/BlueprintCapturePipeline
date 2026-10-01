@@ -244,7 +244,7 @@ def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
         "expected_production_commit": source,
         "allowed_mutations": ["catalog_synchronization", "profile_publication", "standing_authorization"],
         "provider_allowlist": ["vast"], "maximum_hard_cap_usd": 12.0,
-        "valid_for_seconds": 3600, "released_by": "FICTIONAL no-paid fixture coordinator",
+        "valid_for_seconds": 3600, "released_by": "fictional-fixture-coordinator",
         "release_reference": "ADP-009D development_only local fixture",
         "provider_resource_allocation_allowed": False, "paid_request_allowed": False}
     template["template_digest"] = canonical_digest(template, digest_field="template_digest")
