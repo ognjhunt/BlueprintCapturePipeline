@@ -272,8 +272,8 @@ def build_summary(
     scenes: list[dict[str, Any]],
     measured_peak_concurrency: int,
     concurrency_hold_seconds: float,
-    baseline_allocated_bytes: int,
-    final_allocated_bytes: int,
+    baseline_allocated_bytes: int | None,
+    final_allocated_bytes: int | None,
     maximum_retained_bytes: int,
     maximum_delta_bytes: int,
     external_calls: int,
@@ -285,10 +285,16 @@ def build_summary(
         blockers.append("requested_scene_count_not_completed")
     if measured_peak_concurrency != count or concurrency_hold_seconds <= 0:
         blockers.append("target_concurrency_not_observed")
-    if final_allocated_bytes > maximum_retained_bytes:
+    if baseline_allocated_bytes is None or final_allocated_bytes is None:
+        blockers.append("control_plane_allocation_not_ingested")
+    if final_allocated_bytes is not None and final_allocated_bytes > maximum_retained_bytes:
         blockers.append("control_plane_retained_bytes_exceeded")
-    delta = final_allocated_bytes - baseline_allocated_bytes
-    if delta > maximum_delta_bytes:
+    delta = (
+        final_allocated_bytes - baseline_allocated_bytes
+        if final_allocated_bytes is not None and baseline_allocated_bytes is not None
+        else None
+    )
+    if delta is not None and delta > maximum_delta_bytes:
         blockers.append("control_plane_disk_delta_exceeded")
     if external_calls:
         blockers.append("external_provider_calls_observed")

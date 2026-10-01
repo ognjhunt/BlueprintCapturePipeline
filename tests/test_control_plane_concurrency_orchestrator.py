@@ -56,6 +56,60 @@ def test_live_acceptance_requires_kernel_confinement_before_creating_roots(tmp_p
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("failure", ["initial_measurement", "synchronous_builder"])
+def test_parent_failure_or_watchdog_seals_failed_report(tmp_path, monkeypatch, failure):
+    import time
+    from scripts import control_plane_concurrency_orchestrator as module
+    from tests.test_task_evaluation_completed_scene_progression import _config
+    from tests import test_task_evaluation_completed_scene_progression as fixture
+    from tests import test_task_evaluation_scene_configuration_submission as template
+
+    source = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    monkeypatch.setattr(fixture, "SHA", source)
+    monkeypatch.setattr(template, "SHA", source)
+    configuration = tmp_path / "configuration"
+    configuration.mkdir()
+    _config(configuration, monkeypatch)
+    run = tmp_path / "run"
+    run.mkdir(mode=0o700)
+    monkeypatch.setattr(module, "require_kernel_confinement", lambda: {"contract_fixture": True})
+    if failure == "initial_measurement":
+
+        def unreadable(root):
+            raise ValueError("allocation_measurement_incomplete")
+
+        monkeypatch.setattr(module, "allocated_tree_bytes", unreadable)
+    else:
+        monkeypatch.setattr(module, "_runtime_bundle", lambda *args: time.sleep(2))
+    arguments = SimpleNamespace(
+        report=run / "report.json",
+        control_plane_root=run / "control",
+        object_store_root=run / "objects",
+        worker_root=run / "workers",
+        release_binding=configuration / "release.json",
+        runtime_source_root=tmp_path / "packet",
+        expected_beta_concurrency=1,
+        owner_confirmed_concurrency=False,
+        maximum_retained_gib=0.25,
+        maximum_delta_gib=0.25,
+        child_timeout_seconds=120,
+        global_timeout_seconds=0.1,
+    )
+    started = time.monotonic()
+    assert module.run_benchmark(arguments) == 1
+    assert time.monotonic() - started < 1.5
+    report = json.loads(arguments.report.read_text())
+    assert report["status"] == "failed" and report["owner_sized_acceptance_complete"] is False
+    expected = (
+        "allocation_measurement_incomplete"
+        if failure == "initial_measurement"
+        else "global_timeout"
+    )
+    assert any(expected in value for value in report["blockers"])
+    if failure == "initial_measurement":
+        assert report["baseline_allocated_bytes"] is report["final_allocated_bytes"] is None
+
+
 @pytest.mark.slow
 def test_two_joined_children_share_original_holds_and_retire_only_after_join(tmp_path, monkeypatch):
     from scripts import control_plane_concurrency_orchestrator as module

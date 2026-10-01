@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import socket
 import stat
@@ -17,11 +18,11 @@ from scripts.control_plane_concurrency_load_test import (
     AllocationSampler,
     allocated_tree_bytes,
     argument_parser,
-    build_summary,
     child_environment,
     create_run_roots,
 )
 from scripts.control_plane_concurrency_protocol import observe_overlap, seal_document
+from scripts.control_plane_concurrency_reporting import finish_report, whole_run_deadline
 
 
 def require_kernel_confinement(*, process_root=Path("/proc")):
@@ -37,7 +38,9 @@ def require_kernel_confinement(*, process_root=Path("/proc")):
             raise ValueError("harness_kernel_confinement_required")
         try:
             connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        except OSError:
+        except OSError as exc:
+            if exc.errno not in {errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT, errno.EPERM}:
+                raise ValueError("harness_internet_denial_not_proven") from exc
             return {
                 "private_network": True,
                 "internet_address_family_denied": True,
@@ -77,16 +80,30 @@ def _wait_children(children, predicate, *, child_timeout, global_deadline):
 
 
 def _stop_owned_children(children):
-    for row in children:
-        if row["process"].poll() is None:
-            row["process"].terminate()
+    """Terminate all owned children with two shared ten-second shutdown budgets."""
+    blockers = []
+    for operation in ("terminate", "kill"):
+        deadline = time.monotonic() + 10
+        for row in children:
+            try:
+                if row["process"].poll() is None:
+                    getattr(row["process"], operation)()
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                blockers.append("child_shutdown:" + row["scene_key"] + ":" + str(exc))
+        for row in children:
+            try:
+                row["process"].wait(timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                if operation == "kill":
+                    blockers.append("child_shutdown_timeout:" + row["scene_key"])
     for row in children:
         try:
-            row["process"].wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            row["process"].kill()
-            row["process"].wait(timeout=10)
-        row["log"].close()
+            row["log"].close()
+        except OSError as exc:
+            blockers.append("child_log_close:" + row["scene_key"] + ":" + str(exc))
+    return blockers
 
 
 def _runtime_bundle(source_root, source_commit, roots):
@@ -157,7 +174,7 @@ def run_benchmark(args):
     for key in ("deploy_receipt", "release_provenance", "release_environment"):
         checked_file(release[key]["path"], release[key])
     roots = create_run_roots(*roots_paths)
-    baseline = allocated_tree_bytes(roots["control_plane"])
+    baseline = None
     children = []
     scenes = []
     peak = 0
@@ -167,8 +184,14 @@ def run_benchmark(args):
     started = time.monotonic()
     deadline = started + args.global_timeout_seconds
     sampler = AllocationSampler(roots["control_plane"])
-    sampler.__enter__()
+    watchdog = whole_run_deadline(deadline)
+    watchdog_started = sampler_started = False
     try:
+        watchdog.__enter__()
+        watchdog_started = True
+        baseline = allocated_tree_bytes(roots["control_plane"])
+        sampler.__enter__()
+        sampler_started = True
         runtime = _runtime_bundle(args.runtime_source_root, source, roots)
         barriers = roots["workers"] / "barriers"
         barriers.mkdir(mode=0o700)
@@ -353,53 +376,31 @@ def run_benchmark(args):
     except Exception as exc:
         blockers = getattr(exc, "errors", None) or [type(exc).__name__ + ":" + str(exc)]
     finally:
-        _stop_owned_children(children)
-        try:
-            sampler.__exit__(None, None, None)
-        except Exception as exc:
-            blockers.append(type(exc).__name__ + ":" + str(exc))
-    if blockers:
-        scenes = [
-            json.loads(row["result_path"].read_text())
-            for row in children
-            if row["result_path"].is_file()
-        ]
-    final = allocated_tree_bytes(roots["control_plane"])
-    summary = build_summary(
-        source_commit=source,
-        expected_beta_concurrency=args.expected_beta_concurrency,
-        owner_confirmed=args.owner_confirmed_concurrency,
+        if watchdog_started:
+            watchdog.__exit__(None, None, None)
+        blockers.extend(_stop_owned_children(children))
+        if sampler_started:
+            try:
+                with whole_run_deadline(time.monotonic() + 5):
+                    sampler.__exit__(None, None, None)
+            except Exception as exc:
+                blockers.append(type(exc).__name__ + ":" + str(exc))
+    return finish_report(
+        args=args,
+        source=source,
+        release=release,
+        confinement=confinement,
+        roots=roots,
+        baseline=baseline,
+        children=children,
         scenes=scenes,
-        measured_peak_concurrency=peak,
-        concurrency_hold_seconds=held,
-        baseline_allocated_bytes=baseline,
-        final_allocated_bytes=final,
-        maximum_retained_bytes=int(args.maximum_retained_gib * 1024**3),
-        maximum_delta_bytes=int(args.maximum_delta_gib * 1024**3),
-        external_calls=sum(s.get("actual_provider_calls", 0) for s in scenes),
-    )
-    summary.update(
-        kernel_confinement=confinement,
+        sampler=sampler,
+        blockers=blockers,
         retirement=retirement,
-        peak_allocated_bytes=sampler.peak_bytes,
-        allocation_sample_count=sampler.sample_count,
-        allocation_incomplete_scan_count=sampler.incomplete_scan_count,
-        filesystem_and_allocation_samples=sampler.samples,
-        allocation_interval_seconds=sampler.interval_seconds,
-        fixture_object_allocated_bytes=allocated_tree_bytes(roots["objects"]),
-        worker_allocated_bytes=allocated_tree_bytes(roots["workers"]),
-        maximum_heavy_stage_parallelism_configured=1,
-        concurrency_boundary="positive policy-output storage reservations",
-        automatic_terminal_reconciliation_proven=False,
-        normal_six_hour_retention_proven=False,
+        peak=peak,
+        held=held,
+        measure=allocated_tree_bytes,
     )
-    summary["blockers"] = sorted(set(summary["blockers"] + blockers))
-    summary["status"] = "failed" if summary["blockers"] else "passed"
-    summary["owner_sized_acceptance_complete"] = (
-        args.owner_confirmed_concurrency and summary["status"] == "passed"
-    )
-    seal_document(report, summary)
-    return 0 if summary["status"] == "passed" else 1
 
 
 def main(argv=None):
