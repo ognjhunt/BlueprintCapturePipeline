@@ -7,6 +7,7 @@ publication and readback validators consume this transport unchanged.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -21,11 +22,15 @@ SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 class _ReadCounter:
-    def __init__(self, stream: BinaryIO, store: FilesystemObjectStore):
-        self.stream, self.store = stream, store
+    def __init__(self, stream: BinaryIO, store: FilesystemObjectStore, remaining: int | None = None):
+        self.stream, self.store, self.remaining = stream, store, remaining
 
     def read(self, size: int = -1) -> bytes:
+        if self.remaining is not None:
+            size = self.remaining if size < 0 else min(size, self.remaining)
         result = self.stream.read(size)
+        if self.remaining is not None:
+            self.remaining -= len(result)
         self.store.read_bytes += len(result)
         return result
 
@@ -58,15 +63,44 @@ class FilesystemObjectStore:
             raise ValueError("fixture_object_path_unsafe")
         return result
 
+    def _metadata_path(self, bucket: str, key: str) -> Path:
+        self._path(bucket, key)
+        path = self.root / ".metadata" / bucket / (key + ".json")
+        if any(item.is_symlink() for item in (path, *path.parents)):
+            raise ValueError("fixture_object_path_unsafe")
+        return path
+
     def head_object(self, *, Bucket: str, Key: str) -> dict:
         path = self._path(Bucket, Key)
         if not path.is_file():
             raise KeyError(Key)
-        return {"ContentLength": path.stat().st_size}
+        state = path.stat()
+        etag = '"' + ':'.join(str(value) for value in
+            (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)) + '"'
+        metadata_path = self._metadata_path(Bucket, Key)
+        metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+        return {"ContentLength": state.st_size, "ETag": etag, "Metadata": metadata}
 
-    def get_object(self, *, Bucket: str, Key: str) -> dict:
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None,
+                   IfMatch: str | None = None) -> dict:
         path = self._path(Bucket, Key)
-        return {"Body": _ReadCounter(path.open("rb"), self)}
+        head = self.head_object(Bucket=Bucket, Key=Key)
+        if IfMatch is not None and IfMatch != head["ETag"]:
+            raise ValueError("fixture_object_version_changed")
+        start, end = 0, head["ContentLength"] - 1
+        if Range is not None:
+            match = re.fullmatch(r"bytes=(\d+)-(\d+)", Range)
+            if not match:
+                raise ValueError("fixture_object_range_invalid")
+            start, end = map(int, match.groups())
+            if not 0 <= start <= end < head["ContentLength"]:
+                raise ValueError("fixture_object_range_invalid")
+        stream = path.open("rb")
+        stream.seek(start)
+        length = end - start + 1
+        return {"Body": _ReadCounter(stream, self, length), "ContentLength": length,
+                "ETag": head["ETag"], "ContentRange": f"bytes {start}-{end}/{head['ContentLength']}",
+                "ResponseMetadata": {"HTTPStatusCode": 206 if Range else 200}}
 
     def put_object(self, *, Bucket: str, Key: str, Body: BinaryIO, ContentLength: int) -> dict:
         if type(ContentLength) is not int or not 0 < ContentLength <= OBJECT_LIMIT:
@@ -94,11 +128,15 @@ class FilesystemObjectStore:
         self.uploaded_bytes += written
         return {"ETag": digest.hexdigest()}
 
-    def create_multipart_upload(self, *, Bucket: str, Key: str) -> dict:
+    def create_multipart_upload(self, *, Bucket: str, Key: str, Metadata: dict | None = None,
+                                ContentType: str | None = None) -> dict:
         self._path(Bucket, Key)
         identifier = uuid.uuid4().hex
         root = self.root / ".multipart" / identifier
+        if any(path.is_symlink() for path in (root, *root.parents)):
+            raise ValueError("fixture_multipart_binding_invalid")
         root.mkdir(parents=True, mode=0o700)
+        (root / "metadata").write_text(json.dumps(Metadata or {}))
         (root / "binding").write_text(Bucket + "\n" + Key + "\n")
         return {"UploadId": identifier}
 
@@ -107,7 +145,7 @@ class FilesystemObjectStore:
         if not re.fullmatch(r"[a-f0-9]{32}", identifier):
             raise ValueError("fixture_multipart_binding_invalid")
         root = self.root / ".multipart" / identifier
-        if root.is_symlink() or (root / "binding").read_text() != bucket + "\n" + key + "\n":
+        if any(path.is_symlink() for path in (root, *root.parents, root / "binding", root / "metadata")) or (root / "binding").read_text() != bucket + "\n" + key + "\n":
             raise ValueError("fixture_multipart_binding_invalid")
         return root
 
@@ -131,6 +169,8 @@ class FilesystemObjectStore:
             if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != row["ETag"]:
                 raise ValueError("fixture_multipart_part_mismatch")
             total += path.stat().st_size
+        if not 0 < total <= OBJECT_LIMIT:
+            raise ValueError("fixture_object_size_invalid")
         path = self._path(Bucket, Key)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with path.open("xb") as destination:
@@ -139,6 +179,10 @@ class FilesystemObjectStore:
                     shutil.copyfileobj(source, destination, CHUNK)
             destination.flush()
             os.fsync(destination.fileno())
+        metadata = self._metadata_path(Bucket, Key)
+        metadata.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with metadata.open("x") as stream:
+            stream.write((root / "metadata").read_text())
         self.uploaded_bytes += total
         shutil.rmtree(root)
 

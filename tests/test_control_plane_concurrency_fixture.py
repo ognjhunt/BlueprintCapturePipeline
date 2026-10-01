@@ -56,3 +56,40 @@ def test_fixture_multipart_retains_remote_bytes_and_binds_every_part(tmp_path):
                                     MultipartUpload={"Parts": parts})
     assert (tmp_path / "fixtures/large").read_bytes() == b"a" * 100 + b"b" * 100
     assert store.uploaded_bytes == 200
+
+
+def test_real_cas_publication_validates_fixture_transport_bytes(tmp_path):
+    from blueprint_pipeline.task_evaluation_configured_scene_object_store import publish_configured_scene_stream
+    store = FilesystemObjectStore(tmp_path)
+    payload = b"actual closed fixture CAS input" * 100
+    record = publish_configured_scene_stream(write_stream=lambda stream: stream.write(payload),
+        digest="sha256:" + hashlib.sha256(payload).hexdigest(), size_bytes=len(payload),
+        filename="fixture.zip", artifact_kind="provider-output", client=store, bucket="fixtures")
+    assert record["status"] == "remote_verified"
+    assert record["full_byte_service_account_readback_passed"] is True
+    assert store.read_bytes == len(payload)
+    key = record["uri"].split("s3://fixtures/", 1)[1]
+    head = store.head_object(Bucket="fixtures", Key=key)
+    with store.get_object(Bucket="fixtures", Key=key, Range="bytes=3-9", IfMatch=head["ETag"])["Body"] as body:
+        assert body.read() == payload[3:10]
+
+
+def test_multipart_total_limit_and_symlinked_control_root_fail_closed(tmp_path, monkeypatch):
+    from scripts import control_plane_concurrency_fixture as module
+    store = FilesystemObjectStore(tmp_path)
+    monkeypatch.setattr(module, "OBJECT_LIMIT", 5)
+    upload = store.create_multipart_upload(Bucket="fixtures", Key="too-large")
+    part = store.upload_part(Bucket="fixtures", Key="too-large", UploadId=upload["UploadId"],
+                              PartNumber=1, Body=b"sixxxx")
+    with pytest.raises(ValueError, match="fixture_object_size_invalid"):
+        store.complete_multipart_upload(Bucket="fixtures", Key="too-large", UploadId=upload["UploadId"],
+            MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": part["ETag"]}]})
+    assert not (tmp_path / "fixtures/too-large").exists()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    store.abort_multipart_upload(Bucket="fixtures", Key="too-large", UploadId=upload["UploadId"])
+    (tmp_path / ".multipart").rmdir()
+    (tmp_path / ".multipart").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="fixture_multipart_binding_invalid"):
+        store.create_multipart_upload(Bucket="fixtures", Key="escape")
+    assert not list(outside.iterdir())
