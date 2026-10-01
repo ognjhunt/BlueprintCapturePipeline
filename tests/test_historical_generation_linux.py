@@ -301,7 +301,13 @@ def test_actual_connected_historical_interruption(case_id, record_property):
         command = ['sudo', '-n', 'env', 'BLUEPRINT_DISPOSABLE_LINUX_TEST=1',
                    'PYTHONDONTWRITEBYTECODE=1', *command]
     try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=60,
+        # Two real expired grants need two actual waiting windows. This only
+        # bounds controller observation; original operation and grant clocks,
+        # fixed manager timeout and all per-syscall gates remain unchanged.
+        options = dict(CONNECTED_CASES)[case_id]
+        observation_timeout = 90 if any(options.get(key) for key in (
+            'observation_expiry', 'resume_delete_expiry', 'resume_absent_expiry')) else 60
+        done = subprocess.run(command, capture_output=True, text=True, timeout=observation_timeout,
                               cwd=Path(__file__).parents[1],
                               env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})
     except subprocess.TimeoutExpired as error:

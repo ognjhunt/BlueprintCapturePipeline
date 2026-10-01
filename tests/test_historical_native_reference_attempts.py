@@ -156,7 +156,7 @@ def test_controller_refusals_are_separate_from_actual_durable_receipt():
     assert native._durable_receipt(dict(decorated, other='unexpected')) != receipt
 
 
-@pytest.mark.parametrize('expected', ['recovered_stage', 'recovered_split'])
+@pytest.mark.parametrize('expected', ['recovered_stage', 'recovered_split', 'recovered_prefix'])
 def test_actual_later_restore_observation_may_follow_refused_boundary(tmp_path, expected):
     import hashlib
     _, raw = original_journal(tmp_path)
@@ -175,3 +175,30 @@ def test_stage_boundary_cannot_move_backwards_after_refusal(tmp_path, phase):
         original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=1)]
     with pytest.raises(AssertionError):
         native._assert_boundary_recovery(result, 'recovered_split', observations, ACTION, raw)
+
+
+def test_exact_prefix_phase_keeps_actual_incremental_accounting():
+    result = dict(status='completed', recovered_prefix=True, restored_files=1, restored_logical_bytes=2,
+                  reused_files=1, reused_logical_bytes=1)
+    native._assert_boundary_recovery(result, 'recovered_prefix', [], ACTION, b'')
+    native._assert_restore_increment(result, {'one': b'a', 'two': b'bc'})
+
+
+@pytest.mark.parametrize('change', ['swapped_count', 'wrong_hash', 'wrong_path', 'duplicate'])
+def test_native_prefix_credit_requires_the_exact_preceding_birth_set(change):
+    import hashlib
+    original = {'one': b'a', 'two': b'bc'}
+    body = dict(path='one', sha256='sha256:' + hashlib.sha256(b'a').hexdigest(), size_bytes=1)
+    receipt = dict(status='completed', recovered_prefix=True, reused_files=1, reused_logical_bytes=1,
+        restored_files=1, restored_logical_bytes=2, _fixture_prior_member_births=[dict(body=body)])
+    if change == 'swapped_count':
+        receipt.update(reused_logical_bytes=2, restored_logical_bytes=1)
+    elif change == 'wrong_hash':
+        body['sha256'] = 'sha256:' + 'f' * 64
+    elif change == 'wrong_path':
+        body['path'] = 'unselected'
+    else:
+        receipt['_fixture_prior_member_births'].append(dict(body=body))
+        receipt.update(reused_files=2, reused_logical_bytes=2, restored_files=0, restored_logical_bytes=1)
+    with pytest.raises(AssertionError):
+        native._assert_restore_increment(receipt, original)

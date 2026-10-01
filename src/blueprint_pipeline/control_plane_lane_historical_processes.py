@@ -346,7 +346,8 @@ def refuse_historical_process_references(manifest, *, tick):
                 _require(not channels, 'process_reference')
             finally:
                 os.close(directory)
-        _require([name for name in scan.names(proc, 10000) if name.isdigit()] == names)
+        after = [name for name in scan.names(proc, 10000) if name.isdigit()]
+        _require(after == names)
         scan.tick()
     except HistoricalProcessError:
         raise

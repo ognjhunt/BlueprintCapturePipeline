@@ -111,6 +111,12 @@ def worker_main(root, action_id):
             while frame is not None:
                 if frame.f_code.co_filename == processes.__file__:
                     frames.append(dict(function=frame.f_code.co_name, line=frame.f_lineno))
+                    if frame.f_code.co_name == 'refuse_historical_process_references':
+                        before, after = frame.f_locals.get('names'), frame.f_locals.get('after')
+                        if type(before) is list and type(after) is list:
+                            scan_failure['pid_census'] = dict(before_count=len(before), after_count=len(after),
+                                added=[int(pid) for pid in sorted(set(after)-set(before))[:8]],
+                                removed=[int(pid) for pid in sorted(set(before)-set(after))[:8]])
                 frame = frame.f_back
             scan_failure.update(error_type='HistoricalProcessError', errno=None, frames=frames)
         return original_require(value, code)
@@ -126,6 +132,13 @@ def worker_main(root, action_id):
                 if trace.tb_frame.f_code.co_filename == processes.__file__:
                     frames.append(dict(function=trace.tb_frame.f_code.co_name,
                                        line=trace.tb_lineno))
+                    if trace.tb_frame.f_code.co_name == '_inspect_process':
+                        local = trace.tb_frame.f_locals
+                        scan_failure['process_id'] = int(args[2])
+                        scan_failure['process_start_tick'] = local.get('started')
+                        slot = local.get('name')
+                        if type(slot) is str and slot.isdecimal():
+                            scan_failure['fd_slot'] = int(slot)
                 trace = trace.tb_next
             scan_failure.update(error_type=type(error).__name__,
                                 errno=getattr(error, 'errno', None), frames=frames,
@@ -276,8 +289,8 @@ def worker_main(root, action_id):
                 def reconciliation_record(self, kind, body):
                     nonlocal selected
                     result = original_record(self, kind, body)
-                    if kind == 'restore_intent' and body.get('phase') == 'reconcile_intent':
-                        approved, _, _ = self.reconciliation_selected[-1]
+                    if kind == 'restore_intent' and body.get('phase') in ('reconcile_intent', 'reconcile_delete_resume'):
+                        approved, _, _ = self.effect_selected[-1]
                         selected = approved['packet']['scope']
                     return result
                 _Worker.record = reconciliation_record
@@ -303,7 +316,7 @@ def worker_main(root, action_id):
         elif phase in ('fenced', 'removed', 'restore_final', 'before_restore_final', 'stage_removed',
                      'unwritten_stage', 'access_intent', 'stage_complete', 'restore_directory', 'restore_member',
                      'publish_intent', 'publish_rename', 'publish_observed', 'stage_remove_intent', 'stage_remove_effect',
-                     'reconcile_intent', 'reconcile_consumed'):
+                     'reconcile_intent', 'reconcile_delete_resume', 'reconcile_consumed'):
             from blueprint_pipeline.control_plane_lane_historical_action import _Worker
             original_record = _Worker.record
             def record(self, kind, body):
@@ -313,8 +326,8 @@ def worker_main(root, action_id):
                     raise RuntimeError('fixture_interrupted_after_' + phase)
                 if phase == 'before_restore_final' and kind == 'restore_final':
                     raise RuntimeError('fixture_interrupted_after_' + phase)
-                original_record(self, kind, body)
-                if phase == 'reconcile_intent' and kind == 'restore_intent' and body.get('phase') == phase:
+                actual_event = original_record(self, kind, body)
+                if phase in ('reconcile_intent', 'reconcile_delete_resume') and kind == 'restore_intent' and body.get('phase') == phase:
                     os.kill(os.getpid(), signal.SIGKILL)
                 if phase == 'reconcile_consumed' and kind == 'restore_intent' and body.get('phase') == 'reconciled':
                     os.kill(os.getpid(), signal.SIGKILL)
@@ -334,6 +347,7 @@ def worker_main(root, action_id):
                     raise HistoricalGenerationError('fixture_interrupted_after_' + phase)
                 if kind == phase or (kind == 'restore_intent' and body.get('phase') == phase):
                     raise RuntimeError('fixture_interrupted_after_' + phase)
+                return actual_event
             _Worker.record = record
         elif phase == 'restore_member_chown':
             original_chown = os.fchown
@@ -377,16 +391,64 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     # Each invocation reaches a real terminal unit before another GC tick is
     # considered. Never overlap handles, change an ID or mint a new deadline.
     observations = []
-    receipt = _later_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
-        restore=restore, launch=launch), journals, action_id, observations=observations)
+    births = []
+    def invoke():
+        nonlocal births
+        births = _capture_restore_births(journals, action_id) if restore else []
+        return _launch_worker_once(entry, action_id, target, journals, restore=restore, launch=launch)
+    receipt = _later_reference_attempts(invoke, journals, action_id, observations=observations)
     assert receipt['status'] == expected, receipt
-    return dict(receipt, _fixture_reference_refusals=observations) if observations else receipt
+    result = dict(receipt, _fixture_reference_refusals=observations) if observations else receipt
+    return dict(result, _fixture_prior_member_births=births) if receipt.get('recovered_prefix') is True else result
+
+
+def _capture_restore_births(journals, action_id):
+    """Actual protected whole-chain births immediately before the next unit."""
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    directory = journals / action_id
+    if not directory.exists():
+        return []
+    names = sorted(path.name for path in directory.glob('e-*.json'))
+    assert 0 < len(names) <= 256
+    events, previous, size = [], None, 0
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        scope = None
+        for index, name in enumerate(names):
+            assert name == f'e-{index:05d}.json'
+            record = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+            try:
+                info = os.fstat(record)
+                assert stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                assert info.st_uid == info.st_gid == 0 and info.st_nlink == 1 and 0 < info.st_size <= 4096
+                raw = os.read(record, 4097)
+                assert len(raw) == info.st_size and not os.read(record, 1)
+                assert os.fstat(record) == os.stat(name, dir_fd=fd, follow_symlinks=False)
+            finally:
+                os.close(record)
+            size += len(raw)
+            assert size <= 1024**2
+            event = json.loads(raw)
+            assert event['action_id'] == action_id and event['sequence'] == index
+            assert event['event_digest'] == canonical_digest(event, digest_field='event_digest')
+            assert event['previous_event_digest'] == previous and event['execution_authorized'] is False
+            assert (event['kind'] == 'intent') == (index == 0)
+            scope = event['scope_digest'] if scope is None else scope
+            assert event['scope_digest'] == scope
+            previous = event['event_digest']
+            if event['kind'] == 'restore_member':
+                events.append(event)
+    finally:
+        os.close(fd)
+    assert len({event['body']['path'] for event in events}) == len(events)
+    return events
 
 
 def _durable_receipt(receipt):
     # Controller observations describe earlier real units. They are retained
     # separately and never become part of the worker's immutable final event.
-    return {key: value for key, value in receipt.items() if key != '_fixture_reference_refusals'}
+    return {key: value for key, value in receipt.items()
+            if key not in ('_fixture_reference_refusals', '_fixture_prior_member_births')}
 
 
 def _later_reference_attempts(invoke, journals, action_id, *, observations=None):
@@ -444,9 +506,20 @@ def _assert_restore_increment(receipt, original):
         reuse = (receipt.get('reused_files'), receipt.get('reused_logical_bytes'))
         assert all(type(value) is int and value >= 0 for value in reuse), receipt
         assert len(original) <= 8  # finite tiny fixture, not production accounting
-        allowed = {(len(rows), sum(map(len, rows))) for count in range(len(original) + 1)
-                   for rows in combinations(original.values(), count)}
-        assert reuse in allowed, receipt
+        if '_fixture_prior_member_births' in receipt:
+            births = receipt['_fixture_prior_member_births']
+            assert type(births) is list
+            rows = [event['body'] for event in births]
+            assert len({row['path'] for row in rows}) == len(rows)
+            assert all(row['path'] in original and row['size_bytes'] == len(original[row['path']])
+                and row['sha256'] == 'sha256:' + hashlib.sha256(original[row['path']]).hexdigest() for row in rows)
+            assert reuse == (len(rows), sum(row['size_bytes'] for row in rows)), receipt
+        else:
+            # Parser-only arithmetic projections. Native execution always
+            # supplies the exact protected pre-unit birth set above.
+            allowed = {(len(rows), sum(map(len, rows))) for count in range(len(original) + 1)
+                       for rows in combinations(original.values(), count)}
+            assert reuse in allowed, receipt
         expected = (len(original)-reuse[0], sum(map(len, original.values()))-reuse[1])
     assert (receipt['restored_files'], receipt['restored_logical_bytes']) == expected, receipt
 
@@ -459,13 +532,17 @@ def _assert_boundary_recovery(receipt, expected, observations, action_id, origin
     It creates no success receipt, clock, birth or native clearance observation.
     """
     assert receipt.get('status') == 'completed'
-    assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
     if receipt.get(expected) is True:
+        if expected != 'recovered_prefix':
+            assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
         return
-    assert expected in ('recovered_stage', 'recovered_split')
+    assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
+    assert expected in ('recovered_stage', 'recovered_split', 'recovered_prefix')
     later = ('recovered_publication', 'recovered_before_final', 'recovered_access', 'idempotent')
     if expected == 'recovered_stage':
         later += ('recovered_split',)
+    elif expected == 'recovered_prefix':
+        later += ('recovered_split', 'recovered_stage')
     assert any(receipt.get(field) is True for field in later)
     assert 0 < len(observations) <= 3
     assert all(row == dict(action_id=action_id, code='historical_generation_process_unknown',
@@ -556,6 +633,9 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
         current = observations()
     assert current[:-1] == previous and len(current) == len(previous) + 1, current
     receipt = current[-1]
+    entry_failure = receipt.pop('_fixture_entry_failure', None)
+    if entry_failure is not None:
+        print(json.dumps(dict(fixture_installed_entry_refusal=entry_failure, action_id=action_id)))
     metadata_proof = receipt.pop('_fixture_metadata_proof', None)
     if (entry.parent / 'metadata-boundary-probe').exists() and not any(
             '_fixture_metadata_proof' in row for row in previous):
@@ -673,6 +753,26 @@ def _installed_entry(root, entry):
         assert boot.count(refusal) == 1
         boot = boot.replace(refusal, refusal[:-1] + ", **({'_fixture_remote': "
             "_installed_fixture_remote()} if '_installed_fixture_remote' in globals() else {}))")
+    original_require = "def _require(value):\n    if not value:\n        raise ValueError(_ERROR)"
+    diagnostic_require = """def _require(value):
+    if not value:
+        frame = sys._getframe(1)
+        diagnosis = dict(function=frame.f_code.co_name, line=frame.f_lineno)
+        before, child = frame.f_locals.get('before'), frame.f_locals.get('child')
+        if isinstance(before, os.stat_result):
+            diagnosis['before_identity'] = _identity(before)
+        if type(child) is int:
+            try:
+                diagnosis['opened_identity'] = _identity(os.fstat(child))
+            except OSError as error:
+                diagnosis['opened_errno'] = error.errno
+        globals()['_fixture_entry_failure'] = diagnosis
+        raise ValueError(_ERROR)"""
+    assert boot.count(original_require) == 1
+    boot = boot.replace(original_require, diagnostic_require)
+    refusal = "dict(status='kept', code=code, error_type=type(error).__name__"
+    assert boot.count(refusal) == 1
+    boot = boot.replace(refusal, refusal + ", _fixture_entry_failure=globals().get('_fixture_entry_failure')")
     _write(installed / 'historical-generation-entry.py', boot.encode(), 0o644)
     _write(entry, ('#!/bin/sh\nexec /usr/bin/python3 -I -S '
                    + str(installed / 'historical-generation-entry.py') + ' "$@"\n').encode(), 0o755)
@@ -726,6 +826,64 @@ def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *,
     return approved
 
 
+def _approve_fresh_discard_fixture(root, config, entry, restore, target, journals, previous, *, short_expiry=False):
+    """Explicit fixture owner issues a NEW DELETE grant after real old expiry."""
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_authority import (
+        observe_historical_restore_reconciliation, approve_historical_restore_reconciliation)
+    store, directory = root / 'state/requests/historical-generation-actions', journals / restore['action_id']
+    retained = {path.name: path.read_bytes() for path in store.iterdir()}
+    journal = {path.name: path.read_bytes() for path in directory.iterdir()}
+    def namespace():
+        return {path.relative_to(target).as_posix(): (
+            tuple(getattr(path.stat(), name) for name in ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid',
+                'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns')),
+            path.read_bytes() if path.is_file() else None) for path in (target, *target.rglob('*'))}
+    original = namespace()
+    deadline = time.monotonic() + 15
+    while time.time() <= previous['expires_at_epoch']:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert time.time() < restore['expires_at_epoch']
+    refused = _launch_worker(entry, restore['action_id'], target, journals, restore=True, expected='failed')
+    assert refused['code'] in ('historical_generation_restore_reconciliation_approval_invalid',
+                              'historical_generation_restore_absent_observation_approval_missing'), refused
+    assert namespace() == original and {path.name: path.read_bytes() for path in directory.iterdir()} == journal
+    assert {path.name: path.read_bytes() for path in store.iterdir()} == retained
+    packet = observe_historical_restore_reconciliation(installed_config_path=config,
+        action_id=restore['action_id'], now=time.time())
+    previous_raw = retained[previous['decision_id'] + '.json']
+    assert packet['attempt'] == previous['attempt'] + 1
+    assert packet['prior_decisions'][-1] == dict(decision_id=previous['decision_id'],
+        decision=dict(sha256='sha256:' + hashlib.sha256(previous_raw).hexdigest(), size_bytes=len(previous_raw)))
+    assert packet['scope']['remove_member']['path'] in original
+    assert packet['original_expires_at_epoch'] == restore['expires_at_epoch']
+    head = json.loads(journal[max(name for name in journal if name.startswith('e-'))])
+    pending = head['body'].get('phase') in ('reconcile_intent', 'reconcile_delete_resume')
+    assert (packet['resume_from'] is not None) == pending
+    if pending:
+        assert packet['resume_from']['event_digest'] == head['event_digest']
+    options = dict(installed_config_path=config, action_id=restore['action_id'], ack_packet_digest=packet['packet_digest'],
+        principal='operator', owner='owner', discard_unfinished_row=True, no_future_writers=True,
+        no_future_readers=True, expires_at_epoch=min(time.time() + (12 if short_expiry else 300),
+            restore['expires_at_epoch']), now=time.time())
+    for change in (dict(principal='restore-operator'), dict(owner='other'), dict(no_future_readers=False),
+        dict(ack_packet_digest='sha256:' + 'f' * 64), dict(expires_at_epoch=restore['expires_at_epoch'] + 1)):
+        try:
+            approve_historical_restore_reconciliation(**(options | change))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('fresh discard bypassed exact current owner DELETE')
+        assert namespace() == original and {path.name: path.read_bytes() for path in directory.iterdir()} == journal
+        assert {path.name: path.read_bytes() for path in store.iterdir()} == retained
+    approved = approve_historical_restore_reconciliation(**options)
+    assert approved['packet'] == packet and approved['decision_id'] != previous['decision_id']
+    assert approved['attempt'] == packet['attempt'] and approved['execution_authorized'] is False
+    assert namespace() == original and {path.name: path.read_bytes() for path in directory.iterdir()} == journal
+    assert all((store / name).read_bytes() == raw for name, raw in retained.items())
+    return approved, retained
+
+
 def _assert_reconciliation_death_boundary(root, restore, target, journals, approval, phase):
     from blueprint_pipeline.control_plane_lane_historical_generation import inventory_historical_generation
     from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_scope import reconciled_parent
@@ -756,12 +914,79 @@ def _assert_reconciliation_death_boundary(root, restore, target, journals, appro
         observed_generation_digest=observed['generation_digest'])), flush=True)
 
 
+def _approve_absent_fixture(root, config, entry, restore, target, journals, old, *, repeat_expiry=False):
+    """Real current observation approval after actual unlink and old expiry."""
+    from blueprint_pipeline.control_plane_lane_historical_generation import inventory_historical_generation
+    from blueprint_pipeline.control_plane_lane_historical_restore_absent_authority import (
+        observe_historical_restore_absence, approve_historical_restore_absence)
+    action_id = restore['action_id']
+    store = root / 'state/requests/historical-generation-actions'
+    records = {path.name: path.read_bytes() for path in store.iterdir()}
+    before = {path.name: path.read_bytes() for path in (journals / action_id).iterdir()}
+    observed = inventory_historical_generation(target, allowed_roots=(root / 'work', root / 'inputs'))
+    assert time.time() > old['expires_at_epoch'] and time.time() < restore['expires_at_epoch']
+    refused = _launch_worker(entry, action_id, target, journals, restore=True, expected='failed')
+    assert refused['code'] == 'historical_generation_restore_absent_observation_approval_missing', refused
+    assert inventory_historical_generation(target, allowed_roots=(root / 'work', root / 'inputs')) == observed
+    assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+    packet = observe_historical_restore_absence(installed_config_path=config, action_id=action_id, now=time.time())
+    assert packet['permits_removal'] is packet['execution_authorized'] is False
+    assert packet['observation_only'] is True
+    options = dict(installed_config_path=config, action_id=action_id, ack_packet_digest=packet['packet_digest'],
+        principal='restore-operator', owner='owner', observe_absence_only=True,
+        no_future_writers=True, no_future_readers=True,
+        expires_at_epoch=min(time.time() + 4, restore['expires_at_epoch']) if repeat_expiry else restore['expires_at_epoch'],
+        now=time.time())
+    for changes in (dict(principal='unknown'), dict(owner='different-owner'),
+        dict(ack_packet_digest='sha256:' + 'f' * 64), dict(observe_absence_only=False),
+        dict(no_future_writers=False), dict(expires_at_epoch=restore['expires_at_epoch'] + 1)):
+        try:
+            approve_historical_restore_absence(**(options | changes))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('absence observation accepted without exact current owner handling')
+        assert {path.name: path.read_bytes() for path in store.iterdir()} == records
+    approved = approve_historical_restore_absence(**options)
+    if repeat_expiry:
+        records = {path.name: path.read_bytes() for path in store.iterdir()}
+        first, first_raw = approved, (store / (approved['decision_id'] + '.json')).read_bytes()
+        deadline = time.monotonic() + 5
+        while time.time() <= first['expires_at_epoch']:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        refused = _launch_worker(entry, action_id, target, journals, restore=True, expected='failed')
+        assert refused['code'] == 'historical_generation_restore_approval_expired', refused
+        assert inventory_historical_generation(target, allowed_roots=(root / 'work', root / 'inputs')) == observed
+        assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+        packet = observe_historical_restore_absence(installed_config_path=config, action_id=action_id, now=time.time())
+        assert packet['attempt'] == 1 and packet['prior_observations'] == [dict(decision_id=first['decision_id'],
+            decision=dict(sha256='sha256:' + hashlib.sha256(first_raw).hexdigest(), size_bytes=len(first_raw)))]
+        approved = approve_historical_restore_absence(**(options | dict(ack_packet_digest=packet['packet_digest'],
+            expires_at_epoch=restore['expires_at_epoch'], now=time.time())))
+        assert approved['decision_id'] != first['decision_id'] and approved['attempt'] == 1
+    assert approved['packet'] == packet and approved['principal'] == 'restore-operator'
+    assert approved['execution_authorized'] is False
+    assert inventory_historical_generation(target, allowed_roots=(root / 'work', root / 'inputs')) == observed
+    assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+    assert all((store / name).read_bytes() == raw for name, raw in records.items())
+    return approved, records
+
+
 def connected_delete(interruption=None, *, action='delete', corrupt=False,
                      restore_interruption='restore_final', installed=False, destination_conflict=False, metadata_probe=False,
-                     reconciliation_interruption=None):
+                     reconciliation_interruption=None, absent_expiry=False, observation_expiry=False,
+                     delete_expiry=False, resume_delete_expiry=False, resume_remove=False, resume_absent_expiry=False):
     assert sys.platform == 'linux' and os.geteuid() == 0
     assert os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'
     assert Path('/proc/1/exe').resolve() == Path('/usr/lib/systemd/systemd')
+    assert not absent_expiry or reconciliation_interruption == 'reconcile_remove'
+    assert not observation_expiry or absent_expiry
+    assert not delete_expiry or (restore_interruption == 'unlogged_member' and not absent_expiry
+        and reconciliation_interruption in (None, 'reconcile_intent'))
+    assert not resume_delete_expiry or delete_expiry and reconciliation_interruption == 'reconcile_intent'
+    assert not resume_remove or delete_expiry and reconciliation_interruption == 'reconcile_intent'
+    assert not resume_absent_expiry or resume_remove
     with tempfile.TemporaryDirectory(prefix='blueprint-historical-connected-', dir='/var/lib') as temporary:
         root = Path(temporary)
         root.chmod(0o755)
@@ -1116,7 +1341,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 (root / 'interrupt-once').unlink()
                 if restore_interruption.startswith('unlogged_'):
                     reconciliation = _approve_unlogged_fixture(root, config, entry, restore, target, journals,
-                        short_expiry=reconciliation_interruption == 'reconcile_consumed')
+                        short_expiry=reconciliation_interruption == 'reconcile_consumed' or absent_expiry or delete_expiry)
                     if reconciliation_interruption:
                         _write(root / 'interrupt-once', reconciliation_interruption.encode())
                         assert _launch_worker_once(entry, restore['action_id'], target, journals,
@@ -1124,7 +1349,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                         (root / 'interrupt-once').unlink()
                         _assert_reconciliation_death_boundary(root, restore, target, journals,
                             reconciliation, reconciliation_interruption)
-                        if reconciliation_interruption == 'reconcile_consumed':
+                        if reconciliation_interruption == 'reconcile_consumed' or absent_expiry:
                             # Actual elapsed time, no injected clock or renewed
                             # decision. Only consumed DELETE may be historical;
                             # the original restore expiry stays current.
@@ -1133,6 +1358,48 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                                 assert time.monotonic() < deadline
                                 time.sleep(0.05)
                             assert time.time() < restore['expires_at_epoch']
+                        if absent_expiry:
+                            absence, retained_discard_records = _approve_absent_fixture(root, config, entry,
+                                restore, target, journals, reconciliation, repeat_expiry=observation_expiry)
+                if delete_expiry:
+                    initial_discard = reconciliation
+                    reconciliation, retained_discard_records = _approve_fresh_discard_fixture(root, config, entry,
+                        restore, target, journals, reconciliation, short_expiry=resume_delete_expiry or resume_absent_expiry)
+                    if resume_delete_expiry:
+                        _write(root / 'interrupt-once', b'reconcile_delete_resume')
+                        assert _launch_worker_once(entry, restore['action_id'], target, journals,
+                            restore=True, process_death=True) is None
+                        (root / 'interrupt-once').unlink()
+                        resume_raw = max((journals / restore['action_id']).glob('e-*.json')).read_bytes()
+                        resume_event = json.loads(resume_raw)
+                        assert resume_event['body']['phase'] == 'reconcile_delete_resume'
+                        raw = (root / 'state/requests/historical-generation-actions' / (reconciliation['decision_id'] + '.json')).read_bytes()
+                        assert resume_event['body']['delete_resume'] == dict(decision_id=reconciliation['decision_id'],
+                            decision=dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)))
+                        assert resume_event['observed_at_epoch'] < reconciliation['expires_at_epoch']
+                        row = reconciliation['packet']['scope']['remove_member']
+                        assert (target / row['path']).exists() and (target / row['path']).stat().st_ino == row['version'][1]
+                        reconciliation, retained_discard_records = _approve_fresh_discard_fixture(root, config, entry,
+                            restore, target, journals, reconciliation)
+                    if resume_remove:
+                        _write(root / 'interrupt-once', b'reconcile_remove')
+                        assert _launch_worker_once(entry, restore['action_id'], target, journals,
+                            restore=True, process_death=True) is None
+                        (root / 'interrupt-once').unlink()
+                        resume_event = json.loads(max((journals / restore['action_id']).glob('e-*.json')).read_bytes())
+                        assert resume_event['body']['phase'] == 'reconcile_delete_resume'
+                        raw = (root / 'state/requests/historical-generation-actions' / (reconciliation['decision_id'] + '.json')).read_bytes()
+                        assert resume_event['body']['delete_resume'] == dict(decision_id=reconciliation['decision_id'],
+                            decision=dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)))
+                        assert resume_event['observed_at_epoch'] < reconciliation['expires_at_epoch']
+                        assert not (target / reconciliation['packet']['scope']['remove_member']['path']).exists()
+                        if resume_absent_expiry:
+                            deadline = time.monotonic() + 15
+                            while time.time() <= reconciliation['expires_at_epoch']:
+                                assert time.monotonic() < deadline
+                                time.sleep(0.05)
+                            absence, retained_discard_records = _approve_absent_fixture(root, config, entry,
+                                restore, target, journals, reconciliation)
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
                                       launch=gc_tick if installed else None)
             if restore_interruption is not None:
@@ -1146,7 +1413,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             'publish_observed': 'recovered_split', 'stage_remove_intent': 'recovered_split',
                             'stage_remove_effect': 'recovered_split'}
                 recovery.update(unlogged_directory='recovered_prefix', unlogged_member='recovered_prefix')
-                if recovery[restore_interruption] in ('recovered_stage', 'recovered_split'):
+                if recovery[restore_interruption] in ('recovered_stage', 'recovered_split', 'recovered_prefix'):
                     _assert_boundary_recovery(restored, recovery[restore_interruption],
                         restored.get('_fixture_reference_refusals', []), restore['action_id'],
                         interrupted_prefix['e-00000.json'])
@@ -1156,14 +1423,10 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                     assert restored['restored_files'] == len(original)
                     assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
                 elif restore_interruption.startswith('unlogged_'):
-                    assert restored['reused_files'] == restored['reused_logical_bytes'] == 0
                     if restore_interruption == 'unlogged_member':
                         assert ((target / 'nested').stat().st_dev, (target / 'nested').stat().st_ino) \
                             == retained_known_directories['nested']
                 elif restore_interruption in ('restore_directory', 'restore_member'):
-                    born = [event['body'] for event in interrupted_events if event['kind'] == 'restore_member']
-                    assert restored['reused_files'] == len(born)
-                    assert restored['reused_logical_bytes'] == sum(row['size_bytes'] for row in born)
                     assert all((target / name).stat().st_dev == identity[0]
                                and (target / name).stat().st_ino == identity[1]
                                for name, identity in retained_stage_inodes.items())
@@ -1175,9 +1438,15 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                                for name, identity in retained_stage_inodes.items())
                 assert all((journals / restore['action_id'] / name).read_bytes() == raw
                            for name, raw in interrupted_prefix.items())
+            if restored.get('recovered_prefix') is True:
+                assert '_fixture_prior_member_births' in restored
             _assert_restore_increment(restored, original)
             assert restored['action'] == 'restore' and restored['owner_access_reopened'] is True
-            assert restored['fresh_disk_reservation'] is True
+            if restored.get('idempotent') is True:
+                assert restored.get('_fixture_reference_refusals'), restored
+                assert 'fresh_disk_reservation' not in restored
+            else:
+                assert restored['fresh_disk_reservation'] is True
             assert all((target / name).read_bytes() == value for name, value in original.items())
             assert target.stat().st_uid == foreign.pw_uid and target.stat().st_gid == foreign.pw_gid
             restore_events = [json.loads(path.read_bytes()) for path in
@@ -1188,6 +1457,26 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                               and event['body'].get('phase') == 'reconciled']
                 assert len(reconciled) == 1 and reconciled[0]['body']['uncertain'] is True
                 assert reconciled[0]['body']['credited_removed_allocated_bytes'] == 0
+                if delete_expiry:
+                    store = root / 'state/requests/historical-generation-actions'
+                    assert all((store / name).read_bytes() == raw for name, raw in retained_discard_records.items())
+                    assert reconciled[0]['observed_at_epoch'] > initial_discard['expires_at_epoch']
+                    resumes = [event for event in restore_events if event['body'].get('phase') == 'reconcile_delete_resume']
+                    assert len(resumes) == (2 if resume_delete_expiry else int(reconciliation_interruption is not None))
+                    if resumes and not resume_absent_expiry:
+                        raw = (store / (reconciliation['decision_id'] + '.json')).read_bytes()
+                        assert reconciled[0]['body']['delete_resume'] == dict(decision_id=reconciliation['decision_id'],
+                            decision=dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)))
+                        assert reconciled[0]['previous_event_digest'] == resumes[-1]['event_digest']
+                    elif not resumes:
+                        assert reconciled[0]['body']['decision_id'] == reconciliation['decision_id']
+                if absent_expiry or resume_absent_expiry:
+                    raw = (root / 'state/requests/historical-generation-actions' / (absence['decision_id'] + '.json')).read_bytes()
+                    assert reconciled[0]['body']['observation_resume'] == dict(decision_id=absence['decision_id'],
+                        decision=dict(sha256='sha256:' + hashlib.sha256(raw).hexdigest(), size_bytes=len(raw)))
+                    assert reconciled[0]['observed_at_epoch'] > reconciliation['expires_at_epoch']
+                    assert all((root / 'state/requests/historical-generation-actions' / name).read_bytes() == raw
+                               for name, raw in retained_discard_records.items())
                 if restore_interruption == 'unlogged_member':
                     born = {event['body']['path']: tuple(event['body']['version'][:2])
                             for event in restore_events if event['kind'] == 'restore_directory'}
@@ -1261,6 +1550,13 @@ CONNECTED_CASES = (
     ('reconcile_remove', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove')),
     ('reconcile_sync', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_sync')),
     ('reconcile_consumed', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_consumed')),
+    ('reconcile_delete_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption=None, delete_expiry=True, resume_delete_expiry=False)),
+    ('reconcile_pending_delete_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_delete_expiry=False)),
+    ('reconcile_resume_delete_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_delete_expiry=True)),
+    ('reconcile_resume_remove', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True)),
+    ('reconcile_resume_absent_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True, resume_absent_expiry=True)),
+    ('reconcile_absent_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove', absent_expiry=True)),
+    ('reconcile_observation_expiry', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove', absent_expiry=True, observation_expiry=True)),
     ('publish_intent', dict(action='offload', restore_interruption='publish_intent')),
     ('publish_rename', dict(action='offload', restore_interruption='publish_rename')),
     ('publish_observed', dict(action='offload', restore_interruption='publish_observed')),

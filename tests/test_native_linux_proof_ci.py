@@ -106,3 +106,36 @@ def test_required_native_proof_still_gates_the_pr_on_success() -> None:
     assert step["env"]["NATIVE_REQUIRED"] == "${{ needs.impact.outputs.native_feature_required }}"
     assert step["env"]["NATIVE_RESULT"] == "${{ needs.native-feature-linux.result }}"
     assert 'if test "${NATIVE_REQUIRED}" = "true"; then\n  test "${NATIVE_RESULT}" = "success"' in step["run"]
+
+
+def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> None:
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    assert dict(CONNECTED_CASES)['reconcile_absent_expiry'] == dict(action='offload',
+        restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove', absent_expiry=True)
+    assert dict(CONNECTED_CASES)['reconcile_observation_expiry'] == dict(action='offload',
+        restore_interruption='unlogged_member', reconciliation_interruption='reconcile_remove',
+        absent_expiry=True, observation_expiry=True)
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    assert 'assert len(cases) == 43' in run
+    assert 'case.find(tag)' in run and 'for tag in ("skipped", "error", "failure")' in run
+
+
+def test_present_delete_expiry_requires_each_actual_original_operation_boundary() -> None:
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    cases = dict(CONNECTED_CASES)
+    for name, phase, resume in (('reconcile_delete_expiry', None, False),
+        ('reconcile_pending_delete_expiry', 'reconcile_intent', False),
+        ('reconcile_resume_delete_expiry', 'reconcile_intent', True)):
+        assert cases[name] == dict(action='offload', restore_interruption='unlogged_member',
+            reconciliation_interruption=phase, delete_expiry=True, resume_delete_expiry=resume)
+
+
+def test_resumed_unlink_has_actual_current_and_expired_absence_cases() -> None:
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    for case, expired in [('reconcile_resume_remove', False), ('reconcile_resume_absent_expiry', True)]:
+        options = dict(action='offload', restore_interruption='unlogged_member',
+            reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True)
+        if expired:
+            options['resume_absent_expiry'] = True
+        assert dict(CONNECTED_CASES)[case] == options
