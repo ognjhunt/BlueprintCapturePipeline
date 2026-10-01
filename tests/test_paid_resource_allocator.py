@@ -1189,64 +1189,23 @@ def test_reconstruction_gpu_refreshes_read_only_vast_preflight_before_admission(
     assert observed["inventory_prefixes"] == ["blueprint-reconstruction-", ""]
 
 
-def test_reconstruction_gpu_aws_refresh_builds_provider_request_before_probe(
+def test_reconstruction_gpu_aws_refresh_refuses_before_request_or_provider_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     args = _reconstruction_args(tmp_path, execute=False)
     args.provider = "aws"
     args.reconstruction_refresh_preflight = True
-    args.reconstruction_name_prefix = "blueprint-postshot-"
-    args.reconstruction_container_disk_bytes = 120 * 1024**3
-    args.reconstruction_max_hourly_rate_usd = 2.0
-    Path(args.provider_launch_request).write_text(
-        json.dumps({"worker_image_digest": "worker@sha256:" + "a" * 64}),
-        encoding="utf-8",
-    )
-    Path(args.preflight_bundle).write_text(
-        json.dumps(
-            {
-                "watchdog": {"status": "armed", "independent_process": True},
-                "conflicting_owner_present": False,
-            }
-        ),
-        encoding="utf-8",
-    )
-    observed: dict[str, object] = {}
 
-    class Provider:
-        def build_request(self, spec, _job_dir):
-            observed["spec"] = spec
-            return {"run_instances": {"ImageId": "ami-test"}}
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("retired AWS path reached request refresh or provider access")
 
-        def capacity_preflight(self, request):
-            observed["capacity_request"] = request
-            return {
-                "status": "available",
-                "selected_offer": {
-                    "gpu_name": "NVIDIA L40S",
-                    "gpu_ram_mb": 49_152,
-                    "on_demand_price_usd_per_hour": 1.86,
-                },
-            }
-
-        def billable_inventory(self, *, name_prefix: str):
-            return {"api_confirmed": True, "live_resource_count": 0}
-
-    monkeypatch.setattr(allocator, "get_render_provider", lambda _name: Provider())
-
-    def fake_prepare(**kwargs: object) -> dict[str, object]:
-        observed["preflight"] = json.loads(
-            Path(str(kwargs["preflight_path"])).read_text(encoding="utf-8")
-        )
-        return {"status": "dry_run_ready", "blockers": []}
-
-    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", fake_prepare)
+    monkeypatch.setattr(allocator, "get_render_provider", forbidden)
+    monkeypatch.setattr(allocator, "prepare_reconstruction_gpu_canary", forbidden)
+    monkeypatch.setattr(allocator, "_load", forbidden)
     result = allocator._run_reconstruction_gpu_canary(args, checkout_commit="c" * 40)
-    assert result["status"] == "dry_run_ready"
-    assert observed["capacity_request"] == {
-        "run_instances": {"ImageId": "ami-test"}
-    }
-    assert observed["preflight"]["provider"] == "aws"  # type: ignore[index]
+
+    assert result == {"status": "blocked", "blockers": ["aws_provider_integration_removed"],
+                      "provider_mutations_performed": 0}
 
 
 def test_reconstruction_gpu_execute_refuses_insecure_transport_before_provider(

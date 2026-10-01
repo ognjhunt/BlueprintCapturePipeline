@@ -114,7 +114,8 @@ class World:
         # The dedicated B2 store is explicitly configured (review I4), by files promotion's own
         # reader accepts: private (0600), non-empty UTF-8 (minor 8, and the auto-delivery review).
         for key, name in scene_store._ARTIFACT_STORE_FILE_ENV.items():
-            (tmp_path / f"b2-{key}").write_text("configured-by-file\n", encoding="utf-8")
+            value = "https://s3.us-west-004.backblazeb2.com" if key == "endpoint" else "configured-by-file"
+            (tmp_path / f"b2-{key}").write_text(value + "\n", encoding="utf-8")
             (tmp_path / f"b2-{key}").chmod(0o600)
             monkeypatch.setenv(name, str(tmp_path / f"b2-{key}"))
         for name, value in (("ACCESS_KEY_ID", "access"), ("SECRET_ACCESS_KEY", "secret"),
