@@ -11,7 +11,7 @@ from pathlib import Path
 
 FILES = (
     "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "standalone.py", "runner.py", "knowledge.py",
-    "contracts.py", "freshness.py", "capabilities.py", "requirements.txt", "standalone.config.example.json",
+    "contracts.py", "freshness.py", "capabilities.py", "consumer.py", "publisher.mjs", "requirements.txt", "standalone.config.example.json",
     "capabilities/blueprint-evidence-qualification/SKILL.md",
     "capabilities/blueprint-evidence-qualification/references/prospect-contract.md",
     "capabilities/deep-research/SKILL.md", "capabilities/deep-research/LICENSE",

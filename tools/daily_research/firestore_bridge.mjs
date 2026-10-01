@@ -3,6 +3,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {gzipSync, gunzipSync} from 'node:zlib';
 import {createInterface} from 'node:readline';
 import {pathToFileURL} from 'node:url';
+import {livePublisher} from './publisher.mjs';
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
@@ -12,13 +13,14 @@ const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.s
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review)|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|qa|qa-evidence)|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
-  constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null) {
+  constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null) {
     this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
+    this.publisher = publisher;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -116,6 +118,7 @@ export class Store {
       date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest,
       owner: 'blueprint-research-qa-publication-agent',
       stage: row.state === 'awaiting_review' ? 'agent_qa_pending' : row.state === 'reviewed' ? 'publication_pending' : row.state,
+      qa_state: row.qa?.state || null, qa_error: row.qa?.error || null,
       observer_receipt_required: false, scope: 'research_only_no_outreach'
     });
   }
@@ -130,7 +133,11 @@ export class Store {
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
-        session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null});
+        session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
+        qa_request_digest: row.qa?.request_digest || null, qa_state: row.qa?.state || null,
+        qa_deadline_ms: row.qa?.deadline_ms || null,
+        qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
+        publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
       this.projectWorkItem(tx, row, hash);
     });
     return true;
@@ -141,7 +148,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if (name.endsWith('-artifact.json') && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json')) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -156,7 +163,7 @@ export class Store {
     const row = await this.get(day);
     if (!row) refuse('run_missing');
     const files = {}, missing = [];
-    for (const kind of ['artifact', 'evidence', 'output', 'review']) {
+    for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.qa ? ['qa','qa-evidence'] : [])]) {
       try {files[kind] = await this.fileGet(`${day}-${kind}.json`);}
       catch (error) {
         if (!(error instanceof Refusal) || error.message !== 'firestore_file_missing') throw error;
@@ -206,6 +213,63 @@ export class Store {
     return {latest_date: latest.docs[0]?.id || null, unfinished: unfinished.docs.length > 0,
       cleanup_required: uncleaned.docs.length > 0};
   }
+  workflowGate(control) {
+    const workflow=control?.workflow;
+    if (control?.enabled !== true || workflow?.enabled !== true
+        || ['qa_authority_reference','publication_authority_reference'].some(k=>typeof workflow[k]!=='string'
+          || !workflow[k].trim() || workflow[k].startsWith('PENDING'))) refuse('workflow_authority_missing');
+  }
+  async workItem() {
+    const queue=this.db.collection(`${ROOT}/workItems`);
+    const [qa,pub]=await Promise.all(['agent_qa_pending','publication_pending'].map(stage=>queue.where('stage','==',stage).limit(21).get()));
+    if (qa.docs.length>20 || pub.docs.length>20) refuse('workflow_queue_limit');
+    const items=[...qa.docs,...pub.docs].map(s=>s.data()).sort((a,b)=>a.date.localeCompare(b.date));
+    return items[0] || null;
+  }
+  async activeQA() {
+    const runs=this.db.collection(`${ROOT}/runs`);
+    const groups=await Promise.all(['qa_running','qa_input_unresolved','qa_cancel_pending']
+      .map(state=>runs.where('qa_state','==',state).limit(1).get()));
+    const days=groups.flatMap(s=>s.docs.map(d=>d.id)).sort();
+    return days[0] || null;
+  }
+  async qaCheck(day,requestDigest,deadlineMS) {
+    if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest)) refuse('agent_qa_request_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),snap=await tx.get(ref),run=snap.data();
+      if (!snap.exists || run.state!=='awaiting_review' || run.qa_state!=='qa_input_unresolved'
+          || run.qa_request_digest!==requestDigest || run.qa_request_claimed
+          || !Number.isSafeInteger(deadlineMS) || run.qa_deadline_ms!==deadlineMS
+          || this.clock()>=deadlineMS) refuse('agent_qa_input_not_admitted');
+      tx.set(ref,{qa_request_claimed:true},{merge:true});return true;
+    });
+  }
+  async publish(day) {
+    await this.assertLease(); this.workflowGate((await this.control.get()).data());
+    if (!this.publisher) refuse('publication_binding_unavailable');
+    const row=await this.get(day);
+    const destination=['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
+    if (!destination) return null;
+    const d=row.delivery[destination];
+    try {
+      if (!d.plan) {d.plan=await this.publisher.prepare(row,destination);await this.put(row);}
+      const receipt=await this.publisher.reconcile(row,destination,d.plan);
+      if (receipt) return receipt;
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
+      if (before.data().publication_claimed?.[destination]) return null; // uncertain: GET reconciliation only
+      await this.transaction(async tx=>{
+        const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+        const snap=await tx.get(ref),run=snap.data();
+        if (run.blob!==before.data().blob || run.publication_claimed?.[destination]) refuse('publication_attempt_not_admitted');
+        tx.set(ref,{publication_claimed:{...run.publication_claimed,[destination]:d.plan.request_digest}},{merge:true});
+      });
+      await this.publisher.write(row,destination,d.plan);
+      return await this.publisher.reconcile(row,destination,d.plan);
+    } catch(error) {
+      refuse(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
+    }
+  }
   async dispatch(request) {
     switch (request.op) {
       case 'init': {
@@ -234,6 +298,10 @@ export class Store {
       case 'get': return this.get(request.day);
       case 'rows': return this.rows();
       case 'summary': return this.summary();
+      case 'work_item': return this.workItem();
+      case 'active_qa': return this.activeQA();
+      case 'qa_check': return this.qaCheck(request.day,request.request_digest,request.deadline_ms);
+      case 'publish': return this.publish(request.day);
       case 'refresh_crm': {
         await this.assertLease();
         if (!this.crmReader) refuse('canonical_crm_read_unavailable');
@@ -307,8 +375,9 @@ async function main() {
   const {getFirestore} = await import('firebase-admin/firestore');
   const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '{}');
   if (account.project_id !== 'blueprint-8c1ca') refuse('firestore_project_binding_mismatch');
-  const store = new Store(getFirestore(initializeApp({credential: cert(account)})), undefined, undefined,
-    () => readCanonicalCRM(account));
+  const crmReader=()=>readCanonicalCRM(account);
+  const publisher=await livePublisher(account,crmReader,process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY);
+  const store = new Store(getFirestore(initializeApp({credential: cert(account)})), undefined, undefined,crmReader,publisher);
   const channel = new LeaseChannel(store);
   for await (const line of createInterface({input: process.stdin})) {
     try {

@@ -1,6 +1,11 @@
 {
   "schema_version": "blueprint.research-control.v1",
   "enabled": false,
+  "workflow": {
+    "enabled": false,
+    "qa_authority_reference": "PENDING-reviewed-agent-workflow",
+    "publication_authority_reference": "PENDING-scoped-Sheets-and-Notion-access"
+  },
   "project_id": "proj_F2tFJuxLaovJru8RrtXRaqNj",
   "agent_id": "agent_5a01ec367d1042ef8632bb5f2e6af8b4919909d2abed48ed95",
   "model": "gpt-6.1-sol",

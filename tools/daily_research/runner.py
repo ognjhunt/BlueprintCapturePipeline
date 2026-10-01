@@ -771,7 +771,7 @@ class Runner:
             payloads = {"sheets": {"sheet_id": SHEET, "tab": "Prospects", "candidates": selected},
                         "notion": {"parent_id": row["packet"]["destinations"]["notion_parent"], "summary": summary, "candidates": selected}}
             row["delivery"] = {name: {"key": row["run_key"] + ":" + name, "payload": payload,
-                                      "payload_digest": digest(payload), "state": "pending"}
+                                      "payload_digest": digest(payload), "payload_json": canonical(payload), "state": "pending"}
                                for name, payload in payloads.items()}
             self.ledger.put(row)
             return row
@@ -796,6 +796,8 @@ class Runner:
     def record_cleanup(self, day, receipt):
         with self.ledger.lock():
             row = self.ledger.get(day)
+            if row and row.get("qa") and row["qa"].get("state") not in {"validated", "qa_blocked"}:
+                raise Refusal("agent_qa_cleanup_not_terminal")
             if (not row or row["state"] not in TERMINAL or not row.get("evidence_digest")
                     or receipt.get("session_id") != row["session_id"]
                     or receipt.get("environment_id") != row["environment_id"]
@@ -809,6 +811,11 @@ class Runner:
                 if (not row.get("artifact_downloaded") or artifact is None
                         or hashlib.sha256(artifact).hexdigest() != row.get("raw_output_digest")):
                     raise Refusal("artifact_not_downloaded_or_digest_mismatch")
+            if row.get("qa", {}).get("state") == "validated":
+                qa = row["qa"]
+                if (hashlib.sha256(self.ledger.read_bytes(day + "-qa.json")).hexdigest() != qa["artifact_digest"]
+                        or digest(json.loads(self.ledger.read_bytes(day + "-qa-evidence.json"))) != qa["evidence_digest"]):
+                    raise Refusal("agent_qa_cleanup_digest_mismatch")
             for resource in ("session", "environment"):
                 try:
                     self.api.get(resource, row[resource + "_id"])

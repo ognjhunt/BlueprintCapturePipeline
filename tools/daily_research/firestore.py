@@ -6,6 +6,7 @@ import re
 import select
 import subprocess
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.daily_research.runner import (
@@ -27,7 +28,7 @@ class Bridge:
             [node, str(script or Path(__file__).with_name("firestore_bridge.mjs"))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1,
-            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON"}},
+            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON", "NOTION_API_TOKEN", "NOTION_API_KEY"}},
         )
 
     def call(self, op, **fields):
@@ -115,6 +116,12 @@ class FencedProvider(Provider):
     def cancel(self, session_id, run_key):
         self.ledger.bridge.call("assert_lease")
         return super().cancel(session_id, run_key)
+
+    def qa_input(self, session_id, event, key, day, request_digest, deadline_ms):
+        self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+        if datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms:
+            raise Refusal("agent_qa_total_runtime_exhausted")
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
 
 def control_configuration(value):
