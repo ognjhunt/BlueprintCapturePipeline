@@ -1,6 +1,8 @@
 """Runnable pilot admission, stop placement and replay, with no network calls."""
 
 from decimal import Decimal
+from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 
@@ -393,4 +395,115 @@ def test_readonly_transport_blocks_every_mutation_and_other_session():
                          ("DELETE", "/agents/sessions/session_parallel_fast"), ("GET", "/agents/sessions/other")):
         with pytest.raises(AgentExecutionError, match="mutations_and_other"):
             readonly.request(method, path)
+    assert api.calls == []
+
+
+def test_get404_never_recreates_or_asserts_approved_cleanup(unresolved_stopped):
+    from .reconcile import reconcile_session
+    root, receipt, clock, api, task = unresolved_stopped
+    def absent(method, path, **kwargs):
+        api.calls.append((method, path, kwargs.get("body")))
+        raise AgentTransportError("agents_api_http_error", status=404)
+    api.request = absent
+    with pytest.raises(AgentTransportError):
+        reconcile_session(root, receipt, api.session["id"], transport=api, clock=clock)
+    state = soft.AgentJournal(soft.SoftMonitor(root, receipt).path / "agent_journal").task(task.task_id)
+    assert state["state"] == "creation_unresolved" and state["cleanup_state"] != "deleted"
+    assert len(api.calls) == 1 and api.calls[0][0] == "GET"
+
+
+def cleanup_fixture(root, receipt, clock, api):
+    from .reconcile import CLEANUP_APPROVAL, TRACE_SHA
+    monitor = soft.SoftMonitor(root, receipt, clock=clock)
+    session_id, env_id = api.session["id"], api.session["environment"]["id"]
+    session = api.request("GET", "/agents/sessions/" + session_id)
+    turns = api.request("GET", "/agents/sessions/" + session_id + "/turns")
+    monitor.observe(monitor.task_id("parallel_fast"), session)
+    ledger = Ledger(root / "live_journal.jsonl", "10.00")
+    deleted_at = clock() + 50
+    ack = {"deleted": True, "id": session_id, "object": "agent.session.deleted"}
+    cleanup = {"schema": "approved_hosted_session_cleanup.v1", "session_id": session_id,
+        "environment_id": env_id, "delete_http_status": 200, "delete_response": ack,
+        "session_get_after_delete_http_status": 404, "environment_get_after_delete_http_status": 404,
+        "deletion_approved_request": CLEANUP_APPROVAL[0], "deletion_approved_reply": CLEANUP_APPROVAL[1],
+        "deleted_at_utc": datetime.fromtimestamp(deleted_at, timezone.utc).isoformat(),
+        "research_resume_authorized": False, "exactly_one_delete_dispatch": True,
+        "no_other_resource_deleted": True, "new_inference_or_search_or_session_create_dispatches": 0,
+        "trace_gzip_sha256": TRACE_SHA, "trace_library_file_id": "libfile_dfb2926095f88191b8c4108e84900211",
+        "trace_unchanged": True, "accounting": {"ledger_events": len(ledger.events),
+        "ledger_head": ledger.previous, "aggregate_reserved_usd": str(ledger.exposure), "reservations_released_usd": "0"},
+        "owned_endpoint_receipts": [
+            {"method": "DELETE", "approval_answer": "yes", "approval_request": CLEANUP_APPROVAL[0],
+             "approval_reply": CLEANUP_APPROVAL[1], "session_id": session_id, "environment_id": env_id,
+             "only_this_session": True, "endpoint": "https://api.openai.com/v1/agents/sessions/" + session_id},
+            {"method": "DELETE", "http_status": 200, "at": deleted_at, "session_id": session_id,
+             "uncertain": False, "response": ack},
+            {"method": "GET", "path": "/agents/sessions/" + session_id, "http_status": 404, "at": deleted_at + 1},
+            {"method": "GET", "path": "/agents/environments/" + env_id, "http_status": 404, "at": deleted_at + 2},
+            {"method": "GET", "path": "/agents/environments/" + env_id, "http_status": 404, "at": deleted_at + 3},
+            {"method": "GET", "path": "/agents/sessions/" + session_id, "http_status": 200,
+             "phase": "before_approved_deletion", "response": session},
+            {"method": "GET", "path": "/agents/sessions/" + session_id + "/turns", "http_status": 200,
+             "phase": "before_approved_deletion", "response": turns},
+            {"method": "GET", "path": "/agents/environments/" + env_id, "http_status": 200,
+             "phase": "before_approved_deletion", "response": session["environment"]}]}
+    # Synthetic receipt follows the actual read Library schema, no external call.
+    api.calls.clear()
+    path = root / "synthetic_cleanup.json"
+    path.write_text(json.dumps(cleanup, indent=2) + "\n")
+    return path, hashlib.sha256(path.read_bytes()).hexdigest(), cleanup
+
+
+def test_approved_deleted_cleanup_is_offline_preserves_state_and_closes_local_age(unresolved_stopped, monkeypatch):
+    from .reconcile import reconcile_cleanup
+    root, receipt, clock, api, task = unresolved_stopped
+    path, sha, _ = cleanup_fixture(root, receipt, clock, api)
+    monitor = soft.SoftMonitor(root, receipt, clock=clock)
+    before = soft.AgentJournal(monitor.path / "agent_journal").task(task.task_id)
+    old_ledger = (root / "live_journal.jsonl").read_bytes()
+    monkeypatch.setattr(soft, "existing_key", lambda *_: (_ for _ in ()).throw(AssertionError("key read")))
+    clock.now += 10000  # Deletion ack, not clock or arbitrary expiry, ends local age.
+    report = reconcile_cleanup(root, receipt, path, sha, clock=clock)
+    after = soft.AgentJournal(monitor.path / "agent_journal").task(task.task_id)
+    assert after["state"] == before["state"] == "creation_unresolved" and after["session_id"] is None
+    assert after["error_code"] == before["error_code"] and after["cleanup_state"] == "deleted"
+    assert report["http_calls"] == report["new_paid_calls"] == 0 and api.calls == []
+    assert report["budget"]["aggregate_reserved_usd"] == "4.765920"
+    session = report["budget"]["sessions"][0]
+    assert session["cleanup"] == "approved_deleted_api_absence_observed"
+    assert session["container_elapsed_estimate_usd"] == "0.03" and session["container_age_estimate_stopped_at_delete_ack"]
+    assert (root / "live_journal.jsonl").read_bytes() == old_ledger
+    clock.now += 10000
+    assert reconcile_cleanup(root, receipt, path, sha, clock=clock)["budget"] == report["budget"]
+    assert monitor.report()["sessions"][0]["container_elapsed_estimate_usd"] == "0.03"
+
+
+@pytest.mark.parametrize("tamper", ["wrong_hash", "wrong_approval", "wrong_session", "delete_uncertain",
+    "missing_environment_absence", "active_turn", "wrong_ledger", "released_reserves", "changed_creation"])
+def test_deleted_cleanup_refuses_incomplete_or_unbound_evidence(unresolved_stopped, tamper):
+    from .reconcile import reconcile_cleanup
+    root, receipt, clock, api, task = unresolved_stopped
+    path, sha, cleanup = cleanup_fixture(root, receipt, clock, api)
+    if tamper == "wrong_approval":
+        cleanup["deletion_approved_reply"] = "unapproved"
+    elif tamper == "wrong_session":
+        cleanup["session_id"] = "other"
+    elif tamper == "delete_uncertain":
+        cleanup["owned_endpoint_receipts"][1]["uncertain"] = True
+    elif tamper == "missing_environment_absence":
+        cleanup["owned_endpoint_receipts"].pop(4)
+    elif tamper == "active_turn":
+        cleanup["owned_endpoint_receipts"][6]["response"]["data"][0]["status"] = "in_progress"
+    elif tamper == "wrong_ledger":
+        cleanup["accounting"]["ledger_head"] = "wrong"
+    elif tamper == "released_reserves":
+        cleanup["accounting"]["reservations_released_usd"] = "1"
+    elif tamper == "changed_creation":
+        (soft.SoftMonitor(root, receipt).path / task.task_id / "started.json").write_text("{}")
+    path.write_text(json.dumps(cleanup, indent=2) + "\n")
+    sha = "wrong" if tamper == "wrong_hash" else hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(AgentExecutionError):
+        reconcile_cleanup(root, receipt, path, sha, clock=clock)
+    state = soft.AgentJournal(soft.SoftMonitor(root, receipt).path / "agent_journal").task(task.task_id)
+    assert state["cleanup_state"] != "deleted" and state["state"] == "creation_unresolved"
     assert api.calls == []

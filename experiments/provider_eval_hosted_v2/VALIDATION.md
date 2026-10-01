@@ -1,7 +1,7 @@
 # Offline validation
 
 Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
-Result: **95 passed**, comprising 30 hosted cohort instances, 29 soft-pilot cases,
+Result: **106 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
 and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
@@ -56,6 +56,12 @@ Verified boundaries include:
   receipt for patched paid execution. The retained 49,484/261 token checkpoint
   reproduces $4.765920/$0.905315. Idle without a terminal root turn, any earlier
   active root, or outstanding required action keeps cancellation unresolved.
+- Offline exact-approved-deletion receipt adoption validates the raw hash,
+  approval/intent/DELETE acknowledgement/session-and-environment absence, retained
+  task/network/cancelled turn/creation and original ledger/reserves. No key or
+  HTTP route is used. The historical creation-unresolved state is preserved;
+  deletion anchors stop local container-age growth without releasing holds or
+  claiming final teardown/billing. Tampered/incomplete evidence is refused.
 
 Remaining limitations are documented in README: hosted inference/write access
 is not verified by read-only saved-agent access; managed hidden-loop usage lacks

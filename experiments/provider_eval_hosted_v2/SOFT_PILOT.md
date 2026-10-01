@@ -160,7 +160,35 @@ never a successful benchmark answer. Repeated reads do not create another sessio
 repeat a search or release prior holds. Conservative usage/carry accounting may
 increase; the supplied checkpoint reproduces $4.765920 reserved and $0.905315
 projected, above the $0.80 stop threshold. The remaining three arms stay stopped.
-No permanent deletion is performed; exact-session cleanup approval remains needed.
+The GET-only route performs no deletion. If the exact session has already been
+approved deleted, use the offline cleanup route below rather than querying or
+recreating it.
+
+### Already approved deleted session
+
+The execution owner confirmed one approved DELETE 200, session GET 404 and two
+environment GET 404 observations. The exact cleanup receipt is Library
+`libfile_051328762d188191a2e6bee160df9987`, version 0. A complete Library text read
+contains 648 lines / 27,481 bytes; its local read projection has SHA256
+`b692d6ea4c9b1ad7b99dcd2dc15d76c66338822ed4ee244455088cd395fe3ca1`.
+The supported download helper failed with `download failed`; materialization is
+not claimed. The execution owner already retains the source receipt locally.
+
+Substitute that exact existing local receipt path and the original approval SHA:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_hosted_v2.soft_pilot --aggregate-root /workspace/provider-eval-private-live-20260930 --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce --soft-receipt-sha256 ORIGINAL_APPROVAL_SHA --reconcile-cleanup EXACT_EXISTING_CLEANUP_RECEIPT.json --cleanup-receipt-sha256 b692d6ea4c9b1ad7b99dcd2dc15d76c66338822ed4ee244455088cd395fe3ca1
+```
+
+This route makes **zero HTTP/key/model/search calls**. It verifies the exact file
+hash and deletion approval, intent/acknowledgement, post-delete absence, retained
+cancelled turn/session/environment, creation proof, original ledger prefix and
+reserves. The raw cleanup evidence is retained and anchored in AgentJournal.
+Historical task state and missing session binding stay unchanged; only the cleanup
+marker becomes deleted. Repeated adoption does not release or duplicate reserves.
+Container-age estimates stop at the delete acknowledgement, while existing holds
+and asynchronous provider-teardown/final-billing uncertainty remain. Remaining
+arms and all paid work stay stopped; a 404 never authorizes recreation.
 
 Primary references: [official SDK registry](https://pypi.org/project/openai/3.22.1/),
 [compatible Agents SDK](https://pypi.org/project/openai-agents/0.22.3/),

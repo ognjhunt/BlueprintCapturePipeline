@@ -1,13 +1,150 @@
 """GET-only observation of an existing stopped pilot; never inference or cleanup."""
 
 from pathlib import Path
+from datetime import datetime
+from decimal import Decimal
+import hashlib
+import json
+import math
 import re
 import time
 
 from blueprint_pipeline.agent_execution.contracts import AgentExecutionError
 from blueprint_pipeline.agent_execution.journal import AgentJournal, TERMINAL_STATES
-from experiments.provider_eval_recovery.harness import digest, exclusive, read_json, write_once
+from experiments.provider_eval_recovery.harness import Ledger, digest, exclusive, read_json, write_once
+from experiments.provider_eval_recovery.live_http import PROJECT
 from .soft_pilot import MODES, SoftMonitor, make_runtime
+
+CLEANUP_APPROVAL = ("Sentinel_d6eb85df8ad08191a630d071b244c607", "Sentinel_61c9e31a09708191b1bc4cbbd41d1ac5")
+TRACE_SHA = "78c382fa8c1e3c508336bff6c8ca29a7711e63e3aabc57d9ebe60d6fb4feb637"
+
+
+def retained_cleanup(journal, path, task_id, soft_sha, task_sha, started):
+    proof = journal.event("hosted_cleanup_" + task_id)
+    if proof is None:
+        return None
+    saved = path / task_id / "approved_cleanup.json"
+    if (not saved.is_file() or digest(read_json(saved)) != proof.get("semantic_sha256")
+            or proof.get("task_digest") != task_sha or proof.get("soft_receipt") != soft_sha
+            or proof.get("task_id") != task_id or type(proof.get("deleted_at")) not in {int, float}
+            or not math.isfinite(proof["deleted_at"]) or proof["deleted_at"] < started):
+        raise AgentExecutionError("approved_cleanup_receipt_integrity_failure")
+    return proof
+
+
+class RetainedSession:
+    """Offline receipt observations only. Every unknown route fails closed."""
+    project_id = PROJECT
+    def __init__(self, receipts):
+        self.receipts = receipts
+    def request(self, method, path, *, body=None, query=None):
+        rows = [r for r in self.receipts if r.get("method") == "GET" and r.get("path") == path
+                and r.get("phase") == "before_approved_deletion" and r.get("http_status") == 200]
+        if method != "GET" or body is not None or len(rows) != 1:
+            raise AgentExecutionError("offline_cleanup_retained_endpoint_missing_or_ambiguous")
+        return rows[0]["response"]
+
+
+def reconcile_cleanup(root, receipt, cleanup_path, expected_raw_sha, *, clock=time.time):
+    """Adopt only the exact approved cleanup, without rebinding the old task."""
+    blob = Path(cleanup_path).read_bytes()
+    raw_sha = hashlib.sha256(blob).hexdigest()
+    if raw_sha != expected_raw_sha:
+        raise AgentExecutionError("exact_cleanup_receipt_hash_required")
+    cleanup = json.loads(blob)
+    required = {"schema": "approved_hosted_session_cleanup.v1", "delete_http_status": 200,
+        "session_get_after_delete_http_status": 404, "environment_get_after_delete_http_status": 404,
+        "deletion_approved_request": CLEANUP_APPROVAL[0], "deletion_approved_reply": CLEANUP_APPROVAL[1],
+        "research_resume_authorized": False, "exactly_one_delete_dispatch": True,
+        "no_other_resource_deleted": True, "new_inference_or_search_or_session_create_dispatches": 0,
+        "trace_gzip_sha256": TRACE_SHA, "trace_library_file_id": "libfile_dfb2926095f88191b8c4108e84900211",
+        "trace_unchanged": True}
+    if not isinstance(cleanup, dict) or any(cleanup.get(k) != v for k, v in required.items()):
+        raise AgentExecutionError("exact_approved_cleanup_evidence_required")
+    session_id, env_id = cleanup.get("session_id"), cleanup.get("environment_id")
+    if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", value)
+           for value in (session_id, env_id)):
+        raise AgentExecutionError("agents_api_resource_id_invalid")
+    rows = cleanup.get("owned_endpoint_receipts")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise AgentExecutionError("cleanup_endpoint_receipts_required")
+    intents = [r for r in rows if r.get("method") == "DELETE" and r.get("approval_answer") == "yes"]
+    acknowledgements = [r for r in rows if r.get("method") == "DELETE" and r.get("http_status") == 200]
+    if (len(intents) != 1 or len(acknowledgements) != 1 or intents[0].get("session_id") != session_id
+            or intents[0].get("environment_id") != env_id or intents[0].get("only_this_session") is not True
+            or (intents[0].get("approval_request"), intents[0].get("approval_reply")) != CLEANUP_APPROVAL
+            or intents[0].get("endpoint") != "https://api.openai.com/v1/agents/sessions/" + session_id
+            or acknowledgements[0].get("session_id") != session_id
+            or acknowledgements[0].get("response") != cleanup.get("delete_response")
+            or acknowledgements[0].get("response", {}).get("id") != session_id
+            or acknowledgements[0].get("response", {}).get("deleted") is not True
+            or acknowledgements[0].get("uncertain") is not False):
+        raise AgentExecutionError("cleanup_exact_delete_intent_acknowledgement_required")
+    deleted_at = acknowledgements[0].get("at")
+    absent_session = [r for r in rows if r.get("method") == "GET" and r.get("http_status") == 404
+                      and r.get("path") == "/agents/sessions/" + session_id]
+    absent_env = [r for r in rows if r.get("method") == "GET" and r.get("http_status") == 404
+                  and r.get("path") == "/agents/environments/" + env_id]
+    if (type(deleted_at) not in {int, float} or not math.isfinite(deleted_at)
+            or not absent_session or len(absent_env) < 2
+            or any(type(r.get("at")) not in {int, float} or not math.isfinite(r["at"]) or r["at"] < deleted_at
+                   for r in absent_session + absent_env)
+            or datetime.fromisoformat(cleanup["deleted_at_utc"]).timestamp() != deleted_at):
+        raise AgentExecutionError("cleanup_post_delete_absence_evidence_required")
+    root = Path(root).resolve()
+    monitor = SoftMonitor(root, receipt, clock=clock, notify=lambda _: None)
+    if not (monitor.path / "stop.json").is_file():
+        raise AgentExecutionError("cleanup_requires_existing_stopped_pilot")
+    with exclusive(monitor.path):
+        accounting = cleanup.get("accounting", {})
+        ledger = Ledger(root / "live_journal.jsonl", "10.00")
+        n = accounting.get("ledger_events")
+        if (type(n) is not int or not 1 <= n <= len(ledger.events)
+                or ledger.events[n - 1]["sha256"] != accounting.get("ledger_head")
+                or accounting.get("reservations_released_usd") != "0"):
+            raise AgentExecutionError("cleanup_original_ledger_checkpoint_required")
+        states = {e["attempt_id"]: e["kind"] for e in ledger.events[:n]}
+        held = sum((Decimal(e["amount_usd"]) for e in ledger.events[:n] if e["kind"] == "reserved"
+                    and states[e["attempt_id"]] != "not_accepted"), Decimal(0))
+        if held != Decimal(accounting.get("aggregate_reserved_usd", "-1")):
+            raise AgentExecutionError("cleanup_original_reserves_not_preserved")
+        retained = RetainedSession(rows)
+        session = retained.request("GET", "/agents/sessions/" + session_id)
+        task_id = (session.get("metadata") or {}).get("blueprint_task_id")
+        frozen = {monitor.task_id(mode): mode for mode in MODES}
+        if task_id not in frozen:
+            raise AgentExecutionError("cleanup_owned_frozen_task_required")
+        runtime, task = make_runtime(root, receipt, monitor, frozen[task_id], transport=retained)
+        if runtime._validate_session(task, session) != session_id or session["environment"].get("id") != env_id:
+            raise AgentExecutionError("cleanup_owned_session_environment_mismatch")
+        roots = runtime._root_turns(session_id)
+        if (not roots or any(t.get("status") != "cancelled" for t in roots)
+                or session.get("required_actions") not in (None, [])):
+            raise AgentExecutionError("cleanup_retained_cancelled_turn_required")
+        environment = retained.request("GET", "/agents/environments/" + env_id)
+        if environment.get("id") != env_id or environment.get("type") != "openai_hosted":
+            raise AgentExecutionError("cleanup_retained_environment_identity_required")
+        journal = runtime.journal
+        before = journal.task(task_id)
+        anchor = journal.event("hosted_creation_" + task_id)
+        if (anchor is None or anchor.get("task_digest") != task.task_digest
+                or anchor.get("soft_receipt") != monitor.sha or deleted_at < anchor["at"]
+                or read_json(monitor.path / task_id / "started.json") != anchor
+                or not any(o["task_id"] == task_id and o.get("session_id") == session_id for o in monitor.observations())):
+            raise AgentExecutionError("cleanup_retained_creation_observation_required")
+        write_once(monitor.path / task_id / "approved_cleanup.json", cleanup)
+        proof = {"task_id": task_id, "task_digest": task.task_digest, "soft_receipt": monitor.sha,
+                 "session_id": session_id, "environment_id": env_id, "deleted_at": deleted_at,
+                 "raw_sha256": raw_sha, "semantic_sha256": digest(cleanup)}
+        journal.record_event("hosted_cleanup_" + task_id, proof)
+        journal.cleanup_state(task_id, "deleted")
+        report = {"session_id": session_id, "environment_id": env_id, "cleanup": "approved_deleted_api_absence_observed",
+            "cleanup_receipt_sha256": raw_sha, "historical_task_state": before["state"],
+            "historical_task_state_not_rebound_or_reset": True, "cancellation_settled_from_retained_turn": True,
+            "new_paid_calls": 0, "http_calls": 0, "no_recreation": True, "no_reservations_released": True,
+            "provider_async_teardown_and_final_billing_uncertain": True, "budget": monitor.report()}
+        write_once(monitor.path / "readonly_reconciliation" / raw_sha / "cleanup_report.json", report)
+        return report
 
 
 class ReadOnlySession:

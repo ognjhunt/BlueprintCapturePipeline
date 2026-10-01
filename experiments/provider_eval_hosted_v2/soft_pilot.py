@@ -220,12 +220,18 @@ class SoftMonitor:
             latest = max(observed, key=lambda o: o["at"]) if observed else {}
             costs = [Decimal(o["model_estimate_usd"]) for o in observed if o["model_estimate_usd"] is not None]
             model_cost = max([MODEL_HOLD, *costs])
-            carry = Decimal(max(1, math.ceil(max(0, self.clock() - started) / 1200))) * Decimal("0.03")
+            from .reconcile import retained_cleanup
+            cleanup = retained_cleanup(journal, self.path, task_id, self.sha, known.get("task_digest"), started)
+            until = cleanup["deleted_at"] if cleanup else self.clock()
+            carry = Decimal(max(1, math.ceil(max(0, until - started) / 1200))) * Decimal("0.03")
             overage += max(Decimal(0), model_cost - MODEL_HOLD) + max(Decimal(0), carry - CONTAINER_HOLD)
             sessions.append({"mode": mode, "task_id": task_id, "session_id": known.get("session_id") or latest.get("session_id"),
                 "environment_id": latest.get("environment_id"), "usage": latest.get("usage"),
                 "model_high_water_estimate_usd": str(model_cost), "container_elapsed_estimate_usd": str(carry),
-                "cleanup": "retained_pending_exact_session_deletion_approval", "ongoing_container_cost_unreconciled": True})
+                "cleanup": "approved_deleted_api_absence_observed" if cleanup else "retained_pending_exact_session_deletion_approval",
+                "cleanup_receipt_sha256": cleanup["raw_sha256"] if cleanup else None,
+                "container_age_estimate_stopped_at_delete_ack": bool(cleanup),
+                "ongoing_container_cost_unreconciled": True})
         topups = sum((ledger.reservations[e["attempt_id"]] for e in ledger.events if e["kind"] == "reserved"
             and e.get("soft_receipt") == self.sha and e.get("role") == "soft_pilot_upward_hold"), Decimal(0))
         shortfall = max(Decimal(0), overage - topups)
@@ -434,12 +440,14 @@ def main():
     parser.add_argument("--aggregate-root", type=Path, required=True)
     parser.add_argument("--execution-owner-task-id", required=True)
     parser.add_argument("--soft-receipt-sha256")
+    parser.add_argument("--cleanup-receipt-sha256")
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--prepare-soft-pilot", action="store_true")
     action.add_argument("--check-access", action="store_true")
     action.add_argument("--execute", action="store_true")
     action.add_argument("--status", action="store_true")
     action.add_argument("--reconcile-session", metavar="EXACT_SESSION_ID")
+    action.add_argument("--reconcile-cleanup", type=Path, metavar="EXACT_CLEANUP_RECEIPT")
     args = parser.parse_args()
     root = args.aggregate_root.resolve()
     try:
@@ -459,6 +467,13 @@ def main():
             result = reconcile_session(root, receipt, args.reconcile_session,
                 transport=OpenAIAgentsHTTP(api_key=existing_key("openai"), project_id=PROJECT))
             print(json.dumps(result, indent=2))
+            return
+        if args.reconcile_cleanup:
+            from .reconcile import reconcile_cleanup
+            receipt = validate_receipt(root, args.execution_owner_task_id, args.soft_receipt_sha256,
+                                       readonly_previous=True)
+            print(json.dumps(reconcile_cleanup(root, receipt, args.reconcile_cleanup,
+                args.cleanup_receipt_sha256), indent=2))
             return
         if version("openai") != SDK_VERSION or version("openai-agents") != AGENTS_SDK_VERSION:
             raise AgentExecutionError("install_reviewed_sdk_pair_openai_3.22.1_openai_agents_0.22.3")
