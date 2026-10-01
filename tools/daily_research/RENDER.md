@@ -99,6 +99,16 @@ The five-activity search limit and $1 soft TOTAL target include both phases;
 model/search/environment usage and QA turn evidence remain in the dated row.
 An exhausted budget/time envelope blocks publication rather than adding a run.
 
+Those are the legacy scan guards. The disabled
+`adaptive-daily.config.example.json` opts newly admitted v3 rows into ten or more
+new site/task opportunities, honest coverage/shortfall and a pinned 20-minute
+research phase within a 30-minute research+QA watchdog. Agent QA excludes CRM
+matches and existing deployments from that quota. The daily $1 soft TOTAL
+target stays unchanged; old rows retain their original guards. See
+[ADAPTIVE.md](ADAPTIVE.md) for the separate disabled $25 test preparation and
+its unresolved total-spend/session admission. Installing this package does not
+change live control or recover/retry the failed Oct 1 intent.
+
 `publisher.mjs` handles only the two digest-bound deliveries. It preserves the
 exact request plan and one-use attempt claim before each service POST. A timeout
 or restart uses GET-only reconciliation; absence never authorizes a second POST.

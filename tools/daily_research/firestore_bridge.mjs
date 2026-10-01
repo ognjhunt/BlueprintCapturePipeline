@@ -6,6 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {livePublisher} from './publisher.mjs';
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
+export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
 const TERMINAL = ['awaiting_review', 'reviewed', 'completed', 'failed', 'cancelled'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -270,6 +271,82 @@ export class Store {
       refuse(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
     }
   }
+  // One authorized test reuses the Oct 1 session. It never enters daily runs or
+  // workItems, and shares the existing lease and immutable blob implementation.
+  adaptiveRef() {return this.db.doc(`${ROOT}/adaptiveTests/${ADAPTIVE_TEST}`);}
+  async adaptiveOrigin() {
+    const snap = await this.db.doc(`${ROOT}/runs/2026-10-01`).get();
+    return {blob: snap.exists ? snap.data().blob : null, row: await this.get('2026-10-01')};
+  }
+  async adaptiveGet() {
+    const snap = await this.adaptiveRef().get();
+    return snap.exists ? JSON.parse(Buffer.from(await this.blobGet(snap.data().blob), 'base64').toString('utf8')) : null;
+  }
+  async adaptivePut(row) {
+    const intent = row?.test_intent;
+    if (row?.test_id !== ADAPTIVE_TEST || row.date !== '2026-10-01' || !intent
+        || intent.test_id !== ADAPTIVE_TEST || intent.session_id !== row.session_id
+        || intent.environment_id !== row.environment_id
+        || !/^[a-f0-9]{64}$/.test(intent.intent_digest || '') || !/^[a-f0-9]{64}$/.test(row.daily_blob || ''))
+      refuse('adaptive_test_binding_invalid');
+    const hash = await this.blobPut(Buffer.from(JSON.stringify(row)).toString('base64'));
+    const binding = sha(JSON.stringify([intent,row.session_id,row.environment_id,row.metadata,row.run_key,
+      row.started_at,row.research_runtime_seconds,row.total_runtime_seconds,row.research_deadline_ms,row.daily_blob]));
+    return this.transaction(async tx => {
+      const control = (await tx.get(this.control)).data(); this.fence(control);
+      const origin = await tx.get(this.db.doc(`${ROOT}/runs/2026-10-01`));
+      const prior = await tx.get(this.adaptiveRef());
+      if (!origin.exists || origin.data().blob !== row.daily_blob) refuse('adaptive_original_intent_changed');
+      if (!prior.exists && row.state !== 'research_input_unresolved') refuse('adaptive_intent_not_staged');
+      if (prior.exists && prior.data().binding !== binding) refuse('adaptive_intent_conflict');
+      tx.set(this.adaptiveRef(), {blob: hash, intent_digest: intent.intent_digest, daily_blob: row.daily_blob,
+        binding, state: row.state, claims: prior.exists ? prior.data().claims || {} : {},
+        research_request_digest: intent.request_digest, research_deadline_ms: row.research_deadline_ms,
+        qa_request_digest: row.qa?.request_digest || null, qa_deadline_ms: row.qa?.deadline_ms || null});
+      return true;
+    });
+  }
+  async adaptiveClaim(phase, requestDigest, deadlineMS) {
+    if (!['research','qa'].includes(phase)) refuse('adaptive_phase_invalid');
+    // Verify immutable intent bytes before claiming; the transaction pins the
+    // same row blob, original daily blob, lease, deadline and one-use bit.
+    const row = await this.adaptiveGet(), intent = row?.test_intent;
+    if (!intent || intent.admission_blockers?.length !== 0 || intent.provider_calls !== 0
+        || intent.profile?.enabled !== false || intent.profile?.publication_enabled !== false
+        || intent.profile?.new_session_create_allowed !== false || intent.profile?.daily_state_reset_allowed !== false
+        || intent.profile?.permanent_deletion_allowed !== false) refuse('adaptive_admission_incomplete');
+    return this.transaction(async tx => {
+      const control = (await tx.get(this.control)).data(); this.fence(control);
+      const origin = await tx.get(this.db.doc(`${ROOT}/runs/2026-10-01`));
+      const snap = await tx.get(this.adaptiveRef()), run = snap.data();
+      if (control?.enabled !== true || !snap.exists || !origin.exists || origin.data().blob !== row.daily_blob
+          || run.blob !== sha(Buffer.from(JSON.stringify(row))) || run.intent_digest !== intent.intent_digest
+          || run[`${phase}_request_digest`] !== requestDigest
+          || run[`${phase}_deadline_ms`] !== deadlineMS || run.claims?.[phase]
+          || run.state !== (phase === 'research' ? 'research_input_unresolved' : 'awaiting_review')
+          || !Number.isSafeInteger(deadlineMS) || this.clock() >= deadlineMS)
+        refuse('adaptive_input_not_admitted');
+      tx.set(this.adaptiveRef(), {claims: {...run.claims,[phase]: requestDigest}}, {merge: true});
+      return true;
+    });
+  }
+  async adaptiveFilePut(name, encoded) {
+    if (!fileOK(name) || !name.startsWith('2026-10-01-') && name !== 'crm.json') refuse('adaptive_file_invalid');
+    const hash = await this.blobPut(encoded), ref = this.db.doc(`${this.adaptiveRef().path}/files/${name}`);
+    return this.transaction(async tx => {
+      const control = (await tx.get(this.control)).data(); this.fence(control);
+      const prior = await tx.get(ref);
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json')) && prior.exists && prior.data().blob !== hash)
+        refuse('artifact_identity_conflict');
+      tx.set(ref,{blob: hash}); return true;
+    });
+  }
+  async adaptiveFileGet(name) {
+    if (!fileOK(name)) refuse('adaptive_file_invalid');
+    const snap = await this.db.doc(`${this.adaptiveRef().path}/files/${name}`).get();
+    if (!snap.exists) refuse('firestore_file_missing');
+    return this.blobGet(snap.data().blob);
+  }
   async dispatch(request) {
     switch (request.op) {
       case 'init': {
@@ -295,6 +372,16 @@ export class Store {
       case 'release': return this.release();
       case 'assert_lease': return this.assertLease();
       case 'control': return (await this.control.get()).data() || null;
+      case 'read_crm': {
+        if (!this.crmReader) refuse('canonical_crm_read_unavailable');
+        return this.crmReader();
+      }
+      case 'adaptive_origin': return this.adaptiveOrigin();
+      case 'adaptive_get': return this.adaptiveGet();
+      case 'adaptive_put': return this.adaptivePut(request.row);
+      case 'adaptive_claim': return this.adaptiveClaim(request.phase,request.request_digest,request.deadline_ms);
+      case 'adaptive_file_put': return this.adaptiveFilePut(request.name,request.bytes);
+      case 'adaptive_file_get': return this.adaptiveFileGet(request.name);
       case 'get': return this.get(request.day);
       case 'rows': return this.rows();
       case 'summary': return this.summary();

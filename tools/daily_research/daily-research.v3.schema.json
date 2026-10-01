@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "blueprint.daily-research.v3.schema.json",
-  "title": "Parent-reviewed Blueprint research v3",
+  "title": "Blueprint agent-reviewed research v3",
   "description": "Explicit dated background and approved refresh eligibility. Runtime enforces positive task capability coverage, live operational/deployment-critical gates, exact policy/fact/source bindings and source dates.",
   "type": "object",
   "additionalProperties": false,
@@ -49,7 +49,7 @@
       "items": {
         "$ref": "#/$defs/candidate"
       },
-      "maxItems": 3
+      "maxItems": 100
     },
     "proposed_knowledge_deltas": {
       "type": "array",
@@ -61,6 +61,61 @@
     "refresh_policy_hash": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "search_queries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "pages_opened": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "branches_checked": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "rejection_reasons": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "stop_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "shortfall_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "search_queries",
+        "pages_opened",
+        "branches_checked",
+        "rejection_reasons",
+        "stop_reason",
+        "shortfall_reason"
+      ]
     }
   },
   "required": [

@@ -38,7 +38,7 @@ function bind(row, destination) {
   if (destination === 'sheets' && (delivery.payload.sheet_id !== SHEET || delivery.payload.tab !== 'Prospects'))
     fail('publication_destination_invalid');
   if (destination === 'notion' && delivery.payload.parent_id !== NOTION) fail('publication_destination_invalid');
-  if (!Array.isArray(delivery.payload.candidates) || delivery.payload.candidates.length > 3)
+  if (!Array.isArray(delivery.payload.candidates) || delivery.payload.candidates.length > 100)
     fail('publication_candidates_invalid');
   return delivery;
 }
