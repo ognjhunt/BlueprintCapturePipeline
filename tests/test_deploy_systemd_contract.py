@@ -568,7 +568,7 @@ def test_privacy_runner_auth_tokens_fail_closed_before_deploy() -> None:
     privacy_secret = _terraform_variable_body(terraform, "privacy_runner_token_secret_name")
     video_secret = _terraform_variable_body(terraform, "video_to_world_runner_token_secret_name")
 
-    assert 'default     = ""' not in privacy_secret
+    assert 'var.deployment_scope == "remote_cpu" && var.privacy_runner_token_secret_name == ""' in privacy_secret
     assert "^[A-Za-z0-9_-]{1,255}$" in privacy_secret
     assert "video_to_world_runner_token_secret_name" in video_secret
     assert 'variable "privacy_runner_token"' not in terraform
@@ -872,7 +872,10 @@ def test_release_images_are_versioned_manifested_and_rejected_if_latest():
 
     for variable in image_variables:
         body = _terraform_variable_body(terraform, variable)
-        assert "default" not in body
+        if variable == "docker_image":
+            assert "default" not in body
+        else:
+            assert f'var.deployment_scope == "remote_cpu" && var.{variable} == ""' in body
         assert "nullable    = false" in body
         assert "^.+@sha256:[0-9a-f]{64}$" in body
         assert "non-latest versioned release tag" not in body
