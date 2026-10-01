@@ -27,6 +27,7 @@ from tools.daily_research.firestore import (
     control_configuration,
 )
 from tools.daily_research.runner import (
+    TERMINAL,
     Provider,
     Refusal,
     Runner,
@@ -273,7 +274,8 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider,
             # Recovery follows the existing test identity even after due_date
             # advances. Terminal/QA rows must not look up a different date.
             with ledger.lock():
-                result = runner.observe(ledger.get(DAY))
+                current = ledger.get(DAY)
+                result = current if current["state"] in TERMINAL else runner.observe(current)
         else:
             result = runner.start_or_resume(allow_create=execute)
         while True:
