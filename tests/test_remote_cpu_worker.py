@@ -291,6 +291,41 @@ def _outputs(world: WorkerWorld, descriptor: dict) -> dict:
     return report(sealed_result(descriptor, blockers=[]))
 
 
+@pytest.mark.parametrize("logical_bytes", [4297047466, 6 * 1024**3, 6 * 1024**3 + 1])
+def test_logical_output_limit_seals_known_runtime_bytes_without_uploading_them(
+    tmp_path: Path, monkeypatch, logical_bytes: int,
+) -> None:
+    """Exercise original sealing/receipts with a scaled index, without allocating multi-GiB test files."""
+
+    world = WorkerWorld(tmp_path)
+    original_index = archive.index_tree
+
+    def scaled_index(root: Path, *, host_known: dict) -> dict:
+        index = original_index(root, host_known=host_known)
+        known = next(row for row in index["entries"] if row["path"].endswith("model.bin"))
+        assert known["origin"] != "archive"
+        known["size_bytes"] += logical_bytes - index["bytes_total"]
+        index = archive._index_body(index["root_mode"], index["entries"], index["directories"])
+        index["index_digest"] = archive.canonical_digest(index, digest_field="index_digest")
+        archive.index_bytes(index)  # Keep the real index seal and derived-field validation.
+        return index
+
+    monkeypatch.setattr(worker, "index_tree", scaled_index)
+    assert world.run(lambda *, descriptor, **_: _outputs(world, descriptor)) == 0
+    receipt = world.receipt()
+    if logical_bytes <= 6 * 1024**3:
+        assert _verdict(world) == ("succeeded", True)
+        assert receipt["output"]["bytes_total"] == logical_bytes
+        assert receipt["output"]["host_known"]["bytes"] > 4 * 1024**3
+        assert receipt["output"]["archive"]["size_bytes"] < 64 * 1024
+        assert _puts(world)[-3:] == ["blobs.tar", "index.json", "receipt.json"]
+    else:
+        assert _verdict(world) == ("infrastructure_failed", False)
+        assert receipt["infrastructure_failures"] == ["infrastructure_failed:output_exceeds_limits"]
+        assert receipt["output"] is None
+        assert world.staged("blobs.tar") is None and world.staged("index.json") is None
+
+
 def test_inputs_materialize_at_declared_paths_with_digest_checks(tmp_path: Path) -> None:
     world = WorkerWorld(tmp_path / "fetched")
     seen: list[tuple[str, bytes, int]] = []

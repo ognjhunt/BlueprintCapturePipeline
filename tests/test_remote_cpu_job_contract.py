@@ -582,6 +582,33 @@ def test_receipt_must_echo_descriptor_attempt_and_execution_identity() -> None:
     )
 
 
+@pytest.mark.parametrize("logical_bytes", [4297047466, 6 * GIB, 6 * GIB + 1])
+def test_generated_descriptor_receipts_bound_full_logical_output(logical_bytes: int) -> None:
+    config = _config()
+    descriptor = _descriptor(limits=contract.stage_limits(config, "episode_compilation"))
+    output = _output()
+    output["bytes_total"] = logical_bytes
+    # Known bytes still count toward the logical bound; they are not an exemption.
+    output["host_known"]["bytes"] = logical_bytes - 10000
+    receipt = _receipt(descriptor, output=output)
+    if logical_bytes <= 6 * GIB:
+        verdict = contract.validate_receipt(receipt, descriptor=descriptor, execution_name=EXECUTION)
+        assert verdict["outcome"] == "succeeded" and verdict["terminal"] is True
+    else:
+        assert "remote_cpu_receipt_output_exceeds_limits" in _reasons(
+            lambda: contract.validate_receipt(receipt, descriptor=descriptor, execution_name=EXECUTION)
+        )
+
+
+def test_descriptor_cannot_raise_the_canonical_logical_output_bound() -> None:
+    assert _descriptor(limits=_limits(max_output_bytes=6 * GIB))["limits"]["max_output_bytes"] == 6 * GIB
+    assert "remote_cpu_descriptor_output_limit_out_of_bounds" in _reasons(
+        lambda: _descriptor(limits=_limits(max_output_bytes=6 * GIB + 1))
+    )
+    # An older descriptor's stricter bound remains valid.
+    assert _descriptor()["limits"]["max_output_bytes"] == 4 * GIB
+
+
 def test_blocked_receipt_with_release_path_misses_is_not_terminal() -> None:
     descriptor = _descriptor()
 

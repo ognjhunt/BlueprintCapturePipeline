@@ -43,7 +43,7 @@ HOST_ENVIRONMENT = "sha256:" + "4" * 64
 QUEUE = "task-evaluation-episode-compilations"
 ROWS = "/var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations/processing"
 COMPILED = "/var/lib/blueprint/task-evaluation-inputs/compiled-episodes"
-WORST_CASE_USD = 0.6672  # 1800 s x (4 x 0.000018 + 16 x 0.000002) + 4 GiB x 0.12
+WORST_CASE_USD = 0.9072  # 1800 s x (4 x 0.000018 + 16 x 0.000002) + 6 GiB x 0.12
 
 
 def seal(value: dict[str, Any], field: str) -> dict[str, Any]:
