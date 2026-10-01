@@ -56,9 +56,13 @@ def install_child_fences(owned_roots: Sequence[Path]) -> None:
             raise PermissionError("concurrency_harness_network_denied")
         if event == "subprocess.Popen":
             command = args[1]
+            arguments = list(command[1:]) if isinstance(command, (list, tuple)) else []
+            if len(arguments) >= 3 and arguments[0] == "-C":
+                arguments = arguments[2:]
             if (not isinstance(command, (list, tuple)) or len(command) < 2
                     or Path(command[0]).name != "git"
-                    or command[1] not in {"rev-parse", "status", "show", "ls-files", "archive"}):
+                    or not arguments or arguments[0] not in {"rev-parse", "status", "show", "ls-files", "archive"}
+                    or any(arg.startswith(("--output", "--exec")) for arg in arguments)):
                 raise PermissionError("concurrency_harness_provider_subprocess_denied")
         if event == "open":
             path, mode, flags = args
@@ -72,7 +76,8 @@ def install_child_fences(owned_roots: Sequence[Path]) -> None:
         if event in {"os.mkdir", "os.remove", "os.rmdir", "os.chmod", "os.chown", "os.utime"}:
             check(args[0])
         if event in {"os.rename", "os.link"}:
-            check(args[0]); check(args[1])
+            check(args[0])
+            check(args[1])
         if event == "os.symlink":
             check(args[1])
 
