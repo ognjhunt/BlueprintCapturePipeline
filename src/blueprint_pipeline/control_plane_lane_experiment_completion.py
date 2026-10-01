@@ -15,9 +15,78 @@ from . import control_plane_lane_owner_consents as owners
 from . import control_plane_lane_scratch_decisions as retained
 from .control_plane_lane_experiment_authority import _current
 from .control_plane_lane_experiment_publication import _BirthFiles, _publish
-from .control_plane_lane_owner_target_versions import _require
+from .control_plane_lane_owner_target_versions import _epoch, _require
 from .control_plane_reference_budget import ReferenceCollectionBudget
 from .decision_evidence_contracts import canonical_digest
+
+
+def complete_disk_diagnostic(proof, *, expected_intent, request_path, installed_config_path, now):
+    """Distinct root finalizer; only the just-closed fixed executor can enroll."""
+    from . import control_plane_lane_disk_diagnostic as diagnostic
+    _require(os.geteuid() == 0, 'diagnostic_producer_closure_unproven')
+    budget = diagnostic._consume_closed(proof)
+    files = diagnostic._DiagnosticFiles(budget, now)
+    try:
+        # Preserve the real producer's latest floor and original ceiling.
+        # The distinct file owner reacquires inputs; it gets no new lifetime.
+        files.bind_lifetime(proof.files.last_epoch, proof.files.expiry)
+        issued = now()
+        config, gid, public, current, entry, intent, request, target, target_fd = diagnostic._admission(
+            files, proof.entry['intent_id'], expected_intent, installed_config_path, request_path, issued,
+            closed_context=proof)
+        _require(current[0] == proof.authority and entry == proof.entry,
+                 'diagnostic_producer_authority_changed')
+        diagnostic._tree(files, target, target_fd, report=True)
+        store = issuance._store(files, config.experiment_record_store)
+        invocation_raw, _ = files.read(Path(config.experiment_record_store) / (entry['intent_id'] + '.producer-invocation.json'),
+                                      cap=32768, protected=True, mode=0o600)
+        _require(issuance._selector(invocation_raw, budget) == proof.invocation, 'diagnostic_invocation_changed')
+        invocation = retained._document(invocation_raw, 32768, _work_budget=budget)
+        diagnostic._reserved_bytes(invocation)
+        _require(invocation['intent'] == expected_intent and invocation['authority'] == current[0]['record']
+                 and invocation['request'] == intent['request_records'][0]
+                 and all(invocation[key] == entry[key] for key in ('intent_id', 'generation', 'birth', 'target_identity', 'lease')),
+                 'diagnostic_invocation_changed')
+        raw, report_record = files.read(target / diagnostic.REPORT_NAME, cap=8192, protected=True, mode=0o600)
+        value = retained._document(raw, 8192, _work_budget=budget)
+        _require(issuance._selector(raw, budget) == proof.report_selector and value == proof.report
+                 and value['schema_version'] == diagnostic.REPORT_SCHEMA
+                 and value['report_digest'] == canonical_digest(value, digest_field='report_digest')
+                 and value['invocation'] == proof.invocation and value['intent'] == expected_intent
+                 and value['request'] == intent['request_records'][0]
+                 and value['authority'] == current[0]['record']
+                 and all(value[key] == entry[key] for key in ('intent_id', 'generation', 'birth', 'target_identity', 'lease'))
+                 and len(value['observations']) == 2
+                 and all(invocation['started_at_epoch'] <= row['started_at_epoch'] <= row['finished_at_epoch'] <= issued
+                         and row['root_identity'] == request['root_identities'][row['root']]
+                         for row in value['observations']), 'diagnostic_report_changed')
+        _require(diagnostic._report_member(report_record, proof.report_selector) == proof.report_member,
+                 'diagnostic_report_changed')
+        publication_time = now()
+        _require(_epoch(publication_time) and issued <= publication_time < entry['expires_at_epoch']
+                 and publication_time < current[1]['expires_at_epoch'], 'diagnostic_producer_inactive')
+        record = dict(schema_version='control_plane_lane_disk_diagnostic_completion.v1',
+            intent_id=entry['intent_id'], generation=entry['generation'], birth=entry['birth'],
+            target_identity=entry['target_identity'], lease=entry['lease'],
+            participant_profile=intent['participant_profile'], request=intent['request_records'][0],
+            invocation=proof.invocation, report=proof.report_selector, report_member=proof.report_member,
+            installed_sources=request['installed_sources'],
+            lifetime_closed=True, child_execution_started=False, completed_at_epoch=publication_time)
+        payload = actions._encoded(record, 'completion_digest', 32768)
+        files.verify()
+        selected = _publish(files, store, entry['intent_id'] + '.producer-completion.json', payload, kind='private')
+        prepared, previous = actions._version(files, public, current, entry | {'completion': selected},
+                                              gid, intent['policy'], issued)
+        _publish(files, store, entry['intent_id'] + '.completion-head.json', prepared, kind='private')
+        diagnostic._tree(files, target, target_fd, report=True)
+        files.verify()
+        final_time = now()
+        _require(_epoch(final_time) and publication_time <= final_time < entry['expires_at_epoch']
+                 and final_time < current[1]['expires_at_epoch'], 'diagnostic_producer_inactive')
+        actions._install_head(files, public, prepared, gid, previous)
+        return selected
+    finally:
+        files.finish()
 
 
 def complete_native_pair(use, result):
@@ -144,6 +213,7 @@ def _historical_lease(files, config, entry, value):
     _require(type(manifest) is dict and set(manifest) == {'sha256', 'size_bytes'}
              and _valid_digest(manifest['sha256']) and type(manifest['size_bytes']) is int
              and 0 < manifest['size_bytes'] <= 1048576, 'experiment_restoration_changed')
+    return certificate
 
 
 def selected_completion(files, config, entry):
@@ -153,6 +223,8 @@ def selected_completion(files, config, entry):
                         cap=32768, protected=True, mode=0o600)
     _require(issuance._selector(raw, files.budget) == entry['completion'], 'experiment_completion_changed')
     value = retained._document(raw, 32768, _work_budget=files.budget)
+    if value.get('schema_version') == 'control_plane_lane_disk_diagnostic_completion.v1':
+        return _selected_diagnostic_completion(files, config, entry, value)
     if value.get('schema_version') == 'control_plane_lane_experiment_producer_completion.v2':
         fields = {'schema_version', 'intent_id', 'generation', 'birth', 'target_identity', 'lease',
                   'participant_profile', 'pair', 'workers', 'supervised', 'kernel_unit', 'installed_sources',
@@ -178,6 +250,66 @@ def selected_completion(files, config, entry):
              and value['lifetime_closed'] is True and value['child_execution_started'] is False,
              'experiment_completion_changed')
     _historical_lease(files, config, entry, value)
+    return value
+
+
+def _selected_diagnostic_completion(files, config, entry, value):
+    from . import control_plane_lane_disk_diagnostic as diagnostic
+    from .control_plane_lane_owner_target_versions import _valid_digest
+    fields = {'schema_version', 'intent_id', 'generation', 'birth', 'target_identity', 'lease',
+              'participant_profile', 'request', 'invocation', 'report', 'installed_sources',
+              'lifetime_closed', 'child_execution_started', 'completed_at_epoch', 'completion_digest', 'report_member'}
+    _require(set(value) == fields
+             and value['completion_digest'] == canonical_digest(value, digest_field='completion_digest')
+             and all(value[key] == entry[key] for key in ('intent_id', 'generation', 'birth', 'target_identity'))
+             and value['participant_profile'] in diagnostic.PROFILES and entry['lane'] == 'diagnostics'
+             and value['lifetime_closed'] is True and value['child_execution_started'] is False
+             and _epoch(value['completed_at_epoch'])
+             and type(value['installed_sources']) is dict
+             and set(value['installed_sources']) == diagnostic.SOURCE_MODULES | {'operator_door.__init__', 'operator_door.config'}
+             and all(_valid_digest(digest) for digest in value['installed_sources'].values()),
+             'experiment_completion_changed')
+    for key, cap in (('request', 32768), ('invocation', 32768), ('report', 8192)):
+        selected = value[key]
+        _require(type(selected) is dict and set(selected) == {'sha256', 'size_bytes'}
+                 and _valid_digest(selected['sha256']) and type(selected['size_bytes']) is int
+                 and 0 < selected['size_bytes'] <= cap, 'experiment_completion_changed')
+    _, gid = birth._blueprint_identity()
+    public, _ = files.parent(Path(config.experiment_authority_root) / 'HEAD.json')
+    original = actions._birth(files, public, entry, gid)
+    _require(original['participant_profile'] == value['participant_profile']
+             and original['writer_scope'] == 'fixed_root_disk_diagnostic.v1'
+             and original['lease'] == value['lease'], 'experiment_completion_changed')
+    invocation_raw, _ = files.read(Path(config.experiment_record_store) / (entry['intent_id'] + '.producer-invocation.json'),
+                                  cap=32768, protected=True, mode=0o600)
+    _require(issuance._selector(invocation_raw, files.budget) == value['invocation'], 'experiment_completion_changed')
+    invocation = retained._document(invocation_raw, 32768, _work_budget=files.budget)
+    diagnostic._reserved_bytes(invocation)
+    _require(all(invocation[key] == value[key] for key in ('intent_id', 'generation', 'birth', 'target_identity', 'lease', 'request'))
+             and invocation['started_at_epoch'] <= value['completed_at_epoch'] < original['expires_at_epoch'],
+             'experiment_completion_changed')
+    intent_raw, _ = files.read(Path(config.experiment_record_store) / (entry['intent_id'] + '.json'),
+                              cap=32768, protected=True, mode=0o600)
+    _require(issuance._selector(intent_raw, files.budget) == invocation['intent'], 'experiment_completion_changed')
+    intent = retained._document(intent_raw, 32768, _work_budget=files.budget)
+    _require(set(intent) == birth._INTENT_FIELDS
+             and intent['intent_digest'] == canonical_digest(intent, digest_field='intent_digest')
+             and intent['participant_profile'] == value['participant_profile']
+             and intent['request_records'] == [value['request']]
+             and all(intent[key] == entry[key] for key in ('intent_id', 'generation', 'owner', 'root', 'lane', 'name')),
+             'experiment_completion_changed')
+    diagnostic.validate_manifest(value, dict(members=[value['report_member']],
+                                 logical_bytes=value['report']['size_bytes']))
+    certificate = _historical_lease(files, config, entry, value)
+    if certificate is not None:
+        restored_raw, _ = files.read(Path(config.experiment_record_store)
+            / (certificate['restoration_id'] + '.manifest.json'), cap=1048576, protected=True, mode=0o600)
+        _require(issuance._selector(restored_raw, files.budget) == certificate['manifest'],
+                 'experiment_restoration_changed')
+        restored = actions._manifest_record(files, restored_raw, entry, restorable=True)
+        _require(len(restored['members']) == 1, 'diagnostic_manifest_changed')
+        diagnostic.validate_manifest(value, restored, selected_member=restored['members'][0])
+        return value | {'selected_report_member': restored['members'][0]}
     return value
 
 

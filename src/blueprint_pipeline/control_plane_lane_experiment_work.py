@@ -225,8 +225,25 @@ class _ActionFiles(_BirthFiles):
             self.check_long()
         return super().location(fd, cleanup=cleanup or self.payload_mode)
 
+    def publication_checkpoint(self, *, cleanup=False):
+        super().publication_checkpoint(cleanup=cleanup)
+        references = getattr(self, '_diagnostic_references', None)
+        if references is not None and not cleanup:
+            references.guard(processes=False)
+
+    def creation_checkpoint(self):
+        super().creation_checkpoint()
+        references = getattr(self, '_diagnostic_references', None)
+        if references is not None:
+            references.guard(processes=False)
+
     def slot(self):
         self.check_long()
+        references = getattr(self, '_diagnostic_references', None)
+        if references is not None:
+            observer = references.files
+            _require(len(self.owned) + len(self.probe_owned) + len(observer.owned)
+                     + len(observer.probe_owned) < 112, 'experiment_work_descriptor_limit')
         if not self.payload_mode:
             return super().slot()
         _require(len(self.owned) < 104 and len(self.owned) + len(self.probe_owned) < 128,
@@ -257,6 +274,9 @@ class _ActionFiles(_BirthFiles):
             _require(stat.S_ISDIR(named.st_mode) if flags & os.O_DIRECTORY else stat.S_ISREG(named.st_mode),
                      'experiment_work_acquisition_invalid')
         self.check_long()
+        references = getattr(self, '_diagnostic_references', None)
+        if references is not None and creating:
+            references.guard(processes=False)
         fd = os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=parent)
         if creating:
             try:

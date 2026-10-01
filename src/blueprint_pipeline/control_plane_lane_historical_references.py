@@ -19,7 +19,7 @@ from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_experiment_actions as experiments
 from .control_plane_lane_historical_fence import _version
-from .control_plane_storage_pin_observation import observe_storage_pins
+from .control_plane_storage_pin_observation import observe_storage_pins, _HeldPinInventory
 
 
 def _require(value, code):
@@ -209,20 +209,34 @@ def _table(root, target, budget, *, _descriptor_check=None, _target_observation=
 
 
 @contextmanager
-def historical_reference_fence(files, config, target, *, observed_at):
+def historical_reference_fence(files, config, target, *, observed_at, _held_pins=None):
     """Keep the established state/pin directory locks through the caller effect."""
     selected = legacy._reference_settings(files, config)
     state, _ = files.parent(Path(config.control_plane_state) / '.historical-reference-probe')
     files.location(state)
     fcntl.flock(state, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    pins, pin_directory = experiments._pin_fence(files, config, selected['pins_root'], target, observed_at)
+    if _held_pins is None:
+        pin_files = files
+        pins, pin_directory = experiments._pin_fence(files, config, selected['pins_root'], target, observed_at)
+    else:
+        # The ordinary caller already owns and EX-locks this original directory.
+        # Never adopt its numeric descriptor into the reference observer.
+        pin_files, pins, pin_directory = _held_pins
+        pin_files.location(pin_directory)
+        pin_files.proof(pin_directory)
+        _require(pins['root'] == str(selected['pins_root'])
+                 and pins['configuration'] == experiments._reference_configuration(
+                     files, config, selected['pins_root']), 'table_unknown')
     roots = tuple(dict.fromkeys((*selected['queue_roots'], *selected['active_run_roots'])))
     _require(0 < len(roots) <= 16, 'table_unknown')
+    held_inventory = (_HeldPinInventory(files, pin_files, pin_directory, selected['pins_root'])
+                      if _held_pins is not None else None)
     def target_observation(transient):
         return _target_observation(files, target, transient, descriptor_check)
     def descriptor_check(count):
         files.budget.tick()
         _require(len(files.owned) + len(files.probe_owned) + count <= 128, 'table_unknown')
+    descriptor_check = getattr(files, 'table_descriptor_check', descriptor_check)
     def table(root):
         return _table(root, target, files.budget, _descriptor_check=descriptor_check,
                       _target_observation=target_observation)
@@ -240,11 +254,12 @@ def historical_reference_fence(files, config, target, *, observed_at):
     def guard():
         files.location(state)
         _require(legacy._reference_settings(files, config) == selected, 'table_unknown')
-        files.location(pin_directory)
+        pin_files.location(pin_directory)
         _require(experiments._reference_configuration(files, config, selected['pins_root'])
                  == pins['configuration'], 'table_unknown')
         current = observe_storage_pins(str(selected['pins_root']), observed_at_epoch=observed_at,
-                                      budget=files.budget, _held_root_fd=pin_directory)
+                                      budget=files.budget, _held_root_fd=pin_directory,
+                                      _held_inventory=held_inventory)
         _require(current.complete and current.root_identity
             == (pins['identity']['dev'], pins['identity']['ino']), 'table_unknown')
         for row in current.rows:
