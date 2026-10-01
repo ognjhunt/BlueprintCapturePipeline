@@ -27,6 +27,13 @@ def bridge():
     return task_evaluation_scene_retirement_cli
 
 
+@pytest.fixture
+def door_path():
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='.scene-door-test-',dir=Path.home()) as name:
+        yield Path(name).resolve()
+
+
 def request(kind='retire-scene', **extra):
     value = dict(kind=kind, intent_id='scene-1', consent_id='1'*32,
                  expected_sha256='sha256:'+'a'*64, expected_size_bytes=101)
@@ -340,19 +347,27 @@ def test_native_sdk_failure_is_typed_without_provider_or_secret_text():
 
 
 @pytest.mark.slow
-def test_actual_installed_script_invokes_exact_engine_cli_and_writes_sanitized_outcome(tmp_path):
+@pytest.mark.parametrize('bootstrap_exit',[0,7])
+def test_actual_installed_script_invokes_exact_engine_cli_and_writes_sanitized_outcome(door_path,bootstrap_exit):
     import os
     import shutil
     import subprocess
+    tmp_path=door_path
     root=Path(__file__).resolve().parents[1]
     scripts=tmp_path/'installed'
     scripts.mkdir()
     for name in ('door-common.sh','door-scene-lifecycle.sh'):
         shutil.copyfile(root/'deploy/operator-door'/name,scripts/name)
     executable=tmp_path/'python'
-    executable.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
-        'with open(os.environ["TEST_ARGS"],"w") as f: json.dump(sys.argv[1:],f)\n'
-        'print(json.dumps({"status":"planned","mutations":0}))\n')
+    executable.write_text('#!'+sys.executable+'\nimport json,os,sys\n'
+        'with open(os.environ["TEST_ARGS"],"w") as f: json.dump(dict(args=sys.argv[1:],pid=os.getpid()),f)\n'
+        'if int(os.environ["TEST_BOOTSTRAP_EXIT"]): raise SystemExit(int(os.environ["TEST_BOOTSTRAP_EXIT"]))\n'
+        'from blueprint_pipeline import task_evaluation_scene_retirement_cli as module\n'
+        'module.access._POLICY_UID=os.getuid()\n'
+        'module._DOOR_CONFIG=module.Path(os.environ["TEST_CONFIG"])\n'
+        'module.load_installed_environment=lambda: None\n'
+        'module.run_selected_action=lambda *a,**kw: dict(status="planned",mutations=0)\n'
+        'raise SystemExit(module.main(sys.argv[3:]))\n')
     executable.chmod(0o700)
     # Substitute only the compiled interpreter+installed bootstrap in this
     # portable shell fixture. Production accepts no interpreter override; the
@@ -362,23 +377,216 @@ def test_actual_installed_script_invokes_exact_engine_cli_and_writes_sanitized_o
     fixed='/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py'
     assert source.count(fixed)==1
     script.write_text(source.replace(fixed,str(executable)))
-    resultdir=tmp_path/'results'
-    resultdir.mkdir()
+    resultdir=tmp_path/'requests/results'
+    resultdir.mkdir(parents=True)
+    config=tmp_path/'door.json'
+    config.write_text(__import__('json').dumps(dict(state_root=str(tmp_path))))
     identity='20260928T180000Z-retire-scene-12345678'
     environment=dict(os.environ,DOOR_REQUEST_ID=identity,DOOR_RESULTS_DIR=str(resultdir),
         DOOR_SCENE_ACTION='retire',DOOR_SCENE_INTENT_ID='scene-1',DOOR_SCENE_CONSENT_ID='1'*32,
         DOOR_SCENE_CONSENT_SHA256='sha256:'+'a'*64,DOOR_SCENE_CONSENT_SIZE_BYTES='101',
         DOOR_SCENE_APPLY='0',DOOR_VENV_PYTHON=str(executable),DOOR_CONTROL_PLANE_REPO=str(root),
-        TEST_ARGS=str(tmp_path/'args.json'))
-    result=subprocess.run(['bash',str(scripts/'door-scene-lifecycle.sh')],env=environment,
-                          capture_output=True,text=True,timeout=10)
-    assert result.returncode==0, result.stderr+'\n'+(resultdir/(identity+'.log')).read_text()
+        TEST_ARGS=str(tmp_path/'args.json'),TEST_CONFIG=str(config),PYTHONPATH=str(root/'src'),
+        TEST_BOOTSTRAP_EXIT=str(bootstrap_exit))
+    with subprocess.Popen(['bash',str(scripts/'door-scene-lifecycle.sh')],env=environment,
+                          stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) as process:
+        _, stderr=process.communicate(timeout=10)
+        worker_pid=process.pid
+        assert process.returncode==bootstrap_exit, stderr+'\n'+(resultdir/(identity+'.log')).read_text()
     import json
-    args=json.loads((tmp_path/'args.json').read_text())
+    invocation=json.loads((tmp_path/'args.json').read_text())
+    assert invocation['pid']==worker_pid, 'installed action retained a waiting shell parent'
+    args=invocation['args']
     assert args[:3]==['--action-module','blueprint_pipeline.task_evaluation_scene_retirement_cli','retire']
     assert '--apply' not in args and '--intent-id' in args and '--consent-id' in args
+    assert '--operator-door' in args
+    if bootstrap_exit:
+        # No parent guesses whether an absent CLI outcome means zero mutation
+        # or success. The real request projection leaves terminal proof unknown.
+        from operator_door.config import DoorConfig
+        from operator_door.requests import request_state
+        state=request_state(DoorConfig(state_root=str(tmp_path)),identity)
+        assert state['outcome'] is None and state['result'] is None
+        assert not (resultdir/(identity+'.scene-lifecycle.json')).exists()
+        return
     outcome=json.loads((resultdir/(identity+'.outcome.json')).read_text())
     assert outcome['status']=='planned' and outcome['intent_id']=='scene-1'
+
+
+@pytest.mark.parametrize('status,expected,rc',[
+    ('planned','planned',0),('retired','retired',0),('restored','restored',0),
+    ('kept','retained',0),('incomplete','failed',1)])
+def test_door_worker_publishes_durable_public_counters_then_typed_outcome(
+        door_path,monkeypatch,status,expected,rc):
+    import json
+    import os
+    module=bridge()
+    monkeypatch.setattr(module.access,'_POLICY_UID',os.getuid())
+    config=door_path/'door.json'
+    config.write_text(json.dumps(dict(state_root=str(door_path))))
+    monkeypatch.setattr(module,'_DOOR_CONFIG',config)
+    directory=door_path/'requests/results'
+    directory.mkdir(parents=True)
+    identity='20260928T180000Z-retire-scene-12345678'
+    monkeypatch.setenv('DOOR_REQUEST_ID',identity)
+    monkeypatch.setenv('DOOR_RESULTS_DIR',str(directory))
+    monkeypatch.setattr(module,'load_installed_environment',lambda:None)
+    monkeypatch.setattr(module,'run_selected_action',lambda *a,**kw:
+        dict(status=status,mutations=None,removed_allocated_bytes=4096,
+             private_consent='do-not-publish',remote_uri='private-object'))
+    synced=[]
+    original=module.os.fsync
+    monkeypatch.setattr(module.os,'fsync',lambda fd:(synced.append(os.fstat(fd).st_ino),original(fd))[1])
+    options=['retire','--intent-id','scene-1','--consent-id','1'*32,
+             '--expected-sha256','sha256:'+'a'*64,'--expected-size-bytes','101','--operator-door']
+    assert module.main(options)==rc
+    public=json.loads((directory/(identity+'.scene-lifecycle.json')).read_text())
+    outcome=json.loads((directory/(identity+'.outcome.json')).read_text())
+    assert public==dict(status=status,mutations=None,removed_allocated_bytes=4096)
+    assert outcome['status']==expected and outcome['exit_code']==rc
+    assert len(synced)==4 and synced[1]==directory.stat().st_ino
+    assert all(path.stat().st_nlink==1 for path in directory.iterdir())
+    assert not list(directory.glob('*.tmp.*'))
+
+
+@pytest.mark.parametrize('change',['wrong-kind','foreign-directory','linked-directory',
+                                  'writable-directory','prior-result','prior-outcome','result-alias'])
+def test_door_context_refuses_without_entering_action(door_path,monkeypatch,change):
+    import json
+    import os
+    module=bridge()
+    monkeypatch.setattr(module.access,'_POLICY_UID',os.getuid())
+    config=door_path/'door.json'
+    config.write_text(json.dumps(dict(state_root=str(door_path))))
+    monkeypatch.setattr(module,'_DOOR_CONFIG',config)
+    directory=door_path/'requests/results'
+    directory.mkdir(parents=True)
+    identity='20260928T180000Z-retire-scene-12345678'
+    selected=directory
+    if change=='wrong-kind':
+        identity=identity.replace('retire-scene','restore-scene')
+    elif change=='foreign-directory':
+        selected=door_path
+    elif change=='linked-directory':
+        directory.rename(directory.with_name('original'))
+        directory.symlink_to(directory.with_name('original'))
+    elif change=='writable-directory':
+        directory.chmod(0o777)
+    elif change=='result-alias':
+        (directory/(identity+'.scene-lifecycle.json')).symlink_to(config)
+    elif change in {'prior-result','prior-outcome'}:
+        suffix='.scene-lifecycle.json' if change=='prior-result' else '.outcome.json'
+        (directory/(identity+suffix)).write_text('preserve-original')
+    monkeypatch.setenv('DOOR_REQUEST_ID',identity)
+    monkeypatch.setenv('DOOR_RESULTS_DIR',str(selected))
+    calls=[]
+    monkeypatch.setattr(module,'load_installed_environment',lambda:calls.append('environment'))
+    monkeypatch.setattr(module,'run_selected_action',lambda *a,**kw:calls.append('action'))
+    options=['retire','--intent-id','scene-1','--consent-id','1'*32,
+             '--expected-sha256','sha256:'+'a'*64,'--expected-size-bytes','101','--operator-door']
+    assert module.main(options)==1 and calls==[]
+
+
+@pytest.mark.parametrize('change',['outcome-write-failure','directory-replaced','outcome-fsync-failure',
+                                  'directory-replaced-during-fsync','temp-replaced-during-fsync'])
+def test_door_publication_failure_retains_partial_action_counters(
+        door_path,monkeypatch,capsys,change):
+    import json
+    import os
+    module=bridge()
+    monkeypatch.setattr(module.access,'_POLICY_UID',os.getuid())
+    config=door_path/'door.json'
+    config.write_text(json.dumps(dict(state_root=str(door_path))))
+    monkeypatch.setattr(module,'_DOOR_CONFIG',config)
+    directory=door_path/'requests/results'
+    directory.mkdir(parents=True)
+    identity='20260928T180000Z-retire-scene-12345678'
+    monkeypatch.setenv('DOOR_REQUEST_ID',identity)
+    monkeypatch.setenv('DOOR_RESULTS_DIR',str(directory))
+    monkeypatch.setattr(module,'load_installed_environment',lambda:None)
+    def action(*a,**kw):
+        if change=='directory-replaced':
+            directory.rename(directory.with_name('original'))
+            directory.mkdir()
+        return dict(status='retired',mutations=None,removed_allocated_bytes=4096)
+    monkeypatch.setattr(module,'run_selected_action',action)
+    original=module.os.link
+    def link(source,destination,**kw):
+        if destination.endswith('.outcome.json'):
+            raise OSError('private-provider-secret')
+        return original(source,destination,**kw)
+    if change=='outcome-write-failure':
+        monkeypatch.setattr(module.os,'link',link)
+    elif change=='outcome-fsync-failure':
+        fsync=module.os.fsync
+        count=[0]
+        def sync(fd):
+            count[0]+=1
+            if count[0]==4:
+                raise OSError('private-provider-secret')
+            return fsync(fd)
+        monkeypatch.setattr(module.os,'fsync',sync)
+    elif change in {'directory-replaced-during-fsync','temp-replaced-during-fsync'}:
+        fsync=module.os.fsync
+        replaced=[False]
+        def sync(fd):
+            fsync(fd)
+            if not replaced[0] and os.fstat(fd).st_ino!=directory.stat().st_ino:
+                replaced[0]=True
+                if change=='directory-replaced-during-fsync':
+                    directory.rename(directory.with_name('original'))
+                    directory.mkdir()
+                else:
+                    temporary=next(directory.glob('*.tmp.*'))
+                    temporary.unlink()
+                    temporary.write_text('preserve-foreign-inode')
+        monkeypatch.setattr(module.os,'fsync',sync)
+    options=['retire','--intent-id','scene-1','--consent-id','1'*32,
+             '--expected-sha256','sha256:'+'a'*64,'--expected-size-bytes','101','--operator-door']
+    assert module.main(options)==1
+    result=json.loads(capsys.readouterr().out)
+    assert result['status']=='incomplete' and result['removed_allocated_bytes']==4096
+    assert result['mutations'] is None and 'private-provider-secret' not in str(result)
+    assert not (directory/(identity+'.outcome.json')).exists()
+    if change=='temp-replaced-during-fsync':
+        assert next(directory.glob('*.tmp.*')).read_text()=='preserve-foreign-inode'
+        assert not (directory/(identity+'.scene-lifecycle.json')).exists()
+    else:
+        assert not list(directory.glob('*.tmp.*'))
+    if change=='directory-replaced-during-fsync':
+        assert not list(directory.with_name('original').iterdir())
+
+
+def test_door_writer_never_closes_an_unproven_borrowed_creation_fd(door_path,monkeypatch):
+    import os
+    module=bridge()
+    monkeypatch.setattr(module.access,'_POLICY_UID',os.getuid())
+    borrowed_path=door_path/'borrowed'
+    borrowed_path.write_text('preserve-original')
+    original=os.open
+    borrowed=original(borrowed_path,os.O_RDONLY)
+    parent=original(door_path,os.O_RDONLY|os.O_DIRECTORY)
+    created=[]
+    def substituted(name,flags,*a,**kw):
+        fd=original(name,flags,*a,**kw)
+        if str(name).endswith('.tmp.'+str(os.getpid())):
+            created.append(fd)
+            return borrowed
+        return fd
+    monkeypatch.setattr(module.os,'open',substituted)
+    try:
+        with pytest.raises(ValueError):
+            module._door_publish(door_path,'20260928T180000Z-retire-scene-12345678',
+                                 parent,'scene-1',dict(status='kept',mutations=0))
+        assert os.fstat(borrowed).st_ino==borrowed_path.stat().st_ino
+        assert borrowed_path.read_text()=='preserve-original'
+        assert not list(door_path.glob('*.outcome.json'))
+    finally:
+        for fd in created+[parent,borrowed]:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def test_client_close_failure_retains_completed_native_result_instead_of_zero_mutations(tmp_path,monkeypatch):

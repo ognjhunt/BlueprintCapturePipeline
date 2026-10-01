@@ -22,34 +22,12 @@ case "${DOOR_SCENE_APPLY:-0}" in
 esac
 [ "$DOOR_SCENE_ACTION" != restore ] || [ "$DOOR_SCENE_APPLY" = 1 ] || door_fail scene_lifecycle_options_invalid
 cd -P "$DOOR_CONTROL_PLANE_REPO" || door_fail scene_lifecycle_release_missing
-result="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.scene-lifecycle.json"
 apply=()
 [ "$DOOR_SCENE_APPLY" != 1 ] || apply=(--apply)
-set +e
-/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py \
+# Replace the shell: an unclassified waiting parent would prevent the actual
+# reader closure. The same protected action PID publishes result and outcome.
+exec /usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py \
   --action-module blueprint_pipeline.task_evaluation_scene_retirement_cli \
   "$DOOR_SCENE_ACTION" --intent-id "$DOOR_SCENE_INTENT_ID" --consent-id "$DOOR_SCENE_CONSENT_ID" \
   --expected-sha256 "$DOOR_SCENE_CONSENT_SHA256" --expected-size-bytes "$DOOR_SCENE_CONSENT_SIZE_BYTES" \
-  ${apply[@]+"${apply[@]}"} >"$result"
-rc=$?
-set -e
-# The module publishes only secret-free counters/typed refusal, never consent.
-status="$(python3 - "$result" <<'PY'
-import json, sys
-try:
-    with open(sys.argv[1]) as source:
-        value=json.load(source)
-    status=value.get('status')
-except (OSError,ValueError,AttributeError):
-    status=None
-print(status if status in {'planned','kept','retired','restored','incomplete'} else 'failed')
-PY
-)"
-if [ "$rc" = 0 ]; then
-  case "$status" in
-    planned | retired | restored) door_outcome "$status" "" 0 intent_id "$DOOR_SCENE_INTENT_ID" result "$result"; exit 0 ;;
-    kept) door_outcome retained scene_lifecycle_kept 0 intent_id "$DOOR_SCENE_INTENT_ID" result "$result"; exit 0 ;;
-  esac
-fi
-door_outcome failed scene_lifecycle_incomplete 1 intent_id "$DOOR_SCENE_INTENT_ID" result "$result"
-exit 1
+  ${apply[@]+"${apply[@]}"} --operator-door

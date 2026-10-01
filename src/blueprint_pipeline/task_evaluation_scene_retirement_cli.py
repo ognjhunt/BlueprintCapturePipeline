@@ -7,6 +7,8 @@ policy, owner scopes or remote locations. No switch is enabled by this module.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, nullcontext
+import datetime
 import json
 import os
 import re
@@ -23,6 +25,7 @@ from .object_store_multipart_stream import MultipartStream
 CONSENT_ROOT = Path('/var/lib/blueprint/scene-retirement/consents')
 GC_SELECTION = Path('/var/lib/blueprint/scene-retirement/gc-selection.json')
 ENVIRONMENT_FILE = Path('/etc/blueprint/pipeline-control-plane.env')
+_DOOR_CONFIG = Path('/etc/blueprint-operator-door/door.json')
 _PREFIX = 'blueprint/arm-decision-proof-v1/scene-retirement/'
 _CHUNK = 1024*1024
 _ARCHIVE_MAX = 48*1024**3
@@ -458,6 +461,109 @@ def _summary(result):
     return {key:result[key] for key in keys if key in result}
 
 
+@contextmanager
+def _door_context(action):
+    """Bind runner metadata to the protected installed spool, never CLI paths."""
+    _require(os.geteuid()==access._POLICY_UID, 'scene_retirement_door_context_unproven')
+    config={}
+    if os.path.lexists(_DOOR_CONFIG):
+        raw=access._bytes(_DOOR_CONFIG,protected=True)
+        _require(len(raw)<=65536,'scene_retirement_door_context_unproven')
+        config=access._document(raw)
+    state=access._canonical(config.get('state_root','/var/lib/blueprint-operator-door'))
+    directory=state/'requests/results'
+    identity=os.environ.get('DOOR_REQUEST_ID','')
+    _require(re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-'+action+r'-scene-[0-9a-f]{8}',identity)
+             and os.environ.get('DOOR_RESULTS_DIR')==str(directory),
+             'scene_retirement_door_context_unproven')
+    with access._opened(directory,directory=True,protected=True) as (parent,_):
+        for suffix in ('.scene-lifecycle.json','.outcome.json'):
+            try:
+                os.stat(identity+suffix,dir_fd=parent,follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise access.SceneRetirementAccessError('scene_retirement_door_context_unproven')
+        yield directory,identity,parent
+
+
+def _door_publish(directory, identity, parent, intent_id, result):
+    """Publish public counters before the terminal outcome, in the action PID."""
+    status=result.get('status')
+    successful=status in {'planned','retired','restored','kept'}
+    rc=0 if successful else 1
+    document=dict(schema='blueprint_operator_door_outcome.v1',
+        status=('retained' if status=='kept' else status if successful else 'failed'),
+        code=('scene_lifecycle_kept' if status=='kept' else None if successful else 'scene_lifecycle_incomplete'),
+        exit_code=rc,finished_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+        intent_id=intent_id,result=str(directory/(identity+'.scene-lifecycle.json')))
+    payloads=[(suffix,(json.dumps(value,sort_keys=True,allow_nan=False)+'\n').encode())
+              for suffix,value in (('.scene-lifecycle.json',_summary(result)),('.outcome.json',document))]
+    _require(all(len(raw)<=8192 for _,raw in payloads),'scene_retirement_door_publication_unproven')
+    def binding():
+        with access._opened(directory,directory=True,protected=True) as (current,_):
+            _require(access._identity(os.fstat(current))==access._identity(os.fstat(parent)),
+                     'scene_retirement_door_publication_unproven')
+    for suffix,raw in payloads:
+        # A retained directory must still be the installed public destination.
+        binding()
+        name=identity+suffix
+        temporary=name+'.tmp.'+str(os.getpid())
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,
+                   0o644,dir_fd=parent)
+        # Until the new named inode independently matches, this numeric token
+        # is unproven and must never be adopted or closed as our descriptor.
+        named=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
+        _require(stat.S_ISREG(named.st_mode) and named.st_nlink==1
+                 and named.st_uid==access._POLICY_UID,'scene_retirement_door_publication_unproven')
+        owned=access._identity(named)
+        _require(access._identity(os.fstat(fd))==owned,'scene_retirement_door_publication_unproven')
+        published=False
+        try:
+            with os.fdopen(fd,'wb') as stream:
+                _require(access._identity(os.stat(temporary,dir_fd=parent,follow_symlinks=False))==owned,
+                         'scene_retirement_door_publication_unproven')
+                os.fchmod(stream.fileno(),0o644)
+                named=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
+                _require((named.st_dev,named.st_ino)==owned[:2]
+                         and access._identity(os.fstat(stream.fileno()))==access._identity(named),
+                         'scene_retirement_door_publication_unproven')
+                owned=access._identity(named)
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+                binding()
+                _require(access._identity(os.fstat(stream.fileno()))==owned
+                         and access._identity(os.stat(temporary,dir_fd=parent,follow_symlinks=False))==owned,
+                         'scene_retirement_door_publication_unproven')
+                # Atomic publication refuses a conflicting file or destination alias.
+                os.link(temporary,name,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False)
+                published=True
+                _require(access._identity(os.stat(name,dir_fd=parent,follow_symlinks=False))==owned
+                         and access._identity(os.stat(temporary,dir_fd=parent,follow_symlinks=False))==owned,
+                         'scene_retirement_door_publication_unproven')
+                os.unlink(temporary,dir_fd=parent)
+                os.fsync(parent)
+                binding()
+        except BaseException as error:
+            # A failed durability proof must not leave a successful terminal
+            # name. Remove only this acquisition; never a conflicting inode.
+            for selected in ([name] if published else [])+[temporary]:
+                try:
+                    info=os.stat(selected,dir_fd=parent,follow_symlinks=False)
+                    _require(access._identity(info)==owned,'scene_retirement_door_publication_unproven')
+                    os.unlink(selected,dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+                except (OSError,ValueError):
+                    error.add_note('scene_retirement_door_publication_cleanup_unproven')
+            try:
+                os.fsync(parent)
+            except OSError:
+                error.add_note('scene_retirement_door_publication_cleanup_unproven')
+            raise
+    return rc
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action',choices=('retire','restore'))
@@ -466,15 +572,31 @@ def main(argv=None):
     parser.add_argument('--expected-sha256',required=True)
     parser.add_argument('--expected-size-bytes',required=True,type=int)
     parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--operator-door',action='store_true')
     args=vars(parser.parse_args(argv))
     action=args.pop('action')
+    door=args.pop('operator_door')
+    result=None
     try:
-        load_installed_environment()
-        result=run_selected_action(action,**args)
-    except (OSError,ValueError,UnicodeError):
-        result=_kept('scene_retirement_installed_environment_unproven')
+        if door:
+            _options(action,**args)
+        with _door_context(action) if door else nullcontext(None) as context:
+            try:
+                load_installed_environment()
+                result=run_selected_action(action,**args)
+            except (OSError,ValueError,UnicodeError):
+                result=_kept('scene_retirement_installed_environment_unproven')
+            rc=_door_publish(*context,args['intent_id'],result) if context is not None else 0
+    except (OSError,ValueError,TypeError):
+        if result is None:
+            result=_kept('scene_retirement_door_context_unproven')
+        else:
+            # Do not erase proven action counters when public publication fails.
+            result=dict(result,status='incomplete',reason='scene_retirement_door_publication_unproven')
+        print(json.dumps(_summary(result),sort_keys=True))
+        return 1
     print(json.dumps(_summary(result),sort_keys=True))
-    return 0
+    return rc
 
 
 if __name__=='__main__':
