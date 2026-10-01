@@ -13,6 +13,8 @@ import os
 import re
 import shutil
 import uuid
+import fcntl
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -72,6 +74,26 @@ class FilesystemObjectStore:
         return path
 
     def head_object(self, *, Bucket: str, Key: str) -> dict:
+        with self._publication_lock(Bucket, Key):
+            return self._head_object(Bucket=Bucket, Key=Key)
+
+    @contextmanager
+    def _publication_lock(self, bucket: str, key: str):
+        self._path(bucket, key)
+        locks = self.root / ".locks"
+        if locks.is_symlink():
+            raise ValueError("fixture_object_path_unsafe")
+        locks.mkdir(mode=0o700, exist_ok=True)
+        lock = locks / hashlib.sha256((bucket + "\n" + key).encode()).hexdigest()
+        descriptor = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "r+b") as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(stream, fcntl.LOCK_UN)
+
+    def _head_object(self, *, Bucket: str, Key: str) -> dict:
         path = self._path(Bucket, Key)
         if not path.is_file():
             raise KeyError(Key)
@@ -132,7 +154,8 @@ class FilesystemObjectStore:
             # Linking creates the final name exclusively and atomically. A
             # reader can never observe a partially written object, and a losing
             # publisher cannot remove another publisher's committed bytes.
-            os.link(temporary, path, follow_symlinks=False)
+            with self._publication_lock(Bucket, Key):
+                os.link(temporary, path, follow_symlinks=False)
         finally:
             temporary.unlink()
         self.uploaded_bytes += written
@@ -183,16 +206,31 @@ class FilesystemObjectStore:
             raise ValueError("fixture_object_size_invalid")
         path = self._path(Bucket, Key)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with path.open("xb") as destination:
-            for row in rows:
-                with (root / str(row["PartNumber"])).open("rb") as source:
-                    shutil.copyfileobj(source, destination, CHUNK)
-            destination.flush()
-            os.fsync(destination.fileno())
-        metadata = self._metadata_path(Bucket, Key)
-        metadata.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with metadata.open("x") as stream:
-            stream.write((root / "metadata").read_text())
+        temporary = path.parent / (".put-" + uuid.uuid4().hex)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as destination:
+                for row in rows:
+                    with (root / str(row["PartNumber"])).open("rb") as source:
+                        shutil.copyfileobj(source, destination, CHUNK)
+                destination.flush()
+                os.fsync(destination.fileno())
+            with self._publication_lock(Bucket, Key):
+                if path.exists():
+                    raise FileExistsError(path)
+                metadata = self._metadata_path(Bucket, Key)
+                metadata.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with metadata.open("x") as stream:
+                    stream.write((root / "metadata").read_text())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                try:
+                    os.link(temporary, path, follow_symlinks=False)
+                except BaseException:
+                    metadata.unlink()
+                    raise
+        finally:
+            temporary.unlink()
         self.uploaded_bytes += total
         shutil.rmtree(root)
 

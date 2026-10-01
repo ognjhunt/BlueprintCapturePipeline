@@ -60,6 +60,35 @@ def test_same_fixture_filename_has_distinct_digest_bound_publications(tmp_path):
     assert publish(path=first, object_name="same.json")["uri"] == a["uri"]
 
 
+def test_multipart_publication_is_atomic_and_preserves_a_competing_object(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from scripts import control_plane_concurrency_fixture as module
+    store = FilesystemObjectStore(tmp_path)
+    upload = store.create_multipart_upload(Bucket="fixtures", Key="shared")
+    part = store.upload_part(Bucket="fixtures", Key="shared", UploadId=upload["UploadId"],
+                             PartNumber=1, Body=b"multipart")
+    opened, release = threading.Event(), threading.Event()
+    original = module.shutil.copyfileobj
+    def paused(source, destination, length):
+        opened.set()
+        assert release.wait(5)
+        return original(source, destination, length)
+    monkeypatch.setattr(module.shutil, "copyfileobj", paused)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(store.complete_multipart_upload, Bucket="fixtures", Key="shared",
+            UploadId=upload["UploadId"], MultipartUpload={"Parts": [{"PartNumber":1,"ETag":part["ETag"]}]})
+        assert opened.wait(5)
+        try:
+            with pytest.raises(KeyError): store.head_object(Bucket="fixtures", Key="shared")
+            store.put_object(Bucket="fixtures", Key="shared", Body=b"winner")
+        finally:
+            release.set()
+        with pytest.raises(FileExistsError): pending.result(timeout=5)
+    assert (tmp_path/"fixtures/shared").read_bytes() == b"winner"
+    assert not list((tmp_path/"fixtures").glob(".put-*"))
+
+
 def test_fixture_transport_refuses_escape_symlinks_and_bad_lengths(tmp_path):
     objects = tmp_path / "objects"
     objects.mkdir()
