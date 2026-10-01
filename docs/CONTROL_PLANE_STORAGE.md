@@ -1520,6 +1520,20 @@ census, `absent_inline_only`, environment parity and image drift, the
 allocator's admission, the standing authority and its daily and total caps all
 apply exactly as they do to a set `cloud_run`.
 
+**Output bound.** The code fixes the maximum logical output at 6 GiB, including
+every path that references a host-known blob; those blobs still stay out of the
+upload archive. A genuine retained development compile indexed 4,297,047,466
+bytes, including the 4,287,162,924-byte runtime ZIP, exceeding the earlier
+4 GiB bound. Descriptors may choose a stricter bound but cannot raise it past
+6 GiB. The input, path, phase, memory and ephemeral limits remain unchanged.
+The allocator conservatively reserves egress for all 6 GiB: with 4 CPUs,
+16 GiB memory, 1,800 seconds and the configured rates of $0.000018 per CPU
+second, $0.000002 per GiB second and $0.12 per egress GiB, the worst case is
+$0.9072. The original $1 attempt, $5 daily and $25 total authority still
+controls admission; higher rates can refuse an attempt. This bound establishes
+no worker qualification: fresh output must fit it and each closure still needs
+three actual parity passes before authoritative routing.
+
 A config that cannot be read at all (a directory at the path, deep nesting, an
 escaped lone surrogate) is no config: the no-spend unit compiles on the host,
 the ExecCondition skips unless something is left to drain, and a paid-unit run

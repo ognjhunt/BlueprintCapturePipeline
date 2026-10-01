@@ -455,7 +455,7 @@ def _identity_reasons(descriptor: Mapping[str, Any]) -> list[str]:
 STAGE_LIMITS: Mapping[str, Any] = {
     "phase_seconds": {"fetch": 300, "stage": 900, "seal_upload": 420}, "start_allowance_seconds": 600,
     "heartbeat_interval_seconds": 30, "heartbeat_stale_seconds": 180, "max_input_bytes": 6 * 1024**3,
-    "max_output_bytes": 4 * 1024**3, "max_output_paths": 20000, "allowed_path_roots": list(PERMITTED_PATH_ROOTS),
+    "max_output_bytes": 6 * 1024**3, "max_output_paths": 20000, "allowed_path_roots": list(PERMITTED_PATH_ROOTS),
 }
 
 
@@ -482,6 +482,8 @@ def _limit_reasons(descriptor: Mapping[str, Any], entry: Mapping[str, Any], conf
         reasons.append("remote_cpu_descriptor_limits_out_of_bounds")
     if sum(item["size_bytes"] for item in descriptor["inputs"]) > limits["max_input_bytes"]:
         reasons.append("remote_cpu_descriptor_input_bytes_exceed_limit")
+    if limits["max_output_bytes"] > STAGE_LIMITS["max_output_bytes"]:
+        reasons.append("remote_cpu_descriptor_output_limit_out_of_bounds")
     return reasons
 
 
