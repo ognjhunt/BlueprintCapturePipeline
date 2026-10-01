@@ -106,3 +106,38 @@ def test_capacity_failure_and_residual_lease_survive_summary():
     assert report["status"] == "failed"
     assert "control_plane_disk_budget_exceeded:launch_preparation" in report["blockers"]
     assert "residual_leases:scene-1" in report["blockers"]
+
+
+def test_cli_requires_explicit_size_concurrency_and_separate_owned_roots(tmp_path):
+    parser = harness.argument_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([])
+    args = parser.parse_args([
+        "--expected-beta-concurrency", "2", "--maximum-retained-gib", "0.25",
+        "--maximum-delta-gib", "0.25", "--control-plane-root", str(tmp_path / "host"),
+        "--object-store-root", str(tmp_path / "objects"),
+        "--worker-root", str(tmp_path / "workers"), "--report", str(tmp_path / "report.json"),
+    ])
+    assert args.expected_beta_concurrency == 2
+    assert args.owner_confirmed_concurrency is False
+    for flag, value in (("--expected-beta-concurrency", "0"),
+                        ("--maximum-retained-gib", "nan"), ("--child-timeout-seconds", "0")):
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "--expected-beta-concurrency", "2", "--maximum-retained-gib", "0.25",
+                "--maximum-delta-gib", "0.25", "--control-plane-root", str(tmp_path / "host"),
+                "--object-store-root", str(tmp_path / "objects"),
+                "--worker-root", str(tmp_path / "workers"), "--report", str(tmp_path / "report.json"),
+                flag, value,
+            ])
+
+
+def test_child_environment_keeps_runtime_but_drops_inherited_provider_authority():
+    env = harness.child_environment({
+        "PATH": "/bin", "PYTHONPATH": "src:.", "HOME": "/secret-home",
+        "GOOGLE_APPLICATION_CREDENTIALS": "/secret", "AWS_SECRET_ACCESS_KEY": "never-copy",
+        "BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG": "/etc/blueprint/remote-cpu-workers.json",
+        "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT": "/var/lib/blueprint/live",
+        "OPENAI_API_KEY": "never-copy", "LD_PRELOAD": "/injected.so",
+    })
+    assert env == {"PATH": "/bin", "PYTHONPATH": "src:.", "PYTHONDONTWRITEBYTECODE": "1"}

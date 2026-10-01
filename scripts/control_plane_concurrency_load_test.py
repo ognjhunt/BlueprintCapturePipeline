@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import argparse
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -17,6 +18,37 @@ REQUIRED_STAGES = (
     "scene_intake", "scene_preparation", "scene_configuration", "launch_preparation",
     "episode_compilation", "launch_activation", "policy_output_ingestion", "result_delivery", "retirement",
 )
+
+
+def child_environment(environment: dict[str, str]) -> dict[str, str]:
+    """Allow runtime paths only; production credentials and root settings never leak."""
+    return {**{key: value for key, value in environment.items()
+              if key in {"PATH", "PYTHONPATH", "LANG", "LC_ALL"}}, "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def argument_parser() -> argparse.ArgumentParser:
+    def positive_int(value: str) -> int:
+        number = int(value)
+        if number < 1 or number > 3600:
+            raise argparse.ArgumentTypeError("must be an integer from 1 to 3600")
+        return number
+
+    def positive_float(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number) or number <= 0:
+            raise argparse.ArgumentTypeError("must be finite and positive")
+        return number
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-beta-concurrency", type=positive_int, required=True)
+    parser.add_argument("--owner-confirmed-concurrency", action="store_true")
+    parser.add_argument("--maximum-retained-gib", type=positive_float, required=True)
+    parser.add_argument("--maximum-delta-gib", type=positive_float, required=True)
+    for flag in ("control-plane-root", "object-store-root", "worker-root", "report"):
+        parser.add_argument("--" + flag, type=Path, required=True)
+    parser.add_argument("--child-timeout-seconds", type=positive_int, default=300)
+    parser.add_argument("--global-timeout-seconds", type=positive_int, default=900)
+    return parser
 
 
 def p95(values: Sequence[float]) -> float:
