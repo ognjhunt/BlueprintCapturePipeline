@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import hashlib
+import shutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlsplit
 
 from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
 from blueprint_pipeline import task_evaluation_scene_progression as progression
@@ -107,3 +110,64 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
     if publication_record:
         output["publication"] = json.loads(Path(publication_record["path"]).read_text())
     return output
+
+
+def _fixture_render_inputs(*, envelope: dict, stage_one_configuration: dict, output_root: Path) -> dict:
+    """External renderer fixture; source/reference admission stays in the worker."""
+    from PIL import Image
+    output_root.mkdir(parents=True)
+    seed = canonical_digest({"envelope": envelope["envelope_digest"], "stage": stage_one_configuration})
+    frames = []
+    for index in range(8):
+        path = output_root / f"fixture-{index:02d}.png"
+        Image.new("RGB", (32, 32), (index * 20, 80, 160)).save(path)
+        frames.append({"path": str(path), "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                       "size_bytes": path.stat().st_size})
+    value = {"schema_version": "task_evaluation_scene_configuration_render_inputs.v1",
+             "status": "derived_method_inputs_materialized", "run_id": envelope["request"]["run_id"],
+             "fixture_provider": True, "fixture_input_digest": seed, "claim_ceiling": "development_only",
+             "derived_frames": frames, "derived_frame_count": len(frames),
+             "renderer_qualified": False, "physical_truth_claimed": False,
+             "raw_interiorgs_bytes_in_provider_packet": False,
+             "provider_mutation_performed": False, "paid_execution_requested": False}
+    value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+    return value
+
+
+def advance_fixture_preparation(*, intake: dict, object_root: Path,
+                                reservation_root: Path, pins_root: Path) -> dict:
+    from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
+        default_reference_fetcher, process_launch_preparation_queue,
+    )
+    from blueprint_pipeline.task_evaluation_owner_source_store import PREFIX
+    store = FilesystemObjectStore(object_root)
+    host = intake["config_path"].parent
+    construction = host / "construction-queue"
+
+    def fetch(uri: str, destination: Path, maximum_bytes: int) -> None:
+        if uri.startswith(PREFIX):
+            default_reference_fetcher(uri, destination, maximum_bytes)
+            return
+        parsed = urlsplit(uri)
+        if parsed.scheme != "s3" or parsed.query or parsed.fragment:
+            raise ValueError("harness_fixture_reference_uri_refused")
+        size = store.head_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))["ContentLength"]
+        if size > maximum_bytes:
+            raise ValueError("harness_fixture_reference_size_exceeded")
+        with store.get_object(Bucket=parsed.netloc, Key=parsed.path.lstrip("/"))["Body"] as source:
+            with destination.open("xb") as target:
+                shutil.copyfileobj(source, target, 1024 * 1024)
+
+    with fixture_environment(intake["environment"]):
+        run = process_launch_preparation_queue(queue_root=intake["preparation_queue"],
+            input_root=host.parent / "prepared-references",
+            allowed_uri_prefixes=["s3://blueprint/task-evaluation/"],
+            service_account=pwd.getpwuid(os.geteuid()).pw_name, source_commit=intake["source_commit"],
+            fetcher=fetch, scene_render_input_materializer=_fixture_render_inputs,
+            construction_queue_root=construction, episode_compilation_queue_root=host / "episode-compilation",
+            disk_reservation_root=reservation_root, storage_pins_root=pins_root,
+            installed_source_environment={})
+    rows = list((construction / "pending").glob("*.json"))
+    return {"run": run, "construction_queue": construction,
+            "object_bytes_fetched": store.read_bytes,
+            "construction_envelope": json.loads(rows[0].read_text()) if len(rows) == 1 else None}
