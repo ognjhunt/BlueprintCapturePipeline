@@ -1381,6 +1381,7 @@ def test_actual_registered_disk_diagnostic_delete_offload_and_restore():
     assert receipt['actual_delete'] and receipt['actual_offload'] and receipt['full_readback_before_remove']
     assert receipt['actual_restore'] and receipt['restore_no_overwrite'] and receipt['sealed_writer_denied']
     assert receipt['actual_open_fd_kept'] and receipt['zero_repeat_credit'] and receipt['shipped_gc_sandbox']
+    assert receipt['actual_encoded_queue_kept'] and receipt['actual_directory_alias_kept']
 
 
 if __name__ == "__main__":

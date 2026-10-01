@@ -186,7 +186,9 @@ def test_sealed_report_without_complete_reference_settings_cannot_delete(install
     assert {path.name: path.read_bytes() for path in target.iterdir()} == before
 
 
-def test_actual_current_queue_reference_preserves_the_sealed_report(installation, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize('reference_kind', ['literal', 'encoded', 'directory_alias'])
+def test_actual_current_queue_reference_preserves_the_sealed_report(installation, monkeypatch, reference_kind):  # noqa: F811
+    """Actual URI/table bytes and alias; portable owners, no kernel clearance."""
     from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
     from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
@@ -214,11 +216,26 @@ def test_actual_current_queue_reference_preserves_the_sealed_report(installation
     selected_action = issuer.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
         action='delete', expires_at_epoch=3500, installed_config_path=config, now=lambda: 2900)
     target = Path(born['path'])
+    report = target / 'disk-capacity-report.v1.json'
+    if reference_kind == 'encoded':
+        reference = 'file://' + ''.join('/' if byte == 47 else '%' + format(byte, '02X')
+                                        for byte in bytes(str(report), 'utf-8'))
+        assert target.name not in reference
+    elif reference_kind == 'directory_alias':
+        alias = root / 'current-source'
+        alias.symlink_to(target, target_is_directory=True)
+        reference = (alias / report.name).as_uri()
+        assert (alias / report.name).read_bytes() == report.read_bytes()
+        assert target.name not in reference
+    else:
+        reference = str(report)
     record = selected['queue'] / 'active.json'
-    record.write_bytes(encoded({'request': {'path': str(target / 'disk-capacity-report.v1.json')}}))
+    record.write_bytes(encoded({'request': {'path': reference}}))
     record.chmod(0o600)
     before = {path.name: path.read_bytes() for path in target.iterdir()}
-    with pytest.raises(ValueError, match='experiment_diagnostic_queue_reference'):
+    reason = ('experiment_diagnostic_references_unknown' if reference_kind == 'directory_alias'
+              else 'experiment_diagnostic_queue_reference')
+    with pytest.raises(ValueError, match=reason):
         actions.run_action(selected_action['action_id'], expected_action_intent=selected_action['action_intent'],
             installed_config_path=config, now=lambda: 2901, _pins_root=root / 'pins')
     assert {path.name: path.read_bytes() for path in target.iterdir()} == before

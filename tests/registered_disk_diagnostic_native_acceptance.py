@@ -104,15 +104,27 @@ def _held_fd_keeps(value, action, pins, report, account):
         assert report.read_bytes() == original
 
 
-def _encoded_queue_keeps(value, action, pins, report):
+def _current_queue_keeps(value, action, pins, report, *, directory_alias=False):
     """The actual installed GC must retain a URI-selected current payload."""
     from urllib.parse import unquote, urlparse
     from blueprint_pipeline.control_plane_lane_owner_consents import _metadata
-    selected = 'file://' + ''.join('/' if byte == 47 else '%' + format(byte, '02X')
-                                    for byte in os.fsencode(report))
+    alias = value['config'].parent / 'current-source'
+    if directory_alias:
+        alias.symlink_to(report.parent, target_is_directory=True)
+        alias_metadata = _metadata(alias.lstat())
+        source = alias / report.name
+        assert source.read_bytes() == report.read_bytes()
+        assert (source.stat().st_dev, source.stat().st_ino) == (report.stat().st_dev, report.stat().st_ino)
+        assert report.stat().st_nlink == 1
+        selected = source.as_uri()
+        expected_reason = 'experiment_diagnostic_references_unknown'
+    else:
+        selected = 'file://' + ''.join('/' if byte == 47 else '%' + format(byte, '02X')
+                                        for byte in os.fsencode(report))
+        expected_reason = 'experiment_diagnostic_queue_reference'
     parsed = urlparse(selected)
     assert parsed.scheme == 'file' and parsed.netloc == ''
-    assert Path(unquote(parsed.path)) == report
+    assert Path(unquote(parsed.path)) == (source if directory_alias else report)
     assert report.parent.name not in selected and str(report.parent) not in selected
     queue = value['config'].parent / 'reference-tables/queue/current-diagnostic.json'
     original = encoded(dict(source_uri=selected))
@@ -127,7 +139,7 @@ def _encoded_queue_keeps(value, action, pins, report):
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=3)
         row = next(row for row in result['report']['registered_experiments']['outcomes']
                    if row['action_id'] == action['action_id'])
-        assert row['decision'] == 'kept' and row['reason'] == 'experiment_diagnostic_queue_reference', row
+        assert row['decision'] == 'kept' and row['reason'] == expected_reason, row
         assert row['removed_logical_bytes'] == row['removed_allocated_bytes'] == 0 and row['receipt'] is None, row
         assert not result['objects'] and not result['object_metadata']
         assert report.read_bytes() == before and _metadata(report.stat()) == initial
@@ -135,6 +147,9 @@ def _encoded_queue_keeps(value, action, pins, report):
     finally:
         assert _metadata(queue.stat()) == queued and queue.read_bytes() == original
         queue.unlink()  # Only this exact owned temporary queued row.
+        if directory_alias:
+            assert _metadata(alias.lstat()) == alias_metadata and os.readlink(alias) == str(report.parent)
+            alias.unlink()  # Only this exact owned temporary alias.
 
 
 def _restore_reference_after_publication(value, restore, pins, target, account, original):
@@ -268,7 +283,7 @@ def run(root):
             apply=True, ack=RUN_ACK, lane_scratch_roots=roots, lane_scratch_enabled=False,
             _experiment_config_path=value['config'], now=time.time)
         assert disabled['registered_experiments']['enabled'] is False and report.read_bytes() == before
-        _encoded_queue_keeps(value, action, pins, report)
+        _current_queue_keeps(value, action, pins, report, directory_alias=method == 'offload')
         _held_fd_keeps(value, action, pins, report, account)
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=1)
         row = next(row for row in result['report']['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
@@ -340,4 +355,5 @@ def run(root):
     return dict(status='passed', actual_ordinary_uid=account.pw_uid, real_lease_expiry=True,
         default_off_kept=True, actual_delete=True, actual_offload=True, full_readback_before_remove=True,
         actual_restore=True, restore_no_overwrite=True, sealed_writer_denied=True, actual_open_fd_kept=True,
-        zero_repeat_credit=True, shipped_gc_sandbox=True)
+        zero_repeat_credit=True, shipped_gc_sandbox=True, actual_encoded_queue_kept=True,
+        actual_directory_alias_kept=True)
