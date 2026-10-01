@@ -84,7 +84,8 @@ def test_reconciliation_fault_observes_held_pin_without_a_new_journal_event():
 
 
 @pytest.mark.parametrize('new_record', [None, dict(status='failed', code='current_real_refusal'),
-                                      dict(unknown_json='must refuse')])
+    dict(unknown_json='must refuse'), dict(status='failed', code='historical_generation_process_unknown'),
+    dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')])
 def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(tmp_path, monkeypatch, new_record):
     # Controller-flow projection only: no native worker, death or cgroup proof.
     # The old receipt falls out of the last64 lines after new manager messages.
@@ -96,12 +97,14 @@ def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(t
     entry.write_bytes(b'')
     group = tmp_path / 'simulated-cgroup-events'
     group.write_bytes(b'populated 1\n')
-    opened, reads, journal_reads = [], [], []
+    opened, reads, journal_reads, startup_order = [], [], [], []
     real_open, real_pread = os.open, os.pread
+    real_write = os.write
     def open_file(path, *args, **kwargs):
         if str(path).startswith('/sys/fs/cgroup/'):
             fd = real_open(group, *args, **kwargs)
             opened.append(fd)
+            startup_order.append('held-cgroup')
             return fd
         return real_open(path, *args, **kwargs)
     def pread(fd, *args):
@@ -113,28 +116,47 @@ def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(t
         if argv[0].endswith('systemd-run'):
             return SimpleNamespace(returncode=0, stdout='', stderr='')
         assert argv[0].endswith('journalctl')
+        if '--sync' in argv:
+            assert kwargs['timeout'] == 5
+            startup_order.append('reaped-sync')
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
         if '--lines=1' in argv:
             return SimpleNamespace(returncode=0, stdout=json.dumps(dict(__CURSOR='s=abc;i=123')))
         journal_reads.append(argv)
         # Earlier genuine fixture transport receipts can exceed one query's
         # bound in aggregate. They cannot enter this attempt's cursor window.
+        uncompleted = new_record is not None and new_record.get('code') in (
+            'historical_generation_process_unknown', 'historical_generation_restore_reconciliation_approval_missing')
         text = (json.dumps(dict(status='failed', code='prior_real_refusal',
                                 transport='a' * 40000))
-                if '--after-cursor=s=abc;i=123' not in argv else 'code=killed, status=9/KILL\n')
+                if '--after-cursor=s=abc;i=123' not in argv else
+                'code=exited, status=1/FAILURE\n' if uncompleted else 'code=killed, status=9/KILL\n')
         if '--after-cursor=s=abc;i=123' in argv and new_record is not None:
             text += json.dumps(new_record) + '\n'
         return SimpleNamespace(returncode=0, stdout='\n'.join(json.dumps(dict(MESSAGE=line)) for line in text.splitlines()))
     monkeypatch.setattr(native.os, 'open', open_file)
+    def write(fd, raw):
+        if raw == b'ready\n':
+            startup_order.append('release')
+        return real_write(fd, raw)
+    monkeypatch.setattr(native.os, 'write', write)
     monkeypatch.setattr(native.os, 'pread', pread)
     monkeypatch.setattr(native.subprocess, 'run', run)
     if new_record is None:
         assert native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals',
             process_death=True) is None
+    elif new_record.get('code') in ('historical_generation_process_unknown',
+                                   'historical_generation_restore_reconciliation_approval_missing'):
+        # Actual typed refusal can reach exact owner handling, but it can
+        # never be converted to the None reserved for observed SIGKILL.
+        assert native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals',
+            process_death=True) == new_record
     else:
         with pytest.raises(AssertionError, match='killed worker must not emit a terminal receipt'):
             native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals', process_death=True)
     assert len(reads) == 2
     assert all('--after-cursor=s=abc;i=123' in argv for argv in journal_reads)
+    assert startup_order == ['held-cgroup', 'reaped-sync', 'release']
 
 
 def original_journal(tmp_path):
@@ -178,6 +200,47 @@ def test_non_reference_refusals_never_trigger_another_attempt(tmp_path, code):
         return dict(status='kept', code=code)
     assert native._later_reference_attempts(invoke, tmp_path, ACTION)['code'] == code
     assert calls == [ACTION]
+
+
+def test_exact_unfinished_owner_handling_uses_existing_three_unit_cadence(tmp_path):
+    path, raw = original_journal(tmp_path)
+    missing = dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')
+    results = iter([dict(REFUSED), missing, None])
+    calls, approvals = [], []
+    def invoke():
+        calls.append(ACTION)
+        return next(results)
+    def handle(receipt):
+        # Controller projection only: the actual fixture callback must use
+        # the protected exact-head owner API; this creates no approval.
+        assert receipt is missing
+        approvals.append(receipt)
+        assert (path / 'e-00000.json').read_bytes() == raw
+    assert native._later_reference_attempts(invoke, tmp_path, ACTION,
+        on_unfinished=handle) is None
+    assert len(calls) == 3 and approvals == [missing]
+    assert (path / 'e-00000.json').read_bytes() == raw
+
+
+def test_last_failed_unit_cannot_issue_an_unused_recovery_grant(tmp_path):
+    original_journal(tmp_path)
+    missing = dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')
+    calls, approvals = [], []
+    def invoke():
+        calls.append(ACTION)
+        return dict(REFUSED) if len(calls) < 3 else missing
+    assert native._later_reference_attempts(invoke, tmp_path, ACTION,
+        on_unfinished=approvals.append) is missing
+    assert len(calls) == 3 and approvals == []
+
+
+def test_owner_handling_cannot_rewrite_the_original_journal(tmp_path):
+    path, _ = original_journal(tmp_path)
+    missing = dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')
+    def handle(receipt):
+        (path / 'e-00000.json').write_bytes(b'replaced operation')
+    with pytest.raises(AssertionError, match='original_journal_changed'):
+        native._later_reference_attempts(lambda: missing, tmp_path, ACTION, on_unfinished=handle)
 
 
 @pytest.mark.parametrize('change', ['missing', 'wrong_id', 'rewrite'])

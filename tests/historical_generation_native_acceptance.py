@@ -386,7 +386,8 @@ def worker_main(root, action_id):
     emit(receipt)
 
 
-def _launch_worker(entry, action_id, target, journals, *, expected='completed', restore=False, launch=None):
+def _launch_worker(entry, action_id, target, journals, *, expected='completed', restore=False, launch=None,
+                   on_unfinished=None):
     # Each invocation reaches a real terminal unit before another GC tick is
     # considered. Never overlap handles, change an ID or mint a new deadline.
     observations = []
@@ -395,7 +396,8 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
         nonlocal births
         births = _capture_restore_births(journals, action_id) if restore else []
         return _launch_worker_once(entry, action_id, target, journals, restore=restore, launch=launch)
-    receipt = _later_reference_attempts(invoke, journals, action_id, observations=observations)
+    receipt = _later_reference_attempts(invoke, journals, action_id, observations=observations,
+                                        on_unfinished=on_unfinished)
     assert receipt['status'] == expected, receipt
     result = dict(receipt, _fixture_reference_refusals=observations) if observations else receipt
     return dict(result, _fixture_prior_member_births=births) if receipt.get('recovered_prefix') is True else result
@@ -411,10 +413,10 @@ def _observe_reconciliation_pin(worker, binding, verify):
     return worker.effect_selected[-1][0]['packet']['scope']
 
 
-def _launch_death_worker(entry, action_id, target, journals):
+def _launch_death_worker(entry, action_id, target, journals, *, on_unfinished=None):
     """Same three-unit cadence; each None must come from fresh real SIGKILL."""
     result = _later_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
-        restore=True, process_death=True), journals, action_id)
+        restore=True, process_death=True), journals, action_id, on_unfinished=on_unfinished)
     assert result is None, result
 
 
@@ -468,7 +470,7 @@ def _durable_receipt(receipt):
             if key not in ('_fixture_reference_refusals', '_fixture_prior_member_births')}
 
 
-def _later_reference_attempts(invoke, journals, action_id, *, observations=None):
+def _later_reference_attempts(invoke, journals, action_id, *, observations=None, on_unfinished=None):
     """Keep genuine unknowns; at most three later SAME-operation attempts.
 
     This is fixture cadence, not reader clearance or worker recovery. Every
@@ -491,6 +493,19 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None)
             # This is an observed fixture death, never a worker success receipt.
             # Ordinary callers still require an actual completed worker result.
             return None
+        if receipt.get('status') == 'failed' and receipt.get('code') == \
+                'historical_generation_restore_reconciliation_approval_missing' \
+                and on_unfinished is not None and attempt < 2:
+            # A changed unfinished row needs its own explicit fixture-owner
+            # decision. This callback must authenticate the current packet;
+            # the typed failure itself grants nothing. It consumes this same
+            # three-unit cadence and cannot alter the operation journal.
+            print(json.dumps(dict(fixture_unfinished_refusal=receipt, action_id=action_id,
+                                  attempt=attempt + 1)), flush=True)
+            on_unfinished(receipt)
+            assert prefix() == current, 'original_journal_changed'
+            original = current
+            continue
         if receipt.get('status') not in ('kept', 'failed') or receipt.get('code') != \
                 'historical_generation_process_unknown':
             return receipt
@@ -566,9 +581,11 @@ def _assert_boundary_recovery(receipt, expected, observations, action_id, origin
         later += ('recovered_split', 'recovered_stage')
     assert any(receipt.get(field) is True for field in later)
     assert 0 < len(observations) <= 3
+    attempts = [row['attempt'] for row in observations]
+    assert attempts == sorted(set(attempts)) and all(type(index) is int and 1 <= index <= 3 for index in attempts)
     assert all(row == dict(action_id=action_id, code='historical_generation_process_unknown',
-        original_intent_sha256=hashlib.sha256(original_intent).hexdigest(), attempt=index + 1)
-        for index, row in enumerate(observations))
+        original_intent_sha256=hashlib.sha256(original_intent).hexdigest(), attempt=index)
+        for index, row in zip(attempts, observations))
 
 
 def _unit_cursor(unit):
@@ -650,6 +667,14 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
                 time.sleep(0.01)
         assert fd is not None, 'actual_worker_cgroup_missing_before_startup'
         try:
+            # Flush actual disposable start messages and REAP that diagnostic
+            # command before releasing the held startup FD. This proves no
+            # clearance; every PID/FD/current-view check still runs unchanged.
+            # It consumes the existing startup and owner clocks.
+            settled = subprocess.run(['/usr/bin/journalctl', '--sync'],
+                capture_output=True, text=True, timeout=5)
+            assert settled.returncode == 0 and len(settled.stdout.encode()) <= 32768 \
+                and len(settled.stderr.encode()) <= 32768, 'fixture_start_journal_sync_failed'
             assert os.write(startup, b'ready\n') == 6
             os.fsync(startup)
             populated = False
@@ -679,7 +704,8 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
         output = _unit_output(unit, cursor)
         current = observations()
         if len(current) == 1 and current[0].get('status') in ('kept', 'failed') \
-                and current[0].get('code') == 'historical_generation_process_unknown':
+                and current[0].get('code') in ('historical_generation_process_unknown',
+                    'historical_generation_restore_reconciliation_approval_missing'):
             # The real fault was not reached. Preserve its actual refusal for
             # the existing bounded SAME-e0 cadence, with no clock/authority edit.
             assert 'code=killed, status=9/KILL' not in output, dict(cursor=cursor, records=current)
@@ -854,7 +880,8 @@ def _current_fixture_approval(options, original_expiry, ttl, changes=None):
     return options | dict(now=moment, expires_at_epoch=min(moment + ttl, original_expiry)) | (changes or {})
 
 
-def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *, short_expiry=False):
+def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *, short_expiry=False,
+                              observed_refusal=None):
     """Actual tiny owner decision; original restore principal cannot DELETE."""
     from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_authority import (
         observe_historical_restore_reconciliation, approve_historical_restore_reconciliation)
@@ -867,7 +894,9 @@ def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *,
             path.read_bytes() if path.is_file() else None) for path in (target, *target.rglob('*'))}
     original = unchanged()
     before = {path.name: path.read_bytes() for path in (journals / action_id).iterdir()}
-    refused = _launch_worker(entry, action_id, target, journals, restore=True, expected='failed')
+    refused = observed_refusal if observed_refusal is not None else _launch_worker(
+        entry, action_id, target, journals, restore=True, expected='failed')
+    assert refused['status'] == 'failed'
     assert refused['code'] == 'historical_generation_restore_reconciliation_approval_missing', refused
     assert unchanged() == original
     assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
@@ -899,7 +928,47 @@ def _approve_unlogged_fixture(root, config, entry, restore, target, journals, *,
     assert approved['discard_unfinished_row_approved'] is True
     assert unchanged() == original
     assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+    assert all((store / name).read_bytes() == raw for name, raw in records.items())
     return approved
+
+
+def _authenticate_additional_reconciliations(root, config_path, restore, events, approvals):
+    """Authenticate each incidental row against its real protected owner grant.
+
+    These are consumed historical effects, never current removal permission.
+    The original requested fault has separate exact boundary assertions.
+    """
+    from blueprint_pipeline import control_plane_lane_historical_authority as authority
+    from blueprint_pipeline.control_plane_lane_historical_restore_authority import select_restore
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_authority import historical_effect_grant
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_replay import reconciliation_bindings
+    bindings = reconciliation_bindings(events)
+    assert len(bindings) <= 8 and len(approvals) <= 7
+    assert len({value['decision_id'] for value in approvals}) == len(approvals)
+    for approval in approvals:
+        selected_binding = [row for row in bindings if row[1] == approval['decision_id']]
+        assert len(selected_binding) == 1
+        prefix, identifier, selector, recorded = selected_binding[0]
+        operation = authority._Operation(time.time(), time.monotonic)
+        with authority._session(config_path, operation) as (files, settings, store):
+            selected = select_restore(files, settings, store, config_path, restore['action_id'], operation.moment())
+            actual, _ = store.read(identifier)
+            assert actual == approval
+            original, effect = historical_effect_grant(files, settings, store, config_path,
+                selected, prefix, identifier, selector, recorded, operation.moment())
+        assert original[0] == effect[0] == approval
+        completed = recorded[-1]
+        assert completed['body']['phase'] == 'reconciled'
+        assert completed['body']['uncertain'] is True
+        assert completed['body']['credited_removed_allocated_bytes'] == 0
+        assert approval['issued_at_epoch'] <= recorded[0]['observed_at_epoch'] \
+            <= completed['observed_at_epoch'] < approval['expires_at_epoch']
+        assert completed['previous_event_digest'] == recorded[0]['event_digest']
+        assert approval['packet']['original_head_event_digest'] == prefix[-1]['event_digest']
+        assert approval['packet']['original_expires_at_epoch'] == restore['expires_at_epoch']
+        print(json.dumps(dict(fixture_additional_reconciliation=identifier,
+            original_head=prefix[-1]['event_digest'], consumed_event=completed['event_digest'],
+            credited_removed_allocated_bytes=0)), flush=True)
 
 
 def _approve_fresh_discard_fixture(root, config, entry, restore, target, journals, previous, *, short_expiry=False):
@@ -1311,6 +1380,17 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             assert restore['tombstone_version'] == receipt['tombstone_version']
             assert not list(target.iterdir()) and target.stat().st_uid == 0
             assert {path.name: path.read_bytes() for path in (journals / action_id).iterdir()} == before
+            additional_reconciliations = []
+            def acknowledge_unfinished(refused):
+                assert len(additional_reconciliations) < 7
+                # The actual observation/approval API authenticates the exact
+                # CURRENT full tree and head before this fixture owner issues
+                # a distinct DELETE. A missing-code receipt is not authority.
+                approved = _approve_unlogged_fixture(root, config, entry, restore,
+                    target, journals, observed_refusal=refused)
+                assert approved['decision_id'] not in {
+                    value['decision_id'] for value in additional_reconciliations}
+                additional_reconciliations.append(approved)
             store = root / 'state/requests/historical-generation-actions'
             after_approval = {path.name: path.read_bytes() for path in store.iterdir()}
             for changes in ({'owner': 'another-owner'}, {'ack_final_event_digest': 'sha256:' + 'f' * 64}):
@@ -1344,7 +1424,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             if restore_interruption is not None:
                 _write(root / 'interrupt-once', restore_interruption.encode())
                 if restore_interruption.startswith('unlogged_'):
-                    _launch_death_worker(entry, restore['action_id'], target, journals)
+                    _launch_death_worker(entry, restore['action_id'], target, journals,
+                                         on_unfinished=acknowledge_unfinished)
                 else:
                     interrupted = _launch_worker(entry, restore['action_id'], target, journals,
                                                  restore=True, expected='failed')
@@ -1440,8 +1521,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                         short_expiry=reconciliation_interruption == 'reconcile_consumed' or absent_expiry or delete_expiry)
                     if reconciliation_interruption:
                         _write(root / 'interrupt-once', reconciliation_interruption.encode())
-                        assert _launch_worker_once(entry, restore['action_id'], target, journals,
-                                                  restore=True, process_death=True) is None
+                        _launch_death_worker(entry, restore['action_id'], target, journals,
+                                             on_unfinished=acknowledge_unfinished)
                         (root / 'interrupt-once').unlink()
                         _assert_reconciliation_death_boundary(root, restore, target, journals,
                             reconciliation, reconciliation_interruption)
@@ -1463,8 +1544,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                         restore, target, journals, reconciliation, short_expiry=resume_delete_expiry or resume_absent_expiry)
                     if resume_delete_expiry:
                         _write(root / 'interrupt-once', b'reconcile_delete_resume')
-                        assert _launch_worker_once(entry, restore['action_id'], target, journals,
-                            restore=True, process_death=True) is None
+                        _launch_death_worker(entry, restore['action_id'], target, journals,
+                                             on_unfinished=acknowledge_unfinished)
                         (root / 'interrupt-once').unlink()
                         resume_raw = max((journals / restore['action_id']).glob('e-*.json')).read_bytes()
                         resume_event = json.loads(resume_raw)
@@ -1479,8 +1560,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             restore, target, journals, reconciliation)
                     if resume_remove:
                         _write(root / 'interrupt-once', b'reconcile_remove')
-                        assert _launch_worker_once(entry, restore['action_id'], target, journals,
-                            restore=True, process_death=True) is None
+                        _launch_death_worker(entry, restore['action_id'], target, journals,
+                                             on_unfinished=acknowledge_unfinished)
                         (root / 'interrupt-once').unlink()
                         _assert_reconciliation_death_boundary(root, restore, target, journals, reconciliation,
                             'resumed_remove', original_approval=initial_discard)
@@ -1492,7 +1573,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             absence, retained_discard_records = _approve_absent_fixture(root, config, entry,
                                 restore, target, journals, reconciliation)
             restored = _launch_worker(entry, restore['action_id'], target, journals, restore=True,
-                                      launch=gc_tick if installed else None)
+                                      launch=gc_tick if installed else None,
+                                      on_unfinished=acknowledge_unfinished)
             if restore_interruption is not None:
                 recovery = {'restore_final': 'recovered_access',
                             'before_restore_final': 'recovered_before_final',
@@ -1543,9 +1625,14 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
             restore_events = [json.loads(path.read_bytes()) for path in
                               sorted((journals / restore['action_id']).glob('e-*.json'))]
             kinds = [event['kind'] for event in restore_events]
+            _authenticate_additional_reconciliations(root, config, restore,
+                                                     restore_events, additional_reconciliations)
             if restore_interruption and restore_interruption.startswith('unlogged_'):
                 reconciled = [event for event in restore_events if event['kind'] == 'restore_intent'
                               and event['body'].get('phase') == 'reconciled']
+                assert len(reconciled) == 1 + len(additional_reconciliations)
+                planned_id = (initial_discard if delete_expiry else reconciliation)['decision_id']
+                reconciled = [event for event in reconciled if event['body']['decision_id'] == planned_id]
                 assert len(reconciled) == 1 and reconciled[0]['body']['uncertain'] is True
                 assert reconciled[0]['body']['credited_removed_allocated_bytes'] == 0
                 if delete_expiry:
