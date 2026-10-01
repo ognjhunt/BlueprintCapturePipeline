@@ -73,7 +73,8 @@ def test_forecast_uses_the_oldest_observation_inside_the_window() -> None:
     assert result["status"] == "growing"
     assert result["growth_bytes_per_day"] == 5 * GIB
     assert result["days_until_floor"] == pytest.approx(4.4, abs=0.01)
-    assert cap.forecast([], current, now=now) == {"status": "insufficient_history"}
+    assert cap.forecast([], current, now=now) == {"status": "insufficient_history",
+                                                  "recent": {"status": "insufficient_history"}}
     assert cap.forecast(history[:1], {**current, "free_bytes": 50 * GIB}, now=now)["status"] == "not_growing"
 
 
@@ -117,6 +118,174 @@ def test_fast_growth_pages_even_while_current_utilization_is_ok(tmp_path: Path) 
     assert any(a["code"] == "floor_within_three_days" and a["severity"] == "page"
                for a in report["alerts"])
     assert report["alert_posted"] is True and len(posted) == 1
+
+
+def _burst_history(mount: str, now: float, recent_free_gib: list[tuple[int, float]]) -> list[dict]:
+    """A week-old row from before the volume move freed space, then recent ticks."""
+
+    rows = [{"mount": mount, "status": "measured", "observed_at_epoch": now - 6 * 86400,
+             "free_bytes": 10 * GIB, "floor_bytes": 8 * GIB}]
+    rows.extend({"mount": mount, "status": "measured", "observed_at_epoch": now - minutes * 60,
+                 "free_bytes": int(free * GIB), "floor_bytes": 8 * GIB}
+                for minutes, free in recent_free_gib)
+    return rows
+
+
+def test_recent_decline_pages_while_the_week_trend_says_not_growing(tmp_path: Path) -> None:
+    """2026-10-01: a local image unpack took root from 55 to 44 GB in an hour.
+
+    The week-old oldest row predated the volume move, so the 7-day trend read
+    ``not_growing`` and nothing paged while the floor was about three hours away.
+    """
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(60, 55.0), (50, 53.0), (40, 51.0),
+                                          (30, 49.0), (20, 47.0), (10, 45.5)])
+
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(44.37), now=now)
+
+    forecast = report["mounts"][0]["forecast"]
+    assert forecast["status"] == "not_growing"
+    assert forecast["recent"]["status"] == "declining"
+    assert forecast["recent"]["window_seconds"] == 3600
+    assert forecast["recent"]["decline_bytes_per_hour"] == pytest.approx(10.63 * GIB, abs=1)
+    assert forecast["recent"]["hours_until_floor"] == pytest.approx(3.42, abs=0.01)
+    burst = next(a for a in report["alerts"] if a["code"] == "floor_within_hours")
+    assert burst["severity"] == "page" and burst["mount"] == mount
+    assert burst["hours_until_floor"] == pytest.approx(3.42, abs=0.01)
+    summary_alert = next(a for a in cap.capacity_summary(report)["alerts"]
+                         if a["code"] == "floor_within_hours")
+    assert summary_alert["hours_until_floor"] == burst["hours_until_floor"]
+    assert summary_alert["decline_bytes_per_hour"] == forecast["recent"]["decline_bytes_per_hour"]
+
+
+@pytest.mark.parametrize("recent, status", [
+    ([(60, 45.8), (30, 45.0)], "not_declining"),           # 1.43 GiB: below the noise floor
+    ([(20, 50.0), (10, 47.0)], "insufficient_history"),    # under 30 minutes of ticks
+    ([(60, 47.4), (30, 46.0)], "declining"),               # 3 GiB/h: floor ~12 h away
+    ([(60, 40.0), (30, 42.0)], "not_declining"),           # reclaim freed space
+])
+def test_small_short_or_slow_recent_changes_do_not_page(tmp_path: Path, recent, status) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=_burst_history(mount, now, recent),
+                                       disk_usage=_usage(44.37), now=now)
+
+    assert report["mounts"][0]["forecast"]["recent"]["status"] == status
+    assert "floor_within_hours" not in {a["code"] for a in report["alerts"]}
+
+
+def test_admitted_writes_the_ledger_reserved_do_not_page(tmp_path: Path) -> None:
+    """A G1 run reserves 32 GB and writes 20 GB in an hour: admission already budgeted it."""
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(60, 64.0), (30, 54.0)])
+    for row in history[1:]:
+        row["reserved_bytes"] = 32 * GIB  # released since; its bytes were budgeted
+
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(44.0), now=now)
+
+    recent = report["mounts"][0]["forecast"]["recent"]
+    assert recent["status"] == "explained_by_reservations"
+    assert recent["reserved_bytes"] == 32 * GIB
+    assert "floor_within_hours" not in {a["code"] for a in report["alerts"]}
+
+
+def test_a_one_off_step_is_not_a_sustained_decline(tmp_path: Path) -> None:
+    """A single 5 GiB write that stopped would otherwise read as 5 GiB/h."""
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(60, 25.1), (45, 25.1), (30, 25.1), (15, 20.0)])
+
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(20.0), now=now)
+
+    assert report["mounts"][0]["forecast"]["recent"]["status"] == "not_sustained"
+    assert "floor_within_hours" not in {a["code"] for a in report["alerts"]}
+
+
+def test_a_burst_page_holds_until_twelve_hours_instead_of_flapping_at_six(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(60, 49.0), (30, 47.0)])  # 4 GiB/h, floor ~9.3 h away
+
+    def codes(**kwargs):
+        report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                           history=history, disk_usage=_usage(45.0), now=now, **kwargs)
+        return {a["code"] for a in report["alerts"]}
+
+    assert "floor_within_hours" not in codes()
+    assert "floor_within_hours" in codes(burst_paging={mount})
+
+    report_root = tmp_path / "capacity"
+    report_root.mkdir()
+    (report_root / "history.jsonl").write_text("".join(json.dumps(row) + "\n" for row in history))
+    (report_root / "latest.json").write_text(json.dumps({
+        "level": "warning", "last_alert_epoch": now - 600, "last_alert_fingerprint": "sha256:x",
+        "alerts": [{"code": "floor_within_hours", "mount": mount, "severity": "page"}]}))
+    held = cap.run_controller(
+        mounts=[mount], report_root=report_root, reservation_root=tmp_path / "reservations",
+        webhook_url="", volume=None, ack="", token="", survey=None, disk_usage=_usage(45.0), now=now,
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "absent-notes",
+    )
+    assert "floor_within_hours" in {a["code"] for a in held["alerts"]}
+
+
+def test_a_malformed_recent_history_row_cannot_abort_the_tick(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(58, 55.0), (30, 49.0)])
+    history.append({"mount": mount, "status": "measured", "observed_at_epoch": now - 3600,
+                    "free_bytes": None, "floor_bytes": 8 * GIB})
+
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(44.37), now=now)
+
+    assert report["mounts"][0]["forecast"]["recent"]["status"] == "declining"
+
+
+def test_recent_decline_page_posts_with_hours_in_the_summary_and_text(tmp_path: Path, monkeypatch) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    report_root = tmp_path / "capacity"
+    report_root.mkdir()
+    (report_root / "history.jsonl").write_text("".join(
+        json.dumps(row) + "\n" for row in _burst_history(mount, now, [(60, 55.0), (30, 49.0)])))
+    posted = []
+    report = cap.run_controller(
+        mounts=[mount], report_root=report_root, reservation_root=tmp_path / "reservations",
+        webhook_url="https://alerts.example/hook", volume=None, ack="", token="",
+        survey=None, disk_usage=_usage(44.37), now=now,
+        poster=lambda _url, value: posted.append(value),
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "absent-notes",
+    )
+    assert report["alert_posted"] is True and len(posted) == 1
+
+    payloads = []
+
+    class Response:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def urlopen(request, *, timeout):
+        payloads.append(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr(cap.urllib.request, "urlopen", urlopen)
+    cap.post_alert("https://alerts.example/hook", report)
+    assert payloads[0]["page"] is True
+    assert payloads[0]["summary"] == f"{mount}: floor in 3.4 hours at the last 60 minutes' rate"
+    assert f"{mount} floor_within_hours 3.4h" in payloads[0]["text"]
 
 
 def test_blocked_volume_growth_pages(tmp_path: Path) -> None:
@@ -1005,6 +1174,26 @@ def _survey_result(**overrides):
               "top_owners": [], "unclassified_roots": []}
     result.update(overrides)
     return result
+
+
+def test_large_container_runtime_store_warns_by_name() -> None:
+    """Image layers on the root disk are named, not left to a generic attribution warning."""
+    runtime = [{"root": "/var/lib/containerd", "allocated_bytes": 78 * GIB},
+               {"root": "/var/lib/docker", "allocated_bytes": 35 * MIB}]
+    survey = _survey_result(container_runtime_roots=runtime,
+                            container_runtime_bytes=78 * GIB + 35 * MIB,
+                            container_runtime_complete=False)
+
+    alerts = cap.usage_alerts(survey)
+
+    assert alerts == [{"code": "usage_container_runtime_large", "root": "/var/lib/containerd",
+                       "allocated_bytes": 78 * GIB}]
+    cap._annotate_alerts(alerts)
+    assert alerts[0]["severity"] == "warn"
+    projection = cap.usage_projection(survey, now=1_060.0)
+    assert projection["container_runtime_roots"] == runtime
+    assert projection["container_runtime_bytes"] == 78 * GIB + 35 * MIB
+    assert projection["container_runtime_complete"] is False  # a lower bound, not a measurement
 
 
 @pytest.mark.parametrize(("total", "largest"), [

@@ -10,8 +10,11 @@ import tarfile
 from pathlib import Path
 
 FILES = (
-    "README.md", "RENDER.md", "KNOWLEDGE.md", "standalone.py", "runner.py", "knowledge.py",
-    "contracts.py", "freshness.py", "requirements.txt", "standalone.config.example.json",
+    "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "standalone.py", "runner.py", "knowledge.py",
+    "contracts.py", "freshness.py", "capabilities.py", "consumer.py", "publisher.mjs", "requirements.txt", "standalone.config.example.json",
+    "capabilities/blueprint-evidence-qualification/SKILL.md",
+    "capabilities/blueprint-evidence-qualification/references/prospect-contract.md",
+    "capabilities/deep-research/SKILL.md", "capabilities/deep-research/LICENSE",
     "firestore.py", "firestore_bridge.mjs", "render.py", "render_worker.mjs", "render.control.example.json",
     "config.example.json", "knowledge.config.example.json", "knowledge.v3.config.example.json",
     "daily-research.v2.schema.json", "daily-research.v3.schema.json",

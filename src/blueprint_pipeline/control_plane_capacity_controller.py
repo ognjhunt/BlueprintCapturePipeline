@@ -39,7 +39,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +72,7 @@ SUMMARY_FILENAME = "summary.json"
 SUMMARY_MAX_BYTES = 128 * 1024
 DEFAULT_SURVEY_INTERVAL_SECONDS = 60 * 60
 USAGE_UNCLASSIFIED_ALERT_BYTES = 1024**3
+USAGE_CONTAINER_RUNTIME_ALERT_BYTES = 20 * 1024**3
 ORPHAN_SCRATCH_AGGREGATE_PAGE_BYTES = 5 * 1024**3
 ORPHAN_SCRATCH_SINGLE_PAGE_BYTES = 2 * 1024**3
 USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
@@ -94,8 +95,20 @@ ALERT_REPEAT_SECONDS = 60 * 60
 RESIZE_ACK = "grow-control-plane-volume"
 DEFAULT_RESIZE_STEP_GIB = 50
 GIB = 1024**3
+# The week trend averages a burst away, and a reclaim inside the week makes it
+# read ``not_growing`` while a writer fills the disk (2026-10-01: a local image
+# unpack took root from 55 to 31 GB with the floor hours away, and nothing paged).
+# The recent window projects only the last hour of ticks, and only growth the
+# reservation ledger does not explain (admitted writers are already budgeted).
+# A page set below six hours clears at twelve, so a writer near the threshold
+# does not post on every tick.
+RECENT_FORECAST_WINDOW_SECONDS = 60 * 60
+RECENT_FORECAST_MIN_SECONDS = 30 * 60
+RECENT_DECLINE_MIN_BYTES = 2 * GIB
+FLOOR_WITHIN_HOURS_PAGE = 6.0
+FLOOR_WITHIN_HOURS_CLEAR = 12.0
 PAGE_ALERT_CODES = frozenset({
-    "floor_within_three_days", "admission_refused", "critical_admission_refused",
+    "floor_within_three_days", "floor_within_hours", "admission_refused", "critical_admission_refused",
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
     "reclaim_ineffective",
     "orphan_scratch_large",
@@ -307,8 +320,52 @@ def live_reserved_bytes(
 
 
 
+def _recent_forecast(rows: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *,
+                     now: float) -> dict[str, Any]:
+    """The last hour's decline in free bytes, and hours until admission headroom is
+    gone if the part the reservation ledger does not explain continues."""
+
+    def epoch(row: Mapping[str, Any]) -> float:
+        return float(row["observed_at_epoch"])
+
+    recent = [row for row in rows if now - epoch(row) <= RECENT_FORECAST_WINDOW_SECONDS]
+    if not recent:
+        return {"status": "insufficient_history"}
+    oldest = min(recent, key=epoch)
+    elapsed = now - epoch(oldest)
+    later = [row for row in recent if epoch(row) > epoch(oldest)]
+    if elapsed < RECENT_FORECAST_MIN_SECONDS or not later:
+        return {"status": "insufficient_history"}
+    middle = min(later, key=lambda row: abs(epoch(row) - (epoch(oldest) + now) / 2))
+    free = int(current["free_bytes"])
+    decline = int(oldest["free_bytes"]) - free
+    # Bytes written under a reservation were admitted against the floor; the
+    # largest reservation the window saw bounds what admitted writers explain.
+    reserved = max([value for value in (row.get("reserved_bytes") for row in [*recent, current])
+                    if type(value) is int] or [0])
+    result: dict[str, Any] = {"status": "not_declining", "window_seconds": int(elapsed),
+                              "decline_bytes_per_hour": int(decline / elapsed * 3600),
+                              "reserved_bytes": reserved}
+    if decline < RECENT_DECLINE_MIN_BYTES:
+        return result
+    if decline - reserved < RECENT_DECLINE_MIN_BYTES:
+        result["status"] = "explained_by_reservations"
+        return result
+    halves = (int(oldest["free_bytes"]) - int(middle["free_bytes"]), int(middle["free_bytes"]) - free)
+    if min(halves) < RECENT_DECLINE_MIN_BYTES / 2:
+        result["status"] = "not_sustained"
+        return result
+    available = current.get("available_bytes")
+    if type(available) is not int:
+        available = free - int(current["floor_bytes"]) - int(current.get("reserved_bytes") or 0)
+    result["status"] = "declining"
+    result["hours_until_floor"] = round(max(0, available) / ((decline - reserved) / elapsed * 3600), 2)
+    return result
+
+
 def forecast(history: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *, now: float) -> dict[str, Any]:
-    """Growth per day and days until the floor, from the oldest row inside the window."""
+    """Growth per day and days until the floor, from the oldest row inside the window,
+    and under ``recent`` the same projection from the last hour alone."""
 
     mount = current.get("mount")
     rows = [
@@ -318,22 +375,27 @@ def forecast(history: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *
         and row.get("mount") == mount
         and row.get("status") == "measured"
         and isinstance(row.get("observed_at_epoch"), (int, float))
+        and type(row.get("free_bytes")) is int
         and now - float(row["observed_at_epoch"]) <= FORECAST_WINDOW_SECONDS
     ]
-    if not rows or current.get("status") != "measured":
+    if current.get("status") != "measured":
         return {"status": "insufficient_history"}
+    recent = _recent_forecast(rows, current, now=now)
+    if not rows:
+        return {"status": "insufficient_history", "recent": recent}
     oldest = min(rows, key=lambda row: float(row["observed_at_epoch"]))
     elapsed = now - float(oldest["observed_at_epoch"])
     if elapsed < 3600:
-        return {"status": "insufficient_history"}
+        return {"status": "insufficient_history", "recent": recent}
     growth_per_day = (int(oldest["free_bytes"]) - int(current["free_bytes"])) / elapsed * 86400
     headroom = int(current["free_bytes"]) - int(current["floor_bytes"])
     if growth_per_day <= 0:
-        return {"status": "not_growing", "growth_bytes_per_day": int(growth_per_day)}
+        return {"status": "not_growing", "growth_bytes_per_day": int(growth_per_day), "recent": recent}
     return {
         "status": "growing",
         "growth_bytes_per_day": int(growth_per_day),
         "days_until_floor": round(max(0.0, headroom / growth_per_day), 2),
+        "recent": recent,
     }
 
 
@@ -363,7 +425,10 @@ def build_capacity_report(
     history: Sequence[Mapping[str, Any]] = (),
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
+    burst_paging: Collection[str] = (),
 ) -> dict[str, Any]:
+    """``burst_paging`` names mounts whose previous report paged ``floor_within_hours``."""
+
     observed = time.time() if now is None else float(now)
     measured = [
         measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=observed)
@@ -387,6 +452,13 @@ def build_capacity_report(
         if row["critical_roles_refused"]:
             alerts.append({"mount": row["mount"], "code": "critical_admission_refused",
                            "roles": row["critical_roles_refused"]})
+        recent = row["forecast"].get("recent") or {}
+        hours = recent.get("hours_until_floor")
+        limit = FLOOR_WITHIN_HOURS_CLEAR if row["mount"] in burst_paging else FLOOR_WITHIN_HOURS_PAGE
+        if isinstance(hours, (int, float)) and hours < limit:
+            alerts.append({"mount": row["mount"], "code": "floor_within_hours", "hours_until_floor": hours,
+                           "decline_bytes_per_hour": recent["decline_bytes_per_hour"],
+                           "window_seconds": recent["window_seconds"]})
         if row["level"] != "ok":
             alerts.append({"mount": row["mount"], "code": f"utilization_{row['level']}", "used_fraction": row["used_fraction"]})
         days = row["forecast"].get("days_until_floor")
@@ -553,6 +625,9 @@ def usage_projection(
             "orphan_scratch_roots": list(survey.get("orphan_scratch_roots") or [])[
                 :USAGE_PROJECTED_UNCLASSIFIED_ROOTS
             ],
+            "container_runtime_bytes": survey.get("container_runtime_bytes"),
+            "container_runtime_complete": survey.get("container_runtime_complete"),
+            "container_runtime_roots": list(survey.get("container_runtime_roots") or []),
         }
     if error:
         projection["error"] = error
@@ -581,6 +656,11 @@ def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
             continue  # one aggregate page; raw scratch folder names stay out of alerts
         if number(size) and size > USAGE_UNCLASSIFIED_ALERT_BYTES:
             alerts.append({"code": "usage_unclassified_root", "root": root, "allocated_bytes": size})
+    for row in survey.get("container_runtime_roots") or []:
+        size = row.get("allocated_bytes") if isinstance(row, Mapping) else None
+        if number(size) and size > USAGE_CONTAINER_RUNTIME_ALERT_BYTES:
+            alerts.append({"code": "usage_container_runtime_large", "root": row.get("root"),
+                           "allocated_bytes": size})
     for row in survey.get("mounts") or []:
         fraction = row.get("attributed_fraction") if isinstance(row, Mapping) else None
         if number(fraction) and fraction < USAGE_ATTRIBUTION_ALERT_FRACTION:
@@ -598,6 +678,7 @@ _SUMMARY_ALERT_KEYS = (
     "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
     "largest_bytes",
     "top_retained_reasons",
+    "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
 )
 
 
@@ -723,6 +804,10 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     summary = f"{first.get('mount') or 'control plane'}: {first.get('code') or report.get('level')}"
     if first.get("code") == "floor_within_three_days":
         summary = f"{first.get('mount')}: floor in {float(first.get('days_until_floor') or 0):.1f} days"
+    elif first.get("code") == "floor_within_hours":
+        minutes = round(float(first.get("window_seconds") or 0) / 60)
+        summary = (f"{first.get('mount')}: floor in {float(first.get('hours_until_floor') or 0):.1f} hours"
+                   f" at the last {minutes} minutes' rate")
     elif first.get("code") == "volume_growth_blocked":
         summary = f"{first.get('mount')}: volume growth blocked ({first.get('reason')})"
     elif first.get("code") == "orphan_scratch_large":
@@ -755,7 +840,10 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
         "text": "control-plane capacity "
         + str(report.get("level"))
         + ": "
-        + "; ".join(f"{a.get('mount')} {a.get('code')}" for a in report.get("alerts") or []),
+        + "; ".join(f"{a.get('mount')} {a.get('code')}"
+                    + (f" {float(a.get('hours_until_floor') or 0):.1f}h"
+                       if a.get("code") == "floor_within_hours" else "")
+                    for a in report.get("alerts") or []),
     }
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST"
@@ -906,6 +994,10 @@ def run_controller(
         history=load_history(report_root),
         disk_usage=disk_usage,
         now=observed,
+        burst_paging={
+            str(alert.get("mount")) for alert in (previous or {}).get("alerts") or []
+            if isinstance(alert, Mapping) and alert.get("code") == "floor_within_hours"
+        },
     )
     from .task_evaluation_scene_spend import observe_configured_scene_project_spend
     try:

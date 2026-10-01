@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 from scripts.remote_cpu_deployment_scope import (
-    ALLOWED_ADDRESSES, APPROVED_BILLING_ACCOUNT, WORKER_PROJECT, check_plan, check_project_iam, check_state,
+    ALLOWED_ADDRESSES, APPROVED_BILLING_ACCOUNT, DISPATCH_PROJECT, WORKER_PROJECT, check_plan, check_project_iam, check_state,
 )
 
 
@@ -55,7 +55,9 @@ def test_complete_worker_bootstrap_plan_is_allowed():
 
 
 @pytest.mark.parametrize("field,value", [("role", "roles/artifactregistry.admin"),
-                                        ("repository", "other-repo"), ("location", "europe-west1")])
+                                        ("repository", "other-repo"), ("location", "europe-west1"),
+                                        ("repository", "projects/other/locations/us/repositories/gcr.io"),
+                                        ("repository", "projects/blueprint-8c1ca/locations/eu/repositories/gcr.io")])
 def test_old_repository_binding_cannot_expand_privileges(field, value):
     plan = _plan()
     row = next(row for row in plan["planned_values"]["root_module"]["resources"]
@@ -70,15 +72,17 @@ def test_computed_project_identity_cannot_hide_an_unreviewed_principal():
                if row["address"] == "data.google_iam_policy.remote_cpu_project")
     row["expressions"]["binding"].append({"role": {"constant_value": "roles/editor"},
                                          "members": {"constant_value": ["user:other@example.com"]}})
-    assert "project_policy_configuration_drift" in check_plan(plan)
+    assert "remote_cpu_project_configuration_drift" in check_plan(plan)
 
 
-def test_managed_service_agent_cannot_enter_dispatcher_deny_exceptions():
+@pytest.mark.parametrize("policy_name", ["remote_cpu_dispatch_project", "remote_cpu_dispatch_transport", "remote_cpu_dispatch_job"])
+def test_managed_service_agent_cannot_enter_dispatch_authority(policy_name):
     plan = _plan()
-    row = next(row for row in plan["planned_values"]["root_module"]["resources"]
-               if row["address"] == 'google_iam_deny_policy.remote_cpu_isolation[0]')
-    row["values"]["rules"][0]["deny_rule"][0]["exception_principals"].append("service-agent")
-    assert "dispatcher_deny_drift" in check_plan(plan)
+    row = next(row for row in plan["configuration"]["root_module"]["resources"]
+               if row["address"] == "data.google_iam_policy." + policy_name)
+    row["expressions"]["binding"].append({"role": {"constant_value": "roles/editor"},
+                                         "members": {"constant_value": ["serviceAccount:runtime-agent"]}})
+    assert policy_name + "_configuration_drift" in check_plan(plan)
 
 
 def test_conflicting_scope_flags_fail_before_provider_commands(tmp_path):
@@ -135,7 +139,7 @@ def test_old_project_mutation_and_inherited_parent_are_refused():
     project = next(row for row in plan["planned_values"]["root_module"]["resources"]
                    if row["address"] == 'google_project.remote_cpu[0]')
     project["values"]["org_id"] = "123"
-    assert "project_isolation_drift" in check_plan(plan)
+    assert "project_isolation_drift:remote_cpu" in check_plan(plan)
     project["values"] = {"project_id": WORKER_PROJECT, "billing_account": APPROVED_BILLING_ACCOUNT}
     job = next(row for row in plan["planned_values"]["root_module"]["resources"]
                if row["address"].startswith("google_cloud_run_v2_job.remote_cpu_worker["))
@@ -155,6 +159,45 @@ def test_project_policy_rejects_editors_and_wrong_managed_service_agent():
     assert check_project_iam(policy, "123") == ["unexpected_project_principal"]
 
 
+def test_founder_email_casing_is_equivalent_and_dispatch_project_is_owner_only():
+    policy = {"bindings": [
+        {"role": "roles/owner", "members": ["user:OHSTNhunt@gmail.com"]},
+    ]}
+    assert check_project_iam(policy, "123", dispatch=True) == []
+    assert check_project_iam(policy, "123") == ["unexpected_project_principal"]
+    policy["bindings"].append({"role": "roles/run.serviceAgent", "members": [
+        "serviceAccount:service-123@serverless-robot-prod.iam.gserviceaccount.com"]})
+    assert check_project_iam(policy, "123") == []
+    assert check_project_iam(policy, "123", dispatch=True) == ["unexpected_project_principal"]
+
+
+def test_moved_keyless_dispatcher_is_allowed_in_preapply_state_but_not_active_plan():
+    address = 'google_service_account.remote_cpu_dispatcher[0]'
+    state = {"values": {"root_module": {"resources": [{"address": address, "mode": "managed"}]}}}
+    assert check_state(state) == []
+    plan = _plan()
+    plan["resource_changes"].append({"address": address, "mode": "managed", "change": {"actions": ["create"]}})
+    assert "unexpected_change:" + address in check_plan(plan)
+
+
+@pytest.mark.parametrize("name", ["remote_cpu_dispatcher", "remote_cpu_dispatch_transport_reader", "remote_cpu_dispatch_transport_writer"])
+def test_custom_role_cannot_acquire_identity_mutation_or_new_work(name):
+    plan = _plan()
+    row = next(row for row in plan["planned_values"]["root_module"]["resources"]
+               if row["address"] == f'google_project_iam_custom_role.{name}[0]')
+    row["values"]["permissions"].append("iam.serviceAccounts.getAccessToken")
+    assert "custom_role_drift:" + name in check_plan(plan)
+
+
+@pytest.mark.parametrize("project,folder", [("other-project", None), (DISPATCH_PROJECT, "123")])
+def test_dispatch_project_cannot_move_to_an_inherited_or_shared_identity(project, folder):
+    plan = _plan()
+    row = next(row for row in plan["planned_values"]["root_module"]["resources"]
+               if row["address"] == 'google_project.remote_cpu_dispatch[0]')
+    row["values"] = {"project_id": project, "billing_account": APPROVED_BILLING_ACCOUNT, "folder_id": folder}
+    assert "project_isolation_drift:remote_cpu_dispatch" in check_plan(plan)
+
+
 def test_full_deployment_refuses_a_scoped_state_without_legacy_adoption():
     state = {"values": {"outputs": {"remote_cpu_bootstrap_scope": {"value": {
         "schema_version": "remote_cpu_bootstrap_scope.v1", "scope": "remote_cpu",
@@ -166,9 +209,9 @@ def test_scoped_refresh_cannot_claim_missing_fences_or_allow_destroy():
     plan = _plan()
     plan["planned_values"]["root_module"]["resources"] = [
         row for row in plan["planned_values"]["root_module"]["resources"]
-        if row["address"] != 'google_iam_deny_policy.remote_cpu_isolation[0]'
+        if row["address"] != 'google_project_iam_policy.remote_cpu_dispatch[0]'
     ]
-    assert "missing_resource:google_iam_deny_policy.remote_cpu_isolation[0]" in check_plan(plan)
+    assert "missing_resource:google_project_iam_policy.remote_cpu_dispatch[0]" in check_plan(plan)
     plan = _plan()
     plan["resource_changes"][0]["change"]["actions"] = ["delete", "create"]
     assert any(reason.startswith("destructive_change:") for reason in check_plan(plan))
