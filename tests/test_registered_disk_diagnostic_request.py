@@ -3,6 +3,7 @@
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -27,10 +28,44 @@ def test_request_binds_actual_installed_configuration_and_fixed_producer_sources
     raw = installation[0].read_bytes()
     assert request['config'] == {'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(), 'size_bytes': len(raw)}
     assert request['roots'] == {key: installation[1]['lane_scratch_' + key + '_root'] for key in ('work', 'inputs')}
-    assert set(request['installed_sources']) == producer.SOURCE_MODULES
+    assert set(request['installed_sources']) == producer.SOURCE_MODULES | {'operator_door.__init__', 'operator_door.config'}
     assert request['request_digest'] == canonical_digest(request, digest_field='request_digest')
     assert {p.name: p.read_bytes() for p in installation[2].iterdir()} == before
     assert not any(p.name.startswith('registered-') for p in installation[0].parent.rglob('*'))
+
+
+@pytest.mark.parametrize('changed_source', ['config.py', '__init__.py', 'consumer'])
+def test_compatible_installed_acquisition_source_change_invalidates_request(installation, monkeypatch, changed_source):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_disk_diagnostic as producer
+    from blueprint_pipeline import control_plane_lane_owner_consents as owners
+    from blueprint_pipeline.control_plane_lane_experiment_publication import _BirthFiles
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.control_plane_lane_experiment_retirement import _configuration
+    prepare(installation)
+    if changed_source == 'consumer':
+        # Disposable protected source mirror, no mutation of the shared checkout.
+        mirror = installation[0].parent / 'producer-source'
+        mirror.mkdir(mode=0o700)
+        source = Path(producer.__file__).parent
+        for name in producer.SOURCE_MODULES | {'control_plane_lane_experiment_consumer'}:
+            target = mirror / (name + '.py')
+            target.write_bytes((source / (name + '.py')).read_bytes())
+            target.chmod(0o600)
+        monkeypatch.setattr(producer, '__file__', str(mirror / 'control_plane_lane_disk_diagnostic.py'))
+        changed = mirror / 'control_plane_lane_experiment_consumer.py'
+    else:
+        changed = owners.INSTALLED_PACKAGE_ROOT / 'operator_door' / changed_source
+    request = _request(installation)
+    changed.write_bytes(changed.read_bytes() + b'\n# compatible bytes still change the installed source identity\n')
+    files = _BirthFiles(ReferenceCollectionBudget(values_limit=10000))
+    try:
+        config = _configuration(files, installation[0])
+        with pytest.raises(ValueError, match='diagnostic_request_changed'):
+            producer.validate_request(files, json.dumps(request).encode(), config=config,
+                installed_config_path=installation[0], run_ref='run1')
+    finally:
+        files.finish()
+        files.budget.close()
 
 
 @pytest.mark.parametrize('change', ['config', 'root', 'root_identity', 'boolean_identity',

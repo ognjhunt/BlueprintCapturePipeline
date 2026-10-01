@@ -31,7 +31,7 @@ _LOCK = ".experiment-authority.lock"
 _MAX_INTENT = 32768
 MAX_EXPERIMENT_REGISTRATIONS = 256
 MAX_EXPERIMENT_STORE_BYTES = 64 * 1024 * 1024
-_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|scan-reservation|retiring-head|retired-head))?\.json\Z")
+_STORE_NAME = re.compile(r"([0-9a-f]{32})(?:\.(claim|creation|publication|correspondence|completed|producer-invocation|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|manifest|stage-manifest|payload-manifest|lease-transition|reservation|scan-reservation|retiring-head|retired-head))?\.json\Z")
 _ARENA_TAG = re.compile(r"arena-launch-(r[1-9][0-9]{0,5})\Z")
 _ARENA_CLAIM_NAME = re.compile(r"arena-launch-r[1-9][0-9]{0,5}\.arena-claim\.json\Z")
 _ISSUE_SELECTION_NAME = re.compile(r'[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json\Z')
@@ -175,6 +175,15 @@ def _capacity(files, parent, *, adding_registration=True):
             if match is not None and match.group(2) is None:
                 count += 1
             total += info.st_size
+            if match is not None and match.group(2) == "producer-invocation":
+                from .control_plane_lane_disk_diagnostic import _reserved_bytes
+                fd = files.open(item.name, os.O_RDONLY | os.O_NONBLOCK, parent=parent)
+                try:
+                    value = retained._document(files.read_bytes(fd, 32768), 32768, _work_budget=files.budget)
+                    _require(value['intent_id'] == match.group(1), "experiment_store_unsafe")
+                    total += _reserved_bytes(value)
+                finally:
+                    files.close(fd)
             _require(records <= MAX_EXPERIMENT_REGISTRATIONS * 12
                      and count <= MAX_EXPERIMENT_REGISTRATIONS - int(adding_registration)
                      and 0 < info.st_size <= (4096 if selection or arena_claim else 1048576 if match.group(2) in ("manifest", "stage-manifest", "payload-manifest") else _MAX_INTENT)

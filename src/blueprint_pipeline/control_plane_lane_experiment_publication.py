@@ -18,11 +18,12 @@ from .control_plane_lane_owner_target_io import _TargetFiles, _typed
 from .control_plane_lane_owner_target_versions import OwnerTargetVersionError, _require
 
 _NAMES = {
+    "diagnostic_report": r"disk-capacity-report\.v1\.json",
     "arena_claim": r"arena-launch-r[1-9][0-9]{0,5}\.arena-claim\.json",
     "arena_selection": r"arena-selection-r[1-9][0-9]{0,5}\.json",
     "scan_work": r"scan-(?:issue|restore_stage|restore_final|restore_activation|restore_checkpoint_compare)-[01]-(?:reserved|completed)\.json",
     "issue_selection": r"[0-9a-f]{32}\.issue-selection-[0-9a-f]{64}\.json",
-    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|reservation|scan-reservation|retiring-head|retired-head|lease-transition))?\.json",
+    "private": r"[0-9a-f]{32}(?:\.(?:claim|creation|publication|correspondence|completed|producer-invocation|producer-completion|completion-head|restore-intent|restore-selection|restore-pending-head|restore-head|restored-head|head-prepared|authority-pending|action|reservation|scan-reservation|retiring-head|retired-head|lease-transition))?\.json",
     "manifest": r"[0-9a-f]{32}\.(?:(?:stage|payload)-)?manifest\.json",
     "event": r"e-[0-9]{5}\.json",
     "historical_restore_snapshot": r"restore\.snapshot\.json",
@@ -35,15 +36,20 @@ _NAMES = {
     "marker": r"\.registered-experiment\.v1\.json",
 }
 _MODES = dict(arena_claim=0o600, arena_selection=0o640, scan_work=0o600, issue_selection=0o600, manifest=0o600, event=0o600, private=0o600, birth=0o640, authority=0o640, head=0o640,
-              lease=0o600, marker=0o600, certificate=0o640, bootstrap=0o640, historical_restore_snapshot=0o600)
+              lease=0o600, marker=0o600, certificate=0o640, bootstrap=0o640, historical_restore_snapshot=0o600, diagnostic_report=0o600)
 _CAPS = dict(arena_claim=4096, arena_selection=4096, scan_work=4096, issue_selection=4096, manifest=1048576, event=32768, private=32768, birth=32768, authority=32768, head=4096,
-             lease=8192, marker=4096, certificate=8192, bootstrap=32768, historical_restore_snapshot=1048576)
+             lease=8192, marker=4096, certificate=8192, bootstrap=32768, historical_restore_snapshot=1048576, diagnostic_report=8192)
 
 
 class _BirthFiles(_TargetFiles):
     def __init__(self, budget):
         super().__init__(budget)
         self.parents = {}
+
+    def publication_checkpoint(self, *, cleanup=False):
+        """Composition may enforce its held original lifetime at this boundary."""
+        if not cleanup:
+            self.budget.tick()
 
     def parent(self, path, *, protected=False):
         selected = retained._path(os.fspath(path), _work_budget=self.budget)
@@ -180,6 +186,8 @@ def _guard(files, state, *, cleanup=False):
             pass
         else:
             raise OwnerTargetVersionError("experiment_publication_destination_exists")
+    # After every final named/opened/ancestry guard, immediately before effect.
+    files.publication_checkpoint(cleanup=cleanup)
 
 
 def _publish(files, parent, name, payload, *, kind, blueprint_gid=0, _expected_head=None):
