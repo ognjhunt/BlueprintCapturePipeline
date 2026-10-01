@@ -461,12 +461,16 @@ def _restored_generation(policy, selected, outcome, original_token, allowance):
                  'scene_retirement_service_identity_unproven')
     key = hashlib.sha256(selected['canonical_path'].encode()).hexdigest() + '.json'
     state, _, info = _read(Path(policy['generation_store']) / key, allowance, maximum=65536)
+    capture = 'capture_owner_user_id' in selected
+    owner_fields = ('capture_owner_user_id', 'owner_observation_raw_ref', 'birth_delivery_raw_ref') if capture else (
+        'owner_intent_id', 'owner_raw_ref')
     _require(stat.S_IMODE(info.st_mode) == 0o600 and (info.st_uid, info.st_gid) == service
-             and state.get('schema_version') == 'scene_member_generation.v1'
+             and state.get('schema_version') == (
+                 'scene_capture_generation.v1' if capture else 'scene_member_generation.v1')
              and state.get('state_digest') == canonical_digest(state, digest_field='state_digest')
              and state.get('state') == 'restored-active' and state.get('retirement_token') == original_token
              and all(state.get(field) == selected[field] for field in
-                     ('canonical_path', 'generation_id', 'owner_intent_id', 'owner_raw_ref')),
+                     ('canonical_path', 'generation_id', *owner_fields)),
              'scene_retirement_generation_unavailable')
     identity = outcome.get('restore_identity')
     _require(type(identity) is list and len(identity) == 3

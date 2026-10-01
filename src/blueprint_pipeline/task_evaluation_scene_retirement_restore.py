@@ -62,6 +62,34 @@ class _ArchiveReader:
                  and 'sha256:'+self.digest.hexdigest()==self.archive['sha256'],'scene_retirement_readback_unproven')
 
 
+def _bounded_tar_info(allowance):
+    """Reject unknown/oversized recursive extensions before stdlib allocation.
+
+    The producer emits only regular/directory entries and one bounded local
+    PAX header for path/uid/gid. Global, GNU, sparse and nested extensions never
+    belong to its archive. Limits share the original action allowance.
+    """
+    count = 0
+    depth = 0
+    class BoundedTarInfo(tarfile.TarInfo):
+        def _proc_member(self, archive):
+            nonlocal count, depth
+            allowance.tick()
+            if self.type == tarfile.XHDTYPE:
+                _require(depth == 0 and type(self.size) is int and 0 < self.size <= 8192
+                         and count < 10000, 'scene_retirement_readback_unproven')
+                count += 1
+                depth += 1
+                try:
+                    return super()._proc_member(archive)
+                finally:
+                    depth -= 1
+            _require(self.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE),
+                     'scene_retirement_readback_unproven')
+            return super()._proc_member(archive)
+    return BoundedTarInfo
+
+
 def _consume(preserved,transport,allowance,file_sink=None):
     _require(type(preserved.get('files')) is list and type(preserved.get('directories')) is list
              and len(preserved['files'])+len(preserved['directories'])<=10000,
@@ -72,7 +100,7 @@ def _consume(preserved,transport,allowance,file_sink=None):
     reader=_ArchiveReader(transport,preserved['archive'],allowance)
     seen=set()
     try:
-        with tarfile.open(fileobj=reader,mode='r|',bufsize=10240) as archive:
+        with tarfile.open(fileobj=reader,mode='r|',bufsize=10240,tarinfo=_bounded_tar_info(allowance)) as archive:
             for item in archive:
                 allowance.tick()
                 _require(len(seen)<10000 and item.name in expected and item.name not in seen,

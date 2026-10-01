@@ -28,7 +28,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from types import MappingProxyType
 
-from .task_evaluation_scene_retirement_access import _opened, _require, scene_access
+from .task_evaluation_scene_retirement_access import _close_owned, _identity, _opened, _open_owned, _require, scene_access
 from . import task_evaluation_scene_retirement_access as access
 from .decision_evidence_contracts import canonical_digest
 
@@ -375,31 +375,216 @@ def _under_roots(value, roots):
     return value.startswith('/') and any(value == str(root) or value.startswith(str(root) + '/') for root in roots)
 
 
+def _reader_inodes(roots, native):
+    """Bounded actual no-follow inventory; path aliases cannot clear an inode."""
+    rows, directories = {}, set()
+    def visit(path):
+        native.tick()
+        with _opened(path, directory=True) as (parent, before):
+            identity = (before.st_dev, before.st_ino)
+            _require(identity not in directories, _READER_ERROR)
+            directories.add(identity)
+            rows[str(path)] = _unit_version(before)
+            def names():
+                result = []
+                with os.scandir(parent) as stream:
+                    for item in stream:
+                        native.consume(entries=1)
+                        _require(len(result) < 10000 and item.name not in {'.', '..'}, _READER_ERROR)
+                        result.append(item.name)
+                return sorted(result)
+            selected = names()
+            for name in selected:
+                native.tick()
+                info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                child = path / name
+                _require(stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode), _READER_ERROR)
+                if stat.S_ISDIR(info.st_mode):
+                    visit(child)
+                    _require(rows[str(child)] == _unit_version(info), _READER_ERROR)
+                else:
+                    rows[str(child)] = _unit_version(info)
+            _require(names() == selected and _unit_version(os.fstat(parent)) == _unit_version(before),
+                     _READER_ERROR)
+    for root in roots:
+        visit(root)
+    _require(rows, _READER_ERROR)
+    return rows
+
+
+def _mount_path(raw):
+    raw = re.sub(rb'\\(040|011|012|134)', lambda match: bytes([int(match[1], 8)]), raw)
+    _require(0 < len(raw) <= 4096 and b'\\' not in raw, _READER_ERROR)
+    text = os.fsdecode(raw)
+    path = Path(text)
+    _require(path.is_absolute() and str(path) == text and '..' not in path.parts
+             and '\x00' not in text and len(path.parts) <= 64, _READER_ERROR)
+    return path
+
+
+def _mount_rows(raw, native):
+    result, identities = [], set()
+    for line in raw.splitlines():
+        native.consume(entries=1)
+        left, separator, right = line.partition(b' - ')
+        fields, tail = left.split(), right.split()
+        _require(separator and len(fields) >= 6 and len(tail) == 3 and len(result) < 4096
+                 and fields[0].isdigit() and fields[1].isdigit() and fields[0] not in identities
+                 and re.fullmatch(rb'[0-9]{1,10}:[0-9]{1,10}', fields[2]), _READER_ERROR)
+        identities.add(fields[0])
+        major, minor = fields[2].split(b':')
+        result.append((os.makedev(int(major), int(minor)), _mount_path(fields[3]), _mount_path(fields[4])))
+    _require(result, _READER_ERROR)
+    return result
+
+
+def _reader_namespaces(parent, native):
+    rows = []
+    for kind in ('pid', 'user', 'mnt'):
+        native.tick()
+        value = os.readlink('ns/' + kind, dir_fd=parent)
+        _require(re.fullmatch(kind + r':\[[0-9]+\]', value), _READER_ERROR)
+        info = os.stat('ns/' + kind, dir_fd=parent)
+        rows.append((value, info.st_dev, info.st_ino))
+    return tuple(rows)
+
+
+@contextmanager
+def _reader_root(parent, native):
+    """Only an independently proved actual proc magic link may be followed."""
+    native.tick()
+    before = os.stat('root', dir_fd=parent)
+    _require(stat.S_ISDIR(before.st_mode), _READER_ERROR)
+    fd = os.open('root', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=parent)
+    observed = os.fstat(fd)
+    expected = _identity(before)
+    _require(_identity(observed) == expected, _READER_ERROR)
+    try:
+        _require(_unit_version(os.stat('root', dir_fd=parent)) == _unit_version(observed), _READER_ERROR)
+        yield fd, observed
+        native.tick()
+        _require(_identity(os.fstat(fd)) == expected
+                 and _unit_version(os.stat('root', dir_fd=parent)) == _unit_version(observed), _READER_ERROR)
+    finally:
+        _require(_close_owned(fd, expected) is None, _READER_ERROR)
+
+
+def _reader_view(pid, roots, native):
+    """Authenticate every current mount route; unknown/subtree aliases keep."""
+    own = Path('/proc') / str(os.getpid())
+    if not hasattr(native, 'own_view'):
+        with _opened(own, directory=True) as (parent, _), _reader_root(parent, native) as (_, root):
+            namespaces = _reader_namespaces(parent, native)
+            raw, _ = _native_bytes(own / 'mountinfo', native, cap=1024 * 1024)
+            mounts = _mount_rows(raw, native)
+            physical = {}
+            for selected in roots:
+                candidates = [row for row in mounts if selected.is_relative_to(row[2])]
+                _require(candidates, _READER_ERROR)
+                device, prefix, point = max(candidates, key=lambda row: len(row[2].parts))
+                _require(device == native.inventory[str(selected)][0], _READER_ERROR)
+                physical[str(selected)] = prefix / selected.relative_to(point)
+            _require(_native_bytes(own / 'mountinfo', native, cap=1024 * 1024)[0] == raw, _READER_ERROR)
+            native.own_view = (namespaces, _identity(root), physical)
+            native.mount_views = {}
+    root = Path('/proc') / str(pid)
+    with _opened(root, directory=True) as (parent, _), _reader_root(parent, native) as (root_fd, root_info):
+        namespaces = _reader_namespaces(parent, native)
+        own_namespaces, own_root, physical = native.own_view
+        _require(namespaces[:2] == own_namespaces[:2] and _identity(root_info) == own_root, _READER_ERROR)
+        raw, _ = _native_bytes(root / 'mountinfo', native, cap=1024 * 1024)
+        key = namespaces[2]
+        if key not in native.mount_views:
+            _require(len(native.mount_views) < 16, _READER_ERROR)
+            native.mount_views[key] = (raw, _mount_rows(raw, native))
+        selected_raw, mounts = native.mount_views[key]
+        _require(raw == selected_raw, _READER_ERROR)
+        for selected in roots:
+            version = native.inventory[str(selected)]
+            target = physical[str(selected)]
+            routes = []
+            for device, prefix, point in mounts:
+                if device != version[0]:
+                    continue
+                # A mount rooted below an enrolled root hides an unaccounted
+                # subtree alias. Whole-root/ancestor aliases need exact route proof.
+                _require(not prefix.is_relative_to(target) or prefix == target, _READER_ERROR)
+                if target.is_relative_to(prefix):
+                    route = point / target.relative_to(prefix)
+                    _require(len(routes) < 16, _READER_ERROR)
+                    routes.append(route)
+            _require(routes, _READER_ERROR)
+            for route in set(routes):
+                with ExitStack() as stack:
+                    current = root_fd
+                    for part in route.parts[1:]:
+                        native.tick()
+                        current, info = _open_owned(part, os.O_RDONLY | os.O_DIRECTORY, dir_fd=current)
+                        stack.callback(_reader_close, current, _identity(info))
+                    info = os.fstat(current)
+                    _require((info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+                             == tuple(version[:5]), _READER_ERROR)
+            _require(_native_bytes(root / 'mountinfo', native, cap=1024 * 1024)[0] == raw, _READER_ERROR)
+        _require(_reader_namespaces(parent, native) == namespaces, _READER_ERROR)
+        return namespaces, own_root, hashlib.sha256(raw).hexdigest()
+
+
+def _reader_close(fd, identity):
+    _require(_close_owned(fd, identity) is None, _READER_ERROR)
+
+
 def _exposure(pid, row, roots, native):
-    """Observe actual retained cwd, descriptor and mapped-file exposure."""
+    """Observe physical cwd/FD/maps plus complete current mount/root views."""
     if row['kernel_thread']:
         return
+    _require(type(getattr(native, 'inodes', None)) is set and native.inodes, _READER_ERROR)
+    view = _reader_view(pid, roots, native)
     _require(not _under_roots(row['cwd'], roots), _READER_ERROR)
     root = Path('/proc') / str(pid)
-    with _opened(root / 'fd', directory=True) as (parent, before):
+    with _opened(root, directory=True) as (parent, _):
         native.tick()
-        with os.scandir(parent) as stream:
-            names = []
-            for item in stream:
-                native.consume(entries=1)
-                _require(item.name.isdecimal() and len(names) < 1024, _READER_ERROR)
-                names.append(item.name)
-        for name in names:
+        cwd = os.stat('cwd', dir_fd=parent)
+        _require((cwd.st_dev, cwd.st_ino) not in native.inodes, _READER_ERROR)
+    with _opened(root / 'fd', directory=True) as (parent, before):
+        def names():
             native.tick()
+            result = []
+            with os.scandir(parent) as stream:
+                for item in stream:
+                    native.consume(entries=1)
+                    _require(item.name.isdecimal() and len(result) < 1024, _READER_ERROR)
+                    result.append(item.name)
+            return sorted(result)
+        selected = names()
+        descriptors = []
+        for name in selected:
+            native.tick()
+            info = os.stat(name, dir_fd=parent)
             value = os.readlink(name, dir_fd=parent)
-            _require(len(value.encode()) <= 4096 and not _under_roots(value, roots), _READER_ERROR)
-        _require(_unit_version(os.fstat(parent)) == _unit_version(before), _READER_ERROR)
+            _require((info.st_dev, info.st_ino) not in native.inodes and len(value.encode()) <= 4096
+                     and not _under_roots(value, roots)
+                     and _unit_version(os.stat(name, dir_fd=parent)) == _unit_version(info), _READER_ERROR)
+            descriptors.append((name, value, _unit_version(info)))
+        _require(names() == selected and _unit_version(os.fstat(parent)) == _unit_version(before), _READER_ERROR)
     raw, _ = _native_bytes(root / 'maps', native, cap=512 * 1024)
-    for line in raw.decode('utf-8', errors='strict').splitlines():
+    for line in raw.splitlines():
+        native.consume(entries=1)
         fields = line.split(None, 5)
-        _require(len(fields) >= 5, _READER_ERROR)
+        _require(len(fields) >= 5 and re.fullmatch(rb'[0-9a-f]+-[0-9a-f]+', fields[0])
+                 and re.fullmatch(rb'[r-][w-][x-][ps]', fields[1])
+                 and re.fullmatch(rb'[0-9a-f]+', fields[2])
+                 and re.fullmatch(rb'[0-9a-f]+:[0-9a-f]+', fields[3]) and fields[4].isdigit(), _READER_ERROR)
+        major, minor = fields[3].split(b':')
+        _require(not int(fields[4]) or (os.makedev(int(major, 16), int(minor, 16)), int(fields[4]))
+                 not in native.inodes, _READER_ERROR)
         if len(fields) == 6:
-            _require(not _under_roots(fields[5], roots), _READER_ERROR)
+            _require(not _under_roots(os.fsdecode(fields[5]), roots), _READER_ERROR)
+    _require(_native_bytes(root / 'maps', native, cap=512 * 1024)[0] == raw
+             and _reader_view(pid, roots, native) == view, _READER_ERROR)
+    with _opened(root, directory=True) as (parent, _):
+        _require(_unit_version(os.stat('cwd', dir_fd=parent)) == _unit_version(cwd), _READER_ERROR)
+    return dict(view=view, cwd_identity=_unit_version(cwd), descriptors=tuple(descriptors),
+                maps_sha256=hashlib.sha256(raw).hexdigest())
 
 
 def _snapshot(proc, roots, native):
@@ -417,7 +602,7 @@ def _snapshot(proc, roots, native):
         # The consent-bound root operation itself necessarily holds payload
         # descriptors. It cannot grant another process this exception.
         if pid != os.getpid():
-            _exposure(pid, row, roots, native)
+            row['reader_observation'] = _exposure(pid, row, roots, native)
         result[pid] = row
     native.tick()
     return result
@@ -675,6 +860,8 @@ def _require_current_reader_closure(policy, allowance):
     boot_id = boot_raw.decode('ascii').strip()
     _require(re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot_id), _READER_ERROR)
     with _actual_proc(native) as proc:
+        native.inventory = _reader_inodes(roots, native)
+        native.inodes = {tuple(version[:2]) for version in native.inventory.values()}
         before = _snapshot(proc, roots, native)
         platform = _platform_processes(platforms, before, native)
         active, receipts = {}, {}
@@ -703,6 +890,7 @@ def _require_current_reader_closure(policy, allowance):
             _require(pid in platform or (0 not in row['uid'] and service_uid not in row['uid']
                                   and row['ppid'] not in active), _READER_ERROR)
         after = _snapshot(proc, roots, native)
+        _require(_reader_inodes(roots, native) == native.inventory, _READER_ERROR)
         _require(after == before and _continuous_rows(allowance) == units
                  and _platform_rows(native) == platforms, _READER_ERROR)
         for pid, (raw, version) in receipts.items():
