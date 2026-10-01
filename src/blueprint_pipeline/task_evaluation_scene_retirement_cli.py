@@ -518,11 +518,13 @@ def _door_publish(directory, identity, parent, intent_id, result):
         owned=access._identity(named)
         _require(access._identity(os.fstat(fd))==owned,'scene_retirement_door_publication_unproven')
         published=False
+        close_attempted=False
         try:
-            with os.fdopen(fd,'wb') as stream:
+            with os.fdopen(fd,'wb',closefd=False) as stream:
                 _require(access._identity(os.stat(temporary,dir_fd=parent,follow_symlinks=False))==owned,
                          'scene_retirement_door_publication_unproven')
                 os.fchmod(stream.fileno(),0o644)
+                owned=(owned[0],owned[1],stat.S_IFREG|0o644)
                 named=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
                 _require((named.st_dev,named.st_ino)==owned[:2]
                          and access._identity(os.fstat(stream.fileno()))==access._identity(named),
@@ -544,7 +546,12 @@ def _door_publish(directory, identity, parent, intent_id, result):
                 os.unlink(temporary,dir_fd=parent)
                 os.fsync(parent)
                 binding()
+            close_attempted=True
+            _require(access._close_owned(fd,owned) is None,'scene_retirement_door_publication_unproven')
         except BaseException as error:
+            if not close_attempted:
+                if access._close_owned(fd,owned) is not None:
+                    error.add_note('scene_retirement_descriptor_cleanup_unproven')
             # A failed durability proof must not leave a successful terminal
             # name. Remove only this acquisition; never a conflicting inode.
             for selected in ([name] if published else [])+[temporary]:

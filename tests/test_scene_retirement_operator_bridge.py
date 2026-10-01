@@ -589,6 +589,40 @@ def test_door_writer_never_closes_an_unproven_borrowed_creation_fd(door_path,mon
                 pass
 
 
+def test_door_writer_preserves_foreign_fd_reused_after_adoption(door_path,monkeypatch):
+    import os
+    module=bridge()
+    monkeypatch.setattr(module.access,'_POLICY_UID',os.getuid())
+    borrowed_path=door_path/'borrowed'
+    borrowed_path.write_text('preserve-original')
+    borrowed=os.open(borrowed_path,os.O_RDONLY)
+    parent=os.open(door_path,os.O_RDONLY|os.O_DIRECTORY)
+    original=os.fsync
+    replaced=[]
+    def sync(fd):
+        original(fd)
+        if not replaced and os.fstat(fd).st_ino!=door_path.stat().st_ino:
+            os.dup2(borrowed,fd)
+            replaced.append(fd)
+    monkeypatch.setattr(module.os,'fsync',sync)
+    try:
+        with pytest.raises(ValueError):
+            module._door_publish(door_path,'20260928T180000Z-retire-scene-12345678',
+                                 parent,'scene-1',dict(status='retired',mutations=None,
+                                                      removed_allocated_bytes=4096))
+        assert len(replaced)==1
+        assert os.fstat(replaced[0]).st_ino==borrowed_path.stat().st_ino
+        assert borrowed_path.read_text()=='preserve-original'
+        assert not list(door_path.glob('*.outcome.json'))
+        assert not list(door_path.glob('*.tmp.*'))
+    finally:
+        for fd in replaced+[parent,borrowed]:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def test_client_close_failure_retains_completed_native_result_instead_of_zero_mutations(tmp_path,monkeypatch):
     module,_,_,_,values=selected_fixture(tmp_path,monkeypatch)
     # Isolate finalization; this is not a successful whole-scene action fixture.
