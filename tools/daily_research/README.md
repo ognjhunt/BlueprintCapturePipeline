@@ -1,5 +1,11 @@
 # Standalone daily research
 
+The intended adaptive target is **ten or more new commercial site/task
+opportunities**, with an honest supported subset and shortfall when necessary.
+See [ADAPTIVE.md](ADAPTIVE.md) for the disabled daily opt-in, evidence/duplicate
+rules and separate one-time test preparation. The daily $1 soft total target
+does not change. Existing legacy rows retain their admitted guards.
+
 **2026-09-30 Render route:** the selected deployment is the existing Render
 worker plus existing Firestore, using the recovered adapter. See
 [RENDER.md](RENDER.md) for the current deployment and agent-owned QA/publication
@@ -74,7 +80,9 @@ Freshness eligibility is field-specific; export time does not renew source
 checks. The example applies no task/geography filter, so Austin-only or
 portioning-only scope is not silently introduced. Missing/conflicted/unsupported
 knowledge remains a gap, and consequential availability/geography claims need
-live evidence. The runner returns fewer than three candidates when warranted.
+live evidence. The adaptive profile records why fewer than ten new candidates
+withstood research instead of padding the result. Legacy configurations below
+retain their original narrow scan envelope until explicitly replaced.
 
 CRM authority: [existing Sheet](https://docs.google.com/spreadsheets/d/1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY/edit).
 Reviewed knowledge is private input, not bundled evidence. The reviewed Library

@@ -27,6 +27,7 @@ from tools.daily_research.runner import (
     configuration,
     digest,
     due_date,
+    observation_seconds,
     preflight,
     read_json,
     save_bytes,
@@ -101,7 +102,7 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
             raise Refusal("date_and_input_required")
         return getattr(runner, command.replace("-", "_"))(day, decision)
     result = runner.start_or_resume(allow_create=command == "run")
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + observation_seconds(result, cfg, "research")
     while result["state"] in {"running", "cancel_pending", "collecting"} and time.monotonic() < deadline:
         if stopped() or bridge.call("control").get("enabled") is not True:
             result = runner.cancel_current(result["date"], "observer_interrupted_or_disabled")
@@ -125,7 +126,12 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
     consumer = Consumer(ledger, cfg, api, stopped=stopped)
     consumer.active_day = day
     try:
-        until = time.monotonic() + 200
+        active_day = day or bridge.call("active_qa") or bridge.call("work_item")
+        # work_item is a projection object, active_qa is a date string.
+        if isinstance(active_day, dict):
+            active_day = active_day.get("date")
+        row = ledger.get(active_day) if active_day else None
+        until = time.monotonic() + observation_seconds(row, cfg, "qa")
         while True:
             result = consumer.step()
             if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_cancel_pending", "reviewed"}:
