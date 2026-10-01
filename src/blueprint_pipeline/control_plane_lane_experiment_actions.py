@@ -348,6 +348,38 @@ def _require_disposable_producer_completion():
     raise OwnerTargetVersionError("experiment_producer_completion_missing")
 
 
+def _action_completion(files, config, entry, original, lease, action):
+    """Finite profile admission; expiry and owner intent cannot mint a seal."""
+    from . import control_plane_lane_disk_diagnostic as diagnostic
+    from .control_plane_lane_experiment_completion import selected_completion
+    profile = original['participant_profile']
+    if action == 'delete':
+        _require(profile in {'local_root_disposable.v1', 'root_disk_diagnostic_disposable.v1'}
+                 and lease['class_intent'] == 'scratch' and lease['cleanup'] == 'delete',
+                 'experiment_delete_ineligible')
+        if profile == 'local_root_disposable.v1':
+            _require_disposable_producer_completion()
+            return None
+    else:
+        _require(action == 'offload' and lease['class_intent'] == 'evidence',
+                 'experiment_action_profile_unsupported')
+        if profile in diagnostic.PROFILES:
+            _require(profile == 'root_disk_diagnostic_evidence.v1' and lease['cleanup'] == 'offload',
+                     'experiment_action_profile_unsupported')
+    closure = selected_completion(files, config, entry)
+    if profile in diagnostic.PROFILES:
+        _require(closure['schema_version'] == 'control_plane_lane_disk_diagnostic_completion.v1'
+                 and closure['participant_profile'] == profile, 'experiment_completion_changed')
+        return closure
+    return None
+
+
+def _validate_completion_manifest(closure, manifest):
+    if closure is not None:
+        from .control_plane_lane_disk_diagnostic import validate_manifest
+        validate_manifest(closure, manifest)
+
+
 def _hash_manifest(files, target, target_fd, manifest, *, role):
     """One declared full payload pass, retaining one original member at a time."""
     _require(type(files) is _ActionFiles and len(manifest['members']) <= 4096,
@@ -402,15 +434,8 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
         origin = _birth(files, public, entry, gid)
         _require(origin["participant_profile"] != "arena_owner_review.v1" or action == "owner_review",
                  "experiment_action_profile_unsupported")
-        if action == "delete":
-            _require(origin["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
-                     and lease["cleanup"] == "delete", "experiment_delete_ineligible")
-            _require_disposable_producer_completion()
-        if action == "offload":
-            _require(lease["class_intent"] == "evidence" and entry["completion"] is not None,
-                     "experiment_completion_required")
-            from .control_plane_lane_experiment_completion import selected_completion
-            selected_completion(files, config, entry)
+        closure = None if action == 'owner_review' else _action_completion(
+            files, config, entry, origin, lease, action)
         policy_raw, policy_record = files.read(config.lane_owner_policy_file, cap=owners.MAX_POLICY_BYTES,
                                              protected=True, mode=0o600)
         policy = owners._policy(policy_raw, principal, files.budget)
@@ -432,6 +457,7 @@ def issue_action(intent_id, *, principal, owner, action, expires_at_epoch, insta
                                  restorable=action == 'offload')
             files.budget.measure(manifest, cap=1048576 - 100)
             _hash_manifest(files, target, target_fd, manifest, role='issue_hash')
+            _validate_completion_manifest(closure, manifest)
             files.phase('finalize')
             manifest_raw = _encoded(manifest, "manifest_digest", 1048576)
             _require(owners._matches(action_id, owners._CONSENT_ID) and action_id != intent_id,
@@ -719,17 +745,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         lease, lease_record = _lease(files, target, entry)
         _require(issued >= lease["expires_at_epoch"] and lease["released_at_epoch"] is None, "experiment_not_expired")
         original = _birth(files, public, entry, gid)
-        if action["action"] == "delete":
-            _require(original["participant_profile"] == "local_root_disposable.v1" and lease["class_intent"] == "scratch"
-                     and lease["cleanup"] == "delete", "experiment_action_profile_unsupported")
-            try:
-                _require_disposable_producer_completion()
-            except OwnerTargetVersionError as error:
-                return _outcome(action, "kept", error.code)
-        else:
-            _require(action["action"] == "offload" and lease["class_intent"] == "evidence", "experiment_action_profile_unsupported")
-            from .control_plane_lane_experiment_completion import selected_completion
-            selected_completion(files, config, entry)
+        try:
+            closure = _action_completion(files, config, entry, original, lease, action['action'])
+        except OwnerTargetVersionError as error:
+            return _outcome(action, 'kept', error.code)
         if _pins_root is None:
             return _outcome(action, "kept", "experiment_reference_authority_missing")
         reference, reference_fd = _pin_fence(files, config, _pins_root, target, issued)
@@ -742,6 +761,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                                     cap=1048576, protected=True, mode=0o600)
         _require(issuance._selector(manifest_raw, files.budget) == action["manifest"], "experiment_manifest_changed")
         manifest = _manifest_record(files, manifest_raw, entry, restorable=action['action'] == 'offload')
+        _validate_completion_manifest(closure, manifest)
         _require(manifest["schema_version"] == MANIFEST_SCHEMA and manifest["manifest_digest"]
                  == canonical_digest(manifest, digest_field="manifest_digest"), "experiment_manifest_invalid")
         _require(len(manifest["members"]) <= 4096, "experiment_manifest_limit")
@@ -967,7 +987,14 @@ def gc_actions(*, installed_config_path, enabled, apply, pins_root, now):
                         continue
                     if candidate['action'] == 'delete':
                         try:
-                            _require_disposable_producer_completion()
+                            if entry['lane'] == 'diagnostics':
+                                original = _birth(files, public, entry, gid)
+                                _require(original['participant_profile'] == 'root_disk_diagnostic_disposable.v1',
+                                         'experiment_delete_ineligible')
+                                from .control_plane_lane_experiment_completion import selected_completion
+                                selected_completion(files, config, entry)
+                            else:
+                                _require_disposable_producer_completion()
                         except OwnerTargetVersionError as error:
                             expired.append(dict(action_id=entry['operation_id'], intent_id=entry['intent_id'],
                                                 decision='kept', reason=error.code, receipt=None,

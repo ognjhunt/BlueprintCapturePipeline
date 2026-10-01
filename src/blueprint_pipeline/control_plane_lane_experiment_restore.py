@@ -698,7 +698,7 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         payload = (checkpoint[0]['new_lease'].encode() if checkpoint is not None else actions._encoded(new_lease, 'lease_digest', scratch.MAX_LEASE_BYTES))
         _require(scratch._lease_fields_valid(json.loads(payload)), 'experiment_restore_lease_invalid')
         root = config.lane_scratch_work_root if entry['root'] == 'work' else config.lane_scratch_inputs_root
-        birth._locked_lane(files, root)
+        birth._locked_lane(files, root, entry['lane'])
         if checkpoint is None:
             checkpoint_io.prepare(files, store, target, target_fd, action, expected_restore_intent, entry, lease_record, payload, started, previous, index, config=config, operation=operation)
         new_selector = _lease_cas(files, target, target_fd, lease_record, payload)

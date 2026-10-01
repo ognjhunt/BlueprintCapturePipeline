@@ -434,7 +434,7 @@ def _command_parser():
     recover.add_argument("tag")
     recover.add_argument("--principal", required=True)
     recover.add_argument("--owner", required=True)
-    for operation in ("issue-create", "create", "issue-action", "apply", "issue-restore", "restore", "bootstrap", "run"):
+    for operation in ("issue-create", "create", "issue-action", "apply", "issue-restore", "restore", "bootstrap", "run", "run-diagnostic"):
         command = commands.add_parser(operation, allow_abbrev=False)
         if operation != "issue-create":
             command.add_argument("intent_id")
@@ -445,7 +445,7 @@ def _command_parser():
             command.add_argument("--expires-at", required=True, type=float)
         if operation in ("issue-create", "issue-restore"):
             command.add_argument("--ttl", required=True, type=int)
-        if operation in ("create", "apply", "restore", "bootstrap", "run"):
+        if operation in ("create", "apply", "restore", "bootstrap", "run", "run-diagnostic"):
             command.add_argument("--sha256", required=True)
             command.add_argument("--size-bytes", required=True, type=int)
         if operation == "issue-create":
@@ -455,8 +455,8 @@ def _command_parser():
             command.add_argument("--request", nargs=3, action="append", default=[], metavar=("SEALED_PATH", "SHA256", "SIZE"))
         if operation == "issue-action":
             command.add_argument("--action", required=True, choices=("delete", "offload", "owner_review"))
-        if operation == "bootstrap":
-            command.add_argument("--request-path", action="append", required=True)
+        if operation in ("bootstrap", "run-diagnostic"):
+            command.add_argument("--request-path", action="append" if operation == "bootstrap" else "store", required=True)
     return parser
 
 
@@ -513,6 +513,10 @@ def _dispatch_fixed_command(arguments):
     if operation == "restore":
         return restore_registered_experiment(arguments.intent_id, expected_restore_intent=selector,
             _pins_root=_installed_pin_root(), **fixed)
+    if operation == "run-diagnostic":
+        from .control_plane_lane_disk_diagnostic import run_registered_disk_diagnostic
+        return run_registered_disk_diagnostic(arguments.intent_id, expected_intent=selector,
+            request_path=arguments.request_path, **fixed)
     if operation == "bootstrap":
         return issue_experiment_producer_bootstrap(arguments.intent_id, expected_intent_sha256=arguments.sha256,
             expected_intent_size_bytes=arguments.size_bytes, request_paths=tuple(arguments.request_path), **fixed)

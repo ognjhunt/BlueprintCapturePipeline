@@ -6,6 +6,7 @@ Its capacity rows are sequential observations, never reference clearance.
 from __future__ import annotations
 
 import os
+import stat
 import time
 import weakref
 from dataclasses import dataclass
@@ -226,6 +227,7 @@ def _tree(files, target, target_fd, *, report=False):
     from . import control_plane_lane_experiment_birth as birth
     names = {scratch.LEASE_FILE, birth._MARKER} | ({REPORT_NAME} if report else set())
     files.location(target_fd)
+
     owners._protected(os.fstat(target_fd), directory=True, mode=0o700)
     seen = set()
     files.slot()
@@ -239,6 +241,29 @@ def _tree(files, target, target_fd, *, report=False):
     _require(seen == names, 'diagnostic_tree_changed')
     files.location(target_fd)
 
+def _report_member(record, selector):
+    info = record.info
+    return [REPORT_NAME, 'file', f'{info.st_dev}:{info.st_ino}:r',
+            ':'.join(map(str, (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid,
+                               info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns))),
+            selector['sha256']]
+
+
+def validate_manifest(completion, manifest, *, selected_member=None):
+    """Sealed closure selects one exact root-owned payload, never new contents."""
+    rows = manifest['members']
+    _require(type(rows) is list and len(rows) == 1 and type(rows[0]) is list and len(rows[0]) == 5
+             and type(rows[0][2]) is str and type(rows[0][3]) is str and rows[0][0] == REPORT_NAME
+             and rows[0][1] == 'file' and rows[0][4] == completion['report']['sha256'],
+             'diagnostic_manifest_changed')
+    token = rows[0][3].split(':')
+    _require(len(token) == 7 and all(part.isdecimal() for part in token)
+             and tuple(map(int, token[:5])) == (0o600, 0, 0, 1, completion['report']['size_bytes'])
+             and manifest['logical_bytes'] == completion['report']['size_bytes'],
+             'diagnostic_manifest_changed')
+    expected = completion.get('selected_report_member', completion['report_member']) if selected_member is None else selected_member
+    _require(rows[0] == expected, 'diagnostic_manifest_changed')
+
 
 @dataclass(frozen=True, eq=False)
 class _ClosedDiagnostic:
@@ -251,6 +276,7 @@ class _ClosedDiagnostic:
     invocation: dict
     report_selector: dict
     report: dict
+    report_member: list
 
 
 def _consume_closed(proof):
@@ -311,8 +337,11 @@ def _execute(files, intent_id, expected, config_path, request_path, now):
     selected = actions._publish(files, target_fd, REPORT_NAME, raw, kind='diagnostic_report')
     _tree(files, target, target_fd, report=True)
     files.verify()
+    measured, record = files.read(target / REPORT_NAME, cap=8192, protected=True, mode=0o600)
+    _require(measured == raw, 'diagnostic_report_changed')
+    member = _report_member(record, selected)
     result = retained._document(raw, 8192, _work_budget=files.budget)
-    return _ClosedDiagnostic(files, config, gid, request, entry, current[0], invocation_selector, selected, result)
+    return _ClosedDiagnostic(files, config, gid, request, entry, current[0], invocation_selector, selected, result, member)
 
 
 def run_registered_disk_diagnostic(intent_id, *, expected_intent, request_path,
