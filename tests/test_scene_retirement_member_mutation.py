@@ -27,13 +27,13 @@ def test_actual_member_detaches_only_after_durable_exact_intent_then_removes_kno
     from blueprint_pipeline import control_plane_lane_scratch as primitive
     original=primitive._publish_no_replace
     observed=[]
-    def rename(parent,source,destination):
+    def rename(parent,source,destination,**kwargs):
         events=[json.loads(path.read_text()) for path in journal.directory.glob('*.json')]
         planned=[event for event in events if event.get('event')=='detach_planned']
         assert len(planned)==1 and planned[0]['evidence']['detached_path']==str(member.parent/destination)
         assert (member/'nested'/'evidence.bin').read_bytes()==b'preserved-evidence'
         observed.append(destination)
-        return original(parent,source,destination)
+        return original(parent,source,destination,**kwargs)
     monkeypatch.setattr(primitive,'_publish_no_replace',rename)
     with access.exclusive_scene_access():
         outcome=detach_and_remove(preserved,member_index=0,generation_id='2'*32,journal=journal)
@@ -88,8 +88,8 @@ def test_resume_only_prejournaled_exact_detach_after_rename_before_event(tmp_pat
     original=primitive._publish_no_replace
     class Interrupted(RuntimeError):
         pass
-    def rename_then_interrupt(*args):
-        original(*args)
+    def rename_then_interrupt(*args,**kwargs):
+        original(*args,**kwargs)
         raise Interrupted()
     with monkeypatch.context() as patch:
         patch.setattr(primitive,'_publish_no_replace',rename_then_interrupt)
@@ -111,8 +111,8 @@ def test_resume_never_adopts_substituted_detach_inode(tmp_path,monkeypatch):
     original=primitive._publish_no_replace
     class Interrupted(RuntimeError):
         pass
-    def rename_then_interrupt(*args):
-        original(*args)
+    def rename_then_interrupt(*args,**kwargs):
+        original(*args,**kwargs)
         raise Interrupted()
     with monkeypatch.context() as patch:
         patch.setattr(primitive,'_publish_no_replace',rename_then_interrupt)

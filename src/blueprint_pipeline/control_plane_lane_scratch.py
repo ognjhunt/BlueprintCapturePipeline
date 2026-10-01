@@ -196,7 +196,8 @@ def _write_lease(directory_fd: int, lease: Mapping[str, Any], *, replace: bool) 
         raise LaneScratchError("lane_scratch_write_failed") from exc
 
 
-def _publish_no_replace(lane_fd: int, staging: str, name: str) -> None:
+def _publish_no_replace(lane_fd: int, staging: str, name: str, *,
+                        action_guard: Callable[[], None] | None = None) -> None:
     """Atomically publish a prepared directory, refusing an existing target."""
 
     libc = ctypes.CDLL(None, use_errno=True)
@@ -211,7 +212,10 @@ def _publish_no_replace(lane_fd: int, staging: str, name: str) -> None:
     function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
                          ctypes.c_uint)
     function.restype = ctypes.c_int
-    if function(lane_fd, os.fsencode(staging), lane_fd, os.fsencode(name), flag) != 0:
+    source_name, destination_name = os.fsencode(staging), os.fsencode(name)
+    if action_guard is not None:
+        action_guard()
+    if function(lane_fd, source_name, lane_fd, destination_name, flag) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), name)
 

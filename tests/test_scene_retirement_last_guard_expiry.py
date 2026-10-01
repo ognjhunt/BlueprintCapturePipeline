@@ -79,6 +79,41 @@ def test_final_named_guard_expiry_preserves_next_actual_member_effect(
         assert (detached / 'nested').is_dir()
 
 
+@pytest.mark.parametrize('preparation', ['library', 'arguments'])
+@pytest.mark.parametrize('clock_kind', ['wall', 'monotonic'])
+def test_native_detach_preparation_cannot_cross_original_expiry(
+        tmp_path, monkeypatch, preparation, clock_kind):
+    from blueprint_pipeline import control_plane_lane_scratch as primitive
+    from blueprint_pipeline import task_evaluation_scene_retirement_mutation as mutation
+    access, member, preserved, journal = setup_operation(tmp_path, monkeypatch)
+    wall, mono = [100], [0]
+    journal.allowance.now = lambda: wall[0]
+    journal.allowance.monotonic = lambda: mono[0]
+    reached = []
+    def expire():
+        reached.append(preparation)
+        (wall if clock_kind == 'wall' else mono)[0] = 201 if clock_kind == 'wall' else 1801
+    actual_library, actual_encode = primitive.ctypes.CDLL, os.fsencode
+    def library(*args, **kwargs):
+        result = actual_library(*args, **kwargs)
+        if preparation == 'library':
+            expire()
+        return result
+    def encode(value):
+        result = actual_encode(value)
+        if preparation == 'arguments' and str(value).startswith('.scene-retirement-'):
+            expire()
+        return result
+    monkeypatch.setattr(primitive.ctypes, 'CDLL', library)
+    monkeypatch.setattr(os, 'fsencode', encode)
+    reason = 'scene_retirement_consent_expired' if clock_kind == 'wall' else 'scene_retirement_deadline'
+    with access.exclusive_scene_access(), pytest.raises(ValueError, match=reason):
+        mutation.detach_and_remove(preserved, member_index=0, generation_id='2'*32, journal=journal)
+    assert reached == [preparation]
+    assert (member / 'nested/evidence.bin').read_bytes() == b'preserved-evidence'
+    assert not (member.parent / ('.scene-retirement-' + journal.token + '-0')).exists()
+
+
 @pytest.mark.parametrize('replacement', [False, True])
 @pytest.mark.parametrize('clock_kind', ['wall', 'monotonic'])
 def test_generation_transition_cannot_publish_after_its_final_named_guard(

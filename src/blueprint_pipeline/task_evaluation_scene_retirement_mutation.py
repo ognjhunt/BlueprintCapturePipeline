@@ -353,7 +353,7 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
             _require(list(_identity(os.stat(source.name,dir_fd=parent,follow_symlinks=False)))==member['physical_identity'])
             # Atomic NO-REPLACE, never check then overwrite or orphan adoption.
             allowance.tick()
-            primitive._publish_no_replace(parent,source.name,destination.name)
+            primitive._publish_no_replace(parent,source.name,destination.name,action_guard=allowance.tick)
         allowance.tick()
         _current_parent(source.parent,parent,parent_identity)
         _require(list(_identity(os.stat(destination.name,dir_fd=parent,follow_symlinks=False)))==member['physical_identity'])
