@@ -64,6 +64,8 @@ def validate_coverage(value, candidate_count):
         if not value["defined_run_scope"] or value["completion_state"] not in {
                 "coverage_complete", "budget_interrupted", "time_interrupted", "access_blocked"}:
             raise ValueError("discovery_scope_or_completion_invalid")
+        if value["completion_state"] == "coverage_complete" and value["unresolved_promising_branches"]:
+            raise ValueError("discovery_completion_has_unresolved_branches")
     elif candidate_count < TARGET_NEW and reason is None:
         raise ValueError("discovery_shortfall_reason_required")
     return value

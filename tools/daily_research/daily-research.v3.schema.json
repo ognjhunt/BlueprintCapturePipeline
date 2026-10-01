@@ -160,7 +160,28 @@
           "unresolved_promising_branches",
           "completion_state"
         ]
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "completion_state": {
+                "const": "coverage_complete"
+              }
+            },
+            "required": [
+              "completion_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "unresolved_promising_branches": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "required": [

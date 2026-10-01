@@ -11,7 +11,7 @@ from tests.test_daily_research_adaptive import result
 from tests.test_daily_research_knowledge import enable_v3
 from tests.test_daily_research_runner import DAY, NOW, FakeAPI
 from tests.test_daily_research_runner import fixture as runner_fixture
-from tools.daily_research import render, search
+from tools.daily_research import discovery, render, search
 from tools.daily_research.consumer import Consumer, qa_text
 from tools.daily_research.firestore import FencedProvider
 from tools.daily_research.runner import (
@@ -279,3 +279,11 @@ def test_defined_coverage_can_return_fewer_than_ten_without_count_shortfall(fixt
     api.raw, api.turn_status = canonical(output).encode(), "completed"
     row = runner.start_or_resume()
     assert row["state"] == "awaiting_review" and len(row["packet"]["candidates"]) == 2
+
+
+def test_unresolved_in_scope_branch_cannot_claim_coverage_complete():
+    coverage = result()[0]["coverage"]
+    coverage.update(defined_run_scope=["Bounded task/industry/region hypotheses"], completion_state="coverage_complete",
+                    unresolved_promising_branches=["Promising in-scope branch not yet examined"])
+    with pytest.raises(ValueError, match="discovery_completion_has_unresolved_branches"):
+        discovery.validate_coverage(coverage, 50)
