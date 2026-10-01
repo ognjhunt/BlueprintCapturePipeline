@@ -59,8 +59,8 @@ class TestLedger(FirestoreLedger):
 
 class TestProvider:
     """Scope existing adapters to new turns and the unique immutable artifact."""
-    def __init__(self, api, ledger, intent, clock):
-        self.api, self.ledger, self.intent, self.clock = api, ledger, intent, clock
+    def __init__(self, api, ledger, intent, clock, stopped=lambda: False):
+        self.api, self.ledger, self.intent, self.clock, self.stopped = api, ledger, intent, clock, stopped
 
     def get(self, resource, resource_id):
         value = self.api.get(resource, resource_id)
@@ -86,14 +86,18 @@ class TestProvider:
         raise Refusal("adaptive_session_create_forbidden")
 
     def input(self, phase, event, key, deadline_ms):
+        if self.stopped():
+            raise Refusal("adaptive_stopped_before_input")
         session = self.get("session", self.intent["session_id"])
         row = self.ledger.get("2026-10-01")
         Consumer.check_session(row, session)
         if session.get("status") != "idle" or session.get("required_actions"):
             raise Refusal("adaptive_input_requires_idle_session")
         self.ledger.bridge.call("adaptive_claim", phase=phase, request_digest=digest(event), deadline_ms=deadline_ms)
-        if self.clock().timestamp() * 1000 >= deadline_ms:
-            raise Refusal("adaptive_input_deadline_exhausted")
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if self.stopped() or control.get("enabled") is not True or self.clock().timestamp() * 1000 >= deadline_ms:
+            raise Refusal("adaptive_stopped_disabled_or_expired_before_input")
         self.api.api.sessions.events.create(self.intent["session_id"], events=[event], idempotency_key=key)
 
     def qa_input(self, sid, event, key, day, request_digest, deadline_ms):
@@ -178,7 +182,7 @@ def invoke(bridge, profile, source, cache, api, *, execute=False, clock=lambda: 
             ledger.put(row)  # Complete original binding, intent and event before claim/POST.
             ledger.write_json("crm.json", row["crm_snapshot"])
         save_json(cache / "crm.json", row["crm_snapshot"])
-        scoped = TestProvider(api, ledger, row["test_intent"], clock)
+        scoped = TestProvider(api, ledger, row["test_intent"], clock, stopped)
         runner = Runner(ledger, daily_config(cache), scoped, clock=clock)
         consumer = TestConsumer(ledger, runner.config, scoped, clock=clock, stopped=stopped)
         if newly_staged:

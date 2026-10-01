@@ -98,8 +98,13 @@ python -m tools.daily_research.adaptive_runtime reconcile --profile /private/adm
 
 The observer stops on disabled control, interruption, unknown/invalid turn
 usage, $8 cumulative model estimate, research deadline or total QA deadline. It
-cancels only the exact bound session. Observation ends at the original total
-deadline plus 60 seconds of cancellation/collection grace. Unverified terminal
+cancels only the exact bound session. The observer loop stops at the original total
+deadline plus 60 seconds of cancellation/collection grace. Provider reads can
+paginate, so the operator must also bound the entire process group with GNU
+`timeout --signal=TERM --kill-after=60s 1860s` when invoking execute/reconcile;
+this is an independent wall-time watchdog. A forced stop cannot prove remote
+cancellation: retain the durable unresolved record and reconcile its exact
+session/turns after the lease expires, without another research input. Unverified terminal
 cancellation remains unresolved with cleanup held. Usage can lag; the test may
 stop without sufficient output. A successful input POST proves neither settled
 total spend nor ten accepted prospects.

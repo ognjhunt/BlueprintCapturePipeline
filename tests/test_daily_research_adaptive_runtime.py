@@ -164,3 +164,63 @@ def test_pending_admission_and_reconcile_have_zero_input_and_no_test_record(fixt
     assert not f.posted and f.ledger.get("2026-10-01") is None
     with pytest.raises(Refusal,match="create_forbidden"):
         adaptive_runtime.TestProvider(f.api,f.ledger,{"session_id":"sess_1"},lambda:NOW).create({})
+
+
+@pytest.mark.parametrize("phase",["research","qa"])
+@pytest.mark.parametrize("stop_during",["session_get","claim"])
+def test_stop_during_final_read_or_claim_prevents_both_paid_inputs(fixture,tmp_path,monkeypatch,phase,stop_during):
+    f=setup(fixture,monkeypatch)
+    stop={"requested":False}
+    with f.ledger.lock():
+        row=adaptive_runtime.stage(f.bridge,f.profile,f.source,tmp_path,f.api,lambda:f.clock["now"])
+        f.ledger.put(row)
+        event=row["test_intent"]["event"]
+        deadline=row["research_deadline_ms"]
+        if phase=="qa":
+            row["state"]="awaiting_review"
+            row["qa"]={"request_digest":digest(event),"deadline_ms":deadline}
+        f.ledger.put(row)
+        scoped=adaptive_runtime.TestProvider(f.api,f.ledger,row["test_intent"],lambda:f.clock["now"],lambda:stop["requested"])
+        if stop_during=="session_get":
+            get=f.api.get
+            def interrupted_get(resource,resource_id):
+                value=get(resource,resource_id)
+                stop["requested"]=True
+                return value
+            f.api.get=interrupted_get
+        else:
+            call=f.bridge.call
+            def interrupted_claim(op,**fields):
+                value=call(op,**fields)
+                if op=="adaptive_claim":
+                    stop["requested"]=True
+                return value
+            monkeypatch.setattr(f.bridge,"call",interrupted_claim)
+        with pytest.raises(Refusal,match="before_input"):
+            scoped.input(phase,event,"synthetic-once",deadline)
+        assert not f.posted
+    assert FirestoreLedger(f.bridge).get("2026-10-01")==f.original
+
+
+@pytest.mark.parametrize("guard",["disabled","expired"])
+def test_late_control_or_deadline_change_after_claim_prevents_post(fixture,tmp_path,monkeypatch,guard):
+    f=setup(fixture,monkeypatch)
+    with f.ledger.lock():
+        row=adaptive_runtime.stage(f.bridge,f.profile,f.source,tmp_path,f.api,lambda:f.clock["now"])
+        f.ledger.put(row)
+        call=f.bridge.call
+        claimed={"value":False}
+        def changed_after_claim(op,**fields):
+            value=call(op,**fields)
+            if op=="adaptive_claim":
+                claimed["value"]=True
+                if guard=="expired":
+                    f.clock["now"]+=timedelta(seconds=1201)
+            if op=="control" and claimed["value"] and guard=="disabled":
+                return {**value,"enabled":False}
+            return value
+        monkeypatch.setattr(f.bridge,"call",changed_after_claim)
+        scoped=adaptive_runtime.TestProvider(f.api,f.ledger,row["test_intent"],lambda:f.clock["now"])
+        with pytest.raises(Refusal,match="before_input"):
+            scoped.input("research",row["test_intent"]["event"],"synthetic-once",row["research_deadline_ms"])
+        assert not f.posted
