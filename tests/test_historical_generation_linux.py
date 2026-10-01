@@ -308,7 +308,8 @@ def test_actual_connected_historical_interruption(case_id, record_property):
         # The real16-directory lifecycle exceeded60s in original nativeea.
         # Observe it for90s; installed4h/original600s/per-scan clocks remain.
         observation_timeout = 90 if options.get('deep_tree') or any(options.get(key) for key in (
-            'observation_expiry', 'resume_delete_expiry', 'resume_absent_expiry')) else 60
+            'observation_expiry', 'delete_expiry', 'resume_delete_expiry', 'resume_absent_expiry',
+            'resume_remove')) else 60
         done = subprocess.run(command, capture_output=True, text=True, timeout=observation_timeout,
                               cwd=Path(__file__).parents[1],
                               env=os.environ | {'PYTHONDONTWRITEBYTECODE': '1'})

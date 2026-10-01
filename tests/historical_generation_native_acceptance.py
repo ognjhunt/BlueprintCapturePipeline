@@ -396,7 +396,7 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
         nonlocal births
         births = _capture_restore_births(journals, action_id) if restore else []
         return _launch_worker_once(entry, action_id, target, journals, restore=restore, launch=launch)
-    receipt = _later_reference_attempts(invoke, journals, action_id, observations=observations,
+    receipt = _reconciled_reference_attempts(invoke, journals, action_id, observations=observations,
                                         on_unfinished=on_unfinished)
     assert receipt['status'] == expected, receipt
     result = dict(receipt, _fixture_reference_refusals=observations) if observations else receipt
@@ -415,7 +415,7 @@ def _observe_reconciliation_pin(worker, binding, verify):
 
 def _launch_death_worker(entry, action_id, target, journals, *, on_unfinished=None):
     """Same three-unit cadence; each None must come from fresh real SIGKILL."""
-    result = _later_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
+    result = _reconciled_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
         restore=True, process_death=True), journals, action_id, on_unfinished=on_unfinished)
     assert result is None, result
 
@@ -526,6 +526,41 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None,
     raise AssertionError('bounded_reference_attempts_exhausted')
 
 
+def _reconciled_reference_attempts(invoke, journals, action_id, *, observations=None, on_unfinished=None):
+    """One extra real unit only after a third unit needs an exact owner DELETE.
+
+    UNKNOWN remains a refusal. The owner API must observe and approve the
+    current unfinished row, without changing the original operation journal.
+    There is no new retry loop, original intent or operation deadline.
+    """
+    receipt = _later_reference_attempts(invoke, journals, action_id,
+        observations=observations, on_unfinished=on_unfinished)
+    if receipt is None or receipt.get('status') != 'failed' or receipt.get('code') != \
+            'historical_generation_restore_reconciliation_approval_missing' or on_unfinished is None:
+        return receipt
+    directory = journals / action_id
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    assert 0 < len(before) <= 256 and sum(map(len, before.values())) <= 1024**2
+    original = before['e-00000.json']
+    intent = json.loads(original)
+    assert intent['kind'] == 'intent' and intent['action_id'] == action_id
+    print(json.dumps(dict(fixture_unfinished_refusal=receipt, action_id=action_id, attempt=3)), flush=True)
+    approved = on_unfinished(receipt)
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before, 'original_journal_changed'
+    assert type(approved) is dict and approved['discard_unfinished_row_approved'] is True \
+        and approved['execution_authorized'] is False and approved['packet']['action_id'] == action_id
+    assert approved['packet']['original_intent_bytes'] == dict(
+        sha256='sha256:' + hashlib.sha256(original).hexdigest(), size_bytes=len(original))
+    # The actual protected observation/approval API is in the callback below;
+    # this controller row is retained evidence, never kernel reader clearance.
+    print(json.dumps(dict(fixture_explicit_owner_continuation=dict(
+        action_id=action_id, decision_id=approved['decision_id'], attempt=4))), flush=True)
+    result = invoke()
+    after = {path.name: path.read_bytes() for path in directory.iterdir()}
+    assert all(after.get(name) == raw for name, raw in before.items()), 'original_journal_changed'
+    return result
+
+
 def _assert_restore_increment(receipt, original):
     # A genuine refused earlier unit may already have written every byte.
     # Its later recovered receipt credits zero, while the original durable
@@ -569,16 +604,24 @@ def _assert_boundary_recovery(receipt, expected, observations, action_id, origin
     """
     assert receipt.get('status') == 'completed'
     if receipt.get(expected) is True:
-        if expected != 'recovered_prefix':
+        if expected not in ('recovered_prefix', 'restarted_unwritten'):
             assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
         return
-    assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
-    assert expected in ('recovered_stage', 'recovered_split', 'recovered_prefix')
+    if expected == 'restarted_unwritten' and receipt.get('recovered_prefix') is True:
+        # The restarted unit may have durably written a genuine prefix before
+        # a later native refusal. Credit requires the actual pre-unit births;
+        # the complete byte arithmetic is checked by _assert_restore_increment.
+        assert type(receipt.get('_fixture_prior_member_births')) is list
+    else:
+        assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
+    assert expected in ('recovered_stage', 'recovered_split', 'recovered_prefix', 'restarted_unwritten')
     later = ('recovered_publication', 'recovered_before_final', 'recovered_access', 'idempotent')
     if expected == 'recovered_stage':
         later += ('recovered_split',)
     elif expected == 'recovered_prefix':
         later += ('recovered_split', 'recovered_stage')
+    elif expected == 'restarted_unwritten':
+        later += ('recovered_prefix', 'recovered_stage', 'recovered_split')
     assert any(receipt.get(field) is True for field in later)
     assert 0 < len(observations) <= 3
     attempts = [row['attempt'] for row in observations]
@@ -1391,6 +1434,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                 assert approved['decision_id'] not in {
                     value['decision_id'] for value in additional_reconciliations}
                 additional_reconciliations.append(approved)
+                return approved
             store = root / 'state/requests/historical-generation-actions'
             after_approval = {path.name: path.read_bytes() for path in store.iterdir()}
             for changes in ({'owner': 'another-owner'}, {'ack_final_event_digest': 'sha256:' + 'f' * 64}):
@@ -1586,13 +1630,14 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             'publish_observed': 'recovered_split', 'stage_remove_intent': 'recovered_split',
                             'stage_remove_effect': 'recovered_split'}
                 recovery.update(unlogged_directory='recovered_prefix', unlogged_member='recovered_prefix')
-                if recovery[restore_interruption] in ('recovered_stage', 'recovered_split', 'recovered_prefix'):
+                if recovery[restore_interruption] in ('recovered_stage', 'recovered_split', 'recovered_prefix',
+                                                     'restarted_unwritten'):
                     _assert_boundary_recovery(restored, recovery[restore_interruption],
                         restored.get('_fixture_reference_refusals', []), restore['action_id'],
                         interrupted_prefix['e-00000.json'])
                 else:
                     assert restored[recovery[restore_interruption]] is True
-                if restore_interruption == 'unwritten_stage':
+                if restore_interruption == 'unwritten_stage' and restored.get('restarted_unwritten') is True:
                     assert restored['restored_files'] == len(original)
                     assert restored['restored_logical_bytes'] == sum(map(len, original.values()))
                 elif restore_interruption.startswith('unlogged_'):

@@ -234,6 +234,42 @@ def test_last_failed_unit_cannot_issue_an_unused_recovery_grant(tmp_path):
     assert len(calls) == 3 and approvals == []
 
 
+@pytest.mark.parametrize('last_code', ['historical_generation_restore_reconciliation_approval_missing',
+                                      'historical_generation_process_unknown', 'arbitrary_failure'])
+def test_one_extra_unit_requires_a_real_missing_decision_receipt(tmp_path, last_code):
+    path, raw = original_journal(tmp_path)
+    calls, approvals = [], []
+    last = dict(status='failed', code=last_code)
+    def invoke():
+        calls.append(ACTION)
+        return dict(REFUSED) if len(calls) < 3 else last if len(calls) == 3 else None
+    def approve(receipt):
+        approvals.append(receipt)
+        return dict(decision_id='b' * 32, discard_unfinished_row_approved=True,
+                    execution_authorized=False, packet=dict(action_id=ACTION,
+                    original_intent_bytes=dict(sha256='sha256:' + __import__('hashlib').sha256(raw).hexdigest(),
+                                               size_bytes=len(raw))))
+    result = native._reconciled_reference_attempts(invoke, tmp_path, ACTION, on_unfinished=approve)
+    assert len(calls) == (4 if last_code.endswith('approval_missing') else 3)
+    assert approvals == ([last] if last_code.endswith('approval_missing') else [])
+    assert result is (None if approvals else last)
+    assert (path / 'e-00000.json').read_bytes() == raw
+
+
+def test_extra_owner_unit_preserves_all_original_journal_bytes(tmp_path):
+    path, raw = original_journal(tmp_path)
+    calls = []
+    def invoke():
+        calls.append(ACTION)
+        return dict(REFUSED) if len(calls) < 3 else dict(status='failed',
+            code='historical_generation_restore_reconciliation_approval_missing')
+    def approve(receipt):
+        (path / 'e-00000.json').write_bytes(b'replaced original intent')
+    with pytest.raises(AssertionError, match='original_journal_changed'):
+        native._reconciled_reference_attempts(invoke, tmp_path, ACTION, on_unfinished=approve)
+    assert len(calls) == 3 and (path / 'e-00000.json').read_bytes() != raw
+
+
 def test_owner_handling_cannot_rewrite_the_original_journal(tmp_path):
     path, _ = original_journal(tmp_path)
     missing = dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')
@@ -379,6 +415,32 @@ def test_exact_prefix_phase_keeps_actual_incremental_accounting():
                   reused_files=1, reused_logical_bytes=1)
     native._assert_boundary_recovery(result, 'recovered_prefix', [], ACTION, b'')
     native._assert_restore_increment(result, {'one': b'a', 'two': b'bc'})
+
+
+@pytest.mark.parametrize('phase', ['recovered_access', 'recovered_prefix'])
+def test_unwritten_restart_can_advance_before_a_later_real_reference_refusal(tmp_path, phase):
+    import hashlib
+    _, raw = original_journal(tmp_path)
+    result = dict(status='completed', **{phase: True}, restored_files=0, restored_logical_bytes=0)
+    if phase == 'recovered_prefix':
+        result.update(restored_files=1, restored_logical_bytes=2, reused_files=1,
+                      reused_logical_bytes=1, _fixture_prior_member_births=[dict(body=dict(
+                          path='one', size_bytes=1, sha256='sha256:' + hashlib.sha256(b'a').hexdigest()))])
+    observations = [dict(action_id=ACTION, code=REFUSED['code'],
+        original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=1)]
+    native._assert_boundary_recovery(result, 'restarted_unwritten', observations, ACTION, raw)
+    native._assert_restore_increment(result, {'one': b'a', 'two': b'bc'})
+
+
+def test_unwritten_later_prefix_cannot_claim_reuse_without_original_births(tmp_path):
+    import hashlib
+    _, raw = original_journal(tmp_path)
+    result = dict(status='completed', recovered_prefix=True, restored_files=1,
+                  restored_logical_bytes=2, reused_files=1, reused_logical_bytes=1)
+    observations = [dict(action_id=ACTION, code=REFUSED['code'],
+        original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=1)]
+    with pytest.raises(AssertionError):
+        native._assert_boundary_recovery(result, 'restarted_unwritten', observations, ACTION, raw)
 
 
 @pytest.mark.parametrize('change', ['swapped_count', 'wrong_hash', 'wrong_path', 'duplicate'])
