@@ -10,7 +10,7 @@
 #   terraform apply -var="project_id=blueprint-8c1ca"
 
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.9.0"
 
   required_providers {
     google = {
@@ -33,6 +33,16 @@ terraform {
 # =============================================================================
 # Variables
 # =============================================================================
+
+variable "deployment_scope" {
+  description = "full owns the legacy topology; remote_cpu bootstraps only the isolated worker project."
+  type        = string
+  default     = "full"
+  validation {
+    condition     = contains(["full", "remote_cpu"], var.deployment_scope)
+    error_message = "deployment_scope must be full or remote_cpu."
+  }
+}
 
 variable "project_id" {
   description = "GCP Project ID"
@@ -84,10 +94,11 @@ variable "docker_image" {
 variable "privacy_sam3_image" {
   description = "Immutable digest-pinned Docker image for the SAM3 privacy service."
   type        = string
+  default     = ""
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_sam3_image))
+    condition     = (var.deployment_scope == "remote_cpu" && var.privacy_sam3_image == "") || can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_sam3_image))
     error_message = "privacy_sam3_image must be pinned to an immutable sha256 digest."
   }
 }
@@ -95,10 +106,11 @@ variable "privacy_sam3_image" {
 variable "privacy_vip_image" {
   description = "Immutable digest-pinned Docker image for the VIP privacy service."
   type        = string
+  default     = ""
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_vip_image))
+    condition     = (var.deployment_scope == "remote_cpu" && var.privacy_vip_image == "") || can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_vip_image))
     error_message = "privacy_vip_image must be pinned to an immutable sha256 digest."
   }
 }
@@ -106,10 +118,11 @@ variable "privacy_vip_image" {
 variable "privacy_deepprivacy2_image" {
   description = "Immutable digest-pinned Docker image for the DeepPrivacy2 service."
   type        = string
+  default     = ""
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_deepprivacy2_image))
+    condition     = (var.deployment_scope == "remote_cpu" && var.privacy_deepprivacy2_image == "") || can(regex("^.+@sha256:[0-9a-f]{64}$", var.privacy_deepprivacy2_image))
     error_message = "privacy_deepprivacy2_image must be pinned to an immutable sha256 digest."
   }
 }
@@ -117,10 +130,11 @@ variable "privacy_deepprivacy2_image" {
 variable "video_to_world_image" {
   description = "Immutable digest-pinned Docker image for the video_to_world geometry service."
   type        = string
+  default     = ""
   nullable    = false
 
   validation {
-    condition     = can(regex("^.+@sha256:[0-9a-f]{64}$", var.video_to_world_image))
+    condition     = (var.deployment_scope == "remote_cpu" && var.video_to_world_image == "") || can(regex("^.+@sha256:[0-9a-f]{64}$", var.video_to_world_image))
     error_message = "video_to_world_image must be pinned to an immutable sha256 digest."
   }
 }
@@ -287,9 +301,11 @@ variable "worldlabs_default_model" {
 variable "worldlabs_api_key_secret_name" {
   description = "Existing Secret Manager secret containing WORLDLABS_API_KEY"
   type        = string
+  default     = ""
+  nullable    = false
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.worldlabs_api_key_secret_name))
+    condition     = (var.deployment_scope == "remote_cpu" && var.worldlabs_api_key_secret_name == "") || can(regex("^[A-Za-z0-9_-]{1,255}$", var.worldlabs_api_key_secret_name))
     error_message = "worldlabs_api_key_secret_name must name an existing Secret Manager secret."
   }
 }
@@ -339,9 +355,11 @@ variable "huggingface_token_secret_name" {
 variable "pipeline_sync_webapp_url" {
   description = "Blueprint-WebApp pipeline sync endpoint"
   type        = string
+  default     = ""
+  nullable    = false
 
   validation {
-    condition     = can(regex("^https://", var.pipeline_sync_webapp_url))
+    condition     = (var.deployment_scope == "remote_cpu" && var.pipeline_sync_webapp_url == "") || can(regex("^https://", var.pipeline_sync_webapp_url))
     error_message = "pipeline_sync_webapp_url is required and must use HTTPS."
   }
 }
@@ -349,9 +367,11 @@ variable "pipeline_sync_webapp_url" {
 variable "pipeline_sync_token_secret_name" {
   description = "Existing Secret Manager secret containing PIPELINE_SYNC_TOKEN"
   type        = string
+  default     = ""
+  nullable    = false
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.pipeline_sync_token_secret_name))
+    condition     = (var.deployment_scope == "remote_cpu" && var.pipeline_sync_token_secret_name == "") || can(regex("^[A-Za-z0-9_-]{1,255}$", var.pipeline_sync_token_secret_name))
     error_message = "pipeline_sync_token_secret_name must name an existing Secret Manager secret."
   }
 }
@@ -396,9 +416,11 @@ variable "gpu_fleet_billing_budget_thresholds" {
 variable "privacy_runner_token_secret_name" {
   description = "Existing Secret Manager secret containing PRIVACY_RUNNER_TOKEN"
   type        = string
+  default     = ""
+  nullable    = false
 
   validation {
-    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.privacy_runner_token_secret_name))
+    condition     = (var.deployment_scope == "remote_cpu" && var.privacy_runner_token_secret_name == "") || can(regex("^[A-Za-z0-9_-]{1,255}$", var.privacy_runner_token_secret_name))
     error_message = "privacy_runner_token_secret_name must name an existing Secret Manager secret."
   }
 }
@@ -721,7 +743,7 @@ resource "google_project_iam_member" "pipeline_runner_storage" {
     content {
       title       = "not-remote-cpu-transport"
       description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
-      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+      expression  = "resource.name != \"projects/_/buckets/${var.remote_cpu_project_id}-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.remote_cpu_project_id}-transport/\")"
     }
   }
 
@@ -756,7 +778,7 @@ resource "google_project_iam_member" "privacy_services_storage" {
     content {
       title       = "not-remote-cpu-transport"
       description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
-      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+      expression  = "resource.name != \"projects/_/buckets/${var.remote_cpu_project_id}-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.remote_cpu_project_id}-transport/\")"
     }
   }
 
@@ -856,7 +878,7 @@ resource "google_project_iam_member" "storage_trigger_storage" {
     content {
       title       = "not-remote-cpu-transport"
       description = "Any bucket except the remote CPU transport bucket (plan 14 C2)."
-      expression  = "resource.name != \"projects/_/buckets/${var.project_id}-remote-cpu-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.project_id}-remote-cpu-transport/\")"
+      expression  = "resource.name != \"projects/_/buckets/${var.remote_cpu_project_id}-transport\" && !resource.name.startsWith(\"projects/_/buckets/${var.remote_cpu_project_id}-transport/\")"
     }
   }
 
@@ -2197,14 +2219,211 @@ variable "remote_cpu_workers_budget_thresholds" {
   }
 }
 
+# ADP-009D/day 28: legacy Editors can delete isolation tags and mint SA keys.
+# Bootstrap a separate no-parent project instead of weakening unrelated grants.
+variable "remote_cpu_project_id" {
+  type    = string
+  default = "blueprint-remote-cpu-8c1ca"
+  validation {
+    condition     = var.remote_cpu_project_id == "blueprint-remote-cpu-8c1ca" && var.remote_cpu_project_id != var.project_id
+    error_message = "The reviewed worker bootstrap uses the isolated blueprint-remote-cpu-8c1ca project."
+  }
+}
+
+resource "google_project" "remote_cpu" {
+  count               = var.remote_cpu_workers_enabled ? 1 : 0
+  project_id          = var.remote_cpu_project_id
+  name                = "Blueprint Remote CPU Workers"
+  billing_account     = var.billing_account_id
+  auto_create_network = false
+  deletion_policy     = "ABANDON"
+  lifecycle {
+    prevent_destroy = true
+    postcondition {
+      condition     = coalesce(self.org_id, "none") == "none" && coalesce(self.folder_id, "none") == "none"
+      error_message = "The worker project must have no organization or folder parent; dependents are blocked."
+    }
+  }
+}
+
+resource "google_project_service" "remote_cpu_apis" {
+  for_each = var.remote_cpu_workers_enabled ? toset([
+    "run.googleapis.com", "iam.googleapis.com", "iamcredentials.googleapis.com", "cloudresourcemanager.googleapis.com",
+    "storage.googleapis.com", "monitoring.googleapis.com", "logging.googleapis.com",
+    "billingbudgets.googleapis.com",
+  ]) : toset([])
+  project            = google_project.remote_cpu[0].project_id
+  service            = each.key
+  disable_on_destroy = false
+}
+
+resource "google_project_service_identity" "remote_cpu_run" {
+  provider   = google-beta
+  count      = var.remote_cpu_workers_enabled ? 1 : 0
+  project    = google_project.remote_cpu[0].project_id
+  service    = "run.googleapis.com"
+  depends_on = [google_project_service.remote_cpu_apis]
+}
+
+data "google_iam_policy" "remote_cpu_project" {
+  count = var.remote_cpu_workers_enabled ? 1 : 0
+  binding {
+    role    = "roles/owner"
+    members = ["user:ohstnhunt@gmail.com"]
+  }
+  # Owner omits iam.denypolicies.create/update/delete. Terraform needs these
+  # permissions to install and refresh the lane's mandatory deny fences.
+  binding {
+    role    = "roles/iam.denyAdmin"
+    members = ["user:ohstnhunt@gmail.com"]
+  }
+  binding {
+    role    = "roles/run.serviceAgent"
+    members = ["serviceAccount:${google_project_service_identity.remote_cpu_run[0].email}"]
+  }
+}
+
+# Whole-project ownership applies ONLY to the newly created worker project.
+# No automatic/default Editor or project-wide TokenCreator grant is retained.
+resource "google_project_iam_policy" "remote_cpu" {
+  count       = var.remote_cpu_workers_enabled ? 1 : 0
+  project     = google_project.remote_cpu[0].project_id
+  policy_data = data.google_iam_policy.remote_cpu_project[0].policy_data
+}
+
+# This is the sole old-project mutation: the new Cloud Run service agent may
+# fetch the existing immutable image from the verified Artifact Registry repo.
+resource "google_artifact_registry_repository_iam_member" "remote_cpu_image_reader" {
+  count      = var.remote_cpu_workers_enabled ? 1 : 0
+  project    = var.project_id
+  location   = "us"
+  repository = "gcr.io"
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_project_service_identity.remote_cpu_run[0].email}"
+}
+
+resource "google_monitoring_notification_channel" "remote_cpu_owner" {
+  count        = var.remote_cpu_workers_enabled ? 1 : 0
+  project      = google_project.remote_cpu[0].project_id
+  display_name = "Blueprint Remote CPU Owner"
+  type         = "email"
+  labels       = { email_address = "ohstnhunt@gmail.com" }
+  depends_on   = [google_project_service.remote_cpu_apis]
+}
+
+resource "google_tags_tag_key" "remote_cpu_isolation" {
+  count      = var.remote_cpu_workers_enabled ? 1 : 0
+  parent     = "projects/${google_project.remote_cpu[0].number}"
+  short_name = "remote-cpu-isolation"
+  depends_on = [google_project_iam_policy.remote_cpu]
+}
+
+resource "google_tags_tag_value" "remote_cpu_isolation" {
+  for_each   = var.remote_cpu_workers_enabled ? toset(["worker", "dispatcher", "job", "transport"]) : toset([])
+  parent     = google_tags_tag_key.remote_cpu_isolation[0].id
+  short_name = each.key
+}
+
+resource "google_tags_tag_binding" "remote_cpu_identity" {
+  for_each = var.remote_cpu_workers_enabled ? {
+    worker     = google_service_account.remote_cpu_worker[0].unique_id
+    dispatcher = google_service_account.remote_cpu_dispatcher[0].unique_id
+  } : {}
+  # The API canonicalizes this parent to the project number. Use its returned
+  # identity so a provider refresh never proposes deleting the safety tag.
+  parent    = "//iam.googleapis.com/projects/${google_project.remote_cpu[0].number}/serviceAccounts/${each.value}"
+  tag_value = google_tags_tag_value.remote_cpu_isolation[each.key].id
+}
+
+resource "google_tags_location_tag_binding" "remote_cpu_transport" {
+  count     = var.remote_cpu_workers_enabled ? 1 : 0
+  location  = var.primary_region
+  parent    = "//storage.googleapis.com/projects/_/buckets/${google_storage_bucket.remote_cpu_transport[0].name}"
+  tag_value = google_tags_tag_value.remote_cpu_isolation["transport"].id
+}
+
+resource "google_tags_location_tag_binding" "remote_cpu_job" {
+  for_each  = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
+  location  = var.primary_region
+  parent    = "//run.googleapis.com/projects/${google_project.remote_cpu[0].number}/locations/${var.primary_region}/jobs/${google_cloud_run_v2_job.remote_cpu_worker[each.key].name}"
+  tag_value = google_tags_tag_value.remote_cpu_isolation["job"].id
+}
+
+resource "google_iam_deny_policy" "remote_cpu_isolation" {
+  count        = var.remote_cpu_workers_enabled ? 1 : 0
+  parent       = urlencode("cloudresourcemanager.googleapis.com/projects/${google_project.remote_cpu[0].number}")
+  name         = "remote-cpu-isolation"
+  display_name = "Blueprint Remote CPU Identity and Transport Isolation"
+
+  # The managed Cloud Run agent may impersonate the worker, never the host's
+  # dispatcher. Tags cannot be removed by either SA or the managed agent:
+  # none has tag administration in this isolated project.
+  rules {
+    description = "Only the founder can impersonate or mutate the dispatcher identity."
+    deny_rule {
+      denied_principals    = ["principalSet://goog/public:all"]
+      exception_principals = ["principal://goog/subject/ohstnhunt@gmail.com"]
+      denied_permissions = [
+        "iam.googleapis.com/serviceAccounts.actAs",
+        "iam.googleapis.com/serviceAccounts.getAccessToken",
+        "iam.googleapis.com/serviceAccounts.getOpenIdToken",
+        "iam.googleapis.com/serviceAccounts.signBlob",
+        "iam.googleapis.com/serviceAccounts.signJwt",
+        "iam.googleapis.com/serviceAccounts.implicitDelegation",
+        "iam.googleapis.com/serviceAccounts.setIamPolicy",
+        "iam.googleapis.com/serviceAccounts.delete",
+        "iam.googleapis.com/serviceAccounts.disable",
+        "iam.googleapis.com/serviceAccounts.enable",
+        "iam.googleapis.com/serviceAccounts.update",
+        "iam.googleapis.com/serviceAccounts.undelete",
+        "iam.googleapis.com/serviceAccountKeys.create",
+      ]
+      denial_condition {
+        expression = "resource.matchTagId('${google_tags_tag_key.remote_cpu_isolation[0].id}', '${google_tags_tag_value.remote_cpu_isolation["dispatcher"].id}')"
+      }
+    }
+  }
+  rules {
+    description = "Transport objects are readable only by the two lane identities and founder."
+    deny_rule {
+      denied_principals = ["principalSet://goog/public:all"]
+      exception_principals = [
+        "principal://goog/subject/ohstnhunt@gmail.com",
+        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.remote_cpu_worker[0].unique_id}",
+        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.remote_cpu_dispatcher[0].unique_id}",
+      ]
+      denied_permissions = ["storage.googleapis.com/objects.get"]
+      denial_condition {
+        expression = "resource.matchTagId('${google_tags_tag_key.remote_cpu_isolation[0].id}', '${google_tags_tag_value.remote_cpu_isolation["transport"].id}')"
+      }
+    }
+  }
+  rules {
+    description = "Only the dispatcher and founder can write transport objects."
+    deny_rule {
+      denied_principals = ["principalSet://goog/public:all"]
+      exception_principals = [
+        "principal://goog/subject/ohstnhunt@gmail.com",
+        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.remote_cpu_dispatcher[0].unique_id}",
+      ]
+      denied_permissions = ["storage.googleapis.com/objects.create", "storage.googleapis.com/objects.delete"]
+      denial_condition {
+        expression = "resource.matchTagId('${google_tags_tag_key.remote_cpu_isolation[0].id}', '${google_tags_tag_value.remote_cpu_isolation["transport"].id}')"
+      }
+    }
+  }
+  depends_on = [google_tags_tag_binding.remote_cpu_identity, google_tags_location_tag_binding.remote_cpu_transport]
+}
+
 # Each attempt's transport (its descriptor and presigned links) is one object
 # written with if_generation_match=0 and read at that generation. The host
 # deletes it at teardown; the one-day rule is the backstop. Nothing is kept:
 # no versions and no soft delete.
 resource "google_storage_bucket" "remote_cpu_transport" {
-  count = var.remote_cpu_workers_enabled ? 1 : 0
+  project = google_project.remote_cpu[0].project_id
+  count   = var.remote_cpu_workers_enabled ? 1 : 0
 
-  name     = "${var.project_id}-remote-cpu-transport"
+  name     = "${var.remote_cpu_project_id}-transport"
   location = var.primary_region
   labels   = merge(local.common_labels, { cost-center = "remote-cpu-workers" })
 
@@ -2232,21 +2451,24 @@ resource "google_storage_bucket" "remote_cpu_transport" {
 # The job's own identity. It holds no project role: its only grant is get on
 # transport objects, which is how an execution reads its pinned transport.
 resource "google_service_account" "remote_cpu_worker" {
-  count = var.remote_cpu_workers_enabled ? 1 : 0
+  project = google_project.remote_cpu[0].project_id
+  count   = var.remote_cpu_workers_enabled ? 1 : 0
 
   account_id   = "remote-cpu-worker"
   display_name = "Blueprint Remote CPU Worker"
   description  = "Runs remote CPU worker job executions; can only read transport objects"
+  depends_on   = [google_project_service.remote_cpu_apis, google_project_iam_policy.remote_cpu]
 }
 
 resource "google_project_iam_custom_role" "remote_cpu_transport_reader" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
 
-  project     = var.project_id
+  project     = google_project.remote_cpu[0].project_id
   role_id     = "remoteCpuTransportReader"
   title       = "Blueprint Remote CPU Transport Reader"
   description = "Read one remote CPU transport object at a known generation; bound only on the transport bucket."
   permissions = ["storage.objects.get"]
+  depends_on  = [google_project_service.remote_cpu_apis, google_project_iam_policy.remote_cpu]
 }
 
 # The host's paid unit dispatches as this identity. Its roles are custom and
@@ -2254,18 +2476,21 @@ resource "google_project_iam_custom_role" "remote_cpu_transport_reader" {
 # the owner and loaded into that unit alone with LoadCredential=; Terraform
 # never manages a service account key.
 resource "google_service_account" "remote_cpu_dispatcher" {
-  count = var.remote_cpu_workers_enabled ? 1 : 0
+  project = google_project.remote_cpu[0].project_id
+  count   = var.remote_cpu_workers_enabled ? 1 : 0
 
   account_id   = "remote-cpu-dispatcher"
   display_name = "Blueprint Remote CPU Dispatcher"
   description  = "Runs remote CPU worker jobs with attempt overrides and cancels their executions"
+  depends_on   = [google_project_service.remote_cpu_apis, google_project_iam_policy.remote_cpu]
 }
 
 resource "google_project_iam_custom_role" "remote_cpu_dispatcher" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
 
-  project     = var.project_id
+  project     = google_project.remote_cpu[0].project_id
   role_id     = "remoteCpuDispatcher"
+  depends_on  = [google_project_service.remote_cpu_apis, google_project_iam_policy.remote_cpu]
   title       = "Blueprint Remote CPU Dispatcher"
   description = "Run a remote CPU worker job with overrides and read or cancel its executions; bound only on those jobs."
   permissions = [
@@ -2281,8 +2506,9 @@ resource "google_project_iam_custom_role" "remote_cpu_dispatcher" {
 resource "google_project_iam_custom_role" "remote_cpu_transport_writer" {
   count = var.remote_cpu_workers_enabled ? 1 : 0
 
-  project     = var.project_id
+  project     = google_project.remote_cpu[0].project_id
   role_id     = "remoteCpuTransportWriter"
+  depends_on  = [google_project_service.remote_cpu_apis, google_project_iam_policy.remote_cpu]
   title       = "Blueprint Remote CPU Transport Writer"
   description = "Create, read and delete remote CPU transport objects; bound only on the transport bucket."
   permissions = [
@@ -2313,7 +2539,7 @@ data "google_iam_policy" "remote_cpu_transport" {
 
   binding {
     role    = "roles/storage.legacyBucketOwner"
-    members = ["projectOwner:${var.project_id}"]
+    members = ["projectOwner:${var.remote_cpu_project_id}"]
   }
 }
 
@@ -2325,6 +2551,7 @@ resource "google_storage_bucket_iam_policy" "remote_cpu_transport" {
 }
 
 resource "google_cloud_run_v2_job" "remote_cpu_worker" {
+  project  = google_project.remote_cpu[0].project_id
   provider = google-beta
   for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
 
@@ -2389,14 +2616,17 @@ resource "google_cloud_run_v2_job" "remote_cpu_worker" {
   }
 
   depends_on = [
-    google_project_service.required_apis["run.googleapis.com"],
+    google_project_service.remote_cpu_apis["run.googleapis.com"],
+    google_project_iam_policy.remote_cpu,
+    google_iam_deny_policy.remote_cpu_isolation,
+    google_artifact_registry_repository_iam_member.remote_cpu_image_reader,
   ]
 }
 
 resource "google_cloud_run_v2_job_iam_member" "remote_cpu_dispatcher" {
   for_each = var.remote_cpu_workers_enabled ? var.remote_cpu_worker_stages : {}
 
-  project  = var.project_id
+  project  = google_project.remote_cpu[0].project_id
   location = var.primary_region
   name     = google_cloud_run_v2_job.remote_cpu_worker[each.key].name
   role     = google_project_iam_custom_role.remote_cpu_dispatcher[0].name
@@ -2406,7 +2636,8 @@ resource "google_cloud_run_v2_job_iam_member" "remote_cpu_dispatcher" {
 # Every failed remote CPU task attempt alerts: the jobs never retry, so no
 # failure is retried away, and each one is paid compute.
 resource "google_monitoring_alert_policy" "remote_cpu_job_failures" {
-  count = var.remote_cpu_workers_enabled ? 1 : 0
+  project = google_project.remote_cpu[0].project_id
+  count   = var.remote_cpu_workers_enabled ? 1 : 0
 
   display_name = "Blueprint Remote CPU Job Failures"
   combiner     = "OR"
@@ -2428,11 +2659,11 @@ resource "google_monitoring_alert_policy" "remote_cpu_job_failures" {
     }
   }
 
-  notification_channels = var.monitoring_notification_channels
+  notification_channels = [google_monitoring_notification_channel.remote_cpu_owner[0].name]
 
   lifecycle {
     precondition {
-      condition     = var.allow_empty_monitoring_notification_channels || length(var.monitoring_notification_channels) > 0
+      condition     = google_monitoring_notification_channel.remote_cpu_owner[0].name != ""
       error_message = "monitoring_notification_channels must include at least one channel for production alert policies. Set allow_empty_monitoring_notification_channels=true only for dry-run plans."
     }
   }
@@ -2454,7 +2685,7 @@ resource "google_billing_budget" "remote_cpu_workers" {
   display_name    = "Blueprint Remote CPU Workers Budget"
 
   budget_filter {
-    projects = ["projects/${data.google_project.current.number}"]
+    projects = ["projects/${google_project.remote_cpu[0].number}"]
     labels = {
       cost-center = "remote-cpu-workers"
     }
@@ -2484,13 +2715,25 @@ resource "google_billing_budget" "remote_cpu_workers" {
   }
 
   depends_on = [
-    google_project_service.required_apis["billingbudgets.googleapis.com"],
+    google_project_service.remote_cpu_apis["billingbudgets.googleapis.com"],
   ]
 }
 
 # =============================================================================
 # Outputs
 # =============================================================================
+
+output "remote_cpu_bootstrap_scope" {
+  description = "A scoped bootstrap cannot claim adoption or zero drift of the unrelated legacy topology."
+  value = var.deployment_scope == "remote_cpu" ? {
+    schema_version = "remote_cpu_bootstrap_scope.v1"
+    scope          = "remote_cpu"
+    project        = var.remote_cpu_project_id
+    source_project = var.project_id
+    image          = var.docker_image
+    claim_boundary = "Isolated CPU workers only; legacy topology adoption is still required before a full apply."
+  } : null
+}
 
 output "pipeline_service_account" {
   description = "Service account email for pipeline runner"
@@ -2524,13 +2767,13 @@ output "privacy_runner_services" {
 
 output "deployed_image_digests" {
   description = "Immutable image digests bound into the refreshed deployment topology"
-  value = {
+  value = var.deployment_scope == "remote_cpu" ? tomap({ pipeline = var.docker_image }) : tomap({
     pipeline             = var.docker_image
     privacy_sam3         = var.privacy_sam3_image
     privacy_vip          = var.privacy_vip_image
     privacy_deepprivacy2 = var.privacy_deepprivacy2_image
     video_to_world       = var.video_to_world_image
-  }
+  })
 }
 
 output "privacy_runner_max_instances" {

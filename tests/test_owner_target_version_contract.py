@@ -4,10 +4,22 @@
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
 from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+
+
+@pytest.fixture(autouse=True)
+def canonical_lane_roots(monkeypatch):
+    # Another test may first import this module while scratch roots are patched.
+    # These literal-path contract cases require their own canonical root binding.
+    from blueprint_pipeline import control_plane_lane_owner_target_versions as t
+    monkeypatch.setattr(t, "LANE_ROOTS", (
+        Path("/mnt/blueprint-work/lanes"),
+        Path("/var/lib/blueprint/task-evaluation-inputs/lanes"),
+    ))
 
 
 def expected():

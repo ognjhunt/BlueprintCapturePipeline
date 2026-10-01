@@ -1,4 +1,4 @@
-"""Single-host, parent-reviewed business research. No sink writes or deletion.
+"""Blueprint-owned, agent-reviewed business research. No sink writes or deletion.
 
 Run with ``python -m tools.daily_research.runner --help``. Only the ``run``
 command can start paid work; preflight/reconciliation use saved resources.
@@ -100,7 +100,8 @@ def due_date(now, first_date):
 def configuration(value):
     allowed = {"enabled", "first_date", "approval_reference", "scheduler_authority_reference",
                "crm_snapshot", "slack_channel_id", "max_runtime_seconds", "soft_target_usd",
-               "research_contract_version", "knowledge_snapshot", "knowledge_filters", "knowledge_refresh_policy"}
+               "research_contract_version", "knowledge_snapshot", "knowledge_filters", "knowledge_refresh_policy",
+               "expected_agent_instructions_sha256"}
     if set(value) - allowed or type(value.get("enabled")) is not bool:
         raise Refusal("config_invalid")
     date.fromisoformat(value["first_date"])
@@ -113,6 +114,9 @@ def configuration(value):
             raise Refusal("config_reference_missing")
     if value["enabled"] and value["scheduler_authority_reference"].startswith("PENDING"):
         raise Refusal("scheduler_cutover_not_approved")
+    if "expected_agent_instructions_sha256" in value and not re.fullmatch(
+            r"[a-f0-9]{64}", str(value["expected_agent_instructions_sha256"])):
+        raise Refusal("agent_instructions_pin_invalid")
     version = value.get("research_contract_version", 1)
     if type(version) is not int or version not in {1, 2, 3}:
         raise Refusal("research_contract_version_unsupported")
@@ -378,16 +382,30 @@ class Ledger:
                             (row["date"], canonical(row)))
         save_json(self.root / (row["date"] + "-status.json"), row)
 
+    def write_bytes(self, name, value):
+        save_bytes(self.root / name, value)
 
-def preflight(api):
+    def write_json(self, name, value):
+        self.write_bytes(name, (canonical(value) + "\n").encode())
+
+    def read_bytes(self, name):
+        return (self.root / name).read_bytes()
+
+
+def preflight(api, expected_instructions_sha256=None):
     agent, template = api.get("agent", AGENT), api.get("template", TEMPLATE)
     check_agent(agent)
+    instructions = agent.get("instructions")
+    instructions_hash = hashlib.sha256(instructions.encode()).hexdigest() if isinstance(instructions, str) else None
+    if expected_instructions_sha256 and instructions_hash != expected_instructions_sha256:
+        raise Refusal("agent_instructions_pin_mismatch")
     if (template.get("id") != TEMPLATE or template.get("network", {}).get("access") != "disabled"
             or template.get("capability_directories") != ["/workspace/capabilities/blueprint"]
             or sorted(x.get("name", "") for x in template.get("skills", [])) != ["blueprint-evidence-qualification", "deep-research"]):
         raise Refusal("template_configuration_mismatch")
     return {"project_id": PROJECT, "agent_id": AGENT, "template_id": TEMPLATE,
             "model": MODEL, "agent_digest": digest(agent), "template_digest": digest(template),
+            "instructions_sha256": instructions_hash,
             "inference_started": False, "actual_container_size_verified": False}
 
 
@@ -428,11 +446,11 @@ def prompt(day, knowledge_context=None, contract_version=2):
             "Native web_search only: at most two searches and two page opens, then stop. No subagents, installs, "
             "sandbox networking, new providers/models, outreach/drafts, purchases, credentials or external writes. "
             "The $1 total model/search/sandbox target is SOFT, not a hard cap. Stay under 800 words. "
-            "No CRM is supplied to the sandbox: local code checks exact duplicates, parent checks semantic matches. "
+            "No CRM is supplied to the sandbox: local code checks exact duplicates; the Blueprint QA agent checks semantic matches against the durable CRM snapshot. "
             "For each candidate require task, capability and geography evidence roles; unknown availability stays unknown. "
             "Use operator/vendor/independent classification and fact/vendor_claim/hypothesis claim_kind. "
             "Vendor assertions cannot be facts. source_date is null when unknown. Include a short exact source quote "
-            "for parent verification. Leave qualification_status unqualified or needs_review, never qualified. "
+            "for Blueprint agent verification. Leave qualification_status unqualified or needs_review, never qualified. "
             f"Write and read back {REMOTE_OUTPUT} as strict JSON with exactly this structure (evidence needs all three roles): "
             + canonical(example))
     if knowledge_context is not None:
@@ -452,7 +470,7 @@ def prompt(day, knowledge_context=None, contract_version=2):
                    "Hardware specifications need units and conditions; max payload never proves a bounded task. Software-only "
                    "teams need no hardware specs. Keep company and exact product/version, supported hardware and task scope separate. "
                    "Do not infer service eligibility from unknown geography or deployment from a shipment announcement. "
-                   "Return up to ten proposed_knowledge_deltas, proposals only for parent review: record_id/fact_id (null for "
+                   "Return up to ten proposed_knowledge_deltas, proposals only for Blueprint agent review: record_id/fact_id (null for "
                    "discovery), reason gap/conflict/stale/unsupported/discovery/consequential, proposed_statement, unknowns, "
                    "and 1-4 fresh live evidence entries with url,publisher,publication_date,source_checked_at,classification, "
                    "evidence_level,quote. No Notion or CRM writes.")
@@ -478,7 +496,7 @@ def prompt(day, knowledge_context=None, contract_version=2):
                    "a dated reviewed task_claim only. Historical reports, operational requirements, specifications and limits "
                    "may be cited solely with role background, never positive capability coverage or proof of current operation. "
                    "Task/geography must be live today. Current availability, support geography and deployment-critical "
-                   "decisions always require live evidence and parent review regardless of age. Policy approval approves "
+                   "decisions always require live evidence and Blueprint agent review regardless of age. Policy approval approves "
                    "refresh rules only; it creates no newly approved factual claims. Source dates never advance on load or due review.")
     if knowledge_context is not None:
         # Append immutable untrusted data only after all trusted instruction edits.
@@ -513,7 +531,7 @@ class Runner:
             snapshot, _ = crm_snapshot(self.config["crm_snapshot"], self.clock())
             version = self.config.get("research_contract_version", 1)
             context, policy = load_knowledge_bundle(self.config, self.clock())
-            checked = preflight(self.api)
+            checked = preflight(self.api, self.config.get("expected_agent_instructions_sha256"))
             if self.stop_requested():
                 return {"date": day, "state": "stopped_before_create"}
             body = {"agent_id": AGENT, "environment": {"type": "openai_hosted", "container_size": "small",
@@ -522,7 +540,7 @@ class Runner:
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),
                    "run_key": body["metadata"]["run_key"], "metadata": body["metadata"],
-                   "preflight": checked, "crm_snapshot": snapshot, "session_id": None, "turn_id": None,
+                   "preflight": checked, "crm_snapshot": snapshot, "create_payload": body, "session_id": None, "turn_id": None,
                    "environment_id": None, "cleanup_required": True, "cancel_attempted": False,
                    "soft_target_usd": 1, "budget_is_hard_cap": False, "usage": None,
                    "cost_status": "unknown_pending_billing_reconciliation", "delivery": {}}
@@ -606,7 +624,7 @@ class Runner:
             row["web_tool_activities"] = sum(i.get("type") == "web_search_call" for i in items)
             # Retain exact-turn messages/tool evidence before any lifecycle action.
             row["evidence_digest"] = digest(items)
-            save_json(self.ledger.root / (row["date"] + "-evidence.json"), items)
+            self.ledger.write_json(row["date"] + "-evidence.json", items)
             if turn and turn["status"] in {"completed", "failed", "cancelled"}:
                 completed_at = turn.get("completed_at")
                 runtime_exceeded = isinstance(completed_at, (int, float)) and (
@@ -673,7 +691,7 @@ class Runner:
         if len(raw) > LIMIT_BYTES:
             raise Refusal("artifact_too_large")
         row["raw_output_digest"] = hashlib.sha256(raw).hexdigest()
-        save_bytes(self.ledger.root / (row["date"] + "-artifact.json"), raw)
+        self.ledger.write_bytes(row["date"] + "-artifact.json", raw)
         row["artifact_downloaded"] = True
         row["artifact_id"] = artifacts[0]["id"]
         self.ledger.put(row)
@@ -683,7 +701,7 @@ class Runner:
             output = json.loads(raw)
         except (ValueError, UnicodeError):
             raise Refusal("artifact_json_invalid") from None
-        save_json(self.ledger.root / (row["date"] + "-output.json"), output)
+        self.ledger.write_json(row["date"] + "-output.json", output)
         _, known = crm_snapshot(self.config["crm_snapshot"], self.clock())
         for previous in self.ledger.rows():
             if previous["date"] != row["date"]:
@@ -705,7 +723,7 @@ class Runner:
         packet = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
                   "findings": output["findings"], "blockers": output["blockers"],
                   "proposed_next_actions": output["proposed_next_actions"], "candidates": candidates,
-                  "duplicates": duplicates, "source_verification": "parent_required_before_writes",
+                  "duplicates": duplicates, "source_verification": "blueprint_agent_qa_required_before_writes",
                   "cost_status": row["cost_status"], "usage": row["usage"], "cleanup_required": True,
                   "destinations": {"sheet_id": SHEET, "sheet_tab": "Prospects", "notion_parent": NOTION},
                   "scope": "proposals_only_no_outreach", "budget_is_hard_cap": False}
@@ -721,7 +739,7 @@ class Runner:
         row["packet"], row["packet_digest"] = packet, digest(packet)
         row["state"] = "awaiting_review"
         row.pop("error", None)
-        save_json(self.ledger.root / (row["date"] + "-review.json"), {**packet, "packet_digest": row["packet_digest"]})
+        self.ledger.write_json(row["date"] + "-review.json", {**packet, "packet_digest": row["packet_digest"]})
         return True
 
     def review(self, day, decision):
@@ -744,10 +762,9 @@ class Runner:
             if not isinstance(summary, str) or not 1 <= len(summary) <= 2000:
                 raise Refusal("bounded_review_summary_required")
             row["review"], row["state"] = decision, "reviewed"
-            # Parent chooses escalation. No raw-report broadcast is implied.
+            # An agent owns QA/publication; observers need no receipt to unblock it.
             payloads = {"sheets": {"sheet_id": SHEET, "tab": "Prospects", "candidates": selected},
-                        "notion": {"parent_id": row["packet"]["destinations"]["notion_parent"], "summary": summary, "candidates": selected},
-                        "parent_status": {"run_key": row["run_key"], "summary": summary}}
+                        "notion": {"parent_id": row["packet"]["destinations"]["notion_parent"], "summary": summary, "candidates": selected}}
             row["delivery"] = {name: {"key": row["run_key"] + ":" + name, "payload": payload,
                                       "payload_digest": digest(payload), "state": "pending"}
                                for name, payload in payloads.items()}
@@ -766,7 +783,7 @@ class Runner:
             if delivery.get("receipt") and delivery["receipt"] != receipt:
                 raise Refusal("delivery_receipt_already_bound")
             delivery["receipt"], delivery["state"] = receipt, "acknowledged"
-            if all(x["state"] == "acknowledged" for x in row["delivery"].values()):
+            if all(x["state"] == "acknowledged" for name, x in row["delivery"].items() if name != "parent_status"):
                 row["state"] = "completed"
             self.ledger.put(row)
             return row
@@ -780,9 +797,12 @@ class Runner:
                     or not receipt.get("action_time_approval_reference")):
                 raise Refusal("cleanup_receipt_not_admitted")
             if row.get("turn_status") == "completed":
-                artifact = self.ledger.root / (day + "-artifact.json")
-                if (not row.get("artifact_downloaded") or not artifact.is_file()
-                        or hashlib.sha256(artifact.read_bytes()).hexdigest() != row.get("raw_output_digest")):
+                try:
+                    artifact = self.ledger.read_bytes(day + "-artifact.json")
+                except OSError:
+                    artifact = None
+                if (not row.get("artifact_downloaded") or artifact is None
+                        or hashlib.sha256(artifact).hexdigest() != row.get("raw_output_digest")):
                     raise Refusal("artifact_not_downloaded_or_digest_mismatch")
             for resource in ("session", "environment"):
                 try:
@@ -825,7 +845,7 @@ def main(argv=None):
         api = None if local else Provider(os.environ.get("OPENAI_API_KEY", ""))
         runner = Runner(ledger, cfg, api)
         if args.command == "preflight":
-            result = {**preflight(api), "crm_digest": digest(snapshot), "enabled": cfg["enabled"],
+            result = {**preflight(api, cfg.get("expected_agent_instructions_sha256")), "crm_digest": digest(snapshot), "enabled": cfg["enabled"],
                       "unresolved_runs": [r["run_key"] for r in ledger.rows() if r.get("cleanup_required")]}
             if context is not None:
                 result.update(snapshot_content_hash=context["content_hash"], knowledge_context_digest=digest(context))

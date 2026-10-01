@@ -907,13 +907,18 @@ def run_controller(
         disk_usage=disk_usage,
         now=observed,
     )
-    from .task_evaluation_scene_spend import refresh_configured_scene_project_spend
+    from .task_evaluation_scene_spend import observe_configured_scene_project_spend
     try:
-        if project_spend := refresh_configured_scene_project_spend():
+        if project_spend := observe_configured_scene_project_spend(now=observed):
             report["project_spend"] = project_spend
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError) as exc:
         report["level"] = "critical"
-        report["alerts"].append({"code": "project_spend_refresh_blocked"})
+        reason = str(exc) if str(exc) in {
+            "scene_spend_monitor_config_invalid", "scene_spend_monitor_seed_reference_invalid",
+            "scene_spend_pointer_invalid_or_stale", "scene_spend_pointer_source_changed",
+            "scene_spend_pointer_outside_output_root",
+        } else "scene_spend_snapshot_unreadable_or_invalid"
+        report["alerts"].append({"code": "project_spend_observation_blocked", "reason": reason})
     if credit_collector is not None:
         from .provider_credit_admission import credit_admission
 

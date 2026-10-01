@@ -22,6 +22,7 @@ from .task_evaluation_scene_reservation_spend_evidence import (
 
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_scene_intake import _read as read_scene, _lock
+from .validation_file_digests import file_digest_scope
 
 MONITOR_MANAGED_BY = "blueprint_pipeline.task_evaluation_scene_preparation_installation"
 
@@ -108,6 +109,7 @@ def _publish_current_scene_project_spend_locked(*, scene_root: str | Path, seed_
             "provider_mutation_performed": False, "reserved_caps_are_not_actual_billing": True}
 
 
+@file_digest_scope()
 def publish_current_scene_project_spend(**kwargs: Any) -> dict[str, Any]:
     root = Path(kwargs["scene_root"])
     if not root.is_dir() or any(p.is_symlink() for p in (root, *root.parents)):
@@ -118,13 +120,15 @@ def publish_current_scene_project_spend(**kwargs: Any) -> dict[str, Any]:
         return _publish_current_scene_project_spend_locked(**kwargs)
 
 
-def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[str, Any] | None:
+def _configured_monitor() -> dict[str, Any] | None:
     configured = os.getenv("BLUEPRINT_SCENE_PROJECT_SPEND_CONFIG", "")
     if not configured:
         return None
     path = Path(configured)
     _record(path)
     value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError("scene_spend_monitor_config_invalid")
     base_keys = {"schema_version", "scene_root", "seed_reconciliation_path", "output_root",
                  "current_path", "config_digest"}
     managed_keys = base_keys | {"managed_by"}
@@ -137,7 +141,7 @@ def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[
             or ("managed_by" in value and value["managed_by"] != MONITOR_MANAGED_BY)):
         raise ValueError("scene_spend_monitor_config_invalid")
     reference = value.get("seed_reconciliation_reference")
-    if reference is not None:
+    if "seed_reconciliation_reference" in value:
         if (not isinstance(reference, dict)
                 or set(reference) != {"path", "sha256", "size_bytes"}
                 or reference.get("path") != value.get("seed_reconciliation_path")):
@@ -147,6 +151,60 @@ def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[
                 raise ValueError("scene_spend_monitor_seed_reference_invalid")
         except (OSError, TypeError, ValueError):
             raise ValueError("scene_spend_monitor_seed_reference_invalid") from None
+    return value
+
+
+def observe_configured_scene_project_spend(*, now: float | None = None) -> dict[str, Any] | None:
+    """Observe the publisher's fresh checked exposure without taking its write lock.
+
+    Capacity's sandbox permits writing only capacity reports. The dedicated
+    refresh service and activation remain the publication owners; observation
+    never restamps freshness, enumerates new reservations or grants execution.
+    """
+    from .project_spend_reconciliation import validate_project_spend_reconciliation
+
+    value = _configured_monitor()
+    if value is None:
+        return None
+    _record(Path(value["current_path"]))
+    pointer = read_scene(Path(value["current_path"]), "receipt_digest")
+    observed = pointer.get("observed_at_epoch")
+    clock = time.time() if now is None else now
+    source = Path(str(pointer.get("path") or ""))
+    output = Path(value["output_root"])
+    if (set(pointer) != {"schema_version", "path", "digest", "observed_at_epoch", "receipt_digest"}
+            or pointer.get("schema_version") != "task_evaluation_project_spend_current.v1"
+            or isinstance(observed, bool) or not isinstance(observed, (int, float))
+            or not 0 <= clock - observed <= 900
+            or not source.is_absolute()
+            or source.name != "project_spend_reconciliation.json"):
+        raise ValueError("scene_spend_pointer_invalid_or_stale")
+    # Resolve both paths, but reject the original traversal/symlink spelling
+    # first. A lexical parent test accepts output_root/../receipt.json.
+    if (".." in source.parts or ".." in output.parts
+            or any(p.is_symlink() for p in (source, *source.parents, output, *output.parents))):
+        raise ValueError("scene_spend_pointer_outside_output_root")
+    try:
+        relative = source.resolve(strict=True).relative_to(output.resolve(strict=True))
+    except (OSError, ValueError):
+        raise ValueError("scene_spend_pointer_outside_output_root") from None
+    if len(relative.parts) != 2:
+        raise ValueError("scene_spend_pointer_outside_output_root")
+    if _record(source)["sha256"] != pointer["digest"]:
+        raise ValueError("scene_spend_pointer_source_changed")
+    receipt, record = validate_project_spend_reconciliation(source)
+    if record["sha256"] != pointer["digest"]:
+        raise ValueError("scene_spend_pointer_source_changed")
+    return {"status": "published_project_exposure_observed", "pointer": pointer,
+            "total_cost_usd": receipt["total_cost_usd"],
+            "accounting_scope": "last_checked_publication_not_new_reservation_admission",
+            "provider_mutation_performed": False, "reserved_caps_are_not_actual_billing": True}
+
+
+def refresh_configured_scene_project_spend(*, now: float | None = None) -> dict[str, Any] | None:
+    value = _configured_monitor()
+    if value is None:
+        return None
     # Stamp the pointer with the caller's ``now`` (the activation tick captures one
     # ``now`` for the whole pass, then gates on ``0 <= now - observed_at_epoch <= 900``;
     # defaulting to ``time.time()`` here stamps a moment LATER than that ``now`` and the
