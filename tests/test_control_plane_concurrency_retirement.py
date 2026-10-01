@@ -48,3 +48,13 @@ def test_live_producer_prevents_every_retirement_effect(tmp_path):
     with pytest.raises(ValueError,match='retirement_producer_still_alive'):
         retire_fixture_chains(control_root=root,scenes=[scene],source_commit='a'*40,
             producer_pids=[os.getpid()],process_root=tmp_path/'unavailable-proc')
+
+
+def test_missing_producer_registry_cannot_assert_a_completed_child(tmp_path):
+    from scripts.control_plane_concurrency_load_test import create_run_roots, REQUIRED_STAGES
+    from scripts.control_plane_concurrency_retirement import retire_fixture_chains
+    roots=create_run_roots(tmp_path/'control',tmp_path/'objects',tmp_path/'workers')
+    scene={'stages':[{'stage':stage,'status':'completed'} for stage in REQUIRED_STAGES[:-1]]}
+    with pytest.raises(ValueError,match='retirement_producer_registry_invalid'):
+        retire_fixture_chains(control_root=roots['control_plane'],scenes=[scene],source_commit='a'*40,
+            producer_pids=[],process_root=tmp_path/'unavailable-proc')

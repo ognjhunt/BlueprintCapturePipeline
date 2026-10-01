@@ -45,6 +45,37 @@ def namespace_classifier(*, owned_root: Path, mapping: dict):
     return classify
 
 
+def validate_producer_joins(root, scenes, source_commit, producer_pids):
+    """Require the parent's sealed registry and successful joins for every child."""
+    documents=[]
+    for name,schema in (('producer-registry.json','concurrency_producer_registry.v1'),
+                        ('producer-joins.json','concurrency_producer_joins.v1')):
+        path=_safe(root/name,root)
+        if not path.is_file():raise ValueError('retirement_producer_registry_invalid')
+        value=json.loads(path.read_text())
+        if (value.get('schema_version')!=schema or value.get('source_commit')!=source_commit
+                or value.get('receipt_digest')!=canonical_digest(value,digest_field='receipt_digest')):
+            raise ValueError('retirement_producer_registry_invalid')
+        documents.append(value)
+    registry,joined=documents
+    rows=registry.get('producers',[]);joins=joined.get('joins',[])
+    if (len(rows)!=len(scenes) or len(joins)!=len(scenes)
+            or joined.get('registry_digest')!=registry['receipt_digest']
+            or len({row['scene_key'] for row in rows})!=len(rows)
+            or sorted(row['pid'] for row in rows)!=sorted(producer_pids)
+            or not producer_pids or len(set(producer_pids))!=len(producer_pids)):
+        raise ValueError('retirement_producer_registry_invalid')
+    for scene in scenes:
+        row=[row for row in rows if row['scene_key']==scene['scene_key']]
+        join=[row for row in joins if row['scene_key']==scene['scene_key']]
+        normalized=json.loads(json.dumps(scene,default=str))
+        if (len(row)!=1 or len(join)!=1 or join[0].get('pid')!=row[0]['pid']
+                or scene.get('producer_pid')!=row[0]['pid'] or join[0].get('exit_code')!=0
+                or join[0].get('scene_result_digest')!=canonical_digest(normalized)):
+            raise ValueError('retirement_producer_join_invalid')
+    return joined
+
+
 def retire_fixture_chains(*, control_root: Path, scenes: list, source_commit: str,
                           producer_pids: list[int], process_root: Path=Path('/proc')) -> dict:
     """All validations precede owner revocation, pin release and GC mutation."""
@@ -64,6 +95,7 @@ def retire_fixture_chains(*, control_root: Path, scenes: list, source_commit: st
         raise ValueError('retirement_root_owner_mismatch')
     if not marker.read_text().startswith('control_plane_concurrency_load_test.v1 '):
         raise ValueError('retirement_root_marker_invalid')
+    joined=validate_producer_joins(root,scenes,source_commit,producer_pids)
     reservations=_safe(root/'reservations',root)
     if list(reservations.glob('*.json')):raise ValueError('retirement_live_reservations')
     pins_root=_safe(root/'pins',root)
@@ -169,6 +201,7 @@ def retire_fixture_chains(*, control_root: Path, scenes: list, source_commit: st
         'boundary':'fixture-owner cancellation and release followed by production GC',
         'automatic_terminal_reconciliation_proven':False,'normal_six_hour_retention_proven':False,
         'zero_age_parameters_explicit':True,'producer_pids_joined':producer_pids,
+        'producer_join_receipt_digest':joined['receipt_digest'],
         'owner_revocations':revocations,'pin_releases':releases,'gc':report,
         'before_allocated_bytes':before,'after_allocated_bytes':allocated_tree_bytes(root),
         'residual_pins':len(remaining),'residual_leases':len(list(reservations.glob('*.json'))),
