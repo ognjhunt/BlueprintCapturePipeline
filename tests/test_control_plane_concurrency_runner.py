@@ -2,6 +2,9 @@
 from collections import namedtuple
 import subprocess
 import threading
+import multiprocessing
+import json
+import os
 
 import pytest
 
@@ -36,11 +39,34 @@ def test_joined_runner_keeps_both_activation_bindings_and_retires_real_cache(tmp
     build_task_evaluation_runtime_source_bundle(source_root=packet.parent, output_path=bundle,
         expected_production_commit=source, runtime_identity=_runtime()["runtime"]["identity"])
     published = fixture_publisher(roots["objects"])(path=bundle, object_name="runtime-source.zip")
-    scene = run_scene(scene_key="joined-1",control_root=roots["control_plane"],
-        object_root=roots["objects"],worker_root=roots["workers"],source_commit=source,
-        runtime_bundle={"reference":{k:published[k] for k in ("uri","digest","size_bytes")},
-                        "source_kind":"contract_fixture"},release_binding=None,
-        heavy_slot=threading.Semaphore(1))
+    result_path=roots['workers']/'child-result.json'
+    start=multiprocessing.get_context('fork').Event()
+    def child():
+        assert start.wait(10)
+        scene = run_scene(scene_key="joined-1",control_root=roots["control_plane"],
+            object_root=roots["objects"],worker_root=roots["workers"],source_commit=source,
+            runtime_bundle={"reference":{k:published[k] for k in ("uri","digest","size_bytes")},
+                            "source_kind":"contract_fixture"},release_binding=None,
+            heavy_slot=threading.Semaphore(1))
+        scene['producer_pid']=os.getpid()
+        result_path.write_text(json.dumps(scene,default=str))
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    def seal(name,value):
+        value['receipt_digest']=canonical_digest(value,digest_field='receipt_digest')
+        (roots['control_plane']/name).write_text(json.dumps(value))
+        return value
+    process=multiprocessing.get_context('fork').Process(target=child)
+    process.start()
+    registry=seal('producer-registry.json',{'schema_version':'concurrency_producer_registry.v1',
+        'source_commit':source,'producers':[{'pid':process.pid,'scene_key':'joined-1'}]})
+    start.set();process.join(90)
+    if process.is_alive():
+        process.terminate();process.join()
+    assert process.exitcode==0
+    scene=json.loads(result_path.read_text())
+    seal('producer-joins.json',{'schema_version':'concurrency_producer_joins.v1','source_commit':source,
+        'registry_digest':registry['receipt_digest'],'joins':[{'pid':process.pid,'scene_key':'joined-1',
+            'exit_code':process.exitcode,'scene_result_digest':canonical_digest(scene)}]})
     assert [row["stage"] for row in scene["stages"]] == list(REQUIRED_STAGES[:-1])
     assert scene["actual_provider_calls"] == 0
     assert scene["configuration_activation"]["preparer"]["status"] == "prepared"
@@ -49,7 +75,7 @@ def test_joined_runner_keeps_both_activation_bindings_and_retires_real_cache(tmp
     # contract test; live acceptance scans the actual Linux process tree.
     process_root=tmp_path/"proc";process_root.mkdir()
     retired=retire_fixture_chains(control_root=roots["control_plane"],scenes=[scene],
-        source_commit=source,producer_pids=[],process_root=process_root)
+        source_commit=source,producer_pids=[process.pid],process_root=process_root)
     assert retired["status"] == "completed"
     assert retired["residual_pins"] == retired["residual_leases"] == 0
     assert retired["after_allocated_bytes"] < retired["before_allocated_bytes"]

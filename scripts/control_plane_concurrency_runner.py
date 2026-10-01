@@ -29,13 +29,13 @@ def _expect(value, expected, boundary):
 
 def run_scene(*, scene_key: str, control_root: Path, object_root: Path, worker_root: Path,
               source_commit: str, runtime_bundle: dict, release_binding: dict | None,
-              heavy_slot, on_reserved=None) -> dict:
+              heavy_slot, on_reserved=None, stage_recorder=None) -> dict:
     """Advance eight joined stages; the parent retires only after children join."""
     host = control_root / scene_key
     worker = worker_root / scene_key
     worker.mkdir(mode=0o700)
     reservations, pins = control_root / 'reservations', control_root / 'pins'
-    rows = []
+    rows = [] if stage_recorder is None else stage_recorder
     def measured(stage, function):
         wall, cpu = time.monotonic(), time.process_time()
         with AllocationSampler(control_root) as allocation:

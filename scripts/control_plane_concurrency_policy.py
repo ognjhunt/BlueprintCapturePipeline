@@ -208,7 +208,7 @@ def ingest_policy_fixture(*, provider: dict, object_root: Path, output_root: Pat
 
 def deliver_policy_fixture(*, collected: dict) -> dict:
     """Validate actual returned bytes and project an explicitly fictional run."""
-    root, result = collected["run_root"], collected["result"]
+    root, result = Path(collected["run_root"]), collected["result"]
     closures = {}
     for name, flag in (("billing", "official_billing_sealed"), ("teardown", "teardown_completed"),
                        ("provider_zero", "provider_zero_verified")):
