@@ -33,6 +33,31 @@ def test_pending_row_naming_generation_is_a_reference(tmp_path):
         scan(queue, target)
 
 
+@pytest.mark.parametrize('encoding', ['dash', 'entire_path'])
+def test_encoded_pending_file_uri_is_an_actual_current_reference(tmp_path, encoding):
+    from urllib.parse import unquote, urlparse
+    queue = tmp_path / 'queue'
+    queue.mkdir()
+    target = tmp_path / 'selected-diagnostics'
+    target.mkdir()
+    payload = target / 'input.bin'
+    payload.write_bytes(b'original owner bytes')
+    selected = str(payload)
+    encoded_path = selected.replace('-', '%2D') if encoding == 'dash' else ''.join(
+        '/' if byte == 47 else '%' + format(byte, '02X') for byte in os.fsencode(selected))
+    uri = 'file://' + encoded_path
+    parsed = urlparse(uri)
+    assert parsed.scheme == 'file' and parsed.netloc == ''
+    assert Path(unquote(parsed.path)) == payload
+    row = queue / 'job.json'
+    original = json.dumps({'source_uri': uri}).encode()
+    row.write_bytes(original)
+    assert target.name not in encoded_path and str(target) not in encoded_path
+    with pytest.raises(ValueError, match='historical_generation_table_reference'):
+        scan(queue, target)
+    assert row.read_bytes() == original and payload.read_bytes() == b'original owner bytes'
+
+
 def test_closed_unchanged_tables_bind_exact_namespace_and_bytes(tmp_path):
     (tmp_path / 'processing').mkdir()
     (tmp_path / 'processing/job.json').write_text('{"run":"other"}')
@@ -42,7 +67,7 @@ def test_closed_unchanged_tables_bind_exact_namespace_and_bytes(tmp_path):
     assert scan(tmp_path, Path('/unrelated/selected')) != before
 
 
-@pytest.mark.parametrize('kind', ['symlink', 'hardlink', 'malformed', 'fifo'])
+@pytest.mark.parametrize('kind', ['symlink', 'hardlink', 'malformed', 'malformed_uri', 'fifo'])
 def test_unknown_reference_rows_are_not_absence(tmp_path, kind):
     row = tmp_path / 'job.json'
     if kind == 'symlink':
@@ -52,6 +77,8 @@ def test_unknown_reference_rows_are_not_absence(tmp_path, kind):
         os.link(row, tmp_path / 'alias.json')
     elif kind == 'fifo':
         os.mkfifo(row)
+    elif kind == 'malformed_uri':
+        row.write_text('{"source_uri":"file:///other/%FF/input.bin"}')
     else:
         row.write_text('{bad json')
     with pytest.raises(ValueError, match='table_unknown'):
@@ -93,6 +120,24 @@ def reference_call(installed, callback):
     with authority._session(config, authority._Operation(1030, lambda: 0)) as (files, settings, _):
         with historical_reference_fence(files, settings, target, observed_at=1030) as guard:
             return callback(guard)
+
+
+def test_initial_encoded_reference_refuses_held_fence_without_effect(reference_installation):
+    _, target, root = reference_installation
+    selected = 'file://' + ''.join('/' if byte == 47 else '%' + format(byte, '02X')
+                                    for byte in os.fsencode(target / 'one.log'))
+    row = root / 'queue/job.json'
+    original = json.dumps({'source_uri': selected}).encode()
+    row.write_bytes(original)
+    with pytest.raises(ValueError, match='historical_generation_table_reference'):
+        reference_call(reference_installation, lambda guard: guard())
+    assert row.read_bytes() == original
+    assert (target / 'one.log').read_bytes() == b'original owner diagnostics\n'
+
+
+def test_unrelated_encoded_reference_does_not_select_target(tmp_path):
+    (tmp_path / 'job.json').write_text('{"source_uri":"file:///other%2Dgeneration/input.bin"}')
+    assert len(scan(tmp_path, Path('/unrelated/selected-diagnostics'))) == 2
 
 
 def test_current_reference_fence_holds_real_publisher_locks(reference_installation):
@@ -152,12 +197,15 @@ def test_historical_recheck_allowance_is_fixed_and_keeps_original_deadline():
         timed.close()
 
 
-@pytest.mark.parametrize('changed', ['queue', 'release', 'pin'])
+@pytest.mark.parametrize('changed', ['queue', 'encoded_queue', 'release', 'pin'])
 def test_current_reference_change_is_detected_before_effect(reference_installation, changed):
     _, target, root = reference_installation
     def change(guard):
-        if changed == 'queue':
-            (root / 'queue/job.json').write_text(json.dumps({'input': str(target / 'one.log')}))
+        if changed in ('queue', 'encoded_queue'):
+            selected = str(target / 'one.log')
+            if changed == 'encoded_queue':
+                selected = 'file://' + ''.join('/' if byte == 47 else '%' + format(byte, '02X') for byte in os.fsencode(selected))
+            (root / 'queue/job.json').write_text(json.dumps({'input': selected}))
         elif changed == 'release':
             (root / 'active').unlink()
             (root / 'active').symlink_to(target)

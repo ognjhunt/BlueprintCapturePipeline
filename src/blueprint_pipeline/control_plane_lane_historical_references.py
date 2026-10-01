@@ -13,6 +13,7 @@ import os
 import stat
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from urllib.parse import unquote
 
 from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_legacy_owner as legacy
@@ -38,6 +39,13 @@ def _mentions(value, target, budget, depth=0):
     _require(depth <= 32, 'table_unknown')
     if isinstance(value, str):
         _require(str(target) not in value and target.name not in value, 'table_reference')
+        # File EvidenceReference consumers decode the selected URI once before
+        # opening it. An encoded current selector is still a reference; invalid
+        # encoded UTF-8 is unknown. Keep the original observation's deadline.
+        budget.tick()
+        decoded = unquote(value, errors='strict')
+        budget.tick()
+        _require(str(target) not in decoded and target.name not in decoded, 'table_reference')
     elif isinstance(value, dict):
         for key, child in value.items():
             _mentions(key, target, budget, depth + 1)
