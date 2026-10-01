@@ -1,0 +1,631 @@
+{
+  "schema_version": "argus_shadow_remote_evidence_trace.v1",
+  "date": "2026-10-01",
+  "scope": "Read-only existing operator door metadata for two named retained simulator runs and one v28 offload pointer; not an exhaustive census of all remote runs",
+  "operator_door_access": "existing egress-proxy-authorized GET only; no secrets read, credentials/access changes, operator mutations or provider launches",
+  "admitted_episode_count": 0,
+  "video_bytes_retrieved": 0,
+  "summary": {
+    "projection_rows": 40,
+    "completed_rollouts_with_video_references": 8,
+    "existing_grader_reported_successes": 0,
+    "existing_grader_reported_failures": 8,
+    "blocked_attempts_with_video_references": 6,
+    "unexecuted_rows_without_video": 26,
+    "registered_review_video_references": 14,
+    "independently_reviewed_labels_found_in_inspected_records": 0,
+    "independently_admitted_success_failure_ambiguous_subtle_occlusion_undo_counts": {
+      "success": 0,
+      "failure": 0,
+      "ambiguous": 0,
+      "subtle_failure": 0,
+      "occlusion": 0,
+      "success_then_undone": 0
+    }
+  },
+  "runs": [
+    {
+      "run_id": "operator-policy-841757-ed97253b9dbe-verified-candidate-failure",
+      "root": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure",
+      "projection": {
+        "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/expected-website-projection.json",
+        "sha256": "sha256:cfca5d416baa0648b01c7ba5c566ee27603ba85e9f2fe777b2b2ffca1d4f2e22",
+        "size_bytes": 44453,
+        "verified": "read_only_operator_door_metadata_bytes"
+      },
+      "source_commit": "ed97253b9dbe5c9978c9e2f98927993923091ef4",
+      "planned_rows": 20,
+      "completed_rollouts": 1,
+      "registered_video_references": 2,
+      "blocked_attempts_with_video": 1,
+      "unexecuted_rows_without_video": 18,
+      "existing_grader_reported_success_count": 0,
+      "existing_grader_reported_failure_count": 1,
+      "independently_reviewed_labels_found": 0,
+      "episodes_with_registered_video": [
+        {
+          "episode_id": "operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--pi05_droid",
+          "candidate_id": "pi05_droid",
+          "terminal_state": "blocked",
+          "policy_outcome_interpretable": false,
+          "failure_taxonomy": "DroidActionExecutionError",
+          "review_video": {
+            "artifact_id": "03640a55668651592451dea9e10e8815",
+            "digest": "sha256:f81823859d513386e41e4435f8cfb2c3c33e138882ea4b2109642964b08dd88b",
+            "size_bytes": 258489
+          },
+          "frame_manifest": {
+            "artifact_id": "206aac38158560cf795f4c1b043950e2",
+            "digest": "sha256:ce998fb370ea88ac58e2254dba2e0072ff46683a4b30e49d85ce4207e2b38f35",
+            "size_bytes": 49081
+          },
+          "state_trace": null,
+          "score_receipt": null,
+          "evidence_gaps": [
+            "action_delivery_readback",
+            "contact_force_trace",
+            "reset_state",
+            "score_receipt",
+            "state_trace",
+            "task_object_trajectory"
+          ],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/artifacts/03640a55668651592451dea9e10e8815",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata",
+          "remote_storage_pointer": {
+            "uri": "s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/artifacts/task-evaluation-result/sha256/f81823859d513386e41e4435f8cfb2c3c33e138882ea4b2109642964b08dd88b/failed-external.mp4",
+            "recorded_remote_verified_at": "2026-09-10T13:29:38Z",
+            "recorded_full_byte_service_account_readback_passed": true,
+            "pointer_metadata": {
+              "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/artifacts/result_delivery/remote_artifacts/8d0a301d4b4686dd22916aeba083cb3f2e09390f5e3dc8e20ed4f0d27180f6b6.json",
+              "sha256": "sha256:946592b818782ebed0197bcefe21e32cf089cb20752bbcd576e54ff58b2c8f8e",
+              "size_bytes": 1392,
+              "verified": "read_only_operator_door_metadata_bytes"
+            }
+          },
+          "local_runner_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/evidence/cell_runs/00/episodes/media/operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--pi05_droid/failed-external.mp4",
+          "local_runner_path_read_result": "HTTP 404 not_found; offloaded object pointer exists"
+        },
+        {
+          "episode_id": "operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--groot_n17_droid",
+          "candidate_id": "groot_n17_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "0c8b7d0fde7169085124b2eed7300cca",
+            "digest": "sha256:69f622de3a73969f3202f896c5c02762abecee3c547ebb7fabe17ea589ae7348",
+            "size_bytes": 6498977
+          },
+          "frame_manifest": {
+            "artifact_id": "488494672183510910e88eaf8f4c403b",
+            "digest": "sha256:c1f3dfcea53df3799d2f0f56366ee62029f9d5841c5f713dd103b98c87dd9c51",
+            "size_bytes": 1466943
+          },
+          "state_trace": {
+            "artifact_id": "66261fb4aac3b5be37760cc669eccef1",
+            "digest": "sha256:5e86ab0ef130d75f0da04defea50a50873d7befbac4a57ed2ebe7f95b226c926",
+            "size_bytes": 3625135
+          },
+          "score_receipt": {
+            "artifact_id": "88be84d8fb2e273e72b326c25bf3527a",
+            "digest": "sha256:3bb6565bb0b109693d54ecf2c7159e8b9944c57977b1bf073a3c4ed747f51ed8",
+            "size_bytes": 65667
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/artifacts/0c8b7d0fde7169085124b2eed7300cca",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata",
+          "remote_storage_pointer": {
+            "uri": "s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/artifacts/task-evaluation-result/sha256/69f622de3a73969f3202f896c5c02762abecee3c547ebb7fabe17ea589ae7348/external.mp4",
+            "recorded_remote_verified_at": "2026-09-10T13:28:42Z",
+            "recorded_full_byte_service_account_readback_passed": true,
+            "pointer_metadata": {
+              "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/artifacts/result_delivery/remote_artifacts/747ddef328b948a569c7bc034d2953d0409965192f359b3ee06636bc4189e8d0.json",
+              "sha256": "sha256:6ed3e8525cb7b17dc2808fcc875974f0038dd212920187bda40c08ca083c7806",
+              "size_bytes": 1385,
+              "verified": "read_only_operator_door_metadata_bytes"
+            }
+          },
+          "local_runner_path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/evidence/cell_runs/00/episodes/media/operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--groot_n17_droid/external.mp4",
+          "local_runner_path_read_result": "HTTP 404 not_found; offloaded object pointer exists"
+        }
+      ]
+    },
+    {
+      "run_id": "operator-policy-841757-c92ea670efac-astra-book-tray",
+      "root": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-c92ea670efac-astra-book-tray",
+      "projection": {
+        "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-c92ea670efac-astra-book-tray/operator_terminal_delivery/website_projection.json",
+        "sha256": "sha256:43072d5c77b8858dfb093c783bf1913b1d8d3e2ae4e37f1c6723f5de6580cace",
+        "size_bytes": 55701,
+        "verified": "read_only_operator_door_metadata_bytes"
+      },
+      "source_commit": "c92ea670efac162315c324e3f6ebc8232807223b",
+      "planned_rows": 20,
+      "completed_rollouts": 7,
+      "registered_video_references": 12,
+      "blocked_attempts_with_video": 5,
+      "unexecuted_rows_without_video": 8,
+      "existing_grader_reported_success_count": 0,
+      "existing_grader_reported_failure_count": 7,
+      "independently_reviewed_labels_found": 0,
+      "episodes_with_registered_video": [
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.00.canonical_anchor--groot_n17_droid",
+          "candidate_id": "groot_n17_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "8bda0a2783aa7a545d47ebb6a3647e4a",
+            "digest": "sha256:e4e47483e70b3f0741ef56672ee71dfb52c898ec65d7903465d1263b95860bc8",
+            "size_bytes": 7755892
+          },
+          "frame_manifest": {
+            "artifact_id": "98ca451022fad96ad7a5656dce187713",
+            "digest": "sha256:44dcbd1beb380468bf298da21383d7b81e46a03577f8528522886c03848e3fdf",
+            "size_bytes": 1461701
+          },
+          "state_trace": {
+            "artifact_id": "c9615f728cbca80d861627bfb5d2ca8c",
+            "digest": "sha256:3b6a6a3ef99539c9c741943c1a2ccd8f5f44f2498d27060bb8aeee80a280ebd8",
+            "size_bytes": 3871420
+          },
+          "score_receipt": {
+            "artifact_id": "66b92b60cf58e3698f07c374deb57e3e",
+            "digest": "sha256:e50d3778789e33b7b357b8da0f5b13cd6e15ac50717b06a9cf65e3ddc095fd96",
+            "size_bytes": 246184
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/8bda0a2783aa7a545d47ebb6a3647e4a",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.00.canonical_anchor--pi05_droid",
+          "candidate_id": "pi05_droid",
+          "terminal_state": "blocked",
+          "policy_outcome_interpretable": false,
+          "failure_taxonomy": "DroidActionExecutionError",
+          "review_video": {
+            "artifact_id": "aaa6458e70590dddaf822e016d9c83ce",
+            "digest": "sha256:8ae6f53eaf66a7e7a0cdd8f7d459e439f2f4d869968a445eb4fe2a870903ebc9",
+            "size_bytes": 303156
+          },
+          "frame_manifest": {
+            "artifact_id": "1d9dc039807adfb72223980e4cce93de",
+            "digest": "sha256:d129115e247e15a107f93afe0c9617add04d03a61302fe7b1a5d079c12b280a4",
+            "size_bytes": 48905
+          },
+          "state_trace": null,
+          "score_receipt": null,
+          "evidence_gaps": [
+            "action_delivery_readback",
+            "contact_force_trace",
+            "reset_state",
+            "score_receipt",
+            "state_trace",
+            "task_object_trajectory"
+          ],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/aaa6458e70590dddaf822e016d9c83ce",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.01.canonical_anchor--groot_n17_droid",
+          "candidate_id": "groot_n17_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "c520e824335ab2533c42bf3a7e5459d9",
+            "digest": "sha256:5879dece46b4df897773193ba571e6474fcddd579bdae79a906a5c74dd36dc12",
+            "size_bytes": 8599444
+          },
+          "frame_manifest": {
+            "artifact_id": "7484893c70e1b41ccf0b13559b61b065",
+            "digest": "sha256:451168543fd30571e0effc2f62d6f852df39494849c5b01705aa24335b503d8c",
+            "size_bytes": 1461614
+          },
+          "state_trace": {
+            "artifact_id": "f59cdad70bd23526ca1768ad14642785",
+            "digest": "sha256:1ba622ac76d9366384da451d30980d75c6865cd56ea02ca4c103b6cfd47f4779",
+            "size_bytes": 3874690
+          },
+          "score_receipt": {
+            "artifact_id": "0daf032d83ce05cccd070893d43cdc3c",
+            "digest": "sha256:761b3fbe20f8a50f3f2d509036e99ffe517fd1b20f1b129d3a935546a674fbe8",
+            "size_bytes": 246123
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/c520e824335ab2533c42bf3a7e5459d9",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.01.canonical_anchor--pi05_droid",
+          "candidate_id": "pi05_droid",
+          "terminal_state": "blocked",
+          "policy_outcome_interpretable": false,
+          "failure_taxonomy": "DroidActionExecutionError",
+          "review_video": {
+            "artifact_id": "9b2beb249eaa60cc834975d1c30b8bda",
+            "digest": "sha256:e82edc8ce672377e7d15e2cd6ed5dda3349006f097eaec26ec4f7648610e9367",
+            "size_bytes": 2321183
+          },
+          "frame_manifest": {
+            "artifact_id": "3ce219439365d240450575e6d1b55f87",
+            "digest": "sha256:23865c91625ab7deccf608df2aca4a91e179f2dcb9ca4c9b826631f833b2228f",
+            "size_bytes": 423710
+          },
+          "state_trace": null,
+          "score_receipt": null,
+          "evidence_gaps": [
+            "action_delivery_readback",
+            "contact_force_trace",
+            "reset_state",
+            "score_receipt",
+            "state_trace",
+            "task_object_trajectory"
+          ],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/9b2beb249eaa60cc834975d1c30b8bda",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.04.illumination--groot_n17_droid",
+          "candidate_id": "groot_n17_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "e3bed8dc219ccdba7aee9be020b55168",
+            "digest": "sha256:11a96a673d69d3568434f614a69b67eab641f4ccb150b6b16d8079c3146d0b28",
+            "size_bytes": 9084372
+          },
+          "frame_manifest": {
+            "artifact_id": "92ab65d683a8811522209288a4d620f0",
+            "digest": "sha256:0edfb1c16729eaa0d64127e14fd2ce23f77aea1328d2ca538a718f9c86febe83",
+            "size_bytes": 1459452
+          },
+          "state_trace": {
+            "artifact_id": "197062d3b3acea87586156e457fcf40e",
+            "digest": "sha256:0ff36e577e0829bd88c9b538b0b2c02a221b7b5761f899ffc1ffee214925abc2",
+            "size_bytes": 3876068
+          },
+          "score_receipt": {
+            "artifact_id": "d09e21e0a635468929f88a0788194be2",
+            "digest": "sha256:7c4173c60ddee3deda97dc490ab076b6e4ec3dcb2dc67c12f49f91343bc665e3",
+            "size_bytes": 241171
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/e3bed8dc219ccdba7aee9be020b55168",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.04.illumination--pi05_droid",
+          "candidate_id": "pi05_droid",
+          "terminal_state": "blocked",
+          "policy_outcome_interpretable": false,
+          "failure_taxonomy": "DroidActionExecutionError",
+          "review_video": {
+            "artifact_id": "d5edf760532079ad120c145405e93647",
+            "digest": "sha256:4b46669285c13dbb63cf61b36eb98252224b377639e577a8b2ee4ae19ed9eff9",
+            "size_bytes": 3587756
+          },
+          "frame_manifest": {
+            "artifact_id": "b151402774c6110ffeef63eb4a17beb5",
+            "digest": "sha256:0ab0fed3f829dddb1bfdd34e7f8a009ee241d61622a2a0df7b2540aae5e4a459",
+            "size_bytes": 647918
+          },
+          "state_trace": null,
+          "score_receipt": null,
+          "evidence_gaps": [
+            "action_delivery_readback",
+            "contact_force_trace",
+            "reset_state",
+            "score_receipt",
+            "state_trace",
+            "task_object_trajectory"
+          ],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/d5edf760532079ad120c145405e93647",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.05.camera_sensor--groot_n17_droid",
+          "candidate_id": "groot_n17_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "1ece8cdf95a207a3d07bf68ace168cec",
+            "digest": "sha256:4adcd65f4917e700df89e4d0883821799da01ea6b873f65aba5b15fe924efa68",
+            "size_bytes": 7996936
+          },
+          "frame_manifest": {
+            "artifact_id": "f71bf58450e205210dc58364a0024a90",
+            "digest": "sha256:c914e85142cac99dfcb5c517e15619125dabc6c05fd41ac52030f60b2c9ddf50",
+            "size_bytes": 1460277
+          },
+          "state_trace": {
+            "artifact_id": "edaaf535d93424d2b74ec25ce5da6bd2",
+            "digest": "sha256:b2caa6c189492e0d06e94c7b8c97d8705723033420f01bd8477fb39c9e026e26",
+            "size_bytes": 3877367
+          },
+          "score_receipt": {
+            "artifact_id": "ddf218d5cf26a41dd6bf7cf3bbab9c16",
+            "digest": "sha256:97fe838b8a9da975c382773f9737f15bbf008eb0e4ca42abc11a8b96517fffc6",
+            "size_bytes": 247120
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/1ece8cdf95a207a3d07bf68ace168cec",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.05.camera_sensor--pi05_droid",
+          "candidate_id": "pi05_droid",
+          "terminal_state": "blocked",
+          "policy_outcome_interpretable": false,
+          "failure_taxonomy": "DroidActionExecutionError",
+          "review_video": {
+            "artifact_id": "daf0598c3c25193fe27dd1b469613eb2",
+            "digest": "sha256:e4f4c919664de8684b29e9bdbb1297ad791e250e1291eeef724431cb8e54f42d",
+            "size_bytes": 6196353
+          },
+          "frame_manifest": {
+            "artifact_id": "c248976bc8eadc7a13cc3c548446a973",
+            "digest": "sha256:bc40f46d9dc70e2f2aebcccadedfad6807e6804b99b576c3c8e6bc9152d37726",
+            "size_bytes": 1060676
+          },
+          "state_trace": null,
+          "score_receipt": null,
+          "evidence_gaps": [
+            "action_delivery_readback",
+            "contact_force_trace",
+            "reset_state",
+            "score_receipt",
+            "state_trace",
+            "task_object_trajectory"
+          ],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/daf0598c3c25193fe27dd1b469613eb2",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.06.bounded_physics--groot_n17_droid",
+          "candidate_id": "groot_n17_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "660f0cca34b06ccd57cc29738442c747",
+            "digest": "sha256:d36f84989fc928fe508099d8696800217d7c36b8e82caf229f1c4ed25c9b9cd1",
+            "size_bytes": 8425325
+          },
+          "frame_manifest": {
+            "artifact_id": "70094b00fd6da1a22e11e21c08a894ed",
+            "digest": "sha256:dc5a97f53c5537505b0ff09cf12ef00260bdd297cc4e5cba80ad2f10c9b66632",
+            "size_bytes": 1461164
+          },
+          "state_trace": {
+            "artifact_id": "40ce86932ade6a8fee7b9ba498fa15ba",
+            "digest": "sha256:bcbf94fbc4585a82571fc2292aa012c5d26a78e2dbb5d63777135d15f1751bac",
+            "size_bytes": 3871547
+          },
+          "score_receipt": {
+            "artifact_id": "aaeded62689615664e48812564061dce",
+            "digest": "sha256:7a18ae66da938f9ad279c2cbf374ff4b6f9a92f36602be4583bcfbc6f17602b3",
+            "size_bytes": 248545
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/660f0cca34b06ccd57cc29738442c747",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.06.bounded_physics--pi05_droid",
+          "candidate_id": "pi05_droid",
+          "terminal_state": "blocked",
+          "policy_outcome_interpretable": false,
+          "failure_taxonomy": "DroidActionExecutionError",
+          "review_video": {
+            "artifact_id": "510dd64957cfeccee4038fe46eb5d940",
+            "digest": "sha256:c34c3c11c3305c86d193188d13a818de3986afd2b6fe1fd8f89ae7fa7243d5d9",
+            "size_bytes": 1505775
+          },
+          "frame_manifest": {
+            "artifact_id": "46834fdfa980cdc46ad453d923b2c6be",
+            "digest": "sha256:84a014b950d30d7c42cd5949607450b4f710b548af54e153c3678349ac28d6ec",
+            "size_bytes": 273667
+          },
+          "state_trace": null,
+          "score_receipt": null,
+          "evidence_gaps": [
+            "action_delivery_readback",
+            "contact_force_trace",
+            "reset_state",
+            "score_receipt",
+            "state_trace",
+            "task_object_trajectory"
+          ],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/510dd64957cfeccee4038fe46eb5d940",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.07.admitted_object_material_cousin--groot_n17_droid",
+          "candidate_id": "groot_n17_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "9f0e29385a89b0092726227a5324e87b",
+            "digest": "sha256:af2b7074f343ef287f5cbf78c0a799a3c20cd8e1993e11c08c1079c0c27e9c8c",
+            "size_bytes": 8489230
+          },
+          "frame_manifest": {
+            "artifact_id": "fcab2f3e28f9e15b6e9c47797547602d",
+            "digest": "sha256:91b618a416db7bcc220f3077c0fa90bc134e25bacb399035b2ae33647e5949cb",
+            "size_bytes": 1469141
+          },
+          "state_trace": {
+            "artifact_id": "ea59ce8818f877ee3a216a5315b883aa",
+            "digest": "sha256:ee80f66c431c05668a8b8b729c701e19747e93c18179770c5e974b966496c434",
+            "size_bytes": 3873356
+          },
+          "score_receipt": {
+            "artifact_id": "4b91c9a6a5f4f02aff907dec6b620ca3",
+            "digest": "sha256:f6f9c6992df5e8b68d6b8d98ab9da280b7db20114031fe6cd2d3f9e44c89e71c",
+            "size_bytes": 247935
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/9f0e29385a89b0092726227a5324e87b",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        },
+        {
+          "episode_id": "operator-policy-841757-c92ea670efac-astra-book-tray--scene841757.quick10.07.admitted_object_material_cousin--pi05_droid",
+          "candidate_id": "pi05_droid",
+          "terminal_state": "completed",
+          "policy_outcome_interpretable": true,
+          "failure_taxonomy": null,
+          "review_video": {
+            "artifact_id": "75a8647499f4678ce9c44837c83a93f2",
+            "digest": "sha256:4c7ba82ef84db729f34664a58f82b031b83631452385d800b06dedf73f7dbb2e",
+            "size_bytes": 7056436
+          },
+          "frame_manifest": {
+            "artifact_id": "4d039e11c72a38bb687d1c2c098b6939",
+            "digest": "sha256:ec5ef9059b10de2c55058c89b70096249e645e3b0b8eb0011adf7a533198636d",
+            "size_bytes": 1466367
+          },
+          "state_trace": {
+            "artifact_id": "6a5615a9b9d63cdda192814e49f7e44d",
+            "digest": "sha256:7c280070e792dd6eedf6d9dcfb07d02a1a13a4746edf66b56d8ec9d565f37a83",
+            "size_bytes": 3870478
+          },
+          "score_receipt": {
+            "artifact_id": "99a99ac9d88cf689b8b84de3634f19fe",
+            "digest": "sha256:07338754c3d81647a37ac3a1548acfa8c784f384fdf40fcf2267dcbb1d097914",
+            "size_bytes": 241282
+          },
+          "evidence_gaps": [],
+          "authenticated_read_route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-c92ea670efac-astra-book-tray/artifacts/75a8647499f4678ce9c44837c83a93f2",
+          "video_bytes_verified_in_this_task": false,
+          "independent_label": null,
+          "provider_disclosure_rights": "not_established_in_inspected_metadata"
+        }
+      ]
+    }
+  ],
+  "metadata_bytes_verified": [
+    {
+      "artifact_id": "88be84d8fb2e273e72b326c25bf3527a",
+      "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/evidence/cell_runs/00/episodes/operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--groot_n17_droid.score_receipt.json",
+      "sha256": "sha256:3bb6565bb0b109693d54ecf2c7159e8b9944c57977b1bf073a3c4ed747f51ed8",
+      "size_bytes": 65667,
+      "schema_version": "adp_rigid_task_scoring.v2",
+      "retrieval": "digest_and_size_checked_existing_operator_door_GET_fs_read",
+      "metadata_bytes_verified": true,
+      "raw_bytes_committed_to_repository": false
+    },
+    {
+      "artifact_id": "66261fb4aac3b5be37760cc669eccef1",
+      "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/evidence/cell_runs/00/episodes/operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--groot_n17_droid.state_trace.json",
+      "sha256": "sha256:5e86ab0ef130d75f0da04defea50a50873d7befbac4a57ed2ebe7f95b226c926",
+      "size_bytes": 3625135,
+      "schema_version": "policy_episode_state_trace.v1",
+      "retrieval": "digest_and_size_checked_existing_operator_door_GET_fs_read",
+      "metadata_bytes_verified": true,
+      "raw_bytes_committed_to_repository": false
+    },
+    {
+      "artifact_id": "488494672183510910e88eaf8f4c403b",
+      "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/evidence/cell_runs/00/episodes/media/operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--groot_n17_droid/multicamera_frame_manifest.json",
+      "sha256": "sha256:c1f3dfcea53df3799d2f0f56366ee62029f9d5841c5f713dd103b98c87dd9c51",
+      "size_bytes": 1466943,
+      "schema_version": "adp_multicamera_observation_frame_manifest.v1",
+      "retrieval": "digest_and_size_checked_existing_operator_door_GET_fs_read",
+      "metadata_bytes_verified": true,
+      "raw_bytes_committed_to_repository": false
+    }
+  ],
+  "native_evidence_readback": {
+    "episode_id": "operator-policy-841757-ed97253b9dbe-verified-candidate-failure--scene841757.quick10.00.canonical_anchor--groot_n17_droid",
+    "task_state_sample_count": 693,
+    "policy_input_observation_count": 84,
+    "required_camera_ids": [
+      "external",
+      "overview",
+      "wrist"
+    ],
+    "terminal_position_pointer": "/task_state_samples/692/task_scoring_pose_world",
+    "terminal_position_world_m": [
+      -2.0134036296876787,
+      -3.470208411623887,
+      0.28700004704293625
+    ],
+    "contract_containment_bounds_world_m": {
+      "maximum": [
+        -2.0242786,
+        -2.9472899860558797,
+        0.2910687
+      ],
+      "minimum": [
+        -2.0342786,
+        -2.9572899860558794,
+        0.2810687
+      ]
+    },
+    "terminal_position_inside_bounds": false,
+    "authority": "independent arithmetic readback of native retained trace versus confirmed contract; unreviewed candidate finding, not a confirmed corpus label or physical validation",
+    "criterion_supported": "destination_containment failure; other criteria are not independently adjudicated here"
+  },
+  "access_probe": {
+    "method": "GET",
+    "route": "/api/live-pipeline/task-evaluation-runs/operator-policy-841757-ed97253b9dbe-verified-candidate-failure/artifacts/0c8b7d0fde7169085124b2eed7300cca",
+    "status": 401,
+    "response": "intake requires HMAC signature and nonce headers",
+    "result": "Existing operator-door metadata read scope does not supply result-store HMAC admission; no new credential was requested or configured"
+  },
+  "rights_and_label_gap": {
+    "offline_metadata_review": "Explicit user authorization; exact bytes retrieved with existing authenticated read scope",
+    "input_disclosure_to_model_provider": "No exact-input owner confirmation or provider retention/training terms established in inspected projection/setup/registration records",
+    "independent_labels": "No confirmed independent acceptance reviews found in the inspected records; interpretation is null and existing scorer metrics are not ground truth",
+    "task_spec_replay_inputs": "Original native packet/scene plan/runtime source in setup point to /Users/nijelhunt_1 workspace paths; not imported into a complete byte-bound episode bundle. Current source closure is pinned separately, and real retained-score replay has not occurred",
+    "categories": "No independently labelled successful/ambiguous/subtle/occlusion/undo sample established; blocked attempts require typed evidence-gap adjudication, not automatic task-failure or ambiguous labels"
+  },
+  "minimum_missing_inputs": [
+    "Approved existing result-store HMAC read path or owner-delivered digest-bound bundles for the exact selected historical episodes, including authoritative lossless frames and complete replay task specs; no new credentials or access changes authorized",
+    "Independent reviewed predicates or human evidence labels covering the actual confirmed contract; current-grader agreement alone is insufficient",
+    "Human confirmation of exact footage/state/source rights and allowed provider disclosure/retention/training terms",
+    "Later: admitted live payload builder, official GPT-6.1 Sol quote/token accounting and separate aggregate reservations/spend approval; paid work is deferred during the billing incident"
+  ],
+  "historical_v28_offload": {
+    "path": "/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries/operator-native-diagnostic-841757-v28-flecks-retained-replay.offloaded.v1.json",
+    "archive_uri": "s3://blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/artifacts/control-plane-evidence/sha256/3b7a7c9374865c3a13f876edc5e323671f09e88b570fa9a4622112c564ae474e/evidence.tar",
+    "note": "178-member, 492,912,640-byte offload archive metadata had no mp4/mov member; not downloaded or counted as an episode"
+  },
+  "paid_model_calls": 0,
+  "gpu_runs": 0,
+  "model_provider_uploads": 0,
+  "production_grader_changed": false,
+  "trace_digest": "sha256:5ac592631b389fc214a36c8586af5c9a764dc5693afe616e64943fbc929285aa"
+}
