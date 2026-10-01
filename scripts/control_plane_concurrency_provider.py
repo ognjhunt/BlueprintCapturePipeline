@@ -83,6 +83,9 @@ def fixture_scene_artifacts(*, envelope: dict, output_root: Path) -> list[dict]:
     subject_path = "/Root" + selection["source_object_id"]
     if not stage.RemovePrim(subject_path):
         raise ValueError("harness_fixture_subject_prim_missing")
+    for prim in stage.Traverse():
+        if prim.IsA(UsdGeom.Mesh):
+            UsdPhysics.CollisionAPI.Apply(prim)
     stage.GetRootLayer().Save()
     stage.GetRootLayer().Export(str(appearance))
     stage = None

@@ -168,8 +168,12 @@ def advance_fixture_preparation(*, intake: dict, object_root: Path,
             disk_reservation_root=reservation_root, storage_pins_root=pins_root,
             installed_source_environment={})
     rows = list((construction / "pending").glob("*.json"))
+    compilations = host / "episode-compilation"
+    episode_rows = list((compilations / "pending").glob("*.json"))
     return {"run": run, "construction_queue": construction,
             "object_bytes_fetched": store.read_bytes,
+            "compilation_queue": compilations,
+            "compilation_envelope": json.loads(episode_rows[0].read_text()) if len(episode_rows) == 1 else None,
             "construction_envelope": json.loads(rows[0].read_text()) if len(rows) == 1 else None}
 
 
