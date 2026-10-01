@@ -429,6 +429,10 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
         'experiment_restore_payload_changed')
     actions._hash_manifest(files, target, files.parents[target], measured, role='restore_activation_validate')
     _require(raw == actions._encoded(measured, 'manifest_digest', 1048576), 'experiment_restore_payload_changed')
+    # Hashing enters the confined payload reader. End that existing pass before
+    # rereading authenticated protected completion metadata; preserve the same
+    # controller, conserved counts and single scan-completion phase.
+    files.phase('scan_completion')
     if entry['lane'] == 'diagnostics':
         from .control_plane_lane_disk_diagnostic_references import DiagnosticReferences
         from .control_plane_lane_experiment_completion import selected_completion
@@ -438,7 +442,6 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
             dict(members=[closure['report_member'], *saved['members']]), issued=issued,
             held_pins=(files, reference, reference_fd))
         files._diagnostic_references = references
-    files.phase('scan_completion')
     acquisition.completed(files, manifest_selector, len(measured['members']))
     files.phase('finalize')
     prepared, _ = _document(files, Path(config.experiment_record_store) / (action['action_id'] + '.restored-head.json'),

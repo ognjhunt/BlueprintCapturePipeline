@@ -11,6 +11,8 @@ mandatory. This test does not supply process absence or completed robot proof.
 import os
 import stat
 import sys
+
+import pytest
 from pathlib import Path
 
 from tests.test_registered_disk_diagnostic_actions import configure, seal
@@ -21,8 +23,9 @@ from tests.test_registered_experiment_retirement_flow import _current_entry
 from tests.registered_disk_diagnostic_native_acceptance import _restore_conflict_before_publication
 
 
+@pytest.mark.parametrize('changed_completion', [False, True])
 def test_foreign_destination_refusal_can_replay_authenticated_original_stage(
-        installation, monkeypatch):  # noqa: F811
+        installation, monkeypatch, changed_completion):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
     from blueprint_pipeline import control_plane_lane_experiment_restore as restoration
     from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
@@ -30,6 +33,10 @@ def test_foreign_destination_refusal_can_replay_authenticated_original_stage(
     from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
     from blueprint_pipeline import control_plane_lane_disk_diagnostic_references as references
     value = installation
+    # The existing hermetic fixture projects all protected metadata to root;
+    # use that same group for restored-certificate rereads, not a host account.
+    from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
+    monkeypatch.setattr(consumer, '_blueprint_gid', lambda: 0)
     configure(value)
     config, settings, _, _ = value
     tables = {}
@@ -101,3 +108,22 @@ def test_foreign_destination_refusal_can_replay_authenticated_original_stage(
         expected_restore_intent=restore['restore_intent'], installed_config_path=value[0],
         now=lambda: 2902, _pins_root=value[0].parent / 'pins')
     assert outcome['decision'] == 'restored' and report.read_bytes() == original
+
+    report_identity = (report.stat().st_dev, report.stat().st_ino)
+    if changed_completion:
+        completed_record = value[2] / (intent_id + '.producer-completion.json')
+        completed_record.write_bytes(completed_record.read_bytes() + b' ')
+        with pytest.raises(ValueError, match='experiment_completion_changed'):
+            issuer.restore_registered_experiment(restore['action_id'],
+                expected_restore_intent=restore['restore_intent'], installed_config_path=value[0],
+                now=lambda: 2903, _pins_root=value[0].parent / 'pins')
+        assert (report.stat().st_dev, report.stat().st_ino) == report_identity
+        assert report.read_bytes() == original
+        return
+    repeated = issuer.restore_registered_experiment(restore['action_id'],
+        expected_restore_intent=restore['restore_intent'], installed_config_path=value[0],
+        now=lambda: 2903, _pins_root=value[0].parent / 'pins')
+    assert repeated['decision'] == 'restored'
+    assert repeated['receipt'] == outcome['receipt']
+    assert repeated['removed_logical_bytes'] == repeated['removed_allocated_bytes'] == 0
+    assert report.read_bytes() == original
