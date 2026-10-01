@@ -81,11 +81,8 @@ def reconcile_unlogged_creation(worker, events, observed, roots, monotonic):
         identifier = decision_id(worker.action_id, prefix[-1]['event_digest'])
         generation._require(len(worker.reconciliations) < 8, 'restore_reconciliation_limit')
         worker.reconciliations.append((prefix, identifier, selected, None))
-    try:
-        with worker.checkpoint(journal=True):
-            approval, approved, selected = worker.reconciliation_selected[-1]
-    except FileNotFoundError:
-        raise generation.HistoricalGenerationError('historical_generation_restore_reconciliation_approval_missing') from None
+    with worker.checkpoint(journal=True):
+        approval, approved, selected = worker.reconciliation_selected[-1]
     worker.reconciliations[-1] = (prefix, identifier, selected, None)
     scope = approval['packet']['scope']
     present = observed == approved

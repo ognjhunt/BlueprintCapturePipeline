@@ -112,7 +112,13 @@ def observe_historical_restore_reconciliation(*, installed_config_path, action_i
 
 def select_reconciliation(files, config, store, config_path, selected, events, identifier, selector, moment, *, consumed=None):
     """Fresh protected DELETE approval; current physical gates remain separate."""
-    value, raw = store.read(identifier)
+    try:
+        value, raw = store.read(identifier)
+    except FileNotFoundError:
+        # Classify absence while still inside the protected session. Its
+        # OSError boundary must continue to refuse every other IO failure.
+        raise generation.HistoricalGenerationError(
+            'historical_generation_restore_reconciliation_approval_missing') from None
     _require((selector is None or authority._selector(raw) == selector)
         and set(value) == _FIELDS and value['schema_version'] == SCHEMA
         and value['decision_id'] == identifier and value['action'] == 'discard_unfinished_restore_row'

@@ -46,3 +46,28 @@ def test_current_explicit_delete_returns_only_config_and_policy_selectors(histor
     assert authorize(historical_installation) == (
         selector(historical_installation[0].read_bytes()), selector(historical_installation[2].read_bytes()))
     assert (historical_installation[1] / 'one.log').read_bytes() == before
+
+
+def test_missing_reconciliation_approval_survives_authority_session(historical_installation):
+    from blueprint_pipeline import control_plane_lane_historical_authority as authority
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_authority import select_reconciliation
+    before = {path.name: path.read_bytes() for path in historical_installation[3].iterdir()}
+    with pytest.raises(ValueError, match='historical_generation_restore_reconciliation_approval_missing'):
+        with authority._session(historical_installation[0], authority._Operation(1030, lambda: 0)) as (files, config, store):
+            # The missing protected decision must refuse before any selector,
+            # packet, native fact or effect can be accepted.
+            select_reconciliation(files, config, store, historical_installation[0],
+                None, [], 'a' * 32, None, 1030)
+    assert {path.name: path.read_bytes() for path in historical_installation[3].iterdir()} == before
+
+
+def test_unreadable_reconciliation_stays_authority_io_refusal(historical_installation, monkeypatch):
+    from blueprint_pipeline import control_plane_lane_historical_authority as authority
+    from blueprint_pipeline.control_plane_lane_historical_restore_reconciliation_authority import select_reconciliation
+    def denied(*args, **kwargs):
+        raise PermissionError('unreadable protected decision')
+    monkeypatch.setattr(authority._Store, 'read', denied)
+    with pytest.raises(ValueError, match='historical_generation_authority_io_unavailable'):
+        with authority._session(historical_installation[0], authority._Operation(1030, lambda: 0)) as (files, config, store):
+            select_reconciliation(files, config, store, historical_installation[0],
+                None, [], 'a' * 32, None, 1030)

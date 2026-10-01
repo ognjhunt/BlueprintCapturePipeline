@@ -146,3 +146,32 @@ def test_later_phase_cannot_replace_a_missing_boundary_proof(tmp_path, change):
         result['recovered_access'] = 'true'
     with pytest.raises(AssertionError):
         native._assert_boundary_recovery(result, 'recovered_split', observations, ACTION, raw)
+
+
+def test_controller_refusals_are_separate_from_actual_durable_receipt():
+    receipt = dict(status='completed', action='delete', removed_files=2)
+    decorated = dict(receipt, _fixture_reference_refusals=[dict(REFUSED)])
+    assert native._durable_receipt(decorated) == receipt
+    assert decorated['_fixture_reference_refusals'] == [REFUSED]
+    assert native._durable_receipt(dict(decorated, other='unexpected')) != receipt
+
+
+@pytest.mark.parametrize('expected', ['recovered_stage', 'recovered_split'])
+def test_actual_later_restore_observation_may_follow_refused_boundary(tmp_path, expected):
+    import hashlib
+    _, raw = original_journal(tmp_path)
+    result = dict(status='completed', idempotent=True, restored_files=0, restored_logical_bytes=0)
+    observations = [dict(action_id=ACTION, code=REFUSED['code'],
+        original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=1)]
+    native._assert_boundary_recovery(result, expected, observations, ACTION, raw)
+
+
+@pytest.mark.parametrize('phase', ['restarted_unwritten', 'recovered_prefix', 'recovered_stage'])
+def test_stage_boundary_cannot_move_backwards_after_refusal(tmp_path, phase):
+    import hashlib
+    _, raw = original_journal(tmp_path)
+    result = dict(status='completed', **{phase: True}, restored_files=0, restored_logical_bytes=0)
+    observations = [dict(action_id=ACTION, code=REFUSED['code'],
+        original_intent_sha256=hashlib.sha256(raw).hexdigest(), attempt=1)]
+    with pytest.raises(AssertionError):
+        native._assert_boundary_recovery(result, 'recovered_split', observations, ACTION, raw)

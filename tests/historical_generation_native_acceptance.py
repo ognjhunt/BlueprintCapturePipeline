@@ -383,6 +383,12 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     return dict(receipt, _fixture_reference_refusals=observations) if observations else receipt
 
 
+def _durable_receipt(receipt):
+    # Controller observations describe earlier real units. They are retained
+    # separately and never become part of the worker's immutable final event.
+    return {key: value for key, value in receipt.items() if key != '_fixture_reference_refusals'}
+
+
 def _later_reference_attempts(invoke, journals, action_id, *, observations=None):
     """Keep genuine unknowns; at most three later SAME-operation attempts.
 
@@ -456,9 +462,11 @@ def _assert_boundary_recovery(receipt, expected, observations, action_id, origin
     assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
     if receipt.get(expected) is True:
         return
-    assert expected == 'recovered_split'
-    assert any(receipt.get(field) is True for field in (
-        'recovered_publication', 'recovered_before_final', 'recovered_access', 'idempotent'))
+    assert expected in ('recovered_stage', 'recovered_split')
+    later = ('recovered_publication', 'recovered_before_final', 'recovered_access', 'idempotent')
+    if expected == 'recovered_stage':
+        later += ('recovered_split',)
+    assert any(receipt.get(field) is True for field in later)
     assert 0 < len(observations) <= 3
     assert all(row == dict(action_id=action_id, code='historical_generation_process_unknown',
         original_intent_sha256=hashlib.sha256(original_intent).hexdigest(), attempt=index + 1)
@@ -919,7 +927,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
         assert receipt['root_directory_retained'] is True and not list(target.iterdir())
         assert target.stat().st_uid == 0 and target.stat().st_mode & 0o777 == 0o700
         events = [json.loads(path.read_bytes()) for path in sorted((journals / action_id).glob('e-*.json'))]
-        assert events[-1]['kind'] == 'final' and events[-1]['body'] == receipt
+        assert events[-1]['kind'] == 'final' and events[-1]['body'] == _durable_receipt(receipt)
         assert len([event for event in events if event['kind'] == 'removed']) == (2 if interruption == 'unlink' else 3)
         uncertain = [event for event in events if event['kind'] == 'removal_uncertain']
         assert len(uncertain) == int(interruption == 'unlink')
@@ -1138,8 +1146,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
                             'publish_observed': 'recovered_split', 'stage_remove_intent': 'recovered_split',
                             'stage_remove_effect': 'recovered_split'}
                 recovery.update(unlogged_directory='recovered_prefix', unlogged_member='recovered_prefix')
-                if recovery[restore_interruption] == 'recovered_split':
-                    _assert_boundary_recovery(restored, 'recovered_split',
+                if recovery[restore_interruption] in ('recovered_stage', 'recovered_split'):
+                    _assert_boundary_recovery(restored, recovery[restore_interruption],
                         restored.get('_fixture_reference_refusals', []), restore['action_id'],
                         interrupted_prefix['e-00000.json'])
                 else:
