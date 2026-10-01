@@ -163,6 +163,41 @@ def test_inspection_is_read_only_and_separates_authorities(fixture):
     assert candidate["enabled"] is candidate["config"]["enabled"] is candidate["workflow"]["enabled"] is False
 
 
+@pytest.mark.parametrize("captured_offset,accepted", [(2, True), (4, False), (-26*3600, False)])
+def test_crm_read_validates_at_completion_without_rewriting_timestamp(fixture, monkeypatch, captured_offset, accepted):
+    bridge, ledger, api, receipt, _, cache, _, crm, _ = fixture
+    snapshot = json.loads(crm.read_text())
+    snapshot["captured_at"] = (NOW+timedelta(seconds=captured_offset)).isoformat()
+    calls = []
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            calls.append("clock")
+            return NOW if len(calls) == 1 else NOW+timedelta(seconds=3)
+
+    original_call = bridge.call
+
+    def read(op, **fields):
+        if op == "read_crm":
+            assert calls == ["clock"]  # Only the earlier admission time exists.
+            return snapshot
+        return original_call(op, **fields)
+
+    monkeypatch.setattr(canary, "datetime", Clock)
+    monkeypatch.setattr(bridge, "call", read)
+    if accepted:
+        plan = canary.inspect(bridge, APPROVAL, receipt, api, cache)
+        retained = json.loads(base64.b64decode(plan["inputs"]["crm.json"]))
+        assert retained == snapshot and plan["crm_values_digest"] == canary.digest(snapshot["values"])
+    else:
+        with pytest.raises(Refusal, match="crm_snapshot_missing_incomplete_or_stale"):
+            canary.inspect(bridge, APPROVAL, receipt, api, cache)
+    assert calls == ["clock", "clock"]
+    assert ledger.rows() == [] and bridge.call("control") is None
+    assert not api.payloads and not api.inputs
+
+
 def test_original_row_drift_refuses_staging(fixture):
     bridge, ledger, _, receipt, plan, _, _, _, _ = fixture
     bridge.call("test_origin_change")

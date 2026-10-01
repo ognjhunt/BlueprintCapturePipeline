@@ -99,8 +99,7 @@ class CanaryBridge(Bridge):
 
 
 def inspect(bridge, approval, receipt, api, cache, now=None):
-    now = now or datetime.now(timezone.utc)
-    approved = admission(approval, now)
+    approved = admission(approval, now or datetime.now(timezone.utc))
     origin = bridge.call("origin")
     control = origin["control"]
     row = origin["oct1_row"]
@@ -114,14 +113,17 @@ def inspect(bridge, approval, receipt, api, cache, now=None):
     inputs = {"knowledge.json": base64.b64decode(bridge.call("origin_file", name="knowledge.json"), validate=True),
               "refresh-policy.json": base64.b64decode(bridge.call("origin_file", name="refresh-policy.json"), validate=True)}
     snapshot = bridge.call("read_crm")
+    # The reader timestamps its snapshot after the network request. Compare it
+    # with a time sampled after that read, never the earlier admission time.
+    validated_at = now or datetime.now(timezone.utc)
     inputs["crm.json"] = (canonical(snapshot) + "\n").encode()
     for name, value in inputs.items():
         save_bytes(cache / name, value)
     cfg = {**control_configuration(control), "crm_snapshot": str(cache / "crm.json"),
            "knowledge_snapshot": str(cache / "knowledge.json"), "knowledge_refresh_policy": str(cache / "refresh-policy.json")}
     configuration(cfg)
-    _, known = crm_snapshot(cfg["crm_snapshot"], now)
-    load_knowledge_bundle(cfg, now)
+    _, known = crm_snapshot(cfg["crm_snapshot"], validated_at)
+    load_knowledge_bundle(cfg, validated_at)
     checked = preflight(api, migration.INSTRUCTIONS, search.PROFILE)
     candidate = copy.deepcopy(control)
     candidate["workflow"]["enabled"] = False
