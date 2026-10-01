@@ -104,6 +104,39 @@ def _held_fd_keeps(value, action, pins, report, account):
         assert report.read_bytes() == original
 
 
+def _encoded_queue_keeps(value, action, pins, report):
+    """The actual installed GC must retain a URI-selected current payload."""
+    from urllib.parse import unquote, urlparse
+    from blueprint_pipeline.control_plane_lane_owner_consents import _metadata
+    selected = 'file://' + ''.join('/' if byte == 47 else '%' + format(byte, '02X')
+                                    for byte in os.fsencode(report))
+    parsed = urlparse(selected)
+    assert parsed.scheme == 'file' and parsed.netloc == ''
+    assert Path(unquote(parsed.path)) == report
+    assert report.parent.name not in selected and str(report.parent) not in selected
+    queue = value['config'].parent / 'reference-tables/queue/current-diagnostic.json'
+    original = encoded(dict(source_uri=selected))
+    descriptor = os.open(queue, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(original)
+        stream.flush()
+        os.fsync(stream.fileno())
+    before, initial = report.read_bytes(), _metadata(report.stat())
+    queued = _metadata(queue.stat())
+    try:
+        result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=3)
+        row = next(row for row in result['report']['registered_experiments']['outcomes']
+                   if row['action_id'] == action['action_id'])
+        assert row['decision'] == 'kept' and row['reason'] == 'experiment_diagnostic_queue_reference', row
+        assert row['removed_logical_bytes'] == row['removed_allocated_bytes'] == 0 and row['receipt'] is None, row
+        assert not result['objects'] and not result['object_metadata']
+        assert report.read_bytes() == before and _metadata(report.stat()) == initial
+        assert queue.read_bytes() == original and _metadata(queue.stat()) == queued
+    finally:
+        assert _metadata(queue.stat()) == queued and queue.read_bytes() == original
+        queue.unlink()  # Only this exact owned temporary queued row.
+
+
 def _restore_reference_after_publication(value, restore, pins, target, account, original):
     """Expose a real foreign FD after journaled link, before staged unlink."""
     from blueprint_pipeline import control_plane_lane_experiment_actions as actions
@@ -235,6 +268,7 @@ def run(root):
             apply=True, ack=RUN_ACK, lane_scratch_roots=roots, lane_scratch_enabled=False,
             _experiment_config_path=value['config'], now=time.time)
         assert disabled['registered_experiments']['enabled'] is False and report.read_bytes() == before
+        _encoded_queue_keeps(value, action, pins, report)
         _held_fd_keeps(value, action, pins, report, account)
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=1)
         row = next(row for row in result['report']['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
