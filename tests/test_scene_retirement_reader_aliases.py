@@ -162,7 +162,9 @@ def test_manual_foreign_uid_with_service_group_has_unclosed_access_lifetime(acce
         foreign['gid'][('primary', 'effective', 'saved', 'filesystem').index(access_group)] = service_gid
     # There need not be any current FD or map: this identity can traverse750
     # members after the scan without an enrolled SH participant.
-    assert not supervisor._outside_service_identity(foreign, service_uid, service_gid)
+    foreign.update(kernel_thread=False, ppid=1)
+    with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
+        supervisor._require_classified_readers({os.getpid() + 100000: foreign}, {}, set())
 
 
 @pytest.mark.parametrize('groups', ['20 21', '', 'unknown', '4294967296', ' '.join(['20'] * 65), None])
@@ -213,11 +215,46 @@ def test_unknown_capable_reader_has_unclosed_access_lifetime(field, capability):
     row = dict(uid=[10001] * 4, gid=[10002] * 4, groups=[], status=status)
     # Actual capability-enabled access need not already have a current FD.
     # This projection pins admission logic; it is not native reader clearance.
-    assert not supervisor._outside_service_identity(row, 1000, 1001)
+    row.update(kernel_thread=False, ppid=1)
+    with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
+        supervisor._require_classified_readers({os.getpid() + 100000: row}, {}, set())
 
 
-@pytest.mark.parametrize('no_new_privs,bound,closed', [('0', '4', False), ('1', '4', True), ('0', '0', False), ('1', '0', True)])
-def test_unknown_reader_cannot_acquire_executable_capabilities(no_new_privs, bound, closed):
+@pytest.mark.parametrize('no_new_privs,bound', [('0', '4'), ('1', '4'), ('0', '0'), ('1', '0')])
+def test_unknown_reader_cannot_acquire_executable_capabilities(no_new_privs, bound):
     status = dict(CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd=bound, NoNewPrivs=no_new_privs)
     row = dict(uid=[10001] * 4, gid=[10002] * 4, groups=[], status=status)
-    assert supervisor._outside_service_identity(row, 1000, 1001) is closed
+    row.update(kernel_thread=False, ppid=1)
+    with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
+        supervisor._require_classified_readers({os.getpid() + 100000: row}, {}, set())
+
+
+@pytest.mark.parametrize('route_mode,payload_mode,foreign_group', [(0o755, 0o644, False), (0o750, 0o640, True)])
+def test_readable_actual_payload_does_not_close_unclassified_reader_lifetime(tmp_path, route_mode, payload_mode, foreign_group):
+    route = tmp_path / 'selected-cache'
+    route.mkdir(mode=route_mode)
+    route.chmod(route_mode)
+    payload = route / 'actual.payload'
+    payload.write_bytes(b'actual-reproducible-cache')
+    payload.chmod(payload_mode)
+    birth = payload.stat()
+    service_uid, service_gid = os.getuid(), os.getgid() + 10000
+    # Explicit foreign identity projection; permission bytes are real and are
+    # preserved. Absence of a current FD/map never proves future admission.
+    row = dict(uid=[service_uid + 10000] * 4, gid=[birth.st_gid if foreign_group else service_gid + 1] * 4,
+               groups=[], status=dict(CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd='0', NoNewPrivs='1'),
+               kernel_thread=False, ppid=1)
+    with pytest.raises(ValueError, match='scene_retirement_reader_closure_unproven'):
+        supervisor._require_classified_readers({os.getpid() + 100000: row}, {}, set())
+    assert payload.read_bytes() == b'actual-reproducible-cache'
+    assert (payload.stat().st_ino, payload.stat().st_mode, payload.stat().st_gid) == (birth.st_ino, birth.st_mode, birth.st_gid)
+
+
+@pytest.mark.parametrize('classification', ['caller', 'kernel', 'continuous', 'platform'])
+def test_only_previously_authenticated_reader_classes_retain_exceptions(classification):
+    # Classification sets are projections of the independently authenticated
+    # upstream records. This only checks that the existing exceptions remain.
+    pid = os.getpid() if classification == 'caller' else os.getpid() + 100000
+    row = dict(kernel_thread=classification == 'kernel')
+    supervisor._require_classified_readers({pid: row}, {pid} if classification == 'continuous' else {},
+                                          {pid} if classification == 'platform' else set())

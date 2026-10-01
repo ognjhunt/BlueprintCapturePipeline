@@ -843,15 +843,19 @@ def _platform_processes(rows, snapshot, native):
     return result
 
 
-def _outside_service_identity(row, service_uid, service_gid):
-    """An unrelated UID alone does not prove absence of service access."""
-    return (0 not in row['uid'] and service_uid not in row['uid']
-            and service_gid not in row['gid'] and service_gid not in row['groups']
-            and all(int(row['status'][key], 16) == 0
-                    for key in ('CapEff', 'CapPrm', 'CapInh', 'CapAmb'))
-            # A zero bounding mask alone still permits setuid/setgid credentials.
-            # NNP is inherited and prevents new executable credential authority.
-            and row['status']['NoNewPrivs'] == '1')
+def _require_classified_readers(snapshot, active, platform):
+    """Only independently authenticated lifetimes can exclude future access.
+
+    UID/GID, capabilities and absent current exposure cannot prove inaccessible
+    payloads: producer-owned cache modes and actual routes may permit another
+    identity to open a member after this scan without taking the shared fence.
+    """
+    for pid, row in snapshot.items():
+        if pid == os.getpid() or row['kernel_thread'] or pid in active:
+            continue
+        # These exact OS MainPIDs were independently authenticated upstream;
+        # no child, session or otherwise unclassified process inherits them.
+        _require(pid in platform, _READER_ERROR)
 
 
 def _require_current_reader_closure(policy, allowance):
@@ -859,8 +863,8 @@ def _require_current_reader_closure(policy, allowance):
 
     No observed absence clears a legacy/manual/external lifetime. Known installed
     workers must be idle; only the two freshly root-bootstrapped fixed continuous
-    processes may be alive. Unknown processes with the service/root identity or
-    actual member exposure, and every unowned descendant, refuse retirement.
+    processes may be alive. Every unclassified process lifetime refuses retirement,
+    irrespective of identity separation or absence of current member exposure.
     """
     allowance.tick()
 
@@ -896,16 +900,7 @@ def _require_current_reader_closure(policy, allowance):
             pid = int(unit['MainPID'])
             active[pid] = unit
             receipts[pid] = _boot_record(policy, before[pid], module, unit, sources, boot_id, native)
-        service_uid, service_gid = access._service_identity()
-        for pid, row in before.items():
-            if pid == os.getpid() or row['kernel_thread']:
-                continue
-            if pid in active:
-                continue
-            # Native OS MainPIDs were independently bound above; no child,
-            # session, root Python or manual process inherits that classification.
-            _require(pid in platform or (_outside_service_identity(row, service_uid, service_gid)
-                                  and row['ppid'] not in active), _READER_ERROR)
+        _require_classified_readers(before, active, platform)
         after = _snapshot(proc, roots, native)
         _require(_reader_inodes(roots, native) == native.inventory, _READER_ERROR)
         _require(after == before and _continuous_rows(allowance) == units
