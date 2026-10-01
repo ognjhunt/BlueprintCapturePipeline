@@ -1,4 +1,12 @@
-# Reviewed knowledge snapshot and research v2
+# Reviewed knowledge snapshot and research v2/v3
+
+In v3, proposed knowledge-delta evidence may retain `assertion_scope` as
+`as_of_background`, `current_operational`, or `deployment_critical`. It describes
+the proposed claim's scope, not factual approval or permission to change the
+reviewed knowledge snapshot. Scope-free v3 deltas remain supported; v2 delta
+evidence retains its seven-field contract. Delta publisher names are bounded to
+200 characters in both the schema and runtime. All original dates, quotes,
+evidence levels, raw artifact bytes and digests remain unchanged.
 
 This change is authorized by the owner's explicit 2026-09-30 request to implement
 Blueprint's versioned knowledge snapshot and research runner integration. It is a

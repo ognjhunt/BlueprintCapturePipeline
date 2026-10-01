@@ -92,7 +92,14 @@ def deltas(values, day, context, observed_at=None, contract_version=2):
             text(unknown)
         require(isinstance(delta["evidence"], list) and 1 <= len(delta["evidence"]) <= 4, "knowledge_delta_evidence_required")
         for item in delta["evidence"]:
-            shape(item, {"url", "publisher", "publication_date", "source_checked_at", "classification", "evidence_level", "quote"})
+            shape(item, {"url", "publisher", "publication_date", "source_checked_at", "classification", "evidence_level", "quote"},
+                  {"assertion_scope"} if contract_version == 3 else ())
+            # v3's scope describes this proposed claim; it does not approve it
+            # or rewrite the reviewed snapshot. Older scope-free deltas remain valid.
+            if "assertion_scope" in item:
+                require(isinstance(item["assertion_scope"], str)
+                        and item["assertion_scope"] in {"as_of_background", "current_operational", "deployment_critical"},
+                        "knowledge_delta_assertion_scope_invalid")
             url(item["url"])
             text(item["publisher"], 200)
             text(item["quote"])

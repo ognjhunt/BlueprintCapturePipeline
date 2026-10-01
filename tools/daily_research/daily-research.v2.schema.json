@@ -418,7 +418,7 @@
         "publisher": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 2000
+          "maxLength": 200
         },
         "publication_date": {
           "anyOf": [
