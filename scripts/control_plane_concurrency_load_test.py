@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 import os
 import argparse
+import sys
+import socket
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -24,6 +26,57 @@ def child_environment(environment: dict[str, str]) -> dict[str, str]:
     """Allow runtime paths only; production credentials and root settings never leak."""
     return {**{key: value for key, value in environment.items()
               if key in {"PATH", "PYTHONPATH", "LANG", "LC_ALL"}}, "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def install_child_fences(owned_roots: Sequence[Path]) -> None:
+    """A fresh benchmark child has no network, provider subprocess or live writer."""
+    roots = tuple(Path(root).resolve(strict=True) for root in owned_roots)
+
+    def owned(path: Any) -> bool:
+        if isinstance(path, int):
+            # Only standard streams and descriptors already opened by this
+            # fresh child arrive here; every path open was audited separately.
+            return True
+        try:
+            target = Path(os.fsdecode(path)).resolve()
+        except (TypeError, ValueError):
+            return False
+        return any(target == root or target.is_relative_to(root) for root in roots)
+
+    def check(path: Any) -> None:
+        if not owned(path):
+            raise PermissionError("concurrency_harness_write_outside_owned_roots")
+
+    def audit(event: str, args: tuple[Any, ...]) -> None:
+        if event in {"socket.connect", "socket.connect_ex", "socket.bind"}:
+            if args[0].family == socket.AF_UNIX and owned(args[1]):
+                return
+            raise PermissionError("concurrency_harness_network_denied")
+        if event == "socket.getaddrinfo":
+            raise PermissionError("concurrency_harness_network_denied")
+        if event == "subprocess.Popen":
+            command = args[1]
+            if (not isinstance(command, (list, tuple)) or len(command) < 2
+                    or Path(command[0]).name != "git"
+                    or command[1] not in {"rev-parse", "status", "show", "ls-files", "archive"}):
+                raise PermissionError("concurrency_harness_provider_subprocess_denied")
+        if event == "open":
+            path, mode, flags = args
+            if not isinstance(path, int):
+                target = Path(os.fsdecode(path)).resolve()
+                if (target.is_relative_to('/etc/blueprint')
+                        or '.blueprint-secrets' in target.parts):
+                    raise PermissionError("concurrency_harness_live_credentials_denied")
+            if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+                check(path)
+        if event in {"os.mkdir", "os.remove", "os.rmdir", "os.chmod", "os.chown", "os.utime"}:
+            check(args[0])
+        if event in {"os.rename", "os.link"}:
+            check(args[0]); check(args[1])
+        if event == "os.symlink":
+            check(args[1])
+
+    sys.addaudithook(audit)
 
 
 def argument_parser() -> argparse.ArgumentParser:

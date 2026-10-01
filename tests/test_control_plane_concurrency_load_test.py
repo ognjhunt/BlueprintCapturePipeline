@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -141,3 +143,30 @@ def test_child_environment_keeps_runtime_but_drops_inherited_provider_authority(
         "OPENAI_API_KEY": "never-copy", "LD_PRELOAD": "/injected.so",
     })
     assert env == {"PATH": "/bin", "PYTHONPATH": "src:.", "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+@pytest.mark.slow
+def test_child_fence_blocks_network_provider_launch_and_external_writes(tmp_path):
+    root = tmp_path / "owned"
+    root.mkdir()
+    outside = tmp_path / "keep"
+    outside.write_text("user-owned")
+    program = '''import json,pathlib,socket,subprocess,sys
+from scripts.control_plane_concurrency_load_test import install_child_fences
+root=pathlib.Path(sys.argv[1]); outside=pathlib.Path(sys.argv[2]); blocked=[]
+install_child_fences([root])
+for label, action in [
+ ("network",lambda:socket.socket().connect(("127.0.0.1",9))),
+ ("provider",lambda:subprocess.run(["curl","https://example.com"],check=True)),
+ ("write",lambda:outside.write_text("wrong")),
+ ("delete",lambda:outside.unlink())]:
+ try:action()
+ except PermissionError:blocked.append(label)
+(root/"receipt.json").write_text(json.dumps(blocked))
+print(json.dumps(blocked))
+'''
+    result = subprocess.run([sys.executable, "-c", program, str(root), str(outside)],
+                            cwd=SCRIPT.parent.parent, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert '"network", "provider", "write", "delete"' in result.stdout
+    assert outside.read_text() == "user-owned"
