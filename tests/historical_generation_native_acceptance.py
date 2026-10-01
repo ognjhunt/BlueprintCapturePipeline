@@ -445,8 +445,11 @@ def _observe_reconciliation_pin(worker, binding, verify):
 
 def _launch_death_worker(entry, action_id, target, journals, *, on_unfinished=None):
     """Same three-unit cadence; each None must come from fresh real SIGKILL."""
-    result = _reconciled_reference_attempts(lambda: _launch_worker_once(entry, action_id, target, journals,
-        restore=True, process_death=True), journals, action_id, on_unfinished=on_unfinished)
+    continuations = []
+    def unit():
+        return _launch_worker_once(entry, action_id, target, journals, restore=True, process_death=True)
+    result = _reconciled_reference_attempts(lambda: _continued_restore_units(
+        unit, journals, action_id, continuations), journals, action_id, on_unfinished=on_unfinished)
     assert result is None, result
 
 
@@ -826,9 +829,12 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
         # cgroup above and service-manager signal record prove this boundary.
         output = _unit_output(unit, cursor)
         current = observations()
-        if len(current) == 1 and current[0].get('status') in ('kept', 'failed') \
-                and current[0].get('code') in ('historical_generation_process_unknown',
-                    'historical_generation_restore_reconciliation_approval_missing'):
+        refused = len(current) == 1 and current[0].get('status') in ('kept', 'failed') \
+            and current[0].get('code') in ('historical_generation_process_unknown',
+                'historical_generation_restore_reconciliation_approval_missing')
+        pending = len(current) == 1 and restore and current[0].get('status') == 'pending' \
+            and current[0].get('reason') == 'fresh_unit_required_after_reconciliation'
+        if refused or pending:
             # The real fault was not reached. Preserve its actual refusal for
             # the existing bounded SAME-e0 cadence, with no clock/authority edit.
             assert 'code=killed, status=9/KILL' not in output, dict(cursor=cursor, records=current)

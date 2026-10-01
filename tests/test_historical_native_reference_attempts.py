@@ -85,7 +85,8 @@ def test_reconciliation_fault_observes_held_pin_without_a_new_journal_event():
 
 @pytest.mark.parametrize('new_record', [None, dict(status='failed', code='current_real_refusal'),
     dict(unknown_json='must refuse'), dict(status='failed', code='historical_generation_process_unknown'),
-    dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')])
+    dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing'),
+    dict(status='pending', reason='fresh_unit_required_after_reconciliation')])
 def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(tmp_path, monkeypatch, new_record):
     # Controller-flow projection only: no native worker, death or cgroup proof.
     # The old receipt falls out of the last64 lines after new manager messages.
@@ -98,6 +99,7 @@ def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(t
     group = tmp_path / 'simulated-cgroup-events'
     group.write_bytes(b'populated 1\n')
     opened, reads, journal_reads, startup_order = [], [], [], []
+    pending = new_record is not None and new_record.get('status') == 'pending'
     real_open, real_pread = os.open, os.pread
     real_write = os.write
     def open_file(path, *args, **kwargs):
@@ -130,6 +132,7 @@ def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(t
         text = (json.dumps(dict(status='failed', code='prior_real_refusal',
                                 transport='a' * 40000))
                 if '--after-cursor=s=abc;i=123' not in argv else
+                'code=exited, status=0/SUCCESS\n' if pending else
                 'code=exited, status=1/FAILURE\n' if uncompleted else 'code=killed, status=9/KILL\n')
         if '--after-cursor=s=abc;i=123' in argv and new_record is not None:
             text += json.dumps(new_record) + '\n'
@@ -145,6 +148,9 @@ def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(t
     if new_record is None:
         assert native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals',
             process_death=True) is None
+    elif pending:
+        assert native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals',
+            restore=True, process_death=True) == new_record
     elif new_record.get('code') in ('historical_generation_process_unknown',
                                    'historical_generation_restore_reconciliation_approval_missing'):
         # Actual typed refusal can reach exact owner handling, but it can

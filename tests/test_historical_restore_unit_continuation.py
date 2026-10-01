@@ -167,3 +167,49 @@ def test_boundary_recovery_retains_durable_continuation_separate_from_unknowns()
     continuation['original_intent_event_digest'] = 'sha256:' + 'f' * 64
     with pytest.raises(AssertionError):
         native._assert_boundary_recovery(receipt, 'restarted_unwritten', [], action_id, original)
+
+
+@pytest.mark.parametrize('matched', [True, False])
+def test_death_helper_continues_matching_pending_then_requires_genuine_death(tmp_path, monkeypatch, matched):
+    from tests import historical_generation_native_acceptance as native
+    action_id, events, receipt = pending_projection()
+    if not matched:
+        receipt['continuation_event_digest'] = 'sha256:' + 'f' * 64
+    monkeypatch.setattr(native, '_capture_action_events', lambda *args: events)
+    calls = []
+    def unit(*args, **kwargs):
+        assert kwargs == dict(restore=True, process_death=True)
+        calls.append('terminal death-unit projection')
+        # None represents the existing helper's independent actual SIGKILL
+        # checks. This projection supplies no death or native proof itself.
+        return receipt if len(calls) == 1 else None
+    monkeypatch.setattr(native, '_launch_worker_once', unit)
+    if matched:
+        native._launch_death_worker(tmp_path / 'entry', action_id, tmp_path / 'target', tmp_path)
+        assert len(calls) == 2
+    else:
+        with pytest.raises(AssertionError):
+            native._launch_death_worker(tmp_path / 'entry', action_id, tmp_path / 'target', tmp_path)
+        assert len(calls) == 1
+
+
+@pytest.mark.parametrize('pending_count', [8, 9])
+def test_routine_continuation_keeps_original_eight_reconciliation_limit(tmp_path, monkeypatch, pending_count):
+    from tests import historical_generation_native_acceptance as native
+    action_id, events, receipt = pending_projection()
+    monkeypatch.setattr(native, '_capture_action_events', lambda *args: events)
+    calls, continuations = [], []
+    final = dict(status='completed', action_id=action_id)
+    def unit():
+        calls.append('terminal unit projection')
+        if len(calls) > pending_count:
+            return final
+        digest = 'sha256:' + format(len(calls), '064x')
+        events[-1]['event_digest'] = digest
+        return dict(receipt, continuation_event_digest=digest)
+    if pending_count == 8:
+        assert native._continued_restore_units(unit, tmp_path, action_id, continuations) is final
+    else:
+        with pytest.raises(AssertionError):
+            native._continued_restore_units(unit, tmp_path, action_id, continuations)
+    assert len(calls) == 9 and len(continuations) == 8
