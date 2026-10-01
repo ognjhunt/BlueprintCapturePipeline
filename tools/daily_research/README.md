@@ -6,8 +6,10 @@ and exact binding/recovery/evidence contract are in [SEARCH.md](SEARCH.md).
 Existing admitted native-search rows and the failed October 1 intent retain
 their original guards; shipping this adapter does not activate or reset them.
 
-The intended adaptive target is **ten or more new commercial site/task
-opportunities**, with an honest supported subset and shortfall when necessary.
+The selected profile retains **all defensible new commercial site/task
+opportunities** within a defined run scope. Count is never the stopping rule;
+report actual coverage, unresolved branches and evidence-based or interrupted
+stopping reasons.
 See [ADAPTIVE.md](ADAPTIVE.md) for the disabled daily opt-in, evidence/duplicate
 rules and separate one-time test preparation. The daily $1 soft total target
 does not change. Existing legacy rows retain their admitted guards.

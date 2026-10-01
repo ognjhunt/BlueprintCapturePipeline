@@ -727,7 +727,7 @@ def test_fresh_firestore_control_fence_blocks_disabled_or_changed_search(enabled
     assert calls == ["assert_lease", "control"]
 
 
-def test_deployed_sdk_wire_has_function_tool_override_and_exact_success_failure_events():
+def _sdk_wire_probe():
     import httpx2 as httpx
     import openai
 
@@ -773,8 +773,7 @@ def test_deployed_sdk_wire_has_function_tool_override_and_exact_success_failure_
         provider.client.close()
 
 
-@pytest.mark.parametrize("status", [307, 503])
-def test_deployed_sdk_tool_result_does_not_retry_or_follow_redirects(monkeypatch, status):
+def _sdk_transport_probe(monkeypatch, status):
     import httpx2 as httpx
     import openai
 
@@ -798,3 +797,34 @@ def test_deployed_sdk_tool_result_does_not_retry_or_follow_redirects(monkeypatch
         assert len(requests) == 1 and requests[0].url.host == "api.openai.com"
     finally:
         provider.client.close()
+
+
+def _isolated_sdk_probe(name, status=None):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    runtime = os.environ.get("BLUEPRINT_RESEARCH_SDK_PYTHON", sys.executable)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OPENAI_") and key != "PERPLEXITY_API_KEY"}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    code = ("import runpy,sys,pytest; ns=runpy.run_path(sys.argv[1]); "
+            "ns['_sdk_wire_probe']()") if name == "wire" else (
+            "import runpy,sys,pytest; ns=runpy.run_path(sys.argv[1]); "
+            "m=pytest.MonkeyPatch(); "
+            "ns['_sdk_transport_probe'](m,int(sys.argv[2])); m.undo()")
+    args = [runtime, "-c", code, str(Path(__file__).resolve())]
+    if status is not None:
+        args.append(str(status))
+    subprocess.run(args, cwd=Path(__file__).resolve().parents[1], env=env,
+                   capture_output=True, text=True, timeout=30, check=True)
+
+
+def test_deployed_sdk_wire_has_function_tool_override_and_exact_success_failure_events():
+    # Main Pipeline and the isolated research package intentionally use distinct SDKs.
+    _isolated_sdk_probe("wire")
+
+
+@pytest.mark.parametrize("status", [307, 503])
+def test_deployed_sdk_tool_result_does_not_retry_or_follow_redirects(status):
+    _isolated_sdk_probe("transport", status)

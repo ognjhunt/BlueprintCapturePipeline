@@ -6,7 +6,11 @@ session-only tool override; the legacy examples and retained same-session test
 below remain unchanged. The production secret binding and a new eligible date
 must be verified before activation; the existing cleanup guard still applies.
 
-The intended daily target is **at least ten new distinct site/task opportunities**.
+The selected production profile has **no prospect-count stopping rule**. Define
+task/industry/region hypotheses and retain all defensible new opportunities;
+ten findings do not establish coverage. See SEARCH.md for typed completion,
+interruption and unresolved-branch fields. The original native examples retain
+their compatibility behavior below.
 An exact operating location, sourced recurring physical work, plausible labeled
 robot/task hypothesis, incumbent check, counterevidence and one useful first
 question make a discovery row useful. Unknown interest, budget, support or pilot
