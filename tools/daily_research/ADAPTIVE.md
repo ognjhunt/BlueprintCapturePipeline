@@ -68,14 +68,41 @@ python -m tools.daily_research.adaptive \
   --output /private/new-disabled-test-intent.json
 ```
 
-This command is **preparation, not a test controller or launch readiness**.
-Before any POST, the exact intent/event/input hashes need their own Blueprint
-durable test record and one-use fenced claim, separate from the immutable daily
-record. A supported execution/observation contract must retain the exact new
-root-turn/artifact bindings and cancel on watchdog, disabled control, unknown
-usage or exhausted admission. Repeating an uncertain event is forbidden. Agent
-QA must be separately admitted within the same total time/spend envelope. No
-new provider framework or dot review step is required or supplied here.
+This command is preparation and does not establish launch readiness.
+`adaptive_runtime.py` is the single-test adapter to the existing Store, Provider,
+Runner collector and Consumer QA, not another scheduler. An explicit `execute`
+uses fresh GETs and complete canonical CRM reads before admission, then saves
+the complete intent and original daily blob binding under
+`blueprintDailyResearch/sites-first/adaptiveTests/adaptive-discovery-20261001`.
+The existing shared lease, immutable chunked blobs and heartbeat fence a single
+research event attempt and a separate single QA event attempt. The original
+daily row, file manifests and work item remain untouched. The test artifact is
+`/workspace/outputs/adaptive-discovery-20261001.json`, bound to exactly one new
+root turn; the original root/artifact cannot satisfy collection. Test files are
+in a separate subcollection. An uncertain reply or restart reconciles by GETs;
+research input is never repeated. Same-session agent QA follows within the pinned
+30-minute total deadline and produces a durable accepted count. There is no
+session create, publication, deletion or dot review step in this adapter.
+
+The example profile still has pending admission references. **Do not run paid
+execute until exact fresh session and total-spend admission are reconciled.**
+Replacing a pending reference records an owner-resolved admission; it does not
+prove that an unavailable provider dollar cap exists. `status` makes no provider
+request. `reconcile` never starts research input; it may send the once-admitted
+QA event for an existing test. Use an immutable reviewed package:
+
+```bash
+python -m tools.daily_research.adaptive_runtime status
+python -m tools.daily_research.adaptive_runtime reconcile --profile /private/admitted-test.json
+```
+
+The observer stops on disabled control, interruption, unknown/invalid turn
+usage, $8 cumulative model estimate, research deadline or total QA deadline. It
+cancels only the exact bound session. Observation ends at the original total
+deadline plus 60 seconds of cancellation/collection grace. Unverified terminal
+cancellation remains unresolved with cleanup held. Usage can lag; the test may
+stop without sufficient output. A successful input POST proves neither settled
+total spend nor ten accepted prospects.
 
 ## Spend admission limits
 
@@ -84,8 +111,9 @@ rate), all output including reasoning at $15/M, then includes the documented
 10% regional premium. Reasoning is not counted twice. Standard service tier is
 required; no cache discount is assumed. This is a conservative token estimate,
 **not settled total spend**: it excludes unreported/lagged usage, web-search tool
-fees and hosted-environment charges. Null/invalid usage is unknown. The $8 stop
-is prepared policy only; this preparation command never runs a spend watcher.
+fees and hosted-environment charges. Null/invalid usage is unknown. Preparation
+never runs a spend watcher. The single-test adapter applies the $8 stop to
+complete new-turn usage, retaining the estimate and exclusions in its record.
 
 Official project monthly hard limits provide a useful additional boundary but
 enforcement is delayed and spend can exceed the configured threshold. The

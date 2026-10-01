@@ -85,7 +85,7 @@ def prepare(value, row, snapshot, source_commit, *, session=None, environment=No
     text = prompt(row["date"], context, 3, adaptive=True, target_usd=25)
     # A follow-up artifact must have its own path as well as an exact new turn
     # binding; it must not overwrite the earlier daily artifact in the sandbox.
-    output_path = "/workspace/" + config["test_id"] + ".json"
+    output_path = "/workspace/outputs/" + config["test_id"] + ".json"
     text = text.replace(REMOTE_OUTPUT, output_path)
     text += (" This is a separate authorized test, not recovery of the earlier failed daily intent. "
              "The previous root scan's two-search/two-open/three-candidate task limits do not apply to this test. "
