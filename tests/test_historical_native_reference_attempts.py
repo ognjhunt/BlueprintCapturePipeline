@@ -116,9 +116,12 @@ def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(t
         if '--lines=1' in argv:
             return SimpleNamespace(returncode=0, stdout=json.dumps(dict(__CURSOR='s=abc;i=123')))
         journal_reads.append(argv)
-        text = (json.dumps(dict(status='failed', code='prior_real_refusal'))
-                if len(journal_reads) == 1 else 'code=killed, status=9/KILL\n')
-        if len(journal_reads) > 1 and new_record is not None:
+        # Earlier genuine fixture transport receipts can exceed one query's
+        # bound in aggregate. They cannot enter this attempt's cursor window.
+        text = (json.dumps(dict(status='failed', code='prior_real_refusal',
+                                transport='a' * 40000))
+                if '--after-cursor=s=abc;i=123' not in argv else 'code=killed, status=9/KILL\n')
+        if '--after-cursor=s=abc;i=123' in argv and new_record is not None:
             text += json.dumps(new_record) + '\n'
         return SimpleNamespace(returncode=0, stdout='\n'.join(json.dumps(dict(MESSAGE=line)) for line in text.splitlines()))
     monkeypatch.setattr(native.os, 'open', open_file)
@@ -131,7 +134,7 @@ def test_old_receipt_eviction_cannot_make_a_current_killed_unit_emit_a_receipt(t
         with pytest.raises(AssertionError, match='killed worker must not emit a terminal receipt'):
             native._launch_worker_once(entry, ACTION, tmp_path / 'target', tmp_path / 'journals', process_death=True)
     assert len(reads) == 2
-    assert all('--after-cursor=s=abc;i=123' in argv for argv in journal_reads[1:])
+    assert all('--after-cursor=s=abc;i=123' in argv for argv in journal_reads)
 
 
 def original_journal(tmp_path):

@@ -21,6 +21,11 @@ import tempfile
 import time
 from pathlib import Path
 
+if __package__ == 'tests':
+    from .historical_generation_fake_cloud import decode_wire_state, wire_state
+else:
+    from historical_generation_fake_cloud import decode_wire_state, wire_state
+
 
 def _encoded(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':')).encode() + b'\n'
@@ -225,9 +230,7 @@ def worker_main(root, action_id):
         if metadata_proof is not None:
             receipt = dict(receipt, _fixture_metadata_proof=metadata_proof)
         if cloud is not None:
-            receipt = dict(receipt, _fixture_remote=dict(corrupt=cloud.corrupt,
-                objects={key: base64.b64encode(raw).decode() for key, raw in cloud.objects.items()},
-                metadata=cloud.metadata, calls=cloud.calls))
+            receipt = dict(receipt, _fixture_remote=wire_state(cloud))
         print(json.dumps(receipt), flush=True)
     # Fault injection interrupts actual completed syscalls/publications. It
     # never supplies a kernel observation, authority record or success result.
@@ -608,11 +611,11 @@ def _unit_output(unit, cursor):
 def _launch_worker_once(entry, action_id, target, journals, *, restore=False, launch=None, process_death=False):
     from blueprint_pipeline.control_plane_lane_historical_dispatch import _unit_property_assignments
     unit = 'blueprint-historical-generation-' + action_id
-    cursor = None
+    cursor = _unit_cursor(unit)
     def observations():
         return [json.loads(line) for line in _unit_output(unit, cursor).splitlines() if line.startswith('{')]
-    history = observations()
-    cursor = _unit_cursor(unit)
+    # Every observation belongs to this attempt's actual cursor window. Old
+    # transport receipts are never reread as current death or closure facts.
     previous = []
     ready = entry.parent / ('.fixture-unit-ready-' + action_id)
     _write(ready, b'')
@@ -683,7 +686,7 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
         else:
             assert 'code=killed, status=9/KILL' in output, dict(cursor=cursor, output=output, records=current)
             assert current == previous, dict(failure='killed worker must not emit a terminal receipt',
-                cursor=cursor, history=history, current=current)
+                cursor=cursor, current=current)
             return None
     receipt_deadline = time.monotonic() + 2
     current = observations()
@@ -698,16 +701,19 @@ def _launch_worker_once(entry, action_id, target, journals, *, restore=False, la
     if entry_failure is not None:
         print(json.dumps(dict(fixture_installed_entry_refusal=entry_failure, action_id=action_id)))
     metadata_proof = receipt.pop('_fixture_metadata_proof', None)
-    if (entry.parent / 'metadata-boundary-probe').exists() and not any(
-            '_fixture_metadata_proof' in row for row in history):
+    metadata_seen = entry.parent / ('.fixture-metadata-observed-' + action_id)
+    if (entry.parent / 'metadata-boundary-probe').exists() and not metadata_seen.exists():
         assert metadata_proof == dict(records=2, bytes_per_record=1048576,
             full_comparisons=6, no_replace_conflicts=2, actual_landlock=True), metadata_proof
+        # Controller diagnostic only, retained after validating the actual
+        # native observation; it grants no worker or owner authority.
+        _write(metadata_seen, _encoded(metadata_proof))
     else:
         assert metadata_proof is None
     remote = receipt.pop('_fixture_remote', None)
     if remote is not None:
         assert len(_encoded(remote)) <= 16384
-        _write(entry.parent / 'cloud-fixture.json', _encoded(remote))
+        _write(entry.parent / 'cloud-fixture.json', _encoded(decode_wire_state(remote)))
     return receipt
 
 
@@ -794,16 +800,12 @@ def _installed_entry(root, entry):
             return cloud
         boto3.client = object_client
         def remote_state():
-            return dict(corrupt=cloud.corrupt,
-                objects={key: base64.b64encode(raw).decode() for key, raw in cloud.objects.items()},
-                metadata=cloud.metadata, calls=cloud.calls)
+            return fixture_namespace['wire_state'](cloud)
         globals()['_installed_fixture_remote'] = remote_state
 """.replace('FAKE_CLOUD', repr(str(root / 'python/historical_generation_fake_cloud.py'))).replace(
             'CLOUD_STATE', repr(str(root / 'cloud-fixture.json')))
         boot = boot.replace(needle, transport + needle)
-        emit = """        receipt = dict(receipt, _fixture_remote=dict(corrupt=cloud.corrupt,
-            objects={key: base64.b64encode(raw).decode() for key, raw in cloud.objects.items()},
-            metadata=cloud.metadata, calls=cloud.calls))
+        emit = """        receipt = dict(receipt, _fixture_remote=_installed_fixture_remote())
 """
         boot = boot.replace('        print(json.dumps(receipt, sort_keys=True, separators=',
                             emit + '        print(json.dumps(receipt, sort_keys=True, separators=')
@@ -1121,6 +1123,7 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
         foreign = pwd.getpwnam('nobody')
         for relative, raw in original.items():
             _write(target / relative, raw)
+        original_directories = sum(path.is_dir() for path in target.rglob('*'))
         for path in (target, *target.rglob('*')):
             os.chown(path, foreign.pw_uid, foreign.pw_gid)
         if installed:
@@ -1220,7 +1223,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
         receipt = _launch_worker(entry, action_id, target, journals,
                                  launch=gc_tick if installed else None)
         assert receipt['action'] == action
-        assert receipt['removed_files'] == (1 if interruption == 'unlink' else 2) and receipt['removed_directories'] == 1
+        assert receipt['removed_files'] == len(original) - int(interruption == 'unlink')
+        assert receipt['removed_directories'] == original_directories
         assert receipt['logical_bytes'] == sum(map(len, original.values())) - (len(original['nested/two.log']) if interruption == 'unlink' else 0)
         assert receipt['uncertain_removed_allocated_bytes'] == 0
         if interruption:
@@ -1229,7 +1233,8 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
         assert target.stat().st_uid == 0 and target.stat().st_mode & 0o777 == 0o700
         events = [json.loads(path.read_bytes()) for path in sorted((journals / action_id).glob('e-*.json'))]
         assert events[-1]['kind'] == 'final' and events[-1]['body'] == _durable_receipt(receipt)
-        assert len([event for event in events if event['kind'] == 'removed']) == (2 if interruption == 'unlink' else 3)
+        assert len([event for event in events if event['kind'] == 'removed']) == (
+            len(original) + original_directories - int(interruption == 'unlink'))
         uncertain = [event for event in events if event['kind'] == 'removal_uncertain']
         assert len(uncertain) == int(interruption == 'unlink')
         assert all(event['body']['observed_removed_allocated_bytes'] == 0 for event in uncertain)
