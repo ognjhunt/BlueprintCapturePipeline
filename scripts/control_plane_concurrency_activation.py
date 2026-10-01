@@ -31,6 +31,14 @@ from scripts.control_plane_concurrency_scene import fixture_environment
 def _fixture_s3(store):
     """Replace only external transport construction for actual CLI publication."""
     import boto3
+    from blueprint_pipeline.task_evaluation_supervisor.openai_cost_authority import OpenAIOrganizationCostsClient
+    original_cost_transport = OpenAIOrganizationCostsClient.__dict__["_default_transport"]
+    def costs(url, headers, timeout):
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or parsed.netloc != "api.openai.com" or parsed.path != "/v1/organization/costs":
+            raise PermissionError("harness_cost_fixture_endpoint_denied")
+        return {"object": "page", "data": [], "has_more": False, "fixture_provider": True}
+    OpenAIOrganizationCostsClient._default_transport = staticmethod(costs)
     original = boto3.client
     def client(service, **kwargs):
         if service != "s3":
@@ -41,6 +49,7 @@ def _fixture_s3(store):
         yield
     finally:
         boto3.client = original
+        OpenAIOrganizationCostsClient._default_transport = original_cost_transport
 
 
 def canonical_fixture_preparer(*, lane, context_path, receipt_path, repository_root,
@@ -156,7 +165,19 @@ def advance_fixture_configuration_activation(*, intake, preparation, object_root
             with destination.open("xb") as stream:
                 shutil.copyfileobj(body, stream, 1024 * 1024)
 
-    values = {**intake["environment"],
+    from blueprint_pipeline.task_evaluation_scene_configuration_openai_runtime_scope import (
+        OPENAI_RUNTIME_FILE_ENVS, OPENAI_RUNTIME_VALUE_ENVS)
+    fixture_scopes = {}
+    scopes = output_root / "fictional-openai-scopes"
+    scopes.mkdir(mode=0o700)
+    for index, name in enumerate(OPENAI_RUNTIME_FILE_ENVS):
+        path = scopes / (name + ".fixture")
+        path.write_text("FICTIONAL_NON_CREDENTIAL_VALUE_" + str(index))
+        path.chmod(0o600)
+        fixture_scopes[name] = str(path)
+    for index, name in enumerate(OPENAI_RUNTIME_VALUE_ENVS):
+        fixture_scopes[name] = "fictional-scope-" + str(index)
+    values = {**intake["environment"], **fixture_scopes,
         "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT": str(toolchain)}
     with fixture_environment(values):
         progressed = progression.process_scene_intents(config_path=intake["config_path"],
