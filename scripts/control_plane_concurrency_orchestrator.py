@@ -29,6 +29,33 @@ from scripts.control_plane_concurrency_reporting import (
 )
 
 
+def require_clean_checkout(repo):
+    """Match the deployed tracked-source guard and reject untracked importable source."""
+    if subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"]
+    ):
+        raise ValueError("harness_checkout_dirty")
+    if subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            "src",
+            "scripts",
+            "tests",
+            ":(top,glob)*.py",
+            ":(top,glob)*.pyc",
+            ":(top,glob)*.so",
+        ]
+    ):
+        raise ValueError("harness_untracked_code")
+
+
 def require_kernel_confinement(*, process_root=Path("/proc")):
     """Require the real Linux sandbox before reading source inputs or writing roots."""
     try:
@@ -147,8 +174,7 @@ def run_benchmark(args):
     confinement = require_kernel_confinement()
     repo = Path(__file__).resolve().parents[1]
     source = _verified_checkout_head()
-    if subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"]):
-        raise ValueError("harness_checkout_dirty")
+    require_clean_checkout(repo)
     report = Path(args.report)
     roots_paths = [
         Path(args.control_plane_root),

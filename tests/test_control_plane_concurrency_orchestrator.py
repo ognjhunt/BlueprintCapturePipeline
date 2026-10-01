@@ -7,6 +7,41 @@ import subprocess
 from types import SimpleNamespace
 
 
+def test_checkout_accepts_generated_metadata_but_refuses_changed_or_untracked_code(tmp_path):
+    from scripts.control_plane_concurrency_orchestrator import require_clean_checkout
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    source = tmp_path / "scripts/original.py"
+    source.parent.mkdir()
+    source.write_text("original = True\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "scripts/original.py"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "-c",
+            "user.name=Contract Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+        check=True,
+    )
+    (tmp_path / "generated-ci-report.json").write_text("{}")
+    require_clean_checkout(tmp_path)
+    extra = source.parent / "untracked.py"
+    extra.write_text("unexpected = True\n")
+    with pytest.raises(ValueError, match="harness_untracked_code"):
+        require_clean_checkout(tmp_path)
+    extra.unlink()
+    source.write_text("original = False\n")
+    with pytest.raises(ValueError, match="harness_checkout_dirty"):
+        require_clean_checkout(tmp_path)
+
+
 def test_child_failure_and_timeout_are_terminal_without_retirement(tmp_path):
     from scripts.control_plane_concurrency_orchestrator import child_failure
 

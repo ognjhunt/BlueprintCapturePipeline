@@ -13,9 +13,11 @@ chain below, not accept a collection of existing tests as the load proof.
 
 ## Acceptance boundary
 
-The owner concurrency decision is pending. Require `--expected-beta-concurrency`
-as a CLI argument and test twice that value. An exploratory run may choose a
-clearly recorded provisional value; it does not close the owner-sized gate.
+The retained owner decision is two simultaneous beta scenes
+(`disk-redesign-handoff-20260926/evidence/owner-beta-concurrency-20260928.json`,
+September 28). Require `--expected-beta-concurrency` as a CLI argument and test
+twice that value: four scenes. A differently sized exploratory run must record
+its provisional value and does not close the owner-sized gate.
 Require an explicit `--maximum-retained-gib` threshold and keep observed results
 separate from modeled capacity and costs.
 
