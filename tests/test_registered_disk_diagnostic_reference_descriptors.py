@@ -1,9 +1,82 @@
 """Portable original descriptor/accounting contracts; no Linux clearance proof."""
 import os
+import fcntl
+import json
 
 import pytest
 
 from tests.test_owner_target_version_publication import root_metadata, protected_root_tmp_path  # noqa: F401
+
+
+@pytest.mark.parametrize('change', ['none', 'row', 'kind', 'removed_kind', 'root', 'closed_budget', 'deadline'])
+def test_held_pin_inventory_rechecks_original_namespace_and_actual_bytes(
+    protected_root_tmp_path, root_metadata, change  # noqa: F811
+):
+    """Actual descriptor/ledger work; portable metadata, no native GC clearance."""
+    from blueprint_pipeline.control_plane_lane_experiment_publication import _BirthFiles
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    from blueprint_pipeline.control_plane_storage_pin_observation import _HeldPinInventory, observe_storage_pins
+    from blueprint_pipeline.control_plane_storage_pins import PIN_KINDS, SCHEMA_VERSION
+    root = protected_root_tmp_path / 'pins'
+    root.mkdir(mode=0o700)
+    for kind in PIN_KINDS:
+        (root / kind).mkdir(mode=0o700)
+    path = root / 'preparation/owner.json'
+    raw = json.dumps(dict(schema_version=SCHEMA_VERSION, kind='preparation', owner_id='owner',
+        paths=['/original/selected'], depends_on=[], created_at_epoch=1,
+        expires_at_epoch=100, released_at_epoch=None)).encode()
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    elapsed = [0]
+    pin_budget = ReferenceCollectionBudget(monotonic=lambda: elapsed[0])
+    budget = ReferenceCollectionBudget(monotonic=lambda: elapsed[0])
+    pins, reader = _BirthFiles(pin_budget), _BirthFiles(budget)
+    try:
+        locked, _ = pins.parent(root / '.probe')
+        fcntl.flock(locked, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        inventory = _HeldPinInventory(reader, pins, locked, root)
+        def observe():
+            return observe_storage_pins(str(root), observed_at_epoch=50, budget=budget,
+                _held_root_fd=locked, _held_inventory=inventory)
+        first = observe()
+        assert first.complete and first.protected_paths == ('/original/selected',)
+        original_descriptors = dict(reader.owned)
+        deadline, initial = budget.deadline, dict(budget.counts)
+        for _ in range(20):
+            assert observe() == first
+            assert reader.owned == original_descriptors
+        assert budget.deadline == deadline and budget.limits['roots'] == 16
+        assert budget.counts['roots'] == initial['roots'] == 1
+        assert budget.counts['groups'] == initial['groups'] == len(PIN_KINDS)
+        assert budget.counts['raw_bytes'] == 21 * len(raw)
+        assert budget.counts['entries'] > initial['entries'] and budget.counts['rows'] == 21
+        if change == 'row':
+            path.write_bytes(raw.replace(b'/original/selected', b'/changed/selected'))
+            current = observe()
+            assert current.complete and current.protected_paths == ('/changed/selected',)
+        elif change == 'removed_kind':
+            (root / 'activation').rmdir()
+            with pytest.raises(OSError):
+                observe()
+        elif change in {'kind', 'root'}:
+            selected = root / 'preparation' if change == 'kind' else root
+            selected.rename(selected.with_name(selected.name + '-original'))
+            selected.mkdir(mode=0o700)
+            with pytest.raises(ValueError, match='experiment_location_changed'):
+                observe()
+        elif change in {'closed_budget', 'deadline'}:
+            if change == 'closed_budget':
+                budget.close()
+            else:
+                elapsed[0] = 5
+            with pytest.raises(ValueError, match='reference_budget_closed|reference_deadline_exceeded'):
+                observe()
+    finally:
+        reader.finish()
+        pins.finish()
+        assert not reader.owned and not pins.owned
+        budget.close()
+        pin_budget.close()
 
 
 def test_native_limit_observer_rethrows_actual_refusal_and_retains_counters(

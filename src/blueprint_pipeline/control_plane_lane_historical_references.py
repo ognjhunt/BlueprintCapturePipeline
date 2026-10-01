@@ -19,7 +19,7 @@ from . import control_plane_lane_historical_generation as generation
 from . import control_plane_lane_legacy_owner as legacy
 from . import control_plane_lane_experiment_actions as experiments
 from .control_plane_lane_historical_fence import _version
-from .control_plane_storage_pin_observation import observe_storage_pins
+from .control_plane_storage_pin_observation import observe_storage_pins, _HeldPinInventory
 
 
 def _require(value, code):
@@ -229,6 +229,8 @@ def historical_reference_fence(files, config, target, *, observed_at, _held_pins
                      files, config, selected['pins_root']), 'table_unknown')
     roots = tuple(dict.fromkeys((*selected['queue_roots'], *selected['active_run_roots'])))
     _require(0 < len(roots) <= 16, 'table_unknown')
+    held_inventory = (_HeldPinInventory(files, pin_files, pin_directory, selected['pins_root'])
+                      if _held_pins is not None else None)
     def target_observation(transient):
         return _target_observation(files, target, transient, descriptor_check)
     def descriptor_check(count):
@@ -256,7 +258,8 @@ def historical_reference_fence(files, config, target, *, observed_at, _held_pins
         _require(experiments._reference_configuration(files, config, selected['pins_root'])
                  == pins['configuration'], 'table_unknown')
         current = observe_storage_pins(str(selected['pins_root']), observed_at_epoch=observed_at,
-                                      budget=files.budget, _held_root_fd=pin_directory)
+                                      budget=files.budget, _held_root_fd=pin_directory,
+                                      _held_inventory=held_inventory)
         _require(current.complete and current.root_identity
             == (pins['identity']['dev'], pins['identity']['ino']), 'table_unknown')
         for row in current.rows:

@@ -241,6 +241,58 @@ def test_actual_current_queue_reference_preserves_the_sealed_report(installation
     assert {path.name: path.read_bytes() for path in target.iterdir()} == before
 
 
+def test_actual_diagnostic_delete_reference_accounting(installation, monkeypatch):  # noqa: F811
+    """Portable accounting only; native process clearance is separately mandatory."""
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
+    from blueprint_pipeline import control_plane_lane_disk_diagnostic_references as references
+    configure(installation)
+    config, settings, _, _ = installation
+    root = config.parent
+    tables = {}
+    for kind in ('queue', 'evidence', 'settlement'):
+        tables[kind] = root / kind
+        tables[kind].mkdir(mode=0o700)
+    unit = root / 'gc.service'
+    unit.write_bytes(b'[Service]\n')
+    unit.chmod(0o600)
+    monkeypatch.setattr(legacy, '_GC_UNIT', unit)
+    environment = root / 'gc.env'
+    environment.write_text(environment.read_text() + ''.join(
+        'BLUEPRINT_CONTROL_PLANE_GC_' + key.upper() + '_ROOTS=' + str(path) + '\n'
+        for key, path in tables.items()))
+    release = root / 'active-release'
+    release.symlink_to(root / 'installed')
+    settings.update(control_plane_state=settings['state_root'], active_release_link=str(release))
+    config.write_bytes(encoded(settings))
+    _, _, grant, born, _ = seal(installation, monkeypatch, 'root_disk_diagnostic_disposable.v1')
+    selected = issuer.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+        action='delete', expires_at_epoch=3500, installed_config_path=config, now=lambda: 2900)
+    target = Path(born['path'])
+    report = target / 'disk-capacity-report.v1.json'
+    original = report.read_bytes()
+    monkeypatch.setattr(references.DiagnosticReferences, '_own_handles', lambda *args: None)
+    monkeypatch.setattr(references, 'refuse_historical_process_references', lambda *args, **kwargs: None)
+    checks = []
+    original_guard = references.DiagnosticReferences.guard
+    def guard(reader, **kwargs):
+        original_guard(reader, **kwargs)
+        checks.append((reader.budget, dict(reader.budget.counts), reader.budget.deadline))
+    monkeypatch.setattr(references.DiagnosticReferences, 'guard', guard)
+    outcome = actions.run_action(selected['action_id'], expected_action_intent=selected['action_intent'],
+        installed_config_path=config, now=lambda: 2901, _pins_root=root / 'pins')
+    assert outcome['decision'] == 'retired' and outcome['removed_logical_bytes'] == len(original)
+    assert outcome['receipt'] and not report.exists()
+    assert len(checks) > 16
+    assert all(budget is checks[0][0] and deadline == checks[0][2]
+               and counts['roots'] == checks[0][1]['roots'] < 16 and counts['groups'] == 3
+               for budget, counts, deadline in checks)
+    assert all(later[1]['entries'] > earlier[1]['entries']
+               and later[1]['raw_bytes'] > earlier[1]['raw_bytes']
+               for earlier, later in zip(checks, checks[1:]))
+
+
 def test_final_named_member_check_cannot_cross_original_delete_expiry(installation, monkeypatch):  # noqa: F811
     """Portable clock model only; this supplies no kernel reader clearance."""
     import sys
