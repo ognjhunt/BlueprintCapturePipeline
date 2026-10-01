@@ -208,7 +208,7 @@ def advance_fixture_configuration_activation(*, intake, preparation, object_root
             scene_configuration_toolchain_root=toolchain, source_commit=source,
             configured_controls_autostart_intent_root=output_root / "configured-controls-intents",
             fetcher=fetch, preparer=preparer, disk_reservation_root=reservation_root)
-    return {"progression": progressed, "staged": staged, "worker": worker,
+    return {"progression": progressed, "staged": staged, "worker": worker, "queue_root": queue,
             "preparer": receipts[0] if len(receipts) == 1 else None,
             "fixture_provider": True, "claim_ceiling": "development_only", "actual_provider_calls": 0}
 
@@ -228,8 +228,8 @@ def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
             or compiled.get("result_digest") != canonical_digest(compiled, digest_field="result_digest")
             or compiled.get("source_commit") != source):
         raise ValueError("harness_native_compilation_invalid")
-    first_queue = Path(configuration_activation["staged"]["activation_queue_root"]) if "activation_queue_root" in configuration_activation["staged"] else output_root.parent / "configuration-activation" / "activation-queue"
-    rows = list((first_queue / "completed").glob("*.json"))
+    first_queue = Path(configuration_activation["queue_root"])
+    rows = list((first_queue / "prepared").glob("*.json"))
     if len(rows) != 1:
         raise ValueError("harness_native_configuration_activation_ambiguous")
     first = json.loads(rows[0].read_text())["request"]
