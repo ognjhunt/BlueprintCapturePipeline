@@ -44,7 +44,7 @@ def publish_record(directory,name,value,*,maximum,allowance):
         expected=_identity(info)
         allowance.tick()
         _parent(directory,parent,expected)
-        fd,identity=_new_file(parent,temporary,parent_identity=expected)
+        fd,identity=_new_file(parent,temporary,parent_identity=expected,action_guard=allowance.tick)
         placed=False
         try:
             buffer=bytearray()
@@ -58,6 +58,7 @@ def publish_record(directory,name,value,*,maximum,allowance):
                     allowance.tick()
                     _parent(directory,parent,expected)
                     _named(parent,expected,temporary,fd,identity)
+                    allowance.tick()
                     written=os.write(fd,view)
                     _require(written>0)
                     view=view[written:]
@@ -78,20 +79,24 @@ def publish_record(directory,name,value,*,maximum,allowance):
             allowance.tick()
             _parent(directory,parent,expected)
             _named(parent,expected,temporary,fd,identity)
+            allowance.tick()
             os.fsync(fd)
             allowance.tick()
             _parent(directory,parent,expected)
             _named(parent,expected,temporary,fd,identity)
+            allowance.tick()
             os.link(temporary,name,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False)
             allowance.tick()
             _parent(directory,parent,expected)
             _named(parent,expected,temporary,fd,identity)
             _require(_identity(os.stat(name,dir_fd=parent,follow_symlinks=False))==identity)
+            allowance.tick()
             os.unlink(temporary,dir_fd=parent)
             placed=True
             allowance.tick()
             _parent(directory,parent,expected)
             _guard(fd,identity)
+            allowance.tick()
             os.fsync(parent)
             allowance.tick()
         finally:

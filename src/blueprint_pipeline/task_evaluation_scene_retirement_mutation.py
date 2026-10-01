@@ -172,9 +172,11 @@ def _remove_directory(path,relative,identity,parent_identity,source,index,genera
         _current_parent(path.parent,fd,parent_identity)
         _require(_identity(os.stat(path.name,dir_fd=fd,follow_symlinks=False))==identity,
                  'scene_retirement_member_changed')
+        allowance.tick()
         os.rmdir(path.name,dir_fd=fd)
         allowance.tick()
         _current_parent(path.parent,fd,parent_identity)
+        allowance.tick()
         os.fsync(fd)
         _directory_completion(journal,index,relative,reference,recovered=False)
 
@@ -350,12 +352,14 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
             _current_parent(source.parent,parent,parent_identity)
             _require(list(_identity(os.stat(source.name,dir_fd=parent,follow_symlinks=False)))==member['physical_identity'])
             # Atomic NO-REPLACE, never check then overwrite or orphan adoption.
+            allowance.tick()
             primitive._publish_no_replace(parent,source.name,destination.name)
         allowance.tick()
         _current_parent(source.parent,parent,parent_identity)
         _require(list(_identity(os.stat(destination.name,dir_fd=parent,follow_symlinks=False)))==member['physical_identity'])
         allowance.tick()
         _current_parent(source.parent,parent,parent_identity)
+        allowance.tick()
         os.fsync(parent)
         journal.append('detached',member_key=str(member_index),evidence=dict(evidence,detach_plan_raw_ref=planned))
         files=[row for row in preserved['files'] if row['member_index']==member_index]
@@ -407,12 +411,14 @@ def detach_and_remove(preserved,*,member_index,generation_id,journal,removed_ino
                 _current_parent(leaf_parent,leaf_fd,expected)
                 _require(list(_snapshot(os.stat(relative.name,dir_fd=leaf_fd,follow_symlinks=False)))==current['snapshot'],
                          'scene_retirement_payload_changed')
+                allowance.tick()
                 os.unlink(relative.name,dir_fd=leaf_fd)
                 removed[key]=removed_count+1
                 if info.st_nlink==1:
                     removed_allocated+=row['allocated_bytes']
                 allowance.tick()
                 _current_parent(leaf_parent,leaf_fd,expected)
+                allowance.tick()
                 os.fsync(leaf_fd)
                 journal.append('leaf_unlinked',member_key=str(member_index),evidence={
                     'relative_path':row['relative_path'],'leaf_plan_raw_ref':planned_leaf,

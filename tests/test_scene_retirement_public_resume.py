@@ -55,6 +55,9 @@ def fresh_action(tmp_path,monkeypatch):
     monkeypatch.setattr(engine,'_resume_current_references',lambda *args,**kwargs: None,raising=False)
     # No assertion of unknown process absence: this test only exercises replay.
     monkeypatch.setattr(engine,'_installed_cohort',lambda *args: None)
+    # Public replay mechanics only; installed native admission is mandatory in
+    # production and separately challenged by restore-reader refusal tests.
+    monkeypatch.setattr(engine,'_current_readers',lambda *args: None)
     return engine,policy,scope,consent,transport
 
 

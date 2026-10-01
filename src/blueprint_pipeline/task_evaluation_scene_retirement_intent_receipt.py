@@ -107,12 +107,13 @@ def _publish(directory, name, raw, allowance, *, prior=None):
         _require(not parent_info.st_mode & 0o022, 'scene_retirement_receipt_permissions')
         allowance.tick()
         _parent(directory, parent, parent_info)
-        fd, identity = _new_file(parent, temporary, parent_identity=_identity(parent_info))
+        fd, identity = _new_file(parent, temporary, parent_identity=_identity(parent_info),action_guard=allowance.tick)
         placed = False
         try:
             allowance.tick()
             _parent(directory, parent, parent_info)
             _named(parent, _identity(parent_info), temporary, fd, identity)
+            allowance.tick()
             os.fchmod(fd, 0o644)
             identity = (*identity[:2], (identity[2] & ~0o7777) | 0o644)
             _named(parent, _identity(parent_info), temporary, fd, identity)
@@ -122,19 +123,23 @@ def _publish(directory, name, raw, allowance, *, prior=None):
                 allowance.tick()
                 _parent(directory, parent, parent_info)
                 _named(parent, _identity(parent_info), temporary, fd, identity)
+                allowance.tick()
                 written = os.write(fd, view)
                 _require(written > 0)
                 view = view[written:]
             allowance.tick()
             _parent(directory, parent, parent_info)
             _named(parent, _identity(parent_info), temporary, fd, identity)
+            allowance.tick()
             os.fsync(fd)
             allowance.tick()
             _parent(directory, parent, parent_info)
             _named(parent, _identity(parent_info), temporary, fd, identity)
             if prior is None:
+                allowance.tick()
                 os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
                 _named(parent, _identity(parent_info), temporary, fd, identity)
+                allowance.tick()
                 os.unlink(temporary, dir_fd=parent)
             else:
                 prior_fd, prior_info = prior
@@ -142,12 +147,14 @@ def _publish(directory, name, raw, allowance, *, prior=None):
                 _require(_version(os.fstat(prior_fd)) == _version(prior_info)
                          == _version(os.stat(name, dir_fd=parent, follow_symlinks=False)),
                          'scene_retirement_receipt_changed')
+                allowance.tick()
                 os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
             placed = True
             allowance.tick()
             _parent(directory, parent, parent_info)
             _guard(fd, identity)
             _require(_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity)
+            allowance.tick()
             os.fsync(parent)
             allowance.tick()
         finally:

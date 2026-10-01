@@ -241,7 +241,8 @@ def _capture_action_current(policy, consent, member, allowance, *, expected_stat
     return generation
 
 
-def _transition(policy, prior, *, state, token, journal_ref, inventory_sha256=None, identity=None):
+def _transition(policy, prior, *, allowance, state, token, journal_ref, inventory_sha256=None, identity=None):
+    allowance.tick()
     store=Path(policy['generation_store'])
     key=hashlib.sha256(prior['canonical_path'].encode()).hexdigest()
     current=access._read(store/(key+'.json'))
@@ -260,8 +261,8 @@ def _transition(policy, prior, *, state, token, journal_ref, inventory_sha256=No
         # Global EX excludes every enrolled SH birth/publisher; immutable history
         # and the exact prior value are checked before updating this projection.
         _write(fd,key+'.'+value['generation_id']+'.'+str(value['state_sequence'])+'.'+state+'.json',
-               value,parent_identity=_identity(info))
-        _write(fd,key+'.json',value,parent_identity=_identity(info),replace=True)
+               value,parent_identity=_identity(info),action_guard=allowance.tick)
+        _write(fd,key+'.json',value,parent_identity=_identity(info),replace=True,action_guard=allowance.tick)
     return value
 
 
@@ -595,14 +596,14 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
         if generation['state'] in {'active','restored-active'}:
             event=journal.append('retiring',member_key='cache-'+str(index),
                 evidence={'generation_id':generation['generation_id']})
-            cache_generations[index]=_transition(policy,generation,state='retiring',token=token,journal_ref=event)
+            cache_generations[index]=_transition(policy,generation,allowance=allowance,state='retiring',token=token,journal_ref=event)
     for index,generation in enumerate(generations):
         allowance.tick()
         outcome=detach_and_remove(preserved,member_index=index,generation_id=generation['generation_id'],
                   journal=journal,removed_inodes=removed)
         outcomes.append(outcome)
         if generation['state']!='retired':
-            generations[index]=_transition(policy,generation,state='retired',token=token,
+            generations[index]=_transition(policy,generation,allowance=allowance,state='retired',token=token,
                     journal_ref=outcome['event_raw_ref'])
         # The member event and generation transition are already durable. A
         # failure projects their exact journal prefix through _partial_result;
@@ -613,7 +614,7 @@ def _finish_retirement(policy,consent,initial,journal,pending,generations,outcom
     _require(len(cache_outcomes)==len(cache_generations),'scene_retirement_cache_journal_unproven')
     for index,(generation,outcome) in enumerate(zip(cache_generations,cache_outcomes)):
         if generation['state']!='retired':
-            cache_generations[index]=_transition(policy,generation,state='retired',token=token,
+            cache_generations[index]=_transition(policy,generation,allowance=allowance,state='retired',token=token,
                 journal_ref=outcome['event_raw_ref'])
     extra=dict(cache_outcomes=cache_outcomes,cache_generations=cache_generations) if cache_generations else {}
     if pin_rows:
@@ -677,7 +678,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
                         event=journal.append('retiring',member_key=str(index),evidence={
                             'generation_id':generation['generation_id'],
                             'inventory_sha256':consent['members'][index]['inventory_sha256']})
-                        generations[index]=_transition(policy,generation,state='retiring',token=journal.token,
+                        generations[index]=_transition(policy,generation,allowance=allowance,state='retiring',token=journal.token,
                             journal_ref=event,inventory_sha256=consent['members'][index]['inventory_sha256'])
                 return _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance,resumed=True)
             fresh=_current_plan(policy,consent,retained,allowance,now,monotonic)
@@ -773,7 +774,7 @@ def retire_scene(plan_path, consent_path, *, transport, now=time.time, monotonic
             for index,generation in enumerate(generations):
                 event=journal.append('retiring',member_key=str(index),evidence={
                     'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][index]['inventory_sha256']})
-                generations[index]=_transition(policy,generation,state='retiring',token=token,journal_ref=event,
+                generations[index]=_transition(policy,generation,allowance=allowance,state='retiring',token=token,journal_ref=event,
                     inventory_sha256=consent['members'][index]['inventory_sha256'])
             return _finish_retirement(policy,consent,initial,journal,pending,generations,outcomes,allowance)
     except access.SceneRetirementAccessError as error:
@@ -877,12 +878,13 @@ def _finish_restore(policy,consent,retired,reference,journal,pending,restore_con
         if generation['state']=='retired':
             event=journal.append('restoring',member_key='cache-'+str(index),
                 evidence={'generation_id':generation['generation_id']})
-            cache_generations[index]=_transition(policy,generation,state='restoring',token=retired['token'],journal_ref=event)
+            cache_generations[index]=_transition(policy,generation,allowance=allowance,state='restoring',token=retired['token'],journal_ref=event)
     restored=restore_preserved_members(retired['preserved'],transport=transport,journal=journal)
     for index,(generation,outcome) in enumerate(zip(generations,restored)):
         if generation['state']!='restored-active':
+            _current_readers(policy,allowance)
             event=journal.append('restored-active',member_key=str(index),evidence=outcome)
-            _transition(policy,generation,state='restored-active',token=retired['token'],journal_ref=event,
+            _transition(policy,generation,allowance=allowance,state='restored-active',token=retired['token'],journal_ref=event,
                 identity=outcome['restore_identity'])
         else:
             _require(outcome['restore_identity']==[generation['dev'],generation['ino'],generation['mode']],
@@ -913,8 +915,9 @@ def _finish_restore(policy,consent,retired,reference,journal,pending,restore_con
                 and (info.st_uid,info.st_gid)==(alias['uid'],alias['gid'])
                 and stat.S_IMODE(info.st_mode)==alias['mode'],'scene_retirement_generation_changed')
         if generation['state']!='restored-active':
+            _current_readers(policy,allowance)
             event=journal.append('restored-active',member_key='cache-'+str(index),evidence=evidence)
-            _transition(policy,generation,state='restored-active',token=retired['token'],journal_ref=event,
+            _transition(policy,generation,allowance=allowance,state='restored-active',token=retired['token'],journal_ref=event,
                 identity=evidence['restore_identity'])
         cache_outcomes.append(dict(evidence,outcome='restored'))
     pin_rows=retired.get('terminal_pin_release_rows',[])
@@ -965,6 +968,7 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 journal,pending,initial,projection=resumed
                 recovery.bind_original_allowance(journal,initial,allowance,restoring=True)
                 _installed_cohort(policy,allowance)
+                _current_readers(policy,allowance)
                 generations=recovery.resumed_restore_generations(sys.modules[__name__],policy,consent,journal,initial)
                 outcomes.extend(recovery.restored_prefix(journal,generations))
                 recovery.reserve_phase(journal,retired['preserved'],restoring=True,pin_rows=retired.get('terminal_pin_release_rows',[]))
@@ -976,7 +980,7 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 for index,generation in enumerate(generations):
                     if generation['state']=='retired':
                         event=journal.append('restoring',member_key=str(index),evidence={'generation_id':generation['generation_id']})
-                        generations[index]=_transition(policy,generation,state='restoring',token=retired['token'],journal_ref=event)
+                        generations[index]=_transition(policy,generation,allowance=allowance,state='restoring',token=retired['token'],journal_ref=event)
                 return _finish_restore(policy,consent,retired,reference,journal,pending,restore_context,
                                        generations,outcomes,allowance,transport,was_restored=was_restored)
             generations=[]
@@ -991,6 +995,7 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 else:
                     _require(False,'scene_retirement_restore_conflict')
             _installed_cohort(policy,allowance)
+            _current_readers(policy,allowance)
             token=secrets.token_hex(32)[:32]
             initial=dict(schema_version='scene_restore_journal.v1',status='restoring',intent_id=consent['intent_id'],
                 intent_raw_ref=consent['intent_raw_ref'],members=consent['members'],generations=generations,
@@ -1019,7 +1024,7 @@ def restore_scene(retired_journal_path, consent_path, *, transport, now=time.tim
                 intent_id=consent['intent_id'],members=[],last_event_raw_ref=journal.prior_ref,**restore_context),allowance)
             for index,generation in enumerate(generations):
                 event=journal.append('restoring',member_key=str(index),evidence={'generation_id':generation['generation_id']})
-                generations[index]=_transition(policy,generation,state='restoring',token=retired['token'],journal_ref=event)
+                generations[index]=_transition(policy,generation,allowance=allowance,state='restoring',token=retired['token'],journal_ref=event)
             return _finish_restore(policy,consent,retired,reference,journal,pending,restore_context,
                                    generations,outcomes,allowance,transport)
     except access.SceneRetirementAccessError as error:

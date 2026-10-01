@@ -377,6 +377,7 @@ def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
                          'scene_retirement_cache_journal_unproven')
                 outcome=planned['evidence']['outcome']
                 _current_parent(path.parent,parent,parent_identity)
+                journal.allowance.tick()
                 os.fsync(parent)
             else:
                 with _opened(path) as (fd,info):
@@ -405,9 +406,11 @@ def remove_preserved_cache_aliases(preserved,*,journal,removed_inodes):
                     _guard(fd,_identity(info))
                     _require(_identity(os.stat(path.name,dir_fd=parent,follow_symlinks=False))==_identity(info),
                              'scene_retirement_cache_alias_changed')
+                    journal.allowance.tick()
                     os.unlink(path.name,dir_fd=parent)
                     journal.allowance.tick()
                     _current_parent(path.parent,parent,parent_identity)
+                    journal.allowance.tick()
                     os.fsync(parent)
             inode=tuple(alias['physical_identity'][:2])
             removed_inodes[inode]=removed_inodes.get(inode,0)+1
@@ -469,6 +472,7 @@ def restore_preserved_cache_aliases(preserved,roots,file_identities,journal):
                      'scene_retirement_cache_restore_conflict')
             journal.allowance.tick()
             _current_parent(path.parent,parent,parent_identity)
+            journal.allowance.tick()
             os.fsync(parent)
             done=_cache_event(journal,'cache_alias_restored',key)
             if done is None:

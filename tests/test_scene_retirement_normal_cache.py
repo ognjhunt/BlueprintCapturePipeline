@@ -349,8 +349,10 @@ def test_cache_generation_transition_rejects_wrong_service_group(tmp_path,monkey
     current=json.loads(before)
     store=Path(policy['generation_store']).stat()
     monkeypatch.setattr(access,'_SERVICE_IDENTITY',(store.st_uid,store.st_gid+1))
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    allowance=ActionAllowance(expires_at=200,now=lambda:101,monotonic=lambda:0)
     with pytest.raises(ValueError,match='scene_retirement_service_identity_unproven'):
-        engine._transition(policy,current,state='retiring',token='4'*32,
+        engine._transition(policy,current,allowance=allowance,state='retiring',token='4'*32,
             journal_ref={'sha256':'sha256:'+'a'*64})
     assert ledger.read_bytes()==before
 
@@ -614,7 +616,7 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     with access.exclusive_scene_access():
         event=journal.append('retiring',member_key='0',evidence={
             'generation_id':generation['generation_id'],'inventory_sha256':consent['members'][0]['inventory_sha256']})
-        generation=engine._transition(policy,generation,state='retiring',token=journal.token,journal_ref=event,
+        generation=engine._transition(policy,generation,allowance=allowance,state='retiring',token=journal.token,journal_ref=event,
             inventory_sha256=consent['members'][0]['inventory_sha256'])
         if mode=='combined_journal_cap':
             from blueprint_pipeline import task_evaluation_scene_retirement_journal as journal_module
@@ -665,7 +667,7 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
     transport.members=[]
     with access.exclusive_scene_access():
         event=restore.append('restoring',member_key='0',evidence={'generation_id':retired_generation['generation_id']})
-        restoring=engine._transition(policy,retired_generation,state='restoring',token=journal.token,journal_ref=event)
+        restoring=engine._transition(policy,retired_generation,allowance=allowance,state='restoring',token=journal.token,journal_ref=event)
         if mode=='restore_generation_changed':
             target,foreign=caches[0]
             foreign=json.loads(target.read_bytes())
@@ -690,6 +692,9 @@ def test_real_engine_finish_removes_last_normal_cache_links_and_retires_generati
             assert not root.exists()
             assert all(json.loads(file.read_bytes())['state']=='retired' for file,_ in caches)
             return
+        # Internal cache replay mechanics only. Current native reader admission
+        # is separately mandatory; this portable fixture cannot clear Linux PIDs.
+        monkeypatch.setattr(engine,'_current_readers',lambda *args: None)
         result=engine._finish_restore(policy,restore_consent,snapshot,receipt['retired_journal_raw_ref'],
             restore,pending,context,[restoring],[],allowance,transport)
     assert result['status']=='restored' and root.is_dir()

@@ -39,8 +39,10 @@ def _named(parent, parent_identity, name, fd, identity):
              'scene_retirement_descriptor_ownership_lost')
 
 
-def _new_file(parent, name, *, parent_identity):
+def _new_file(parent, name, *, parent_identity, action_guard=None):
     _guard(parent, parent_identity)
+    if action_guard is not None:
+        action_guard()
     fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                  0o600, dir_fd=parent)
     # Independent named expectation precedes first descriptor adoption. A lost
@@ -84,7 +86,7 @@ def _birth_gate(parent, key, *, parent_identity):
             incoming.add_note('scene_retirement_descriptor_cleanup_failed')
 
 
-def _write(parent, name, value, *, parent_identity, replace=False, raw_bytes=None):
+def _write(parent, name, value, *, parent_identity, replace=False, raw_bytes=None, action_guard=None):
     raw = (raw_bytes if raw_bytes is not None else
            json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode())
     _require(type(raw) is bytes)
@@ -93,13 +95,15 @@ def _write(parent, name, value, *, parent_identity, replace=False, raw_bytes=Non
     store_info=os.fstat(parent)
     owner=(store_info.st_uid,store_info.st_gid)
     _require(all(type(value) is int and 0 <= value < 2**32-1 for value in owner))
-    def named():
+    def named(*, check_action=True):
         _guard(parent,parent_identity)
         current=os.fstat(parent)
         _require((current.st_uid,current.st_gid)==owner,'scene_retirement_generation_changed')
         _named(parent,parent_identity,temporary,fd,identity)
+        if check_action and action_guard is not None:
+            action_guard()
     temporary = '.' + secrets.token_hex(16) + '.pending'
-    fd, identity = _new_file(parent, temporary, parent_identity=parent_identity)
+    fd, identity = _new_file(parent, temporary, parent_identity=parent_identity, action_guard=action_guard)
     placed = False
     try:
         view = memoryview(raw)
@@ -128,13 +132,15 @@ def _write(parent, name, value, *, parent_identity, replace=False, raw_bytes=Non
         _guard(fd, identity)
         _require(_identity(os.stat(name, dir_fd=parent, follow_symlinks=False)) == identity)
         _guard(parent, parent_identity)
+        if action_guard is not None:
+            action_guard()
         os.fsync(parent)
     finally:
         incoming = sys.exc_info()[1]
         cleanup_failure = None
         if not placed:
             try:
-                named()
+                named(check_action=False)  # Exact owned cleanup does not renew action authority.
                 os.unlink(temporary, dir_fd=parent)
             except FileNotFoundError:
                 pass

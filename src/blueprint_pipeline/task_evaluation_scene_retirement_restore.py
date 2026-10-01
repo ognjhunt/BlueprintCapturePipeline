@@ -289,6 +289,7 @@ def restore_preserved_members(preserved,*,transport,journal):
             expected=_identity(info)
             allowance.tick()
             _current_parent(root.parent,parent,expected)
+            allowance.tick()
             os.mkdir(root.name,0o700,dir_fd=parent)
             allowance.tick()
             _current_parent(root.parent,parent,expected)
@@ -297,6 +298,7 @@ def restore_preserved_members(preserved,*,transport,journal):
                 directories[(index,'')]=_identity(born)
             allowance.tick()
             _current_parent(root.parent,parent,expected)
+            allowance.tick()
             os.fsync(parent)
             journal.append('restore_directory_created',member_key=str(index),evidence={
                 'canonical_path':str(root),'relative_path':'','restore_identity':list(directories[(index,'')]),
@@ -313,12 +315,14 @@ def restore_preserved_members(preserved,*,transport,journal):
             _require(_identity(info)==expected)
             allowance.tick()
             _current_parent(parent_path,fd,expected)
+            allowance.tick()
             os.mkdir(relative.name,0o700,dir_fd=fd)
             with _opened(roots[index]/relative,directory=True) as (_,born):
                 _require(born.st_uid==os.geteuid() and (born.st_mode & 0o777)==0o700)
                 directories[(index,str(relative))]=_identity(born)
             allowance.tick()
             _current_parent(parent_path,fd,expected)
+            allowance.tick()
             os.fsync(fd)
         journal.append('restore_directory_created',member_key=str(index),evidence={
             'relative_path':str(relative),'restore_identity':list(directories[(index,str(relative))]),
@@ -358,13 +362,14 @@ def restore_preserved_members(preserved,*,transport,journal):
                     _current_parent(original.parent,source,source_identity)
                     _current_parent(parent_path,parent,expected)
                     _require(_identity(os.stat(original.name,dir_fd=source,follow_symlinks=False))==identity)
+                    allowance.tick()
                     os.link(original.name,relative.name,src_dir_fd=source,dst_dir_fd=parent,follow_symlinks=False)
                 created=identity
             else:
                 temporary='.'+secrets.token_hex(16)+'.restore'
                 allowance.tick()
                 _current_parent(parent_path,parent,expected)
-                fd,identity=_new_file(parent,temporary,parent_identity=expected)
+                fd,identity=_new_file(parent,temporary,parent_identity=expected,action_guard=allowance.tick)
                 placed=False
                 try:
                     def write(chunk):
@@ -373,6 +378,7 @@ def restore_preserved_members(preserved,*,transport,journal):
                             allowance.tick()
                             _current_parent(parent_path,parent,expected)
                             _named(parent,expected,temporary,fd,identity)
+                            allowance.tick()
                             count=os.write(fd,view)
                             _require(count>0)
                             view=view[count:]
@@ -380,10 +386,12 @@ def restore_preserved_members(preserved,*,transport,journal):
                     allowance.tick()
                     _current_parent(parent_path,parent,expected)
                     _named(parent,expected,temporary,fd,identity)
+                    allowance.tick()
                     os.fchown(fd,row['uid'],row['gid'])
                     allowance.tick()
                     _current_parent(parent_path,parent,expected)
                     _named(parent,expected,temporary,fd,identity)
+                    allowance.tick()
                     os.fchmod(fd,row['mode'])
                     # chmod changes the owned token's mode, with the SAME inode.
                     observed=os.fstat(fd)
@@ -392,14 +400,17 @@ def restore_preserved_members(preserved,*,transport,journal):
                     allowance.tick()
                     _current_parent(parent_path,parent,expected)
                     _named(parent,expected,temporary,fd,identity)
+                    allowance.tick()
                     os.fsync(fd)
                     allowance.tick()
                     _current_parent(parent_path,parent,expected)
                     _named(parent,expected,temporary,fd,identity)
+                    allowance.tick()
                     os.link(temporary,relative.name,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False)
                     allowance.tick()
                     _current_parent(parent_path,parent,expected)
                     _named(parent,expected,temporary,fd,identity)
+                    allowance.tick()
                     os.unlink(temporary,dir_fd=parent)
                     placed=True
                     created=identity
@@ -422,6 +433,7 @@ def restore_preserved_members(preserved,*,transport,journal):
                     groups[group]=(roots[index]/relative,created)
             allowance.tick()
             _current_parent(parent_path,parent,expected)
+            allowance.tick()
             os.fsync(parent)
             file_identities[(index,str(relative))]=created
             journal.append('restore_file_created',member_key=str(index),evidence={
@@ -446,10 +458,12 @@ def restore_preserved_members(preserved,*,transport,journal):
                 allowance.tick()
                 _current_parent(path.parent,parent,parent_identity)
                 _named(parent,parent_identity,path.name,fd,expected)
+                allowance.tick()
                 os.fchown(fd,original['uid'],original['gid'])
                 allowance.tick()
                 _current_parent(path.parent,parent,parent_identity)
                 _named(parent,parent_identity,path.name,fd,expected)
+                allowance.tick()
                 os.fchmod(fd,original['mode'])
                 expected=(*expected[:2],(expected[2] & ~0o7777)|original['mode'])
                 current=os.fstat(fd)
@@ -458,6 +472,7 @@ def restore_preserved_members(preserved,*,transport,journal):
                 allowance.tick()
                 _current_parent(path.parent,parent,parent_identity)
                 _named(parent,parent_identity,path.name,fd,expected)
+                allowance.tick()
                 os.fsync(fd)
             finally:
                 failure=_close_owned(fd,expected)
