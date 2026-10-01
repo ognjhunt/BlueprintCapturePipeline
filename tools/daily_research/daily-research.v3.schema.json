@@ -106,6 +106,34 @@
           ],
           "minLength": 1,
           "maxLength": 2000
+        },
+        "defined_run_scope": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "unresolved_promising_branches": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "completion_state": {
+          "type": "string",
+          "enum": [
+            "coverage_complete",
+            "budget_interrupted",
+            "time_interrupted",
+            "access_blocked"
+          ]
         }
       },
       "required": [
@@ -115,6 +143,44 @@
         "rejection_reasons",
         "stop_reason",
         "shortfall_reason"
+      ],
+      "dependentRequired": {
+        "defined_run_scope": [
+          "defined_run_scope",
+          "unresolved_promising_branches",
+          "completion_state"
+        ],
+        "unresolved_promising_branches": [
+          "defined_run_scope",
+          "unresolved_promising_branches",
+          "completion_state"
+        ],
+        "completion_state": [
+          "defined_run_scope",
+          "unresolved_promising_branches",
+          "completion_state"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "completion_state": {
+                "const": "coverage_complete"
+              }
+            },
+            "required": [
+              "completion_state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "unresolved_promising_branches": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
       ]
     }
   },

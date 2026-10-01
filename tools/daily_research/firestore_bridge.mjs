@@ -14,7 +14,7 @@ const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.s
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|qa|qa-evidence)|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|qa|qa-evidence|qa-input|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null) {
@@ -125,6 +125,8 @@ export class Store {
   }
   async put(row) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}`) refuse('firestore_row_binding_invalid');
+    if (row.search_provider === 'perplexity-fast-v1' && Buffer.byteLength(JSON.stringify(row)) > 7000000)
+      refuse('research_tool_record_resource_ceiling');
     const hash = await this.blobPut(Buffer.from(JSON.stringify(row)).toString('base64'));
     const ref = this.db.doc(`${ROOT}/runs/${row.date}`);
     await this.transaction(async tx => {
@@ -137,6 +139,8 @@ export class Store {
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
         qa_request_digest: row.qa?.request_digest || null, qa_state: row.qa?.state || null,
         qa_deadline_ms: row.qa?.deadline_ms || null,
+        search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
+        recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
         publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
       this.projectWorkItem(tx, row, hash);
@@ -149,7 +153,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json')) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -164,7 +168,8 @@ export class Store {
     const row = await this.get(day);
     if (!row) refuse('run_missing');
     const files = {}, missing = [];
-    for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.qa ? ['qa','qa-evidence'] : [])]) {
+    for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.qa ? ['qa','qa-evidence'] : []),
+      ...(row.qa?.input_file ? ['qa-input'] : []), ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
       try {files[kind] = await this.fileGet(`${day}-${kind}.json`);}
       catch (error) {
         if (!(error instanceof Refusal) || error.message !== 'firestore_file_missing') throw error;
@@ -174,6 +179,17 @@ export class Store {
     }
     if (files.artifact && row.raw_output_digest !== sha(Buffer.from(files.artifact, 'base64')))
       refuse('artifact_not_downloaded_or_digest_mismatch');
+    if (row.qa?.input_file) {
+      const input = files['qa-input'] && Buffer.from(files['qa-input'], 'base64');
+      if (row.qa.input_file !== `${day}-qa-input.json` || !input || input.at(-1) !== 10
+        || sha(input.subarray(0, -1)) !== row.qa.request_digest)
+        refuse('agent_qa_export_digest_mismatch');
+    }
+    for (const call of Object.values(row.application_tool_calls || {})) {
+      if (call.result_file && (call.result_file !== `${day}-tool-${call.request.call_id}.json`
+        || !files[`tool-${call.request.call_id}`] || call.result_sha256 !== sha(Buffer.from(files[`tool-${call.request.call_id}`], 'base64'))))
+        refuse('research_tool_result_digest_mismatch');
+    }
     return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing};
   }
   async importRun(row) {
@@ -200,6 +216,7 @@ export class Store {
       const snap = await tx.get(this.db.doc(`${ROOT}/runs/${day}`));
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
+      this.budgetGate(control, snap.data());
       tx.set(this.db.doc(`${ROOT}/runs/${day}`), {create_attempt_claimed: true}, {merge: true});
       return true;
     });
@@ -219,6 +236,16 @@ export class Store {
     if (control?.enabled !== true || workflow?.enabled !== true
         || ['qa_authority_reference','publication_authority_reference'].some(k=>typeof workflow[k]!=='string'
           || !workflow[k].trim() || workflow[k].startsWith('PENDING'))) refuse('workflow_authority_missing');
+  }
+  budgetGate(control, row) {
+    if (row.search_provider !== 'perplexity-fast-v1') return;
+    const authority = row.recurring_budget_authority_reference, target = row.soft_target_usd;
+    if (typeof authority !== 'string' || !authority.trim() || authority.trim().startsWith('PENDING')
+        || typeof target !== 'number' || !Number.isFinite(target) || target <= 0)
+      refuse('research_tool_budget_authority_not_pinned');
+    if (control.config?.search_provider !== row.search_provider || control.config?.soft_target_usd !== target
+        || control.config?.recurring_budget_authority_reference !== authority)
+      refuse('research_tool_budget_authority_changed');
   }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
@@ -243,6 +270,7 @@ export class Store {
           || run.qa_request_digest!==requestDigest || run.qa_request_claimed
           || !Number.isSafeInteger(deadlineMS) || run.qa_deadline_ms!==deadlineMS
           || this.clock()>=deadlineMS) refuse('agent_qa_input_not_admitted');
+      this.budgetGate(control, run);
       tx.set(ref,{qa_request_claimed:true},{merge:true});return true;
     });
   }
