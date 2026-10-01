@@ -115,6 +115,12 @@ dependent step as blocked instead of guessing.
 
 ## Working Rules
 
+- Keep research workflow code and instructions in Blueprint-controlled GitHub,
+  structured state in the existing company database with portable exports, and
+  private business artifacts in authorized company object storage using standard
+  files and manifests. Stable Blueprint IDs are canonical; provider/session IDs
+  are provenance only. Do not make Dot, ChatGPT Library, or one model vendor a
+  production dependency. Preserve existing approval, privacy and cleanup guards.
 - **Execute without serial debugging loops.** When the user asks to reach a
   concrete stage, keep that stage as the immediate objective. Before an attempt,
   batch the complete applicable preflight: exact runtime inputs, launch arguments,
