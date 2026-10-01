@@ -39,172 +39,648 @@
           "type": "google_artifact_registry_repository_iam_member"
         },
         {
-          "address": "google_iam_deny_policy.remote_cpu_isolation",
+          "address": "google_billing_budget.remote_cpu_workers",
           "count_expression": {
             "references": [
               "var.remote_cpu_workers_enabled"
             ]
           },
           "depends_on": [
-            "google_tags_tag_binding.remote_cpu_identity",
-            "google_tags_location_tag_binding.remote_cpu_transport"
+            "google_project_service.remote_cpu_apis[\"billingbudgets.googleapis.com\"]"
           ],
           "expressions": {
+            "amount": [
+              {
+                "specified_amount": [
+                  {
+                    "currency_code": {
+                      "constant_value": "USD"
+                    },
+                    "units": {
+                      "references": [
+                        "var.remote_cpu_workers_budget_usd"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "billing_account": {
+              "references": [
+                "var.billing_account_id"
+              ]
+            },
+            "budget_filter": [
+              {
+                "projects": {
+                  "references": [
+                    "google_project.remote_cpu[0].number",
+                    "google_project.remote_cpu[0]",
+                    "google_project.remote_cpu",
+                    "google_project.remote_cpu_dispatch[0].number",
+                    "google_project.remote_cpu_dispatch[0]",
+                    "google_project.remote_cpu_dispatch"
+                  ]
+                }
+              }
+            ],
             "display_name": {
-              "constant_value": "Blueprint Remote CPU Identity and Transport Isolation"
+              "constant_value": "Blueprint Remote CPU Workers Budget"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_workers",
+          "provider_config_key": "google",
+          "schema_version": 1,
+          "type": "google_billing_budget"
+        },
+        {
+          "address": "google_cloud_run_v2_job.remote_cpu_worker",
+          "depends_on": [
+            "google_project_service.remote_cpu_apis[\"run.googleapis.com\"]",
+            "google_project_iam_policy.remote_cpu",
+            "google_project_iam_policy.remote_cpu_dispatch",
+            "google_storage_bucket_iam_policy.remote_cpu_dispatch_transport",
+            "google_artifact_registry_repository_iam_member.remote_cpu_image_reader"
+          ],
+          "expressions": {
+            "labels": {
+              "references": [
+                "local.common_labels"
+              ]
+            },
+            "location": {
+              "references": [
+                "var.primary_region"
+              ]
             },
             "name": {
-              "constant_value": "remote-cpu-isolation"
-            },
-            "parent": {
               "references": [
-                "google_project.remote_cpu[0].number",
+                "each.key"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
                 "google_project.remote_cpu[0]",
                 "google_project.remote_cpu"
               ]
             },
-            "rules": [
+            "template": [
               {
-                "deny_rule": [
+                "parallelism": {
+                  "constant_value": 1
+                },
+                "task_count": {
+                  "constant_value": 1
+                },
+                "template": [
                   {
-                    "denial_condition": [
+                    "containers": [
                       {
-                        "expression": {
-                          "references": [
-                            "google_tags_tag_key.remote_cpu_isolation[0].id",
-                            "google_tags_tag_key.remote_cpu_isolation[0]",
-                            "google_tags_tag_key.remote_cpu_isolation",
-                            "google_tags_tag_value.remote_cpu_isolation[\"dispatcher\"].id",
-                            "google_tags_tag_value.remote_cpu_isolation[\"dispatcher\"]",
-                            "google_tags_tag_value.remote_cpu_isolation"
+                        "command": {
+                          "constant_value": [
+                            "python",
+                            "-m",
+                            "blueprint_pipeline.remote_cpu_worker",
+                            "bootstrap"
                           ]
-                        }
+                        },
+                        "env": [
+                          {
+                            "name": {
+                              "constant_value": "BLUEPRINT_REMOTE_CPU_STAGE"
+                            },
+                            "value": {
+                              "references": [
+                                "each.key"
+                              ]
+                            }
+                          },
+                          {
+                            "name": {
+                              "constant_value": "BLUEPRINT_REMOTE_CPU_OBJECT_PREFIX"
+                            },
+                            "value": {
+                              "references": [
+                                "var.remote_cpu_worker_object_prefix"
+                              ]
+                            }
+                          }
+                        ],
+                        "image": {
+                          "references": [
+                            "var.docker_image"
+                          ]
+                        },
+                        "resources": [
+                          {
+                            "limits": {
+                              "references": [
+                                "each.value.cpu",
+                                "each.value",
+                                "each.value.memory",
+                                "each.value"
+                              ]
+                            }
+                          }
+                        ],
+                        "volume_mounts": [
+                          {
+                            "mount_path": {
+                              "constant_value": "/var/lib/blueprint"
+                            },
+                            "name": {
+                              "constant_value": "blueprint-state"
+                            }
+                          }
+                        ]
                       }
                     ],
-                    "denied_permissions": {
-                      "constant_value": [
-                        "iam.googleapis.com/serviceAccounts.actAs",
-                        "iam.googleapis.com/serviceAccounts.getAccessToken",
-                        "iam.googleapis.com/serviceAccounts.getOpenIdToken",
-                        "iam.googleapis.com/serviceAccounts.signBlob",
-                        "iam.googleapis.com/serviceAccounts.signJwt",
-                        "iam.googleapis.com/serviceAccounts.implicitDelegation",
-                        "iam.googleapis.com/serviceAccounts.setIamPolicy",
-                        "iam.googleapis.com/serviceAccounts.delete",
-                        "iam.googleapis.com/serviceAccounts.disable",
-                        "iam.googleapis.com/serviceAccounts.enable",
-                        "iam.googleapis.com/serviceAccounts.update",
-                        "iam.googleapis.com/serviceAccounts.undelete",
-                        "iam.googleapis.com/serviceAccountKeys.create"
-                      ]
+                    "execution_environment": {
+                      "constant_value": "EXECUTION_ENVIRONMENT_GEN2"
                     },
-                    "denied_principals": {
-                      "constant_value": [
-                        "principalSet://goog/public:all"
-                      ]
+                    "max_retries": {
+                      "constant_value": 0
                     },
-                    "exception_principals": {
-                      "constant_value": [
-                        "principal://goog/subject/ohstnhunt@gmail.com"
-                      ]
-                    }
-                  }
-                ],
-                "description": {
-                  "constant_value": "Only the founder can impersonate or mutate the dispatcher identity."
-                }
-              },
-              {
-                "deny_rule": [
-                  {
-                    "denial_condition": [
-                      {
-                        "expression": {
-                          "references": [
-                            "google_tags_tag_key.remote_cpu_isolation[0].id",
-                            "google_tags_tag_key.remote_cpu_isolation[0]",
-                            "google_tags_tag_key.remote_cpu_isolation",
-                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"].id",
-                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"]",
-                            "google_tags_tag_value.remote_cpu_isolation"
-                          ]
-                        }
-                      }
-                    ],
-                    "denied_permissions": {
-                      "constant_value": [
-                        "storage.googleapis.com/objects.get"
-                      ]
-                    },
-                    "denied_principals": {
-                      "constant_value": [
-                        "principalSet://goog/public:all"
-                      ]
-                    },
-                    "exception_principals": {
+                    "service_account": {
                       "references": [
-                        "google_service_account.remote_cpu_worker[0].unique_id",
+                        "google_service_account.remote_cpu_worker[0].email",
                         "google_service_account.remote_cpu_worker[0]",
-                        "google_service_account.remote_cpu_worker",
-                        "google_service_account.remote_cpu_dispatcher[0].unique_id",
-                        "google_service_account.remote_cpu_dispatcher[0]",
-                        "google_service_account.remote_cpu_dispatcher"
+                        "google_service_account.remote_cpu_worker"
                       ]
-                    }
-                  }
-                ],
-                "description": {
-                  "constant_value": "Transport objects are readable only by the two lane identities and founder."
-                }
-              },
-              {
-                "deny_rule": [
-                  {
-                    "denial_condition": [
+                    },
+                    "timeout": {
+                      "references": [
+                        "each.value.timeout_seconds",
+                        "each.value"
+                      ]
+                    },
+                    "volumes": [
                       {
-                        "expression": {
-                          "references": [
-                            "google_tags_tag_key.remote_cpu_isolation[0].id",
-                            "google_tags_tag_key.remote_cpu_isolation[0]",
-                            "google_tags_tag_key.remote_cpu_isolation",
-                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"].id",
-                            "google_tags_tag_value.remote_cpu_isolation[\"transport\"]",
-                            "google_tags_tag_value.remote_cpu_isolation"
-                          ]
+                        "empty_dir": [
+                          {
+                            "medium": {
+                              "constant_value": "MEMORY"
+                            },
+                            "size_limit": {
+                              "references": [
+                                "each.value.ephemeral_size_limit",
+                                "each.value"
+                              ]
+                            }
+                          }
+                        ],
+                        "name": {
+                          "constant_value": "blueprint-state"
                         }
                       }
-                    ],
-                    "denied_permissions": {
-                      "constant_value": [
-                        "storage.googleapis.com/objects.create",
-                        "storage.googleapis.com/objects.delete"
-                      ]
-                    },
-                    "denied_principals": {
-                      "constant_value": [
-                        "principalSet://goog/public:all"
-                      ]
-                    },
-                    "exception_principals": {
-                      "references": [
-                        "google_service_account.remote_cpu_dispatcher[0].unique_id",
-                        "google_service_account.remote_cpu_dispatcher[0]",
-                        "google_service_account.remote_cpu_dispatcher"
-                      ]
-                    }
+                    ]
                   }
-                ],
-                "description": {
-                  "constant_value": "Only the dispatcher and founder can write transport objects."
-                }
+                ]
               }
             ]
           },
+          "for_each_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled",
+              "var.remote_cpu_worker_stages"
+            ]
+          },
           "mode": "managed",
-          "name": "remote_cpu_isolation",
+          "name": "remote_cpu_worker",
+          "provider_config_key": "google-beta",
+          "schema_version": 0,
+          "type": "google_cloud_run_v2_job"
+        },
+        {
+          "address": "google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher",
+          "expressions": {
+            "location": {
+              "references": [
+                "var.primary_region"
+              ]
+            },
+            "name": {
+              "references": [
+                "google_cloud_run_v2_job.remote_cpu_worker",
+                "each.key"
+              ]
+            },
+            "policy_data": {
+              "references": [
+                "data.google_iam_policy.remote_cpu_dispatch_job[0].policy_data",
+                "data.google_iam_policy.remote_cpu_dispatch_job[0]",
+                "data.google_iam_policy.remote_cpu_dispatch_job"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            }
+          },
+          "for_each_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled",
+              "var.remote_cpu_worker_stages"
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatcher",
           "provider_config_key": "google",
           "schema_version": 0,
-          "type": "google_iam_deny_policy"
+          "type": "google_cloud_run_v2_job_iam_policy"
+        },
+        {
+          "address": "google_monitoring_alert_policy.remote_cpu_job_failures",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "combiner": {
+              "constant_value": "OR"
+            },
+            "conditions": [
+              {
+                "condition_threshold": [
+                  {
+                    "aggregations": [
+                      {
+                        "alignment_period": {
+                          "constant_value": "300s"
+                        },
+                        "cross_series_reducer": {
+                          "constant_value": "REDUCE_SUM"
+                        },
+                        "per_series_aligner": {
+                          "constant_value": "ALIGN_SUM"
+                        }
+                      }
+                    ],
+                    "comparison": {
+                      "constant_value": "COMPARISON_GT"
+                    },
+                    "duration": {
+                      "constant_value": "0s"
+                    },
+                    "filter": {
+                      "constant_value": "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\" AND resource.labels.job_name = starts_with(\"blueprint-remote-cpu-\")"
+                    },
+                    "threshold_value": {
+                      "constant_value": 0
+                    }
+                  }
+                ],
+                "display_name": {
+                  "constant_value": "Remote CPU task attempt failed"
+                }
+              }
+            ],
+            "display_name": {
+              "constant_value": "Blueprint Remote CPU Job Failures"
+            },
+            "documentation": [
+              {
+                "content": {
+                  "constant_value": "A remote CPU worker task attempt failed. The attempt falls back to the host after at most one retry by the dispatcher. Check the execution's logs and the control plane's remote-cpu-jobs summary; a stuck execution can be cancelled with `gcloud run jobs executions cancel`."
+                },
+                "mime_type": {
+                  "constant_value": "text/markdown"
+                }
+              }
+            ],
+            "notification_channels": {
+              "references": [
+                "google_monitoring_notification_channel.remote_cpu_owner[0].name",
+                "google_monitoring_notification_channel.remote_cpu_owner[0]",
+                "google_monitoring_notification_channel.remote_cpu_owner"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_job_failures",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_monitoring_alert_policy"
+        },
+        {
+          "address": "google_monitoring_notification_channel.remote_cpu_owner",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_apis"
+          ],
+          "expressions": {
+            "display_name": {
+              "constant_value": "Blueprint Remote CPU Owner"
+            },
+            "labels": {
+              "constant_value": {
+                "email_address": "ohstnhunt@gmail.com"
+              }
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "type": {
+              "constant_value": "email"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_owner",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_monitoring_notification_channel"
+        },
+        {
+          "address": "google_project.remote_cpu",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "auto_create_network": {
+              "constant_value": false
+            },
+            "billing_account": {
+              "references": [
+                "var.billing_account_id"
+              ]
+            },
+            "deletion_policy": {
+              "constant_value": "ABANDON"
+            },
+            "name": {
+              "constant_value": "Blueprint Remote CPU Workers"
+            },
+            "project_id": {
+              "references": [
+                "var.remote_cpu_project_id"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu",
+          "provider_config_key": "google",
+          "schema_version": 1,
+          "type": "google_project"
+        },
+        {
+          "address": "google_project.remote_cpu_dispatch",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "auto_create_network": {
+              "constant_value": false
+            },
+            "billing_account": {
+              "references": [
+                "var.billing_account_id"
+              ]
+            },
+            "deletion_policy": {
+              "constant_value": "ABANDON"
+            },
+            "name": {
+              "constant_value": "Blueprint CPU Dispatch"
+            },
+            "project_id": {
+              "references": [
+                "var.remote_cpu_dispatch_project_id"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatch",
+          "provider_config_key": "google",
+          "schema_version": 1,
+          "type": "google_project"
+        },
+        {
+          "address": "google_project_iam_custom_role.remote_cpu_dispatch_transport_reader",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_dispatch_apis",
+            "google_project_iam_policy.remote_cpu_dispatch"
+          ],
+          "expressions": {
+            "permissions": {
+              "constant_value": [
+                "storage.objects.get"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu_dispatch[0].project_id",
+                "google_project.remote_cpu_dispatch[0]",
+                "google_project.remote_cpu_dispatch"
+              ]
+            },
+            "role_id": {
+              "constant_value": "remoteCpuTransportReader"
+            },
+            "title": {
+              "constant_value": "Blueprint Remote CPU Transport Reader"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatch_transport_reader",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_iam_custom_role"
+        },
+        {
+          "address": "google_project_iam_custom_role.remote_cpu_dispatch_transport_writer",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_dispatch_apis",
+            "google_project_iam_policy.remote_cpu_dispatch"
+          ],
+          "expressions": {
+            "permissions": {
+              "constant_value": [
+                "storage.objects.create",
+                "storage.objects.delete",
+                "storage.objects.get"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu_dispatch[0].project_id",
+                "google_project.remote_cpu_dispatch[0]",
+                "google_project.remote_cpu_dispatch"
+              ]
+            },
+            "role_id": {
+              "constant_value": "remoteCpuTransportWriter"
+            },
+            "title": {
+              "constant_value": "Blueprint Remote CPU Transport Writer"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatch_transport_writer",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_iam_custom_role"
+        },
+        {
+          "address": "google_project_iam_custom_role.remote_cpu_dispatcher",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_apis",
+            "google_project_iam_policy.remote_cpu"
+          ],
+          "expressions": {
+            "description": {
+              "constant_value": "Run a remote CPU worker job with overrides and read or cancel its executions; bound only on those jobs."
+            },
+            "permissions": {
+              "constant_value": [
+                "run.executions.cancel",
+                "run.executions.get",
+                "run.executions.list",
+                "run.jobs.get",
+                "run.jobs.run",
+                "run.jobs.runWithOverrides"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "role_id": {
+              "constant_value": "remoteCpuDispatcher"
+            },
+            "title": {
+              "constant_value": "Blueprint Remote CPU Dispatcher"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatcher",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_iam_custom_role"
+        },
+        {
+          "address": "google_project_iam_custom_role.remote_cpu_transport_reader",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_apis",
+            "google_project_iam_policy.remote_cpu"
+          ],
+          "expressions": {
+            "description": {
+              "constant_value": "Read one remote CPU transport object at a known generation; bound only on the transport bucket."
+            },
+            "permissions": {
+              "constant_value": [
+                "storage.objects.get"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "role_id": {
+              "constant_value": "remoteCpuTransportReader"
+            },
+            "title": {
+              "constant_value": "Blueprint Remote CPU Transport Reader"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_transport_reader",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_iam_custom_role"
+        },
+        {
+          "address": "google_project_iam_custom_role.remote_cpu_transport_writer",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_apis",
+            "google_project_iam_policy.remote_cpu"
+          ],
+          "expressions": {
+            "description": {
+              "constant_value": "Create, read and delete remote CPU transport objects; bound only on the transport bucket."
+            },
+            "permissions": {
+              "constant_value": [
+                "storage.objects.create",
+                "storage.objects.delete",
+                "storage.objects.get"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "role_id": {
+              "constant_value": "remoteCpuTransportWriter"
+            },
+            "title": {
+              "constant_value": "Blueprint Remote CPU Transport Writer"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_transport_writer",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_iam_custom_role"
         },
         {
           "address": "google_project_iam_policy.remote_cpu",
@@ -236,7 +712,636 @@
           "type": "google_project_iam_policy"
         },
         {
-          "address": "data.google_iam_policy.remote_cpu_project",
+          "address": "google_project_iam_policy.remote_cpu_dispatch",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "policy_data": {
+              "references": [
+                "data.google_iam_policy.remote_cpu_dispatch_project[0].policy_data",
+                "data.google_iam_policy.remote_cpu_dispatch_project[0]",
+                "data.google_iam_policy.remote_cpu_dispatch_project"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu_dispatch[0].project_id",
+                "google_project.remote_cpu_dispatch[0]",
+                "google_project.remote_cpu_dispatch"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatch",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_iam_policy"
+        },
+        {
+          "address": "google_project_service.remote_cpu_apis",
+          "expressions": {
+            "disable_on_destroy": {
+              "constant_value": false
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "service": {
+              "references": [
+                "each.key"
+              ]
+            }
+          },
+          "for_each_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_apis",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_service"
+        },
+        {
+          "address": "google_project_service.remote_cpu_dispatch_apis",
+          "expressions": {
+            "disable_on_destroy": {
+              "constant_value": false
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu_dispatch[0].project_id",
+                "google_project.remote_cpu_dispatch[0]",
+                "google_project.remote_cpu_dispatch"
+              ]
+            },
+            "service": {
+              "references": [
+                "each.key"
+              ]
+            }
+          },
+          "for_each_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatch_apis",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_project_service"
+        },
+        {
+          "address": "google_project_service_identity.remote_cpu_run",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_apis"
+          ],
+          "expressions": {
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "service": {
+              "constant_value": "run.googleapis.com"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_run",
+          "provider_config_key": "google-beta",
+          "schema_version": 0,
+          "type": "google_project_service_identity"
+        },
+        {
+          "address": "google_service_account.remote_cpu_host_dispatcher",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_dispatch_apis",
+            "google_project_iam_policy.remote_cpu_dispatch"
+          ],
+          "expressions": {
+            "account_id": {
+              "constant_value": "remote-cpu-dispatcher"
+            },
+            "description": {
+              "constant_value": "Job-scoped dispatch and transport writes; no runtime project credentials"
+            },
+            "display_name": {
+              "constant_value": "Blueprint Remote CPU Host Dispatcher"
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu_dispatch[0].project_id",
+                "google_project.remote_cpu_dispatch[0]",
+                "google_project.remote_cpu_dispatch"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_host_dispatcher",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_service_account"
+        },
+        {
+          "address": "google_service_account.remote_cpu_quarantined_dispatcher",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_apis",
+            "google_project_iam_policy.remote_cpu"
+          ],
+          "expressions": {
+            "account_id": {
+              "constant_value": "remote-cpu-dispatcher"
+            },
+            "description": {
+              "constant_value": "Runs remote CPU worker jobs with attempt overrides and cancels their executions"
+            },
+            "display_name": {
+              "constant_value": "Blueprint Remote CPU Dispatcher"
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_quarantined_dispatcher",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_service_account"
+        },
+        {
+          "address": "google_service_account.remote_cpu_worker",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_apis",
+            "google_project_iam_policy.remote_cpu"
+          ],
+          "expressions": {
+            "account_id": {
+              "constant_value": "remote-cpu-worker"
+            },
+            "description": {
+              "constant_value": "Runs remote CPU worker job executions; can only read transport objects"
+            },
+            "display_name": {
+              "constant_value": "Blueprint Remote CPU Worker"
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_worker",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_service_account"
+        },
+        {
+          "address": "google_storage_bucket.remote_cpu_dispatch_transport",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_service.remote_cpu_dispatch_apis",
+            "google_project_iam_policy.remote_cpu_dispatch"
+          ],
+          "expressions": {
+            "labels": {
+              "references": [
+                "local.common_labels"
+              ]
+            },
+            "lifecycle_rule": [
+              {
+                "action": [
+                  {
+                    "type": {
+                      "constant_value": "Delete"
+                    }
+                  }
+                ],
+                "condition": [
+                  {
+                    "age": {
+                      "constant_value": 1
+                    }
+                  }
+                ]
+              }
+            ],
+            "location": {
+              "references": [
+                "var.primary_region"
+              ]
+            },
+            "name": {
+              "references": [
+                "var.remote_cpu_dispatch_project_id"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu_dispatch[0].project_id",
+                "google_project.remote_cpu_dispatch[0]",
+                "google_project.remote_cpu_dispatch"
+              ]
+            },
+            "public_access_prevention": {
+              "constant_value": "enforced"
+            },
+            "soft_delete_policy": [
+              {
+                "retention_duration_seconds": {
+                  "constant_value": 0
+                }
+              }
+            ],
+            "uniform_bucket_level_access": {
+              "constant_value": true
+            },
+            "versioning": [
+              {
+                "enabled": {
+                  "constant_value": false
+                }
+              }
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatch_transport",
+          "provider_config_key": "google",
+          "schema_version": 2,
+          "type": "google_storage_bucket"
+        },
+        {
+          "address": "google_storage_bucket.remote_cpu_transport",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "labels": {
+              "references": [
+                "local.common_labels"
+              ]
+            },
+            "lifecycle_rule": [
+              {
+                "action": [
+                  {
+                    "type": {
+                      "constant_value": "Delete"
+                    }
+                  }
+                ],
+                "condition": [
+                  {
+                    "age": {
+                      "constant_value": 1
+                    }
+                  }
+                ]
+              }
+            ],
+            "location": {
+              "references": [
+                "var.primary_region"
+              ]
+            },
+            "name": {
+              "references": [
+                "var.remote_cpu_project_id"
+              ]
+            },
+            "project": {
+              "references": [
+                "google_project.remote_cpu[0].project_id",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "public_access_prevention": {
+              "constant_value": "enforced"
+            },
+            "soft_delete_policy": [
+              {
+                "retention_duration_seconds": {
+                  "constant_value": 0
+                }
+              }
+            ],
+            "uniform_bucket_level_access": {
+              "constant_value": true
+            },
+            "versioning": [
+              {
+                "enabled": {
+                  "constant_value": false
+                }
+              }
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_transport",
+          "provider_config_key": "google",
+          "schema_version": 2,
+          "type": "google_storage_bucket"
+        },
+        {
+          "address": "google_storage_bucket_iam_policy.remote_cpu_dispatch_transport",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "bucket": {
+              "references": [
+                "google_storage_bucket.remote_cpu_dispatch_transport[0].name",
+                "google_storage_bucket.remote_cpu_dispatch_transport[0]",
+                "google_storage_bucket.remote_cpu_dispatch_transport"
+              ]
+            },
+            "policy_data": {
+              "references": [
+                "data.google_iam_policy.remote_cpu_dispatch_transport[0].policy_data",
+                "data.google_iam_policy.remote_cpu_dispatch_transport[0]",
+                "data.google_iam_policy.remote_cpu_dispatch_transport"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_dispatch_transport",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_storage_bucket_iam_policy"
+        },
+        {
+          "address": "google_storage_bucket_iam_policy.remote_cpu_transport",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "bucket": {
+              "references": [
+                "google_storage_bucket.remote_cpu_transport[0].name",
+                "google_storage_bucket.remote_cpu_transport[0]",
+                "google_storage_bucket.remote_cpu_transport"
+              ]
+            },
+            "policy_data": {
+              "references": [
+                "data.google_iam_policy.remote_cpu_transport[0].policy_data",
+                "data.google_iam_policy.remote_cpu_transport[0]",
+                "data.google_iam_policy.remote_cpu_transport"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_transport",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_storage_bucket_iam_policy"
+        },
+        {
+          "address": "google_tags_location_tag_binding.remote_cpu_job",
+          "expressions": {
+            "location": {
+              "references": [
+                "var.primary_region"
+              ]
+            },
+            "parent": {
+              "references": [
+                "google_project.remote_cpu[0].number",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu",
+                "var.primary_region",
+                "google_cloud_run_v2_job.remote_cpu_worker",
+                "each.key"
+              ]
+            },
+            "tag_value": {
+              "references": [
+                "google_tags_tag_value.remote_cpu_isolation[\"job\"].id",
+                "google_tags_tag_value.remote_cpu_isolation[\"job\"]",
+                "google_tags_tag_value.remote_cpu_isolation"
+              ]
+            }
+          },
+          "for_each_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled",
+              "var.remote_cpu_worker_stages"
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_job",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_tags_location_tag_binding"
+        },
+        {
+          "address": "google_tags_location_tag_binding.remote_cpu_transport",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "location": {
+              "references": [
+                "var.primary_region"
+              ]
+            },
+            "parent": {
+              "references": [
+                "google_storage_bucket.remote_cpu_transport[0].name",
+                "google_storage_bucket.remote_cpu_transport[0]",
+                "google_storage_bucket.remote_cpu_transport"
+              ]
+            },
+            "tag_value": {
+              "references": [
+                "google_tags_tag_value.remote_cpu_isolation[\"transport\"].id",
+                "google_tags_tag_value.remote_cpu_isolation[\"transport\"]",
+                "google_tags_tag_value.remote_cpu_isolation"
+              ]
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_transport",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_tags_location_tag_binding"
+        },
+        {
+          "address": "google_tags_tag_binding.remote_cpu_identity",
+          "expressions": {
+            "parent": {
+              "references": [
+                "google_project.remote_cpu[0].number",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu",
+                "each.value"
+              ]
+            },
+            "tag_value": {
+              "references": [
+                "google_tags_tag_value.remote_cpu_isolation",
+                "each.key"
+              ]
+            }
+          },
+          "for_each_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled",
+              "google_service_account.remote_cpu_worker[0].unique_id",
+              "google_service_account.remote_cpu_worker[0]",
+              "google_service_account.remote_cpu_worker",
+              "google_service_account.remote_cpu_quarantined_dispatcher[0].unique_id",
+              "google_service_account.remote_cpu_quarantined_dispatcher[0]",
+              "google_service_account.remote_cpu_quarantined_dispatcher"
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_identity",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_tags_tag_binding"
+        },
+        {
+          "address": "google_tags_tag_key.remote_cpu_isolation",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "depends_on": [
+            "google_project_iam_policy.remote_cpu"
+          ],
+          "expressions": {
+            "parent": {
+              "references": [
+                "google_project.remote_cpu[0].number",
+                "google_project.remote_cpu[0]",
+                "google_project.remote_cpu"
+              ]
+            },
+            "short_name": {
+              "constant_value": "remote-cpu-isolation"
+            }
+          },
+          "mode": "managed",
+          "name": "remote_cpu_isolation",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_tags_tag_key"
+        },
+        {
+          "address": "google_tags_tag_value.remote_cpu_isolation",
+          "expressions": {
+            "parent": {
+              "references": [
+                "google_tags_tag_key.remote_cpu_isolation[0].id",
+                "google_tags_tag_key.remote_cpu_isolation[0]",
+                "google_tags_tag_key.remote_cpu_isolation"
+              ]
+            },
+            "short_name": {
+              "references": [
+                "each.key"
+              ]
+            }
+          },
+          "for_each_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "mode": "managed",
+          "name": "remote_cpu_isolation",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_tags_tag_value"
+        },
+        {
+          "address": "data.google_iam_policy.remote_cpu_dispatch_job",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "binding": [
+              {
+                "members": {
+                  "references": [
+                    "google_service_account.remote_cpu_host_dispatcher[0].email",
+                    "google_service_account.remote_cpu_host_dispatcher[0]",
+                    "google_service_account.remote_cpu_host_dispatcher"
+                  ]
+                },
+                "role": {
+                  "references": [
+                    "google_project_iam_custom_role.remote_cpu_dispatcher[0].name",
+                    "google_project_iam_custom_role.remote_cpu_dispatcher[0]",
+                    "google_project_iam_custom_role.remote_cpu_dispatcher"
+                  ]
+                }
+              }
+            ]
+          },
+          "mode": "data",
+          "name": "remote_cpu_dispatch_job",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_iam_policy"
+        },
+        {
+          "address": "data.google_iam_policy.remote_cpu_dispatch_project",
           "count_expression": {
             "references": [
               "var.remote_cpu_workers_enabled"
@@ -253,7 +1358,83 @@
                 "role": {
                   "constant_value": "roles/owner"
                 }
+              }
+            ]
+          },
+          "mode": "data",
+          "name": "remote_cpu_dispatch_project",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_iam_policy"
+        },
+        {
+          "address": "data.google_iam_policy.remote_cpu_dispatch_transport",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "binding": [
+              {
+                "members": {
+                  "references": [
+                    "google_service_account.remote_cpu_worker[0].email",
+                    "google_service_account.remote_cpu_worker[0]",
+                    "google_service_account.remote_cpu_worker"
+                  ]
+                },
+                "role": {
+                  "references": [
+                    "google_project_iam_custom_role.remote_cpu_dispatch_transport_reader[0].name",
+                    "google_project_iam_custom_role.remote_cpu_dispatch_transport_reader[0]",
+                    "google_project_iam_custom_role.remote_cpu_dispatch_transport_reader"
+                  ]
+                }
               },
+              {
+                "members": {
+                  "references": [
+                    "google_service_account.remote_cpu_host_dispatcher[0].email",
+                    "google_service_account.remote_cpu_host_dispatcher[0]",
+                    "google_service_account.remote_cpu_host_dispatcher"
+                  ]
+                },
+                "role": {
+                  "references": [
+                    "google_project_iam_custom_role.remote_cpu_dispatch_transport_writer[0].name",
+                    "google_project_iam_custom_role.remote_cpu_dispatch_transport_writer[0]",
+                    "google_project_iam_custom_role.remote_cpu_dispatch_transport_writer"
+                  ]
+                }
+              },
+              {
+                "members": {
+                  "references": [
+                    "var.remote_cpu_dispatch_project_id"
+                  ]
+                },
+                "role": {
+                  "constant_value": "roles/storage.legacyBucketOwner"
+                }
+              }
+            ]
+          },
+          "mode": "data",
+          "name": "remote_cpu_dispatch_transport",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_iam_policy"
+        },
+        {
+          "address": "data.google_iam_policy.remote_cpu_project",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "binding": [
               {
                 "members": {
                   "constant_value": [
@@ -261,7 +1442,7 @@
                   ]
                 },
                 "role": {
-                  "constant_value": "roles/iam.denyAdmin"
+                  "constant_value": "roles/owner"
                 }
               },
               {
@@ -283,6 +1464,33 @@
           "provider_config_key": "google",
           "schema_version": 0,
           "type": "google_iam_policy"
+        },
+        {
+          "address": "data.google_iam_policy.remote_cpu_transport",
+          "count_expression": {
+            "references": [
+              "var.remote_cpu_workers_enabled"
+            ]
+          },
+          "expressions": {
+            "binding": [
+              {
+                "members": {
+                  "references": [
+                    "var.remote_cpu_project_id"
+                  ]
+                },
+                "role": {
+                  "constant_value": "roles/storage.legacyBucketOwner"
+                }
+              }
+            ]
+          },
+          "mode": "data",
+          "name": "remote_cpu_transport",
+          "provider_config_key": "google",
+          "schema_version": 0,
+          "type": "google_iam_policy"
         }
       ]
     }
@@ -298,110 +1506,741 @@
       "repository": "projects/blueprint-8c1ca/locations/us/repositories/gcr.io",
       "role": "roles/artifactregistry.reader"
     },
-    "google_iam_deny_policy.remote_cpu_isolation[0]": {
-      "display_name": "Blueprint Remote CPU Identity and Transport Isolation",
-      "name": "remote-cpu-isolation",
-      "parent": "cloudresourcemanager.googleapis.com%2Fprojects%2F653671516677",
-      "rules": [
+    "google_billing_budget.remote_cpu_workers[0]": {
+      "all_updates_rule": [],
+      "amount": [
         {
-          "deny_rule": [
+          "last_period_amount": false,
+          "specified_amount": [
             {
-              "denial_condition": [
-                {
-                  "description": null,
-                  "expression": "resource.matchTagId('tagKeys/281479606050559', 'tagValues/281481102395054')",
-                  "location": null,
-                  "title": null
-                }
-              ],
-              "denied_permissions": [
-                "iam.googleapis.com/serviceAccounts.actAs",
-                "iam.googleapis.com/serviceAccounts.getAccessToken",
-                "iam.googleapis.com/serviceAccounts.getOpenIdToken",
-                "iam.googleapis.com/serviceAccounts.signBlob",
-                "iam.googleapis.com/serviceAccounts.signJwt",
-                "iam.googleapis.com/serviceAccounts.implicitDelegation",
-                "iam.googleapis.com/serviceAccounts.setIamPolicy",
-                "iam.googleapis.com/serviceAccounts.delete",
-                "iam.googleapis.com/serviceAccounts.disable",
-                "iam.googleapis.com/serviceAccounts.enable",
-                "iam.googleapis.com/serviceAccounts.update",
-                "iam.googleapis.com/serviceAccounts.undelete",
-                "iam.googleapis.com/serviceAccountKeys.create"
-              ],
-              "denied_principals": [
-                "principalSet://goog/public:all"
-              ],
-              "exception_permissions": null,
-              "exception_principals": [
-                "principal://goog/subject/ohstnhunt@gmail.com"
-              ]
+              "currency_code": "USD",
+              "nanos": 0,
+              "units": "25"
             }
-          ],
-          "description": "Only the founder can impersonate or mutate the dispatcher identity."
+          ]
+        }
+      ],
+      "billing_account": "01E907-62B1FB-2134FB",
+      "budget_filter": [
+        {
+          "calendar_period": "MONTH",
+          "credit_types": [],
+          "credit_types_treatment": "INCLUDE_ALL_CREDITS",
+          "custom_period": [],
+          "labels": {
+            "cost-center": "remote-cpu-workers"
+          },
+          "resource_ancestors": [],
+          "services": [],
+          "subaccounts": []
+        }
+      ],
+      "display_name": "Blueprint Remote CPU Workers Budget",
+      "id": "billingAccounts/01E907-62B1FB-2134FB/budgets/01a214ee-2a4c-414b-9691-c78a446cd814",
+      "name": "01a214ee-2a4c-414b-9691-c78a446cd814",
+      "ownership_scope": "",
+      "threshold_rules": [
+        {
+          "spend_basis": "CURRENT_SPEND",
+          "threshold_percent": 0.5
         },
         {
-          "deny_rule": [
-            {
-              "denial_condition": [
-                {
-                  "description": null,
-                  "expression": "resource.matchTagId('tagKeys/281479606050559', 'tagValues/281480085608803')",
-                  "location": null,
-                  "title": null
-                }
-              ],
-              "denied_permissions": [
-                "storage.googleapis.com/objects.get"
-              ],
-              "denied_principals": [
-                "principalSet://goog/public:all"
-              ],
-              "exception_permissions": null,
-              "exception_principals": [
-                "principal://goog/subject/ohstnhunt@gmail.com",
-                "principal://iam.googleapis.com/projects/-/serviceAccounts/100589344848479244279",
-                "principal://iam.googleapis.com/projects/-/serviceAccounts/111296861720994798887"
-              ]
-            }
-          ],
-          "description": "Transport objects are readable only by the two lane identities and founder."
+          "spend_basis": "CURRENT_SPEND",
+          "threshold_percent": 0.9
         },
         {
-          "deny_rule": [
-            {
-              "denial_condition": [
-                {
-                  "description": null,
-                  "expression": "resource.matchTagId('tagKeys/281479606050559', 'tagValues/281480085608803')",
-                  "location": null,
-                  "title": null
-                }
-              ],
-              "denied_permissions": [
-                "storage.googleapis.com/objects.create",
-                "storage.googleapis.com/objects.delete"
-              ],
-              "denied_principals": [
-                "principalSet://goog/public:all"
-              ],
-              "exception_permissions": null,
-              "exception_principals": [
-                "principal://goog/subject/ohstnhunt@gmail.com",
-                "principal://iam.googleapis.com/projects/-/serviceAccounts/111296861720994798887"
-              ]
-            }
-          ],
-          "description": "Only the dispatcher and founder can write transport objects."
+          "spend_basis": "CURRENT_SPEND",
+          "threshold_percent": 1
         }
       ],
       "timeouts": null
     },
+    "google_cloud_run_v2_job.remote_cpu_worker[\"episode-compilation\"]": {
+      "annotations": null,
+      "binary_authorization": [],
+      "client": null,
+      "client_version": null,
+      "effective_labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "location": "us-central1",
+      "name": "blueprint-remote-cpu-episode-compilation",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "run_execution_token": null,
+      "start_execution_token": null,
+      "template": [
+        {
+          "annotations": null,
+          "labels": null,
+          "parallelism": 1,
+          "task_count": 1,
+          "template": [
+            {
+              "containers": [
+                {
+                  "args": null,
+                  "command": [
+                    "python",
+                    "-m",
+                    "blueprint_pipeline.remote_cpu_worker",
+                    "bootstrap"
+                  ],
+                  "env": [
+                    {
+                      "name": "BLUEPRINT_REMOTE_CPU_STAGE",
+                      "value": "episode-compilation",
+                      "value_source": []
+                    },
+                    {
+                      "name": "BLUEPRINT_REMOTE_CPU_OBJECT_PREFIX",
+                      "value": "https://s3.us-east-005.backblazeb2.com/blueprint-task-evaluation-artifacts-prod/blueprint/arm-decision-proof-v1/configured-scenes/",
+                      "value_source": []
+                    }
+                  ],
+                  "image": "gcr.io/blueprint-8c1ca/blueprint-pipeline@sha256:fc9bd539fc5c736b645eb7644176a51a92f632f81f10d8113f5bdb80485c69be",
+                  "name": null,
+                  "ports": [],
+                  "resources": [
+                    {
+                      "limits": {
+                        "cpu": "4",
+                        "memory": "16Gi"
+                      }
+                    }
+                  ],
+                  "volume_mounts": [
+                    {
+                      "mount_path": "/var/lib/blueprint",
+                      "name": "blueprint-state"
+                    }
+                  ],
+                  "working_dir": null
+                }
+              ],
+              "encryption_key": null,
+              "execution_environment": "EXECUTION_ENVIRONMENT_GEN2",
+              "max_retries": 0,
+              "service_account": "remote-cpu-worker@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+              "timeout": "1800s",
+              "volumes": [
+                {
+                  "cloud_sql_instance": [],
+                  "empty_dir": [
+                    {
+                      "medium": "MEMORY",
+                      "size_limit": "10Gi"
+                    }
+                  ],
+                  "gcs": [],
+                  "name": "blueprint-state",
+                  "nfs": [],
+                  "secret": []
+                }
+              ],
+              "vpc_access": []
+            }
+          ]
+        }
+      ],
+      "terraform_labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "timeouts": null
+    },
+    "google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher[\"episode-compilation\"]": {
+      "location": "us-central1",
+      "name": "blueprint-remote-cpu-episode-compilation",
+      "project": "blueprint-remote-cpu-8c1ca"
+    },
+    "google_monitoring_alert_policy.remote_cpu_job_failures[0]": {
+      "alert_strategy": [],
+      "combiner": "OR",
+      "conditions": [
+        {
+          "condition_absent": [],
+          "condition_matched_log": [],
+          "condition_monitoring_query_language": [],
+          "condition_prometheus_query_language": [],
+          "condition_threshold": [
+            {
+              "aggregations": [
+                {
+                  "alignment_period": "300s",
+                  "cross_series_reducer": "REDUCE_SUM",
+                  "group_by_fields": [],
+                  "per_series_aligner": "ALIGN_SUM"
+                }
+              ],
+              "comparison": "COMPARISON_GT",
+              "denominator_aggregations": [],
+              "denominator_filter": "",
+              "duration": "0s",
+              "evaluation_missing_data": "",
+              "filter": "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_task_attempt_count\" AND metric.labels.result=\"failed\" AND resource.labels.job_name = starts_with(\"blueprint-remote-cpu-\")",
+              "forecast_options": [],
+              "threshold_value": 0,
+              "trigger": []
+            }
+          ],
+          "display_name": "Remote CPU task attempt failed",
+          "name": "projects/blueprint-remote-cpu-8c1ca/alertPolicies/12949146399090862686/conditions/12949146399090860157"
+        }
+      ],
+      "creation_record": [
+        {
+          "mutate_time": "2026-10-01T01:12:23.191845541Z",
+          "mutated_by": "OHSTNhunt@gmail.com"
+        }
+      ],
+      "display_name": "Blueprint Remote CPU Job Failures",
+      "documentation": [
+        {
+          "content": "A remote CPU worker task attempt failed. The attempt falls back to the host after at most one retry by the dispatcher. Check the execution's logs and the control plane's remote-cpu-jobs summary; a stuck execution can be cancelled with `gcloud run jobs executions cancel`.",
+          "links": [],
+          "mime_type": "text/markdown",
+          "subject": ""
+        }
+      ],
+      "enabled": true,
+      "id": "projects/blueprint-remote-cpu-8c1ca/alertPolicies/12949146399090862686",
+      "name": "projects/blueprint-remote-cpu-8c1ca/alertPolicies/12949146399090862686",
+      "notification_channels": [
+        "projects/blueprint-remote-cpu-8c1ca/notificationChannels/15995908754197167422"
+      ],
+      "project": "blueprint-remote-cpu-8c1ca",
+      "severity": "",
+      "timeouts": null,
+      "user_labels": {}
+    },
+    "google_monitoring_notification_channel.remote_cpu_owner[0]": {
+      "description": "",
+      "display_name": "Blueprint Remote CPU Owner",
+      "enabled": true,
+      "force_delete": false,
+      "id": "projects/blueprint-remote-cpu-8c1ca/notificationChannels/15995908754197167422",
+      "labels": {
+        "email_address": "ohstnhunt@gmail.com"
+      },
+      "name": "projects/blueprint-remote-cpu-8c1ca/notificationChannels/15995908754197167422",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "sensitive_labels": [],
+      "timeouts": null,
+      "type": "email",
+      "user_labels": {},
+      "verification_status": ""
+    },
+    "google_project.remote_cpu[0]": {
+      "auto_create_network": false,
+      "billing_account": "01E907-62B1FB-2134FB",
+      "deletion_policy": "ABANDON",
+      "effective_labels": {},
+      "folder_id": null,
+      "id": "projects/blueprint-remote-cpu-8c1ca",
+      "labels": {},
+      "name": "Blueprint Remote CPU Workers",
+      "number": "653671516677",
+      "org_id": null,
+      "project_id": "blueprint-remote-cpu-8c1ca",
+      "skip_delete": null,
+      "terraform_labels": {},
+      "timeouts": null
+    },
+    "google_project.remote_cpu_dispatch[0]": {
+      "auto_create_network": false,
+      "billing_account": "01E907-62B1FB-2134FB",
+      "deletion_policy": "ABANDON",
+      "folder_id": null,
+      "labels": null,
+      "name": "Blueprint CPU Dispatch",
+      "org_id": null,
+      "project_id": "blueprint-cpu-dispatch-8c1ca",
+      "timeouts": null
+    },
+    "google_project_iam_custom_role.remote_cpu_dispatch_transport_reader[0]": {
+      "description": null,
+      "permissions": [
+        "storage.objects.get"
+      ],
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "role_id": "remoteCpuTransportReader",
+      "stage": "GA",
+      "title": "Blueprint Remote CPU Transport Reader"
+    },
+    "google_project_iam_custom_role.remote_cpu_dispatch_transport_writer[0]": {
+      "description": null,
+      "permissions": [
+        "storage.objects.create",
+        "storage.objects.delete",
+        "storage.objects.get"
+      ],
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "role_id": "remoteCpuTransportWriter",
+      "stage": "GA",
+      "title": "Blueprint Remote CPU Transport Writer"
+    },
+    "google_project_iam_custom_role.remote_cpu_dispatcher[0]": {
+      "deleted": false,
+      "description": "Run a remote CPU worker job with overrides and read or cancel its executions; bound only on those jobs.",
+      "id": "projects/blueprint-remote-cpu-8c1ca/roles/remoteCpuDispatcher",
+      "name": "projects/blueprint-remote-cpu-8c1ca/roles/remoteCpuDispatcher",
+      "permissions": [
+        "run.executions.cancel",
+        "run.executions.get",
+        "run.executions.list",
+        "run.jobs.get",
+        "run.jobs.run",
+        "run.jobs.runWithOverrides"
+      ],
+      "project": "blueprint-remote-cpu-8c1ca",
+      "role_id": "remoteCpuDispatcher",
+      "stage": "GA",
+      "title": "Blueprint Remote CPU Dispatcher"
+    },
+    "google_project_iam_custom_role.remote_cpu_transport_reader[0]": {
+      "deleted": false,
+      "description": "Read one remote CPU transport object at a known generation; bound only on the transport bucket.",
+      "id": "projects/blueprint-remote-cpu-8c1ca/roles/remoteCpuTransportReader",
+      "name": "projects/blueprint-remote-cpu-8c1ca/roles/remoteCpuTransportReader",
+      "permissions": [
+        "storage.objects.get"
+      ],
+      "project": "blueprint-remote-cpu-8c1ca",
+      "role_id": "remoteCpuTransportReader",
+      "stage": "GA",
+      "title": "Blueprint Remote CPU Transport Reader"
+    },
+    "google_project_iam_custom_role.remote_cpu_transport_writer[0]": {
+      "deleted": false,
+      "description": "Create, read and delete remote CPU transport objects; bound only on the transport bucket.",
+      "id": "projects/blueprint-remote-cpu-8c1ca/roles/remoteCpuTransportWriter",
+      "name": "projects/blueprint-remote-cpu-8c1ca/roles/remoteCpuTransportWriter",
+      "permissions": [
+        "storage.objects.create",
+        "storage.objects.delete",
+        "storage.objects.get"
+      ],
+      "project": "blueprint-remote-cpu-8c1ca",
+      "role_id": "remoteCpuTransportWriter",
+      "stage": "GA",
+      "title": "Blueprint Remote CPU Transport Writer"
+    },
     "google_project_iam_policy.remote_cpu[0]": {
       "etag": "BwZcvRusAmU=",
       "id": "blueprint-remote-cpu-8c1ca",
-      "policy_data": "{\"bindings\":[{\"members\":[\"user:ohstnhunt@gmail.com\"],\"role\":\"roles/iam.denyAdmin\"},{\"members\":[\"user:ohstnhunt@gmail.com\"],\"role\":\"roles/owner\"},{\"members\":[\"serviceAccount:service-653671516677@serverless-robot-prod.iam.gserviceaccount.com\"],\"role\":\"roles/run.serviceAgent\"}]}",
+      "policy_data": "{\"bindings\":[{\"members\":[\"user:OHSTNhunt@gmail.com\"],\"role\":\"roles/owner\"},{\"members\":[\"serviceAccount:service-653671516677@serverless-robot-prod.iam.gserviceaccount.com\"],\"role\":\"roles/run.serviceAgent\"}]}",
       "project": "blueprint-remote-cpu-8c1ca"
+    },
+    "google_project_iam_policy.remote_cpu_dispatch[0]": {
+      "policy_data": "{\"bindings\":[{\"members\":[\"user:ohstnhunt@gmail.com\"],\"role\":\"roles/owner\"}]}",
+      "project": "blueprint-cpu-dispatch-8c1ca"
+    },
+    "google_project_service.remote_cpu_apis[\"billingbudgets.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/billingbudgets.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "billingbudgets.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_apis[\"cloudresourcemanager.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/cloudresourcemanager.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "cloudresourcemanager.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_apis[\"iam.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/iam.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "iam.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_apis[\"iamcredentials.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/iamcredentials.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "iamcredentials.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_apis[\"logging.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/logging.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "logging.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_apis[\"monitoring.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/monitoring.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "monitoring.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_apis[\"run.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/run.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "run.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_apis[\"storage.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca/storage.googleapis.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "storage.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_dispatch_apis[\"billingbudgets.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "service": "billingbudgets.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_dispatch_apis[\"cloudresourcemanager.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "service": "cloudresourcemanager.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_dispatch_apis[\"iam.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "service": "iam.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_dispatch_apis[\"iamcredentials.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "service": "iamcredentials.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service.remote_cpu_dispatch_apis[\"storage.googleapis.com\"]": {
+      "disable_dependent_services": null,
+      "disable_on_destroy": false,
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "service": "storage.googleapis.com",
+      "timeouts": null
+    },
+    "google_project_service_identity.remote_cpu_run[0]": {
+      "email": "service-653671516677@serverless-robot-prod.iam.gserviceaccount.com",
+      "id": "projects/blueprint-remote-cpu-8c1ca/services/run.googleapis.com",
+      "member": "serviceAccount:service-653671516677@serverless-robot-prod.iam.gserviceaccount.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "service": "run.googleapis.com",
+      "timeouts": null
+    },
+    "google_service_account.remote_cpu_host_dispatcher[0]": {
+      "account_id": "remote-cpu-dispatcher",
+      "create_ignore_already_exists": null,
+      "description": "Job-scoped dispatch and transport writes; no runtime project credentials",
+      "disabled": false,
+      "display_name": "Blueprint Remote CPU Host Dispatcher",
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "timeouts": null
+    },
+    "google_service_account.remote_cpu_quarantined_dispatcher[0]": {
+      "account_id": "remote-cpu-dispatcher",
+      "create_ignore_already_exists": null,
+      "description": "Runs remote CPU worker jobs with attempt overrides and cancels their executions",
+      "disabled": false,
+      "display_name": "Blueprint Remote CPU Dispatcher",
+      "email": "remote-cpu-dispatcher@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "id": "projects/blueprint-remote-cpu-8c1ca/serviceAccounts/remote-cpu-dispatcher@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "member": "serviceAccount:remote-cpu-dispatcher@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "name": "projects/blueprint-remote-cpu-8c1ca/serviceAccounts/remote-cpu-dispatcher@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "timeouts": null,
+      "unique_id": "111296861720994798887"
+    },
+    "google_service_account.remote_cpu_worker[0]": {
+      "account_id": "remote-cpu-worker",
+      "create_ignore_already_exists": null,
+      "description": "Runs remote CPU worker job executions; can only read transport objects",
+      "disabled": false,
+      "display_name": "Blueprint Remote CPU Worker",
+      "email": "remote-cpu-worker@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "id": "projects/blueprint-remote-cpu-8c1ca/serviceAccounts/remote-cpu-worker@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "member": "serviceAccount:remote-cpu-worker@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "name": "projects/blueprint-remote-cpu-8c1ca/serviceAccounts/remote-cpu-worker@blueprint-remote-cpu-8c1ca.iam.gserviceaccount.com",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "timeouts": null,
+      "unique_id": "100589344848479244279"
+    },
+    "google_storage_bucket.remote_cpu_dispatch_transport[0]": {
+      "autoclass": [],
+      "cors": [],
+      "custom_placement_config": [],
+      "default_event_based_hold": null,
+      "effective_labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "enable_object_retention": null,
+      "encryption": [],
+      "force_destroy": false,
+      "labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "lifecycle_rule": [
+        {
+          "action": [
+            {
+              "storage_class": "",
+              "type": "Delete"
+            }
+          ],
+          "condition": [
+            {
+              "age": 1,
+              "created_before": "",
+              "custom_time_before": "",
+              "days_since_custom_time": null,
+              "days_since_noncurrent_time": null,
+              "matches_prefix": [],
+              "matches_storage_class": [],
+              "matches_suffix": [],
+              "no_age": null,
+              "noncurrent_time_before": "",
+              "num_newer_versions": null,
+              "send_age_if_zero": true,
+              "send_days_since_custom_time_if_zero": null,
+              "send_days_since_noncurrent_time_if_zero": null,
+              "send_num_newer_versions_if_zero": null
+            }
+          ]
+        }
+      ],
+      "location": "US-CENTRAL1",
+      "logging": [],
+      "name": "blueprint-cpu-dispatch-8c1ca-transport",
+      "project": "blueprint-cpu-dispatch-8c1ca",
+      "public_access_prevention": "enforced",
+      "requester_pays": null,
+      "retention_policy": [],
+      "soft_delete_policy": [
+        {
+          "retention_duration_seconds": 0
+        }
+      ],
+      "storage_class": "STANDARD",
+      "terraform_labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "timeouts": null,
+      "uniform_bucket_level_access": true,
+      "versioning": [
+        {
+          "enabled": false
+        }
+      ]
+    },
+    "google_storage_bucket.remote_cpu_transport[0]": {
+      "autoclass": [],
+      "cors": [],
+      "custom_placement_config": [],
+      "default_event_based_hold": false,
+      "effective_labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "enable_object_retention": false,
+      "encryption": [],
+      "force_destroy": false,
+      "id": "blueprint-remote-cpu-8c1ca-transport",
+      "labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "lifecycle_rule": [
+        {
+          "action": [
+            {
+              "storage_class": "",
+              "type": "Delete"
+            }
+          ],
+          "condition": [
+            {
+              "age": 1,
+              "created_before": "",
+              "custom_time_before": "",
+              "days_since_custom_time": 0,
+              "days_since_noncurrent_time": 0,
+              "matches_prefix": [],
+              "matches_storage_class": [],
+              "matches_suffix": [],
+              "no_age": false,
+              "noncurrent_time_before": "",
+              "num_newer_versions": 0,
+              "send_age_if_zero": true,
+              "send_days_since_custom_time_if_zero": false,
+              "send_days_since_noncurrent_time_if_zero": false,
+              "send_num_newer_versions_if_zero": false,
+              "with_state": "ANY"
+            }
+          ]
+        }
+      ],
+      "location": "US-CENTRAL1",
+      "logging": [],
+      "name": "blueprint-remote-cpu-8c1ca-transport",
+      "project": "blueprint-remote-cpu-8c1ca",
+      "project_number": 653671516677,
+      "public_access_prevention": "enforced",
+      "requester_pays": false,
+      "retention_policy": [],
+      "rpo": null,
+      "self_link": "https://www.googleapis.com/storage/v1/b/blueprint-remote-cpu-8c1ca-transport",
+      "soft_delete_policy": [
+        {
+          "effective_time": "",
+          "retention_duration_seconds": 0
+        }
+      ],
+      "storage_class": "STANDARD",
+      "terraform_labels": {
+        "cost-center": "remote-cpu-workers",
+        "environment": "production",
+        "managed-by": "terraform",
+        "project": "blueprint-capture"
+      },
+      "timeouts": null,
+      "uniform_bucket_level_access": true,
+      "url": "gs://blueprint-remote-cpu-8c1ca-transport",
+      "versioning": [
+        {
+          "enabled": false
+        }
+      ],
+      "website": []
+    },
+    "google_storage_bucket_iam_policy.remote_cpu_dispatch_transport[0]": {
+      "bucket": "blueprint-cpu-dispatch-8c1ca-transport"
+    },
+    "google_storage_bucket_iam_policy.remote_cpu_transport[0]": {
+      "bucket": "blueprint-remote-cpu-8c1ca-transport",
+      "policy_data": "{\"bindings\":[{\"members\":[\"projectOwner:blueprint-remote-cpu-8c1ca\"],\"role\":\"roles/storage.legacyBucketOwner\"}]}"
+    },
+    "google_tags_location_tag_binding.remote_cpu_job[\"episode-compilation\"]": {
+      "location": "us-central1",
+      "parent": "//run.googleapis.com/projects/653671516677/locations/us-central1/jobs/blueprint-remote-cpu-episode-compilation",
+      "tag_value": "tagValues/281484801835977",
+      "timeouts": null
+    },
+    "google_tags_location_tag_binding.remote_cpu_transport[0]": {
+      "id": "us-central1/tagBindings/%2F%2Fstorage.googleapis.com%2Fprojects%2F_%2Fbuckets%2Fblueprint-remote-cpu-8c1ca-transport/tagValues/281480085608803",
+      "location": "us-central1",
+      "name": "tagBindings/%2F%2Fstorage.googleapis.com%2Fprojects%2F_%2Fbuckets%2Fblueprint-remote-cpu-8c1ca-transport/tagValues/281480085608803",
+      "parent": "//storage.googleapis.com/projects/_/buckets/blueprint-remote-cpu-8c1ca-transport",
+      "tag_value": "tagValues/281480085608803",
+      "timeouts": null
+    },
+    "google_tags_tag_binding.remote_cpu_identity[\"dispatcher\"]": {
+      "id": "tagBindings/%2F%2Fiam.googleapis.com%2Fprojects%2F653671516677%2FserviceAccounts%2F111296861720994798887/tagValues/281481102395054",
+      "name": "%2F%2Fiam.googleapis.com%2Fprojects%2F653671516677%2FserviceAccounts%2F111296861720994798887/tagValues/281481102395054",
+      "parent": "//iam.googleapis.com/projects/653671516677/serviceAccounts/111296861720994798887",
+      "tag_value": "tagValues/281481102395054",
+      "timeouts": null
+    },
+    "google_tags_tag_binding.remote_cpu_identity[\"worker\"]": {
+      "id": "tagBindings/%2F%2Fiam.googleapis.com%2Fprojects%2F653671516677%2FserviceAccounts%2F100589344848479244279/tagValues/281483812784753",
+      "name": "%2F%2Fiam.googleapis.com%2Fprojects%2F653671516677%2FserviceAccounts%2F100589344848479244279/tagValues/281483812784753",
+      "parent": "//iam.googleapis.com/projects/653671516677/serviceAccounts/100589344848479244279",
+      "tag_value": "tagValues/281483812784753",
+      "timeouts": null
+    },
+    "google_tags_tag_key.remote_cpu_isolation[0]": {
+      "create_time": "2026-10-01T01:12:23.626486Z",
+      "description": "",
+      "id": "tagKeys/281479606050559",
+      "name": "281479606050559",
+      "namespaced_name": "blueprint-remote-cpu-8c1ca/remote-cpu-isolation",
+      "parent": "projects/653671516677",
+      "purpose": "",
+      "purpose_data": null,
+      "short_name": "remote-cpu-isolation",
+      "timeouts": null,
+      "update_time": "2026-10-01T01:12:23.626486Z"
+    },
+    "google_tags_tag_value.remote_cpu_isolation[\"dispatcher\"]": {
+      "create_time": "2026-10-01T01:12:44.847418Z",
+      "description": "",
+      "id": "tagValues/281481102395054",
+      "name": "281481102395054",
+      "namespaced_name": "blueprint-remote-cpu-8c1ca/remote-cpu-isolation/dispatcher",
+      "parent": "tagKeys/281479606050559",
+      "short_name": "dispatcher",
+      "timeouts": null,
+      "update_time": "2026-10-01T01:12:44.847418Z"
+    },
+    "google_tags_tag_value.remote_cpu_isolation[\"job\"]": {
+      "create_time": "2026-10-01T01:12:34.235873Z",
+      "description": "",
+      "id": "tagValues/281484801835977",
+      "name": "281484801835977",
+      "namespaced_name": "blueprint-remote-cpu-8c1ca/remote-cpu-isolation/job",
+      "parent": "tagKeys/281479606050559",
+      "short_name": "job",
+      "timeouts": null,
+      "update_time": "2026-10-01T01:12:34.235873Z"
+    },
+    "google_tags_tag_value.remote_cpu_isolation[\"transport\"]": {
+      "create_time": "2026-10-01T01:13:06.007582Z",
+      "description": "",
+      "id": "tagValues/281480085608803",
+      "name": "281480085608803",
+      "namespaced_name": "blueprint-remote-cpu-8c1ca/remote-cpu-isolation/transport",
+      "parent": "tagKeys/281479606050559",
+      "short_name": "transport",
+      "timeouts": null,
+      "update_time": "2026-10-01T01:13:06.007582Z"
+    },
+    "google_tags_tag_value.remote_cpu_isolation[\"worker\"]": {
+      "create_time": "2026-10-01T01:12:56.054076Z",
+      "description": "",
+      "id": "tagValues/281483812784753",
+      "name": "281483812784753",
+      "namespaced_name": "blueprint-remote-cpu-8c1ca/remote-cpu-isolation/worker",
+      "parent": "tagKeys/281479606050559",
+      "short_name": "worker",
+      "timeouts": null,
+      "update_time": "2026-10-01T01:12:56.054076Z"
     }
   }
 }

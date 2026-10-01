@@ -5,40 +5,50 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from urllib.parse import unquote
 from collections.abc import Mapping
 from pathlib import Path
 
 ALLOWED_ADDRESSES = frozenset({
     'google_project.remote_cpu[0]',
+    'google_project.remote_cpu_dispatch[0]',
+    'google_project_iam_policy.remote_cpu_dispatch[0]',
+    'google_storage_bucket.remote_cpu_dispatch_transport[0]',
+    'google_storage_bucket_iam_policy.remote_cpu_dispatch_transport[0]',
+    'google_project_iam_custom_role.remote_cpu_dispatch_transport_reader[0]',
+    'google_project_iam_custom_role.remote_cpu_dispatch_transport_writer[0]',
     'google_project_service_identity.remote_cpu_run[0]',
     'google_project_iam_policy.remote_cpu[0]',
     'google_artifact_registry_repository_iam_member.remote_cpu_image_reader[0]',
     'google_storage_bucket.remote_cpu_transport[0]',
     'google_storage_bucket_iam_policy.remote_cpu_transport[0]',
     'google_service_account.remote_cpu_worker[0]',
-    'google_service_account.remote_cpu_dispatcher[0]',
+    'google_service_account.remote_cpu_quarantined_dispatcher[0]',
+    'google_service_account.remote_cpu_host_dispatcher[0]',
     'google_project_iam_custom_role.remote_cpu_transport_reader[0]',
     'google_project_iam_custom_role.remote_cpu_transport_writer[0]',
     'google_project_iam_custom_role.remote_cpu_dispatcher[0]',
     'google_cloud_run_v2_job.remote_cpu_worker["episode-compilation"]',
-    'google_cloud_run_v2_job_iam_member.remote_cpu_dispatcher["episode-compilation"]',
+    'google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher["episode-compilation"]',
     'google_monitoring_alert_policy.remote_cpu_job_failures[0]',
     'google_monitoring_notification_channel.remote_cpu_owner[0]',
     'google_billing_budget.remote_cpu_workers[0]',
     'google_tags_tag_key.remote_cpu_isolation[0]',
-    'google_iam_deny_policy.remote_cpu_isolation[0]',
     'google_tags_location_tag_binding.remote_cpu_job["episode-compilation"]',
     'google_tags_location_tag_binding.remote_cpu_transport[0]',
     *{f'google_tags_tag_value.remote_cpu_isolation["{kind}"]'
       for kind in ("worker", "dispatcher", "job", "transport")},
     *{f'google_tags_tag_binding.remote_cpu_identity["{kind}"]'
       for kind in ("worker", "dispatcher")},
+    *{f'google_project_service.remote_cpu_dispatch_apis["{api}.googleapis.com"]'
+      for api in ("iam", "iamcredentials", "cloudresourcemanager", "storage", "billingbudgets")},
     *{f'google_project_service.remote_cpu_apis["{api}.googleapis.com"]'
       for api in ("run", "iam", "iamcredentials", "cloudresourcemanager", "storage", "monitoring", "logging", "billingbudgets")},
 })
 JOB_ADDRESS = 'google_cloud_run_v2_job.remote_cpu_worker["episode-compilation"]'
 WORKER_PROJECT = "blueprint-remote-cpu-8c1ca"
+DISPATCH_PROJECT = "blueprint-cpu-dispatch-8c1ca"
+# Moved resources are allowed in pre-apply state only, never as active grants.
+MIGRATION_ADDRESSES = {'google_service_account.remote_cpu_dispatcher[0]'}
 SOURCE_PROJECT = "blueprint-8c1ca"
 APPROVED_BILLING_ACCOUNT = "01E907-62B1FB-2134FB"
 RUN_AGENT_REFERENCES = [
@@ -46,12 +56,17 @@ RUN_AGENT_REFERENCES = [
     "google_project_service_identity.remote_cpu_run[0]",
     "google_project_service_identity.remote_cpu_run",
 ]
-DISPATCHER_DENIED_PERMISSIONS = {
-    "iam.googleapis.com/serviceAccounts." + operation for operation in (
-        "actAs", "getAccessToken", "getOpenIdToken", "signBlob", "signJwt", "implicitDelegation",
-        "setIamPolicy", "delete", "disable", "enable", "update", "undelete",
-    )
-} | {"iam.googleapis.com/serviceAccountKeys.create"}
+DISPATCH_PERMISSIONS = {"run.executions.cancel", "run.executions.get", "run.executions.list",
+                        "run.jobs.get", "run.jobs.run", "run.jobs.runWithOverrides"}
+
+
+def _refs(resource: str, attribute: str) -> dict:
+    return {"references": [resource + "[0]." + attribute, resource + "[0]", resource]}
+
+
+def _binding(role: str | dict, members: list[str] | dict) -> dict:
+    return {"role": {"constant_value": role} if isinstance(role, str) else role,
+            "members": {"constant_value": members} if isinstance(members, list) else members}
 
 
 def _security_blockers(plan: Mapping, resources: Mapping) -> list[str]:
@@ -73,72 +88,101 @@ def _security_blockers(plan: Mapping, resources: Mapping) -> list[str]:
         f"serviceAccount:service-{project_number}@serverless-robot-prod.iam.gserviceaccount.com"
     ):
         blockers.append("old_project_repository_principal_drift")
-    if project_number:
-        deny_parent = resources.get('google_iam_deny_policy.remote_cpu_isolation[0]', {}).get("parent", "")
-        if unquote(deny_parent) != f"cloudresourcemanager.googleapis.com/projects/{project_number}":
-            blockers.append("deny_project_drift")
+    dispatch_number = resources.get('google_project.remote_cpu_dispatch[0]', {}).get("number")
+    if project_number and dispatch_number:
         try:
             projects = resources['google_billing_budget.remote_cpu_workers[0]']["budget_filter"][0]["projects"]
-            if projects != [f"projects/{project_number}"]:
+            if set(projects) != {f"projects/{project_number}", f"projects/{dispatch_number}"}:
                 blockers.append("budget_project_drift")
         except (KeyError, IndexError, TypeError):
             blockers.append("budget_project_unproven")
-    policy = config.get("data.google_iam_policy.remote_cpu_project", {})
-    if policy.get("binding") != [
-        {"role": {"constant_value": "roles/owner"},
-         "members": {"constant_value": ["user:ohstnhunt@gmail.com"]}},
-        {"role": {"constant_value": "roles/iam.denyAdmin"},
-         "members": {"constant_value": ["user:ohstnhunt@gmail.com"]}},
-        {"role": {"constant_value": "roles/run.serviceAgent"},
-         "members": {"references": RUN_AGENT_REFERENCES}},
-    ]:
-        blockers.append("project_policy_configuration_drift")
-    policy_resource = config.get("google_project_iam_policy.remote_cpu", {})
-    if policy_resource.get("policy_data") != {"references": [
-        "data.google_iam_policy.remote_cpu_project[0].policy_data",
-        "data.google_iam_policy.remote_cpu_project[0]", "data.google_iam_policy.remote_cpu_project",
-    ]}:
-        blockers.append("project_policy_source_drift")
-    policy_data = resources.get('google_project_iam_policy.remote_cpu[0]', {}).get("policy_data")
-    if policy_data and project_number:
-        blockers.extend(check_project_iam(json.loads(policy_data), str(project_number)))
-    try:
-        deny = resources['google_iam_deny_policy.remote_cpu_isolation[0]']["rules"][0]["deny_rule"][0]
-        if (deny["denied_principals"] != ["principalSet://goog/public:all"]
-                or deny["exception_principals"] != ["principal://goog/subject/ohstnhunt@gmail.com"]
-                or set(deny["denied_permissions"]) != DISPATCHER_DENIED_PERMISSIONS):
-            blockers.append("dispatcher_deny_drift")
-        refs = config["google_iam_deny_policy.remote_cpu_isolation"]["rules"][0]["deny_rule"][0]["denial_condition"][0]["expression"]
-        if refs != {"references": [
-            "google_tags_tag_key.remote_cpu_isolation[0].id",
-            "google_tags_tag_key.remote_cpu_isolation[0]", "google_tags_tag_key.remote_cpu_isolation",
-            'google_tags_tag_value.remote_cpu_isolation["dispatcher"].id',
-            'google_tags_tag_value.remote_cpu_isolation["dispatcher"]',
-            "google_tags_tag_value.remote_cpu_isolation",
-        ]}:
-            blockers.append("dispatcher_deny_condition_drift")
-    except (KeyError, IndexError, TypeError):
-        blockers.append("dispatcher_deny_unproven")
+    budget_expression = config.get("google_billing_budget.remote_cpu_workers", {}).get("budget_filter", [])
+    expected_budget_refs = _refs("google_project.remote_cpu", "number")["references"] + _refs("google_project.remote_cpu_dispatch", "number")["references"]
+    if (len(budget_expression) != 1 or budget_expression[0].get("projects") != {"references": expected_budget_refs}
+            or "labels" in budget_expression[0]):
+        blockers.append("budget_scope_configuration_drift")
+    founder = _binding("roles/owner", ["user:ohstnhunt@gmail.com"])
+    worker_binding = _binding(_refs("google_project_iam_custom_role.remote_cpu_dispatch_transport_reader", "name"),
+                              _refs("google_service_account.remote_cpu_worker", "email"))
+    dispatcher_binding = _binding(_refs("google_project_iam_custom_role.remote_cpu_dispatch_transport_writer", "name"),
+                                  _refs("google_service_account.remote_cpu_host_dispatcher", "email"))
+    policies = {
+        "remote_cpu_project": [founder, _binding("roles/run.serviceAgent", {"references": RUN_AGENT_REFERENCES})],
+        "remote_cpu_dispatch_project": [founder],
+        "remote_cpu_dispatch_transport": [worker_binding, dispatcher_binding,
+            _binding("roles/storage.legacyBucketOwner", {"references": ["var.remote_cpu_dispatch_project_id"]})],
+        "remote_cpu_transport": [_binding("roles/storage.legacyBucketOwner", {"references": ["var.remote_cpu_project_id"]})],
+        "remote_cpu_dispatch_job": [_binding(_refs("google_project_iam_custom_role.remote_cpu_dispatcher", "name"),
+                                             _refs("google_service_account.remote_cpu_host_dispatcher", "email"))],
+    }
+    for name, bindings in policies.items():
+        if config.get("data.google_iam_policy." + name, {}).get("binding") != bindings:
+            blockers.append(name + "_configuration_drift")
+    for address, source in (
+        ("google_project_iam_policy.remote_cpu", "remote_cpu_project"),
+        ("google_project_iam_policy.remote_cpu_dispatch", "remote_cpu_dispatch_project"),
+        ("google_storage_bucket_iam_policy.remote_cpu_transport", "remote_cpu_transport"),
+        ("google_storage_bucket_iam_policy.remote_cpu_dispatch_transport", "remote_cpu_dispatch_transport"),
+        ("google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher", "remote_cpu_dispatch_job"),
+    ):
+        if config.get(address, {}).get("policy_data") != _refs("data.google_iam_policy." + source, "policy_data"):
+            blockers.append(address + "_policy_source_drift")
+    for name, number, dispatch in (("remote_cpu", project_number, False),
+                                  ("remote_cpu_dispatch", dispatch_number, True)):
+        policy_data = resources.get(f'google_project_iam_policy.{name}[0]', {}).get("policy_data")
+        if policy_data and number:
+            blockers.extend(check_project_iam(json.loads(policy_data), str(number), dispatch=dispatch))
+    for name, permissions in (("remote_cpu_dispatcher", DISPATCH_PERMISSIONS),
+                              ("remote_cpu_transport_reader", {"storage.objects.get"}),
+                              ("remote_cpu_transport_writer", {"storage.objects.create", "storage.objects.get", "storage.objects.delete"}),
+                              ("remote_cpu_dispatch_transport_reader", {"storage.objects.get"}),
+                              ("remote_cpu_dispatch_transport_writer", {"storage.objects.create", "storage.objects.get", "storage.objects.delete"})):
+        if set(resources.get(f'google_project_iam_custom_role.{name}[0]', {}).get("permissions", [])) != permissions:
+            blockers.append("custom_role_drift:" + name)
+    expected_dispatcher = f"remote-cpu-dispatcher@{DISPATCH_PROJECT}.iam.gserviceaccount.com"
+    for name, expected_project in (("remote_cpu_worker", WORKER_PROJECT),
+                                  ("remote_cpu_quarantined_dispatcher", WORKER_PROJECT),
+                                  ("remote_cpu_host_dispatcher", DISPATCH_PROJECT)):
+        values = resources.get(f'google_service_account.{name}[0]', {})
+        expected_id = "remote-cpu-worker" if name == "remote_cpu_worker" else "remote-cpu-dispatcher"
+        if values.get("account_id") != expected_id:
+            blockers.append("service_account_drift:" + name)
+        if values.get("email") and values["email"] != f"{expected_id}@{expected_project}.iam.gserviceaccount.com":
+            blockers.append("service_account_identity_drift:" + name)
+    # Fully resolved IAM policy data must agree with the reviewed references.
+    known_policies = {
+        'google_storage_bucket_iam_policy.remote_cpu_dispatch_transport[0]': {
+            f"projects/{DISPATCH_PROJECT}/roles/remoteCpuTransportReader": {f"serviceAccount:remote-cpu-worker@{WORKER_PROJECT}.iam.gserviceaccount.com"},
+            f"projects/{DISPATCH_PROJECT}/roles/remoteCpuTransportWriter": {"serviceAccount:" + expected_dispatcher},
+            "roles/storage.legacyBucketOwner": {"projectOwner:" + DISPATCH_PROJECT}},
+        'google_storage_bucket_iam_policy.remote_cpu_transport[0]': {
+            "roles/storage.legacyBucketOwner": {"projectOwner:" + WORKER_PROJECT}},
+        'google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher["episode-compilation"]': {
+            f"projects/{WORKER_PROJECT}/roles/remoteCpuDispatcher": {"serviceAccount:" + expected_dispatcher}},
+    }
+    for address, expected in known_policies.items():
+        text = resources.get(address, {}).get("policy_data")
+        if text and _policy_members(json.loads(text)) != expected:
+            blockers.append("resource_policy_drift:" + address)
     return blockers
 
 
-def check_project_iam(policy: Mapping, project_number: str) -> list[str]:
-    expected = {
-        "roles/owner": {"user:ohstnhunt@gmail.com"},
-        "roles/iam.denyAdmin": {"user:ohstnhunt@gmail.com"},
-        "roles/run.serviceAgent": {
-            f"serviceAccount:service-{project_number}@serverless-robot-prod.iam.gserviceaccount.com"},
-    }
+def _policy_members(policy: Mapping) -> dict | None:
     actual = {}
     for row in policy.get("bindings", []):
         if row.get("condition") or row["role"] in actual:
-            return ["unexpected_project_principal"]
-        # Resource Manager returns the account's original display casing.
-        # Google user email addresses denote the same identity in either case;
-        # keep service-account and other principal spellings exact.
+            return None
         actual[row["role"]] = {member.lower() if member.startswith("user:") else member
                                for member in row.get("members", [])}
-    return [] if actual == expected else ["unexpected_project_principal"]
+    return actual
+
+
+def check_project_iam(policy: Mapping, project_number: str, *, dispatch: bool = False) -> list[str]:
+    expected = {"roles/owner": {"user:ohstnhunt@gmail.com"}}
+    if not dispatch:
+        expected["roles/run.serviceAgent"] = {
+            f"serviceAccount:service-{project_number}@serverless-robot-prod.iam.gserviceaccount.com"}
+    return [] if _policy_members(policy) == expected else ["unexpected_project_principal"]
 
 
 def _resources(module: Mapping):
@@ -154,7 +198,7 @@ def check_state(state: Mapping, *, full: bool = False) -> list[str]:
         return ["legacy_topology_adoption_required"] if marker else []
     return sorted("unrelated_state:" + row["address"]
                   for row in _resources(values.get("root_module", {}))
-                  if row.get("mode") == "managed" and row["address"] not in ALLOWED_ADDRESSES)
+                  if row.get("mode") == "managed" and row["address"] not in ALLOWED_ADDRESSES | MIGRATION_ADDRESSES)
 
 
 def check_plan(plan: Mapping) -> list[str]:
@@ -175,13 +219,16 @@ def check_plan(plan: Mapping) -> list[str]:
         if address not in ALLOWED_ADDRESSES:
             blockers.append("unexpected_resource:" + address)
         if "project" in values:
-            expected = SOURCE_PROJECT if address.startswith("google_artifact_registry_repository_iam_member.") else WORKER_PROJECT
+            expected = (SOURCE_PROJECT if address.startswith("google_artifact_registry_repository_iam_member.")
+                        else DISPATCH_PROJECT if ("remote_cpu_dispatch" in address and "remote_cpu_dispatcher" not in address)
+                            or "remote_cpu_host_dispatcher" in address else WORKER_PROJECT)
             if values["project"] != expected:
                 blockers.append("wrong_project:" + address)
-    project = resources.get('google_project.remote_cpu[0]', {})
-    if (project.get("project_id") != WORKER_PROJECT or project.get("org_id") or project.get("folder_id")
-            or project.get("billing_account") != APPROVED_BILLING_ACCOUNT):
-        blockers.append("project_isolation_drift")
+    for name, expected_id in (("remote_cpu", WORKER_PROJECT), ("remote_cpu_dispatch", DISPATCH_PROJECT)):
+        project = resources.get(f'google_project.{name}[0]', {})
+        if (project.get("project_id") != expected_id or project.get("org_id") or project.get("folder_id")
+                or project.get("billing_account") != APPROVED_BILLING_ACCOUNT):
+            blockers.append("project_isolation_drift:" + name)
     blockers.extend(_security_blockers(plan, resources))
     job = resources.get(JOB_ADDRESS, {})
     try:
@@ -215,9 +262,10 @@ def main() -> int:
     parser.add_argument("action", choices=("targets", "state", "full-state", "plan", "project-iam"))
     parser.add_argument("path", nargs="?", type=Path)
     parser.add_argument("--project-number")
+    parser.add_argument("--dispatch-project", action="store_true")
     args = parser.parse_args()
     if args.action == "targets":
-        print("\n".join("-target=" + address for address in sorted(ALLOWED_ADDRESSES)))
+        print("\n".join("-target=" + address for address in sorted(ALLOWED_ADDRESSES | {"google_service_account.remote_cpu_dispatcher"})))
         return 0
     if args.path is None:
         parser.error("A saved Terraform JSON document is required.")
@@ -225,7 +273,7 @@ def main() -> int:
     if args.action == "project-iam":
         if not args.project_number or not args.project_number.isdigit():
             parser.error("The observed project number is required for IAM validation.")
-        blockers = check_project_iam(document, args.project_number)
+        blockers = check_project_iam(document, args.project_number, dispatch=args.dispatch_project)
     else:
         blockers = (check_plan(document) if args.action == "plan"
                     else check_state(document, full=args.action == "full-state"))
