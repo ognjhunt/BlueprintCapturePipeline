@@ -1,11 +1,13 @@
 """Actual durable QA adapter with fake provider; no credentials or inference."""
 import json
+import os
+import subprocess
+import sys
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx2 as httpx
 import pytest
 
 from tests.test_daily_research_knowledge import policy_bundle, v3
@@ -242,7 +244,8 @@ def test_qa_context_excludes_crm_contacts(fixture):
     assert "Existing" in text and "UNTRUSTED DATA" in text
 
 
-def test_actual_sdk_event_wire_and_deadline_gate():
+def _sdk_wire_probe():
+    import httpx2 as httpx
     from openai import OpenAI
     requests, checks = [], []
     def send(request):
@@ -265,3 +268,18 @@ def test_actual_sdk_event_wire_and_deadline_gate():
         assert len(requests) == 1
     finally:
         client.close()
+
+
+def test_actual_sdk_event_wire_and_deadline_gate():
+    runtime = os.environ.get("BLUEPRINT_RESEARCH_SDK_PYTHON", sys.executable)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OPENAI_")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run([runtime, "-c", "import runpy,sys; runpy.run_path(sys.argv[1], run_name='__main__')",
+                             str(Path(__file__).resolve())],
+                            cwd=ROOT, env=env, capture_output=True, text=True, timeout=30, check=True)
+    assert result.stdout.strip() == "qa_sdk_wire_contract_verified"
+
+
+if __name__ == "__main__":
+    _sdk_wire_probe()
+    print("qa_sdk_wire_contract_verified")
