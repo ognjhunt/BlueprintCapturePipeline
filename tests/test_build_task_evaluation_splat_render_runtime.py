@@ -214,6 +214,9 @@ def test_public_runtime_readback_traverses_every_directory_under_private_umask(
     finally:
         os.umask(previous)
     assert receipt["full_byte_service_account_readback_passed"] is True
+    publication = destination.parent / f"{commit}.publication.v1.json"
+    assert stat.S_IMODE(publication.stat().st_mode) == 0o444
+    assert json.loads(publication.read_text()) == receipt
     assert validate_splat_render_runtime(
         runtime_root=destination, repo_root=repository,
         allowed_roots=(destination.parent,),
