@@ -211,7 +211,8 @@ def test_full_qa_publication_and_restart_preserve_normal_history(fixture):
     restarted = canary.CanaryBridge(script=script)
     try:
         api.ledger = FirestoreLedger(restarted)
-        recovered = canary.run(restarted, cache, execute=False, api_factory=lambda *_: api, clock=lambda: NOW)
+        recovered = canary.run(restarted, cache, execute=False, api_factory=lambda *_: api,
+                               clock=lambda: NOW+timedelta(days=1))
         assert recovered["state"] == "completed" and len(api.payloads) == len(api.inputs) == 1
         assert len(json.loads(crm.read_text())["values"]) == 6 and len(json.loads(pages.read_text())) == 1
         assert restarted.call("origin") == before

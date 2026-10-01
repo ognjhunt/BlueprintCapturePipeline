@@ -269,7 +269,13 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider,
     consumer = Consumer(ledger, cfg, api, clock=clock, stopped=stopped)
     consumer.active_day = DAY
     try:
-        result = runner.start_or_resume(allow_create=execute and not existing)
+        if existing:
+            # Recovery follows the existing test identity even after due_date
+            # advances. Terminal/QA rows must not look up a different date.
+            with ledger.lock():
+                result = runner.observe(ledger.get(DAY))
+        else:
+            result = runner.start_or_resume(allow_create=execute)
         while True:
             row = ledger.get(DAY)
             if not row:
