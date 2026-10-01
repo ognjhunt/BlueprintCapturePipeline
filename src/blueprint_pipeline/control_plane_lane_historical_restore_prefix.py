@@ -19,6 +19,34 @@ from .control_plane_lane_historical_restore_staging import validate_private_pref
 from .control_plane_lane_historical_restore_tree import RestoreTree
 
 
+def _pending_continuation(worker, events):
+    """Stop the irreversibly restricted unit at its durable reconciled head.
+
+    This receipt supplies no execution or completion authority. A fresh fixed
+    dispatcher unit must select the original action again, retaining its e0,
+    approvals, archive, history and clocks, before acquiring its own observer.
+    """
+    generation._require(type(events) is list and len(events) >= 2,
+                        'restore_continuation_invalid')
+    first, last = events[0], events[-1]
+    with worker.checkpoint(journal=True) as (_, _, journal):
+        decision, manifest = worker.selected[1:3]
+        generation._require(decision['action'] == 'restore'
+            and first['kind'] == 'intent' and first['action_id'] == worker.action_id
+            and last['action_id'] == worker.action_id and last['kind'] == 'restore_intent'
+            and last['body'].get('phase') == 'reconciled'
+            and last['body'].get('credited_removed_allocated_bytes') == 0
+            and journal.head['event_digest'] == last['event_digest'], 'restore_continuation_invalid')
+        receipt = dict(status='pending', reason='fresh_unit_required_after_reconciliation',
+            action='restore', action_id=worker.action_id, owner=decision['owner'],
+            generation_digest=manifest['generation_digest'], original_manifest=decision['manifest'],
+            original_intent_event_digest=first['event_digest'], continuation_event_digest=last['event_digest'],
+            owner_access_reopened=False, restored_files=0, restored_logical_bytes=0,
+            credited_removed_allocated_bytes=0)
+    worker.operation.remaining()
+    return receipt
+
+
 class _PrefixTree:
     """No replacement writes or birth records for authenticated existing rows."""
     def __init__(self, tree, births):
@@ -75,8 +103,11 @@ def recover_private_prefix(worker, events, roots, monotonic):
     except generation.HistoricalGenerationError:
         from .control_plane_lane_historical_restore_reconciliation_worker import reconcile_unlogged_creation
         events, observed = reconcile_unlogged_creation(worker, events, observed, roots, monotonic)
-        births = validate_private_prefix(manifest, observed, decision, events, worker.action_id,
-                                         tick=worker.operation.remaining)
+        validate_private_prefix(manifest, observed, decision, events, worker.action_id,
+                                tick=worker.operation.remaining)
+        # Reconciliation installed Landlock. Another observer in this process
+        # would inherit it and lose the required complete foreign /proc view.
+        return _pending_continuation(worker, events)
     raw = encoding.encode_validation_report(manifest)
     generation._require(authority._selector(raw) == decision['manifest'], 'restore_manifest_changed')
     _readback(worker, observed, roots, monotonic)

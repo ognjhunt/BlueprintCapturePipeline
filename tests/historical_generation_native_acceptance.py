@@ -417,14 +417,19 @@ def _launch_worker(entry, action_id, target, journals, *, expected='completed', 
     # considered. Never overlap handles, change an ID or mint a new deadline.
     observations = []
     births = []
-    def invoke():
+    continuations = []
+    def unit():
         nonlocal births
         births = _capture_restore_births(journals, action_id) if restore else []
         return _launch_worker_once(entry, action_id, target, journals, restore=restore, launch=launch)
+    def invoke():
+        return _continued_restore_units(unit, journals, action_id, continuations) if restore else unit()
     receipt = _reconciled_reference_attempts(invoke, journals, action_id, observations=observations,
                                         on_unfinished=on_unfinished)
     assert receipt['status'] == expected, receipt
     result = dict(receipt, _fixture_reference_refusals=observations) if observations else receipt
+    if continuations:
+        result = dict(result, _fixture_unit_continuations=continuations)
     return dict(result, _fixture_prior_member_births=births) if receipt.get('recovered_prefix') is True else result
 
 
@@ -445,8 +450,8 @@ def _launch_death_worker(entry, action_id, target, journals, *, on_unfinished=No
     assert result is None, result
 
 
-def _capture_restore_births(journals, action_id):
-    """Actual protected whole-chain births immediately before the next unit."""
+def _capture_action_events(journals, action_id):
+    """Actual protected whole chain immediately before a subsequent unit."""
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from blueprint_pipeline.control_plane_lane_historical_journal import MAX_SUPPORTED_EVENT_BYTES
     directory = journals / action_id
@@ -480,19 +485,55 @@ def _capture_restore_births(journals, action_id):
             scope = event['scope_digest'] if scope is None else scope
             assert event['scope_digest'] == scope
             previous = event['event_digest']
-            if event['kind'] == 'restore_member':
-                events.append(event)
+            events.append(event)
     finally:
         os.close(fd)
+    return events
+
+
+def _capture_restore_births(journals, action_id):
+    events = [row for row in _capture_action_events(journals, action_id) if row['kind'] == 'restore_member']
     assert len({event['body']['path'] for event in events}) == len(events)
     return events
+
+
+def _continued_restore_units(invoke, journals, action_id, continuations):
+    """Fresh real unit only for a new independently retained reconciled head.
+
+    These are routine durable phase transitions, not retries of UNKNOWN. The
+    original three-unit reference cadence, e0 and deadlines remain unchanged.
+    Production GC likewise observes no final receipt and dispatches a later
+    exact same-ID unit under all current gates.
+    """
+    for _ in range(9):
+        receipt = invoke()
+        if receipt is None or receipt.get('status') != 'pending':
+            return receipt
+        events = _capture_action_events(journals, action_id)
+        assert events
+        first, head = events[0], events[-1]
+        assert receipt['reason'] == 'fresh_unit_required_after_reconciliation'
+        assert receipt['action'] == 'restore' and receipt['action_id'] == action_id
+        assert head['kind'] == 'restore_intent' and head['body']['phase'] == 'reconciled'
+        assert receipt['original_intent_event_digest'] == first['event_digest']
+        assert receipt['continuation_event_digest'] == head['event_digest']
+        assert receipt['owner_access_reopened'] is False
+        assert receipt['restored_files'] == receipt['restored_logical_bytes'] == \
+            receipt['credited_removed_allocated_bytes'] == head['body']['credited_removed_allocated_bytes'] == 0
+        assert len(continuations) < 8 and all(row['continuation_event_digest'] != head['event_digest']
+                                            for row in continuations)
+        selected = dict(action_id=action_id, original_intent_event_digest=first['event_digest'],
+                        continuation_event_digest=head['event_digest'])
+        continuations.append(selected)
+        print(json.dumps(dict(fixture_durable_unit_continuation=selected)), flush=True)
+    raise AssertionError('original reconciliation continuation limit')
 
 
 def _durable_receipt(receipt):
     # Controller observations describe earlier real units. They are retained
     # separately and never become part of the worker's immutable final event.
     return {key: value for key, value in receipt.items()
-            if key not in ('_fixture_reference_refusals', '_fixture_prior_member_births')}
+            if key not in ('_fixture_reference_refusals', '_fixture_prior_member_births', '_fixture_unit_continuations')}
 
 
 def _later_reference_attempts(invoke, journals, action_id, *, observations=None, on_unfinished=None):
@@ -628,6 +669,20 @@ def _assert_boundary_recovery(receipt, expected, observations, action_id, origin
     It creates no success receipt, clock, birth or native clearance observation.
     """
     assert receipt.get('status') == 'completed'
+    continuations = receipt.get('_fixture_unit_continuations', [])
+    assert type(continuations) is list and len(continuations) <= 8
+    if continuations:
+        from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+        intent = json.loads(original_intent)
+        assert intent['kind'] == 'intent' and intent['action_id'] == action_id
+        assert intent['event_digest'] == canonical_digest(intent, digest_field='event_digest')
+        assert all(set(row) == {'action_id', 'original_intent_event_digest', 'continuation_event_digest'}
+            and row['action_id'] == action_id and row['original_intent_event_digest'] == intent['event_digest']
+            and type(row['continuation_event_digest']) is str and len(row['continuation_event_digest']) == 71
+            and row['continuation_event_digest'].startswith('sha256:')
+            and all(char in '0123456789abcdef' for char in row['continuation_event_digest'][7:])
+            for row in continuations)
+        assert len({row['continuation_event_digest'] for row in continuations}) == len(continuations)
     if receipt.get(expected) is True:
         if expected not in ('recovered_prefix', 'restarted_unwritten'):
             assert receipt['restored_files'] == receipt['restored_logical_bytes'] == 0
@@ -648,7 +703,7 @@ def _assert_boundary_recovery(receipt, expected, observations, action_id, origin
     elif expected == 'restarted_unwritten':
         later += ('recovered_prefix', 'recovered_stage', 'recovered_split')
     assert any(receipt.get(field) is True for field in later)
-    assert 0 < len(observations) <= 3
+    assert len(observations) <= 3 and (observations or continuations)
     attempts = [row['attempt'] for row in observations]
     assert attempts == sorted(set(attempts)) and all(type(index) is int and 1 <= index <= 3 for index in attempts)
     assert all(row == dict(action_id=action_id, code='historical_generation_process_unknown',
