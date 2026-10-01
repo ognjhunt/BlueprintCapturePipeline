@@ -118,7 +118,7 @@ def _read_intent(files, config, intent_id, expected, issued):
     intent = retained._document(raw, 32768, _work_budget=files.budget)
     _require(set(intent) == _INTENT_FIELDS and intent["schema_version"] == issuance.CREATION_SCHEMA
              and intent["intent_id"] == intent_id and intent["name"] == "registered-" + intent_id
-             and intent["lane"] in ("g1", "arena") and intent["root"] in ("work", "inputs")
+             and intent["lane"] in ("g1", "arena", "diagnostics") and intent["root"] in ("work", "inputs")
              and intent["issuer_uid"] == 0 and type(intent["issuer_uid"]) is int
              and intent["intent_digest"] == canonical_digest(intent, digest_field="intent_digest")
              and _epoch(issued) and _epoch(intent["expires_at_epoch"])
@@ -127,7 +127,7 @@ def _read_intent(files, config, intent_id, expected, issued):
     _require(profile in issuance._PROFILES, "experiment_creation_invalid")
     arena = profile == "arena_owner_review.v1"
     reason, class_intent, cleanup, writer, count = issuance._PROFILES[profile]
-    _require(intent["lane"] == ("arena" if arena else "g1")
+    _require(intent["lane"] == issuance._profile_lane(profile)
              and (not arena or intent["root"] == "inputs" and issuance._ARENA_TAG.fullmatch(intent["reference_value"]))
              and (intent["reason"], intent["class_intent"], intent["cleanup"], intent["writer_scope"])
                  == (reason, class_intent, cleanup, writer)
@@ -196,11 +196,20 @@ def _create(files, intent_id, expected, config_path, issued):
         root=intent["root"], lane=intent["lane"], name=intent["name"], writer_scope=intent["writer_scope"]),
         "marker_digest", 4096)
     marker = _publish(files, stage, _MARKER, marker_bytes, kind="marker")
-    for name in (scratch.LEASE_FILE, _MARKER):
-        fd = files.open(name, os.O_RDONLY, parent=stage)
-        files.transition_owner(fd, uid, gid, 0o600)
-        files.close(fd)
-    files.transition_owner(stage, uid, gid, 0o700)
+    if intent["lane"] == "diagnostics":
+        # Genuine stage birth and both immutable leaves already belong to root.
+        # Never open a blueprint pathname-write window for the fixed producer.
+        owners._protected(os.fstat(stage), directory=True, mode=0o700)
+        for name in (scratch.LEASE_FILE, _MARKER):
+            fd = files.open(name, os.O_RDONLY, parent=stage)
+            owners._protected(os.fstat(fd), mode=0o600)
+            files.close(fd)
+    else:
+        for name in (scratch.LEASE_FILE, _MARKER):
+            fd = files.open(name, os.O_RDONLY, parent=stage)
+            files.transition_owner(fd, uid, gid, 0o600)
+            files.close(fd)
+        files.transition_owner(stage, uid, gid, 0o700)
     files.location(lane)
     files.location(stage)
     scratch._publish_no_replace(lane, stage_name, intent["name"])

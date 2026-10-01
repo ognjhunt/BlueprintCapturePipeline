@@ -40,7 +40,17 @@ _PROFILES = {
     "local_root_disposable.v1": ("owner_disposable_scratch", "scratch", "delete", "fixed_root_scratch_issuer.v1", 0),
     "g1_local_prelaunch_block.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
     "g1_local_contained_completed.v1": ("g1_development_pair", "evidence", "owner_review", "native_g1_development_pair.v1", 2),
+    "root_disk_diagnostic_disposable.v1": ("disk_capacity_diagnostic", "scratch", "delete", "fixed_root_disk_diagnostic.v1", 1),
+    "root_disk_diagnostic_evidence.v1": ("disk_capacity_diagnostic", "evidence", "offload", "fixed_root_disk_diagnostic.v1", 1),
 }
+
+
+def _profile_lane(profile):
+    if profile == "arena_owner_review.v1":
+        return "arena"
+    if profile in ("root_disk_diagnostic_disposable.v1", "root_disk_diagnostic_evidence.v1"):
+        return "diagnostics"
+    return "g1"
 
 
 def _selector(raw, budget):
@@ -201,6 +211,10 @@ def _issue(files, *, installed_config_path, principal, owner, root, reference_va
         raw, _ = files.read(request[0], cap=owners.MAX_POLICY_BYTES, protected=True)
         owners._identity(raw, request[1]["sha256"], request[1]["size_bytes"], files.budget)
         retained._document(raw, owners.MAX_POLICY_BYTES, _work_budget=files.budget)
+        if _profile_lane(participant_profile) == "diagnostics":
+            from .control_plane_lane_disk_diagnostic import validate_request
+            validate_request(files, raw, config=config, installed_config_path=installed_config_path,
+                             run_ref=reference_value)
         selectors.append(_selector(raw, files.budget))
     parent = _store(files, config.experiment_record_store)
     occupied = _capacity(files, parent)
@@ -217,7 +231,7 @@ def _issue(files, *, installed_config_path, principal, owner, root, reference_va
     _require(owners._matches(intent_id, owners._CONSENT_ID) and owners._matches(generation, owners._CONSENT_ID)
              and intent_id != generation, "experiment_creation_invalid")
     record = dict(schema_version=CREATION_SCHEMA, intent_id=intent_id, generation=generation, issuer_uid=0,
-        principal=principal, owner=owner, root=root, lane="arena" if arena else "g1", name="registered-" + intent_id,
+        principal=principal, owner=owner, root=root, lane=_profile_lane(participant_profile), name="registered-" + intent_id,
         reference_kind="run_ref", reference_value=reference_value, reason=reason, class_intent=class_intent,
         cleanup=cleanup, lease_ttl_seconds=lease_ttl_seconds, issued_at_epoch=issued, expires_at_epoch=expiry,
         policy=_selector(policy_raw, files.budget), request_records=selectors,
