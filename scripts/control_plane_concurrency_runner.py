@@ -44,6 +44,7 @@ def run_scene(*, scene_key: str, control_root: Path, object_root: Path, worker_r
             'cpu_seconds':time.process_time()-cpu,'peak_allocated_bytes':allocation.peak_bytes,
             'allocation_measurement':'continuous_shared_tree_samples',
             'allocation_sample_count':allocation.sample_count,
+            'allocation_incomplete_scan_count':allocation.incomplete_scan_count,
             'allocation_interval_seconds':allocation.interval_seconds,
             'allocated_delta_bytes':allocation.final_bytes-allocation.initial_bytes})
         return value

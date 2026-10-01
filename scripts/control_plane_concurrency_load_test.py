@@ -12,6 +12,7 @@ import argparse
 import sys
 import socket
 import threading
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -134,9 +135,20 @@ class AllocationSampler:
         self.stop = threading.Event()
         self.errors: list[Exception] = []
         self.sample_count = self.peak_bytes = self.final_bytes = 0
+        self.incomplete_scan_count = 0
 
     def sample(self):
-        value = allocated_tree_bytes(self.root)
+        for attempt in range(3):
+            try:
+                value = allocated_tree_bytes(self.root)
+                break
+            except ValueError as exc:
+                if str(exc) != "allocation_measurement_incomplete":
+                    raise
+                self.incomplete_scan_count += 1
+                if attempt == 2:
+                    raise
+                time.sleep(0.01)
         self.final_bytes = value
         self.peak_bytes = max(self.peak_bytes, value)
         self.sample_count += 1

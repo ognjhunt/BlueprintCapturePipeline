@@ -63,6 +63,20 @@ def test_allocated_measurement_counts_hardlinks_once_and_ignores_external_symlin
     assert harness.allocated_tree_bytes(root) - before < blob.stat().st_blocks * 512
 
 
+def test_sampler_rescans_a_transient_incomplete_walk_but_records_it(tmp_path, monkeypatch):
+    from scripts import control_plane_concurrency_load_test as module
+    calls=0
+    def changing_tree(root):
+        nonlocal calls
+        calls+=1
+        if calls==1:raise ValueError("allocation_measurement_incomplete")
+        return 1024
+    monkeypatch.setattr(module,"allocated_tree_bytes",changing_tree)
+    with module.AllocationSampler(tmp_path) as sampler:
+        assert sampler.initial_bytes==1024
+    assert sampler.incomplete_scan_count==1
+
+
 def test_owned_run_roots_never_reuse_or_nest_fixture_storage(tmp_path):
     existing = tmp_path / "existing"
     existing.mkdir()
