@@ -1,0 +1,57 @@
+{
+  "schema_version": "argus_video_default_validation.v1",
+  "status": "offline_implementation_reviewed_real_execution_blocked",
+  "base_commit": "9b754881845adf9ae2a871f40eab7ae1ec1233ea",
+  "reviewed_source_bindings": [
+    {
+      "path": "src/blueprint_pipeline/argus_video_explanation.py",
+      "sha256": "sha256:10d602f72cd29792c34e19850fe8b6d747bbfe52b77f5547a6af1fdaa2785d38",
+      "size_bytes": 16853
+    },
+    {
+      "path": "src/blueprint_pipeline/policy_canary_episode_interpretation_closeout.py",
+      "sha256": "sha256:1e7a3cb5d2d666ebf33ce5a8eef8e01ccf4c713a8f633358baf6ffe82f9e7ae5",
+      "size_bytes": 39143
+    },
+    {
+      "path": "tests/test_argus_video_explanation.py",
+      "sha256": "sha256:c551dd61c4d3f22785157b5b4c924bfd5aeb934f5054560b3c33a0620336e4b6",
+      "size_bytes": 14136
+    }
+  ],
+  "commands": [
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q tests/test_argus_video_explanation.py tests/test_policy_canary_episode_interpretation_closeout.py",
+      "result": "32 passed in 1.99s",
+      "protects": "offline default, explicit legacy compatibility, source freshness, observational criterion support, time/undo/provenance/malformed output boundaries; no score writes or provider calls"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q tests/test_argus_video_explanation.py tests/test_policy_canary_episode_interpretation_closeout.py tests/test_episode_interpretation.py",
+      "result": "independent Sol: 46 passed in 2.29s",
+      "protects": "independent review of new and existing explanation contract"
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m blueprint_pipeline.impacted_test_selection --base 9b754881845adf9ae2a871f40eab7ae1ec1233ea --plan-output /tmp/argus-video-default-final-impact-plan.json",
+      "result": "145 passed in 49.67s; 4 existing google-auth grpc FutureWarnings; requires_full_suite false",
+      "protects": "changed closeout, dispatcher/lifecycle/provider import contracts and six always-on governance/security/spend/success/release sentinels"
+    },
+    {
+      "command": ".venv/bin/ruff check src/blueprint_pipeline/argus_video_explanation.py src/blueprint_pipeline/policy_canary_episode_interpretation_closeout.py tests/test_argus_video_explanation.py",
+      "result": "All checks passed",
+      "protects": "changed-file lint"
+    }
+  ],
+  "independent_review": "accepted; see argus_video_default_sol_review.md",
+  "paid_model_calls": 0,
+  "gpu_runs": 0,
+  "upstream_software_executed": false,
+  "footage_disclosed": false,
+  "credentials_or_access_changed": false,
+  "production_grader_changed": false,
+  "live_deployments": 0,
+  "admitted_real_episode_count": 0,
+  "registered_remote_video_references": 14,
+  "validation_on_blueprint_footage": false,
+  "hosted_ci": "Required impacted checks must pass on exact PR head; see PR checks",
+  "validation_digest": "sha256:c62a3d711f76a412775a795545df38e9cdf92e0b0e94ed6429bae24a1fc823a1"
+}
