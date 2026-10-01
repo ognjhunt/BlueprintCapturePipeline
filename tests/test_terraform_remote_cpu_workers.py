@@ -325,10 +325,14 @@ def test_isolated_project_blocks_inherited_authority_before_worker_dependencies(
         assert "google_project_service.remote_cpu_apis" in resources[("google_service_account", name)]
         assert "google_project_iam_policy.remote_cpu" in resources[("google_service_account", name)]
     project_policy = resources[("data.google_iam_policy", "remote_cpu_project")]
-    assert len(_children(project_policy, "binding")) == 2
-    assert '"roles/owner"' in project_policy and '"user:ohstnhunt@gmail.com"' in project_policy
-    assert '"roles/run.serviceAgent"' in project_policy
-    assert "roles/editor" not in project_policy
+    bindings = _children(project_policy, "binding")
+    assert len(bindings) == 3
+    assert {_attr(binding, "role"): _strings(_attr(binding, "members")) for binding in bindings} == {
+        '"roles/owner"': ["user:ohstnhunt@gmail.com"],
+        '"roles/iam.denyAdmin"': ["user:ohstnhunt@gmail.com"],
+        '"roles/run.serviceAgent"': [
+            "serviceAccount:${google_project_service_identity.remote_cpu_run[0].email}"],
+    }
     job = resources[("google_cloud_run_v2_job", "remote_cpu_worker")]
     assert "google_iam_deny_policy.remote_cpu_isolation" in job
     assert "google_project_iam_policy.remote_cpu" in job

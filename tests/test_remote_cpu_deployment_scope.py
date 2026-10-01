@@ -55,7 +55,9 @@ def test_complete_worker_bootstrap_plan_is_allowed():
 
 
 @pytest.mark.parametrize("field,value", [("role", "roles/artifactregistry.admin"),
-                                        ("repository", "other-repo"), ("location", "europe-west1")])
+                                        ("repository", "other-repo"), ("location", "europe-west1"),
+                                        ("repository", "projects/other/locations/us/repositories/gcr.io"),
+                                        ("repository", "projects/blueprint-8c1ca/locations/eu/repositories/gcr.io")])
 def test_old_repository_binding_cannot_expand_privileges(field, value):
     plan = _plan()
     row = next(row for row in plan["planned_values"]["root_module"]["resources"]
@@ -146,12 +148,34 @@ def test_old_project_mutation_and_inherited_parent_are_refused():
 def test_project_policy_rejects_editors_and_wrong_managed_service_agent():
     policy = {"bindings": [
         {"role": "roles/owner", "members": ["user:ohstnhunt@gmail.com"]},
+        {"role": "roles/iam.denyAdmin", "members": ["user:ohstnhunt@gmail.com"]},
         {"role": "roles/run.serviceAgent", "members": [
             "serviceAccount:service-123@serverless-robot-prod.iam.gserviceaccount.com"]},
     ]}
     assert check_project_iam(policy, "123") == []
     assert check_project_iam(policy, "456") == ["unexpected_project_principal"]
     policy["bindings"].append({"role": "roles/editor", "members": ["user:other@example.com"]})
+    assert check_project_iam(policy, "123") == ["unexpected_project_principal"]
+
+
+def test_founder_can_manage_deny_policy_and_google_email_casing_is_equivalent():
+    policy = {"bindings": [
+        {"role": "roles/owner", "members": ["user:OHSTNhunt@gmail.com"]},
+        {"role": "roles/iam.denyAdmin", "members": ["user:OHSTNhunt@gmail.com"]},
+        {"role": "roles/run.serviceAgent", "members": [
+            "serviceAccount:service-123@serverless-robot-prod.iam.gserviceaccount.com"]},
+    ]}
+    assert check_project_iam(policy, "123") == []
+    policy["bindings"][1]["members"] = ["user:other@gmail.com"]
+    assert check_project_iam(policy, "123") == ["unexpected_project_principal"]
+
+
+def test_owner_without_explicit_deny_administration_cannot_close_bootstrap():
+    policy = {"bindings": [
+        {"role": "roles/owner", "members": ["user:ohstnhunt@gmail.com"]},
+        {"role": "roles/run.serviceAgent", "members": [
+            "serviceAccount:service-123@serverless-robot-prod.iam.gserviceaccount.com"]},
+    ]}
     assert check_project_iam(policy, "123") == ["unexpected_project_principal"]
 
 
