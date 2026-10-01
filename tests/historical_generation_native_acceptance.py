@@ -1783,15 +1783,15 @@ def connected_delete(interruption=None, *, action='delete', corrupt=False,
 
 
 CONNECTED_CASES = (
-    # Replay the four actual failures retained from 7ca attempt4 first. The
-    # native job stops on failure and reaches every other case only afterward.
+    # Observe the latest actual 2da refusal with its original limits first,
+    # then retain the four successful replays of the earlier 7ca failures.
+    ('maximum_depth_restore', dict(action='offload', deep_tree=True, restore_interruption='stage_complete')),
     ('before_restore_final', dict(action='offload', restore_interruption='before_restore_final')),
     ('unwritten_stage', dict(action='offload', restore_interruption='unwritten_stage')),
     ('unlogged_directory', dict(action='offload', restore_interruption='unlogged_directory')),
     ('reconcile_resume_remove', dict(action='offload', restore_interruption='unlogged_member', reconciliation_interruption='reconcile_intent', delete_expiry=True, resume_remove=True)),
     ('delete', dict(interruption=None)),
     ('escaped_path_restore', dict(action='offload', controlled_names=True)),
-    ('maximum_depth_restore', dict(action='offload', deep_tree=True, restore_interruption='stage_complete')),
     ('metadata_bounds', dict(metadata_probe=True)),
     ('metadata_before_link', dict(interruption='metadata_before_link')),
     ('metadata_after_link', dict(interruption='metadata_after_link')),

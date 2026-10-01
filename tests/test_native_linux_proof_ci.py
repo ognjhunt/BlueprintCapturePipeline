@@ -113,8 +113,8 @@ def test_required_native_proof_still_gates_the_pr_on_success() -> None:
 
 def test_retained_failed_restore_paths_execute_before_remaining_native_cases():
     from tests.historical_generation_native_acceptance import CONNECTED_CASES
-    assert [row[0] for row in CONNECTED_CASES[:4]] == [
-        'before_restore_final', 'unwritten_stage', 'unlogged_directory', 'reconcile_resume_remove']
+    assert [row[0] for row in CONNECTED_CASES[:5]] == [
+        'maximum_depth_restore', 'before_restore_final', 'unwritten_stage', 'unlogged_directory', 'reconcile_resume_remove']
     assert len(CONNECTED_CASES) == len(dict(CONNECTED_CASES)) == 38
     run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
