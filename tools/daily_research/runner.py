@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from tools.daily_research import contracts, freshness, knowledge
+from tools.daily_research import capabilities, contracts, freshness, knowledge
 
 PROJECT = "proj_F2tFJuxLaovJru8RrtXRaqNj"
 AGENT = "agent_5a01ec367d1042ef8632bb5f2e6af8b4919909d2abed48ed95"
@@ -399,13 +399,16 @@ def preflight(api, expected_instructions_sha256=None):
     instructions_hash = hashlib.sha256(instructions.encode()).hexdigest() if isinstance(instructions, str) else None
     if expected_instructions_sha256 and instructions_hash != expected_instructions_sha256:
         raise Refusal("agent_instructions_pin_mismatch")
-    if (template.get("id") != TEMPLATE or template.get("network", {}).get("access") != "disabled"
-            or template.get("capability_directories") != ["/workspace/capabilities/blueprint"]
-            or sorted(x.get("name", "") for x in template.get("skills", [])) != ["blueprint-evidence-qualification", "deep-research"]):
+    if template.get("id") != TEMPLATE or template.get("network", {}).get("access") != "disabled":
         raise Refusal("template_configuration_mismatch")
+    try:
+        skill_binding = capabilities.check_template(template)
+    except (ValueError, OSError) as exc:
+        raise Refusal(str(exc) if isinstance(exc, ValueError) else "reviewed_skill_file_unavailable") from None
     return {"project_id": PROJECT, "agent_id": AGENT, "template_id": TEMPLATE,
             "model": MODEL, "agent_digest": digest(agent), "template_digest": digest(template),
             "instructions_sha256": instructions_hash,
+            "skill_binding": skill_binding,
             "inference_started": False, "actual_container_size_verified": False}
 
 
@@ -535,7 +538,9 @@ class Runner:
             if self.stop_requested():
                 return {"date": day, "state": "stopped_before_create"}
             body = {"agent_id": AGENT, "environment": {"type": "openai_hosted", "container_size": "small",
-                    "environment_template_id": TEMPLATE}, "input": prompt(day, context, version), "stream": False,
+                    "environment_template_id": TEMPLATE, "network": {"access": "disabled"},
+                    "capability_directories": [capabilities.ROOT], "files": capabilities.inline_files()},
+                    "input": prompt(day, context, version), "stream": False,
                     "metadata": {"purpose": "daily_blueprint_sites_research", "run_key": "blueprint-researcher:" + day}}
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),
@@ -766,7 +771,7 @@ class Runner:
             payloads = {"sheets": {"sheet_id": SHEET, "tab": "Prospects", "candidates": selected},
                         "notion": {"parent_id": row["packet"]["destinations"]["notion_parent"], "summary": summary, "candidates": selected}}
             row["delivery"] = {name: {"key": row["run_key"] + ":" + name, "payload": payload,
-                                      "payload_digest": digest(payload), "state": "pending"}
+                                      "payload_digest": digest(payload), "payload_json": canonical(payload), "state": "pending"}
                                for name, payload in payloads.items()}
             self.ledger.put(row)
             return row
@@ -791,6 +796,8 @@ class Runner:
     def record_cleanup(self, day, receipt):
         with self.ledger.lock():
             row = self.ledger.get(day)
+            if row and row.get("qa") and row["qa"].get("state") not in {"validated", "qa_blocked"}:
+                raise Refusal("agent_qa_cleanup_not_terminal")
             if (not row or row["state"] not in TERMINAL or not row.get("evidence_digest")
                     or receipt.get("session_id") != row["session_id"]
                     or receipt.get("environment_id") != row["environment_id"]
@@ -804,6 +811,11 @@ class Runner:
                 if (not row.get("artifact_downloaded") or artifact is None
                         or hashlib.sha256(artifact).hexdigest() != row.get("raw_output_digest")):
                     raise Refusal("artifact_not_downloaded_or_digest_mismatch")
+            if row.get("qa", {}).get("state") == "validated":
+                qa = row["qa"]
+                if (hashlib.sha256(self.ledger.read_bytes(day + "-qa.json")).hexdigest() != qa["artifact_digest"]
+                        or digest(json.loads(self.ledger.read_bytes(day + "-qa-evidence.json"))) != qa["evidence_digest"]):
+                    raise Refusal("agent_qa_cleanup_digest_mismatch")
             for resource in ("session", "environment"):
                 try:
                     self.api.get(resource, row[resource + "_id"])

@@ -7,12 +7,18 @@ Existing operator hold `20260930T132640Z-hold-354d4ae6` remains held.
 
 ## Runtime and controls
 
-Use existing worker `srv-d9t8gg1t0dsc73am9q70`, Node 24 and Python 3.11.
+Use existing worker `srv-d9t8gg1t0dsc73am9q70` and Node 24. Python 3.11, 3.12 and
+3.14 are tested; the verified disabled release uses Python 3.14.3.
 The WebApp build validates and extracts the pinned portable archive, then creates
 `dist/daily-research/venv` with only `openai==3.22.1`. Firebase Admin and Google
 auth resolve from the existing WebApp dependencies. Python accesses Firestore
 through a private Node pipe; credentials stay in memory/environment, never in
 the archive, inputs, argv, logs or provider sandbox.
+
+The saved template discovers the exact mounted instruction files through
+capability directories, with empty attached-skills/plugins lists. See
+[SKILLS.md](SKILLS.md) for reviewed hashes, session byte binding and the limits
+of a read-only template GET. Do not re-register skills to repair preflight.
 
 Two independent controls must permit creation:
 
@@ -30,8 +36,10 @@ local env bootstrap files or change paid-execution authority.
 
 The Python clock schedules 07:00 America/Chicago using zoneinfo, including DST.
 Boot reconciles an unfinished older date first, or the latest eligible date;
-it never creates a paid catch-up backlog. Idle minute ticks read only the small
-control document. Recovery errors retry after five minutes. Deploy overlaps use
+it never creates a paid catch-up backlog. Disabled idle minute ticks read only the small
+control document; enabled workflow ticks also query bounded pending projections.
+Recovery errors retry after five minutes; active QA is observed at three-second
+intervals and its cancellation is attempted before returning an observation error. Deploy overlaps use
 a transactional, heartbeat-renewed, fenced lease. Immutable compressed chunks,
 complete input snapshots, exact create payload and dated intent are committed
 before the separate one-use create claim and provider POST. A lost reply or
@@ -52,7 +60,7 @@ Contract `blueprint.research-snapshot.v1`, root
 | --- | --- |
 | `runs/YYYY-MM-DD` | Immutable row blob pointer, date/state, metadata binding, cleanup guard, actual session/turn/environment IDs, one-use create claim |
 | `blobs/SHA256` + `chunks/N` | Exact uncompressed SHA256/length, gzip metadata, immutable chunks at most 256 KiB each; read verifies all bytes |
-| `files/YYYY-MM-DD-{artifact,evidence,output,review}.json` | Blob pointers; downloaded raw artifact is immutable once bound |
+| `files/YYYY-MM-DD-{artifact,evidence,output,review,qa,qa-evidence}.json` | Blob pointers; downloaded raw artifact is immutable once bound |
 | `files/{crm,knowledge,refresh-policy}.json` | Private checked input pointers, not public prospects |
 | `workItems/YYYY-MM-DD` | `owner=blueprint-research-qa-publication-agent`, `stage=agent_qa_pending` or `publication_pending`, run key, row blob, packet digest, `observer_receipt_required=false`, no-outreach scope |
 
@@ -66,31 +74,62 @@ export. Missing files are explicit; corruption refuses. Do not consume a work
 item as completed research until the exact root turn is completed, raw artifact
 is saved and verified, and row is `awaiting_review`, `reviewed` or `completed`.
 
-QA/publication agents perform the workflow, rather than asking dot to relay it:
+## Executable agent QA and publication
 
-1. Read the durable packet, original inputs and exact-turn evidence. Verify
-   source support and freshness, distinguish operator/vendor/independent claims,
-   check commercial/industrial robotics relevance, and preserve unknown interest.
-   Do not autoqualify the broad directory or home/data-only/generic-3D entries.
-2. Re-read the canonical CRM and check semantic site/task duplicates. Submit
-   `review --date DATE --input DECISION.json` with `packet_digest`, agent
-   `reviewer_reference`, `source_support_verified=true`, `crm_rechecked=true`,
-   `accepted_keys` and bounded `summary`. These attestations require actual agent
-   checks; the clock does not manufacture them from schema validation.
-3. Consume only the resulting digest-bound `sheets`/`notion` delivery outbox.
-   Use existing authorized app bindings and existing Blueprint review/approval
-   surfaces where human authority is required. Preserve manual Sheet edits;
-   record exact target records/columns and source-backed Notion links.
-4. After each real write/readback, submit `receipt` with destination, delivery
-   key, payload digest, `readback_verified=true`, and the actual reference.
-   Duplicate receipts are idempotent; conflicting receipts refuse. Both receipts
-   complete publication. A dot/observer receipt is never required, including for
-   legacy `parent_status` entries. No prospect outreach is authorized here.
+The same packaged scheduler executes `render.consume_workflow` → `Consumer.step`
+for the durable queue. The `run`/`reconcile` CLI also consumes an eligible result.
+It is independently disabled until root `enabled=true` **and**
+`workflow.enabled=true`, with non-pending `qa_authority_reference` and
+`publication_authority_reference`. The example disables both. These references
+record actual scoped owner authority; they do not grant access by themselves.
 
-The queue is a durable handoff, not proof the consumer is deployed. The separate
-communications owner must bind its agent to this contract and verify QA and both
-publication readbacks. Missing app bindings produce an explicit pending/blocker
-record, never fabricated success or new credentials/grants.
+QA sends one input event to the existing saved-agent session, after persisting
+its exact input/CRM digest and obtaining a transactional one-use claim. It creates
+no second session or new agent. The same saved Sol agent checks original source
+support, semantic CRM duplicates, claim scope and explicit unknowns, writing an
+exact-turn QA artifact. The consumer validates every candidate's check and does
+another complete CRM read before selecting rows. Credentials and CRM contact
+fields are excluded from the QA input. This is an agent attestation backed by
+saved artifacts, not a claim that schema validation proves truth. In-time
+terminal results can be collected after restart. Unknown/active QA is observed
+and cancellation attempted on disable, observation failure, search-limit breach
+or the **shared** research+QA 180-second deadline. Cold disabled recovery never
+admits another input or publication. A cancel request is not terminal proof.
+The five-activity search limit and $1 soft TOTAL target include both phases;
+model/search/environment usage and QA turn evidence remain in the dated row.
+An exhausted budget/time envelope blocks publication rather than adding a run.
+
+`publisher.mjs` handles only the two digest-bound deliveries. It preserves the
+exact request plan and one-use attempt claim before each service POST. A timeout
+or restart uses GET-only reconciliation; absence never authorizes a second POST.
+Failed or conflicting readback blocks the result for Blueprint review.
+
+- Sheets uses the existing Firebase service identity and the exact canonical CRM,
+  `Prospects` first 19 columns. It checks the observed row-5 schema, complete
+  identities, fresh snapshot equality and plain empty destination cells, then
+  appends RAW values with unique `BP-######` IDs and a delivery marker. Existing
+  rows, duplicate historical columns, formatting and contacts are preserved.
+  New rows stay `Research` / `Needs recheck` / `Unverified`. No contact drafting
+  or outreach occurs. Human concurrent edits can cause an ID/readback conflict;
+  the consumer refuses success and never repeats an uncertain append.
+- Notion creates one marked report child under Knowledge page
+  `3eb80154161d8116858ed5f376b4b7a9`. It verifies the exact parent and report
+  paragraphs before recording its receipt. The worker needs an authorized
+  existing Blueprint integration in `NOTION_API_TOKEN` or `NOTION_API_KEY`, with
+  **Read content + Insert content** and this page shared to it. Update content,
+  workspace-wide access and new keys are not required by this publisher.
+
+The existing service account has verified **Viewer** access to the canonical
+Sheet (HTTP200, complete 11-row CRM at 2026-10-01 01:19:46 UTC). Editor access is
+not granted or verified. Notion worker binding is absent. These are live
+activation blockers, not code prerequisites. The native MCP setup preparation is
+separate; ChatGPT connections do not supply worker credentials. No live write,
+QA event, canary or automatic consumer execution has yet been verified.
+
+Both exact readback receipts complete publication. Cleanup still requires
+Blueprint action-time approval naming the exact session/environment; unresolved
+cleanup blocks another date. Communications consumes this snapshot and existing
+approval gates; dot/parent is never a required runtime reviewer or publisher.
 
 ## Operator build/canary/cutover contract
 
@@ -118,7 +157,12 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
    read; report it, do not create a key or grant. Reconciliation bypasses fresh
    CRM reads so an older run can still be observed/cancelled.
 4. Inventory and reconcile old automation `6abc4ffae84881919154bba45f749074` and
-   prior sessions/dated intents. Import an existing runner state directory with
+   prior sessions/dated intents. The exact prior smoke session
+   `sess_0259dcecd393a414006abc7bc3444481939257e0f1dfc82829` was verified idle,
+   one completed root turn, purpose `one_public_web_smoke_test`, no dated run key
+   and **no hosted/self-hosted environment**. Preserve that receipt; it needs no
+   environment deletion and does not clear other unknown sessions. The historical
+   validation session cleanup receipt remains described in SKILLS.md. Import an existing runner state directory with
    `import-state --input /PRIVATE/STATE` while control is disabled. Conflicting
    dates refuse. Missing/ambiguous legacy history must be resolved before canary;
    never erase it by initializing another root. Record the actual reconciliation

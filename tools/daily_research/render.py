@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tools.daily_research.consumer import Consumer, workflow
 from tools.daily_research.firestore import (
     Bridge,
     FencedProvider,
@@ -47,6 +48,8 @@ def next_wake(now):
 def configured(bridge, cache):
     control = bridge.call("control")
     cfg = control_configuration(control)
+    if workflow(control) and cfg.get("research_contract_version") != 3:
+        raise Refusal("automatic_workflow_requires_reviewed_v3_contract")
     manifest_path = Path(__file__).resolve().parents[2] / "manifest.json"
     if cfg["enabled"] and (not manifest_path.is_file()
             or read_json(manifest_path).get("source_commit") != control.get("source_commit")
@@ -70,6 +73,10 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         return {"store": "firestore", "root": "blueprintDailyResearch/sites-first",
                 "runs": [status_summary(row) for row in ledger.rows()]}
     cfg = configured(bridge, cache)
+    if command in {"run", "reconcile"}:
+        pending_qa = bridge.call("active_qa")
+        if pending_qa:
+            return consume_workflow(bridge, cache, stopped=stopped, day=pending_qa, api_factory=api_factory)
     if command in {"run", "preflight"} and (command == "preflight" or cfg["enabled"]):
         summary = bridge.call("summary")
         day = due_date(datetime.now(timezone.utc), cfg["first_date"])
@@ -102,11 +109,32 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         result = runner.start_or_resume(allow_create=False)
     if result["state"] in {"running", "collecting"}:
         result = runner.cancel_current(result["date"], "observation_deadline")
+    if result["state"] in {"awaiting_review", "reviewed"} and workflow(bridge.call("control")):
+        return consume_workflow(bridge, cache, stopped=stopped, day=result["date"], api_factory=api_factory)
     return status_summary(result)
 
 
 def emit(value):
     print(canonical(value), flush=True)
+
+
+def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_factory=FencedProvider):
+    ledger = FirestoreLedger(bridge)
+    cfg = configured(bridge, cache)
+    api = api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    consumer = Consumer(ledger, cfg, api, stopped=stopped)
+    consumer.active_day = day
+    try:
+        until = time.monotonic() + 200
+        while True:
+            result = consumer.step()
+            if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_cancel_pending", "reviewed"}:
+                return result
+            if time.monotonic() >= until:
+                raise Refusal("workflow_observation_deadline")
+            time.sleep(3)
+    finally:
+        api.client.close()
 
 
 def export_snapshot(bridge, day, destination):
@@ -129,6 +157,11 @@ def export_snapshot(bridge, day, destination):
         pinned = packet.pop("packet_digest", None)
         if pinned != row.get("packet_digest") or digest(packet) != pinned:
             raise Refusal("review_packet_digest_mismatch")
+    for kind, field in (("qa", "artifact_digest"), ("qa-evidence", "evidence_digest")):
+        if kind in files:
+            actual = hashlib.sha256(files[kind]).hexdigest() if kind == "qa" else digest(json.loads(files[kind]))
+            if actual != row.get("qa", {}).get(field):
+                raise Refusal("agent_qa_export_digest_mismatch")
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     save_bytes(destination / "status.json", canonical(row).encode())
@@ -152,10 +185,17 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 if signature != last_signature or day != last_day or (retry_at and clock() >= retry_at):
                     last_signature, last_day = signature, day
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
+                        if workflow(control):
+                            emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
                         result = invoke("run" if cfg["enabled"] else "reconcile", bridge, Path(root), stopped=stopped.is_set)
+                        if workflow(control):
+                            emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
                     emit(result)
                     retry_at = clock() + timedelta(minutes=5) if result.get("state") in {
                         "creation_unresolved", "running", "cancel_pending", "collecting"} else None
+                elif workflow(control) and (not retry_at or clock() >= retry_at):
+                    with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
+                        emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
             except Exception as exc:  # noqa: BLE001 - fixed codes, never upstream exception bodies
                 emit({"state": "blocked", "error": str(exc) if isinstance(exc, Refusal) else "research_runtime_unavailable"})
                 retry_at = clock() + timedelta(minutes=5)

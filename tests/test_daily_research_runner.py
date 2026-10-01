@@ -1,4 +1,5 @@
 """Hermetic business research lifecycle tests: no inference, credentials or sinks."""
+import base64
 import hashlib
 import json
 import multiprocessing
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.daily_research import capabilities
 from tools.daily_research.runner import (
     AGENT,
     MODEL,
@@ -62,7 +64,9 @@ class FakeAPI:
                       "multi_agent": {"enabled": False}, "tools": [{"type": "web_search"}]}
         self.template = {"id": TEMPLATE, "network": {"access": "disabled"},
                          "capability_directories": ["/workspace/capabilities/blueprint"],
-                         "skills": [{"name": "deep-research"}, {"name": "blueprint-evidence-qualification"}]}
+                         "skills": [], "plugins": [], "files": [
+                             {"type": "inline", "path": capabilities.ROOT + "/" + name,
+                              "size_bytes": size} for name, (size, _) in capabilities.FILES.items()]}
         self.sessions, self.payloads, self.cancellations = [], [], []
         self.turn_status, self.session_status = "completed", "idle"
         self.raw = (json.dumps(output(), indent=2) + "\n").encode()
@@ -161,10 +165,21 @@ def test_saved_resources_one_create_and_exact_bytes(fixture):
     assert len(api.payloads) == 1
     assert api.payloads[0]["agent_id"] == AGENT
     assert "agent" not in api.payloads[0]
-    assert api.payloads[0]["environment"] == {"type": "openai_hosted", "container_size": "small", "environment_template_id": TEMPLATE}
+    environment = api.payloads[0]["environment"]
+    assert environment["type"] == "openai_hosted" and environment["container_size"] == "small"
+    assert environment["environment_template_id"] == TEMPLATE
+    assert environment["network"] == {"access": "disabled"}
+    assert environment["capability_directories"] == [capabilities.ROOT]
+    assert len(environment["files"]) == 4
+    for item in environment["files"]:
+        name = item["path"].removeprefix(capabilities.ROOT + "/")
+        raw = base64.b64decode(item["data"], validate=True)
+        assert (len(raw), hashlib.sha256(raw).hexdigest()) == capabilities.FILES[name]
+    assert result["create_payload"] == api.payloads[0]
+    assert result["preflight"]["skill_binding"]["template_inline_content_verified"] is False
     assert (ledger.root / (DAY + "-artifact.json")).read_bytes() == api.raw
     assert result["raw_output_digest"] == hashlib.sha256(api.raw).hexdigest()
-    assert result["delivery"] == {}  # No broadcast or publication before parent review.
+    assert result["delivery"] == {}  # The Blueprint QA agent must review before publication.
 
 
 @pytest.mark.parametrize("environment_status", ["expired", "failed", "missing"])
@@ -212,6 +227,52 @@ def test_preflight_get_only_and_configuration_drift(fixture):
     with pytest.raises(Refusal, match="agent_configuration"):
         runner.start_or_resume()
     assert api.payloads == []
+
+
+@pytest.mark.parametrize("mutation", ["missing", "size", "duplicate", "extra", "file_id", "skill", "plugin", "path",
+                                      "missing_skills", "null_skills", "missing_plugins", "null_plugins"])
+def test_file_discovery_drift_refuses_before_intent_or_create(fixture, mutation):
+    runner, api, ledger = fixture
+    files = api.template["files"]
+    if mutation == "missing":
+        files.pop()
+    elif mutation == "size":
+        files[0]["size_bytes"] += 1
+    elif mutation == "duplicate":
+        files[0] = deepcopy(files[1])
+    elif mutation == "extra":
+        files.append({"type": "inline", "path": capabilities.ROOT + "/unreviewed.py", "size_bytes": 1})
+    elif mutation == "file_id":
+        files[0].update(type="file_id", file_id="file_other")
+    elif mutation == "skill":
+        api.template["skills"] = [{"name": "deep-research"}]
+    elif mutation == "plugin":
+        api.template["plugins"] = [{"name": "other"}]
+    elif mutation.startswith("missing_"):
+        del api.template[mutation.removeprefix("missing_")]
+    elif mutation.startswith("null_"):
+        api.template[mutation.removeprefix("null_")] = None
+    else:
+        files[0]["path"] = capabilities.ROOT + "/../other/SKILL.md"
+    with pytest.raises(Refusal, match="template_skill_"):
+        runner.start_or_resume()
+    assert ledger.rows() == [] and api.payloads == []
+
+
+@pytest.mark.parametrize("mutation", ["changed", "missing"])
+def test_local_skill_bytes_drift_refuses_before_create(fixture, tmp_path, monkeypatch, mutation):
+    runner, api, ledger = fixture
+    import shutil
+    shutil.copytree(Path(capabilities.__file__).with_name("capabilities"), tmp_path / "capabilities")
+    target = tmp_path / "capabilities/deep-research/SKILL.md"
+    if mutation == "missing":
+        target.unlink()
+    else:
+        target.write_bytes(target.read_bytes().replace(b"Deep research", b"Evil research"))
+    monkeypatch.setattr(capabilities, "__file__", str(tmp_path / "capabilities.py"))
+    with pytest.raises(Refusal, match="reviewed_skill_file_"):
+        runner.start_or_resume()
+    assert ledger.rows() == [] and api.payloads == []
 
 
 def test_lost_create_reply_reconciles_without_resubmission(fixture):
@@ -428,8 +489,14 @@ def _sdk_wire_probe():
     assert p.artifact("sess_1", "artifact_1") == b'{"artifact":"bytes"}'
     p.cancel("sess_1", "blueprint-researcher:" + DAY)
     with pytest.raises(openai.APIStatusError):
-        p.create({"agent_id": AGENT, "environment": {"type": "openai_hosted", "environment_template_id": TEMPLATE}, "input": "offline", "stream": False})
+        p.create({"agent_id": AGENT, "environment": {"type": "openai_hosted", "environment_template_id": TEMPLATE,
+                  "network": {"access": "disabled"}, "capability_directories": [capabilities.ROOT],
+                  "files": capabilities.inline_files()}, "input": "offline", "stream": False})
     assert len([r for r in calls if r.url.path == "/v1/agents/sessions"]) == 1
+    request = next(r for r in calls if r.url.path == "/v1/agents/sessions")
+    sent = json.loads(request.content)
+    assert sent["environment"]["files"] == capabilities.inline_files()
+    assert sent["environment"]["network"] == {"access": "disabled"}
     assert all(r.headers["OpenAI-Project"] == PROJECT and r.headers["OpenAI-Beta"] == "agents=v1" for r in calls)
     assert all(r.method != "DELETE" for r in calls)
     p.client.close()
