@@ -130,7 +130,8 @@ original lag failure under `soft_pilot/usage_recovery.json` and
 `soft_pilot/retained_usage_lag_stop.json`; no scope or budget is reset. Only that
 exact historical lag stop is superseded. A later stop remains effective.
 
-After the actual retained lifecycle fixtures are checked:
+The available actual retained lifecycle fixtures pass the offline regressions.
+After the read-only preparation succeeds:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m experiments.provider_eval_hosted_v2.usage_recovery --aggregate-root /workspace/provider-eval-private-live-20260930 --execution-owner-task-id 01a0f3b8-6abe-775b-bfea-5102185b80ce --retry-receipt-sha256 ACTUAL_ORIGINAL_RETRY_SHA --execute
@@ -144,7 +145,12 @@ limits, admission stops; this command does not renew approval or increase budget
 
 The recovery packet `libfile_f0f9e052fc388191949d408941075d2d` could not be downloaded
 through supported Library materialization, and its gzip has no readable Library
-projection. No proxy denial was bypassed. Parent-supplied timing evidence and
-mocked lifecycle regressions are verified; exact historical initial/settled API
-fixtures remain pending readable JSON or execution-owner local replay. The
-read-only preparation step is available now; implementation made no live calls.
+projection. No proxy denial was bypassed. The parent then supplied exact retained
+creation/first-GET/settled usage observations and a later real session projection
+with its complete turn-list response. Those available fixtures pass offline
+regressions, including actual null/default fields and absent session turn fields.
+The initial full session bodies were never saved and cannot be recovered; their
+status/network values are unknown, not reconstructed. This retention gap is
+documented in `fixtures/usage_lag_retained.json` and does not block the reviewed
+preparation, which retains current full responses before continuation. No material
+API-contract difference was found. Implementation made no live calls.

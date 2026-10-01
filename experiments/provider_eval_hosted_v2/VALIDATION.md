@@ -1,8 +1,8 @@
 # Offline validation
 
 Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
-Result: **132 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
-10 explicit-retry cases, 16 usage-lag/recovery cases,
+Result: **134 passed**, comprising 30 hosted cohort instances, 40 soft-pilot cases,
+10 explicit-retry cases, 18 usage-lag/recovery cases,
 and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
@@ -81,14 +81,19 @@ Verified boundaries include:
   cumulative exposure. Fixed follow-up deadlines survive restarts, use one real
   clock sample, and do not reuse the obsolete cancelled-parent deadline for grace.
   Foreign session bodies, changed child scope and unrelated stop reasons refuse
-  message dispatch. Independent Sol review verified all 132 tests and source pin.
+  message dispatch. Independent Sol review verified the 132-test code repair and
+  original source pin; two added regressions use the actual retained incident data.
 
-Exact historical initial/settled API regression fixtures are still pending: the
-supported Library transfer failed and gzip cannot be rendered through Library.
-The supplied timestamps/counts are used as observed timing inputs, not mislabeled
-as recovered raw API responses. No materialization success or live readiness is
-claimed from these mocks alone; execution-owner read-only reconciliation retains
-fresh exact API responses before any same-session paid continuation.
+Actual available historical API evidence passes offline replay: exact creation,
+first-GET and first-settled usage observations (14.7-second lag, $0.04423 model
+estimate), plus the later real session projection and complete cancelled-root
+turn response with null/default fields. These parent-message fixtures retain their
+values and label omissions. Initial full session response bodies were never
+saved; their status/network fields cannot be recovered and are not fabricated.
+Supported Library transfer failed and the gzip cannot be rendered through Library;
+no materialization success is claimed. This documented retention gap no longer
+blocks continuation: execution-owner read-only preparation captures current full
+API responses and verifies the owned lifecycle before any paid message event.
 
 Remaining limitations are documented in README: hosted inference/write access
 is not verified by read-only saved-agent access; managed hidden-loop usage lacks

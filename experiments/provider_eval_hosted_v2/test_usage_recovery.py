@@ -1,6 +1,8 @@
 """Reporting lag and same-session resumption; all HTTP is mocked."""
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +12,59 @@ from . import retry_pilot as retry
 from . import usage_recovery as recovery
 from .test_retry_pilot import ready_retry  # noqa: F401 - fixture registration
 from .test_soft_pilot import admitted, API, Clock, factory_for  # noqa: F401 - fixture registration
+
+RETAINED = json.loads((Path(__file__).parent / "fixtures/usage_lag_retained.json").read_text())
+
+
+def test_actual_retained_usage_observations_settle_within_grace(admitted):  # noqa: F811
+    root, receipt, _, clock = admitted
+    rows = RETAINED["observations"]
+    clock.now = rows[0]["at"]
+    # The test's fake authority/task is retimed/rebound; the retained records
+    # themselves stay exact. No missing wire body/status/network is invented.
+    receipt = {**receipt, "created_at": clock(), "expires_at": clock() + 3600}
+    (root / "protocols" / base.PROTOCOL / "soft_pilot_approval.json").write_text(json.dumps(receipt))
+    monitor = base.SoftMonitor(root, receipt, clock=clock, sleep=clock.sleep)
+    monitor.reserve()
+    runtime, task = base.make_runtime(root, receipt, monitor, "parallel_fast", transport=API("parallel_fast", clock))
+    runtime.start(task)
+    for row in rows:
+        clock.now = row["at"]
+        known = monitor.observe(task.task_id, {"id": row["session_id"], "usage": row["usage"],
+            "environment": {"id": row["environment_id"]}})
+        assert known == (row["usage"] is not None)
+        actual = max(monitor.observations(), key=lambda o: o["at"])
+        assert actual["at"] == row["at"] and actual["usage"] == row["usage"]
+        assert actual["model_estimate_usd"] == row["model_estimate_usd"]
+        assert not monitor.report()["stopped"]
+        if not known:
+            assert monitor.usage_deadline(task.task_id) == rows[0]["at"] + 30
+    assert rows[-1]["at"] - rows[0]["at"] < 15
+    assert RETAINED["provenance"]["initial_full_session_bodies_retained"] is False
+
+
+def test_actual_later_session_projection_and_turn_defaults_are_accepted(admitted):  # noqa: F811
+    root, receipt, _, clock = admitted
+    monitor = base.SoftMonitor(root, receipt, clock=clock)
+    runtime, _ = base.make_runtime(root, receipt, monitor, "parallel_fast", transport=API("parallel_fast", clock))
+    # Validate the included exact owned binding only; the projection does not
+    # contain original instructions/input/full task and cannot prove those bytes.
+    binding = SimpleNamespace(parent_task_id=None, model="gpt-6.1-sol",
+        task_id="hosted_retry1_01_parallel_fast_bb3a1e8b8e1b96a9",
+        task_digest="sha256:bbb805b0ccec703986ab036333a8753aa9af8fda0683d49ebfa67b68786eb2d9",
+        run_id="hosted_agent_research_v2_retry1")
+    assert runtime._validate_session(binding, RETAINED["session"]) == recovery.SESSION
+    class Projection:
+        project_id = base.PROJECT
+        def request(self, method, path, **kwargs):
+            assert method == "GET" and path == "/agents/sessions/" + recovery.SESSION + "/turns"
+            return RETAINED["turns"]
+    runtime.transport = Projection()
+    roots = runtime._root_turns(recovery.SESSION)
+    assert roots == RETAINED["turns"]["data"]
+    assert roots[0]["status"] == "cancelled" and roots[0]["subagent_id"] is None
+    assert RETAINED["session"]["required_actions"] == []
+    assert "turn_id" not in RETAINED["session"] and "latest_turn" not in RETAINED["session"]
 
 
 class LagAPI(API):
