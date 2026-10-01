@@ -1699,3 +1699,24 @@ def test_recovery_schema_admits_only_bound_warm_control_search():
     assert not conditional_errors("native_task_arena_construction_recovery", {"retain_warm_control_search": True})
     assert conditional_errors("native_task_arena_controls", {"retain_warm_control_search": True})
     assert conditional_errors("native_task_arena_construction_recovery", {"terminal_feedback_adoption": "/adoption.json"})
+
+
+@pytest.mark.parametrize("kind", ["source_manifest", "rights_admission"])
+def test_completed_scene_claim_reference_keeps_exact_bytes_and_identity(tmp_path, kind):
+    expected = "task_evaluation_scene_" + kind + ".v1"
+    value = {"schema_version": "task_evaluation_completed_scene_" + kind + ".v1",
+        "scene_id": "completed-scene-1", "source": "owner_provided_completed_asset",
+        "status": "candidate_source_bytes_retained" if kind == "source_manifest" else "admitted_for_internal_development"}
+    source = tmp_path / "claim.json"
+    source.write_text(json.dumps(value))
+    digest = prep._sha256_file(source)
+    kwargs = dict(path=source, expected_digest=digest, expected_schema=expected,
+        expected_status="retained" if kind == "source_manifest" else "admitted",
+        digest_field=kind + "_digest", scene_id="completed-scene-1")
+    prep._load_scene_claim_reference(**kwargs)
+    with pytest.raises(prep.PaidLaneLaunchPreparationError):
+        prep._load_scene_claim_reference(**{**kwargs, "scene_id": "another-scene"})
+    value["schema_version"] = value["schema_version"].replace(".v1", ".v2")
+    source.write_text(json.dumps(value))
+    with pytest.raises(prep.PaidLaneLaunchPreparationError):
+        prep._load_scene_claim_reference(**{**kwargs, "expected_digest": prep._sha256_file(source)})

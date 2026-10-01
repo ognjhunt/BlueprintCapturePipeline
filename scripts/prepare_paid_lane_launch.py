@@ -1623,6 +1623,16 @@ def _load_scene_claim_reference(
         "retained": {"retained", "candidate_source_bytes_retained"},
         "admitted": {"admitted", "admitted_for_internal_development"},
     }
+    schema_aliases = {
+        "task_evaluation_scene_source_manifest.v1": "task_evaluation_completed_scene_source_manifest.v1",
+        "task_evaluation_scene_rights_admission.v1": "task_evaluation_completed_scene_rights_admission.v1",
+    }
+    completed_schema = schema_aliases.get(expected_schema)
+    schema_valid = value.get("schema_version") == expected_schema or (
+        value.get("schema_version") == completed_schema
+        and completed_schema is not None
+        and value.get("source") == "owner_provided_completed_asset"
+    )
     observed_scene_id = str(value.get("scene_id") or "")
     scene_id_valid = observed_scene_id == scene_id or scene_id.endswith(
         "-" + observed_scene_id
@@ -1630,7 +1640,7 @@ def _load_scene_claim_reference(
     if (
         not source.is_file()
         or not isinstance(value, Mapping)
-        or value.get("schema_version") != expected_schema
+        or not schema_valid
         or value.get("status")
         not in status_aliases.get(expected_status, {expected_status})
         or not scene_id_valid
