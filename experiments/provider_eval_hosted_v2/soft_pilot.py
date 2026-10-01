@@ -14,7 +14,8 @@ from blueprint_pipeline.agent_execution.contracts import AgentAdmission, AgentEx
 from blueprint_pipeline.agent_execution.journal import AgentJournal, TERMINAL_STATES
 from blueprint_pipeline.agent_execution.openai_transport import OpenAIAgentsHTTP
 from blueprint_pipeline.agent_execution.operations import AgentOperations
-from blueprint_pipeline.paid_resource_admission import PAID_LANE_ADMISSION_SCHEMA_VERSION, require_paid_resource_admission
+from blueprint_pipeline.paid_resource_admission import (PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    require_paid_resource_admission, require_paid_resource_admission_grant)
 from experiments.provider_eval_recovery.harness import Ledger, digest, exclusive, read_json, write_once
 from experiments.provider_eval_recovery.live_http import MODEL, PROJECT, credential_presence, existing_key
 from experiments.provider_eval_recovery.live_runner import OWNER, CATALOG
@@ -283,6 +284,16 @@ class SoftMonitor:
             journal.record_event("hosted_creation_" + task_id, intent)
             write_once(started, intent)
         self.guard()
+        # Use the same canonical paid allocator chokepoint for managed model
+        # creation/resumption as for native provider searches. The status is
+        # derived from the approved soft receipt and live guard, never a flag.
+        binding = task_digest(self.receipt)
+        grant = require_paid_resource_admission({"schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION,
+            "resource_class": "openai_api_candidate", "status": "admitted", "blockers": [],
+            "allocation_binding_digest": binding}, resource_class="openai_api_candidate",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+        require_paid_resource_admission_grant(grant, resource_class="openai_api_candidate",
+            allocation_binding_digest=binding, require_allocation_binding=True)
 
     def observe(self, task_id, session, *, creation=False):
         usage = session.get("usage")

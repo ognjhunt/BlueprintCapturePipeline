@@ -1,7 +1,7 @@
 # Offline validation
 
 Focused command: `PYTHONPATH=src .venv/bin/python -m pytest experiments/provider_eval_hosted_v2 tests/test_agent_execution_sessions.py -q`.
-Result: **74 passed**, comprising 23 hosted cohort instances, 15 soft-pilot cases,
+Result: **75 passed**, comprising 23 hosted cohort instances, 16 soft-pilot cases,
 and 36 existing durable-runtime tests. Ruff and `git diff --check` passed. Independent GPT-6.1 Sol
 review reran these checks and reported no remaining must-fix findings.
 
@@ -45,6 +45,8 @@ Verified boundaries include:
   known sessions or resetting retained-container carry costs across restarts.
 - Actual OpenAI SDK 3.22.1 read-only GET wire, Beta and Default project headers,
   using a mock HTTP transport; compatible Agents SDK 0.22.3 installed from PyPI.
+- Canonical paid-model grant refusal stops session creation before HTTP; the same
+  chokepoint applies to model resumption, separately from native search grants.
 
 Remaining limitations are documented in README: hosted inference/write access
 is not verified by read-only saved-agent access; managed hidden-loop usage lacks

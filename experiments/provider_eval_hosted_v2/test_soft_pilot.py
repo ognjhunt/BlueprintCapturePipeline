@@ -240,3 +240,14 @@ def test_pinned_public_sdk_read_only_wire_uses_default_project_and_agents_beta()
     assert len(seen) == 1 and seen[0].method == "GET"
     assert seen[0].url.host == "api.openai.com" and seen[0].url.path == "/v1/agents/sessions"
     assert seen[0].headers["OpenAI-Project"] == PROJECT and seen[0].headers["OpenAI-Beta"] == "agents=v1"
+
+
+def test_canonical_paid_model_gate_refusal_prevents_session_dispatch(admitted, monkeypatch):
+    root, receipt, _, clock = admitted
+    def refuse(*args, **kwargs):
+        raise AgentExecutionError("canonical_paid_model_grant_rejected")
+    monkeypatch.setattr(soft, "require_paid_resource_admission_grant", refuse)
+    factory, apis = factory_for(clock)
+    result = soft.run_pilot(root, receipt, clock=clock, sleep=clock.sleep, notify=lambda _: None, factory=factory)
+    assert result["budget"]["stopped"] and len(apis) == 1
+    assert not any(m == "POST" and p == "/agents/sessions" for m, p, _ in apis[0].calls)
