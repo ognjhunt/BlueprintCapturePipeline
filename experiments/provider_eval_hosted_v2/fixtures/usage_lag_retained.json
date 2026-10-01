@@ -1,0 +1,90 @@
+{
+  "provenance": {
+    "source": "parent-message exact retained observations and later response projection",
+    "initial_full_session_bodies_retained": false,
+    "session_projection_observed_at": 1790820877.5808208,
+    "turns_observed_at": 1790820877.9431956,
+    "projection_omissions": ["instructions", "tool definitions", "file manifests", "vault metadata"],
+    "no_http_calls_or_mutations_in_fixture_capture": true
+  },
+  "observations": [
+    {
+      "at": 1790820746.422702,
+      "environment_id": "ccarenv_b64_Y2NhcmVudl82YWJkYzE4NmEwMTg4MTkxYTlhY2UxYzdmYzM3NDgyMw",
+      "model_estimate_usd": null,
+      "session_id": "sess_09118c760a810004006abdc1869c9c8194844ab4a80b431ad5",
+      "task_id": "hosted_retry1_01_parallel_fast_bb3a1e8b8e1b96a9",
+      "usage": null,
+      "usage_best_effort": true
+    },
+    {
+      "at": 1790820746.7519503,
+      "environment_id": "ccarenv_b64_Y2NhcmVudl82YWJkYzE4NmEwMTg4MTkxYTlhY2UxYzdmYzM3NDgyMw",
+      "model_estimate_usd": null,
+      "session_id": "sess_09118c760a810004006abdc1869c9c8194844ab4a80b431ad5",
+      "task_id": "hosted_retry1_01_parallel_fast_bb3a1e8b8e1b96a9",
+      "usage": null,
+      "usage_best_effort": true
+    },
+    {
+      "at": 1790820761.1550398,
+      "environment_id": "ccarenv_b64_Y2NhcmVudl82YWJkYzE4NmEwMTg4MTkxYTlhY2UxYzdmYzM3NDgyMw",
+      "model_estimate_usd": "0.04423",
+      "session_id": "sess_09118c760a810004006abdc1869c9c8194844ab4a80b431ad5",
+      "task_id": "hosted_retry1_01_parallel_fast_bb3a1e8b8e1b96a9",
+      "usage": {"input_tokens": 8594, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 84, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 8678},
+      "usage_best_effort": true
+    }
+  ],
+  "session": {
+    "id": "sess_09118c760a810004006abdc1869c9c8194844ab4a80b431ad5",
+    "object": "agent.session",
+    "created_at": 1790820742,
+    "last_active_at": 1790820742,
+    "status": "idle",
+    "error": null,
+    "required_actions": [],
+    "usage": {"input_tokens": 8594, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 84, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 8678},
+    "metadata": {
+      "blueprint_provider_schema_digest": "sha256:6fce9a00985f227d25455ca5a1f093d700f1a5ae5904d193d6e0993a18252c55",
+      "blueprint_run_id": "hosted_agent_research_v2_retry1",
+      "blueprint_source_commit": "7394bc57f285060fd7e3a96f2a4390a18ffe69ea",
+      "blueprint_task_digest": "sha256:bbb805b0ccec703986ab036333a8753aa9af8fda0683d49ebfa67b68786eb2d9",
+      "blueprint_task_id": "hosted_retry1_01_parallel_fast_bb3a1e8b8e1b96a9"
+    },
+    "agent": {
+      "id": "agent_91e48f97e59540d58cde8ee4c523374e1a2620ae05c8454bb6",
+      "model": "gpt-6.1-sol",
+      "multi_agent": {"enabled": false, "max_concurrent_subagents": null},
+      "reasoning": {"effort": "low", "summary": null}
+    },
+    "environment": {
+      "id": "ccarenv_b64_Y2NhcmVudl82YWJkYzE4NmEwMTg4MTkxYTlhY2UxYzdmYzM3NDgyMw",
+      "type": "openai_hosted",
+      "container_size": "small",
+      "network": {"access": "disabled", "allowed_domains": []},
+      "desktop": {"enabled": false},
+      "packages": {"npm": [], "python": [], "system": []},
+      "plugins": [], "skills": [], "capability_directories": []
+    }
+  },
+  "turns": {
+    "data": [{
+      "agent_id": "agent_91e48f97e59540d58cde8ee4c523374e1a2620ae05c8454bb6",
+      "completed_at": 1790820756,
+      "created_at": 1790820746,
+      "error": null,
+      "id": "turn_09118c760a810004006abdc18be18081948811782f9c45e2ef",
+      "object": "agent.session.turn",
+      "session_id": "sess_09118c760a810004006abdc1869c9c8194844ab4a80b431ad5",
+      "started_at": 1790820746,
+      "status": "cancelled",
+      "subagent_id": null,
+      "usage": {"input_tokens": 8594, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 84, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 8678}
+    }],
+    "first_id": "turn_09118c760a810004006abdc18be18081948811782f9c45e2ef",
+    "has_more": false,
+    "last_id": "turn_09118c760a810004006abdc18be18081948811782f9c45e2ef",
+    "object": "list"
+  }
+}
