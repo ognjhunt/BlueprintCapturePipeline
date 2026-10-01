@@ -849,7 +849,9 @@ def _outside_service_identity(row, service_uid, service_gid):
             and service_gid not in row['gid'] and service_gid not in row['groups']
             and all(int(row['status'][key], 16) == 0
                     for key in ('CapEff', 'CapPrm', 'CapInh', 'CapAmb'))
-            and (row['status']['NoNewPrivs'] == '1' or int(row['status']['CapBnd'], 16) == 0))
+            # A zero bounding mask alone still permits setuid/setgid credentials.
+            # NNP is inherited and prevents new executable credential authority.
+            and row['status']['NoNewPrivs'] == '1')
 
 
 def _require_current_reader_closure(policy, allowance):

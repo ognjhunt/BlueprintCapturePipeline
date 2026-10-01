@@ -216,7 +216,7 @@ def test_unknown_capable_reader_has_unclosed_access_lifetime(field, capability):
     assert not supervisor._outside_service_identity(row, 1000, 1001)
 
 
-@pytest.mark.parametrize('no_new_privs,bound,closed', [('0', '4', False), ('1', '4', True), ('0', '0', True)])
+@pytest.mark.parametrize('no_new_privs,bound,closed', [('0', '4', False), ('1', '4', True), ('0', '0', False), ('1', '0', True)])
 def test_unknown_reader_cannot_acquire_executable_capabilities(no_new_privs, bound, closed):
     status = dict(CapEff='0', CapPrm='0', CapInh='0', CapAmb='0', CapBnd=bound, NoNewPrivs=no_new_privs)
     row = dict(uid=[10001] * 4, gid=[10002] * 4, groups=[], status=status)
