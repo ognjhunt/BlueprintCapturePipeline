@@ -139,3 +139,33 @@ def test_fixed_cli_executes_only_the_authenticated_diagnostic(installation, monk
     assert result['decision'] == 'completed'
     assert current(public)['completion'] == result['result']['completion']
     assert (Path(born['path']) / 'disk-capacity-report.v1.json').exists()
+
+
+@pytest.mark.parametrize('mode', [0o777, 0o750])
+def test_sealed_target_rights_are_required_when_issuing_cleanup(installation, monkeypatch, mode):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    configure(installation)
+    _, _, grant, born, _ = seal(installation, monkeypatch, 'root_disk_diagnostic_disposable.v1')
+    target = Path(born['path'])
+    before = {path.name: path.read_bytes() for path in target.iterdir()}
+    target.chmod(mode)
+    with pytest.raises(ValueError, match='experiment_diagnostic_rights_changed'):
+        issuer.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+            action='delete', expires_at_epoch=3500, installed_config_path=installation[0], now=lambda: 2900)
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == before
+
+
+def test_new_member_after_owner_issue_refuses_before_any_payload_removal(installation, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    configure(installation)
+    _, _, grant, born, _ = seal(installation, monkeypatch, 'root_disk_diagnostic_disposable.v1')
+    selected = issuer.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+        action='delete', expires_at_epoch=3500, installed_config_path=installation[0], now=lambda: 2900)
+    target = Path(born['path'])
+    (target / 'late-foreign-member').write_bytes(b'preserve me')
+    before = {path.name: path.read_bytes() for path in target.iterdir()}
+    with pytest.raises(ValueError, match='experiment_diagnostic_namespace_changed'):
+        actions.run_action(selected['action_id'], expected_action_intent=selected['action_intent'],
+            installed_config_path=installation[0], now=lambda: 2901, _pins_root=installation[0].parent / 'pins')
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == before

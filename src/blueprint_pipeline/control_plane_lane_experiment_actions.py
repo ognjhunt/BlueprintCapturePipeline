@@ -119,6 +119,8 @@ def _target(files, config, entry, *, lock=True):
     info = os.fstat(parent)
     _require(stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino)
              == (entry["target_identity"]["dev"], entry["target_identity"]["ino"]), "experiment_target_changed")
+    if entry['lane'] == 'diagnostics':
+        _diagnostic_rights(files, target, parent)
     files.location(parent)
     files.proof(parent)
     if lock:
@@ -127,6 +129,35 @@ def _target(files, config, entry, *, lock=True):
         except BlockingIOError:
             raise OwnerTargetVersionError("experiment_target_busy") from None
     return target, parent
+
+
+def _diagnostic_rights(files, target, target_fd):
+    """Root-only access is a current kernel fence, never a historical seal."""
+    info = os.fstat(target_fd)
+    _require(stat.S_ISDIR(info.st_mode) and info.st_uid == info.st_gid == 0
+             and stat.S_IMODE(info.st_mode) == 0o700,
+             'experiment_diagnostic_rights_changed')
+    files.parent(target / scratch.LEASE_FILE, protected=True)
+    files.location(target_fd)
+
+
+def _diagnostic_namespace(files, target, target_fd, remaining):
+    """Compare the complete current set to the authenticated remaining rows."""
+    _diagnostic_rights(files, target, target_fd)
+    expected = set(_METADATA)
+    for row in remaining:
+        _require(row[0] == 'disk-capacity-report.v1.json' and row[1] == 'file',
+                 'experiment_diagnostic_namespace_changed')
+        expected.add(row[0])
+    names = set()
+    with os.scandir(target_fd) as entries:
+        for item in entries:
+            files.budget.charge('entries')
+            _require(item.name in expected and item.name not in names,
+                     'experiment_diagnostic_namespace_changed')
+            names.add(item.name)
+    _require(names == expected, 'experiment_diagnostic_namespace_changed')
+    files.location(target_fd)
 
 
 def _selected(files, config, intent_id, issued, gid):
@@ -767,6 +798,8 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         _require(len(manifest["members"]) <= 4096, "experiment_manifest_limit")
         from . import control_plane_lane_experiment_recovery as recovery
         rows = sorted(manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
+        if entry['lane'] == 'diagnostics' and entry['state'] == 'active':
+            _diagnostic_namespace(files, target, target_fd, rows)
         files._store_path = config.experiment_record_store
         _preflight_row_events(files, action, rows)
         files.phase("event_admission_done")
@@ -780,6 +813,8 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         operation, retiring, previous, logical, allocated, changed_directories, removed_count, receipt, preservation = recovery.begin(
             files, config, action, expected_action_intent, entry, current, refreshed, public, store,
             target, rows, reference, issued, gid)
+        if entry['lane'] == 'diagnostics':
+            _diagnostic_namespace(files, target, target_fd, rows[removed_count:])
         offset = int(action["action"] == "offload")
         if offset:
             from . import control_plane_lane_experiment_archive as archive
@@ -824,6 +859,8 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                     files.location(reference_fd)
                     files.proof(reference_fd)
                     files.verify_record(retiring[2])
+                    if entry['lane'] == 'diagnostics':
+                        _diagnostic_namespace(files, target, target_fd, rows[index - 1:])
                     parent, name, fd, info = held.pop(index) if row[1] == "file" else _member(
                         files, target, row, changed_directories.get(row[0]), hash_payload=False)
                     try:
