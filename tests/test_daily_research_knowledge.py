@@ -911,6 +911,89 @@ def test_delta_age_reason_is_deliberately_versioned(version, reason, accepted):
 
 
 @pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize("scope", ["absent", None, "as_of_background", "current_operational", "deployment_critical", "invented", 3, [], {}])
+def test_delta_assertion_scope_is_preserved_only_in_v3(version, scope):
+    from jsonschema import Draft202012Validator
+
+    _value, _raw, policy, ctx = policy_bundle()
+    result = v3(ctx) if version == 3 else v2(ctx)
+    proposed = delta()
+    if scope != "absent":
+        proposed["evidence"][0]["assertion_scope"] = scope
+    result["proposed_knowledge_deltas"] = [proposed]
+    original = deepcopy(result)
+    accepted = scope == "absent" or (version == 3 and isinstance(scope, str) and scope in
+                                {"as_of_background", "current_operational", "deployment_critical"})
+    if accepted:
+        validate_output(result, DAY, set(), contract_version=version, knowledge_context=ctx,
+                        refresh_policy=policy if version == 3 else None, observed_at=NOW)
+    else:
+        with pytest.raises(Refusal, match="knowledge_schema_invalid|knowledge_delta_assertion_scope_invalid"):
+            validate_output(result, DAY, set(), contract_version=version, knowledge_context=ctx,
+                            refresh_policy=policy if version == 3 else None, observed_at=NOW)
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research" / f"daily-research.v{version}.schema.json").read_text())
+    assert bool(list(Draft202012Validator(schema, format_checker=schema_format_checker()).iter_errors(result))) is not accepted
+    assert result == original  # Scope and every original evidence field survive validation.
+
+
+def test_v3_delta_scope_does_not_admit_unrelated_fields():
+    _value, _raw, policy, ctx = policy_bundle()
+    result = v3(ctx)
+    proposed = delta()
+    proposed["evidence"][0].update(assertion_scope="current_operational", origin="live")
+    result["proposed_knowledge_deltas"] = [proposed]
+    with pytest.raises(Refusal, match="knowledge_schema_invalid"):
+        validate_v3(result, ctx, policy)
+
+
+@pytest.mark.parametrize("version", [2, 3])
+@pytest.mark.parametrize("length", [200, 201])
+def test_delta_publisher_limit_agrees_with_runtime(version, length):
+    from jsonschema import Draft202012Validator
+
+    _value, _raw, policy, ctx = policy_bundle()
+    result = v3(ctx) if version == 3 else v2(ctx)
+    result["proposed_knowledge_deltas"] = [delta()]
+    result["proposed_knowledge_deltas"][0]["evidence"][0]["publisher"] = "x" * length
+    if length == 200:
+        validate_output(result, DAY, set(), contract_version=version, knowledge_context=ctx,
+                        refresh_policy=policy if version == 3 else None, observed_at=NOW)
+    else:
+        with pytest.raises(Refusal, match="knowledge_schema_invalid"):
+            validate_output(result, DAY, set(), contract_version=version, knowledge_context=ctx,
+                            refresh_policy=policy if version == 3 else None, observed_at=NOW)
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research" / f"daily-research.v{version}.schema.json").read_text())
+    assert bool(list(Draft202012Validator(schema, format_checker=schema_format_checker()).iter_errors(result))) is (length > 200)
+
+
+def test_v3_collects_zero_candidate_scoped_delta_without_rewriting_artifact(runner_fixture, tmp_path):
+    runner, api, ledger = runner_fixture
+    enable_v3(runner, tmp_path)
+    api.turn_status = "in_progress"
+    started = runner.start_or_resume()
+    result = v3(started["knowledge_context"])
+    result["candidates"] = []
+    proposed = delta()
+    proposed["evidence"][0]["assertion_scope"] = "deployment_critical"
+    result["proposed_knowledge_deltas"] = [proposed]
+    raw = json.dumps(result, indent=2).encode()
+    api.raw, api.turn_status = raw, "completed"
+    runner.clock = lambda: NOW + timedelta(seconds=120)
+    collected = runner.start_or_resume(allow_create=False)
+    assert collected["state"] == "awaiting_review"
+    assert collected["packet"]["candidates"] == []
+    assert collected["packet"]["proposed_knowledge_deltas"] == [proposed]
+    assert ledger.read_bytes(DAY + "-artifact.json") == raw
+    assert collected["raw_output_digest"] == hashlib.sha256(raw).hexdigest()
+    assert collected["knowledge_context"] == started["knowledge_context"]
+    assert collected["refresh_policy"] == started["refresh_policy"]
+    assert collected["cleanup_required"] is True and collected["delivery"] == {}
+    assert "qa" not in collected and "review" not in collected
+    assert runner.start_or_resume(allow_create=False)["state"] == "awaiting_review"
+    assert len(api.payloads) == 1
+
+
+@pytest.mark.parametrize("version", [2, 3])
 @pytest.mark.parametrize("needle", [
     "Research gaps, conflicts, stale or unsupported facts",
     "reason gap/conflict/stale/unsupported/discovery/consequential",
