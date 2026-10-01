@@ -111,6 +111,17 @@ def test_required_native_proof_still_gates_the_pr_on_success() -> None:
     assert 'if test "${NATIVE_REQUIRED}" = "true"; then\n  test "${NATIVE_RESULT}" = "success"' in step["run"]
 
 
+def test_diagnostic_native_failure_stops_before_unrelated_cases_without_reducing_acceptance() -> None:
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
+    assert selected[0] == 'tests/test_registered_feature_linux.py::test_actual_registered_disk_diagnostic_delete_offload_and_restore'
+    assert len(selected) == len(set(selected)) == 9
+    assert '--maxfail=1' in run
+    assert 'assert len(cases) == 46' in run
+    assert not any(flag in run for flag in ('--deselect', '--ignore', '-k '))
+
+
 def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> None:
     from tests.historical_generation_native_acceptance import CONNECTED_CASES
     assert dict(CONNECTED_CASES)['reconcile_absent_expiry'] == dict(action='offload',
