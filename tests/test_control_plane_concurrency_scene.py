@@ -8,7 +8,9 @@ from collections import namedtuple
 
 import pytest
 
-from scripts.control_plane_concurrency_scene import advance_fixture_intake, advance_fixture_preparation
+from scripts.control_plane_concurrency_scene import (
+    advance_fixture_intake, advance_fixture_preparation, advance_fixture_configuration,
+)
 
 
 @pytest.mark.slow
@@ -69,3 +71,27 @@ def test_preparation_reads_real_objects_and_seals_same_scene_construction(tmp_pa
     assert all(row["full_byte_service_account_readback_passed"] for row in envelope["materialized_references"])
     assert envelope["render_inputs_result"]["fixture_provider"] is True
     assert not list((tmp_path / "reservations").glob("*.json"))
+    configured = advance_fixture_configuration(preparation=result, object_root=objects,
+                                               output_root=tmp_path / "scene/configured")
+    assert configured["publication"]["status"] == "configured_scene_published"
+    revision = configured["revision"]
+    assert revision["configuration_run_id"] == envelope["run_id"]
+    assert revision["scene_identity"] == envelope["request"]["scene"]["identity"]
+    assert revision["task_template"]["identity"] == envelope["request"]["task"]["identity"]
+    assert configured["terminal"]["configured_scene_revision_digest"] == revision["revision_digest"]
+    assert configured["terminal"]["scene_construction_queue_finalization"]["queue_state"] == "completed"
+    assert configured["terminal"]["fixture_provider"] is True
+    from scripts.control_plane_concurrency_provider import fixture_scene_artifacts
+    from blueprint_pipeline.task_evaluation_scene_configuration_publication import TaskEvaluationSceneConfigurationPublicationError
+
+    def corrupt_provider(**kwargs):
+        rows = fixture_scene_artifacts(**kwargs)
+        path = kwargs["output_root"] / "collision.usda"
+        path.write_text("changed provider output")
+        return rows
+
+    with pytest.raises(TaskEvaluationSceneConfigurationPublicationError,
+                       match="scene_configuration_publication_artifact_invalid:configured_collision_without_source_object"):
+        advance_fixture_configuration(preparation=result, object_root=objects,
+                                      output_root=tmp_path / "failed-configuration", provider=corrupt_provider)
+    assert (tmp_path / "failed-configuration/fixture-provider/collision.usda").read_text() == "changed provider output"

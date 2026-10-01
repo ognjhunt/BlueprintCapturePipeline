@@ -171,3 +171,34 @@ def advance_fixture_preparation(*, intake: dict, object_root: Path,
     return {"run": run, "construction_queue": construction,
             "object_bytes_fetched": store.read_bytes,
             "construction_envelope": json.loads(rows[0].read_text()) if len(rows) == 1 else None}
+
+
+def advance_fixture_configuration(*, preparation: dict, object_root: Path, output_root: Path,
+                                  provider=None) -> dict:
+    from blueprint_pipeline.task_evaluation_scene_configuration_publication import publish_configured_scene_revision
+    from blueprint_pipeline.task_evaluation_scene_construction_queue import finalize_scene_construction
+    from scripts.control_plane_concurrency_provider import fixture_publisher, fixture_scene_artifacts
+    envelope = preparation["construction_envelope"]
+    stage_results = (provider or fixture_scene_artifacts)(envelope=envelope, output_root=output_root / "fixture-provider")
+    if any(row.get("fixture_input_digest") != envelope["envelope_digest"]
+           or row.get("actual_provider_calls") != 0 for row in stage_results):
+        raise ValueError("harness_fixture_provider_input_mismatch")
+    (output_root / "publication").mkdir(mode=0o700)
+    publication = publish_configured_scene_revision(envelope=envelope, stage_results=stage_results,
+        output_root=output_root / "publication", publisher=fixture_publisher(object_root))
+    revision = json.loads(Path(publication["configured_scene_revision"]["path"]).read_text())
+    terminal = {"schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+                "status": "completed", "run_id": envelope["run_id"],
+                "source_commit": envelope["expected_production_commit"],
+                "fixture_provider": True, "actual_provider_calls": 0, "claim_ceiling": "development_only",
+                "configuration_completed": True, "configured_scene_published": True,
+                "configured_scene_revision_digest": revision["revision_digest"],
+                "publication_result_digest": publication["result_digest"],
+                "full_byte_service_account_readback_passed": True, "provider_mutations_performed": 1,
+                "retry_cap": 0, "evaluation_episode_executed": False, "candidate_policy_queried": False,
+                "continuing_spend_from_this_run": False, "blockers": []}
+    finalization = finalize_scene_construction(queue_root=preparation["construction_queue"],
+        envelope={**envelope, "control_plane_envelope_digest": envelope["envelope_digest"]}, terminal_result=terminal)
+    terminal["scene_construction_queue_finalization"] = finalization
+    terminal["result_digest"] = canonical_digest(terminal, digest_field="result_digest")
+    return {"publication": publication, "revision": revision, "terminal": terminal}
