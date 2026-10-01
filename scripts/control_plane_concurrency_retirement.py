@@ -72,7 +72,7 @@ def retire_fixture_chains(*, control_root: Path, scenes: list, source_commit: st
     derived=[prepared,compiled_root]
     mapping={prepared:'/var/lib/blueprint/task-evaluation-inputs/prepared-references',
              compiled_root:'/var/lib/blueprint/task-evaluation-inputs/compiled-episodes'}
-    queues=[];allowed_owners=set();revocations=[]
+    queues=[];expected_pins={};revocations=[]
     for scene in scenes:
         key=scene['scene_key']
         if not isinstance(key,str) or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',key) is None:
@@ -102,10 +102,25 @@ def retire_fixture_chains(*, control_root: Path, scenes: list, source_commit: st
             mapping[derived_root]='/var/lib/blueprint/task-evaluation-inputs/launch-activations'
             queues.append(queue)
             mapping[queue]='/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations'
-            allowed_owners.add(('activation',result['activation_id']))
+            prep_id=preparation['run']['results'][0]['preparation_id']
+            expected_pins[('activation',result['activation_id'])]={
+                'paths':[str(derived_root/result['activation_id'])],
+                'depends_on':[{'kind':'compilation','owner_id':prep_id},
+                              {'kind':'preparation','owner_id':prep_id}]}
+            # Configuration activation has no episode compiler. The original
+            # activation writer still names that exact optional dependency.
+            # Validate the complete original edge set rather than inventing a pin.
+            for request_root in activation['request_roots']:
+                request_root=_safe(request_root,root)
+                if not request_root.is_dir() or any(p.is_file() or p.is_symlink()
+                    for p in request_root.rglob('*')):
+                    raise ValueError('retirement_launch_request_still_active')
         for prep in (first,ready):
-            allowed_owners.add(('preparation',prep['run']['results'][0]['preparation_id']))
-        allowed_owners.add(('compilation',compiled['compilation_id']))
+            prep_id=prep['run']['results'][0]['preparation_id']
+            expected_pins[('preparation',prep_id)]={'paths':[str(prepared/prep_id)],'depends_on':[]}
+        expected_pins[('compilation',compiled['compilation_id'])]={
+            'paths':[str(compiled_root/compiled['compilation_id'])],
+            'depends_on':[{'kind':'preparation','owner_id':ready['run']['results'][0]['preparation_id']}]}
         for queue,logical in ((intake['preparation_queue'],'task-evaluation-launch-preparations'),
             (first['construction_queue'],'task-evaluation-scene-constructions'),
             (ready['compilation_queue'],'task-evaluation-episode-compilations')):
@@ -117,10 +132,10 @@ def retire_fixture_chains(*, control_root: Path, scenes: list, source_commit: st
         if list((queue/'pending').glob('*.json')) or list((queue/'processing').glob('*.json')):
             raise ValueError('retirement_queue_still_active')
     pins=load_storage_pins(pins_root)
-    known={(pin['kind'],pin['owner_id']) for pin in pins}
     for pin in pins:
-        if ((pin['kind'],pin['owner_id']) not in allowed_owners
-                or any((dep['kind'],dep['owner_id']) not in known for dep in pin['depends_on'])):
+        expected=expected_pins.get((pin['kind'],pin['owner_id']))
+        if (expected is None or pin['paths']!=expected['paths']
+                or pin['depends_on']!=expected['depends_on']):
             raise ValueError('retirement_unknown_pin_owner')
         for raw in pin['paths']:_safe(raw,root)
     reader=process_reference_index(process_root=process_root,ignored_process_ids=(os.getpid(),))

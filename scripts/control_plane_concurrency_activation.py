@@ -209,6 +209,7 @@ def advance_fixture_configuration_activation(*, intake, preparation, object_root
             configured_controls_autostart_intent_root=output_root / "configured-controls-intents",
             fetcher=fetch, preparer=preparer, disk_reservation_root=reservation_root)
     return {"progression": progressed, "staged": staged, "worker": worker, "queue_root": queue,
+            "request_roots":[output_root/"launch-executions",output_root/"configured-controls-intents"],
             "preparer": receipts[0] if len(receipts) == 1 else None,
             "fixture_provider": True, "claim_ceiling": "development_only", "actual_provider_calls": 0}
 
@@ -223,6 +224,8 @@ def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
     from blueprint_pipeline.task_evaluation_launch_activation_worker import process_launch_activation_queue
     from scripts.control_plane_concurrency_provider import fixture_publisher
     output_root.mkdir(mode=0o700)
+    for name in ("launch-executions","configured-controls-intents"):
+        (output_root/name).mkdir(mode=0o700)
     source = intake["source_commit"]
     if (compiled.get("status") != "compiled_for_production_launch"
             or compiled.get("result_digest") != canonical_digest(compiled, digest_field="result_digest")
@@ -304,5 +307,6 @@ def advance_fixture_native_activation(*, intake, episode, preparation, compiled,
             standing_authorization_dir=output_root / "authorizations", source_commit=source,
             fetcher=fetch, preparer=prepare, disk_reservation_root=reservation_root)
     return {"staged": staged, "worker": worker, "queue_root": queue,
+            "request_roots":[output_root/"launch-executions",output_root/"configured-controls-intents"],
             "preparer": receipts[0] if len(receipts) == 1 else None,
             "fixture_provider": True, "actual_provider_calls": 0, "claim_ceiling": "development_only"}
