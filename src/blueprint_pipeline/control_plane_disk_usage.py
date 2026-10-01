@@ -811,6 +811,9 @@ def survey_usage(
             {"root": root, "allocated_bytes": allocated} for root, allocated in container_runtime
         ],
         "container_runtime_bytes": sum(allocated for _root, allocated in container_runtime),
+        # A truncated walk may stop before these stores: their totals are then
+        # lower bounds, and an absent store is unknown rather than empty.
+        "container_runtime_complete": not walk.truncated,
         "hardlinks": {
             "shared_inodes": len(walk.shared),
             "shared_bytes": sum(held[2] for held in walk.shared.values()),

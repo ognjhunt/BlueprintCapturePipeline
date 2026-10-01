@@ -177,6 +177,77 @@ def test_small_short_or_slow_recent_changes_do_not_page(tmp_path: Path, recent, 
     assert "floor_within_hours" not in {a["code"] for a in report["alerts"]}
 
 
+def test_admitted_writes_the_ledger_reserved_do_not_page(tmp_path: Path) -> None:
+    """A G1 run reserves 32 GB and writes 20 GB in an hour: admission already budgeted it."""
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(60, 64.0), (30, 54.0)])
+    for row in history[1:]:
+        row["reserved_bytes"] = 32 * GIB  # released since; its bytes were budgeted
+
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(44.0), now=now)
+
+    recent = report["mounts"][0]["forecast"]["recent"]
+    assert recent["status"] == "explained_by_reservations"
+    assert recent["reserved_bytes"] == 32 * GIB
+    assert "floor_within_hours" not in {a["code"] for a in report["alerts"]}
+
+
+def test_a_one_off_step_is_not_a_sustained_decline(tmp_path: Path) -> None:
+    """A single 5 GiB write that stopped would otherwise read as 5 GiB/h."""
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(60, 25.1), (45, 25.1), (30, 25.1), (15, 20.0)])
+
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(20.0), now=now)
+
+    assert report["mounts"][0]["forecast"]["recent"]["status"] == "not_sustained"
+    assert "floor_within_hours" not in {a["code"] for a in report["alerts"]}
+
+
+def test_a_burst_page_holds_until_twelve_hours_instead_of_flapping_at_six(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(60, 49.0), (30, 47.0)])  # 4 GiB/h, floor ~9.3 h away
+
+    def codes(**kwargs):
+        report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                           history=history, disk_usage=_usage(45.0), now=now, **kwargs)
+        return {a["code"] for a in report["alerts"]}
+
+    assert "floor_within_hours" not in codes()
+    assert "floor_within_hours" in codes(burst_paging={mount})
+
+    report_root = tmp_path / "capacity"
+    report_root.mkdir()
+    (report_root / "history.jsonl").write_text("".join(json.dumps(row) + "\n" for row in history))
+    (report_root / "latest.json").write_text(json.dumps({
+        "level": "warning", "last_alert_epoch": now - 600, "last_alert_fingerprint": "sha256:x",
+        "alerts": [{"code": "floor_within_hours", "mount": mount, "severity": "page"}]}))
+    held = cap.run_controller(
+        mounts=[mount], report_root=report_root, reservation_root=tmp_path / "reservations",
+        webhook_url="", volume=None, ack="", token="", survey=None, disk_usage=_usage(45.0), now=now,
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "absent-notes",
+    )
+    assert "floor_within_hours" in {a["code"] for a in held["alerts"]}
+
+
+def test_a_malformed_recent_history_row_cannot_abort_the_tick(tmp_path: Path) -> None:
+    now = 10 * 86400.0
+    mount = str(tmp_path)
+    history = _burst_history(mount, now, [(58, 55.0), (30, 49.0)])
+    history.append({"mount": mount, "status": "measured", "observed_at_epoch": now - 3600,
+                    "free_bytes": None, "floor_bytes": 8 * GIB})
+
+    report = cap.build_capacity_report(mounts=[mount], reservation_root=tmp_path / "r",
+                                       history=history, disk_usage=_usage(44.37), now=now)
+
+    assert report["mounts"][0]["forecast"]["recent"]["status"] == "declining"
+
+
 def test_recent_decline_page_posts_with_hours_in_the_summary_and_text(tmp_path: Path, monkeypatch) -> None:
     now = 10 * 86400.0
     mount = str(tmp_path)
@@ -1110,7 +1181,8 @@ def test_large_container_runtime_store_warns_by_name() -> None:
     runtime = [{"root": "/var/lib/containerd", "allocated_bytes": 78 * GIB},
                {"root": "/var/lib/docker", "allocated_bytes": 35 * MIB}]
     survey = _survey_result(container_runtime_roots=runtime,
-                            container_runtime_bytes=78 * GIB + 35 * MIB)
+                            container_runtime_bytes=78 * GIB + 35 * MIB,
+                            container_runtime_complete=False)
 
     alerts = cap.usage_alerts(survey)
 
@@ -1121,6 +1193,7 @@ def test_large_container_runtime_store_warns_by_name() -> None:
     projection = cap.usage_projection(survey, now=1_060.0)
     assert projection["container_runtime_roots"] == runtime
     assert projection["container_runtime_bytes"] == 78 * GIB + 35 * MIB
+    assert projection["container_runtime_complete"] is False  # a lower bound, not a measurement
 
 
 @pytest.mark.parametrize(("total", "largest"), [

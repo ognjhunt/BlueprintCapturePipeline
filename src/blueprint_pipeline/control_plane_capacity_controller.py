@@ -39,7 +39,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -98,11 +98,15 @@ GIB = 1024**3
 # The week trend averages a burst away, and a reclaim inside the week makes it
 # read ``not_growing`` while a writer fills the disk (2026-10-01: a local image
 # unpack took root from 55 to 31 GB with the floor hours away, and nothing paged).
-# The recent window projects only the last hour of ticks.
+# The recent window projects only the last hour of ticks, and only growth the
+# reservation ledger does not explain (admitted writers are already budgeted).
+# A page set below six hours clears at twelve, so a writer near the threshold
+# does not post on every tick.
 RECENT_FORECAST_WINDOW_SECONDS = 60 * 60
 RECENT_FORECAST_MIN_SECONDS = 30 * 60
 RECENT_DECLINE_MIN_BYTES = 2 * GIB
 FLOOR_WITHIN_HOURS_PAGE = 6.0
+FLOOR_WITHIN_HOURS_CLEAR = 12.0
 PAGE_ALERT_CODES = frozenset({
     "floor_within_three_days", "floor_within_hours", "admission_refused", "critical_admission_refused",
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
@@ -318,25 +322,44 @@ def live_reserved_bytes(
 
 def _recent_forecast(rows: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *,
                      now: float) -> dict[str, Any]:
-    """The last hour's decline in free bytes, and hours until the floor if it continues."""
+    """The last hour's decline in free bytes, and hours until admission headroom is
+    gone if the part the reservation ledger does not explain continues."""
 
-    recent = [row for row in rows
-              if now - float(row["observed_at_epoch"]) <= RECENT_FORECAST_WINDOW_SECONDS]
+    def epoch(row: Mapping[str, Any]) -> float:
+        return float(row["observed_at_epoch"])
+
+    recent = [row for row in rows if now - epoch(row) <= RECENT_FORECAST_WINDOW_SECONDS]
     if not recent:
         return {"status": "insufficient_history"}
-    oldest = min(recent, key=lambda row: float(row["observed_at_epoch"]))
-    elapsed = now - float(oldest["observed_at_epoch"])
-    if elapsed < RECENT_FORECAST_MIN_SECONDS:
+    oldest = min(recent, key=epoch)
+    elapsed = now - epoch(oldest)
+    later = [row for row in recent if epoch(row) > epoch(oldest)]
+    if elapsed < RECENT_FORECAST_MIN_SECONDS or not later:
         return {"status": "insufficient_history"}
-    decline = int(oldest["free_bytes"]) - int(current["free_bytes"])
-    per_hour = decline / elapsed * 3600
+    middle = min(later, key=lambda row: abs(epoch(row) - (epoch(oldest) + now) / 2))
+    free = int(current["free_bytes"])
+    decline = int(oldest["free_bytes"]) - free
+    # Bytes written under a reservation were admitted against the floor; the
+    # largest reservation the window saw bounds what admitted writers explain.
+    reserved = max([value for value in (row.get("reserved_bytes") for row in [*recent, current])
+                    if type(value) is int] or [0])
     result: dict[str, Any] = {"status": "not_declining", "window_seconds": int(elapsed),
-                              "decline_bytes_per_hour": int(per_hour)}
+                              "decline_bytes_per_hour": int(decline / elapsed * 3600),
+                              "reserved_bytes": reserved}
     if decline < RECENT_DECLINE_MIN_BYTES:
         return result
-    headroom = int(current["free_bytes"]) - int(current["floor_bytes"])
+    if decline - reserved < RECENT_DECLINE_MIN_BYTES:
+        result["status"] = "explained_by_reservations"
+        return result
+    halves = (int(oldest["free_bytes"]) - int(middle["free_bytes"]), int(middle["free_bytes"]) - free)
+    if min(halves) < RECENT_DECLINE_MIN_BYTES / 2:
+        result["status"] = "not_sustained"
+        return result
+    available = current.get("available_bytes")
+    if type(available) is not int:
+        available = free - int(current["floor_bytes"]) - int(current.get("reserved_bytes") or 0)
     result["status"] = "declining"
-    result["hours_until_floor"] = round(max(0.0, headroom / per_hour), 2)
+    result["hours_until_floor"] = round(max(0, available) / ((decline - reserved) / elapsed * 3600), 2)
     return result
 
 
@@ -352,6 +375,7 @@ def forecast(history: Sequence[Mapping[str, Any]], current: Mapping[str, Any], *
         and row.get("mount") == mount
         and row.get("status") == "measured"
         and isinstance(row.get("observed_at_epoch"), (int, float))
+        and type(row.get("free_bytes")) is int
         and now - float(row["observed_at_epoch"]) <= FORECAST_WINDOW_SECONDS
     ]
     if current.get("status") != "measured":
@@ -401,7 +425,10 @@ def build_capacity_report(
     history: Sequence[Mapping[str, Any]] = (),
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
+    burst_paging: Collection[str] = (),
 ) -> dict[str, Any]:
+    """``burst_paging`` names mounts whose previous report paged ``floor_within_hours``."""
+
     observed = time.time() if now is None else float(now)
     measured = [
         measure_mount(mount, reservation_root=reservation_root, disk_usage=disk_usage, now=observed)
@@ -427,7 +454,8 @@ def build_capacity_report(
                            "roles": row["critical_roles_refused"]})
         recent = row["forecast"].get("recent") or {}
         hours = recent.get("hours_until_floor")
-        if isinstance(hours, (int, float)) and hours < FLOOR_WITHIN_HOURS_PAGE:
+        limit = FLOOR_WITHIN_HOURS_CLEAR if row["mount"] in burst_paging else FLOOR_WITHIN_HOURS_PAGE
+        if isinstance(hours, (int, float)) and hours < limit:
             alerts.append({"mount": row["mount"], "code": "floor_within_hours", "hours_until_floor": hours,
                            "decline_bytes_per_hour": recent["decline_bytes_per_hour"],
                            "window_seconds": recent["window_seconds"]})
@@ -598,6 +626,7 @@ def usage_projection(
                 :USAGE_PROJECTED_UNCLASSIFIED_ROOTS
             ],
             "container_runtime_bytes": survey.get("container_runtime_bytes"),
+            "container_runtime_complete": survey.get("container_runtime_complete"),
             "container_runtime_roots": list(survey.get("container_runtime_roots") or []),
         }
     if error:
@@ -965,6 +994,10 @@ def run_controller(
         history=load_history(report_root),
         disk_usage=disk_usage,
         now=observed,
+        burst_paging={
+            str(alert.get("mount")) for alert in (previous or {}).get("alerts") or []
+            if isinstance(alert, Mapping) and alert.get("code") == "floor_within_hours"
+        },
     )
     from .task_evaluation_scene_spend import observe_configured_scene_project_spend
     try:

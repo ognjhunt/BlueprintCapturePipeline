@@ -461,7 +461,9 @@ directory it matched. A path under a `container`, or under `/var/lib/blueprint`,
 the child it lies in. Everything else is `host`, rooted at its first two
 components (`/var/log`, `/usr/lib`), except the container runtime stores, which
 keep their own root (`/var/lib/containerd`, `/var/lib/docker`). The survey also
-totals them in `container_runtime_roots` and `container_runtime_bytes`.
+totals them in `container_runtime_roots` and `container_runtime_bytes`. When the
+walk is truncated, `container_runtime_complete` is `false` and those totals are
+lower bounds: a store the walk never reached is unknown, not empty.
 
 **Owner.** The first matching rule wins:
 
@@ -501,7 +503,7 @@ controller warns with `usage_unclassified_root` for each unclassified root over
 1 GiB, with `usage_container_runtime_large` for a container runtime store over
 20 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
-over used bytes, capped at 1) is under 0.9. Either warning raises an `ok` report
+over used bytes, capped at 1) is under 0.9. Any of these warnings raises an `ok` report
 to `warning`. A survey exception keeps the last result and names the error
 (`usage_survey_failed:<type>`) without stopping the capacity tick. Failed and
 interrupted attempts do not retry on every ten-minute tick. A new non-usage

@@ -97,6 +97,26 @@ def test_container_runtime_stores_are_attributed_at_their_own_root(tmp_path):
     ]
     assert survey["container_runtime_bytes"] == sum(
         roots[root]["allocated_bytes"] for root in ("/var/lib/containerd", "/var/lib/docker"))
+    assert survey["container_runtime_complete"] is True
+
+
+def test_a_truncated_walk_reports_container_stores_as_incomplete_not_empty(tmp_path):
+    """Production's root walk ran out before /var/lib; zero there is unknown, not measured."""
+    var_lib = tmp_path / "var-lib"
+    for index in range(20):
+        path = var_lib / f"apt/lists/index-{index:02d}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"z" * 4096)
+    layer = var_lib / "containerd/snapshots/7/fs/libtorch.so"
+    layer.parent.mkdir(parents=True)
+    layer.write_bytes(b"x" * 65536)
+
+    survey = survey_usage([str(var_lib)], aliases={str(var_lib): "/var/lib"}, max_entries=8,
+                          statvfs=_statvfs(), mountinfo=str(tmp_path / "no-mountinfo"))
+
+    assert survey["status"] == "truncated"
+    assert survey["container_runtime_complete"] is False
+    assert survey["container_runtime_bytes"] < 65536
 
 
 def test_hardlinks_count_once_and_are_attributed_to_the_first_path(tmp_path):
