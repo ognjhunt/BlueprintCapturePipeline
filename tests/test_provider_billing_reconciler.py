@@ -10,6 +10,7 @@ import pytest
 from botocore.credentials import Credentials
 
 from blueprint_pipeline.provider_billing_reconciler import (
+    AWS_BILLING_UNAVAILABLE_REASON,
     ProviderBillingReconciliationError,
     reconcile_provider_billing,
 )
@@ -72,20 +73,8 @@ class _Transport:
                     "next_token": None,
                 }
             return json.dumps(payload).encode()
-        if parsed.netloc == "sts.us-east-1.amazonaws.com":
-            return b"""<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><GetCallerIdentityResult><Arn>arn:aws:iam::111710313013:user/Agent</Arn><UserId>agent</UserId><Account>111710313013</Account></GetCallerIdentityResult></GetCallerIdentityResponse>"""
-        if parsed.netloc == "ce.us-east-1.amazonaws.com":
-            return json.dumps(
-                {
-                    "ResultsByTime": [
-                        {
-                            "TimePeriod": {"Start": "2026-01-01", "End": "2026-08-11"},
-                            "Total": {"UnblendedCost": {"Amount": "0.75", "Unit": "USD"}},
-                            "Estimated": True,
-                        }
-                    ]
-                }
-            ).encode()
+        if parsed.netloc.endswith("amazonaws.com"):
+            raise AssertionError("automatic AWS billing request forbidden")
         if parsed.path.endswith("/balance"):
             return json.dumps(
                 {
@@ -135,7 +124,6 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
         "runpod": 4.0,
         "vast": 5.5,
         "digitalocean": 8.0,
-        "aws": 0.75,
     }
     assert result["provider_mutation_performed"] is False
     payload = json.loads(export.read_text())
@@ -148,7 +136,7 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
     }
     source = json.loads(Path(result["source_receipt_path"]).read_text())
     assert source["status"] == "reconciled"
-    assert len(source["sources"]) == 9
+    assert len(source["sources"]) == 7
     assert all(Path(row["retained_path"]).is_file() for row in source["sources"])
     assert all(row["response_digest"].startswith("sha256:") for row in source["sources"])
     assert all(
@@ -156,11 +144,7 @@ def test_reconciles_exact_provider_responses_into_atomic_guard_export(
         for url, header in transport.requests
         if "amazonaws.com" not in url
     )
-    assert all(
-        header.startswith("AWS4-HMAC-SHA256")
-        for url, header in transport.requests
-        if "amazonaws.com" in url
-    )
+    assert not any("amazonaws.com" in url for url, _header in transport.requests)
     assert all("-value" not in json.dumps(row) for row in source["sources"])
 
 
@@ -324,72 +308,50 @@ def test_failed_refresh_preserves_prior_export(tmp_path: Path) -> None:
     assert export.read_text(encoding="utf-8") == "sentinel\n"
 
 
-def test_optional_aws_billing_failure_refreshes_base_provider_export(
-    tmp_path: Path,
-) -> None:
-    class CostExplorerDeniedTransport(_Transport):
-        def __call__(self, request, timeout: float) -> bytes:
-            if urlsplit(request.full_url).netloc == "ce.us-east-1.amazonaws.com":
-                raise ProviderBillingReconciliationError(
-                    "provider_billing_request_failed"
-                )
-            return super().__call__(request, timeout)
-
+def test_automatic_aws_billing_removed_without_starving_other_providers(tmp_path: Path) -> None:
     secrets = _secrets(tmp_path)
     export = tmp_path / "provider_billing_export.json"
+    transport = _Transport()
     result = reconcile_provider_billing(
         secrets_dir=secrets,
         billing_export_path=export,
         audit_root=tmp_path / "audit",
         start_at="2026-01-01T00:00:00Z",
         now=NOW,
-        transport=CostExplorerDeniedTransport(),
+        transport=transport,
         **_aws_kwargs(secrets),
     )
-
     assert result["status"] == "reconciled"
     assert result["covered_provider_ids"] == ["digitalocean", "runpod", "vast"]
     assert result["uncovered_provider_ids"] == ["aws"]
-    assert result["optional_provider_failures"] == {
-        "aws": "provider_billing_request_failed"
-    }
-    assert set(json.loads(export.read_text())["provider_totals_usd"]) == {
-        "runpod",
-        "vast",
-        "digitalocean",
-    }
+    assert result["optional_provider_failures"] == {"aws": AWS_BILLING_UNAVAILABLE_REASON}
+    assert "aws" not in json.loads(export.read_text())["provider_totals_usd"]
+    assert not any("amazonaws.com" in url for url, _header in transport.requests)
     receipt = json.loads(Path(result["source_receipt_path"]).read_text())
-    assert receipt["uncovered_provider_ids"] == ["aws"]
-    assert any(row["provider"] == "aws" for row in receipt["sources"])
+    assert all(row["provider"] != "aws" for row in receipt["sources"])
+
+    # A current export for the other providers cannot admit a live AWS resource.
+    live_aws = guard.GpuInstance(provider="aws", id="i-offline", name="offline",
+                                 state="active", booted=True, live=True)
+    admission = guard.reconcile_billing_export(
+        billing_export_path=export, instances=[live_aws], now=NOW.timestamp(), required=True,
+    )
+    assert admission["status"] == "blocked"
+    assert "provider_billing_export_missing:aws" in admission["blockers"]
 
 
-def test_required_aws_billing_failure_preserves_prior_export(tmp_path: Path) -> None:
-    class CostExplorerDeniedTransport(_Transport):
-        def __call__(self, request, timeout: float) -> bytes:
-            if urlsplit(request.full_url).netloc == "ce.us-east-1.amazonaws.com":
-                raise ProviderBillingReconciliationError(
-                    "provider_billing_request_failed"
-                )
-            return super().__call__(request, timeout)
-
+def test_required_aws_billing_fails_without_requests_or_replacing_prior_export(tmp_path: Path) -> None:
     secrets = _secrets(tmp_path)
     export = tmp_path / "provider_billing_export.json"
     export.write_text("sentinel\n", encoding="utf-8")
-    with pytest.raises(
-        ProviderBillingReconciliationError,
-        match="provider_billing_request_failed",
-    ):
+    transport = _Transport()
+    with pytest.raises(ProviderBillingReconciliationError, match=AWS_BILLING_UNAVAILABLE_REASON):
         reconcile_provider_billing(
-            secrets_dir=secrets,
-            billing_export_path=export,
-            audit_root=tmp_path / "audit",
-            start_at="2026-01-01T00:00:00Z",
-            now=NOW,
-            transport=CostExplorerDeniedTransport(),
-            required_providers=("aws",),
-            **_aws_kwargs(secrets),
+            secrets_dir=secrets, billing_export_path=export, audit_root=tmp_path / "audit",
+            start_at="2026-01-01T00:00:00Z", now=NOW, transport=transport,
+            required_providers=("aws",), **_aws_kwargs(secrets),
         )
-
+    assert transport.requests == []
     assert export.read_text(encoding="utf-8") == "sentinel\n"
 
 
@@ -418,10 +380,11 @@ def test_optional_digitalocean_failure_does_not_block_vast_export(
     )
 
     assert result["status"] == "reconciled"
-    assert result["covered_provider_ids"] == ["aws", "runpod", "vast"]
-    assert result["uncovered_provider_ids"] == ["digitalocean"]
+    assert result["covered_provider_ids"] == ["runpod", "vast"]
+    assert result["uncovered_provider_ids"] == ["aws", "digitalocean"]
     assert result["optional_provider_failures"] == {
-        "digitalocean": "provider_billing_request_failed"
+        "digitalocean": "provider_billing_request_failed",
+        "aws": AWS_BILLING_UNAVAILABLE_REASON,
     }
     assert "vast" in json.loads(export.read_text())["provider_totals_usd"]
 
@@ -512,48 +475,18 @@ def test_secret_symlink_is_rejected_before_network_access(tmp_path: Path) -> Non
         )
 
 
-def test_aws_billing_refuses_credentials_bound_to_another_account(tmp_path: Path) -> None:
-    class MismatchedIdentityTransport(_Transport):
-        def __call__(self, request, timeout: float) -> bytes:
-            payload = super().__call__(request, timeout)
-            if urlsplit(request.full_url).netloc == "sts.us-east-1.amazonaws.com":
-                return payload.replace(b"111710313013", b"999999999999")
-            return payload
-
+def test_legacy_aws_configuration_is_ignored_without_reading_credentials(tmp_path: Path) -> None:
     secrets = _secrets(tmp_path)
-    with pytest.raises(
-        ProviderBillingReconciliationError,
-        match="aws_billing_account_identity_mismatch",
-    ):
-        reconcile_provider_billing(
-            secrets_dir=secrets,
-            billing_export_path=tmp_path / "export.json",
-            audit_root=tmp_path / "audit",
-            start_at="2026-01-01T00:00:00Z",
-            now=NOW,
-            transport=MismatchedIdentityTransport(),
-            **_aws_kwargs(secrets),
-        )
-
-
-def test_aws_billing_loads_only_the_named_canonical_profile(tmp_path: Path) -> None:
-    secrets = _secrets(tmp_path)
+    transport = _Transport()
     result = reconcile_provider_billing(
-        secrets_dir=secrets,
-        billing_export_path=tmp_path / "export.json",
-        audit_root=tmp_path / "audit",
-        start_at="2026-01-01T00:00:00Z",
-        now=NOW,
-        transport=_Transport(),
-        aws_account_id="111710313013",
-        aws_credentials_file=secrets / "aws_agent_credentials",
-        aws_profile="test",
+        secrets_dir=secrets, billing_export_path=tmp_path / "export.json",
+        audit_root=tmp_path / "audit", start_at="2026-01-01T00:00:00Z", now=NOW,
+        transport=transport, aws_account_id="999999999999",
+        aws_credentials_file=tmp_path / "does-not-exist", aws_profile="missing",
     )
-
-    assert result["provider_totals_usd"]["aws"] == 0.75
-    receipt = Path(result["source_receipt_path"]).read_text(encoding="utf-8")
-    assert "aws_secret_access_key" not in receipt
-    assert "test-secret" not in receipt
+    assert result["optional_provider_failures"]["aws"] == AWS_BILLING_UNAVAILABLE_REASON
+    assert "aws" not in result["provider_totals_usd"]
+    assert not any("amazonaws.com" in url for url, _header in transport.requests)
 
 
 def test_repeated_page_cursor_is_bounded_and_preserves_prior_accounting(tmp_path):
