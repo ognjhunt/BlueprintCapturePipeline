@@ -73,12 +73,18 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
 
     old_fixture, old_template = fixture.SHA, template.SHA
     original_splat_bytes = fixture.splat_bytes
+    original_owner = fixture._owner
     fixture.SHA = template.SHA = source_commit
     if scene_key is not None:
         # Author distinct immutable fixture inputs before intake seals any
         # digest. The PLY comment changes identity while retaining geometry.
         comment = b"comment fixture-scene " + hashlib.sha256(scene_key.encode()).hexdigest().encode() + b"\n"
         fixture.splat_bytes = lambda: original_splat_bytes().replace(b"end_header\n", comment + b"end_header\n", 1)
+        def distinct_owner(*args,**kwargs):
+            owner=original_owner(*args,**kwargs)
+            owner['submission_id']='fixture-'+hashlib.sha256(scene_key.encode()).hexdigest()[:32]
+            return owner
+        fixture._owner=distinct_owner
     try:
         config, intent_id, intents, now = fixture._config(host_root, FixtureBuilderEnvironment(),
             submission_enabled=True, existing_support=True,
@@ -88,6 +94,7 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
     finally:
         fixture.SHA, template.SHA = old_fixture, old_template
         fixture.splat_bytes = original_splat_bytes
+        fixture._owner = original_owner
     if release_binding is not None:
         if (release_binding.get("source_commit") != source_commit
                 or release_binding.get("release_digest") != canonical_digest(release_binding, digest_field="release_digest")):

@@ -55,6 +55,8 @@ def test_scene_keys_produce_distinct_immutable_scene_identity(tmp_path):
                                   source_commit=source, scene_key=key)
             for key in ("scene-1", "scene-2")]
     assert len({row["intent"]["request"]["source"]["content_digest"] for row in rows}) == 2
+    assert len({row["intent"]["intent_id"] for row in rows}) == 2
+    assert len({json.loads(row["request_path"].read_text())["run_id"] for row in rows}) == 2
     assert len({json.loads(row["request_path"].read_text())["scene"]["identity"]["id"] for row in rows}) == 2
 
 
