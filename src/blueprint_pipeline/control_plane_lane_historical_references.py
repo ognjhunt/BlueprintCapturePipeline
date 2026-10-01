@@ -47,7 +47,7 @@ def _mentions(value, target, budget, depth=0):
             _mentions(child, target, budget, depth + 1)
 
 
-def _table(root, target, budget):
+def _table(root, target, budget, *, _descriptor_check=None):
     """One bounded original named tree; exact JSON bytes and full namespace."""
     snapshots = []
     def same(fd, initial, parent=None, name=None):
@@ -78,6 +78,8 @@ def _table(root, target, budget):
             flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
             if stat.S_ISDIR(info.st_mode):
                 flags |= os.O_DIRECTORY
+            if _descriptor_check is not None:
+                _descriptor_check(len(chain) + depth + 1)
             child = os.open(name, flags, dir_fd=fd)
             try:
                 same(child, version, fd, name)
@@ -112,7 +114,7 @@ def _table(root, target, budget):
     try:
         with ExitStack() as stack:
             legacy._absolute(root)
-            chain = generation._chain(root, stack)
+            chain = generation._chain(root, stack, _descriptor_check=_descriptor_check)
             root_version = _version(os.fstat(chain[-1][2]))
             walk(chain[-1][2], '', 0)
             generation._verify_chain(chain)
@@ -124,16 +126,28 @@ def _table(root, target, budget):
 
 
 @contextmanager
-def historical_reference_fence(files, config, target, *, observed_at):
+def historical_reference_fence(files, config, target, *, observed_at, _held_pins=None):
     """Keep the established state/pin directory locks through the caller effect."""
     selected = legacy._reference_settings(files, config)
     state, _ = files.parent(Path(config.control_plane_state) / '.historical-reference-probe')
     files.location(state)
     fcntl.flock(state, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    pins, pin_directory = experiments._pin_fence(files, config, selected['pins_root'], target, observed_at)
+    if _held_pins is None:
+        pin_files = files
+        pins, pin_directory = experiments._pin_fence(files, config, selected['pins_root'], target, observed_at)
+    else:
+        # The ordinary caller already owns and EX-locks this original directory.
+        # Never adopt its numeric descriptor into the reference observer.
+        pin_files, pins, pin_directory = _held_pins
+        pin_files.location(pin_directory)
+        pin_files.proof(pin_directory)
+        _require(pins['root'] == str(selected['pins_root'])
+                 and pins['configuration'] == experiments._reference_configuration(
+                     files, config, selected['pins_root']), 'table_unknown')
     roots = tuple(dict.fromkeys((*selected['queue_roots'], *selected['active_run_roots'])))
     _require(0 < len(roots) <= 16, 'table_unknown')
-    baseline = {str(root): _table(root, target, files.budget) for root in roots}
+    descriptor_check = getattr(files, 'table_descriptor_check', None)
+    baseline = {str(root): _table(root, target, files.budget, _descriptor_check=descriptor_check) for root in roots}
     release = Path(config.active_release_link)
     parent, name = files.parent(release)
     before = _version(os.stat(name, dir_fd=parent, follow_symlinks=False))
@@ -147,7 +161,7 @@ def historical_reference_fence(files, config, target, *, observed_at):
     def guard():
         files.location(state)
         _require(legacy._reference_settings(files, config) == selected, 'table_unknown')
-        files.location(pin_directory)
+        pin_files.location(pin_directory)
         _require(experiments._reference_configuration(files, config, selected['pins_root'])
                  == pins['configuration'], 'table_unknown')
         current = observe_storage_pins(str(selected['pins_root']), observed_at_epoch=observed_at,
@@ -158,7 +172,7 @@ def historical_reference_fence(files, config, target, *, observed_at):
             _require(not any(Path(path) == target or target in Path(path).parents
                 or Path(path) in target.parents for path in row.paths), 'pin_reference')
         for root in roots:
-            _require(_table(root, target, files.budget) == baseline[str(root)], 'table_unknown')
+            _require(_table(root, target, files.budget, _descriptor_check=descriptor_check) == baseline[str(root)], 'table_unknown')
         files.location(parent)
         _require(_version(os.stat(name, dir_fd=parent, follow_symlinks=False)) == before
             and os.readlink(name, dir_fd=parent) == link, 'table_unknown')

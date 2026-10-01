@@ -7,6 +7,45 @@ from pathlib import Path
 import pytest
 
 
+def test_scan_charges_actual_read_bytes_and_names_to_original_shared_budget(tmp_path):
+    from blueprint_pipeline.control_plane_lane_historical_processes import _Scan
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    payload = tmp_path / 'observed'
+    payload.write_bytes(b'actual bytes')
+    budget = ReferenceCollectionBudget()
+    scan = _Scan(budget.tick, budget)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert scan.read(fd, 'observed') == b'actual bytes'
+        assert scan.names(fd, 10) == ['observed']
+        assert budget.counts['raw_bytes'] == scan.raw_bytes == len(b'actual bytes')
+        assert budget.counts['entries'] == scan.entries == 1
+        budget.close()
+        with pytest.raises(ValueError, match='reference_budget_closed'):
+            scan.read(fd, 'observed')
+    finally:
+        os.close(fd)
+
+
+def test_scan_cannot_restart_an_already_exhausted_shared_byte_allowance(tmp_path):
+    from blueprint_pipeline.control_plane_lane_historical_processes import _Scan
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    (tmp_path / 'observed').write_bytes(b'x')
+    budget = ReferenceCollectionBudget()
+    budget.charge('raw_bytes', budget.limits['raw_bytes'])
+    scan = _Scan(budget.tick, budget)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError, match='reference_raw_bytes_limit'):
+            scan.read(fd, 'observed')
+        assert budget.counts['raw_bytes'] == budget.limits['raw_bytes']
+        with pytest.raises(ValueError):
+            scan.names(fd, 10)
+    finally:
+        os.close(fd)
+        budget.close()
+
+
 def mounts(extra=b''):
     return b'31 1 8:1 / / ro - ext4 /dev/test ro\n' + extra
 

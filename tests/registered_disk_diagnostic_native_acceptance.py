@@ -20,6 +20,7 @@ from tests.test_registered_feature_linux import encoded, install_protected_featu
 
 
 def _ordinary_denied(target, value, account):
+    before = {path.name: path.read_bytes() for path in target.iterdir()}
     read, write = os.pipe()
     child = os.fork()
     if child == 0:
@@ -28,9 +29,13 @@ def _ordinary_denied(target, value, account):
             os.initgroups('blueprint', account.pw_gid)
             os.setgid(account.pw_gid)
             os.setuid(account.pw_uid)
-            for path in (target, value['config'], value['policy'], target / 'disk-capacity-report.v1.json'):
+            probes = [(path, os.O_RDONLY) for path in
+                      (target, value['config'], value['policy'], target / 'disk-capacity-report.v1.json')]
+            probes += [(target / 'disk-capacity-report.v1.json', os.O_WRONLY),
+                       (target / 'late-writer.payload', os.O_WRONLY | os.O_CREAT | os.O_EXCL)]
+            for path, flags in probes:
                 try:
-                    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                    fd = os.open(path, flags | os.O_NOFOLLOW, 0o600)
                 except PermissionError:
                     continue
                 os.close(fd)
@@ -46,9 +51,10 @@ def _ordinary_denied(target, value, account):
     finally:
         os.close(read)
         os.waitpid(child, 0)
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == before
 
 
-def _held_fd_keeps(value, action, pins, report):
+def _held_fd_keeps(value, action, pins, report, account):
     ready_read, ready_write = os.pipe()
     finish_read, finish_write = os.pipe()
     child = os.fork()
@@ -57,7 +63,11 @@ def _held_fd_keeps(value, action, pins, report):
         os.close(finish_write)
         fd = os.open(report, os.O_RDONLY | os.O_NOFOLLOW)
         try:
-            os.write(ready_write, b'held')
+            os.initgroups('blueprint', account.pw_gid)
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
+            info = os.fstat(fd)
+            os.write(ready_write, encoded(dict(fd=fd, uid=os.geteuid(), dev=info.st_dev, ino=info.st_ino)))
             assert os.read(finish_read, 1) == b'x'
         finally:
             os.close(fd)
@@ -68,12 +78,17 @@ def _held_fd_keeps(value, action, pins, report):
     os.close(finish_read)
     try:
         assert select.select([ready_read], [], [], 10)[0]
-        assert os.read(ready_read, 4) == b'held'
+        held = json.loads(os.read(ready_read, 512))
+        observed = os.stat('/proc/' + str(child) + '/fd/' + str(held['fd']))
+        expected = report.stat()
+        assert held['uid'] == account.pw_uid != 0
+        assert (observed.st_dev, observed.st_ino) == (held['dev'], held['ino']) == (expected.st_dev, expected.st_ino)
         original = report.read_bytes()
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True)
         row = next(row for row in result['report']['registered_experiments']['outcomes']
                    if row['action_id'] == action['action_id'])
         assert row['decision'] == 'kept' and row['removed_logical_bytes'] == row['removed_allocated_bytes'] == 0, row
+        assert row['reason'] == 'experiment_diagnostic_process_reference', row
         assert report.read_bytes() == original
     finally:
         os.write(finish_write, b'x')
@@ -90,6 +105,9 @@ def run(root):
     from blueprint_pipeline import control_plane_lane_experiment_consumer as consumer
     from blueprint_pipeline import control_plane_lane_experiment_archive as archive
     from blueprint_pipeline import control_plane_lane_experiment_restore as restoration
+    from blueprint_pipeline import control_plane_lane_experiment_completion as completion
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline.control_plane_lane_experiment_work import _ActionFiles
     from blueprint_pipeline import control_plane_disk_budget as disk
     from blueprint_pipeline.control_plane_storage_gc import run_storage_gc, RUN_ACK
     from tests.test_registered_experiment_offload import Cloud
@@ -105,8 +123,19 @@ def run(root):
     pins = root / 'pins'
     pins.mkdir(mode=0o700)
     gc_env = root / 'gc.env'
-    gc_env.write_text('BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=' + str(pins) + '\n')
+    tables = root / 'reference-tables'
+    tables.mkdir(mode=0o700)
+    settings_lines = ['BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=' + str(pins)]
+    for kind in ('queue', 'evidence', 'settlement'):
+        selected = tables / kind
+        selected.mkdir(mode=0o700)
+        settings_lines.append('BLUEPRINT_CONTROL_PLANE_GC_' + kind.upper() + '_ROOTS=' + str(selected))
+    gc_env.write_text('\n'.join(settings_lines) + '\n')
     gc_env.chmod(0o600)
+    state = root / 'sandbox-control-plane'
+    state.mkdir(mode=0o700)
+    release = root / 'active-release'
+    release.symlink_to(root / 'installed')
     roots = (value['work'], root / 'inputs/lanes')
     for lane_root in roots:
         if not lane_root.exists():
@@ -119,7 +148,8 @@ def run(root):
         os.chown(lane_root / 'diagnostics', 0, gid)
     value['config'].write_bytes(encoded(value['settings'] | {
         'experiment_creation_enabled': True, 'experiment_retirement_enabled': True,
-        'experiment_gc_environment_file': str(gc_env)}))
+        'experiment_gc_environment_file': str(gc_env), 'control_plane_state': str(state),
+        'active_release_link': str(release)}))
     receipts = []
     for selected_root, profile, method in (('work', 'root_disk_diagnostic_disposable.v1', 'delete'),
                                            ('inputs', 'root_disk_diagnostic_evidence.v1', 'offload')):
@@ -157,7 +187,7 @@ def run(root):
             apply=True, ack=RUN_ACK, lane_scratch_roots=roots, lane_scratch_enabled=False,
             _experiment_config_path=value['config'], now=time.time)
         assert disabled['registered_experiments']['enabled'] is False and report.read_bytes() == before
-        _held_fd_keeps(value, action, pins, report)
+        _held_fd_keeps(value, action, pins, report, account)
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=1)
         row = next(row for row in result['report']['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
         assert row['decision'] == 'retired' and row['receipt'] and row['removed_logical_bytes'] == len(before), row
@@ -198,6 +228,21 @@ def run(root):
                 installed_config_path=value['config'], now=time.time, _pins_root=pins)
             assert outcome['decision'] == 'restored', outcome
             assert report.read_bytes() == before and target.stat().st_ino == original_inode
+            files = _ActionFiles(now=time.time)
+            try:
+                config, selected_gid = actions._context(files, value['config'], time.time())
+                _, _, entry = actions._selected(files, config, grant['intent_id'], time.time(), selected_gid)
+                selected_completion = completion.selected_completion(files, config, entry)
+                assert selected_completion['report_member'] != selected_completion['selected_report_member']
+                assert selected_completion['selected_report_member'][2].split(':')[:2] == [str(report.stat().st_dev), str(report.stat().st_ino)]
+            finally:
+                files.finish()
+                files.budget.close()
+            repeated_restore = issuer.restore_registered_experiment(restore['action_id'], expected_restore_intent=restore['restore_intent'],
+                installed_config_path=value['config'], now=time.time, _pins_root=pins)
+            assert repeated_restore['decision'] == 'restored'
+            assert repeated_restore['removed_logical_bytes'] == repeated_restore['removed_allocated_bytes'] == 0
+            assert report.read_bytes() == before
             _ordinary_denied(target, value, account)
             try:
                 diagnostic.run_registered_disk_diagnostic(grant['intent_id'], expected_intent=grant['intent'],

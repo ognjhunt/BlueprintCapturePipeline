@@ -42,6 +42,24 @@ def test_closed_unchanged_tables_bind_exact_namespace_and_bytes(tmp_path):
     assert scan(tmp_path, Path('/unrelated/selected')) != before
 
 
+def test_table_checks_combined_descriptor_capacity_before_native_acquisition(tmp_path):
+    from blueprint_pipeline.control_plane_lane_historical_references import _table
+    (tmp_path / 'selected.json').write_text('{"run":"other"}')
+    budget = ReferenceCollectionBudget()
+    observed = []
+    def bound(count):
+        observed.append(count)
+        if count > 2:
+            raise ValueError('combined original descriptors exhausted')
+    try:
+        with pytest.raises(ValueError, match='table_unknown'):
+            _table(tmp_path, Path('/unrelated/selected'), budget, _descriptor_check=bound)
+        assert observed == [1, 2, 3]
+        assert (tmp_path / 'selected.json').read_text() == '{"run":"other"}'
+    finally:
+        budget.close()
+
+
 @pytest.mark.parametrize('kind', ['symlink', 'hardlink', 'malformed', 'fifo'])
 def test_unknown_reference_rows_are_not_absence(tmp_path, kind):
     row = tmp_path / 'job.json'

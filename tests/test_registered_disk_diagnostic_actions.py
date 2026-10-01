@@ -169,3 +169,56 @@ def test_new_member_after_owner_issue_refuses_before_any_payload_removal(install
         actions.run_action(selected['action_id'], expected_action_intent=selected['action_intent'],
             installed_config_path=installation[0], now=lambda: 2901, _pins_root=installation[0].parent / 'pins')
     assert {path.name: path.read_bytes() for path in target.iterdir()} == before
+
+
+def test_sealed_report_without_complete_reference_settings_cannot_delete(installation, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    configure(installation)
+    _, _, grant, born, _ = seal(installation, monkeypatch, 'root_disk_diagnostic_disposable.v1')
+    selected = issuer.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+        action='delete', expires_at_epoch=3500, installed_config_path=installation[0], now=lambda: 2900)
+    target = Path(born['path'])
+    before = {path.name: path.read_bytes() for path in target.iterdir()}
+    with pytest.raises(ValueError, match='experiment_diagnostic_references_unknown'):
+        actions.run_action(selected['action_id'], expected_action_intent=selected['action_intent'],
+            installed_config_path=installation[0], now=lambda: 2901, _pins_root=installation[0].parent / 'pins')
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == before
+
+
+def test_actual_current_queue_reference_preserves_the_sealed_report(installation, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_experiment_retirement as issuer
+    from blueprint_pipeline import control_plane_lane_experiment_actions as actions
+    from blueprint_pipeline import control_plane_lane_legacy_owner as legacy
+    configure(installation)
+    config, settings, _, _ = installation
+    root = config.parent
+    selected = {}
+    for kind in ('queue', 'evidence', 'settlement'):
+        path = root / kind
+        path.mkdir(mode=0o700)
+        selected[kind] = path
+    unit = root / 'gc.service'
+    unit.write_bytes(b'[Service]\n')
+    unit.chmod(0o600)
+    monkeypatch.setattr(legacy, '_GC_UNIT', unit)
+    environment = root / 'gc.env'
+    environment.write_text(environment.read_text() + ''.join(
+        'BLUEPRINT_CONTROL_PLANE_GC_' + key.upper() + '_ROOTS=' + str(selected[key]) + '\n'
+        for key in selected))
+    release = root / 'active-release'
+    release.symlink_to(root / 'installed')
+    settings.update(control_plane_state=settings['state_root'], active_release_link=str(release))
+    config.write_bytes(encoded(settings))
+    _, _, grant, born, _ = seal(installation, monkeypatch, 'root_disk_diagnostic_disposable.v1')
+    selected_action = issuer.issue_experiment_action_intent(grant['intent_id'], principal='operator', owner='owner',
+        action='delete', expires_at_epoch=3500, installed_config_path=config, now=lambda: 2900)
+    target = Path(born['path'])
+    record = selected['queue'] / 'active.json'
+    record.write_bytes(encoded({'request': {'path': str(target / 'disk-capacity-report.v1.json')}}))
+    record.chmod(0o600)
+    before = {path.name: path.read_bytes() for path in target.iterdir()}
+    with pytest.raises(ValueError, match='experiment_diagnostic_queue_reference'):
+        actions.run_action(selected_action['action_id'], expected_action_intent=selected_action['action_intent'],
+            installed_config_path=config, now=lambda: 2901, _pins_root=root / 'pins')
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == before

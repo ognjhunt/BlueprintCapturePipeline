@@ -745,6 +745,7 @@ def _member(files, target, row, current_directory_metadata=None, *, hash_payload
 
 def run_action(action_id, *, expected_action_intent, installed_config_path, now, _pins_root):
     files = _ActionFiles(now=now)
+    diagnostic_references = None
     try:
         issued = now()
         config, gid = _context(files, installed_config_path, issued)
@@ -800,6 +801,11 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         rows = sorted(manifest["members"], key=lambda row: (len(Path(row[0]).parts), row[0]), reverse=True)
         if entry['lane'] == 'diagnostics' and entry['state'] == 'active':
             _diagnostic_namespace(files, target, target_fd, rows)
+        if entry['lane'] == 'diagnostics':
+            from .control_plane_lane_disk_diagnostic_references import DiagnosticReferences
+            diagnostic_references = DiagnosticReferences(files, config, target, target_fd, manifest,
+                issued=issued, held_pins=(files, reference, reference_fd))
+            files._diagnostic_references = diagnostic_references
         files._store_path = config.experiment_record_store
         _preflight_row_events(files, action, rows)
         files.phase("event_admission_done")
@@ -824,6 +830,10 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                 files.location(target_fd)
                 files.location(reference_fd)
                 files.verify_record(retiring[2])
+                if diagnostic_references is not None:
+                    # Copy/readback preserves payload; the destructive boundary
+                    # below still performs a complete current process census.
+                    diagnostic_references.guard(processes=False)
             if preservation is None:
                 archived = archive.preserve(files, config, target, rows, manifest_raw, archive_guard)
                 files.phase("ready")
@@ -861,6 +871,7 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                     files.verify_record(retiring[2])
                     if entry['lane'] == 'diagnostics':
                         _diagnostic_namespace(files, target, target_fd, rows[index - 1:])
+                        diagnostic_references.guard()
                     parent, name, fd, info = held.pop(index) if row[1] == "file" else _member(
                         files, target, row, changed_directories.get(row[0]), hash_payload=False)
                     try:
@@ -894,6 +905,8 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
                     files.close(fd)
                 files.trim_payload()
         files.location(target_fd)
+        if diagnostic_references is not None:
+            diagnostic_references.guard()
         os.fsync(target_fd)
         if receipt is None:
             receipt = _event(files, operation, action, "retired", dict(preservation=preservation[0] if preservation else None, manifest=action["manifest"],
@@ -908,9 +921,13 @@ def run_action(action_id, *, expected_action_intent, installed_config_path, now,
         raise OwnerTargetVersionError("experiment_action_io_failed") from None
     finally:
         try:
-            files.finish()
+            if diagnostic_references is not None:
+                diagnostic_references.close()
         finally:
-            files.budget.close()
+            try:
+                files.finish()
+            finally:
+                files.budget.close()
 
 
 def _is_selected_restoration(files, public, entry, gid):

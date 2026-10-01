@@ -248,6 +248,9 @@ def _stage_archive(files, config, target, target_fd, action, selection, manifest
     response = None
     stage_name = '.restore-' + action['action_id']
     stage = _new_directory(files, target_fd, stage_name)
+    references = getattr(files, '_diagnostic_references', None)
+    if references is not None:
+        references.bind_stage(stage)
     stage_path = target / stage_name
     if type(files) is _ActionFiles:
         files.parents[stage_path] = stage
@@ -318,12 +321,16 @@ def _stage_archive(files, config, target, target_fd, action, selection, manifest
                 else:
                     raise OwnerTargetVersionError('experiment_restore_stage_exists')
                 files.location(fd)
+                if references is not None:
+                    references.guard(processes=False)
                 os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
                 files.proof(fd)
                 _require(owners._metadata(os.fstat(fd)) == owners._metadata(os.stat(name, dir_fd=parent, follow_symlinks=False))
                          == owners._metadata(os.stat(temporary, dir_fd=parent, follow_symlinks=False)),
                          'experiment_restore_stage_changed')
                 files.location(parent)
+                if references is not None:
+                    references.guard(processes=False)
                 os.unlink(temporary, dir_fd=parent)
                 files.location(parent)
                 os.fsync(parent)
@@ -352,7 +359,7 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
     actions._lease(files, target, entry)
     actions._birth(files, public, entry, gid)
     _restoration(files, public, entry, gid, issued)
-    actions._pin_fence(files, config, pins_root, target, issued)
+    reference, reference_fd = actions._pin_fence(files, config, pins_root, target, issued)
     public = birth._authority_lock(files, config.experiment_authority_root, gid)
     refreshed = _current(files, public, gid)
     _require(refreshed[0] == current[0], 'experiment_restore_current_changed')
@@ -422,6 +429,15 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
         'experiment_restore_payload_changed')
     actions._hash_manifest(files, target, files.parents[target], measured, role='restore_activation_validate')
     _require(raw == actions._encoded(measured, 'manifest_digest', 1048576), 'experiment_restore_payload_changed')
+    if entry['lane'] == 'diagnostics':
+        from .control_plane_lane_disk_diagnostic_references import DiagnosticReferences
+        from .control_plane_lane_experiment_completion import selected_completion
+        closure = selected_completion(files, config, entry)
+        actions._validate_completion_manifest(closure, saved)
+        references = DiagnosticReferences(files, config, target, files.parents[target],
+            dict(members=[closure['report_member'], *saved['members']]), issued=issued,
+            held_pins=(files, reference, reference_fd))
+        files._diagnostic_references = references
     files.phase('scan_completion')
     acquisition.completed(files, manifest_selector, len(measured['members']))
     files.phase('finalize')
@@ -435,6 +451,8 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
              'experiment_restore_operation_invalid')
     head_selector = issuance._selector(prepared, files.budget)
     body = dict(restored=restored[1], active_head=head_selector)
+    if entry['lane'] == 'diagnostics':
+        references.guard()
     if tail:
         _require(events[-1][0]['body'] == body, 'experiment_restore_operation_invalid')
         receipt = events[-1][1]
@@ -448,6 +466,7 @@ def _activated(files, config, gid, action, expected, public, current, entry, iss
 def restore(action_id, *, expected_restore_intent, installed_config_path, now, pins_root):
     files = _ActionFiles(now=now)
     reservation = None
+    diagnostic_references = None
     try:
         issued = now()
         config, gid = actions._context(files, installed_config_path, issued)
@@ -520,6 +539,12 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             _target_transition=union['target_transition'] if union else None,
             _restored_union=union['mapped'] if union else None)
         _require(final == selection['retired'], 'experiment_restore_selection_invalid')
+        if entry['lane'] == 'diagnostics':
+            from .control_plane_lane_disk_diagnostic_references import DiagnosticReferences
+            diagnostic_references = DiagnosticReferences(files, config, target, target_fd, manifest,
+                issued=issued, held_pins=(files, reference, reference_fd),
+                stage_fd=union['stage'] if union else None)
+            files._diagnostic_references = diagnostic_references
         # The exact old operation/store lock and pins EX remain held.
         occupied = issuance._capacity(files, store, adding_registration=False)
         actions._preflight_row_events(files, action, rows, restoring=True)
@@ -588,6 +613,8 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             files.location(target_fd)
             files.location(reference_fd)
             files.verify_record(restoring[2])
+            if diagnostic_references is not None:
+                diagnostic_references.guard(processes=False)
         if stage_resume is None:
             need = manifest['logical_bytes'] + len(rows) * 8192 + 8192
             reservation = reserve_control_plane_disk('experiment_restore', target_root=target, expected_bytes=need,
@@ -613,6 +640,8 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
                 target_metadata=[getattr(os.fstat(target_fd), key) for key in recovery._STAT]), 1, started, issued)
         else:
             stage = union['stage']
+            if diagnostic_references is not None:
+                diagnostic_references.bind_stage(stage)
             staged, directory_modes = union['staged'], union['directory_modes']
             previous = union['previous']
         index = union['index'] if union else 2
@@ -686,9 +715,13 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             files.location(parent)
             os.fsync(parent)
         if stage is not None:
+            if diagnostic_references is not None:
+                diagnostic_references.guard()
             files.location(stage)
             files.location(target_fd)
             os.rmdir(stage_name, dir_fd=target_fd)
+            if diagnostic_references is not None:
+                diagnostic_references.removed_stage(stage)
             files.removed_directory(target / stage_name, stage)
             files.close(stage)
             files.location(target_fd)
@@ -701,7 +734,11 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         birth._locked_lane(files, root, entry['lane'])
         if checkpoint is None:
             checkpoint_io.prepare(files, store, target, target_fd, action, expected_restore_intent, entry, lease_record, payload, started, previous, index, config=config, operation=operation)
+        if diagnostic_references is not None:
+            diagnostic_references.guard()
         new_selector = _lease_cas(files, target, target_fd, lease_record, payload)
+        if diagnostic_references is not None:
+            diagnostic_references.guard()
         # Root measured publication bytes bind restored identities, not a new execution.
         acquisition.begin(files, config, store, action_id, entry | {'lease': new_selector}, role='restore_final', operation=operation)
         restored_manifest = actions._manifest(files, target, target_fd, binding=entry | {'lease': new_selector}, hash_payload=False)
@@ -734,6 +771,8 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
             prepared_authority=prepared_ref), index, correspondence, issued)
         index += 1
         files.verify()
+        if diagnostic_references is not None:
+            diagnostic_references.guard()
         active_head = actions._install_head(files, public, prepared, gid, old_head)
         receipt = actions._event(files, operation, action, 'activation_complete', dict(restored=restored,
             active_head=active_head), index, restored, issued)
@@ -743,10 +782,15 @@ def restore(action_id, *, expected_restore_intent, installed_config_path, now, p
         raise OwnerTargetVersionError('experiment_restore_io_failed') from None
     finally:
         try:
-            files.finish()
+            references = getattr(files, '_diagnostic_references', diagnostic_references)
+            if references is not None:
+                references.close()
         finally:
             try:
-                if reservation is not None:
-                    reservation.release(outcome='completed' if 'receipt' in locals() else 'failed')
+                files.finish()
             finally:
-                files.budget.close()
+                try:
+                    if reservation is not None:
+                        reservation.release(outcome='completed' if 'receipt' in locals() else 'failed')
+                finally:
+                    files.budget.close()

@@ -32,6 +32,14 @@ SOURCE_MODULES = frozenset({
     'control_plane_lane_owner_target_publication', 'control_plane_lane_scratch_decisions',
     'control_plane_lane_scratch', 'control_plane_scratch_lifetime',
     'control_plane_reference_budget', 'decision_evidence_contracts',
+    'control_plane_lane_disk_diagnostic_references', 'control_plane_lane_experiment_work',
+    'control_plane_lane_historical_processes', 'control_plane_kernel_process',
+    'control_plane_lane_historical_references', 'control_plane_lane_historical_generation',
+    'control_plane_lane_historical_fence', 'control_plane_lane_legacy_owner',
+    'control_plane_storage_pin_observation', 'control_plane_registered_reference_gate',
+    'control_plane_lane_experiment_restore', 'control_plane_lane_experiment_archive',
+    'control_plane_lane_experiment_recovery', 'control_plane_lane_experiment_restore_checkpoint',
+    'control_plane_lane_experiment_restore_reconcile', 'control_plane_lane_experiment_acquisition',
 })
 _REQUEST_FIELDS = frozenset({'schema_version', 'run_ref', 'config', 'roots',
                              'root_identities', 'installed_sources', 'request_digest'})
@@ -79,18 +87,32 @@ class _DiagnosticFiles(_BirthFiles):
 
 
 def _sources(files):
+    known = getattr(files, '_diagnostic_source_selection', None)
+    if known is not None:
+        selected, records = known
+        # Every original protected source FD stays owned by this file owner.
+        # Recheck its complete named metadata; do not reacquire another copy or
+        # restart the source byte allowance within the same admission.
+        for record in records:
+            files.verify_record(record)
+            files.location(record.fd)
+        files.verify()
+        return dict(selected)
     root = Path(__file__).parent
-    selected = {}
+    selected, records = {}, []
     for name in sorted(SOURCE_MODULES):
         raw, record = files.read(root / (name + '.py'), cap=1024 * 1024, protected=True)
         selected[name] = issuance._selector(raw, files.budget)['sha256']
         files.verify_record(record)
+        records.append(record)
     for name in ('__init__', 'config'):
         raw, record = files.read(owners.INSTALLED_PACKAGE_ROOT / 'operator_door' / (name + '.py'),
                                  cap=owners.MAX_POLICY_BYTES, protected=True)
         selected['operator_door.' + name] = issuance._selector(raw, files.budget)['sha256']
         files.verify_record(record)
+        records.append(record)
     files.verify()
+    files._diagnostic_source_selection = dict(selected), tuple(records)
     return selected
 
 

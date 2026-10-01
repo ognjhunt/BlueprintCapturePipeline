@@ -1206,6 +1206,7 @@ def _linux_contained_roundtrip(*, phase="--contained-root-phase"):
         shipped_gc.write_bytes((source / 'deploy/systemd/blueprint-control-plane-storage-gc.service').read_bytes())
         shipped_gc.chmod(0o644)
         substitutions = {
+            '/etc/systemd/system/blueprint-control-plane-storage-gc.service': str(shipped_gc),
             "/mnt/blueprint-work/lanes": str(root / "work/lanes"),
             "/var/lib/blueprint/task-evaluation-inputs/lanes": str(root / "inputs/lanes"),
             "/var/lib/blueprint-operator-door/experiment-authority": str(
@@ -1222,6 +1223,7 @@ def _linux_contained_roundtrip(*, phase="--contained-root-phase"):
             "control_plane_lane_scratch_retention",
             "native_g1_development_pair",
             "native_g1_registered_containment",
+            'control_plane_lane_legacy_owner',
         ):
             path = installed / "blueprint_pipeline" / (name + ".py")
             text = path.read_text()

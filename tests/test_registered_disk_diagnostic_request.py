@@ -68,6 +68,35 @@ def test_compatible_installed_acquisition_source_change_invalidates_request(inst
         files.budget.close()
 
 
+def test_same_admission_retains_original_source_fds_and_rejects_later_source_rewrite(installation, monkeypatch):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_disk_diagnostic as producer
+    from blueprint_pipeline.control_plane_lane_experiment_publication import _BirthFiles
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    mirror = installation[0].parent / 'original-source-readback'
+    mirror.mkdir(mode=0o700)
+    source = Path(producer.__file__).parent
+    for name in producer.SOURCE_MODULES:
+        target = mirror / (name + '.py')
+        target.write_bytes((source / (name + '.py')).read_bytes())
+        target.chmod(0o600)
+    monkeypatch.setattr(producer, '__file__', str(mirror / 'control_plane_lane_disk_diagnostic.py'))
+    files = _BirthFiles(ReferenceCollectionBudget())
+    try:
+        selected = producer._sources(files)
+        before = dict(files.owned), dict(files.budget.counts)
+        assert producer._sources(files) == selected
+        assert dict(files.owned) == before[0]
+        assert files.budget.counts['raw_bytes'] == before[1]['raw_bytes']
+        changed = mirror / 'control_plane_lane_disk_diagnostic.py'
+        changed.write_bytes(changed.read_bytes() + b'\n# actual disposable source mutation\n')
+        with pytest.raises(ValueError):
+            producer._sources(files)
+        assert dict(files.owned) == before[0]
+    finally:
+        files.finish()
+        files.budget.close()
+
+
 @pytest.mark.parametrize('change', ['config', 'root', 'root_identity', 'boolean_identity',
                                    'source', 'run', 'extra', 'seal'])
 def test_request_semantic_drift_refuses_before_any_payload_birth(installation, change):  # noqa: F811
