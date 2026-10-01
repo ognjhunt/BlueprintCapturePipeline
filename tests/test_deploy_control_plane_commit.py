@@ -1306,8 +1306,6 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "_verify_intake_runtime": lambda *_args, **_kwargs: {"commit_proven": True},
         "_activate_agent_execution": lambda **_kwargs: {},
         "_restore_installed_path_units": lambda _installed, **_kwargs: [],
-        "_retire_superseded_release_trees": lambda **_kwargs: {},
-        "_finish_release_retirement": lambda retirement, **_kwargs: retirement,
     }
     for name, stub in stubs.items():
         monkeypatch.setattr(deploy, name, stub)
@@ -1324,6 +1322,116 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
         "scene_preparation_bootstrap_file": tmp_path / "absent-bootstrap.json",
         "controls_autoprovision_bootstrap_file": tmp_path / "absent-controls-bootstrap.json",
     }
+
+
+@pytest.mark.parametrize("failure", [None, "disk_admission", "paid_gate", "intake_identity"])
+def test_deploy_preserves_superseded_and_interrupted_retirement_trees(
+    tmp_path, monkeypatch, failure,
+) -> None:
+    """Deployment preserves old bytes even when deletion would free admission space."""
+
+    commit = "d" * 40
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    releases = arguments["release_root"]
+    runtimes = arguments["scene_configuration_runtime_root"]
+    current = releases / commit
+    current.mkdir(parents=True)
+    arguments["active_link"].unlink()
+    arguments["active_link"].symlink_to(current, target_is_directory=True)
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", lambda **_kwargs: {
+        "source_commit": commit, "release_path": str(current), "created_release_checkout": False,
+    })
+    retained = []
+    for root in (releases, *(runtimes / name for name in deploy.RELEASE_RUNTIME_COMPONENTS)):
+        for index, old in enumerate(("a" * 40, "b" * 40, "c" * 40, "e" * 40)):
+            tree = root / old
+            (tree / "generated").mkdir(parents=True)
+            (tree / "generated/receipt.json").write_bytes(b'{"generated":"retained"}\n')
+            (tree / "untracked.bin").write_bytes(b"untracked bytes\x00\xff")
+            (tree / "untracked.bin").chmod(0o600)
+            os.link(tree / "untracked.bin", tree / "hardlinked.bin")
+            stamp = time.time() - (10 + index) * 86_400
+            os.utime(tree, (stamp, stamp))
+            retained.append(tree)
+            if root != releases:
+                publication = root / f"{old}.publication.v1.json"
+                publication.write_bytes(b'{"publication":"retained"}\n')
+                os.utime(publication, (stamp, stamp))
+                retained.append(publication)
+        leftover = root / ".retiring" / f"{'f' * 40}-0123456789ab"
+        leftover.mkdir(parents=True)
+        (leftover / "generated.bin").write_bytes(b"interrupted retirement bytes")
+        retained.append(leftover.parent)
+
+    sources = _protection_sources(tmp_path / "protection")
+    arguments["release_protection_sources"] = sources
+    plan = deploy.build_release_retirement_plan(
+        release_root=releases, runtime_root=runtimes, active_link=arguments["active_link"],
+        current_commit=commit,
+        protections=deploy.collect_release_protections(sources, now=time.time(), migrate=False),
+    )
+    assert plan["status"] == "dry_run" and plan["candidates"]
+    for candidate in plan["candidates"]:
+        old = candidate["commit"]
+        expected = {str(releases / old)}
+        for component in deploy.RELEASE_RUNTIME_COMPONENTS:
+            expected.update({str(runtimes / component / old),
+                             str(runtimes / component / f"{old}.publication.v1.json")})
+        assert set(candidate["paths"]) == expected
+    summary = arguments["state_root"] / "release-retention/latest-deploy-retirement.json"
+    summary.parent.mkdir(parents=True)
+    summary.write_bytes(b'{"status":"blocked","alerts":["previous_retirement_failure"]}\n')
+    retained.append(summary)
+
+    def snapshot():
+        result = {}
+        for root in retained:
+            for path in (root, *root.rglob("*")):
+                info = path.lstat()
+                result[str(path)] = (
+                    info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+                    info.st_mtime_ns, path.read_bytes() if path.is_file() else None,
+                )
+        return result
+
+    before = snapshot()
+    for name in ("_sweep_retiring_trees", "_retire_superseded_release_trees", "_finish_release_retirement"):
+        monkeypatch.setattr(deploy, name, lambda *args, **kwargs: pytest.fail("deployment requested retirement"))
+
+    if failure == "disk_admission":
+        arguments["disk_reservation_root"] = tmp_path / "disk-reservations"
+        monkeypatch.setattr(deploy, "_install_disk_reservation_runtime_prerequisites", lambda _root: {})
+        monkeypatch.setattr(deploy, "_release_footprint_estimate", lambda *_args, **_kwargs: {
+            "bytes": 4096, "basis": "test_estimate",
+        })
+
+        def refuse_disk(*_args, **_kwargs):
+            raise deploy.ControlPlaneDiskBudgetError("insufficient_headroom")
+
+        monkeypatch.setattr(deploy, "reserve_control_plane_disk", refuse_disk)
+    elif failure:
+        def refuse(*_args, **_kwargs):
+            raise deploy.ControlPlaneDeployError(f"test_{failure}_refused")
+
+        monkeypatch.setattr(deploy, "_holding_paid_launch_gate" if failure == "paid_gate"
+                            else "_verify_intake_runtime", refuse)
+
+    if failure:
+        code = "deploy_disk_budget_exceeded:insufficient_headroom" if failure == "disk_admission" else f"test_{failure}_refused"
+        with pytest.raises(deploy.ControlPlaneDeployError, match=code):
+            deploy.deploy_control_plane_commit(**arguments)
+    else:
+        receipt = deploy.deploy_control_plane_commit(**arguments)
+        retirement = receipt["release_retirement"]
+        assert receipt["status"] == "deployed"
+        assert retirement["status"] == "not_requested"
+        assert retirement["reason"] == "requires_separate_action"
+        assert retirement["retired_bytes"] == 0
+        for key in ("retired_commits", "renamed", "deleted", "direct_delete_fallback", "swept", "startup_swept"):
+            assert retirement[key] == []
+        assert retirement["worktree_prune"]["status"] == "not_requested"
+    assert snapshot() == before
+    assert arguments["active_link"].resolve() == current
 
 
 def test_deploy_reports_and_marks_break_glass_notes(tmp_path, monkeypatch) -> None:
@@ -2478,29 +2586,6 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         ),
     )
 
-    # Retirement runs for real, but only against this test's own tree: never
-    # the host's protection sources, runtime root or process table.
-    monkeypatch.setattr(deploy, "_live_release_commits", lambda *args, **kwargs: [])
-    protection = _protection_sources(tmp_path / "protection")
-    # A previous deploy stopped between moving a tree aside and deleting it.
-    leftover = tmp_path / "releases" / ".retiring" / f"{'e' * 40}-0123456789ab"
-    leftover.mkdir(parents=True)
-    (leftover / "payload").write_bytes(b"x" * 32)
-    paid_gate_held_while_deleting: list[bool] = []
-    delete_retiring_trees = deploy.delete_retiring_trees
-
-    def observed_delete(roots):
-        with lock.open("r", encoding="utf-8") as probe:
-            try:
-                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                paid_gate_held_while_deleting.append(True)
-            else:
-                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
-                paid_gate_held_while_deleting.append(False)
-        return delete_retiring_trees(roots)
-
-    monkeypatch.setattr(deploy, "delete_retiring_trees", observed_delete)
     receipt = deploy.deploy_control_plane_commit(
         source_repo=source,
         source_commit=commit,
@@ -2515,7 +2600,6 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
         scene_preparation_bootstrap_file=tmp_path / "absent-bootstrap.json",
         controls_autoprovision_bootstrap_file=tmp_path / "absent-controls-bootstrap.json",
         disk_reservation_root=tmp_path / "disk-reservations",
-        release_protection_sources=protection,
     )
 
     assert observed == [
@@ -2557,25 +2641,9 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     ]
     assert receipt["release_provenance"]["git_sha"] == commit
     assert Path(receipt["release_provenance"]["path"]).stat().st_mode & 0o777 == 0o440
-    # The synthetic active link points outside the release root, so the plan
-    # cannot prove the active release: retirement is reported, never fatal,
-    # and its summary still lands under the state root.
-    retirement = receipt["release_retirement"]
-    assert retirement["status"] == "skipped"
-    assert retirement["blockers"] == ["release_retirement_active_target_outside_root"]
-    assert retirement["lock_roots"] == sorted(
-        str(path.resolve()) for path in (tmp_path / "state", protection.control_plane_root)
-    )
-    summary = tmp_path / "state" / "release-retention" / "latest-deploy-retirement.json"
-    assert json.loads(summary.read_text(encoding="utf-8"))["alerts"] == [
-        "release_retirement_blocked:release_retirement_active_target_outside_root"
-    ]
-    # Leftovers go before the disk reservation; this deploy's own deletion waits
-    # until the paid-launch gate is open again, so launches are not held out.
-    assert retirement["startup_swept"] == [
-        {"path": str(leftover.resolve()), "bytes": 32, "shared_bytes": 0}
-    ]
-    assert paid_gate_held_while_deleting == [False, True, False]
+    assert receipt["release_retirement"]["status"] == "not_requested"
+    assert receipt["release_retirement"]["retired_bytes"] == 0
+    assert not (tmp_path / "state/release-retention/latest-deploy-retirement.json").exists()
 
 
 def test_disk_reservation_runtime_repairs_root_owned_ledger_and_reports_receipt(
@@ -3498,7 +3566,7 @@ def _release_trees(releases: Path, ages: dict[str, float], *, now: float) -> Non
 def test_release_retirement_is_skipped_without_protection_sources_and_applied_with_them(
     tmp_path: Path,
 ) -> None:
-    """Deploy retires superseded trees only when it can prove what is still live."""
+    """The explicit compatibility helper retires only provably unused trees."""
 
     import time as _time
 
@@ -3550,11 +3618,6 @@ def test_release_retirement_is_skipped_without_protection_sources_and_applied_wi
     assert applied["alerts"] == []
     assert not (releases / superseded).exists()
     assert (releases / current).is_dir()
-    source = Path(deploy.__file__).read_text(encoding="utf-8")
-    assert '"release_retirement": release_retirement,' in source
-    assert source.index("release_retirement = _retire_superseded_release_trees(") > source.index(
-        "automation_unit_state_receipts = _restore_installed_path_units("
-    )
 
 
 def test_deploy_retirement_honors_required_historical_evidence_binding(tmp_path: Path) -> None:
@@ -3725,10 +3788,6 @@ def test_deploy_retirement_holds_publisher_locks_and_writes_its_summary(
     assert summary["source_commit"] == current
     assert summary["retired_commits"] == [superseded]
     assert summary["alerts"] == [] and summary["lease_protected_tree_count"] == 0
-    # The deploy passes its own state root to both.
-    source = Path(deploy.__file__).read_text(encoding="utf-8")
-    assert "            state_root=state,\n" in source
-    assert 'summary_path=state / "release-retention" / RELEASE_RETIREMENT_SUMMARY_NAME' in source
 
 
 def test_deploy_retirement_reports_what_it_moved_deleted_and_swept(
