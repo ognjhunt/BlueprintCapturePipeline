@@ -20,17 +20,17 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
-
+from blueprint_pipeline.metered_call_evidence import MeteredCallEvidenceError, MeteredTransport
 from blueprint_pipeline.provider_billing_audit_retention import (
     ProviderBillingAuditRetentionError,
     audit_root_lock,
     retain_billing_response,
 )
-
 
 BILLING_EXPORT_SCHEMA_VERSION = "blueprint.provider_billing_export.v1"
 BILLING_SOURCE_SCHEMA_VERSION = "blueprint.provider_billing_source_receipt.v1"
@@ -368,6 +368,9 @@ def reconcile_provider_billing(
     required_provider_ids = requested_required
     if "aws" in required_provider_ids:
         raise ProviderBillingReconciliationError(AWS_BILLING_UNAVAILABLE_REASON)
+    # Same dispatch seam and call count; the journal survives collector failure/crash.
+    evidence_origin = "retained_provider_response" if transport is _default_transport else "development_only"
+    transport = MeteredTransport(transport, Path(audit_root).expanduser().resolve().parent / "metered-call-events")
     audit_rows: list[dict[str, Any]] = []
     totals: dict[str, float] = {}
     optional_provider_failures: dict[str, str] = {"aws": AWS_BILLING_UNAVAILABLE_REASON}
@@ -380,7 +383,7 @@ def reconcile_provider_billing(
     def record_provider(provider: str, collect: Callable[[], float]) -> None:
         try:
             totals[provider] = collect()
-        except ProviderBillingReconciliationError as exc:
+        except (ProviderBillingReconciliationError, MeteredCallEvidenceError) as exc:
             error = str(exc)
             if provider in required_provider_ids or error.startswith(security_blockers):
                 raise
@@ -507,6 +510,9 @@ def reconcile_provider_billing(
     }
     export_path = Path(billing_export_path).expanduser().resolve()
     _atomic_write(export_path, (_canonical_json(billing_export) + "\n").encode("utf-8"))
+    # Reporting is an offline observer, never an admission or reservation input.
+    from blueprint_pipeline.daily_spend_snapshot import write_daily_snapshot
+    daily_status = write_daily_snapshot(export_path, Path(source_path), Path(audit_root), evidence_origin=evidence_origin)
     return {
         "schema_version": "blueprint.provider_billing_reconciliation_run.v1",
         "status": "reconciled",
@@ -522,6 +528,7 @@ def reconcile_provider_billing(
         "source_receipt_digest": source_receipt["receipt_digest"],
         "provider_mutation_performed": False,
         "raw_secret_values_recorded": False,
+        "daily_spend_snapshot": daily_status,
     }
 
 
