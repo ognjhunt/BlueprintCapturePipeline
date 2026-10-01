@@ -1747,14 +1747,22 @@ def test_completed_scene_derived_provider_rights_stay_bounded(mutation):
         "geometry": {"configured_collision": {"digest": digest, "size_bytes": 17}}}
     binding = {"semantic_role": "scene_collision", "source": {"sha256": digest, "size_bytes": 17},
                "staged_sha256": digest, "staged_size_bytes": 17}
-    if mutation == "unknown_schema": rights["schema_version"] = rights["schema_version"].replace(".v1", ".v2")
-    if mutation == "foreign_scene": rights["scene_id"] = "foreign"
-    if mutation == "raw_upload": rights["provider_disclosure"]["raw_owner_source_bytes_may_be_uploaded"] = True
-    if mutation == "training": rights["provider_training_allowed"] = True
-    if mutation == "public": rights["public_redistribution_allowed"] = True
-    if mutation == "missing_derived": rights["provider_disclosure"].pop("minimum_digest_bound_derived_runtime_bytes_may_be_privately_processed")
-    if mutation == "unknown_role": binding["semantic_role"] = "arbitrary-raw-source"
-    if mutation == "foreign_bytes": binding["source"]["sha256"] = "sha256:" + "b" * 64
+    if mutation == "unknown_schema":
+        rights["schema_version"] = rights["schema_version"].replace(".v1", ".v2")
+    if mutation == "foreign_scene":
+        rights["scene_id"] = "foreign"
+    if mutation == "raw_upload":
+        rights["provider_disclosure"]["raw_owner_source_bytes_may_be_uploaded"] = True
+    if mutation == "training":
+        rights["provider_training_allowed"] = True
+    if mutation == "public":
+        rights["public_redistribution_allowed"] = True
+    if mutation == "missing_derived":
+        rights["provider_disclosure"].pop("minimum_digest_bound_derived_runtime_bytes_may_be_privately_processed")
+    if mutation == "unknown_role":
+        binding["semantic_role"] = "arbitrary-raw-source"
+    if mutation == "foreign_bytes":
+        binding["source"]["sha256"] = "sha256:" + "b" * 64
     kwargs = dict(packet_receipt={"source_bindings": [binding]}, source_manifest=source,
                   configured_scene_revision=revision, rights_admission=rights)
     if mutation is None:

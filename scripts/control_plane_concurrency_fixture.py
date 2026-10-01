@@ -25,7 +25,9 @@ SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 class _ReadCounter:
-    def __init__(self, stream: BinaryIO, store: FilesystemObjectStore, remaining: int | None = None):
+    def __init__(
+        self, stream: BinaryIO, store: FilesystemObjectStore, remaining: int | None = None
+    ):
         self.stream, self.store, self.remaining = stream, store, remaining
 
     def read(self, size: int = -1) -> bytes:
@@ -55,8 +57,12 @@ class FilesystemObjectStore:
         self.uploaded_bytes = self.read_bytes = 0
 
     def _path(self, bucket: str, key: str) -> Path:
-        if (not isinstance(bucket, str) or not SAFE.fullmatch(bucket)
-                or not isinstance(key, str) or key.startswith("/")):
+        if (
+            not isinstance(bucket, str)
+            or not SAFE.fullmatch(bucket)
+            or not isinstance(key, str)
+            or key.startswith("/")
+        ):
             raise ValueError("fixture_object_path_unsafe")
         parts = key.split("/")
         if not parts or any(not SAFE.fullmatch(part) or part in {".", ".."} for part in parts):
@@ -98,14 +104,21 @@ class FilesystemObjectStore:
         if not path.is_file():
             raise KeyError(Key)
         state = path.stat()
-        etag = '"' + ':'.join(str(value) for value in
-            (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)) + '"'
+        etag = (
+            '"'
+            + ":".join(
+                str(value)
+                for value in (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)
+            )
+            + '"'
+        )
         metadata_path = self._metadata_path(Bucket, Key)
         metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
         return {"ContentLength": state.st_size, "ETag": etag, "Metadata": metadata}
 
-    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None,
-                   IfMatch: str | None = None) -> dict:
+    def get_object(
+        self, *, Bucket: str, Key: str, Range: str | None = None, IfMatch: str | None = None
+    ) -> dict:
         path = self._path(Bucket, Key)
         head = self.head_object(Bucket=Bucket, Key=Key)
         if IfMatch is not None and IfMatch != head["ETag"]:
@@ -121,12 +134,23 @@ class FilesystemObjectStore:
         stream = path.open("rb")
         stream.seek(start)
         length = end - start + 1
-        return {"Body": _ReadCounter(stream, self, length), "ContentLength": length,
-                "ETag": head["ETag"], "ContentRange": f"bytes {start}-{end}/{head['ContentLength']}",
-                "ResponseMetadata": {"HTTPStatusCode": 206 if Range else 200}}
+        return {
+            "Body": _ReadCounter(stream, self, length),
+            "ContentLength": length,
+            "ETag": head["ETag"],
+            "ContentRange": f"bytes {start}-{end}/{head['ContentLength']}",
+            "ResponseMetadata": {"HTTPStatusCode": 206 if Range else 200},
+        }
 
-    def put_object(self, *, Bucket: str, Key: str, Body: BinaryIO | bytes,
-                   ContentLength: int | None = None, IfNoneMatch: str | None = None) -> dict:
+    def put_object(
+        self,
+        *,
+        Bucket: str,
+        Key: str,
+        Body: BinaryIO | bytes,
+        ContentLength: int | None = None,
+        IfNoneMatch: str | None = None,
+    ) -> dict:
         if isinstance(Body, bytes):
             ContentLength = len(Body) if ContentLength is None else ContentLength
             Body = io.BytesIO(Body)
@@ -161,8 +185,9 @@ class FilesystemObjectStore:
         self.uploaded_bytes += written
         return {"ETag": digest.hexdigest()}
 
-    def create_multipart_upload(self, *, Bucket: str, Key: str, Metadata: dict | None = None,
-                                ContentType: str | None = None) -> dict:
+    def create_multipart_upload(
+        self, *, Bucket: str, Key: str, Metadata: dict | None = None, ContentType: str | None = None
+    ) -> dict:
         self._path(Bucket, Key)
         identifier = uuid.uuid4().hex
         root = self.root / ".multipart" / identifier
@@ -178,20 +203,34 @@ class FilesystemObjectStore:
         if not re.fullmatch(r"[a-f0-9]{32}", identifier):
             raise ValueError("fixture_multipart_binding_invalid")
         root = self.root / ".multipart" / identifier
-        if any(path.is_symlink() for path in (root, *root.parents, root / "binding", root / "metadata")) or (root / "binding").read_text() != bucket + "\n" + key + "\n":
+        if (
+            any(
+                path.is_symlink()
+                for path in (root, *root.parents, root / "binding", root / "metadata")
+            )
+            or (root / "binding").read_text() != bucket + "\n" + key + "\n"
+        ):
             raise ValueError("fixture_multipart_binding_invalid")
         return root
 
-    def upload_part(self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes) -> dict:
+    def upload_part(
+        self, *, Bucket: str, Key: str, UploadId: str, PartNumber: int, Body: bytes
+    ) -> dict:
         root = self._upload(Bucket, Key, UploadId)
-        if (type(PartNumber) is not int or not 1 <= PartNumber <= 2048
-                or not isinstance(Body, bytes) or not 0 < len(Body) <= PART_LIMIT):
+        if (
+            type(PartNumber) is not int
+            or not 1 <= PartNumber <= 2048
+            or not isinstance(Body, bytes)
+            or not 0 < len(Body) <= PART_LIMIT
+        ):
             raise ValueError("fixture_multipart_part_invalid")
         with (root / str(PartNumber)).open("xb") as stream:
             stream.write(Body)
         return {"ETag": hashlib.sha256(Body).hexdigest()}
 
-    def complete_multipart_upload(self, *, Bucket: str, Key: str, UploadId: str, MultipartUpload: dict) -> None:
+    def complete_multipart_upload(
+        self, *, Bucket: str, Key: str, UploadId: str, MultipartUpload: dict
+    ) -> None:
         root = self._upload(Bucket, Key, UploadId)
         rows = MultipartUpload.get("Parts", [])
         if not rows or [row["PartNumber"] for row in rows] != list(range(1, len(rows) + 1)):

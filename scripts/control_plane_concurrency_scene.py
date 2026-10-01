@@ -17,11 +17,15 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlsplit
 
-from blueprint_pipeline import task_evaluation_scene_configuration_submission_publication as publication
+from blueprint_pipeline import (
+    task_evaluation_scene_configuration_submission_publication as publication,
+)
 from blueprint_pipeline import task_evaluation_scene_progression as progression
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.public_scene_host_input_intake import _verified_checkout_head
-from blueprint_pipeline.task_evaluation_launch_preparation_queue import ensure_launch_preparation_queue_root
+from blueprint_pipeline.task_evaluation_launch_preparation_queue import (
+    ensure_launch_preparation_queue_root,
+)
 from scripts.control_plane_concurrency_fixture import FilesystemObjectStore
 
 
@@ -39,11 +43,19 @@ def fixture_environment(values: dict[str, str]) -> Iterator[None]:
                 os.environ[key] = value
 
 
-def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit: str,
-                           release_binding: dict | None = None, scene_key: str | None = None) -> dict:
+def advance_fixture_intake(
+    *,
+    host_root: Path,
+    object_root: Path,
+    source_commit: str,
+    release_binding: dict | None = None,
+    scene_key: str | None = None,
+) -> dict:
     if _verified_checkout_head() != source_commit:
         raise ValueError("harness_checkout_source_mismatch")
-    if scene_key is not None and (not isinstance(scene_key, str) or not scene_key or len(scene_key) > 128):
+    if scene_key is not None and (
+        not isinstance(scene_key, str) or not scene_key or len(scene_key) > 128
+    ):
         raise ValueError("harness_scene_key_invalid")
     if host_root.exists() or host_root.is_symlink():
         raise ValueError("harness_scene_root_exists")
@@ -56,7 +68,9 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
     queue = ensure_launch_preparation_queue_root(host_root / "preparation-queue")
     values = {
         "BLUEPRINT_AGENT_EXECUTION_CONFIG": str(host_root / "no-live-agent-config.json"),
-        "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT": str(host_root / "prepared-references"),
+        "BLUEPRINT_TASK_EVALUATION_LAUNCH_PREPARATION_INPUT_ROOT": str(
+            host_root / "prepared-references"
+        ),
         "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT": str(host_root.parent / "reservations"),
         "BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT": str(host_root.parent / "pins"),
     }
@@ -78,26 +92,44 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
     if scene_key is not None:
         # Author distinct immutable fixture inputs before intake seals any
         # digest. The PLY comment changes identity while retaining geometry.
-        comment = b"comment fixture-scene " + hashlib.sha256(scene_key.encode()).hexdigest().encode() + b"\n"
-        fixture.splat_bytes = lambda: original_splat_bytes().replace(b"end_header\n", comment + b"end_header\n", 1)
-        def distinct_owner(*args,**kwargs):
-            owner=original_owner(*args,**kwargs)
-            owner['submission_id']='fixture-'+hashlib.sha256(scene_key.encode()).hexdigest()[:32]
+        comment = (
+            b"comment fixture-scene "
+            + hashlib.sha256(scene_key.encode()).hexdigest().encode()
+            + b"\n"
+        )
+        fixture.splat_bytes = lambda: original_splat_bytes().replace(
+            b"end_header\n", comment + b"end_header\n", 1
+        )
+
+        def distinct_owner(*args, **kwargs):
+            owner = original_owner(*args, **kwargs)
+            owner["submission_id"] = (
+                "fixture-" + hashlib.sha256(scene_key.encode()).hexdigest()[:32]
+            )
             return owner
-        fixture._owner=distinct_owner
+
+        fixture._owner = distinct_owner
     try:
-        config, intent_id, intents, now = fixture._config(host_root, FixtureBuilderEnvironment(),
-            submission_enabled=True, existing_support=True,
-            extra={"preparation_queue_root": str(queue), "publication_lock_root": str(host_root / "locks"),
-                   "submission_transport": "local_owned_queue",
-                   "service_account": pwd.getpwuid(os.geteuid()).pw_name})
+        config, intent_id, intents, now = fixture._config(
+            host_root,
+            FixtureBuilderEnvironment(),
+            submission_enabled=True,
+            existing_support=True,
+            extra={
+                "preparation_queue_root": str(queue),
+                "publication_lock_root": str(host_root / "locks"),
+                "submission_transport": "local_owned_queue",
+                "service_account": pwd.getpwuid(os.geteuid()).pw_name,
+            },
+        )
     finally:
         fixture.SHA, template.SHA = old_fixture, old_template
         fixture.splat_bytes = original_splat_bytes
         fixture._owner = original_owner
     if release_binding is not None:
-        if (release_binding.get("source_commit") != source_commit
-                or release_binding.get("release_digest") != canonical_digest(release_binding, digest_field="release_digest")):
+        if release_binding.get("source_commit") != source_commit or release_binding.get(
+            "release_digest"
+        ) != canonical_digest(release_binding, digest_field="release_digest"):
             raise ValueError("harness_release_binding_mismatch")
         (host_root / "release.json").write_text(json.dumps(release_binding))
     store = FilesystemObjectStore(object_root)
@@ -106,18 +138,26 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
         return publication.publish_scene_configuration_submission(**kwargs, client=store)
 
     with fixture_environment(values):
-        result = progression.process_scene_intents(config_path=config, publisher=publish,
-                                                  only_intent_id=intent_id, now=now)
+        result = progression.process_scene_intents(
+            config_path=config, publisher=publish, only_intent_id=intent_id, now=now
+        )
     intent_path = intents / intent_id / "intent.json"
     intent = json.loads(intent_path.read_text())
     state = json.loads((intents / intent_id / "progression.json").read_text())
     factory_record = state.get("state", {}).get("factory")
-    output = {"claim_ceiling": "development_only", "source_commit": source_commit,
-              "release_is_contract_fixture": release_binding is None,
-              "config_path": config, "intent": intent, "intent_path": intent_path,
-              "progression": result, "preparation_queue": queue,
-              "environment": values, "object_bytes_uploaded": store.uploaded_bytes,
-              "object_bytes_read_back": store.read_bytes}
+    output = {
+        "claim_ceiling": "development_only",
+        "source_commit": source_commit,
+        "release_is_contract_fixture": release_binding is None,
+        "config_path": config,
+        "intent": intent,
+        "intent_path": intent_path,
+        "progression": result,
+        "preparation_queue": queue,
+        "environment": values,
+        "object_bytes_uploaded": store.uploaded_bytes,
+        "object_bytes_read_back": store.read_bytes,
+    }
     if factory_record:
         factory = json.loads(Path(factory_record["path"]).read_text())
         output["factory"] = factory
@@ -128,11 +168,18 @@ def advance_fixture_intake(*, host_root: Path, object_root: Path, source_commit:
     return output
 
 
-def _fixture_render_inputs(*, envelope: dict, stage_one_configuration: dict, output_root: Path) -> dict:
+def _fixture_render_inputs(
+    *, envelope: dict, stage_one_configuration: dict, output_root: Path
+) -> dict:
     """External renderer fixture; source/reference admission stays in the worker."""
     from PIL import Image
-    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import materialize_scene_configuration_render_inputs
-    seed = canonical_digest({"envelope": envelope["envelope_digest"], "stage": stage_one_configuration})
+    from blueprint_pipeline.task_evaluation_scene_configuration_render_inputs import (
+        materialize_scene_configuration_render_inputs,
+    )
+
+    seed = canonical_digest(
+        {"envelope": envelope["envelope_digest"], "stage": stage_one_configuration}
+    )
 
     def renderer(**kwargs):
         root = kwargs["output_dir"]
@@ -141,34 +188,63 @@ def _fixture_render_inputs(*, envelope: dict, stage_one_configuration: dict, out
         for index, camera in enumerate(kwargs["cameras"]):
             path = root / f"fixture-{index:02d}.png"
             intrinsics = camera["intrinsics"]
-            Image.new("RGB", (int(intrinsics["width"]), int(intrinsics["height"])),
-                      (index * 20, 80, 160)).save(path)
-            rows.append({"camera_id": camera["camera_id"], "relative_path": path.name,
-                         "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()})
-        value = {"status": "rendered_exact_cameras", "authorization_class": "method_input",
-            "render_count": len(rows), "splat_digest": kwargs["source_splat_digest"],
-            "renders": rows, "fixture_provider": True, "sealed_camera_render_manifest_digest": ""}
-        value["sealed_camera_render_manifest_digest"] = canonical_digest(value, digest_field="sealed_camera_render_manifest_digest")
+            Image.new(
+                "RGB", (int(intrinsics["width"]), int(intrinsics["height"])), (index * 20, 80, 160)
+            ).save(path)
+            rows.append(
+                {
+                    "camera_id": camera["camera_id"],
+                    "relative_path": path.name,
+                    "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        value = {
+            "status": "rendered_exact_cameras",
+            "authorization_class": "method_input",
+            "render_count": len(rows),
+            "splat_digest": kwargs["source_splat_digest"],
+            "renders": rows,
+            "fixture_provider": True,
+            "sealed_camera_render_manifest_digest": "",
+        }
+        value["sealed_camera_render_manifest_digest"] = canonical_digest(
+            value, digest_field="sealed_camera_render_manifest_digest"
+        )
         return value
 
     identity = {"fixture_provider": True, "fixture_input_digest": seed, "renderer_qualified": False}
-    value = materialize_scene_configuration_render_inputs(envelope=envelope,
-        stage_one_configuration=stage_one_configuration, output_root=output_root,
-        renderer=renderer, runtime_resolver=lambda **kwargs: {
-            "renderer_root": str(output_root), "node": "fixture-no-executable",
-            "browser_executable": "fixture-no-executable", "identity": identity})
-    value.update(fixture_provider=True, fixture_input_digest=seed, claim_ceiling="development_only",
-                 renderer_qualified=False, physical_truth_claimed=False)
+    value = materialize_scene_configuration_render_inputs(
+        envelope=envelope,
+        stage_one_configuration=stage_one_configuration,
+        output_root=output_root,
+        renderer=renderer,
+        runtime_resolver=lambda **kwargs: {
+            "renderer_root": str(output_root),
+            "node": "fixture-no-executable",
+            "browser_executable": "fixture-no-executable",
+            "identity": identity,
+        },
+    )
+    value.update(
+        fixture_provider=True,
+        fixture_input_digest=seed,
+        claim_ceiling="development_only",
+        renderer_qualified=False,
+        physical_truth_claimed=False,
+    )
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
     return value
 
 
-def advance_fixture_preparation(*, intake: dict, object_root: Path,
-                                reservation_root: Path, pins_root: Path) -> dict:
+def advance_fixture_preparation(
+    *, intake: dict, object_root: Path, reservation_root: Path, pins_root: Path
+) -> dict:
     from blueprint_pipeline.task_evaluation_launch_preparation_worker import (
-        default_reference_fetcher, process_launch_preparation_queue,
+        default_reference_fetcher,
+        process_launch_preparation_queue,
     )
     from blueprint_pipeline.task_evaluation_owner_source_store import PREFIX
+
     store = FilesystemObjectStore(object_root)
     host = intake["config_path"].parent
     construction = host / "construction-queue"
@@ -188,52 +264,101 @@ def advance_fixture_preparation(*, intake: dict, object_root: Path,
                 shutil.copyfileobj(source, target, 1024 * 1024)
 
     with fixture_environment(intake["environment"]):
-        run = process_launch_preparation_queue(queue_root=intake["preparation_queue"],
+        run = process_launch_preparation_queue(
+            queue_root=intake["preparation_queue"],
             input_root=host.parent / "prepared-references",
             allowed_uri_prefixes=["s3://blueprint/task-evaluation/"],
-            service_account=pwd.getpwuid(os.geteuid()).pw_name, source_commit=intake["source_commit"],
-            fetcher=fetch, scene_render_input_materializer=_fixture_render_inputs,
-            construction_queue_root=construction, episode_compilation_queue_root=host / "episode-compilation",
-            disk_reservation_root=reservation_root, storage_pins_root=pins_root,
-            installed_source_environment={})
+            service_account=pwd.getpwuid(os.geteuid()).pw_name,
+            source_commit=intake["source_commit"],
+            fetcher=fetch,
+            scene_render_input_materializer=_fixture_render_inputs,
+            construction_queue_root=construction,
+            episode_compilation_queue_root=host / "episode-compilation",
+            disk_reservation_root=reservation_root,
+            storage_pins_root=pins_root,
+            installed_source_environment={},
+        )
     rows = list((construction / "pending").glob("*.json"))
     compilations = host / "episode-compilation"
     episode_rows = list((compilations / "pending").glob("*.json"))
-    return {"run": run, "construction_queue": construction,
-            "object_bytes_fetched": store.read_bytes,
-            "compilation_queue": compilations,
-            "compilation_envelope": json.loads(episode_rows[0].read_text()) if len(episode_rows) == 1 else None,
-            "construction_envelope": json.loads(rows[0].read_text()) if len(rows) == 1 else None}
+    return {
+        "run": run,
+        "construction_queue": construction,
+        "object_bytes_fetched": store.read_bytes,
+        "compilation_queue": compilations,
+        "compilation_envelope": json.loads(episode_rows[0].read_text())
+        if len(episode_rows) == 1
+        else None,
+        "construction_envelope": json.loads(rows[0].read_text()) if len(rows) == 1 else None,
+    }
 
 
-def advance_fixture_configuration(*, preparation: dict, object_root: Path, output_root: Path,
-                                  provider=None, provider_output_root: Path | None = None) -> dict:
-    from blueprint_pipeline.task_evaluation_scene_configuration_publication import publish_configured_scene_revision
-    from blueprint_pipeline.task_evaluation_scene_construction_queue import finalize_scene_construction
-    from scripts.control_plane_concurrency_provider import fixture_publisher, fixture_scene_artifacts
+def advance_fixture_configuration(
+    *,
+    preparation: dict,
+    object_root: Path,
+    output_root: Path,
+    provider=None,
+    provider_output_root: Path | None = None,
+) -> dict:
+    from blueprint_pipeline.task_evaluation_scene_configuration_publication import (
+        publish_configured_scene_revision,
+    )
+    from blueprint_pipeline.task_evaluation_scene_construction_queue import (
+        finalize_scene_construction,
+    )
+    from scripts.control_plane_concurrency_provider import (
+        fixture_publisher,
+        fixture_scene_artifacts,
+    )
+
     envelope = preparation["construction_envelope"]
-    output_root.mkdir(mode=0o700,parents=True,exist_ok=True)
-    stage_results = (provider or fixture_scene_artifacts)(envelope=envelope,
-        output_root=provider_output_root if provider_output_root is not None else output_root / "fixture-provider")
-    if any(row.get("fixture_input_digest") != envelope["envelope_digest"]
-           or row.get("actual_provider_calls") != 0 for row in stage_results):
+    output_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stage_results = (provider or fixture_scene_artifacts)(
+        envelope=envelope,
+        output_root=provider_output_root
+        if provider_output_root is not None
+        else output_root / "fixture-provider",
+    )
+    if any(
+        row.get("fixture_input_digest") != envelope["envelope_digest"]
+        or row.get("actual_provider_calls") != 0
+        for row in stage_results
+    ):
         raise ValueError("harness_fixture_provider_input_mismatch")
     (output_root / "publication").mkdir(mode=0o700)
-    publication = publish_configured_scene_revision(envelope=envelope, stage_results=stage_results,
-        output_root=output_root / "publication", publisher=fixture_publisher(object_root))
+    publication = publish_configured_scene_revision(
+        envelope=envelope,
+        stage_results=stage_results,
+        output_root=output_root / "publication",
+        publisher=fixture_publisher(object_root),
+    )
     revision = json.loads(Path(publication["configured_scene_revision"]["path"]).read_text())
-    terminal = {"schema_version": "task_evaluation_scene_configuration_vast_result.v1",
-                "status": "completed", "run_id": envelope["run_id"],
-                "source_commit": envelope["expected_production_commit"],
-                "fixture_provider": True, "actual_provider_calls": 0, "claim_ceiling": "development_only",
-                "configuration_completed": True, "configured_scene_published": True,
-                "configured_scene_revision_digest": revision["revision_digest"],
-                "publication_result_digest": publication["result_digest"],
-                "full_byte_service_account_readback_passed": True, "provider_mutations_performed": 1,
-                "retry_cap": 0, "evaluation_episode_executed": False, "candidate_policy_queried": False,
-                "continuing_spend_from_this_run": False, "blockers": []}
-    finalization = finalize_scene_construction(queue_root=preparation["construction_queue"],
-        envelope={**envelope, "control_plane_envelope_digest": envelope["envelope_digest"]}, terminal_result=terminal)
+    terminal = {
+        "schema_version": "task_evaluation_scene_configuration_vast_result.v1",
+        "status": "completed",
+        "run_id": envelope["run_id"],
+        "source_commit": envelope["expected_production_commit"],
+        "fixture_provider": True,
+        "actual_provider_calls": 0,
+        "claim_ceiling": "development_only",
+        "configuration_completed": True,
+        "configured_scene_published": True,
+        "configured_scene_revision_digest": revision["revision_digest"],
+        "publication_result_digest": publication["result_digest"],
+        "full_byte_service_account_readback_passed": True,
+        "provider_mutations_performed": 1,
+        "retry_cap": 0,
+        "evaluation_episode_executed": False,
+        "candidate_policy_queried": False,
+        "continuing_spend_from_this_run": False,
+        "blockers": [],
+    }
+    finalization = finalize_scene_construction(
+        queue_root=preparation["construction_queue"],
+        envelope={**envelope, "control_plane_envelope_digest": envelope["envelope_digest"]},
+        terminal_result=terminal,
+    )
     terminal["scene_construction_queue_finalization"] = finalization
     terminal["result_digest"] = canonical_digest(terminal, digest_field="result_digest")
     return {"publication": publication, "revision": revision, "terminal": terminal}

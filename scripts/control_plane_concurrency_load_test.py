@@ -21,15 +21,28 @@ from typing import Any, Sequence
 from blueprint_pipeline.control_plane_disk_usage import tree_usage
 
 REQUIRED_STAGES = (
-    "scene_intake", "scene_preparation", "scene_configuration", "launch_preparation",
-    "episode_compilation", "launch_activation", "policy_output_ingestion", "result_delivery", "retirement",
+    "scene_intake",
+    "scene_preparation",
+    "scene_configuration",
+    "launch_preparation",
+    "episode_compilation",
+    "launch_activation",
+    "policy_output_ingestion",
+    "result_delivery",
+    "retirement",
 )
 
 
 def child_environment(environment: dict[str, str]) -> dict[str, str]:
     """Allow runtime paths only; production credentials and root settings never leak."""
-    return {**{key: value for key, value in environment.items()
-              if key in {"PATH", "PYTHONPATH", "LANG", "LC_ALL"}}, "PYTHONDONTWRITEBYTECODE": "1"}
+    return {
+        **{
+            key: value
+            for key, value in environment.items()
+            if key in {"PATH", "PYTHONPATH", "LANG", "LC_ALL"}
+        },
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
 
 
 def install_child_fences(owned_roots: Sequence[Path]) -> None:
@@ -37,27 +50,28 @@ def install_child_fences(owned_roots: Sequence[Path]) -> None:
     roots = tuple(Path(root).resolve(strict=True) for root in owned_roots)
 
     def descriptor_path(descriptor: int) -> Path:
-        if sys.platform=='darwin':
-            raw=fcntl.fcntl(descriptor,50,bytes(1024)).split(b'\0',1)[0]
+        if sys.platform == "darwin":
+            raw = fcntl.fcntl(descriptor, 50, bytes(1024)).split(b"\0", 1)[0]
             return Path(os.fsdecode(raw))
-        return Path(os.readlink('/proc/self/fd/'+str(descriptor)))
+        return Path(os.readlink("/proc/self/fd/" + str(descriptor)))
 
     def owned(path: Any, dir_fd=None) -> bool:
         try:
-            if isinstance(path,int):
-                target=descriptor_path(path).resolve()
+            if isinstance(path, int):
+                target = descriptor_path(path).resolve()
             else:
-                target=Path(os.fsdecode(path))
-                if dir_fd not in (None,-1) and not target.is_absolute():
-                    if not stat.S_ISDIR(os.fstat(dir_fd).st_mode):return False
-                    target=descriptor_path(dir_fd)/target
-                target=target.resolve()
+                target = Path(os.fsdecode(path))
+                if dir_fd not in (None, -1) and not target.is_absolute():
+                    if not stat.S_ISDIR(os.fstat(dir_fd).st_mode):
+                        return False
+                    target = descriptor_path(dir_fd) / target
+                target = target.resolve()
         except (TypeError, ValueError, OSError):
             return False
         return any(target == root or target.is_relative_to(root) for root in roots)
 
     def check(path: Any, dir_fd=None) -> None:
-        if not owned(path,dir_fd):
+        if not owned(path, dir_fd):
             raise PermissionError("concurrency_harness_write_outside_owned_roots")
 
     def audit(event: str, args: tuple[Any, ...]) -> None:
@@ -72,30 +86,40 @@ def install_child_fences(owned_roots: Sequence[Path]) -> None:
             arguments = list(command[1:]) if isinstance(command, (list, tuple)) else []
             if len(arguments) >= 3 and arguments[0] == "-C":
                 arguments = arguments[2:]
-            if (not isinstance(command, (list, tuple)) or len(command) < 2
-                    or Path(command[0]).name != "git"
-                    or not arguments or arguments[0] not in {"rev-parse", "status", "show", "ls-files", "archive"}
-                    or any(arg.startswith(("--output", "--exec")) for arg in arguments)):
+            if (
+                not isinstance(command, (list, tuple))
+                or len(command) < 2
+                or Path(command[0]).name != "git"
+                or not arguments
+                or arguments[0] not in {"rev-parse", "status", "show", "ls-files", "archive"}
+                or any(arg.startswith(("--output", "--exec")) for arg in arguments)
+            ):
                 raise PermissionError("concurrency_harness_provider_subprocess_denied")
         if event == "open":
             path, mode, flags = args
             if not isinstance(path, int):
                 target = Path(os.fsdecode(path)).resolve()
-                if (target.is_relative_to('/etc/blueprint')
-                        or '.blueprint-secrets' in target.parts):
+                if target.is_relative_to("/etc/blueprint") or ".blueprint-secrets" in target.parts:
                     raise PermissionError("concurrency_harness_live_credentials_denied")
             if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
                 check(path)
-        descriptor_index={'os.mkdir':2,'os.remove':1,'os.rmdir':1,'os.chmod':2,'os.chown':3,'os.utime':3}
+        descriptor_index = {
+            "os.mkdir": 2,
+            "os.remove": 1,
+            "os.rmdir": 1,
+            "os.chmod": 2,
+            "os.chown": 3,
+            "os.utime": 3,
+        }
         if event in descriptor_index:
-            check(args[0],args[descriptor_index[event]])
-        if event=='os.truncate':
+            check(args[0], args[descriptor_index[event]])
+        if event == "os.truncate":
             check(args[0])
         if event in {"os.rename", "os.link"}:
-            check(args[0],args[2])
-            check(args[1],args[3])
+            check(args[0], args[2])
+            check(args[1], args[3])
         if event == "os.symlink":
-            check(args[1],args[2])
+            check(args[1], args[2])
 
     sys.addaudithook(audit)
 
@@ -127,8 +151,10 @@ def argument_parser() -> argparse.ArgumentParser:
 
 def p95(values: Sequence[float]) -> float:
     """Nearest-rank p95; an empty or invalid sample is never zero."""
-    if not values or any(isinstance(v, bool) or not isinstance(v, (float, int))
-                         or not math.isfinite(v) or v < 0 for v in values):
+    if not values or any(
+        isinstance(v, bool) or not isinstance(v, (float, int)) or not math.isfinite(v) or v < 0
+        for v in values
+    ):
         raise ValueError("unmeasured_or_invalid_samples")
     return sorted(values)[math.ceil(len(values) * 0.95) - 1]
 
@@ -142,6 +168,7 @@ def allocated_tree_bytes(root: Path) -> int:
 
 class AllocationSampler:
     """Continuously measure allocated bytes, retaining every measurement error."""
+
     def __init__(self, root: Path, *, interval_seconds: float = 0.1):
         if not math.isfinite(interval_seconds) or interval_seconds <= 0:
             raise ValueError("allocation_sampling_interval_invalid")
@@ -169,13 +196,19 @@ class AllocationSampler:
         self.final_bytes = value
         self.peak_bytes = max(self.peak_bytes, value)
         self.sample_count += 1
-        usage=os.statvfs(self.root)
-        self.samples.append({'observed_at_epoch':time.time(),'allocated_bytes':value,
-            'filesystem_free_bytes':usage.f_bavail*usage.f_frsize})
+        usage = os.statvfs(self.root)
+        self.samples.append(
+            {
+                "observed_at_epoch": time.time(),
+                "allocated_bytes": value,
+                "filesystem_free_bytes": usage.f_bavail * usage.f_frsize,
+            }
+        )
 
     def __enter__(self):
         self.sample()
         self.initial_bytes = self.final_bytes
+
         def monitor():
             while not self.stop.wait(self.interval_seconds):
                 try:
@@ -183,6 +216,7 @@ class AllocationSampler:
                 except Exception as exc:
                     self.errors.append(exc)
                     return
+
         self.thread = threading.Thread(target=monitor, daemon=True)
         self.thread.start()
         return self
@@ -199,7 +233,11 @@ class AllocationSampler:
 
 def create_run_roots(control_plane: Path, objects: Path, workers: Path) -> dict[str, Path]:
     """Create exclusive owned roots after checking all paths; never reuse user work."""
-    roots = {"control_plane": Path(control_plane), "objects": Path(objects), "workers": Path(workers)}
+    roots = {
+        "control_plane": Path(control_plane),
+        "objects": Path(objects),
+        "workers": Path(workers),
+    }
     resolved = []
     for path in roots.values():
         if path.exists() or path.is_symlink():
@@ -209,7 +247,7 @@ def create_run_roots(control_plane: Path, objects: Path, workers: Path) -> dict[
                 raise ValueError("run_root_parent_symlink")
         resolved.append(path.absolute())
     for i, first in enumerate(resolved):
-        for second in resolved[i + 1:]:
+        for second in resolved[i + 1 :]:
             if first == second or first in second.parents or second in first.parents:
                 raise ValueError("run_roots_overlap")
     for path in roots.values():
@@ -221,10 +259,20 @@ def create_run_roots(control_plane: Path, objects: Path, workers: Path) -> dict[
     return roots
 
 
-def build_summary(*, source_commit: str, expected_beta_concurrency: int, owner_confirmed: bool,
-                  scenes: list[dict[str, Any]], measured_peak_concurrency: int, concurrency_hold_seconds: float,
-                  baseline_allocated_bytes: int, final_allocated_bytes: int, maximum_retained_bytes: int,
-                  maximum_delta_bytes: int, external_calls: int) -> dict[str, Any]:
+def build_summary(
+    *,
+    source_commit: str,
+    expected_beta_concurrency: int,
+    owner_confirmed: bool,
+    scenes: list[dict[str, Any]],
+    measured_peak_concurrency: int,
+    concurrency_hold_seconds: float,
+    baseline_allocated_bytes: int,
+    final_allocated_bytes: int,
+    maximum_retained_bytes: int,
+    maximum_delta_bytes: int,
+    external_calls: int,
+) -> dict[str, Any]:
     """Fail acceptance when even one chain, concurrency or retention gate is absent."""
     count = 2 * expected_beta_concurrency
     blockers: list[str] = []
@@ -250,7 +298,9 @@ def build_summary(*, source_commit: str, expected_beta_concurrency: int, owner_c
         for row in rows:
             if row.get("status") != "completed":
                 good = False
-                blockers.extend(row.get("blockers") or [f"stage_incomplete:{identity}:{row.get('stage')}"])
+                blockers.extend(
+                    row.get("blockers") or [f"stage_incomplete:{identity}:{row.get('stage')}"]
+                )
             if row.get("stage") in samples and row.get("status") == "completed":
                 samples[row["stage"]].append(row)
         for field in ("residual_leases", "residual_pins"):
@@ -258,18 +308,34 @@ def build_summary(*, source_commit: str, expected_beta_concurrency: int, owner_c
                 blockers.append(f"{field}:{identity}")
                 good = False
         completed += int(good)
-    metrics = {name: {field + "_p95": p95([row[field] for row in rows])
-                     for field in ("wall_seconds", "cpu_seconds", "peak_allocated_bytes")}
-               for name, rows in samples.items() if rows}
-    return {"schema_version": "control_plane_concurrency_acceptance.v1", "source_commit": source_commit,
-            "claim_ceiling": "development_only", "expected_beta_concurrency": expected_beta_concurrency,
-            "requested_scenes": count, "completed_scenes": completed,
-            "measured_peak_concurrency": measured_peak_concurrency,
-            "concurrency_hold_seconds": concurrency_hold_seconds, "p95_method": "nearest_rank",
-            "stage_metrics": metrics, "baseline_allocated_bytes": baseline_allocated_bytes,
-            "final_allocated_bytes": final_allocated_bytes, "control_plane_delta_bytes": delta,
-            "maximum_retained_bytes": maximum_retained_bytes, "maximum_delta_bytes": maximum_delta_bytes,
-            "owner_confirmed_concurrency": owner_confirmed,
-            "owner_sized_acceptance_complete": owner_confirmed and not blockers,
-            "external_calls": external_calls, "status": "failed" if blockers else "passed",
-            "blockers": sorted(set(blockers)), "scenes": scenes}
+    metrics = {
+        name: {
+            field + "_p95": p95([row[field] for row in rows])
+            for field in ("wall_seconds", "cpu_seconds", "peak_allocated_bytes")
+        }
+        for name, rows in samples.items()
+        if rows
+    }
+    return {
+        "schema_version": "control_plane_concurrency_acceptance.v1",
+        "source_commit": source_commit,
+        "claim_ceiling": "development_only",
+        "expected_beta_concurrency": expected_beta_concurrency,
+        "requested_scenes": count,
+        "completed_scenes": completed,
+        "measured_peak_concurrency": measured_peak_concurrency,
+        "concurrency_hold_seconds": concurrency_hold_seconds,
+        "p95_method": "nearest_rank",
+        "stage_metrics": metrics,
+        "baseline_allocated_bytes": baseline_allocated_bytes,
+        "final_allocated_bytes": final_allocated_bytes,
+        "control_plane_delta_bytes": delta,
+        "maximum_retained_bytes": maximum_retained_bytes,
+        "maximum_delta_bytes": maximum_delta_bytes,
+        "owner_confirmed_concurrency": owner_confirmed,
+        "owner_sized_acceptance_complete": owner_confirmed and not blockers,
+        "external_calls": external_calls,
+        "status": "failed" if blockers else "passed",
+        "blockers": sorted(set(blockers)),
+        "scenes": scenes,
+    }
