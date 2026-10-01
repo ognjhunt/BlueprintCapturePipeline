@@ -122,6 +122,18 @@ def test_diagnostic_native_failure_stops_before_unrelated_cases_without_reducing
     assert not any(flag in run for flag in ('--deselect', '--ignore', '-k '))
 
 
+def test_retained_failed_restore_paths_execute_before_remaining_native_cases():
+    from tests.historical_generation_native_acceptance import CONNECTED_CASES
+    assert [row[0] for row in CONNECTED_CASES[:5]] == [
+        'maximum_depth_restore', 'before_restore_final', 'unwritten_stage', 'unlogged_directory', 'reconcile_resume_remove']
+    assert len(CONNECTED_CASES) == len(dict(CONNECTED_CASES)) == 38
+    run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
+               if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
+    selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
+    assert selected[1] == 'tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption'
+    assert '--maxfail=1' in run and '--deselect' not in run and '-k ' not in run
+
+
 def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> None:
     from tests.historical_generation_native_acceptance import CONNECTED_CASES
     assert dict(CONNECTED_CASES)['reconcile_absent_expiry'] == dict(action='offload',
