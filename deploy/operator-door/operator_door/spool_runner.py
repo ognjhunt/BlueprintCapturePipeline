@@ -215,6 +215,23 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
+    "unit": _LaunchSpec(
+        "blueprint-operator-door-notifier-repair", "door-repair-notifier-binding.sh", "60s",
+        lambda _request: "postchecks",
+        lambda config, request: {
+            "DOOR_INSTALL_ROOT": config.install_root,
+            "DOOR_EXPECTED_POSTCHECK_SHA256": request["expected_postcheck_sha256"],
+            "DOOR_EXPECTED_SOURCE_COMMIT": request["expected_source_commit"],
+        },
+        lambda config, _request: (
+            "ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+            "CapabilityBoundingSet=", "AmbientCapabilities=",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            "ReadWritePaths=/etc/systemd/system/blueprint-pipeline-control-plane.service.d "
+            + str(Path(config.spool_root) / "results"),
+        ),
+    ),
     "legacy-owner-census": _LaunchSpec("blueprint-operator-door-legacy-owner-census",
                                       "door-legacy-owner-census.sh", "5min",
                                       lambda _request: "current", _legacy_owner_environment,
@@ -451,6 +468,11 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
     if request["kind"] in {"owner-census-decision", "legacy-owner-census"} and config.owner_census_decisions_enabled != 1:
         return {"status": "refused", "code": "owner_consent_disabled"}
     if request["kind"] == "unit":
+        if request["action"] == "repair-notifier-binding":
+            busy = _active_deploy_unit(runner)
+            if busy is not None:
+                return {"status": "refused", "code": "notifier_repair_deploy_in_progress"}
+            return _launch(config, runner, request_id, request)
         result = runner.run(
             ["systemctl", "--no-block", request["action"], "--", request["unit"]], timeout=30
         )

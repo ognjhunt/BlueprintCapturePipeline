@@ -545,8 +545,10 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     show = commands.add_parser("show")
     show.add_argument("units", nargs="+")
     unit = commands.add_parser("unit")
-    unit.add_argument("action", choices=("start", "reset-failed", "stop", "restart"))
+    unit.add_argument("action", choices=("start", "reset-failed", "stop", "restart", "repair-notifier-binding"))
     unit.add_argument("unit")
+    unit.add_argument("--expected-postcheck-sha256")
+    unit.add_argument("--expected-source-commit")
     hold = commands.add_parser("hold", help="pause a timer or path with an owner and automatic expiry")
     hold.add_argument("unit")
     hold.add_argument("--owner", required=True)
@@ -644,7 +646,15 @@ def run(args: argparse.Namespace) -> int:
     elif command == "show":
         _print(_json("GET", "/units/show", {"unit": ",".join(args.units)}))
     elif command == "unit":
-        return _submit({"kind": "unit", "unit": args.unit, "action": args.action}, args)
+        body = {"kind": "unit", "unit": args.unit, "action": args.action}
+        if args.action == "repair-notifier-binding":
+            if not args.expected_postcheck_sha256 or not args.expected_source_commit:
+                raise DoorError(2, "notifier_repair_expected_identity_required")
+            body.update(expected_postcheck_sha256=args.expected_postcheck_sha256,
+                        expected_source_commit=args.expected_source_commit)
+        elif args.expected_postcheck_sha256 or args.expected_source_commit:
+            raise DoorError(2, "notifier_repair_options_refused")
+        return _submit(body, args)
     elif command == "hold":
         return _submit({"kind": "hold", "unit": args.unit, "owner": args.owner, "reason": args.reason,
                         "expires_in_seconds": args.expires_in_seconds,

@@ -108,6 +108,15 @@ It never returns raw commands or `Environment`, and does not grant file access
 to `/etc/systemd`. This metadata alone does not prove the imported notifier:
 the naturally emitted alert audit owns its source identity and full payload.
 
+`unit repair-notifier-binding blueprint-pipeline-control-plane.service` is a
+fixed migration of the legacy `95-blueprint-active-release.conf` postcheck
+invocation. Supply `--expected-postcheck-sha256` from fresh status and
+`--expected-source-commit` from the proven active release. It requires the
+explicit dispatcher stop, preserves all other directives/hooks, retains a
+root-only original backup, and reloads systemd without starting the service.
+Unknown hook shapes, symlinks or identity drift are refused. No general path
+or command setter is exposed; judge recovery from the next natural alert.
+
 Read roots: `/var/lib/blueprint`, `/opt/blueprint`, `/workspace`,
 `/mnt/blueprint-work`, `/etc/blueprint` (names screened as above) and the
 door's own state. Paths resolve to their real location and must stay inside a
