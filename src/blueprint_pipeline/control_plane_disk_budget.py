@@ -675,9 +675,12 @@ def disk_headroom(
     pid_alive: Callable[[int], bool] = _pid_alive,
     role_targets: Mapping[str, str | Path] | None = None,
     device_of: Callable[[Path], int] = target_device,
+    lock_nonblocking: bool = False,
 ) -> dict[str, Any]:
     """Return a path-free admission projection suitable for an intake API."""
 
+    if type(lock_nonblocking) is not bool:
+        raise ControlPlaneDiskBudgetError("control_plane_disk_budget_lock_mode_invalid")
     targets_by_role: dict[str, Path] = {}
     for role, value in (role_targets or {}).items():
         path = Path(value)
@@ -686,7 +689,10 @@ def disk_headroom(
         targets_by_role[role] = path
     ledger = _prepare_ledger_root(Path(reservation_root).expanduser())
     with os.fdopen(open_ledger_lock(ledger), "a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH | (fcntl.LOCK_NB if lock_nonblocking else 0))
+        except BlockingIOError:
+            raise ControlPlaneDiskBudgetError("control_plane_disk_budget_lock_busy") from None
         _ledger, usage, default_device, reserved, _stale = _snapshot(
             target_root=target_root,
             reservation_root=ledger,

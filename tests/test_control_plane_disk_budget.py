@@ -94,6 +94,26 @@ def test_restore_admission_and_renewal_refuse_a_busy_shared_ledger(tmp_path):
         reservation.release()
 
 
+def test_nonblocking_headroom_refuses_busy_ledger_and_recovers_after_release(tmp_path):
+    import fcntl
+    ledger = disk_budget._prepare_ledger_root(tmp_path / "ledger")
+    descriptor = disk_budget.open_ledger_lock(ledger, require_mode=True)
+    options = dict(target_root=tmp_path, reservation_root=ledger,
+                   disk_usage=lambda _: Usage(100 * GIB, 60 * GIB, 40 * GIB), lock_nonblocking=True)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ControlPlaneDiskBudgetError, match="lock_busy"):
+            disk_headroom(**options)
+    finally:
+        os.close(descriptor)
+    assert disk_headroom(**options)["status"] in {"ok", "low", "exhausted"}
+
+
+def test_headroom_lock_mode_is_typed(tmp_path):
+    with pytest.raises(ControlPlaneDiskBudgetError, match="lock_mode_invalid"):
+        disk_headroom(target_root=tmp_path, reservation_root=tmp_path / "ledger", lock_nonblocking="yes")
+
+
 def test_preinstalled_group_writable_lock_is_not_rechmodded(
     tmp_path, monkeypatch
 ) -> None:

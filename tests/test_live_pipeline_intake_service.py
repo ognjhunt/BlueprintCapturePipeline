@@ -629,6 +629,32 @@ def test_configured_disk_headroom_passes_role_targets(
         "handoff_staging": scratch,
         "launch_dispatch": scratch,
     }
+    assert seen["lock_nonblocking"] is True
+
+
+def test_deployment_identity_reports_source_while_busy_headroom_refuses_all_roles(monkeypatch, tmp_path):
+    import fcntl
+    from blueprint_pipeline import control_plane_disk_budget as disk_budget
+    ledger = disk_budget._prepare_ledger_root(tmp_path / "ledger")
+    descriptor = disk_budget.open_ledger_lock(ledger, require_mode=True)
+    monkeypatch.setenv(service.CONTROL_PLANE_DISK_TARGET_ROOT_ENV, str(tmp_path))
+    monkeypatch.setenv(service.CONTROL_PLANE_DISK_RESERVATION_ROOT_ENV, str(ledger))
+    monkeypatch.setenv(service.PIPELINE_SOURCE_COMMIT_ENV, "a" * 40)
+    monkeypatch.setattr(service, "running_source_commit", lambda *_args: "a" * 40)
+    monkeypatch.delenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS", raising=False)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        response = TestClient(create_app()).get("/api/live-pipeline/version")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["source_commit"] == "a" * 40 and payload["commit_proven"] is True
+        assert payload["disk_headroom"]["status"] == "unknown_fail_closed"
+        assert payload["disk_headroom"]["error_code"] == "control_plane_disk_budget_lock_busy"
+        assert payload["disk_headroom"]["refused_roles"] == list(service.CHAIN_ROLES)
+        for role in service.CHAIN_ROLES:
+            assert service._disk_role_refused(payload, role) is True
+    finally:
+        os.close(descriptor)
 
 
 def test_configured_disk_headroom_fails_closed_for_invalid_targets(
