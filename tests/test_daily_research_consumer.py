@@ -71,8 +71,7 @@ class QAAPI(FakeAPI):
         return canonical(self.qa_result).encode() if aid == "artifact_qa" else super().artifact(sid, aid)
 
 
-@pytest.fixture
-def fixture(tmp_path):
+def consumer_setup(tmp_path, *, failed=False):
     crm = tmp_path / "crm.json"
     save_json(crm, {"sheet_id": SHEET, "complete": True, "captured_at": NOW.isoformat(),
                     "values": [["CRM"], [], [], [], HEADERS]})
@@ -106,11 +105,22 @@ def fixture(tmp_path):
     save_json(tmp_path / "policy.json", policy)
     cfg.update(research_contract_version=3, knowledge_snapshot=str(tmp_path / "knowledge.json"),
                knowledge_refresh_policy=str(tmp_path / "policy.json"))
-    api.raw = canonical(v3(context)).encode()
-    assert Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()["state"] == "awaiting_review"
+    output = v3(context)
+    if failed:
+        from tests.test_daily_research_knowledge import delta
+        proposal = delta()
+        proposal["evidence"][0].update(classification="operator", evidence_level=None)
+        output["proposed_knowledge_deltas"] = [proposal]
+    api.raw = canonical(output).encode()
+    assert Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()["state"] == ("failed" if failed else "awaiting_review")
     consumer = Consumer(ledger, cfg, api, clock=lambda: NOW + timedelta(seconds=30))
     yield consumer, api, ledger, bridge, script
     bridge.close()
+
+
+@pytest.fixture
+def fixture(tmp_path):
+    yield from consumer_setup(tmp_path)
 
 
 def test_automatic_qa_exact_artifact_review_and_private_export(fixture, tmp_path):

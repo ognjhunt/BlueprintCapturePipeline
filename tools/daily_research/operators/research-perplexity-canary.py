@@ -156,13 +156,15 @@ def diagnose_saved_output(ledger, cfg, *, now=None):
     original_validation = check(output)
     try:
         derived, quarantine = recovery.quarantine_null_operator_deltas(output)
+        derived, date_normalizations = recovery.normalize_live_date_precision(derived, row, ledger, checked)
         replay = check(derived)
     except ValueError:
-        quarantine, replay = [], {"valid": False, "error": "output_recovery_no_matching_proposal"}
+        quarantine, date_normalizations, replay = [], [], {"valid": False, "error": "output_recovery_no_matching_proposal"}
     payload_input = row.get("create_payload", {}).get("input", "")
     return {"raw_output_sha256": row["raw_output_digest"], "session_id": row["session_id"], "turn_id": row["turn_id"],
             "original_validation": original_validation, "quarantined_derivation_validation": replay,
             "invalid_fields": [field for proposal in quarantine for field in proposal["invalid_fields"]],
+            "date_normalizations": date_normalizations,
             "candidate_count": len(output.get("candidates", [])), "finding_count": len(output.get("findings", [])),
             "knowledge_delta_count": len(output.get("proposed_knowledge_deltas", [])),
             "blocker_count": len(output.get("blockers", [])), "coverage_digest": digest(output.get("coverage")),
@@ -421,6 +423,14 @@ class CanaryProvider(FencedProvider):
             raise Refusal("canary_stopped_disabled_or_expired_before_qa")
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
+    def repair_input(self, session_id, event, key, day, request_digest, deadline_ms):
+        self.safe(self.ledger.get(day))
+        return super().repair_input(session_id, event, key, day, request_digest, deadline_ms)
+
+    def repair_action_guard(self, day, deadline_ms):
+        self.ledger.bridge.call("guard")
+        return super().repair_action_guard(day, deadline_ms)
+
 
 def run(bridge, cache, *, execute=False, api_factory=CanaryProvider, recovery_only=False,
         stopped=lambda: False, clock=lambda: datetime.now(timezone.utc), sleep=time.sleep):
@@ -431,7 +441,8 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider, recovery_on
         raise Refusal("canary_not_staged")
     existing = ledger.get(DAY)
     if recovery_only:
-        if not existing or not existing.get("qa_continuation") or existing["state"] not in {"awaiting_review", "reviewed", "completed"}:
+        if (not existing or not (existing.get("qa_continuation") or existing.get("validation_repair_authority"))
+                or existing["state"] not in {"awaiting_review", "reviewed", "completed"}):
             raise Refusal("recovered_qa_intent_required")
         qa_deadline(existing, cfg)
     if not existing:
@@ -526,9 +537,57 @@ def summary(row):
                   delivery={name: {"state": value.get("state"), "receipt": value.get("receipt")}
                             for name, value in row.get("delivery", {}).items()},
                   admission_digest=row.get("canary", {}).get("admission_digest"))
+    result["validation_repairs"] = [{k: revision.get(k) for k in (
+        "number", "state", "turn_id", "turn_status", "artifact_digest", "error", "feedback")}
+        for revision in row.get("validation_repairs", [])]
     if BASELINE:
         result["baseline"] = copy.deepcopy(BASELINE)
     return result
+
+
+def repair_report(bridge, cache, *, api_factory=CanaryProvider, stopped=lambda: False,
+                  clock=lambda: datetime.now(timezone.utc), sleep=time.sleep):
+    """One existing-session repair/QA continuation; preserve the root history."""
+    from tools.daily_research.recovery import RepairLoop, repair_deadline
+    ledger = FirestoreLedger(bridge)
+    cfg = render.configured(bridge, cache, allow_create=False)
+    api = api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    api.clock, api.stopped = clock, stopped
+    try:
+        with ledger.lock():
+            row = ledger.get(DAY)
+            control = bridge.call("control")
+            if (not BASELINE or not row or row.get("turn_status") != "completed"
+                    or row.get("artifact_downloaded") is not True or row.get("canary") != control.get("canary")
+                    or row.get("canary", {}).get("baseline", {}).get("soft_total_usd") != 25):
+                raise Refusal("validation_repair_retained_intent_required")
+            if not row.get("validation_repair_authority"):
+                row["validation_repair_authority"] = {
+                    "started_at": clock().isoformat(), "duration_seconds": 1800,
+                    "request": {"scope": "same-session-validation-repair-and-qa-no-outreach",
+                        "authority_reference": "Sentinel_3b6171ff167c8191b378202c5f0c54c0",
+                        "budget_authority_reference": BASELINE["authority_reference"],
+                        "baseline_id": BASELINE["baseline_id"], "soft_total_usd": 25,
+                        "session_id": row["session_id"], "root_turn_id": row["turn_id"],
+                        "raw_output_sha256": row["raw_output_digest"]}}
+                repair_deadline(row)
+                ledger.put(row)
+            discovery.preserve_estimate(row, "canary_model_estimate", spend(api, row))
+            ledger.put(row)
+        loop = RepairLoop(ledger, cfg, api, clock=clock, stopped=stopped)
+        while True:
+            row = loop.step(DAY)
+            if row.get("validation_repairs", [{}])[-1].get("state") == "validated":
+                # Existing consumer provides the distinct evidence-backed QA
+                # and publication gates; no second research/session creation.
+                return run(bridge, cache, api_factory=api_factory, recovery_only=True,
+                           stopped=stopped, clock=clock, sleep=sleep)
+            if (stopped() or clock() >= repair_deadline(row)
+                    or row.get("validation_repairs", [{}])[-1].get("state") == "no_progress"):
+                return summary(row)
+            sleep(3)
+    finally:
+        api.client.close()
 
 
 def record_cleanup(bridge, cache, receipt, *, api_factory=FencedProvider):
@@ -544,7 +603,7 @@ def record_cleanup(bridge, cache, receipt, *, api_factory=FencedProvider):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered"])
+    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output"])
     parser.add_argument("--package", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--approval")
@@ -562,7 +621,7 @@ def main():
         select_attempt(args.attempt, args.date)
     elif args.date is not None:
         raise Refusal("baseline_attempt_identity_invalid")
-    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered"}
+    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output"}
     repair_arguments = (args.repair_package, args.repair_archive, args.repair_source, args.repair_sha256)
     if repair_command != all(repair_arguments) or not repair_command and any(repair_arguments):
         raise Refusal("repair_package_required_or_command_not_admitted")
@@ -572,7 +631,7 @@ def main():
         if Path(args.repair_package).resolve() == Path(args.package).resolve():
             raise Refusal("repair_must_preserve_installed_package")
         repair_receipt = repair_package_receipt(args.repair_package, args.repair_archive, args.repair_sha256, args.repair_source)
-    if args.command in {"execute", "reconcile", "resume-qa"}:
+    if args.command in {"execute", "reconcile", "resume-qa", "repair-output"}:
         verify_process_watchdog()
     stop = {"requested": False}
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -633,8 +692,11 @@ def main():
                 # This explicitly paid command is distinct from diagnosis,
                 # repricing and packet recovery, and has no root-create path.
                 result = run(bridge, cache, recovery_only=True, stopped=lambda: stop["requested"])
+            elif args.command == "repair-output":
+                result = repair_report(bridge, cache, stopped=lambda: stop["requested"])
             elif args.command == "export-recovered":
-                if not args.output or not FirestoreLedger(bridge).get(DAY).get("output_recovery"):
+                row = FirestoreLedger(bridge).get(DAY)
+                if not args.output or not (row.get("output_recovery") or row.get("validation_repairs")):
                     raise Refusal("recovered_export_requires_output_and_receipt")
                 result = render.export_snapshot(bridge, DAY, args.output)
             elif args.command == "abandon-unstarted":

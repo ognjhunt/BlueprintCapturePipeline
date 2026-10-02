@@ -127,6 +127,7 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
     ledger = FirestoreLedger(bridge)
     cfg = configured(bridge, cache)
     api = api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    api.stopped = stopped
     consumer = Consumer(ledger, cfg, api, stopped=stopped)
     consumer.active_day = day
     try:
@@ -137,6 +138,26 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
         row = ledger.get(active_day) if active_day else None
         until = time.monotonic() + observation_seconds(row, cfg, "qa")
         while True:
+            if row and row["state"] == "failed" and row.get("artifact_downloaded"):
+                from tools.daily_research.recovery import RepairLoop
+                latest = row.get("validation_repairs", [])
+                active = latest and latest[-1]["state"] in {"running", "input_unresolved", "cancel_pending"}
+                if not active and (not workflow(bridge.call("control")) or stopped()):
+                    return {"state": "workflow_disabled", "date": row["date"]}
+                row = RepairLoop(ledger, cfg, api, clock=lambda: datetime.now(timezone.utc), stopped=stopped).step(row["date"])
+                if row["state"] == "awaiting_review":
+                    consumer.active_day = row["date"]
+                elif row.get("validation_repairs", [{}])[-1].get("state") == "no_progress":
+                    return {"state": "validation_repair_blocked", "date": row["date"],
+                            "error": row["validation_repairs"][-1].get("error"),
+                            "feedback": row["validation_repairs"][-1].get("feedback")}
+                elif stopped():
+                    return {"state": "validation_repair_cancel_pending", "date": row["date"]}
+                elif time.monotonic() >= until:
+                    raise Refusal("workflow_observation_deadline")
+                else:
+                    time.sleep(3)
+                    continue
             result = consumer.step()
             if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_cancel_pending", "reviewed"}:
                 return result
@@ -166,6 +187,22 @@ def export_snapshot(bridge, day, destination):
                 or digest(json.loads(files["recovery"])) != recovery.get("digest")
                 or recovery.get("request", {}).get("raw_output_sha256") != row.get("raw_output_digest")):
             raise Refusal("output_recovery_export_binding_mismatch")
+    for number, revision in enumerate(row.get("validation_repairs", []), 1):
+        input_kind, artifact_kind = f"repair-{number}-input", f"repair-{number}-artifact"
+        if (revision.get("number") != number or revision.get("input_file") != day + "-" + input_kind + ".json"
+                or input_kind not in files or digest(json.loads(files[input_kind])) != revision.get("request_digest")):
+            raise Refusal("validation_repair_export_binding_mismatch")
+        if revision.get("artifact_file") and (revision["artifact_file"] != day + "-" + artifact_kind + ".json"
+                or artifact_kind not in files
+                or hashlib.sha256(files[artifact_kind]).hexdigest() != revision.get("artifact_digest")):
+            raise Refusal("validation_repair_export_binding_mismatch")
+    revisions = row.get("validation_repairs", [])
+    if revisions and revisions[-1].get("state") == "validated":
+        current = revisions[-1]
+        if row.get("packet", {}).get("research_revision") != {
+                "number": current["number"], "turn_id": current["turn_id"],
+                "artifact_sha256": current["artifact_digest"], "original_artifact_sha256": row["raw_output_digest"]}:
+            raise Refusal("validation_repair_export_packet_binding_mismatch")
     if "evidence" in files and digest(json.loads(files["evidence"])) != row.get("evidence_digest"):
         raise Refusal("evidence_digest_mismatch")
     if "review" in files:
@@ -185,15 +222,17 @@ def export_snapshot(bridge, day, destination):
         if not call.get("result_file"):
             continue
         raw = files.get("tool-" + cid)
-        expected_turn = row.get("turn_id") if call.get("phase") == "research" else row.get("qa", {}).get("turn_id")
+        expected_turns = ({row.get("turn_id")} if call.get("phase") == "research" else
+                          {r.get("turn_id") for r in row.get("validation_repairs", [])} if call.get("phase") == "repair"
+                          else {row.get("qa", {}).get("turn_id")})
         if (call["result_file"] != day + "-tool-" + cid + ".json" or raw is None
                 or hashlib.sha256(raw).hexdigest() != call.get("result_sha256")
                 or len(raw) != call.get("result_bytes") or digest(call.get("request")) != call.get("request_digest")):
             raise Refusal("research_tool_result_digest_mismatch")
         event = json.loads(raw)
-        if (digest(event) != call.get("result_digest") or event.get("turn_id") != expected_turn
+        if (digest(event) != call.get("result_digest") or event.get("turn_id") not in expected_turns
                 or event.get("call_id") != cid or call["request"].get("call_id") != cid
-                or call["request"].get("turn_id") != expected_turn
+                or call["request"].get("turn_id") not in expected_turns
                 or event.get("type") != "agent.session.input.tool_result"):
             raise Refusal("research_tool_result_digest_mismatch")
     destination = Path(destination)

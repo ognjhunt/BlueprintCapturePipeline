@@ -37,9 +37,14 @@ def lookup(context, record_id, fact_id):
 
 
 def evidence(value, day, context, observed_at=None, *, policy=None):
-    if value["role"] in {"capability", "background"}:
+    if value["role"] == "capability":
         require(value["evidence_level"] in LEVELS, "evidence_level_invalid")
         require(value["evidence_level"] != "unknown", "unsupported_evidence_level")
+    elif value["role"] == "background":
+        # Ordinary company/operator context is not a robot maturity claim.
+        # Background never supplies the required positive capability coverage;
+        # snapshot context still has its exact reviewed fact binding below.
+        require(value["evidence_level"] is None or value["evidence_level"] in LEVELS, "evidence_level_invalid")
     else:
         require(value["evidence_level"] is None, "site_evidence_level_must_be_null")
     require(value["checked_date"] == checked_day(value["source_checked_at"]), "evidence_date_integrity_invalid")

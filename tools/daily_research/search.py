@@ -306,13 +306,17 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
         return False
     if len(canonical(row).encode()) > MAX_RECORD:
         raise Refusal("research_tool_record_resource_ceiling")
-    tid = row.get("turn_id") if phase == "research" else row.get("qa", {}).get("turn_id")
+    tid = row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
+          if phase == "repair" else row.get("qa", {}).get("turn_id"))
     deadline = instant(row["started_at"]).timestamp() + phase_runtime_seconds(row, {}, phase)
     if phase == "qa" and row.get("qa_continuation"):
         # Local import avoids the module initialization cycle. The consumer's
         # validated receipt governs QA tools too; research keeps its old bound.
         from tools.daily_research.consumer import qa_deadline
         deadline = qa_deadline(row, {}).timestamp()
+    if phase == "repair" or phase == "qa" and row.get("validation_repair_authority"):
+        from tools.daily_research.recovery import repair_deadline
+        deadline = repair_deadline(row).timestamp()
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":

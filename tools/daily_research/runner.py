@@ -344,14 +344,17 @@ def validate_output(output, run_date, known, *, contract_version=1, knowledge_co
             roles.add(e["role"])
         if (not {"task", "capability", "geography"} <= roles if contract_version == 3 else roles != {"task", "capability", "geography"}):
             raise Refusal("task_capability_geography_evidence_required")
-        if not any(e["role"] == "task" and e["classification"] == "operator"
-                   and public_url(e["url"]) == public_url(c["organization_url"]) for e in c["evidence"]):
-            raise Refusal("operator_task_source_domain_mismatch")
+        operator_task_sources = [e for e in c["evidence"] if e["role"] == "task" and e["classification"] == "operator"]
+        if not operator_task_sources:
+            raise Refusal("operator_task_source_required")
+        affiliation_review = not any(public_url(e["url"]) == public_url(c["organization_url"])
+                                     for e in operator_task_sources)
         identities = keys(c)
         if identities & known:
             duplicates.append({"organization": c["organization"], "site": c["site"], "reason": "matching_site_task"})
         else:
-            accepted.append({**c, "candidate_key": min(identities), "identity_keys": sorted(identities)})
+            accepted.append({**c, "candidate_key": min(identities), "identity_keys": sorted(identities),
+                             "operator_affiliation_qa_required": affiliation_review})
             known.update(identities)
     return accepted, duplicates
 
@@ -941,12 +944,14 @@ class Runner:
                 if original != json.loads(self.ledger.read_bytes(day + "-output.json")):
                     raise Refusal("output_recovery_original_output_mismatch")
                 derived, quarantined = recovery.quarantine_null_operator_deltas(original)
+                derived, date_normalizations = recovery.normalize_live_date_precision(derived, row, self.ledger, self.clock())
             except (ValueError, UnicodeError, TypeError, AttributeError):
                 raise Refusal("output_recovery_derivation_invalid") from None
             envelope = {"schema_version": "blueprint.research-output-recovery.v1", "request": receipt,
                         "original_failure": "knowledge_delta_evidence_invalid", "raw_output_sha256": receipt["raw_output_sha256"],
                         "derived_output": derived, "derived_output_digest": digest(derived),
                         "quarantined_proposals": quarantined, "knowledge_approved": False,
+                        "date_normalizations": date_normalizations,
                         "provider_mutations": 0, "qa_required": True}
             binding = {"file": day + "-recovery.json", "digest": digest(envelope), "request": receipt}
             if existing and existing != binding:
@@ -956,7 +961,8 @@ class Runner:
             row["output_recovery"] = binding
             self.ledger.put(row)
             self.prepare_output(row, derived, output_recovery={**binding,
-                                "quarantined_proposals": quarantined, "knowledge_approved": False})
+                                "quarantined_proposals": quarantined, "date_normalizations": date_normalizations,
+                                "knowledge_approved": False})
             self.ledger.put(row)
             return row
 

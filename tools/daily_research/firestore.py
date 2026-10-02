@@ -125,7 +125,7 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("assert_lease")
         control = self.ledger.bridge.call("control")
         if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
-                or phase == "qa" and control.get("workflow", {}).get("enabled") is not True):
+                or phase in {"qa", "repair"} and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
         if (
                 control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
@@ -137,6 +137,37 @@ class FencedProvider(Provider):
         if datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms:
             raise Refusal("agent_qa_total_runtime_exhausted")
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def repair_input(self, session_id, event, key, day, request_digest, deadline_ms):
+        # RepairLoop holds the existing fenced lease and has durably consumed
+        # this revision's input claim. A restarted observer never sends it again.
+        from tools.daily_research.runner import digest
+        self.ledger.bridge.call("assert_lease")
+        row = self.ledger.get(day)
+        current = row.get("validation_repairs", [{}])[-1]
+        control = self.ledger.bridge.call("control")
+        if (row.get("session_id") != session_id or current.get("input_attempted") is not True
+                or current.get("state") != "input_unresolved" or current.get("request_digest") != request_digest
+                or key != row.get("run_key", "") + ":repair:" + str(current.get("number"))
+                or digest(event) != request_digest or current.get("deadline_ms") != deadline_ms
+                or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("validation_repair_input_not_admitted")
+        self.ledger.bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+        self.repair_action_guard(day, deadline_ms)
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def repair_action_guard(self, day, deadline_ms):
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        row = self.ledger.get(day)
+        request = row.get("validation_repair_authority", {}).get("request", {})
+        if (getattr(self, "stopped", lambda: False)()
+                or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms
+                or (row.get("validation_repair_authority", {}).get("kind") == "workflow"
+                    and request.get("authority_reference") != control["workflow"].get("qa_authority_reference"))):
+            raise Refusal("validation_repair_stopped_disabled_expired_or_authority_changed")
 
 
 def control_configuration(value):

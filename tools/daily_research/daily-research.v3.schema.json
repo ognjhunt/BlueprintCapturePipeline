@@ -437,8 +437,7 @@
             "properties": {
               "role": {
                 "enum": [
-                  "capability",
-                  "background"
+                  "capability"
                 ]
               }
             }
@@ -456,9 +455,18 @@
             }
           },
           "else": {
-            "properties": {
-              "evidence_level": {
-                "type": "null"
+            "if": {
+              "properties": {
+                "role": {
+                  "enum": ["task", "geography"]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "evidence_level": {
+                  "type": "null"
+                }
               }
             }
           }
