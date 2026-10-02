@@ -423,6 +423,8 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                     if len(output.encode()) > MAX_RESPONSE:
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
                     outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication else True, "output": output}
+                    if outcome["success"] is False:
+                        outcome["error"] = canonical(result.get("error") or {"code": "research_tool_unavailable_no_replay"})
                 except ToolFailure as exc:
                     outcome = {"success": False, "error": str(exc)}
                 except Exception:  # noqa: BLE001 - stable error, never upstream secrets
