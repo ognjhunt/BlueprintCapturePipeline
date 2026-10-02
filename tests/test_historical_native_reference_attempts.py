@@ -182,11 +182,12 @@ def test_repeated_unknowns_remain_refused_under_the_same_original_intent(tmp_pat
         calls.append(ACTION)
         return dict(REFUSED)
     result = native._later_reference_attempts(invoke, tmp_path, ACTION)
-    assert result == REFUSED and calls == [ACTION] * 3
+    assert native._REFERENCE_ATTEMPTS == 8
+    assert result == REFUSED and calls == [ACTION] * 8
     assert (path / 'e-00000.json').read_bytes() == raw
 
 
-@pytest.mark.parametrize('refusals', [0, 1, 2])
+@pytest.mark.parametrize('refusals', [0, 1, 2, 7])
 def test_observed_death_ends_bounded_same_intent_cadence_without_a_success_receipt(tmp_path, refusals):
     path, raw = original_journal(tmp_path)
     calls = []
@@ -210,7 +211,7 @@ def test_non_reference_refusals_never_trigger_another_attempt(tmp_path, code):
 
 
 @pytest.mark.parametrize('status', ['kept', 'failed'])
-def test_exact_unfinished_owner_handling_uses_existing_three_unit_cadence(tmp_path, status):
+def test_exact_unfinished_owner_handling_uses_same_operation_cadence(tmp_path, status):
     path, raw = original_journal(tmp_path)
     missing = dict(status=status, code='historical_generation_restore_reconciliation_approval_missing')
     results = iter([dict(REFUSED), missing, None])
@@ -237,10 +238,10 @@ def test_last_failed_unit_cannot_issue_an_unused_recovery_grant(tmp_path, status
     calls, approvals = [], []
     def invoke():
         calls.append(ACTION)
-        return dict(REFUSED) if len(calls) < 3 else missing
+        return dict(REFUSED) if len(calls) < 8 else missing
     assert native._later_reference_attempts(invoke, tmp_path, ACTION,
         on_unfinished=approvals.append) is missing
-    assert len(calls) == 3 and approvals == []
+    assert len(calls) == 8 and approvals == []
 
 
 @pytest.mark.parametrize('last_code', ['historical_generation_restore_reconciliation_approval_missing',
@@ -252,7 +253,7 @@ def test_one_extra_unit_requires_a_real_missing_decision_receipt(tmp_path, last_
     last = dict(status=status, code=last_code)
     def invoke():
         calls.append(ACTION)
-        return dict(REFUSED) if len(calls) < 3 else last if len(calls) == 3 else None
+        return dict(REFUSED) if len(calls) < 8 else last if len(calls) == 8 else None
     def approve(receipt):
         approvals.append(receipt)
         return dict(decision_id='b' * 32, discard_unfinished_row_approved=True,
@@ -260,7 +261,7 @@ def test_one_extra_unit_requires_a_real_missing_decision_receipt(tmp_path, last_
                     original_intent_bytes=dict(sha256='sha256:' + __import__('hashlib').sha256(raw).hexdigest(),
                                                size_bytes=len(raw))))
     result = native._reconciled_reference_attempts(invoke, tmp_path, ACTION, on_unfinished=approve)
-    assert len(calls) == (4 if last_code.endswith('approval_missing') else 3)
+    assert len(calls) == (9 if last_code.endswith('approval_missing') else 8)
     assert approvals == ([last] if last_code.endswith('approval_missing') else [])
     assert result is (None if approvals else last)
     assert (path / 'e-00000.json').read_bytes() == raw
@@ -271,13 +272,13 @@ def test_extra_owner_unit_preserves_all_original_journal_bytes(tmp_path):
     calls = []
     def invoke():
         calls.append(ACTION)
-        return dict(REFUSED) if len(calls) < 3 else dict(status='failed',
+        return dict(REFUSED) if len(calls) < 8 else dict(status='failed',
             code='historical_generation_restore_reconciliation_approval_missing')
     def approve(receipt):
         (path / 'e-00000.json').write_bytes(b'replaced original intent')
     with pytest.raises(AssertionError, match='original_journal_changed'):
         native._reconciled_reference_attempts(invoke, tmp_path, ACTION, on_unfinished=approve)
-    assert len(calls) == 3 and (path / 'e-00000.json').read_bytes() != raw
+    assert len(calls) == 8 and (path / 'e-00000.json').read_bytes() != raw
 
 
 def test_owner_handling_cannot_rewrite_the_original_journal(tmp_path):
