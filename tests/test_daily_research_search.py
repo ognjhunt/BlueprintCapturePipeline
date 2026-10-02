@@ -155,7 +155,7 @@ def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
     assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == payload
 
 
-@pytest.mark.parametrize("change", ["missing", "duplicate", "unrelated", "endpoint", "auth_type", "vault_id"])
+@pytest.mark.parametrize("change", ["missing", "duplicate", "unrelated", "shared_selected", "endpoint", "static_endpoint", "auth_type", "vault_id"])
 def test_owner_vault_metadata_rejects_unbound_scope_before_intent_or_create(fixture, change):
     runner, api, ledger = fixture
     tool = {"type": "mcp", "server_label": "notion", "transport": {"type": "http", "server_url": "https://mcp.notion.com/mcp"},
@@ -172,8 +172,14 @@ def test_owner_vault_metadata_rejects_unbound_scope_before_intent_or_create(fixt
         api.vault_credentials["vault_synthetic_second"] = [{**credential, "vault_id": "vault_synthetic_second"}]
     elif change == "unrelated":
         api.vault_credentials["vault_synthetic_notion"].append({**credential, "id": "credential_unrelated"})
+    elif change == "shared_selected":
+        api.agent["tools"].append({**deepcopy(tool), "server_label": "slack", "credential_id": "credential_synthetic_slack",
+            "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"}})
+        api.vault_credentials["vault_synthetic_notion"].append({**credential, "id": "credential_synthetic_slack"})
     elif change == "endpoint":
         credential["auth"]["mcp_server_url"] += "/unreviewed"
+    elif change == "static_endpoint":
+        credential["auth"].update(type="static_bearer", mcp_server_url="https://unreviewed.example/mcp")
     elif change == "auth_type":
         credential["auth"]["type"] = "environment_variable"
     else:
@@ -182,6 +188,27 @@ def test_owner_vault_metadata_rejects_unbound_scope_before_intent_or_create(fixt
         runner.start_or_resume()
     assert ledger.rows() == [] and not api.payloads and not api.executions
     assert all(call[0] == "GET" for call in api.calls)
+
+
+@pytest.mark.parametrize("url_metadata", ["absent", "null", "matched"])
+def test_saved_static_bearer_keeps_unknown_url_distinct_from_configured_endpoint(fixture, url_metadata):
+    runner, api, _ = fixture
+    tool = {"type": "mcp", "server_label": "slack", "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"},
+        "credential_id": "credential_synthetic_slack", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    auth = {"type": "static_bearer"}
+    if url_metadata != "absent":
+        auth["mcp_server_url"] = None if url_metadata == "null" else tool["transport"]["server_url"]
+    api.vault_credentials = {"vault_synthetic_slack": [{"id": tool["credential_id"],
+        "vault_id": "vault_synthetic_slack", "auth": {**auth, "metadata_not_retained": "synthetic"}}]}
+    row = runner.start_or_resume()
+    assert row["mcp_vault_binding"][0]["credential_auth"] == auth
+    assert row["mcp_vault_binding"][0]["mcp_server_url"] == tool["transport"]["server_url"]
+    assert row["create_payload"]["vault_ids"] == ["vault_synthetic_slack"]
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+    assert len(api.payloads) == 1 and not api.executions
 
 
 @pytest.mark.parametrize("change", ["missing_attachment", "extra_attachment", "duplicate_attachment", "binding", "payload"])

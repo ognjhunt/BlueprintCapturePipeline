@@ -531,7 +531,7 @@ class Provider:
         query, result, seen = {"limit": 100, "order": "asc", **filters}, [], set()
         for _ in range(10):
             page = endpoint.list(*args, **query)
-            result.extend(x.model_dump(mode="json") for x in page.data)
+            result.extend(x.model_dump(mode="json", exclude_unset=True) for x in page.data)
             if not page.has_more:
                 return result
             cursor = identifier(page.last_id)
@@ -556,18 +556,19 @@ class Provider:
             selected = [credential for credential in credentials if credential.get("id") in wanted]
             if not selected:
                 continue
-            ids = [credential.get("id") for credential in credentials]
-            if len(ids) != len(set(ids)) or any(credential_id not in wanted for credential_id in ids):
+            if len(credentials) != 1:
                 raise Refusal("research_mcp_vault_scope_mismatch")
             for credential in selected:
                 credential_id, auth = credential["id"], credential.get("auth")
                 tool = wanted[credential_id]
                 if (credential_id in matches or credential.get("vault_id") != vault_id
                         or not isinstance(auth, dict) or auth.get("type") not in {"mcp_oauth", "static_bearer"}
-                        or auth.get("mcp_server_url") != tool["transport"]["server_url"]):
+                        or (auth.get("mcp_server_url") != tool["transport"]["server_url"]
+                            and not (auth.get("type") == "static_bearer" and auth.get("mcp_server_url") is None))):
                     raise Refusal("research_mcp_vault_binding_invalid")
                 matches[credential_id] = {"server_label": tool["server_label"], "credential_id": credential_id,
-                    "vault_id": vault_id, "auth_type": auth["type"], "mcp_server_url": auth["mcp_server_url"]}
+                    "vault_id": vault_id, "mcp_server_url": tool["transport"]["server_url"],
+                    "credential_auth": {key: auth[key] for key in ("type", "mcp_server_url") if key in auth}}
         if set(matches) != set(wanted):
             raise Refusal("research_mcp_vault_credential_missing")
         return [matches[tool["credential_id"]] for tool in connections]
@@ -727,11 +728,15 @@ def check_mcp_vault_binding(row, session):
             or digest(binding) != expected_digest):
         raise Refusal("research_mcp_vault_binding_changed")
     for item, tool in zip(binding, connections, strict=True):
-        if (not isinstance(item, dict) or set(item) != {"server_label", "credential_id", "vault_id", "auth_type", "mcp_server_url"}
+        auth = item.get("credential_auth") if isinstance(item, dict) else None
+        if (not isinstance(item, dict) or set(item) != {"server_label", "credential_id", "vault_id", "credential_auth", "mcp_server_url"}
                 or item.get("server_label") != tool.get("server_label")
                 or item.get("credential_id") != tool.get("credential_id")
                 or item.get("mcp_server_url") != tool.get("transport", {}).get("server_url")
-                or item.get("auth_type") not in {"mcp_oauth", "static_bearer"}
+                or not isinstance(auth, dict) or set(auth) - {"type", "mcp_server_url"}
+                or auth.get("type") not in {"mcp_oauth", "static_bearer"}
+                or (auth.get("mcp_server_url") != item["mcp_server_url"]
+                    and not (auth.get("type") == "static_bearer" and auth.get("mcp_server_url") is None))
                 or not isinstance(item.get("vault_id"), str)
                 or not re.fullmatch(r"vault_[A-Za-z0-9_-]{1,150}", item["vault_id"])):
             raise Refusal("research_mcp_vault_binding_changed")

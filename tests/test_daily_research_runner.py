@@ -131,7 +131,7 @@ class FakeAPI:
                 "vault_id": "vault_synthetic_" + tool["server_label"], "auth": {"type": "mcp_oauth",
                 "mcp_server_url": tool["transport"]["server_url"]}}] for tool in connections}
         def page(values):
-            return SimpleNamespace(data=[SimpleNamespace(model_dump=lambda mode, value=value: deepcopy(value))
+            return SimpleNamespace(data=[SimpleNamespace(model_dump=lambda mode, exclude_unset, value=value: deepcopy(value))
                 for value in values], has_more=False)
         def vault_list(**query):
             self.calls.append(("GET", "vaults", query))
