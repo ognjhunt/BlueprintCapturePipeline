@@ -289,7 +289,8 @@ def _sdk_wire_probe():
     client = OpenAI(api_key="offline-fake-key", max_retries=0, http_client=httpx.Client(transport=httpx.MockTransport(send)))
     provider = FencedProvider.__new__(FencedProvider)
     provider.api = client.beta.agents
-    provider.ledger = SimpleNamespace(bridge=SimpleNamespace(call=lambda *args, **kwargs: checks.append((args, kwargs))))
+    provider.ledger = SimpleNamespace(get=lambda _day: {},
+        bridge=SimpleNamespace(call=lambda *args, **kwargs: checks.append((args, kwargs))))
     event = {"type": "agent.session.input.message", "input": [{"role": "user", "content": [{"type": "input_text", "text": "QA"}]}]}
     future = int((datetime.now(timezone.utc) + timedelta(seconds=30)).timestamp() * 1000)
     try:

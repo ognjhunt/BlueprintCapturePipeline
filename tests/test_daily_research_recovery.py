@@ -1,8 +1,13 @@
 """Repair evidence, ordinary daily lifecycle, and immutable export contracts."""
 import hashlib
+import inspect
 import json
+import os
+import subprocess
+import sys
 from copy import deepcopy
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -289,5 +294,125 @@ def test_status_read_failure_does_not_skip_one_durable_repair_cancellation(tmp_p
             assert revision.get("turn_status") != "cancelled"  # GET failure proves no native terminal state.
         assert bridge.call("active_qa") == DAY
         assert len(api.cancellations) == len(api.payloads) == len(calls) == 1 and not api.inputs
+    finally:
+        generator.close()
+
+
+def sdk_error(code="environment_connection_timeout", request_id="req_0123456789abcdef"):
+    import httpx2
+    from openai import BadRequestError
+    request = httpx2.Request("POST", "https://api.openai.com/v1/agents/sessions/private/events",
+                             headers={"Authorization": "Bearer never-retain-this"})
+    response = httpx2.Response(400, request=request, headers={"x-request-id": request_id})
+    return BadRequestError("private message and secret never-retain-this", response=response,
+                           body={"code": code, "message": "private body never-retain-this"})
+
+
+def verify_sdk_error_receipt():
+    assert recovery.repair_error_receipt(sdk_error(), "provider_submission") == {
+        "stage": "provider_submission", "class": "BadRequestError",
+        "code": "environment_connection_timeout", "http_status": 400,
+        "request_id": "req_0123456789abcdef"}
+    error = sdk_error(code="secret-code", request_id="Bearer secret")
+    error.status_code = True
+    receipt = recovery.repair_error_receipt(error, "unknown-private-stage")
+    assert receipt == {"stage": "dispatch", "class": "BadRequestError", "code": None,
+                       "http_status": None, "request_id": None}
+    assert "private" not in canonical(receipt) and "secret" not in canonical(receipt)
+    error = RuntimeError("secret")
+    error.status_code, error.request_id, error.code = 400, "req_0123456789abcdef", "idle_timeout"
+    assert recovery.repair_error_receipt(error, "preconditions") == {
+        "stage": "preconditions", "class": "other", "code": None,
+        "http_status": None, "request_id": None}
+    assert recovery.repair_error_receipt(Refusal("secret"), "preconditions")["code"] is None
+    import httpx2
+    from openai import InternalServerError
+    request = httpx2.Request("POST", "https://api.openai.com/v1/agents/sessions/private/events")
+    for hint, expected in [("15", 15), ("86401", 86400), ("not-a-delay", None),
+                           ("Fri, 02 Oct 2099 10:00:00 GMT", 86400)]:
+        response = httpx2.Response(503, request=request, headers={"retry-after": hint, "x-private": "never-retain-this",
+            "date": "Fri, 02 Oct 2026 09:00:00 GMT", "x-request-id": "req_0123456789abcdef"})
+        error = InternalServerError("private", response=response, body={"code": "service_unavailable_error"})
+        receipt = recovery.repair_error_receipt(error, "provider_submission")
+        assert receipt.get("retry_after_seconds") == expected
+        assert receipt["http_status"] == 503 and receipt["code"] == "service_unavailable_error"
+        assert "private" not in canonical(receipt) and "never-retain-this" not in canonical(receipt)
+
+
+def test_receipt_retains_only_typed_allowlisted_metadata():
+    runtime = os.environ.get("BLUEPRINT_RESEARCH_SDK_PYTHON", sys.executable)
+    script = "from tools.daily_research import recovery\nfrom tools.daily_research.runner import Refusal, canonical\n"
+    script += inspect.getsource(sdk_error) + "\n" + inspect.getsource(verify_sdk_error_receipt)
+    script += "\nverify_sdk_error_receipt()\n"
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OPENAI_")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run([runtime, "-c", script], cwd=Path(__file__).resolve().parents[1],
+                            env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("failure", ["rejected", "lost_reply", "local_refusal", "reply_persistence"])
+def test_error_receipt_persists_and_restart_never_resubmits(tmp_path, monkeypatch, failure):
+    generator = consumer_setup(tmp_path, failed=True)
+    consumer, api, ledger, bridge, _ = next(generator)
+    try:
+        calls = []
+        put = ledger.put
+        persisted_reply_failed = False
+        def fail_one_put(row):
+            nonlocal persisted_reply_failed
+            current = (row.get("validation_repairs") or [{}])[-1]
+            if failure == "reply_persistence" and current.get("state") == "running" and not persisted_reply_failed:
+                persisted_reply_failed = True
+                raise Refusal("firestore_bridge_unavailable")
+            return put(row)
+        monkeypatch.setattr(ledger, "put", fail_one_put)
+        def submit(sid, event, key, day, request_digest, deadline_ms):
+            calls.append((sid, event, key, request_digest, deadline_ms))
+            if failure == "local_refusal":
+                raise Refusal("validation_repair_input_not_admitted")
+            bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+            api.repair_input_phase = "provider_submission"
+            if failure == "rejected":
+                raise RuntimeError("synthetic input rejection")
+            if failure == "lost_reply":
+                raise TimeoutError("accepted reply may be lost; private data")
+        api.repair_input = submit
+        loop = recovery.RepairLoop(ledger, consumer.config, api, clock=consumer.clock)
+        first = loop.step(DAY)
+        revision = deepcopy(first["validation_repairs"][-1])
+        assert revision["input_attempted"] is True
+        assert revision["input_error_receipt"]["stage"] == (
+            "reply_persistence" if failure == "reply_persistence" else
+            "preconditions" if failure == "local_refusal" else "provider_submission")
+        assert revision["state"] == ("running" if failure == "reply_persistence" else "input_unresolved")
+        assert ledger.get(DAY)["validation_repairs"][-1]["input_error_receipt"] == revision["input_error_receipt"]
+        recovery.RepairLoop(ledger, consumer.config, api, clock=consumer.clock).step(DAY)
+        final = ledger.get(DAY)["validation_repairs"][-1]
+        assert len(calls) == 1
+        assert (final["request_digest"], final["deadline_ms"], final["input_attempted"]) == (
+            revision["request_digest"], revision["deadline_ms"], True)
+        assert not api.inputs
+        assert "private" not in canonical(final["input_error_receipt"])
+    finally:
+        generator.close()
+
+
+def test_qa_lost_reply_has_sanitized_receipt_and_is_observed_without_resend(tmp_path):
+    generator = consumer_setup(tmp_path)
+    consumer, api, ledger, _bridge, _ = next(generator)
+    try:
+        qa_input = api.qa_input
+        def lost_reply(*args):
+            api.qa_input_phase = "provider_submission"
+            qa_input(*args)
+            raise TimeoutError("private provider request was accepted but reply lost")
+        api.qa_input = lost_reply
+        assert consumer.step()["state"] == "qa_input_unresolved"
+        receipt = ledger.get(DAY)["qa"]["input_error_receipt"]
+        assert receipt == {"stage": "provider_submission", "class": "TimeoutError",
+                           "code": None, "http_status": None, "request_id": None}
+        assert consumer.step()["state"] == "reviewed"
+        assert len(api.inputs) == len(api.payloads) == 1
     finally:
         generator.close()

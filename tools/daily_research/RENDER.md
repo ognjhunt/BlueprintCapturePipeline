@@ -273,3 +273,26 @@ this overlay; it includes all hash-verified versioned repair inputs/artifacts.
 Ordinary daily runs use this same loop automatically within their existing
 workflow authorization, original total deadline and daily soft budget. They do
 not require this one-time baseline command or any Dot/parent runtime step.
+
+If a baseline correction expires without a confirmed turn, preserve its input,
+claim, deadline and cancellation evidence. The existing provider-free
+`recover-output` path may prepare the retained original report only after full
+evidence-bound normalization and validation. Its separately authorized,
+one-use 600-second recovered-QA continuation governs QA and QA tools; it never
+extends the repair or research clock. Repeated arming cannot renew that window.
+Before its first QA message, the same session must be idle without pending
+actions and its complete turn inventory must match the retained completed turns.
+No correction resend, new research session or deletion is required for this path.
+Submission failures retain sanitized error metadata without exception prose or
+request contents, and an uncertain QA input is observed without resubmission.
+
+The isolated reviewed overlay's `recover-original-and-qa` command combines those
+existing recovery, model-observation and QA steps for the explicitly authorized
+baseline. It checks the saved agent, original session and complete completed-turn
+inventory, derives and validates the original packet without inference, then pins
+the separate 600-second QA receipt and runs existing QA/publication. It checks the
+session and turn inventory again after consuming the one-use QA claim, before
+submission. Restart follows that same receipt and claim; it cannot renew the
+window, resend the expired correction, create another session or delete one.
+Use the existing exact `timeout --signal=TERM --kill-after=60s 1860s` process
+watchdog and the installed/overlay archive, source and file-hash arguments.

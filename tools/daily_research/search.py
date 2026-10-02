@@ -314,7 +314,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
         # validated receipt governs QA tools too; research keeps its old bound.
         from tools.daily_research.consumer import qa_deadline
         deadline = qa_deadline(row, {}).timestamp()
-    if phase == "repair" or phase == "qa" and row.get("validation_repair_authority"):
+    if phase == "repair" or phase == "qa" and row.get("validation_repair_authority") and not row.get("qa_continuation"):
         from tools.daily_research.recovery import repair_deadline
         deadline = repair_deadline(row).timestamp()
     calls = row.setdefault("application_tool_calls", {})

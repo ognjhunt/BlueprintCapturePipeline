@@ -137,6 +137,10 @@ export class Store {
       const prior = await tx.get(ref);
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      const retryPhase = row.qa_retry_continuation ? sha(Buffer.from(JSON.stringify(row.qa_retry_continuation))) : null;
+      if (prior.data()?.qa_retry_phase_digest && prior.data().qa_retry_phase_digest !== retryPhase)
+        refuse('qa_retry_phase_already_bound');
+      const retry = row.qa?.input_retries?.at(-1);
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
@@ -145,6 +149,12 @@ export class Store {
         search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
         recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
+        qa_retry_phase_digest: retryPhase,
+        qa_retry_deadline_ms: row.qa_retry_continuation ? Date.parse(row.qa_retry_continuation.started_at) + 600000 : null,
+        qa_retry_number: retry?.number || null, qa_retry_key: retry?.idempotency_key || null,
+        qa_retry_not_before_ms: retry ? Date.parse(retry.not_before) : null,
+        qa_retry_prior_503: retry ? (row.qa.input_retries.length === 1 ? row.qa.input_error_receipt : row.qa.input_retries.at(-2)?.error_receipt) : null,
+        qa_retry_claims: prior.exists ? prior.data().qa_retry_claims || {} : {},
         repair_request_digest: row.validation_repairs?.at(-1)?.request_digest || null,
         repair_deadline_ms: row.validation_repairs?.at(-1)?.deadline_ms || null,
         repair_number: row.validation_repairs?.at(-1)?.number || null,
@@ -285,6 +295,28 @@ export class Store {
           || this.clock()>=deadlineMS) refuse('agent_qa_input_not_admitted');
       this.budgetGate(control, run);
       tx.set(ref,{qa_request_claimed:true},{merge:true});return true;
+    });
+  }
+  async qaRetryCheck(day, requestDigest, deadlineMS, number) {
+    if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest) || ![1,2].includes(number))
+      refuse('qa_retry_request_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),snap=await tx.get(ref),run=snap.data();
+      const error=run?.qa_retry_prior_503;
+      if (!snap.exists || run.state!=='awaiting_review' || run.qa_state!=='qa_input_unresolved'
+          || run.qa_request_claimed!==true || run.qa_request_digest!==requestDigest
+          || !run.qa_retry_phase_digest || run.qa_retry_number!==number
+          || run.qa_retry_key!==`blueprint-researcher:${day}:qa`
+          || !Number.isSafeInteger(deadlineMS) || run.qa_retry_deadline_ms!==deadlineMS
+          || !Number.isSafeInteger(run.qa_retry_not_before_ms) || this.clock()<run.qa_retry_not_before_ms
+          || this.clock()>=deadlineMS || run.qa_retry_claims?.[number]
+          || (number===2 && run.qa_retry_claims?.[1]!==requestDigest)
+          || error?.stage!=='provider_submission' || error.http_status!==503
+          || !['service_unavailable_error','server_is_overloaded'].includes(error.code))
+        refuse('qa_retry_input_not_admitted');
+      this.budgetGate(control,run);
+      tx.set(ref,{qa_retry_claims:{...run.qa_retry_claims,[number]:requestDigest}},{merge:true});return true;
     });
   }
   async publish(day) {
@@ -445,6 +477,7 @@ export class Store {
       case 'work_item': return this.workItem();
       case 'active_qa': return this.activeQA();
       case 'qa_check': return this.qaCheck(request.day,request.request_digest,request.deadline_ms);
+      case 'qa_retry_check': return this.qaRetryCheck(request.day,request.request_digest,request.deadline_ms,request.number);
       case 'repair_check': return this.repairCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
       case 'refresh_crm': {

@@ -3,6 +3,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -133,8 +134,9 @@ def fixture(tmp_path, monkeypatch):
         "const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]};const c=await crmReader();c.values.push(...body.values);writeFileSync(crmPath,JSON.stringify(c));return {};};",
         "const notion=async(method,path,body)=>{const p=existsSync(pagesPath)?JSON.parse(readFileSync(pagesPath,'utf8')):[];if(method==='POST'){p.push(body);writeFileSync(pagesPath,JSON.stringify(p));return {id:'synthetic-page-'+p.length};}",
         "if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:p.map((x,i)=>({id:'synthetic-page-'+(i+1),type:'child_page',child_page:{title:x.properties.title.title[0].text.content}}))};if(path.startsWith('/pages/synthetic-page-'))return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};const number=Number(path.match(/synthetic-page-(\\d+)/)?.[1]);return {has_more:false,results:p[number-1]?.children||[]};};",
-        "const channel=new CanaryChannel(db,crmReader,new Publisher({crmReader,google,notion}),()=>" + str(int(NOW.timestamp()*1000)) + ");",
+        "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new CanaryChannel(db,crmReader,new Publisher({crmReader,google,notion}),()=>testNow);",
         "for await(const line of createInterface({input:process.stdin})){try{const r=JSON.parse(line);",
+        "if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}",
         "if(r.op==='test_origin_change'){await normal.acquire();await normal.put({...await normal.get('2026-10-01'),cleanup_receipt:{action_time_approval_reference:'changed-synthetic'}});await normal.release();process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}",
         "const value=await channel.call(r);process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}catch(error){process.stdout.write(JSON.stringify({ok:false,error:error.message})+'\\n');}}await channel.close();",
     ]))
@@ -1170,10 +1172,28 @@ def recovered_baseline(fixture, monkeypatch):
     return bridge, ledger, api, cache, recovered
 
 
-def test_recovered_qa_has_its_own_bounded_window_without_resetting_research(fixture, monkeypatch):
+@pytest.mark.parametrize("expired_repair", [False, True])
+def test_recovered_qa_has_its_own_bounded_window_without_resetting_research(fixture, monkeypatch, expired_repair):
     bridge, ledger, api, cache, row = recovered_baseline(fixture, monkeypatch)
     try:
         later = NOW + timedelta(hours=1)  # Original total/research window is exhausted.
+        repair = None
+        if expired_repair:
+            repair = {"number": 1, "state": "cancel_pending", "input_attempted": True,
+                "request_digest": "a" * 64, "deadline_ms": int((NOW + timedelta(seconds=1800)).timestamp() * 1000),
+                "cancel_attempted": True, "cancel_reply_unresolved": True}
+            row["validation_repair_authority"] = {"started_at": NOW.isoformat(), "duration_seconds": 1800,
+                "request": {"scope": "same-session-validation-repair-and-qa-no-outreach",
+                    "authority_reference": "Sentinel_3b6171ff167c8191b378202c5f0c54c0",
+                    "budget_authority_reference": canary.BASELINE["authority_reference"],
+                    "baseline_id": "baseline-20261002", "soft_total_usd": 25,
+                    "session_id": row["session_id"], "root_turn_id": row["turn_id"],
+                    "raw_output_sha256": row["raw_output_digest"]}}
+            row["validation_repairs"] = [deepcopy(repair)]
+            with ledger.lock():
+                ledger.put(row)
+                bridge.call("repair_check", day=canary.DAY, request_digest=repair["request_digest"], deadline_ms=repair["deadline_ms"])
+            assert canary.qa_deadline(row, {}) < later
         before = {key: row.get(key) for key in ('started_at', 'research_deadline_ms', 'research_runtime_seconds', 'total_runtime_seconds', 'turn_id', 'raw_output_digest')}
         receipt = continued_qa_receipt(row)
         armed = canary.authorize_recovered_qa(bridge, receipt, clock=lambda: later)
@@ -1205,6 +1225,40 @@ def test_recovered_qa_has_its_own_bounded_window_without_resetting_research(fixt
         assert final['qa']['deadline_ms'] == int((later + timedelta(seconds=600)).timestamp() * 1000)
         assert final['delivery']['notion']['key'].endswith('baseline-20261002-attempt-0001:notion')
         assert final['qa_continuation']['model_observation'] == armed['qa_continuation']['model_observation']
+        if repair:
+            assert final["validation_repairs"] == [repair]
+            assert final["validation_repair_authority"] == row["validation_repair_authority"]
+            with ledger.lock(), pytest.raises(Refusal, match="not_admitted"):
+                bridge.call("repair_check", day=canary.DAY, request_digest=repair["request_digest"], deadline_ms=repair["deadline_ms"])
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("pending", ["session", "connection", "turn"])
+def test_recovered_qa_refuses_concurrent_or_waiting_work(fixture, monkeypatch, pending):
+    bridge, ledger, api, cache, row = recovered_baseline(fixture, monkeypatch)
+    try:
+        later = NOW + timedelta(hours=1)
+        canary.authorize_recovered_qa(bridge, continued_qa_receipt(row), clock=lambda: later)
+        if pending == "session":
+            api.session_status = "in_progress"
+        elif pending == "connection":
+            api.actions = [{"type": "environment_connection"}]
+        else:
+            listing = api.listing
+            def with_correction(resource, sid=None):
+                values = listing(resource, sid)
+                if resource == "turns":
+                    values.append({"id": "turn_unexpected_correction", "status": "in_progress", "subagent_id": None})
+                return values
+            api.listing = with_correction
+        from tools.daily_research.consumer import Consumer
+        consumer = Consumer(ledger, canary.render.configured(bridge, cache), api, clock=lambda: later)
+        consumer.active_day = canary.DAY
+        with pytest.raises(Refusal, match="session_not_idle|turn_scope_mismatch"):
+            consumer.step()
+        assert not api.inputs and not ledger.get(canary.DAY).get("qa")
+        assert len(api.payloads) == 1
     finally:
         bridge.close()
 
@@ -1223,6 +1277,128 @@ def test_recovered_qa_cannot_renew_expired_window_or_use_wrong_authority(fixture
         assert result['observer_error'] == 'canary_total_observation_deadline'
         assert not api.inputs and len(api.payloads) == 1
         assert ledger.get(canary.DAY)['started_at'] == row['started_at']
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("after_claim", ["session", "connection", "turn", "stop", "deadline", "origin"])
+def test_recovered_qa_rechecks_session_after_its_durable_claim(fixture, monkeypatch, after_claim):
+    from tools.daily_research.consumer import Consumer
+    bridge, ledger, api, cache, row = recovered_baseline(fixture, monkeypatch)
+    later, posts = NOW + timedelta(hours=1), []
+    provider = object.__new__(canary.CanaryProvider)
+    provider.ledger, provider.clock, provider.stopped = ledger, lambda: later, lambda: False
+    provider.safe = lambda _row: None
+    provider.get, provider.listing = api.get, api.listing
+    provider.api = SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=lambda *a, **kw: posts.append(a))))
+    try:
+        canary.authorize_recovered_qa(bridge, continued_qa_receipt(row), clock=lambda: later)
+        original_call, original_listing = bridge.call, api.listing
+        def delayed_claim(op, **fields):
+            result = original_call(op, **fields)
+            if op == "qa_check":
+                if after_claim == "session":
+                    api.session_status = "in_progress"
+                elif after_claim == "connection":
+                    api.actions = [{"type": "environment_connection"}]
+                elif after_claim == "turn":
+                    def late_turn(resource, sid=None):
+                        values = original_listing(resource, sid)
+                        if resource == "turns":
+                            values.append({"id": "turn_late_correction", "status": "in_progress", "subagent_id": None})
+                        return values
+                    provider.listing = api.listing = late_turn
+                else:
+                    def changed_during_inventory(resource, sid=None):
+                        values = original_listing(resource, sid)
+                        if resource == "turns":
+                            if after_claim == "stop":
+                                provider.stopped = lambda: True
+                            elif after_claim == "origin":
+                                original_call("test_origin_change")
+                            else:
+                                provider.clock = lambda: later + timedelta(seconds=601)
+                        return values
+                    provider.listing = changed_during_inventory
+            return result
+        monkeypatch.setattr(bridge, "call", delayed_claim)
+        api.qa_input = provider.qa_input
+        consumer = Consumer(ledger, canary.render.configured(bridge, cache), api, clock=lambda: later)
+        consumer.active_day = canary.DAY
+        result = consumer.step()
+        final = ledger.get(canary.DAY)
+        assert result["state"] == "qa_input_unresolved" and not posts
+        assert final["qa"]["input_error_receipt"]["class"] == "Refusal"
+        assert final["qa"]["input_error_receipt"]["code"] in {
+            "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired",
+            "canary_daily_guard_unreconciled_or_changed"}
+        assert final["qa"]["input_error_receipt"]["stage"] == "preconditions"
+        with ledger.lock(), pytest.raises(Refusal, match="agent_qa_input_not_admitted|canary_daily_guard_unreconciled_or_changed"):
+            original_call("qa_check", day=canary.DAY, request_digest=final["qa"]["request_digest"],
+                          deadline_ms=final["qa"]["deadline_ms"])
+        assert final["raw_output_digest"] == row["raw_output_digest"] and len(api.payloads) == 1
+    finally:
+        bridge.close()
+
+
+def test_one_command_recovers_original_without_resending_expired_correction(fixture, monkeypatch):
+    bridge, ledger, api, _cfg, failed = failed_repair_baseline(fixture, monkeypatch)
+    later = NOW + timedelta(hours=1)
+    repair = {"number": 1, "state": "cancel_pending", "input_attempted": True,
+              "request_digest": "a" * 64, "deadline_ms": int((NOW + timedelta(seconds=1800)).timestamp() * 1000),
+              "cancel_attempted": True, "cancel_reply_unresolved": True}
+    try:
+        original_raw = ledger.read_bytes(canary.DAY + "-artifact.json")
+        with ledger.lock():
+            failed["validation_repairs"] = [deepcopy(repair)]
+            failed["validation_repair_authority"] = {"started_at": NOW.isoformat(), "duration_seconds": 1800,
+                "request": {"scope": "same-session-validation-repair-and-qa-no-outreach",
+                    "authority_reference": "Sentinel_3b6171ff167c8191b378202c5f0c54c0",
+                    "budget_authority_reference": canary.BASELINE["authority_reference"],
+                    "baseline_id": "baseline-20261002", "soft_total_usd": 25,
+                    "session_id": failed["session_id"], "root_turn_id": failed["turn_id"],
+                    "raw_output_sha256": failed["raw_output_digest"]}}
+            ledger.put(failed)
+            bridge.call("repair_check", day=canary.DAY, request_digest=repair["request_digest"], deadline_ms=repair["deadline_ms"])
+        result = canary.recover_original_and_qa(bridge, fixture[5], api_factory=lambda *_: api,
+                                               clock=lambda: later, sleep=lambda _: None)
+        assert result["state"] == "completed", result
+        final = ledger.get(canary.DAY)
+        assert final["qa_continuation"]["started_at"] == later.isoformat()
+        assert final["qa"]["deadline_ms"] == int((later + timedelta(seconds=600)).timestamp() * 1000)
+        assert final["validation_repairs"] == [repair]
+        assert final["validation_repair_authority"] == failed["validation_repair_authority"]
+        assert final["started_at"] == failed["started_at"] and final["turn_id"] == failed["turn_id"]
+        assert ledger.read_bytes(canary.DAY + "-artifact.json") == original_raw
+        assert not api.repair_calls and len(api.payloads) == len(api.inputs) == 1
+        assert all(delivery["receipt"]["readback_verified"] for delivery in final["delivery"].values())
+        replay = canary.recover_original_and_qa(bridge, fixture[5], api_factory=lambda *_: api,
+                                               clock=lambda: later + timedelta(minutes=20), sleep=lambda _: None)
+        assert replay["state"] == "completed" and len(api.inputs) == 1 and not api.repair_calls
+        assert ledger.get(canary.DAY)["qa_continuation"] == final["qa_continuation"]
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("pending", ["connection", "turn", "stop"])
+def test_one_command_checks_for_late_work_before_recovery_writes(fixture, monkeypatch, pending):
+    bridge, ledger, api, _cfg, failed = failed_repair_baseline(fixture, monkeypatch)
+    try:
+        if pending == "connection":
+            api.actions = [{"type": "environment_connection"}]
+        elif pending == "turn":
+            listing = api.listing
+            def late(resource, sid=None):
+                values = listing(resource, sid)
+                if resource == "turns":
+                    values.append({"id": "turn_late_correction", "status": "in_progress", "subagent_id": None})
+                return values
+            api.listing = late
+        with pytest.raises(Refusal, match="recovered_qa_session_or_turn_changed|recovered_qa_state_not_admitted"):
+            canary.recover_original_and_qa(bridge, fixture[5], api_factory=lambda *_: api,
+                clock=lambda: NOW + timedelta(hours=1), stopped=lambda: pending == "stop", sleep=lambda _: None)
+        assert ledger.get(canary.DAY) == failed
+        assert not api.inputs and not api.repair_calls and len(api.payloads) == 1
     finally:
         bridge.close()
 

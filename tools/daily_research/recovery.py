@@ -1,13 +1,87 @@
 """Evidence-preserving normalization and same-session validation repair."""
 import hashlib
 import json
+import math
+import re
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 from tools.daily_research import knowledge, search
 from tools.daily_research.contracts import checked_day
 
 REPAIR_PATH = "/workspace/outputs/daily-research-repaired.json"
+
+
+def repair_error_receipt(error, stage):
+    """Diagnostic metadata only; never retain exception text or request bodies."""
+    from tools.daily_research.runner import Refusal
+
+    stages = {"preconditions", "provider_submission", "dispatch", "reply_persistence"}
+    receipt = {"stage": stage if stage in stages else "dispatch", "class": "other",
+               "code": None, "http_status": None, "request_id": None}
+    local_codes = {"validation_repair_input_not_admitted",
+        "validation_repair_stopped_disabled_expired_or_authority_changed",
+        "canary_admission_binding_invalid", "canary_guard_failed", "canary_daily_guard_unreconciled_or_changed", "workflow_authority_missing",
+        "firestore_lease_lost", "firestore_bridge_deadline", "firestore_bridge_unavailable",
+        "research_tool_budget_authority_not_pinned", "research_tool_budget_authority_changed",
+        "research_tool_record_resource_ceiling", "recovered_qa_session_not_idle",
+        "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired",
+        "canary_stopped_disabled_or_expired_before_qa"}
+    local_codes.update({"qa_retry_input_not_admitted", "qa_retry_saved_work_changed",
+                        "qa_retry_stopped_disabled_or_expired", "qa_retry_immutable_input_changed"})
+    if isinstance(error, Refusal):
+        receipt["class"] = "Refusal"
+        code = error.args[0] if len(error.args) == 1 else None
+        if type(code) is str and code in local_codes:
+            receipt["code"] = code
+    elif isinstance(error, TimeoutError):
+        receipt["class"] = "TimeoutError"
+    elif isinstance(error, OSError):
+        receipt["class"] = "OSError"
+    else:
+        # Optional SDK stays out of the portable import closure. Only typed SDK
+        # errors contribute provider fields; arbitrary exception attributes do not.
+        try:
+            from openai import APIError, APIStatusError
+        except ImportError:
+            return receipt
+        if isinstance(error, APIError):
+            name = type(error).__name__
+            receipt["class"] = name if name in {"APIError", "APIStatusError", "BadRequestError",
+                "AuthenticationError", "PermissionDeniedError", "NotFoundError", "ConflictError",
+                "UnprocessableEntityError", "RateLimitError", "InternalServerError",
+                "APIConnectionError", "APITimeoutError", "APIResponseValidationError"} else "APIError"
+            fields = vars(error)
+            code = fields.get("code")
+            if type(code) is str and code in {"invalid_request", "invalid_request_error", "conflict_error",
+                "environment_connection_failed", "environment_connection_timeout", "idle_timeout",
+                "request_timeout", "connection_failed", "resource_not_found", "internal_error",
+                "service_unavailable_error", "server_is_overloaded", "rate_limit_exceeded"}:
+                receipt["code"] = code
+            if isinstance(error, APIStatusError):
+                status, request_id = fields.get("status_code"), fields.get("request_id")
+                if type(status) is int and 100 <= status <= 599:
+                    receipt["http_status"] = status
+                if type(request_id) is str and re.fullmatch(r"req_[A-Za-z0-9_-]{8,128}", request_id):
+                    receipt["request_id"] = request_id
+                # Read only a typed SDK HTTP response and retain the delay, not
+                # headers/body/exception text. A long hint stops this phase.
+                response = fields.get("response")
+                if response is not None:
+                    hint = response.headers.get("retry-after")
+                    try:
+                        seconds = float(hint)
+                    except (TypeError, ValueError):
+                        try:
+                            server_date = response.headers.get("date")
+                            origin = parsedate_to_datetime(server_date) if server_date else datetime.now(timezone.utc)
+                            seconds = (parsedate_to_datetime(hint) - origin).total_seconds()
+                        except (TypeError, ValueError, OverflowError):
+                            seconds = None
+                    if seconds is not None and math.isfinite(seconds) and seconds >= 0:
+                        receipt["retry_after_seconds"] = math.ceil(min(seconds, 86400))
+    return receipt
 
 
 def replay_saved_artifact(row, raw_artifact, tool_files, known, observed_at):
@@ -311,11 +385,20 @@ class RepairLoop:
                 self.ledger.put(row)  # Persist the complete request/claim before any paid event.
                 if self.stopped() or self.clock() >= deadline:
                     raise Refusal("validation_repair_stopped_before_input")
+                stage = "dispatch"
+                self.api.repair_input_phase = "preconditions"
                 try:
                     self.api.repair_input(row["session_id"], event, row["run_key"] + f":repair:{number}", day, current["request_digest"], current["deadline_ms"])
+                    stage = "reply_persistence"
                     current["state"] = "running"
                     self.ledger.put(row)
-                except Exception:  # noqa: BLE001 - an uncertain event is observed, never resent
+                except Exception as error:  # noqa: BLE001 - an uncertain event is observed, never resent
+                    phase = stage if stage == "reply_persistence" else getattr(self.api, "repair_input_phase", stage)
+                    current["input_error_receipt"] = repair_error_receipt(error, phase)
+                    try:
+                        self.ledger.put(row)
+                    except Exception:  # noqa: BLE001 - a broken store cannot authorize a resend
+                        current["input_error_persistence_failed"] = True
                     if self.stopped() or self.clock() >= deadline or not workflow(self.ledger.bridge.call("control")):
                         self.cancel(row, current, "validation_repair_stopped_disabled_or_expired")
                     return row

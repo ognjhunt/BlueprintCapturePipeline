@@ -136,7 +136,58 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         if datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms:
             raise Refusal("agent_qa_total_runtime_exhausted")
+        self.recovered_qa_action_guard(session_id, day, deadline_ms)
+        self.qa_input_phase = "provider_submission"
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def recovered_qa_action_guard(self, session_id, day, deadline_ms, *, origin_guard=None):
+        row = self.ledger.get(day)
+        if not row.get("qa_continuation"):
+            return
+        from tools.daily_research.consumer import Consumer
+        session = self.get("session", session_id)
+        Consumer.check_session(row, session)
+        turns = self.listing("turns", session_id)
+        if (session.get("status") != "idle" or session.get("required_actions")
+                or {t["id"] for t in turns} != set(row["qa"]["baseline_turn_ids"])
+                or any(t.get("subagent_id") or t["status"] != "completed" for t in turns)):
+            raise Refusal("recovered_qa_session_or_turn_changed")
+        if origin_guard:
+            origin_guard()
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True
+                or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("recovered_qa_stopped_disabled_or_expired")
+
+    def qa_retry_input(self, session_id, event, key, day, request_digest, deadline_ms, number):
+        from tools.daily_research import qa_retry
+        from tools.daily_research.consumer import qa_deadline
+        from tools.daily_research.runner import digest
+        row = self.ledger.get(day)
+        if (not row.get("qa_retry_continuation") or row.get("session_id") != session_id
+                or key != row["run_key"] + ":qa" or digest(event) != request_digest
+                or qa_retry.original_event(self.ledger, row) != event
+                or int(qa_deadline(row, {}).timestamp() * 1000) != deadline_ms):
+            raise Refusal("qa_retry_input_not_admitted")
+        self.qa_retry_action_guard(row, deadline_ms)
+        self.ledger.bridge.call("qa_retry_check", day=day, request_digest=request_digest,
+                                deadline_ms=deadline_ms, number=number)
+        self.qa_retry_action_guard(self.ledger.get(day), deadline_ms)
+        self.qa_input_phase = "provider_submission"
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def qa_retry_action_guard(self, row, deadline_ms):
+        from tools.daily_research import qa_retry
+        if not qa_retry.reconcile(self, self.ledger, row)["clear"]:
+            raise Refusal("qa_retry_saved_work_changed")
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True
+                or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("qa_retry_stopped_disabled_or_expired")
 
     def repair_input(self, session_id, event, key, day, request_digest, deadline_ms):
         # RepairLoop holds the existing fenced lease and has durably consumed
@@ -155,6 +206,7 @@ class FencedProvider(Provider):
             raise Refusal("validation_repair_input_not_admitted")
         self.ledger.bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         self.repair_action_guard(day, deadline_ms)
+        self.repair_input_phase = "provider_submission"
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
     def repair_action_guard(self, day, deadline_ms):
