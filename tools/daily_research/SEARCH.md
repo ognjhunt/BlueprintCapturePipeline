@@ -71,8 +71,10 @@ and receives structured transport errors and exact readback receipts. The worker
 executes these requests and retains original results, decisions, claims and
 receipts. A definitive initial Notion 400 validation rejection permits a revised
 agent choice only after complete readback proves absence; unknown writes retain
-their claims and remain observation-only. Stop and the original absolute
-deadline cancel the bound publication session once, preserving an unknown reply.
+their claims and remain observation-only. The original absolute deadline retains
+its admitted cancellation request once, preserving an unknown reply.
+Stopped or changed-authority observers use GET-only terminal reconciliation;
+unknown attempts stay pending and cannot resume inference, tool calls or uploads.
 This profile grants no additional time, spending, destinations or sends. Deploying
 source alone cannot add tools to an existing session; activation requires this
 explicit profile in a newly admitted session. The example remains disabled.

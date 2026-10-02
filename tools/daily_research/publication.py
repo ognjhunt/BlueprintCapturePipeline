@@ -22,10 +22,14 @@ def tools():
     ]
 
 
-def cancel(consumer, row, reason):
+def cancel(consumer, row, reason, *, observation_only=False):
     """Cancel the exact publication session once; an unknown reply stays unknown."""
     from tools.daily_research import recovery
     phase = row["publication"]
+    if observation_only:
+        phase.update(state="cancel_pending", observation_only_reason=reason)
+        consumer.ledger.put(row)
+        return {"date": row["date"], "state": "publication_cancel_pending"}
     phase.update(state="cancel_pending", cancel_reason=reason)
     if not phase.get("cancel_attempted"):
         phase.update(cancel_attempted=True, cancel_idempotency_key=row["run_key"] + ":publication:cancel",
@@ -54,17 +58,27 @@ def advance(consumer, row):
     )
     ledger, api = consumer.ledger, consumer.api
     deadline = qa_deadline(row, {})
-    permission = workflow(ledger.bridge.call("control"))
+    phase = row.get("publication")
+    if phase and (phase.get("profile") != PROFILE or phase.get("session_id") != row["session_id"]
+            or phase.get("idempotency_key") != row["run_key"] + ":publication"
+            or phase.get("input_file") != row["date"] + "-publication-input.json"
+            or phase.get("deadline_ms") != int(deadline.timestamp() * 1000)):
+        raise Refusal("publication_agent_input_not_admitted")
+    try:
+        permission = workflow(ledger.bridge.call("control"))
+    except Refusal as error:
+        if not phase or str(error) != "workflow_authority_missing":
+            raise
+        permission = None
     if (row.get("publication_profile") != PROFILE or consumer.terminal_collection_receipt is not None
-            or row["qa"]["state"] != "validated" or not permission or consumer.stopped()):
+            or row["qa"]["state"] != "validated"):
         raise Refusal("publication_agent_not_admitted")
-    if row.get("publication") and permission != row["publication"]["workflow_authority"]:
-        return cancel(consumer, row, "publication_authority_changed")
     session = api.get("session", row["session_id"])
     Consumer.check_session(row, session)
     turns = api.listing("turns", row["session_id"])
-    phase = row.get("publication")
     if not phase:
+        if not permission or consumer.stopped():
+            raise Refusal("publication_agent_not_admitted")
         if consumer.clock() >= deadline or session.get("status") != "idle" or session.get("required_actions"):
             raise Refusal("publication_agent_window_or_session_unavailable")
         expected = set(row["qa"]["baseline_turn_ids"]) | {row["qa"]["turn_id"]}
@@ -97,18 +111,23 @@ def advance(consumer, row):
             phase["input_error_receipt"] = recovery.repair_error_receipt(error, getattr(api, "publication_input_phase", "preconditions"))
         ledger.put(row)
         return {"date": row["date"], "state": "publication_" + phase["state"]}
+    interruption = ("publication_stopped_or_disabled" if not permission or consumer.stopped()
+                    else "publication_authority_changed" if permission != phase["workflow_authority"]
+                    else "publication_deadline_reached" if consumer.clock() >= deadline else None)
     fresh = [t for t in turns if t["id"] not in phase["baseline_turn_ids"]]
     if len(fresh) > 1 or any(t.get("subagent_id") or t.get("agent_id") != AGENT or t.get("session_id") != row["session_id"] for t in fresh):
         raise Refusal("publication_agent_turn_scope_changed")
     if not fresh:
-        if consumer.clock() >= deadline:
-            return cancel(consumer, row, "publication_deadline_reached")
+        if phase.get("cancel_attempted") or phase.get("observation_only_reason"):
+            return {"date": row["date"], "state": "publication_cancel_pending"}
+        if interruption:
+            return cancel(consumer, row, interruption, observation_only=interruption != "publication_deadline_reached")
         return {"date": row["date"], "state": "publication_input_unresolved"}
     turn = fresh[0]
     if phase.get("turn_id") not in (None, turn["id"]):
         raise Refusal("publication_agent_turn_scope_changed")
     phase.update(turn_id=identifier(turn["id"]), turn_status=turn["status"],
-                 state="cancel_pending" if phase.get("cancel_attempted") else "running")
+                 state="cancel_pending" if phase.get("cancel_attempted") or phase.get("observation_only_reason") else "running")
     ledger.put(row)
     phase["usage"] = turn.get("usage")
     if turn["status"] in {"completed", "failed", "cancelled"}:
@@ -122,11 +141,11 @@ def advance(consumer, row):
             phase["state"] = "agent_finished_without_complete_receipts"
         ledger.put(row)
         return {"date": row["date"], "state": row["state"] if phase["state"] == "completed" else "publication_agent_incomplete"}
-    if phase.get("cancel_attempted"):
+    if phase.get("cancel_attempted") or phase.get("observation_only_reason"):
         ledger.put(row)
         return {"date": row["date"], "state": "publication_cancel_pending"}
-    if consumer.clock() >= deadline:
-        return cancel(consumer, row, "publication_deadline_reached")
+    if interruption:
+        return cancel(consumer, row, interruption, observation_only=interruption != "publication_deadline_reached")
     source_names = {search.SEARCH, search.READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
     source_actions = [a for a in session.get("required_actions", []) if a.get("name") in source_names]
     if source_actions:

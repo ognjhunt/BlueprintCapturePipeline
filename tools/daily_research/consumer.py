@@ -123,6 +123,8 @@ def qa_deadline(row, config):
 
 def workflow(control, *, allow_stopped=False):
     value = control.get("workflow", {})
+    if not isinstance(value, dict):
+        raise Refusal("workflow_authority_missing")
     if value.get("enabled") is not True or not (control.get("enabled") is True
             or allow_stopped and control.get("enabled") is False):
         return None
@@ -242,16 +244,23 @@ class Consumer:
     def step(self):
         decision = None
         with self.ledger.lock():
-            enabled = workflow(self.ledger.bridge.call("control"),
-                allow_stopped=self.terminal_collection_receipt is not None) and not self.stopped()
+            admission_error = None
+            try:
+                enabled = workflow(self.ledger.bridge.call("control"),
+                    allow_stopped=self.terminal_collection_receipt is not None) and not self.stopped()
+            except Refusal as error:
+                if str(error) != "workflow_authority_missing":
+                    raise
+                enabled, admission_error = False, error
             if not enabled and not self.active_day:
                 active = self.ledger.bridge.call("active_qa")
                 saved = self.ledger.get(active) if active else None
                 if saved and saved.get("publication", {}).get("state") in {"running", "input_unresolved", "cancel_pending"}:
-                    from tools.daily_research.publication import cancel
                     self.active_day = saved["date"]
-                    return cancel(self, saved, "publication_stopped_or_disabled")
-                return {"state": "workflow_disabled"}
+                else:
+                    if admission_error:
+                        raise admission_error
+                    return {"state": "workflow_disabled"}
             item = {"date": self.active_day} if self.active_day else self.ledger.bridge.call("work_item")
             if not item:
                 return {"state": "workflow_idle"}
@@ -260,13 +269,15 @@ class Consumer:
                     or (item.get("packet_digest") and row["packet_digest"] != item["packet_digest"])):
                 raise Refusal("workflow_packet_binding_invalid")
             self.active_day = row["date"]
+            if admission_error and row.get("publication", {}).get("state") not in {"running", "input_unresolved", "cancel_pending"}:
+                raise admission_error
             if self.terminal_collection_receipt is not None and (row.get("qa", {}).get("state") != "validated"
                     or row["qa"].get("terminal_collection_recovery", {}).get("native_receipt") != self.terminal_collection_receipt):
                 raise Refusal("terminal_qa_collection_validated_receipt_required")
             if not enabled and (not row.get("qa") or row["state"] != "awaiting_review"):
                 if row.get("publication", {}).get("state") in {"running", "input_unresolved", "cancel_pending"}:
-                    from tools.daily_research.publication import cancel
-                    return cancel(self, row, "publication_stopped_or_disabled")
+                    from tools.daily_research.publication import advance
+                    return advance(self, row)
                 return {"state": "workflow_disabled"}
             if row["state"] == "awaiting_review":
                 if row.get("qa", {}).get("state") == "validated":
