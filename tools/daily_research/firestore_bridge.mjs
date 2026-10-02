@@ -13,6 +13,8 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const canonicalValue = value => Array.isArray(value) ? value.map(canonicalValue) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalValue(value[key])])) : value;
 const valueHash = value => sha(JSON.stringify(canonicalValue(value)));
+const pythonHash = value => sha(JSON.stringify(canonicalValue(value)).replace(/[^\x00-\x7F]/g,
+  c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0')));
 const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.stringify(Object.entries(b || {}).sort());
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
@@ -38,13 +40,14 @@ const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
-    terminalCollectionReceipt = null) {
+    terminalCollectionReceipt = null, schedulerStopped = false) {
     this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
     this.publisher = publisher;
     this.learning = learning;
     this.terminalCollectionReceipt = terminalCollectionReceipt;
+    this.schedulerStopped = schedulerStopped;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -245,6 +248,25 @@ export class Store {
         publication_state:publication?.state || null,publication_turn_id:publication?.turn_id || null});
       this.projectWorkItem(tx, row, hash);
     });
+    if(this.learning && ['awaiting_review','reviewed','completed','failed','cancelled'].includes(row.state)) {
+      let observation;
+      try {
+        const control=(await this.control.get()).data();
+        const result=await this.learning({op:'learning_after_run',day:row.date},control.learning);
+        observation={row_blob:hash,status:['created','existing'].includes(result?.append)?'observed':'unavailable',
+          append:result?.append || null,event_id:result?.event?.eventId || null,observed_at:new Date(this.clock()).toISOString()};
+      } catch(error) {
+        observation={row_blob:hash,status:'unavailable',code:/^[a-z_]{1,100}$/.test(error?.message || '')
+          ?error.message:'research_learning_observation_unavailable',observed_at:new Date(this.clock()).toISOString()};
+      }
+      // Observation cannot undo or relabel the source commit. A later source
+      // owns its own observation; do not overwrite it with this older result.
+      try {await this.transaction(async tx=>{
+        const control=(await tx.get(this.control)).data();this.fence(control);
+        const current=await tx.get(ref);
+        if(current.data()?.blob===hash) tx.set(ref,{learning_observation:observation},{merge:true});
+      });}catch { /* The committed research row remains authoritative. */ }
+    }
     return true;
   }
   async filePut(name, encoded) {
@@ -670,12 +692,114 @@ export class Store {
         ...(evidence_file?{evidence_file}:{})}};
     }
   }
-  async publish(day,selectedDestination=null,agentContext=null) {
+  terminalSheetsGate(control,row,context) {
+    this.fence(control);
+    const source=context.source,original=source.publication,projection=structuredClone(row);
+    for(const key of ['plan','receipt','state']) delete projection.delivery?.sheets?.[key];
+    const expected=structuredClone(source);
+    for(const key of ['plan','receipt','state']) delete expected.delivery.sheets[key];
+    const authority=control.workflow,stored=original.workflow_authority;
+    if(this.schedulerStopped!==true || control.enabled!==false || control.config?.enabled!==false
+        || !authority || typeof authority.enabled!=='boolean'
+        || Object.keys(authority).sort().join(',')!=='enabled,publication_authority_reference,qa_authority_reference'
+        || authority.publication_authority_reference!==context.publication_authority_reference
+        || authority.publication_authority_reference!==stored.publication_authority_reference
+        || authority.qa_authority_reference!==stored.qa_authority_reference
+        || valueHash(projection)!==valueHash(expected)) refuse('terminal_sheets_recovery_not_admitted');
+  }
+  async recoverTerminalSheets(request) {
+    const keys=['op','day','source_row_blob','payload_digest','rejected_call_id','publication_authority_reference'];
+    if(Object.keys(request).sort().join(',')!==keys.sort().join(',') || !dateOK(request.day)
+        || !['source_row_blob','payload_digest'].every(k=>/^[a-f0-9]{64}$/.test(request[k] || ''))
+        || !/^[A-Za-z0-9_-]{1,200}$/.test(request.rejected_call_id || '')
+        || typeof request.publication_authority_reference!=='string') refuse('terminal_sheets_recovery_request_invalid');
+    const source=JSON.parse(Buffer.from(await this.blobGet(request.source_row_blob),'base64').toString('utf8'));
+    const p=source.publication,d=source.delivery?.sheets,review=source.review,qa=source.qa;
+    if(source.date!==request.day || source.run_key!==`blueprint-researcher:${request.day}` || source.canary
+        || source.state!=='reviewed' || source.publication_profile!=='agent-owned-v1'
+        || !source.session_id || !source.turn_id || qa?.state!=='validated' || !qa.turn_id
+        || p?.profile!=='agent-owned-v1' || p.session_id!==source.session_id || !p.turn_id
+        || p.turn_status!=='completed' || p.state!=='agent_finished_without_complete_receipts'
+        || !Number.isSafeInteger(p.completed_at) || !Number.isSafeInteger(p.deadline_ms)
+        || p.completed_at*1000>p.deadline_ms || p.cancel_attempted || p.observation_only_reason
+        || !Array.isArray(p.baseline_turn_ids) || ![source.turn_id,qa.turn_id].every(id=>p.baseline_turn_ids.includes(id))
+        || p.idempotency_key!==source.run_key+':publication' || !p.workflow_authority
+        || p.authority_reference!==request.publication_authority_reference
+        || p.workflow_authority.publication_authority_reference!==p.authority_reference
+        || review?.source_support_verified!==true || review.crm_rechecked!==true
+        || review.packet_digest!==source.packet_digest || pythonHash(source.packet)!==source.packet_digest
+        || review.qa_artifact_digest!==qa.artifact_digest || valueHash(qa.decision)!==valueHash(review)
+        || ![`${source.date}-qa.json`,`${source.date}-qa-correction-1-artifact.json`,`${source.date}-qa-correction-2-artifact.json`].includes(qa.artifact_file)
+        || review.reviewer_reference!==`agent-turn:${source.session_id}:${qa.turn_id}`
+        || !Array.isArray(review.accepted_keys) || !review.accepted_keys.length
+        || new Set(review.accepted_keys).size!==review.accepted_keys.length
+        || d?.state!=='pending' || d.presentation || d.plan || d.receipt || d.attempt_number
+        || source.delivery.notion?.state!=='acknowledged' || source.delivery.notion.receipt?.readback_verified!==true
+        || source.delivery.notion.receipt.key!==source.run_key+':notion'
+        || source.delivery.notion.receipt.payload_digest!==source.delivery.notion.payload_digest
+        || d.key!==source.run_key+':sheets' || d.payload_digest!==request.payload_digest)
+      refuse('terminal_sheets_recovery_source_invalid');
+    const input=Buffer.from(await this.fileGet(p.input_file),'base64');
+    if(p.input_file!==`${source.date}-publication-input.json` || input.at(-1)!==10
+        || sha(input.subarray(0,-1))!==p.request_digest) refuse('terminal_sheets_recovery_evidence_invalid');
+    const selected=source.packet.candidates.filter(c=>review.accepted_keys.includes(c.candidate_key));
+    if(selected.length!==review.accepted_keys.length || valueHash(selected)!==valueHash(d.payload?.candidates)
+        || d.payload.sheet_id!=='1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY' || d.payload.tab!=='Prospects'
+        || typeof d.payload_json!=='string' || sha(d.payload_json)!==d.payload_digest
+        || valueHash(JSON.parse(d.payload_json))!==valueHash(d.payload)) refuse('terminal_sheets_recovery_payload_invalid');
+    const rawQA=Buffer.from(await this.fileGet(qa.artifact_file),'base64');
+    let qaResult;try {qaResult=JSON.parse(rawQA.toString('utf8'));}catch {refuse('terminal_sheets_recovery_qa_invalid');}
+    if(sha(rawQA)!==qa.artifact_digest || qaResult.packet_digest!==source.packet_digest
+        || qaResult.source_support_verified!==true || !Array.isArray(qaResult.accepted_keys)
+        || !review.accepted_keys.every(key=>qaResult.accepted_keys.includes(key))) refuse('terminal_sheets_recovery_qa_invalid');
+    const evidence=JSON.parse(Buffer.from(await this.fileGet(p.evidence_file),'base64').toString('utf8'));
+    if(p.evidence_file!==`${source.date}-publication-evidence.json` || pythonHash(evidence)!==p.evidence_digest)
+      refuse('terminal_sheets_recovery_evidence_invalid');
+    const call=source.application_tool_calls?.[request.rejected_call_id],action=call?.request;
+    let args;try {args=typeof action?.arguments==='string'?JSON.parse(action.arguments):action?.arguments;}catch {}
+    if(call?.phase!=='publication' || call.attempted!==true || call.success!==false || call.result_acknowledged!==true
+        || action?.call_id!==request.rejected_call_id || action.turn_id!==p.turn_id
+        || action.name!=='blueprint_publish_research' || args?.destination!=='sheets' || args.strategy!=='concise'
+        || typeof call.request_json!=='string' || sha(call.request_json)!==call.request_digest
+        || valueHash(JSON.parse(call.request_json))!==valueHash(action)
+        || call.result_file!==`${source.date}-tool-${action.call_id}.json`) refuse('terminal_sheets_recovery_rejection_invalid');
+    const raw=Buffer.from(await this.fileGet(call.result_file),'base64'),event=JSON.parse(raw.toString('utf8'));
+    const outcome=JSON.parse(event.output);
+    if(sha(raw)!==call.result_sha256 || pythonHash(event)!==call.result_digest || event.success!==false
+        || event.call_id!==action.call_id || event.turn_id!==p.turn_id || outcome.success!==false
+        || outcome.error?.code!=='publication_agent_tool_arguments_invalid' || outcome.error.destination!=='sheets')
+      refuse('terminal_sheets_recovery_rejection_invalid');
+    const context={...request,source},row=await this.get(request.day),control=(await this.control.get()).data();
+    this.terminalSheetsGate(control,row,context);
+    const recoveryRef=this.db.doc(`${ROOT}/terminalSheetsRecoveries/${request.source_row_blob}`);
+    const binding={source_row_blob:request.source_row_blob,payload_digest:d.payload_digest,rejected_call_id:action.call_id,
+      rejection_result_sha256:call.result_sha256,qa_artifact_digest:qa.artifact_digest,
+      publication_evidence_digest:p.evidence_digest,publication_authority_reference:p.authority_reference};
+    context.recoveryRef=recoveryRef;context.binding=binding;
+    const receipt=await this.publish(request.day,'sheets',null,context);
+    if(!receipt) return {state:'readback_pending',mutation_policy:'existing_claim_readback_only',recovery_ref:recoveryRef.path};
+    if(receipt.destination!=='sheets' || receipt.payload_digest!==d.payload_digest || receipt.key!==d.key
+        || receipt.readback_verified!==true || !receipt.reference) refuse('terminal_sheets_recovery_receipt_invalid');
+    const current=await this.get(request.day);this.terminalSheetsGate((await this.control.get()).data(),current,context);
+    if(current.delivery.sheets.receipt && valueHash(current.delivery.sheets.receipt)!==valueHash(receipt))
+      refuse('delivery_receipt_already_bound');
+    current.delivery.sheets.receipt=receipt;current.delivery.sheets.state='acknowledged';await this.put(current);
+    await this.transaction(async tx=>{
+      const ctrl=(await tx.get(this.control)).data();this.terminalSheetsGate(ctrl,current,context);
+      const saved=(await tx.get(recoveryRef)).data();
+      if(!saved || valueHash(saved.binding)!==valueHash(binding)) refuse('terminal_sheets_recovery_binding_changed');
+      if(saved.receipt && valueHash(saved.receipt)!==valueHash(receipt)) refuse('delivery_receipt_already_bound');
+      if(!saved.receipt) tx.set(recoveryRef,{...saved,receipt,state:'acknowledged',readback_at:new Date(this.clock()).toISOString()});
+    });
+    return {state:'acknowledged',receipt,recovery_ref:recoveryRef.path,original_publication_state:p.state};
+  }
+  async publish(day,selectedDestination=null,agentContext=null,terminalRecovery=null) {
     await this.assertLease(); const initialControl=(await this.control.get()).data();
-    this.workflowGate(initialControl,!!this.terminalCollectionReceipt);
+    if(terminalRecovery) this.terminalSheetsGate(initialControl,await this.get(day),terminalRecovery);
+    else this.workflowGate(initialControl,!!this.terminalCollectionReceipt);
     if (!this.publisher) refuse('publication_binding_unavailable');
     const row=await this.get(day);
-    if(row?.publication_profile==='agent-owned-v1') {
+    if(row?.publication_profile==='agent-owned-v1' && !terminalRecovery) {
       if(!agentContext || !selectedDestination) refuse('publication_agent_choice_required');
       this.publicationAgentGate(initialControl,row,agentContext.request_digest,agentContext.action);
     }
@@ -689,17 +813,31 @@ export class Store {
     const destination=selectedDestination || ['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
     if(selectedDestination && !['notion','sheets'].includes(selectedDestination)) refuse('publication_destination_invalid');
     if (!destination) return null;
+    if(terminalRecovery && destination!=='sheets') refuse('terminal_sheets_recovery_request_invalid');
     const d=row.delivery[destination];
     try {
+      if(terminalRecovery && attemptState((await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row,destination).claimed && !d.plan)
+        refuse('terminal_sheets_recovery_claim_plan_missing');
       if (!d.plan) {d.plan=await this.publisher.prepare(row,destination);await this.put(row);}
+      if(terminalRecovery) await this.transaction(async tx=>{
+        const control=(await tx.get(this.control)).data();this.terminalSheetsGate(control,row,terminalRecovery);
+        const saved=(await tx.get(terminalRecovery.recoveryRef)).data(),plan_digest=valueHash(d.plan);
+        if(saved && (valueHash(saved.binding)!==valueHash(terminalRecovery.binding) || saved.plan_digest!==plan_digest))
+          refuse('terminal_sheets_recovery_binding_changed');
+        if(!saved) tx.set(terminalRecovery.recoveryRef,{schema_version:'blueprint.terminal-sheets-recovery.v1',
+          binding:terminalRecovery.binding,plan_digest,state:'prepared',prepared_at:new Date(this.clock()).toISOString()});
+      });
       if(destination==='notion' && d.plan.protocol==='notion-paginated-v1')
         return await this.publishNotionBatch(row,d.plan,initialControl.workflow,collectionAuthority,proof,agentContext);
+      const terminalBlob=terminalRecovery?sha(JSON.stringify(row)):null;
       const receipt=await this.publisher.reconcile(row,destination,d.plan);
       if (receipt) return receipt;
       const ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
+      if(terminalRecovery && before.data().blob!==terminalBlob) refuse('publication_authority_or_plan_changed');
       if (attemptState(before.data(),row,destination).claimed) return null; // uncertain: GET reconciliation only
       await this.transaction(async tx=>{
-        const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control,!!proof);
+        const control=(await tx.get(this.control)).data();this.fence(control);
+        if(terminalRecovery) this.terminalSheetsGate(control,row,terminalRecovery);else this.workflowGate(control,!!proof);
         if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || attemptState(run,row,destination).claimed) refuse('publication_attempt_not_admitted');
@@ -713,10 +851,21 @@ export class Store {
         if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
           refuse('publication_authority_or_plan_changed');
       }
-      await this.publisher.write(row,destination,d.plan);
+      if(terminalRecovery) {
+        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        this.terminalSheetsGate(control,row,terminalRecovery);
+        if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
+          refuse('publication_authority_or_plan_changed');
+      }
+      await this.publisher.write(row,destination,d.plan,terminalRecovery?{beforeWrite:async()=>{
+        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        this.terminalSheetsGate(control,row,terminalRecovery);
+        if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
+          refuse('publication_authority_or_plan_changed');
+      }}:undefined);
       return await this.publisher.reconcile(row,destination,d.plan);
     } catch(error) {
-      if(error instanceof Refusal && /^(?:publication|workflow|firestore|research_tool)_[a-z_]+$/.test(error.message)) throw error;
+      if(error instanceof Refusal && /^(?:publication|workflow|firestore|research_tool|terminal_sheets_recovery)_[a-z_]+$/.test(error.message)) throw error;
       const wrapped=new Refusal(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
       if(error.provider_feedback) wrapped.provider_feedback=error.provider_feedback;
       if(error.provider_response) wrapped.provider_response=error.provider_response;
@@ -934,6 +1083,7 @@ export class Store {
       case 'qa_correction_check': return this.qaCorrectionCheck(request.day,request.request_digest,request.deadline_ms,request.number);
       case 'repair_check': return this.repairCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
+      case 'recover_terminal_sheets': return this.recoverTerminalSheets(request);
       case 'publication_input_check': return this.publicationInputCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publication_agent_tool': return this.publicationAgentTool(request.day,request.action,request.request_digest);
       case 'refresh_crm': {
@@ -1015,7 +1165,8 @@ async function main() {
   // The trusted worker supplies a local compiled module, never a model URL.
   const learningPath = process.env.BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE;
   const learning = learningPath ? (await import(pathToFileURL(learningPath).href)).researchLearningHost(db) : null;
-  const store = new Store(db, undefined, undefined,crmReader,publisher,learning);
+  const store = new Store(db, undefined, undefined,crmReader,publisher,learning,null,
+    process.env.BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED==='false');
   const channel = new LeaseChannel(store);
   for await (const line of createInterface({input: process.stdin})) {
     try {

@@ -17,6 +17,22 @@ async function fixture() {
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
 
+test('supported source commits await the existing learning writer, and observation failure cannot undo research',async()=>{
+  const {db,store}=await fixture(),calls=[];
+  store.learning=async request=>{
+    assert.equal((await store.get(request.day)).state,'reviewed');calls.push(request);
+    return {event:{eventId:'source-bound-event'},append:'existing'};
+  };
+  await store.put(row());assert.equal(calls.length,0);
+  await store.put({...row(),state:'reviewed'});
+  assert.deepEqual(calls,[{op:'learning_after_run',day:'2026-09-30'}]);
+  assert.equal(db.values.get(`${ROOT}/runs/2026-09-30`).learning_observation.status,'observed');
+  store.learning=async()=>{throw new Error('private provider message contains spaces');};
+  assert.equal(await store.put({...row(),state:'reviewed'}),true);
+  assert.equal((await store.get('2026-09-30')).state,'reviewed');
+  assert.equal(db.values.get(`${ROOT}/runs/2026-09-30`).learning_observation.code,'research_learning_observation_unavailable');
+});
+
 test('terminal collection alone may publish validated evidence while control stays stopped', async () => {
   const {db,store}=await fixture(), proof={session_id:'synthetic-session',qa_artifact_sha256:'a'.repeat(64)}, writes=[];
   const workflow={enabled:true,qa_authority_reference:'owner-qa',publication_authority_reference:'owner-publication'};

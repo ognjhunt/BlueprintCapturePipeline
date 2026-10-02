@@ -28,7 +28,7 @@ class Bridge:
             [node, str(script or Path(__file__).with_name("firestore_bridge.mjs"))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1,
-            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON", "NOTION_API_TOKEN", "NOTION_API_KEY", "BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE"}},
+            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON", "NOTION_API_TOKEN", "NOTION_API_KEY", "BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE", "BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED"}},
         )
 
     def call(self, op, **fields):

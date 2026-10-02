@@ -150,7 +150,7 @@ export class Publisher {
     const expected = destination === 'notion' ? planNotion(row,{legacy:!plan.protocol}) : planSheets(row,{sheet_id:SHEET,complete:true,values:plan.crm_values});
     if (!isDeepStrictEqual(expected,plan)) fail('publication_plan_binding_invalid');
   }
-  async write(row,destination,plan) {
+  async write(row,destination,plan,{beforeWrite}={}) {
     this.validate(row,destination,plan);
     if (destination === 'notion') {
       if(plan.protocol) fail('publication_paginated_batch_required');
@@ -160,6 +160,7 @@ export class Publisher {
     } else if (plan.sheet_rows.length) {
       const current = await this.crmReader();
       if (!isDeepStrictEqual(current.values,plan.crm_values)) fail('publication_crm_changed_before_write');
+      if(beforeWrite) await beforeWrite();
       await this.google('POST',`/values/${encodeURIComponent('Prospects!A:S')}:append?valueInputOption=RAW&insertDataOption=OVERWRITE`,JSON.parse(plan.body_json));
     }
   }
