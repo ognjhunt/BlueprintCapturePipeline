@@ -16,7 +16,7 @@ from tests.test_daily_research_search import SearchAPI
 from tools.daily_research import render
 from tools.daily_research.consumer import QA_PATH
 from tools.daily_research.firestore import FirestoreLedger
-from tools.daily_research.runner import Refusal, canonical
+from tools.daily_research.runner import Refusal, Runner, canonical
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPERS = ROOT / "tools/daily_research/operators"
@@ -321,9 +321,180 @@ def test_expired_immutable_research_deadline_never_creates(monkeypatch):
     assert posts == []
 
 
-def test_unknown_usage_is_not_zero_or_admitted():
+def test_unknown_usage_is_pending_and_never_zero():
     api = SimpleNamespace(listing=lambda *_: [{"usage": None}])
-    assert canary.spend(api, {"session_id": "sess-test"}) == {"known": False, "estimate_usd": None, "hard_total_cap": False}
+    observation = canary.spend(api, {"session_id": "sess-test"})
+    assert observation["usage_state"] == "pending"
+    assert observation["known"] is observation["hard_total_cap"] is False
+    assert observation["estimate_usd"] is observation["reported_estimate_usd"] is None
+
+
+def test_partial_usage_does_not_claim_complete_cost():
+    api = SimpleNamespace(listing=lambda *_: [
+        {"id": "root", "status": "completed", "usage": {"input_tokens": 100, "output_tokens": 50}},
+        {"id": "qa", "status": "in_progress", "usage": None}])
+    observation = canary.spend(api, {"session_id": "sess-test"})
+    assert observation["known"] is False and observation["estimate_usd"] is None
+    assert float(observation["reported_estimate_usd"]) > 0
+    assert observation["reported_turn_count"] == 1
+    assert observation["pending_turns"] == [{"turn_id": "qa", "status": "in_progress"}]
+
+
+def test_usage_read_failure_is_unavailable_and_never_zero():
+    def unavailable(*_):
+        raise RuntimeError("upstream private error")
+    observation = canary.spend(SimpleNamespace(listing=unavailable), {"session_id": "sess-test"})
+    assert observation == {"known": False, "estimate_usd": None, "reported_estimate_usd": None,
+                           "usage_state": "unavailable", "hard_total_cap": False}
+
+
+@pytest.mark.parametrize("usage", [None, {"input_tokens": 1_000_000, "output_tokens": 50}])
+def test_baseline_paid_guard_does_not_invent_a_spend_cap(fixture, usage):
+    bridge, _, _, receipt, plan, _, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    provider = canary.CanaryProvider.__new__(canary.CanaryProvider)
+    provider.ledger = FirestoreLedger(bridge)
+    provider.listing = lambda *_: [{"id": "root", "status": "in_progress", "usage": usage}]
+    row = {"session_id": "sess-test", "canary": bridge.call("control")["canary"]}
+    provider.safe(row)
+    observation = row["canary_model_estimate"]
+    assert observation["hard_total_cap"] is False
+    if usage is None:
+        assert observation["estimate_usd"] is None and observation["usage_state"] == "pending"
+    else:
+        assert float(observation["estimate_usd"]) > 8  # Observed, not an arbitrary cancellation threshold.
+
+
+def test_missing_in_progress_and_terminal_usage_allows_normal_tools_qa_and_publication(fixture, monkeypatch):
+    bridge, _, api, receipt, plan, cache, _, crm, pages = fixture
+    canary.stage(bridge, plan, receipt)
+    api.turn_status = "in_progress"
+    api.actions = [{"type": "function_call", "turn_id": "turn_1", "call_id": "baseline_root",
+                    "name": canary.search.SEARCH, "arguments": {"query": "synthetic exact operator task"}}]
+    state = {"qa": "in_progress", "accounting_arrived": False, "cycles": 0}
+    original_listing, original_input = api.listing, api.qa_input
+
+    def listing(resource, sid=None):
+        values = original_listing(resource, sid)
+        if resource == "turns":
+            for turn in values:
+                if not state["accounting_arrived"]:
+                    turn["usage"] = None
+                if turn["id"] == "turn_qa":
+                    turn["status"] = state["qa"]
+        return values
+
+    def qa_input(*args):
+        original_input(*args)
+        api.actions = [{"type": "function_call", "turn_id": "turn_qa", "call_id": "baseline_qa",
+                        "name": canary.search.SEARCH, "arguments": {"query": "synthetic task evidence QA"}}]
+
+    def tick(_):
+        state["cycles"] += 1
+        assert state["cycles"] < 12 and not api.cancellations
+        if api.qa_exists:
+            if any(event[1]["turn_id"] == "turn_qa" for event in api.result_events):
+                state["qa"], api.actions = "completed", []
+        elif api.result_events:
+            api.turn_status, api.actions = "completed", []
+
+    monkeypatch.setattr(api, "listing", listing)
+    monkeypatch.setattr(api, "qa_input", qa_input)
+    result = canary.run(bridge, cache, execute=True, api_factory=lambda *_: api, clock=lambda: NOW, sleep=tick)
+    assert result["state"] == "completed" and result["qa_state"] == "validated"
+    assert len(api.payloads) == len(api.inputs) == 1 and len(api.executions) == 2
+    assert not api.cancellations
+    assert result["canary_model_estimate"]["estimate_usd"] is None
+    assert result["canary_model_estimate"]["usage_state"] == "pending"
+    assert len(json.loads(crm.read_text())["values"]) == 6 and len(json.loads(pages.read_text())) == 1
+    assert all(value["receipt"]["readback_verified"] for value in result["delivery"].values())
+    state["accounting_arrived"] = True
+    reconciled = canary.run(bridge, cache, execute=False, api_factory=lambda *_: api, clock=lambda: NOW)
+    assert reconciled["state"] == "completed"
+    assert reconciled["canary_model_estimate"]["usage_state"] == "reported_best_effort"
+    assert reconciled["canary_model_estimate"]["reported_turn_count"] == 2
+    assert float(reconciled["canary_model_estimate"]["estimate_usd"]) > 0
+    assert len(api.payloads) == len(api.inputs) == 1 and len(api.executions) == 2
+
+
+def test_pending_usage_does_not_bypass_the_original_research_deadline(fixture, monkeypatch):
+    bridge, _, api, receipt, plan, cache, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    api.turn_status = "in_progress"
+    original_listing = api.listing
+    state = {"now": NOW, "cycles": 0}
+
+    def listing(resource, sid=None):
+        values = original_listing(resource, sid)
+        if resource == "turns":
+            for turn in values:
+                turn["usage"] = None
+        return values
+
+    def tick(_):
+        state["cycles"] += 1
+        assert state["cycles"] < 5
+        if state["cycles"] == 1:
+            assert not api.cancellations
+            state["now"] = NOW+timedelta(seconds=1201)
+        else:
+            assert len(api.cancellations) == 1
+            api.turn_status = "cancelled"
+
+    monkeypatch.setattr(api, "listing", listing)
+    result = canary.run(bridge, cache, execute=True, api_factory=lambda *_: api,
+                        clock=lambda: state["now"], sleep=tick)
+    assert result["state"] == "cancelled" and len(api.cancellations) == len(api.payloads) == 1
+    assert not api.inputs and result["canary_model_estimate"]["estimate_usd"] is None
+
+
+def test_pending_qa_usage_preserves_total_deadline_and_terminal_cancel_recovery(fixture, monkeypatch):
+    bridge, ledger, api, receipt, plan, cache, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    state = {"now": NOW, "qa": "in_progress"}
+    original_listing = api.listing
+
+    def listing(resource, sid=None):
+        values = original_listing(resource, sid)
+        if resource == "turns":
+            for turn in values:
+                turn["usage"] = None
+                if turn["id"] == "turn_qa":
+                    turn["status"] = state["qa"]
+        return values
+
+    def tick(_):
+        assert api.qa_exists and not api.cancellations
+        state["now"] = NOW+timedelta(seconds=1801)
+
+    monkeypatch.setattr(api, "listing", listing)
+    first = canary.run(bridge, cache, execute=True, api_factory=lambda *_: api,
+                       clock=lambda: state["now"], sleep=tick)
+    assert first["qa_state"] == "qa_cancel_pending"
+    assert first["observer_error"] == "canary_total_observation_deadline"
+    assert len(api.payloads) == len(api.inputs) == len(api.cancellations) == 1
+    original_deadline = ledger.get(canary.DAY)["qa"]["deadline_ms"]
+    state["qa"] = "cancelled"
+    terminal = canary.run(bridge, cache, execute=False, api_factory=lambda *_: api, clock=lambda: state["now"])
+    assert terminal["qa_state"] == "qa_blocked" and terminal["qa_turn_status"] == "cancelled"
+    assert ledger.get(canary.DAY)["qa"]["deadline_ms"] == original_deadline
+    assert len(api.payloads) == len(api.inputs) == len(api.cancellations) == 1
+    assert not api.executions
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_existing_cancelled_attempt_is_never_resurrected_or_recreated(fixture, execute):
+    bridge, ledger, api, receipt, plan, cache, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    api.turn_status = "in_progress"
+    runner = Runner(ledger, canary.render.configured(bridge, cache), api, clock=lambda: NOW)
+    runner.start_or_resume()
+    runner.cancel_current(canary.DAY, "historical_unknown_usage_guard")
+    api.turn_status = "cancelled"
+    result = canary.run(bridge, cache, execute=execute, api_factory=lambda *_: api, clock=lambda: NOW)
+    assert result["state"] == "cancelled" and len(api.payloads) == len(api.cancellations) == 1
+    assert ledger.get(canary.DAY)["cancel_attempted"] is True
+    assert not api.inputs and not api.executions
 
 
 def test_test_approval_is_not_recurring_or_delete_approval():

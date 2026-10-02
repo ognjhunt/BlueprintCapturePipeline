@@ -104,15 +104,17 @@ Required admission: exact existing $25 one-time approval reference, freshly
 checked package/agent/template/tool/instruction/skills bindings, complete CRM,
 checked knowledge/refresh policy, reconciled original cleanup receipt, canonical
 publication authorities, normal root/config disabled. Test uses the production
-$5 soft target and a separate one-time $25 authorization ceiling; the latter
-never replaces recurring authority or creates a timer.
+$5 soft target and a separate one-time $25 soft total testing allowance; the
+legacy `ceiling_usd` admission field records that allowance, not a hard provider
+billing cap. It never replaces recurring authority or creates a timer.
 
 Research deadline is 1200 seconds and total research+QA 1800 seconds, with 600
 seconds reserved for QA. Existing independent Linux watchdog convention is
 `timeout --signal=TERM --kill-after=60s 1860s`. Process stop/cancellation does not
-guarantee provider teardown or a total-dollar cap. Installed conservative model
-estimate stop threshold is $8, unknown usage stops paid work, selected tools have
-their existing resource ceilings, and actual billing still needs reconciliation.
+guarantee provider teardown or a total-dollar cap. Model usage is observed for
+baseline measurement; an arbitrary $8 stop and cancellation for absent usage
+are removed. Selected tools retain existing resource ceilings, and actual
+billing still needs reconciliation.
 No fixed prospect quota; use defined scope, coverage and diminishing returns.
 
 One durable create claim only, persisted full immutable intent first; an unknown
@@ -232,3 +234,30 @@ as well as normal dated history; normal production Store does not query the
 private test namespace. Verify Oct2 remains unopened, the old Dot trigger stays
 disabled, and only the standalone 07:00 America/Chicago trigger is enabled.
 No canonical publication through Dot or ChatGPT Library is required.
+
+## Baseline measurement and pending usage
+
+The public [Agents API usage contract](https://developers.openai.com/api/docs/guides/agents-api/observability)
+is best-effort: turn/session usage can be null, recorded counts may change, and
+counts are not a final bill. Missing counts are neither zero nor evidence of
+overspend. The measurement adapter records `usage_state=pending` and
+`estimate_usd=null`; if some turns have counts, `reported_estimate_usd` describes
+only that reported subset. A failed telemetry GET is explicitly `unavailable`.
+Reported counts are labeled `reported_best_effort` and retain exclusions for
+unreported usage, tools and hosted compute. Root and QA work may proceed under
+the already-authorized soft-total scope while counts are pending; exact current
+status, immutable phase deadlines, independent watchdog, one-create/one-QA
+claims and resource ceilings continue to apply. No prospect-count stopping
+rule or billing cap is introduced. Terminal reconciliation refreshes accounting
+by GET without repeating research, QA or publication.
+
+The first accepted test was cancelled by the historical missing-usage guard.
+Its create has been consumed. This code correction preserves cancellation and
+never clears an intent, resets its start/deadline, resubmits a create, or opens
+another test identity. The runtime owner must reconcile that exact session's
+terminal status, available usage and tools/hosted charges, retain portable
+evidence, and complete separately approved cleanup. New paid testing waits for
+the owner's total testing allowance and recovery authority; unknown charges
+must remain explicit in that reconciliation. This fix is preparation, not a
+new paid-session or permanent-deletion authorization. Production remains
+disabled until real coverage/QA/publication, cleanup and cutover are verified.

@@ -14,7 +14,6 @@ import signal
 import tempfile
 import time
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 
 from tools.daily_research import discovery, render, search
@@ -51,7 +50,6 @@ ROOT = "blueprintDailyResearch/sites-first/canaries/" + TEST
 DAY = "2026-10-01"
 SCOPE = "one-time-fresh-research-agent-qa-canonical-publication-no-outreach"
 EXPIRES = "2026-10-02T10:00:00+00:00"
-MODEL_STOP = Decimal(8)
 
 
 def admission(value, now=None):
@@ -134,7 +132,7 @@ def inspect(bridge, approval, receipt, api, cache, now=None):
         "origin_row_digest": digest(row), "origin_raw_sha256": migration.RAW,
         "origin_row_blob": origin["oct1_row_blob"],
         "expires_at": EXPIRES, "package": receipt, "research_seconds": 1200,
-        "total_seconds": 1800, "model_estimate_stop_usd": "8", "hard_total_cap": False,
+        "total_seconds": 1800, "usage_observation_policy": "best-effort-post-run-v1", "hard_total_cap": False,
         "input_digests": {name: hashlib.sha256(value).hexdigest() for name, value in inputs.items()},
         "tool_definitions_digest": digest(checked["session_agent_override"]["tools"])}
     if (candidate["config"].get("max_runtime_seconds") != 1800
@@ -190,16 +188,29 @@ def stage(bridge, plan, receipt):
 
 
 def spend(api, row):
-    turns = api.listing("turns", row["session_id"])
+    # Public usage is best-effort, nullable even after completion, and may
+    # change. Observe it without converting missing counts into zero or a cap.
+    try:
+        turns = api.listing("turns", row["session_id"])
+    except Exception:  # noqa: BLE001 - telemetry failure is not proof of spend
+        return {"known": False, "estimate_usd": None, "reported_estimate_usd": None,
+                "usage_state": "unavailable", "hard_total_cap": False}
     usage = {"input_tokens": 0, "output_tokens": 0}
-    if not turns:
-        return {"known": False, "estimate_usd": None, "hard_total_cap": False}
+    reported, pending = 0, []
     for turn in turns:
         if not discovery.estimated_model_cost(turn.get("usage"))["known"]:
-            return {"known": False, "estimate_usd": None, "hard_total_cap": False}
+            pending.append({"turn_id": turn.get("id"), "status": turn.get("status")})
+            continue
+        reported += 1
         for field in usage:
             usage[field] += turn["usage"][field]
-    return discovery.estimated_model_cost(usage)
+    estimate = discovery.estimated_model_cost(usage) if reported else {"estimate_usd": None}
+    if not turns or pending:
+        return {"known": False, "estimate_usd": None, "reported_estimate_usd": estimate["estimate_usd"],
+                "usage_state": "pending", "reported_turn_count": reported, "pending_turns": pending,
+                "hard_total_cap": False}
+    return {**estimate, "usage_state": "reported_best_effort", "reported_turn_count": reported,
+            "pending_turns": []}
 
 
 class CanaryProvider(FencedProvider):
@@ -217,8 +228,6 @@ class CanaryProvider(FencedProvider):
             raise Refusal("canary_admission_binding_invalid")
         estimate = spend(self, row)
         row["canary_model_estimate"] = estimate
-        if not estimate["known"] or Decimal(estimate["estimate_usd"]) >= MODEL_STOP:
-            raise Refusal("canary_model_usage_unknown_or_stop_threshold")
 
     def create(self, payload):
         self.safe()
@@ -284,22 +293,22 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider,
             row = ledger.get(DAY)
             if not row:
                 return result
-            if row["state"] in {"failed", "cancelled", "completed", "creation_unresolved"}:
-                return summary(row)
             reason = "canary_interrupted" if stopped() else None
+            terminal = row["state"] in {"failed", "cancelled", "completed", "creation_unresolved"}
             if row.get("session_id"):
                 try:
-                    bridge.call("guard")
+                    if not terminal:
+                        bridge.call("guard")
                     estimate = spend(api, row)
-                    if not estimate["known"] or Decimal(estimate["estimate_usd"]) >= MODEL_STOP:
-                        reason = "canary_model_usage_unknown_or_stop_threshold"
                     with ledger.lock():
                         fresh = ledger.get(DAY)
                         fresh["canary_model_estimate"] = estimate
                         ledger.put(fresh)
                         row = fresh
                 except Exception:  # noqa: BLE001 - no upstream secrets
-                    reason = "canary_guard_or_usage_unavailable"
+                    reason = "canary_guard_or_state_unavailable"
+            if terminal:
+                return {**summary(row), **({"observer_error": reason} if reason else {})}
             total_exhausted = (clock() - instant(row["started_at"])).total_seconds() >= row["total_runtime_seconds"]
             if total_exhausted:
                 reason = "canary_total_observation_deadline"
@@ -313,6 +322,13 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider,
                         with ledger.lock():
                             fresh = ledger.get(DAY)
                             consumer.cancel(fresh, reason)
+                        # Observe the existing QA even after the deadline so a
+                        # confirmed cancellation can become terminal. A stopped
+                        # Consumer never starts input/tools or publication.
+                        consumer.stopped = lambda: True
+                        result = consumer.step()
+                        return {**summary(ledger.get(DAY)), "observer_error": reason,
+                                "observer_state": result["state"]}
                     return {**summary(ledger.get(DAY)), "observer_error": reason}
                 # Validated terminal QA permits only canonical publication/GET
                 # recovery after paid-work deadline. No new inference here.
