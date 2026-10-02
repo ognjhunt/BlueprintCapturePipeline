@@ -161,6 +161,15 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("wait_for_idle_invalid")
         return {"kind": kind, "commit": _commit(body), "wait_for_idle": wait}
     if kind == "unit":
+        if body.get("action") == "repair-notifier-binding":
+            _only(body, ("kind", "unit", "action", "expected_postcheck_sha256", "expected_source_commit"))
+            digest, commit = body.get("expected_postcheck_sha256"), body.get("expected_source_commit")
+            if (body.get("unit") != "blueprint-pipeline-control-plane.service"
+                    or not isinstance(digest, str) or not _LEASE_DIGEST.fullmatch(digest)
+                    or not isinstance(commit, str) or not _COMMIT.fullmatch(commit)):
+                raise RequestRefused("notifier_repair_identity_invalid")
+            return {"kind": kind, "unit": body["unit"], "action": body["action"],
+                    "expected_postcheck_sha256": digest, "expected_source_commit": commit}
         _only(body, ("kind", "unit", "action"))
         unit, action = body.get("unit"), body.get("action")
         if not isinstance(unit, str) or not UNIT_NAME.fullmatch(unit):

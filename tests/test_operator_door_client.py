@@ -97,6 +97,19 @@ def test_hold_client_explicit_release_remains_an_owned_bounded_request(door: dic
     assert request["expires_in_seconds"] == 86400
 
 
+def test_notifier_repair_client_requires_and_preserves_expected_identity(door: dict[str, Any]) -> None:
+    digest = "sha256:" + "a" * 64
+    code, out = _run("unit", "repair-notifier-binding", "blueprint-pipeline-control-plane.service",
+                     "--expected-postcheck-sha256", digest, "--expected-source-commit", SHA)
+    assert code == 0
+    request_id = json.loads(out)["id"]
+    request = json.loads((door["state"] / "requests/pending" / f"{request_id}.json").read_text())["request"]
+    assert request == {"kind": "unit", "unit": "blueprint-pipeline-control-plane.service",
+                       "action": "repair-notifier-binding", "expected_postcheck_sha256": digest,
+                       "expected_source_commit": SHA}
+    assert _run("unit", "repair-notifier-binding", "blueprint-pipeline-control-plane.service")[0] == 2
+
+
 def test_lane_scratch_client_submits_bounded_commands(door: dict[str, Any]) -> None:
     digest = "sha256:" + "a" * 64
     def submitted(out: str) -> dict[str, Any]:
