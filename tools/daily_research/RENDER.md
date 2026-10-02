@@ -239,7 +239,8 @@ Never restore an empty ledger or an older snapshot of run state.
 Owner request `Sentinel_3b6171ff167c8191b378202c5f0c54c0` authorizes an agent
 repair loop for the already retained baseline. `repair-output --attempt 1
 --date 2026-10-01` uses the same installed/isolated package and archive arguments
-above, under `timeout --signal=TERM --kill-after=60s 1860s`. It pins one immutable
+in [preserved baseline recovery](operators/README.md#preserved-baseline-output-recovery-and-corrected-cost-reporting),
+under `timeout --signal=TERM --kill-after=60s 1860s`. It pins one immutable
 30-minute correction-plus-QA window against the exact original session/root/raw
 hash and existing shared $25 soft baseline authority. Invoking it again resumes
 that window; it never resets the root clock or creates another research session.
