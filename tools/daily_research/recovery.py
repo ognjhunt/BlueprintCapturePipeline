@@ -10,6 +10,47 @@ from tools.daily_research.contracts import checked_day
 REPAIR_PATH = "/workspace/outputs/daily-research-repaired.json"
 
 
+def replay_saved_artifact(row, raw_artifact, tool_files, known, observed_at):
+    """Offline full-report replay using exact retained bytes; never mutate them.
+
+    Native fixture readers supply the complete row, raw bytes, a mapping of
+    immutable tool filenames to bytes and original CRM identity keys. No live
+    provider, database, refresh or publication is reachable from this function.
+    """
+    from tools.daily_research.runner import Refusal, digest, validate_output
+
+    if (hashlib.sha256(raw_artifact).hexdigest() != row.get("raw_output_digest")
+            or digest(row.get("knowledge_context")) != row.get("knowledge_context_digest")
+            or digest(row.get("refresh_policy")) != row.get("refresh_policy_digest")):
+        raise Refusal("offline_fixture_artifact_or_context_binding_invalid")
+    output = json.loads(raw_artifact)
+    original_feedback = validation_feedback(output, row, known, observed_at)
+    try:
+        derived, quarantined = quarantine_null_operator_deltas(output)
+    except ValueError as error:
+        if str(error) != "output_recovery_no_matching_proposal":
+            raise
+        derived, quarantined = deepcopy(output), []
+    class Files:
+        def read_bytes(self, name):
+            return tool_files[name]
+    derived, precision = normalize_live_date_precision(derived, row, Files(), observed_at)
+    remaining = validation_feedback(derived, row, known, observed_at)
+    counts = None
+    if not remaining:
+        candidates, duplicates = validate_output(derived, row["date"], set(known),
+            contract_version=row["research_contract_version"], knowledge_context=row["knowledge_context"],
+            refresh_policy=row["refresh_policy"], observed_at=observed_at)
+        counts = {"candidate_count": len(candidates), "duplicate_count": len(duplicates)}
+    return {"schema_version": "blueprint.saved-research-replay.v1", "provider_calls": 0,
+            "database_writes": 0, "publication_writes": 0, "session_id": row["session_id"],
+            "root_turn_id": row["turn_id"], "raw_output_sha256": row["raw_output_digest"],
+            "original_validation_errors": original_feedback, "remaining_validation_errors": remaining,
+            "quarantined_proposal_count": len(quarantined), "date_normalizations": precision,
+            "derived_report_sha256": digest(derived), "valid": not remaining, "counts": counts,
+            "qa_and_publication_verified": False}
+
+
 def validation_feedback(output, row, known, observed_at):
     """Collect independent failures; feedback is data, never agent authority."""
     from tools.daily_research import contracts, discovery
