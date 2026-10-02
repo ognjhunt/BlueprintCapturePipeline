@@ -325,6 +325,18 @@ def verify_sdk_error_receipt():
         "stage": "preconditions", "class": "other", "code": None,
         "http_status": None, "request_id": None}
     assert recovery.repair_error_receipt(Refusal("secret"), "preconditions")["code"] is None
+    import httpx2
+    from openai import InternalServerError
+    request = httpx2.Request("POST", "https://api.openai.com/v1/agents/sessions/private/events")
+    for hint, expected in [("15", 15), ("86401", 86400), ("not-a-delay", None),
+                           ("Fri, 02 Oct 2099 10:00:00 GMT", 86400)]:
+        response = httpx2.Response(503, request=request, headers={"retry-after": hint, "x-private": "never-retain-this",
+            "date": "Fri, 02 Oct 2026 09:00:00 GMT", "x-request-id": "req_0123456789abcdef"})
+        error = InternalServerError("private", response=response, body={"code": "service_unavailable_error"})
+        receipt = recovery.repair_error_receipt(error, "provider_submission")
+        assert receipt.get("retry_after_seconds") == expected
+        assert receipt["http_status"] == 503 and receipt["code"] == "service_unavailable_error"
+        assert "private" not in canonical(receipt) and "never-retain-this" not in canonical(receipt)
 
 
 def test_receipt_retains_only_typed_allowlisted_metadata():

@@ -49,7 +49,8 @@ def qa_deadline(row, config):
             or value.get("model_observation", {}).get("estimator_version") != discovery.ESTIMATOR_VERSION
             or value.get("model_observation", {}).get("known") is not True):
         raise Refusal("recovered_qa_authority_or_binding_invalid")
-    return instant(value["started_at"]) + timedelta(seconds=600)
+    from tools.daily_research.qa_retry import retry_deadline
+    return retry_deadline(row, instant(value["started_at"]) + timedelta(seconds=600))
 
 
 def workflow(control):
@@ -244,6 +245,12 @@ class Consumer:
         if qa["state"] == "qa_blocked":
             return None
         try:
+            if row.get("qa_retry_continuation"):
+                from tools.daily_research.qa_retry import submit
+                if submit(self, row, deadline) == "reply_persistence_unresolved":
+                    return None
+                if qa["state"] == "qa_blocked":
+                    return None
             return self.observe(row, deadline)
         except Exception:  # noqa: BLE001 - observation failure cancels the exact durably bound session
             if qa.get("turn_status") in {"completed", "failed", "cancelled"}:
@@ -262,7 +269,11 @@ class Consumer:
             qa["cancel_attempted"] = True
             self.ledger.put(row)
             try:
-                self.api.cancel(row["session_id"], row["run_key"] + ":qa")
+                key = row["run_key"] + (":qa:retry-phase" if row.get("qa_retry_continuation") else ":qa")
+                qa["cancel_idempotency_key"] = key + ":cancel"
+                self.ledger.put(row)
+                self.api.cancel(row["session_id"], key)
+                qa["cancel_reply_received"] = True
             except Exception:  # noqa: BLE001 - uncertain cancellation is never claimed terminal or resubmitted
                 qa["cancel_reply_unresolved"] = True
         self.ledger.put(row)
@@ -293,6 +304,7 @@ class Consumer:
             if turn["status"] in {"completed", "failed", "cancelled"}:
                 if (turn["status"] != "completed" or qa["cancel_attempted"] or not isinstance(turn.get("completed_at"), int)
                         or turn["completed_at"] > deadline.timestamp()
+                        or (row.get("qa_retry_continuation") and turn["completed_at"] < instant(row["qa_retry_continuation"]["started_at"]).timestamp())
                         or (row.get("discovery_profile") != "adaptive-sites-v1" and qa["web_tool_activities"] + row.get("web_tool_activities", 0) >= 6)):
                     qa.update(state="qa_blocked", error="agent_qa_terminal_guard_failed")
                     self.ledger.put(row)

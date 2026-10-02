@@ -48,6 +48,38 @@ test('overlap refuses and late release cannot clear the successor lease', async 
   await second.assertLease(); await assert.rejects(store.createCheck(row().date, row().metadata), /lease_lost/);
 });
 
+test('two retry claims serialize, survive replacement, and cannot renew the phase or original claim', async () => {
+  const {db,store,time}=await fixture();
+  db.values.get(ROOT).workflow={enabled:true,qa_authority_reference:'synthetic-qa',publication_authority_reference:'synthetic-pub'};
+  await store.put(row());
+  const request='a'.repeat(64), deadline=time.now+120000;
+  const value={...row(),state:'awaiting_review',qa:{state:'qa_input_unresolved',request_digest:request,deadline_ms:deadline}};
+  await store.put(value);await store.qaCheck(value.date,request,deadline);
+  const phase={started_at:new Date(time.now).toISOString(),previous_qa:structuredClone(value.qa)};
+  value.qa_retry_continuation=phase;
+  const error={stage:'provider_submission',http_status:503,code:'service_unavailable_error'};
+  value.qa.input_error_receipt=error;
+  value.qa.input_retries=[{number:1,idempotency_key:value.run_key+':qa',not_before:new Date(time.now+5000).toISOString()}];
+  await store.put(value);
+  const next=time.now+600000;
+  await assert.rejects(store.qaRetryCheck(value.date,request,next,1),/not_admitted/);
+  time.now+=5001;
+  const results=await Promise.allSettled([store.qaRetryCheck(value.date,request,next,1),store.qaRetryCheck(value.date,request,next,1)]);
+  assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+  await store.release();const replacement=new Store(db,()=>time.now,'replacement');await replacement.acquire();
+  await replacement.put(value);
+  await assert.rejects(replacement.qaRetryCheck(value.date,request,next,1),/not_admitted/);
+  value.qa.input_retries[0].error_receipt=error;
+  value.qa.input_retries.push({number:2,idempotency_key:value.run_key+':qa',not_before:new Date(time.now+15000).toISOString()});
+  await replacement.put(value);
+  await assert.rejects(replacement.qaRetryCheck(value.date,request,next,2),/not_admitted/);
+  time.now+=15001;await replacement.qaRetryCheck(value.date,request,next,2);await replacement.put(value);
+  const persisted=db.values.get(`${ROOT}/runs/${value.date}`);
+  assert.equal(persisted.qa_request_claimed,true);assert.deepEqual(persisted.qa_retry_claims,{'1':request,'2':request});
+  await assert.rejects(replacement.qaRetryCheck(value.date,request,next,2),/not_admitted/);
+  await assert.rejects(replacement.put({...value,qa_retry_continuation:{...phase,started_at:new Date(time.now).toISOString()}}),/phase_already_bound/);
+});
+
 test('create claim is durable, one per date, and outside any provider call', async () => {
   const {db, store} = await fixture(); db.replay = true;
   await store.put(row()); await store.createCheck(row().date, row().metadata);

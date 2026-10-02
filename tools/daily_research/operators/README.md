@@ -493,3 +493,30 @@ tool receipts. The old installed export omits the new receipt and is insufficien
 for this repaired run's canonical backup. The read-only diagnosis also returns
 actual declared coverage, stopping reason and bounded root query/source trace;
 those observations, rather than search counts, support the scope audit.
+
+`retry-qa-submission` is the explicitly authorized recovery of the retained
+HTTP503 QA input (`req_c88b962feb724dbaa72643721e4745be`), not new research.
+It binds the exact final row digest, full baseline-only session/turn/items/artifact
+GETs and unchanged immutable QA input before pinning one new 600-second phase.
+The expired `qa_continuation` and exact prior QA/cancellation record remain
+unchanged in `qa_retry_continuation.previous_qa`; their clocks are never renewed.
+The native operator's completed observer and read-only reconciliation are the
+source receipt; flags alone do not prove cancellation completion, and the new
+receipt explicitly records the previous cancel outcome as `not_inferred`.
+An explicitly unresolved cancel reply refuses admission.
+
+At most two durable transactional slots resend exactly the original message,
+session and idempotency key. Each checks complete saved work before and after
+its claim, then rechecks private lease, normal origin, controls, stop and deadline
+immediately before POST. Backoff floors are 5s/15s and honor HTTP `Retry-After`;
+long hints stop the phase. SDK retries stay disabled. Accepted work is observed;
+a crash, unknown reply, changed error or lost reply-persistence receipt never
+grants the next slot. The original input claim remains consumed. The retry phase
+has a separate stable cancellation-operation key so the earlier cancel response
+cannot deduplicate its own deadline/disable cancellation. Restart cannot renew
+the phase. Existing QA, deduplication, publication and readback gates apply;
+successful command exit alone never establishes QA or publication completion.
+
+Official contracts: [retry transient failures](https://developers.openai.com/api/docs/guides/agents-api/errors#retry-transient-failures)
+and [same-key session input recovery](https://developers.openai.com/api/docs/guides/agents-api/sessions).
+No new session, model change, grants, keys, outreach or deletion is included.

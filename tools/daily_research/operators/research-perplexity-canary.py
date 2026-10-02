@@ -58,6 +58,8 @@ ORIGIN_DAY = "2026-10-01"
 BASELINE = None
 BASELINE_AUTHORITY = "Sentinel_c2046c5f146c81918921eba1ed7f6caa"
 BASELINE_SCOPE = "baseline-research-agent-qa-canonical-publication-with-retries-no-outreach"
+QA_RETRY_SOURCE_ROW = "2032d9cbfe880fb24f3e26280c3b52c0ac152e1ea13f818de1b9d62e75daf810"
+QA_RETRY_REQUEST_ID = "req_c88b962feb724dbaa72643721e4745be"
 
 
 def select_attempt(number, day):
@@ -285,6 +287,46 @@ def recover_original_and_qa(bridge, cache, *, api_factory=None,
                stopped=stopped, clock=clock, sleep=sleep)
 
 
+def retry_qa_submission(bridge, cache, *, api_factory=None, stopped=lambda: False,
+                        clock=lambda: datetime.now(timezone.utc), sleep=time.sleep,
+                        expected_row_digest=QA_RETRY_SOURCE_ROW, expected_request_id=QA_RETRY_REQUEST_ID):
+    """Explicit new bounded phase for the retained 503; original operation only."""
+    from tools.daily_research import qa_retry
+    api_factory = api_factory or CanaryProvider
+    ledger = FirestoreLedger(bridge)
+    cfg = render.configured(bridge, cache, allow_create=False)
+    api = api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    api.clock, api.stopped = clock, stopped
+    try:
+        with ledger.lock():
+            row = ledger.get(DAY)
+            if not BASELINE or BASELINE["attempt_number"] != 1 or DAY != "2026-10-01" or not row:
+                raise Refusal("qa_retry_retained_baseline_required")
+            if row.get("qa_retry_continuation"):
+                qa_deadline(row, cfg)  # Restart cannot replace or extend this phase.
+            else:
+                if (digest(row) != expected_row_digest
+                        or row.get("qa", {}).get("input_error_receipt", {}).get("request_id") != expected_request_id
+                        or clock() < qa_deadline(row, cfg)):
+                    raise Refusal("qa_retry_source_receipt_changed_or_not_expired")
+                preflight(api, cfg.get("expected_agent_instructions_sha256"), row.get("search_provider"))
+                qa_retry.original_event(ledger, row)
+                reconciliation = qa_retry.reconcile(api, ledger, row)
+                bridge.call("guard")
+                bridge.call("assert_lease")
+                control = bridge.call("control")
+                if (stopped() or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
+                        or row.get("canary") != control.get("canary")):
+                    raise Refusal("qa_retry_stopped_disabled_or_expired")
+                qa_retry.authorize(row, reconciliation, clock())
+                qa_deadline(row, cfg)
+                ledger.put(row)
+    finally:
+        api.client.close()
+    return run(bridge, cache, recovery_only=True, api_factory=api_factory,
+               stopped=stopped, clock=clock, sleep=sleep)
+
+
 class CanaryBridge(Bridge):
     def call(self, op, **fields):
         if op == "put":
@@ -493,6 +535,17 @@ class CanaryProvider(FencedProvider):
         self.safe(self.ledger.get(day))
         return super().repair_input(session_id, event, key, day, request_digest, deadline_ms)
 
+    def qa_retry_action_guard(self, row, deadline_ms):
+        self.safe(row)
+        super().qa_retry_action_guard(row, deadline_ms)
+        # Slow provider inventory/spend reads precede this final origin fence.
+        self.ledger.bridge.call("guard")
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (self.stopped() or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
+                or self.clock().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("qa_retry_stopped_disabled_or_expired")
+
     def repair_action_guard(self, day, deadline_ms):
         self.ledger.bridge.call("guard")
         return super().repair_action_guard(day, deadline_ms)
@@ -600,6 +653,9 @@ def summary(row):
                   qa_turn_id=row.get("qa", {}).get("turn_id"), qa_state=row.get("qa", {}).get("state"),
                   qa_turn_status=row.get("qa", {}).get("turn_status"),
                   qa_input_error_receipt=row.get("qa", {}).get("input_error_receipt"),
+                  qa_retry_phase_started_at=row.get("qa_retry_continuation", {}).get("started_at"),
+                  qa_retry_attempts=[{k: attempt.get(k) for k in ("number", "state", "started_at", "finished_at", "error_receipt")}
+                                     for attempt in row.get("qa", {}).get("input_retries", [])],
                   qa_artifact_sha256=row.get("qa", {}).get("artifact_digest"),
                   delivery={name: {"state": value.get("state"), "receipt": value.get("receipt")}
                             for name, value in row.get("delivery", {}).items()},
@@ -670,7 +726,7 @@ def record_cleanup(bridge, cache, receipt, *, api_factory=FencedProvider):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa"])
+    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa", "retry-qa-submission"])
     parser.add_argument("--package", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--approval")
@@ -688,7 +744,7 @@ def main():
         select_attempt(args.attempt, args.date)
     elif args.date is not None:
         raise Refusal("baseline_attempt_identity_invalid")
-    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa"}
+    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa", "retry-qa-submission"}
     repair_arguments = (args.repair_package, args.repair_archive, args.repair_source, args.repair_sha256)
     if repair_command != all(repair_arguments) or not repair_command and any(repair_arguments):
         raise Refusal("repair_package_required_or_command_not_admitted")
@@ -698,7 +754,7 @@ def main():
         if Path(args.repair_package).resolve() == Path(args.package).resolve():
             raise Refusal("repair_must_preserve_installed_package")
         repair_receipt = repair_package_receipt(args.repair_package, args.repair_archive, args.repair_sha256, args.repair_source)
-    if args.command in {"execute", "reconcile", "resume-qa", "repair-output", "recover-original-and-qa"}:
+    if args.command in {"execute", "reconcile", "resume-qa", "repair-output", "recover-original-and-qa", "retry-qa-submission"}:
         verify_process_watchdog()
     stop = {"requested": False}
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -761,6 +817,8 @@ def main():
                 result = run(bridge, cache, recovery_only=True, stopped=lambda: stop["requested"])
             elif args.command == "recover-original-and-qa":
                 result = recover_original_and_qa(bridge, cache, stopped=lambda: stop["requested"])
+            elif args.command == "retry-qa-submission":
+                result = retry_qa_submission(bridge, cache, stopped=lambda: stop["requested"])
             elif args.command == "repair-output":
                 result = repair_report(bridge, cache, stopped=lambda: stop["requested"])
             elif args.command == "export-recovered":

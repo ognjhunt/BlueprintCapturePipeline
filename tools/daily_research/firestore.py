@@ -161,6 +161,34 @@ class FencedProvider(Provider):
                 or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
             raise Refusal("recovered_qa_stopped_disabled_or_expired")
 
+    def qa_retry_input(self, session_id, event, key, day, request_digest, deadline_ms, number):
+        from tools.daily_research import qa_retry
+        from tools.daily_research.consumer import qa_deadline
+        from tools.daily_research.runner import digest
+        row = self.ledger.get(day)
+        if (not row.get("qa_retry_continuation") or row.get("session_id") != session_id
+                or key != row["run_key"] + ":qa" or digest(event) != request_digest
+                or qa_retry.original_event(self.ledger, row) != event
+                or int(qa_deadline(row, {}).timestamp() * 1000) != deadline_ms):
+            raise Refusal("qa_retry_input_not_admitted")
+        self.qa_retry_action_guard(row, deadline_ms)
+        self.ledger.bridge.call("qa_retry_check", day=day, request_digest=request_digest,
+                                deadline_ms=deadline_ms, number=number)
+        self.qa_retry_action_guard(self.ledger.get(day), deadline_ms)
+        self.qa_input_phase = "provider_submission"
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def qa_retry_action_guard(self, row, deadline_ms):
+        from tools.daily_research import qa_retry
+        if not qa_retry.reconcile(self, self.ledger, row)["clear"]:
+            raise Refusal("qa_retry_saved_work_changed")
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True
+                or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("qa_retry_stopped_disabled_or_expired")
+
     def repair_input(self, session_id, event, key, day, request_digest, deadline_ms):
         # RepairLoop holds the existing fenced lease and has durably consumed
         # this revision's input claim. A restarted observer never sends it again.

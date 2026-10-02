@@ -1,9 +1,11 @@
 """Evidence-preserving normalization and same-session validation repair."""
 import hashlib
 import json
+import math
 import re
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 from tools.daily_research import knowledge, search
 from tools.daily_research.contracts import checked_day
@@ -26,6 +28,8 @@ def repair_error_receipt(error, stage):
         "research_tool_record_resource_ceiling", "recovered_qa_session_not_idle",
         "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired",
         "canary_stopped_disabled_or_expired_before_qa"}
+    local_codes.update({"qa_retry_input_not_admitted", "qa_retry_saved_work_changed",
+                        "qa_retry_stopped_disabled_or_expired", "qa_retry_immutable_input_changed"})
     if isinstance(error, Refusal):
         receipt["class"] = "Refusal"
         code = error.args[0] if len(error.args) == 1 else None
@@ -61,6 +65,22 @@ def repair_error_receipt(error, stage):
                     receipt["http_status"] = status
                 if type(request_id) is str and re.fullmatch(r"req_[A-Za-z0-9_-]{8,128}", request_id):
                     receipt["request_id"] = request_id
+                # Read only a typed SDK HTTP response and retain the delay, not
+                # headers/body/exception text. A long hint stops this phase.
+                response = fields.get("response")
+                if response is not None:
+                    hint = response.headers.get("retry-after")
+                    try:
+                        seconds = float(hint)
+                    except (TypeError, ValueError):
+                        try:
+                            server_date = response.headers.get("date")
+                            origin = parsedate_to_datetime(server_date) if server_date else datetime.now(timezone.utc)
+                            seconds = (parsedate_to_datetime(hint) - origin).total_seconds()
+                        except (TypeError, ValueError, OverflowError):
+                            seconds = None
+                    if seconds is not None and math.isfinite(seconds) and seconds >= 0:
+                        receipt["retry_after_seconds"] = math.ceil(min(seconds, 86400))
     return receipt
 
 
