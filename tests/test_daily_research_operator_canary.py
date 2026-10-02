@@ -17,7 +17,7 @@ from tests.test_daily_research_search import SearchAPI
 from tools.daily_research import render
 from tools.daily_research.consumer import QA_PATH
 from tools.daily_research.firestore import FirestoreLedger
-from tools.daily_research.runner import Refusal, Runner, canonical
+from tools.daily_research.runner import Refusal, Runner, canonical, digest
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPERS = ROOT / "tools/daily_research/operators"
@@ -1460,3 +1460,30 @@ def test_recovery_receipt_is_immutable_even_when_crash_precedes_row_pointer(fixt
     assert ledger.read_bytes(canary.DAY + '-recovery.json') == raw
     monkeypatch.setattr(ledger, 'put', original_put)
     assert runner.recover_output(canary.DAY, recovery_receipt(row))['state'] == 'awaiting_review'
+
+
+@pytest.mark.parametrize("change", ["disabled", "authority", "budget"])
+def test_qa_correction_origin_guard_rechecks_control_before_provider_post(monkeypatch, change):
+    row = {"packet": {}, "packet_digest": digest({}), "search_provider": "perplexity-fast-v1",
+           "recurring_budget_authority_reference": "approved", "soft_target_usd": 5,
+           "qa": {"state": "qa_correction_input_unresolved", "submission_binding": {"authority_reference": "qa-approved"}, "corrections": [
+               {"state": "input_unresolved", "authority_reference": "qa-approved"}]}}
+    control = {"enabled": True, "workflow": {"enabled": True, "qa_authority_reference": "qa-approved"},
+               "config": {"search_provider": "perplexity-fast-v1", "recurring_budget_authority_reference": "approved", "soft_target_usd": 5}}
+    class Bridge:
+        def call(self, op, **_):
+            if op == "guard":
+                if change == "disabled":
+                    control["enabled"] = False
+                elif change == "authority":
+                    control["workflow"]["qa_authority_reference"] = "changed"
+                else:
+                    control["config"]["soft_target_usd"] = 7
+            return control if op == "control" else True
+    provider = canary.CanaryProvider.__new__(canary.CanaryProvider)
+    provider.ledger = SimpleNamespace(bridge=Bridge(), get=lambda _: row)
+    provider.safe, provider.clock = lambda *_: None, lambda: NOW
+    # Generic inventory and final fence have separate real-provider race coverage.
+    monkeypatch.setattr(canary.FencedProvider, "qa_correction_action_guard", lambda *_: None)
+    with pytest.raises(Refusal, match="authority_changed|budget_authority_changed"):
+        provider.qa_correction_action_guard(canary.DAY, int((NOW + timedelta(seconds=60)).timestamp() * 1000))

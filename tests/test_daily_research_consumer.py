@@ -198,6 +198,353 @@ def test_fenced_qa_is_collected_losslessly_without_repeating_completed_review(fi
     assert len(api.inputs) == len(api.payloads) == 1 and api.cancellations == []
 
 
+def correction_provider(consumer, api, ledger, bridge, *, fix=True, lost_reply=False, accept=True):
+    """Saved-session correction using the real transaction fence; no inference."""
+    submitted, corrected, turns = [], {}, []
+    listing, artifact = api.listing, api.artifact
+    def correction(sid, event, key, day, request_digest, deadline_ms, number):
+        bridge.call("qa_correction_check", day=day, request_digest=request_digest,
+                    deadline_ms=deadline_ms, number=number)
+        submitted.append((sid, key, event))
+        if accept:
+            tid = "turn_qa_correction_" + str(number)
+            result = deepcopy(api.qa_result)
+            if fix:
+                result["checks"][0]["duplicate"] = False
+            corrected[str(number)] = canonical(result).encode()
+            turns.append({"id": tid, "session_id": sid, "agent_id": AGENT, "subagent_id": None,
+                "status": "completed", "completed_at": int(consumer.clock().timestamp()) + 1})
+        if lost_reply:
+            raise TimeoutError("synthetic uncertain correction input")
+    def values(resource, sid=None):
+        result = listing(resource, sid)
+        if resource == "turns":
+            result.extend(turns)
+        if resource == "artifacts":
+            result.extend({"id": "artifact_qa_correction_" + str(n), "turn_id": turn["id"],
+                "path": f"/workspace/outputs/daily-research-qa-correction-{n}.json"}
+                for n, turn in enumerate(turns, 1))
+        return result
+    api.qa_correction_input, api.listing = correction, values
+    api.artifact = lambda sid, aid: corrected[aid.rsplit("_", 1)[-1]] if aid.startswith("artifact_qa_correction_") else artifact(sid, aid)
+    return submitted
+
+
+def malformed_qa(consumer, api):
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    api.qa_result["checks"][0]["duplicate"] = "false"
+    return canonical(api.qa_result).encode()
+
+
+def test_malformed_qa_returns_precise_feedback_to_same_session_and_preserves_both_reviews(fixture, tmp_path):
+    consumer, api, ledger, bridge, _ = fixture
+    raw = malformed_qa(consumer, api)
+    submitted = correction_provider(consumer, api, ledger, bridge)
+    assert consumer.step()["state"] == "qa_running"
+    pending = ledger.get(DAY)
+    correction = pending["qa"]["corrections"][0]
+    assert any(issue["path"] == "/checks/0/duplicate" and "boolean" in issue["expected"]
+               for issue in correction["feedback"])
+    assert submitted[0][:2] == ("sess_1", "blueprint-researcher:" + DAY + ":qa:correction:1")
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    assert consumer.step()["state"] == "reviewed"
+    while ledger.get(DAY)["state"] != "completed":
+        consumer.step()
+    final = ledger.get(DAY)
+    assert ledger.read_bytes(DAY + "-qa.json") == raw
+    assert correction["previous_review"]["artifact_digest"] == digest(json.loads(raw))
+    assert final["qa"]["artifact_digest"] != correction["previous_review"]["artifact_digest"]
+    assert len(api.payloads) == len(api.inputs) == len(submitted) == 1
+    assert final["qa"]["baseline_turn_ids"] == pending["qa"]["baseline_turn_ids"]
+    assert final["qa"]["deadline_ms"] == correction["deadline_ms"]
+    assert all(d["receipt"]["readback_verified"] for d in final["delivery"].values())
+    assert render.export_snapshot(bridge, DAY, tmp_path / "correction-export")["missing_files"] == []
+
+
+def test_correction_history_files_are_immutable_and_export_rejects_tampering(fixture, tmp_path):
+    import base64
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    correction_provider(consumer, api, ledger, bridge)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    assert consumer.step()["state"] == "reviewed"
+    names = [DAY + "-qa.json", DAY + "-qa-correction-1-input.json", DAY + "-qa-correction-1-artifact.json"]
+    with ledger.lock():
+        for name in names:
+            with pytest.raises(Refusal, match="artifact_identity_conflict"):
+                ledger.write_bytes(name, b"{}")
+    snapshot = bridge.call("snapshot", day=DAY)
+    original_call = bridge.call
+    for index, key in enumerate(("qa-original", "qa-correction-1-input", "qa-correction-1-artifact")):
+        changed = deepcopy(snapshot)
+        changed["files"][key] = base64.b64encode(b"{}").decode()
+        bridge.call = lambda op, _snapshot=changed, **fields: _snapshot if op == "snapshot" else original_call(op, **fields)
+        try:
+            with pytest.raises(Refusal, match="agent_qa_correction_export_digest_mismatch"):
+                render.export_snapshot(bridge, DAY, tmp_path / ("tampered-" + str(index)))
+        finally:
+            bridge.call = original_call
+
+
+def test_repeated_invalid_qa_exhausts_two_corrections_without_fabricating_acceptance(fixture):
+    consumer, api, ledger, bridge, _ = fixture
+    raw = malformed_qa(consumer, api)
+    submitted = correction_provider(consumer, api, ledger, bridge, fix=False)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=60)
+    assert consumer.step()["state"] == "qa_blocked"
+    final = ledger.get(DAY)
+    assert final["qa"]["error"] == "agent_qa_correction_exhausted"
+    assert len(submitted) == len(final["qa"]["corrections"]) == 2
+    assert final["delivery"] == {} and "decision" not in final["qa"]
+    assert ledger.read_bytes(DAY + "-qa.json") == raw
+    assert final["qa"]["validation_feedback"][0]["path"] == "/checks/0/duplicate"
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_uncertain_qa_correction_never_submits_a_duplicate_turn(fixture, accepted):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    submitted = correction_provider(consumer, api, ledger, bridge, lost_reply=True, accept=accepted)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    result = consumer.step()
+    if accepted:
+        assert result["state"] == "reviewed"
+    else:
+        assert result["state"] == "qa_correction_input_unresolved"
+        consumer.step()
+    assert len(submitted) == 1 and len(api.payloads) == 1
+    assert len(ledger.get(DAY)["qa"]["corrections"]) == 1
+
+
+@pytest.mark.parametrize("change", ["stopped", "deadline", "authority", "new_turn", "artifact"])
+def test_qa_correction_action_rechecks_scope_after_claim_before_provider_post(fixture, monkeypatch, change):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    provider = FencedProvider.__new__(FencedProvider)
+    provider.ledger, provider.get = ledger, api.get
+    changed, posts = {"value": False}, []
+    provider.clock = lambda: NOW + timedelta(hours=1) if changed["value"] and change == "deadline" else consumer.clock()
+    provider.stopped = lambda: changed["value"] and change == "stopped"
+    listing = api.listing
+    def values(resource, sid=None):
+        result = listing(resource, sid)
+        if resource == "turns" and changed["value"] and change == "new_turn":
+            result.append({"id": "unexpected_other_turn", "status": "completed", "subagent_id": None})
+        return result
+    provider.listing = values
+    provider.api = SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=lambda *a, **k: posts.append((a, k)))))
+    original_call, original_read = bridge.call, ledger.read_bytes
+    def call(op, **fields):
+        result = original_call(op, **fields)
+        if op == "qa_correction_check":
+            changed["value"] = True
+            if change in {"authority", "budget", "profile"}:
+                control = original_call("control")
+                if change == "authority":
+                    control["workflow"]["qa_authority_reference"] = "different-authority"
+                elif change == "budget":
+                    control["config"]["soft_target_usd"] += 1
+                else:
+                    control["config"]["search_provider"] = "different-profile"
+                original_call("configure", value=control)
+        return result
+    monkeypatch.setattr(bridge, "call", call)
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: b"{}" if changed["value"] and change == "artifact" and name == DAY + "-qa.json" else original_read(name))
+    api.qa_correction_input = provider.qa_correction_input
+    consumer.step()
+    assert changed["value"] and posts == []
+    current = ledger.get(DAY)["qa"]["corrections"][0]
+    assert current["state"] == "input_unresolved" and current["input_error_receipt"]["class"] == "Refusal"
+    assert current["deadline_ms"] == ledger.get(DAY)["qa"]["deadline_ms"]
+    expected = {"stopped": "qa_correction_stopped_disabled_expired_or_authority_changed",
+                "deadline": "qa_correction_stopped_disabled_expired_or_authority_changed",
+                "authority": "qa_correction_stopped_disabled_expired_or_authority_changed",
+                "new_turn": "qa_correction_session_scope_changed", "artifact": "qa_correction_source_artifact_changed"}
+    assert current["input_error_receipt"]["code"] == expected[change]
+
+
+@pytest.mark.parametrize("change", ["deadline", "disabled", "lease"])
+def test_correction_inventory_delay_is_rechecked_before_post(fixture, monkeypatch, change):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    provider = FencedProvider.__new__(FencedProvider)
+    provider.ledger, provider.get = ledger, api.get
+    delayed, posts = {"value": False}, []
+    provider.clock = lambda: NOW + timedelta(hours=1) if delayed["value"] and change == "deadline" else consumer.clock()
+    listing, original_call = api.listing, bridge.call
+    def values(resource, sid=None):
+        result = listing(resource, sid)
+        if resource == "turns":
+            delayed["value"] = True
+            if change == "disabled":
+                control = original_call("control")
+                control["enabled"] = False
+                original_call("configure", value=control)
+        return result
+    def call(op, **fields):
+        if op == "assert_lease" and delayed["value"] and change == "lease":
+            raise Refusal("firestore_lease_lost")
+        return original_call(op, **fields)
+    provider.listing = values
+    provider.api = SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=lambda *a, **k: posts.append((a, k)))))
+    monkeypatch.setattr(bridge, "call", call)
+    api.qa_correction_input = provider.qa_correction_input
+    consumer.step()
+    assert delayed["value"] and posts == []
+    assert ledger.get(DAY)["qa"]["corrections"][0]["state"] == "input_unresolved"
+
+
+@pytest.mark.parametrize("excluded_history", [False, True])
+def test_fenced_correction_provider_posts_exact_saved_session_once_and_exports(fixture, tmp_path, excluded_history):
+    consumer, api, ledger, bridge, _ = fixture
+    if excluded_history:
+        with ledger.lock():
+            row = ledger.get(DAY)
+            row["validation_repairs"] = [{"number": 1, "state": "invalid", "turn_id": "excluded_failed_repair"}]
+            row["validation_repair_outcome"] = {"excluded": ["synthetic-rejected-item"]}
+            ledger.put(row)
+        listing = api.listing
+        def baseline(resource, sid=None):
+            result = listing(resource, sid)
+            if resource == "turns":
+                result.append({"id": "excluded_failed_repair", "session_id": "sess_1", "agent_id": AGENT,
+                               "status": "failed", "subagent_id": None})
+            return result
+        api.listing = baseline
+    malformed_qa(consumer, api)
+    submitted = correction_provider(consumer, api, ledger, bridge)
+    provider = FencedProvider.__new__(FencedProvider)
+    provider.ledger, provider.get, provider.listing, provider.clock = ledger, api.get, api.listing, consumer.clock
+    create, posts = api.qa_correction_input, []
+    def post(sid, *, events, idempotency_key):
+        posts.append((sid, events, idempotency_key))
+        current = ledger.get(DAY)["qa"]["corrections"][-1]
+        # The real provider claimed once; the fake transport supplies the turn only.
+        call = bridge.call
+        def already_claimed(op, **fields):
+            return True if op == "qa_correction_check" else call(op, **fields)
+        bridge.call = already_claimed
+        try:
+            create(sid, events[0], idempotency_key, DAY, current["request_digest"], current["deadline_ms"], current["number"])
+        finally:
+            bridge.call = call
+    provider.api = SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=post)))
+    api.qa_correction_input = provider.qa_correction_input
+    assert consumer.step()["state"] == "qa_running"
+    current = ledger.get(DAY)["qa"]["corrections"][0]
+    assert posts == [("sess_1", [json.loads(ledger.read_bytes(current["input_file"]))], current["idempotency_key"])]
+    assert len(submitted) == 1
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    assert consumer.step()["state"] == "reviewed"
+    if not excluded_history:
+        assert render.export_snapshot(bridge, DAY, tmp_path / "fenced-correction-export")["missing_files"] == []
+
+
+@pytest.mark.parametrize("field", ["summary", "reason"])
+def test_corrupt_unicode_qa_text_returns_precise_field_feedback(fixture, field):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    api.qa_result["checks"][0]["duplicate"] = False
+    if field == "reason":
+        api.qa_result["checks"][0][field] = chr(0xd800)
+    else:
+        api.qa_result[field] = chr(0xd800)
+    correction_provider(consumer, api, ledger, bridge, accept=False)
+    consumer.step()
+    feedback = ledger.get(DAY)["qa"]["corrections"][0]["feedback"]
+    assert any(issue["path"] == ("/summary" if field == "summary" else "/checks/0/reason")
+               and "UTF-8" in issue["expected"] for issue in feedback)
+
+
+def test_nonfinite_qa_json_returns_json_feedback_and_retains_raw_bytes(fixture):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    artifact = api.artifact
+    raw = b'{"packet_digest": NaN}'
+    api.artifact = lambda sid, aid: raw if aid == "artifact_qa" else artifact(sid, aid)
+    correction_provider(consumer, api, ledger, bridge, accept=False)
+    consumer.step()
+    feedback = ledger.get(DAY)["qa"]["corrections"][0]["feedback"]
+    assert feedback[0]["path"] == "/" and feedback[0]["reason"] == "agent_qa_artifact_json_invalid"
+    assert ledger.read_bytes(DAY + "-qa.json") == raw
+
+
+def test_changed_original_qa_authority_does_not_admit_a_new_correction(fixture):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    submitted = correction_provider(consumer, api, ledger, bridge)
+    with ledger.lock():
+        control = bridge.call("control")
+        control["workflow"]["qa_authority_reference"] = "different-authority"
+        bridge.call("configure", value=control)
+    assert consumer.step()["state"] == "qa_blocked"
+    assert submitted == [] and ledger.get(DAY)["qa"]["corrections"] == []
+
+
+def test_correction_completed_same_second_as_fractional_start_is_valid(fixture):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    consumer.clock = lambda: NOW + timedelta(seconds=30, microseconds=800000)
+    correction_provider(consumer, api, ledger, bridge)
+    consumer.step()
+    listing = api.listing
+    def values(resource, sid=None):
+        result = listing(resource, sid)
+        for item in result:
+            if resource == "turns" and item["id"] == "turn_qa_correction_1":
+                item["completed_at"] = int(consumer.clock().timestamp())
+        return result
+    api.listing = values
+    assert consumer.step()["state"] == "reviewed"
+    assert ledger.get(DAY)["qa"]["corrections"][0]["state"] == "validated"
+
+
+def test_legacy_qa_search_envelope_counts_prior_and_corrected_reviews(fixture):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    row = ledger.get(DAY)
+    row["web_tool_activities"] = 4
+    with ledger.lock():
+        ledger.put(row)
+    correction_provider(consumer, api, ledger, bridge)
+    consumer.step()
+    listing = api.listing
+    def values(resource, sid=None):
+        result = listing(resource, sid)
+        if resource == "items":
+            result.append({"id": "correction_search", "type": "web_search_call", "turn_id": "turn_qa_correction_1"})
+        return result
+    api.listing = values
+    assert consumer.step()["state"] == "qa_blocked"
+    row = ledger.get(DAY)
+    assert row["qa"]["web_tool_activities"] == 2
+    assert row["qa"]["error"] == "agent_qa_terminal_guard_failed"
+    assert "decision" not in row["qa"]
+
+
+def test_terminal_correction_artifact_missing_remains_explicit_and_never_claims_repair(fixture):
+    consumer, api, ledger, bridge, _ = fixture
+    malformed_qa(consumer, api)
+    submitted = correction_provider(consumer, api, ledger, bridge)
+    consumer.step()
+    listing = api.listing
+    api.listing = lambda resource, sid=None: [item for item in listing(resource, sid)
+        if resource != "artifacts" or not item["id"].startswith("artifact_qa_correction_")]
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    for _ in range(5):
+        result = consumer.step()
+    assert result["state"] == "qa_blocked"
+    row = ledger.get(DAY)
+    assert row["qa"]["error"] == "agent_qa_artifact_missing"
+    assert len(submitted) == 1 and row["delivery"] == {} and "decision" not in row["qa"]
+
+
 def test_run_entrypoint_automatically_finishes_qa_and_both_publication_receipts(fixture, monkeypatch, tmp_path):
     consumer, api, ledger, bridge, _ = fixture
     monkeypatch.setattr(render, "configured", lambda *args: consumer.config)

@@ -1221,8 +1221,8 @@ class Runner:
                     raise Refusal("artifact_not_downloaded_or_digest_mismatch")
             if row.get("qa", {}).get("state") == "validated":
                 qa = row["qa"]
-                if (hashlib.sha256(self.ledger.read_bytes(day + "-qa.json")).hexdigest() != qa["artifact_digest"]
-                        or digest(json.loads(self.ledger.read_bytes(day + "-qa-evidence.json"))) != qa["evidence_digest"]):
+                if (hashlib.sha256(self.ledger.read_bytes(qa.get("artifact_file", day + "-qa.json"))).hexdigest() != qa["artifact_digest"]
+                        or digest(json.loads(self.ledger.read_bytes(qa.get("evidence_file", day + "-qa-evidence.json")))) != qa["evidence_digest"]):
                     raise Refusal("agent_qa_cleanup_digest_mismatch")
             for resource in ("session", "environment"):
                 try:

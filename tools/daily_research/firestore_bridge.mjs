@@ -17,7 +17,7 @@ const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.s
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
@@ -159,6 +159,12 @@ export class Store {
       if (prior.data()?.qa_terminal_collection_digest && prior.data().qa_terminal_collection_digest !== terminalCollection)
         refuse('qa_terminal_collection_already_bound');
       const retry = row.qa?.input_retries?.at(-1);
+      const correction = row.qa?.corrections?.at(-1);
+      const correctionBindings=Object.fromEntries((row.qa?.corrections || []).map(c=>[c.number, {
+        request_digest:c.request_digest,deadline_ms:c.deadline_ms,idempotency_key:c.idempotency_key,
+        authority_reference:c.authority_reference,previous_review:c.previous_review,baseline_turn_ids:c.baseline_turn_ids}]));
+      if (Object.entries(prior.data()?.qa_correction_bindings || {}).some(([n,b])=>!same(b,correctionBindings[n])))
+        refuse('qa_correction_already_bound');
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
@@ -176,6 +182,9 @@ export class Store {
         qa_retry_not_before_ms: retry ? Date.parse(retry.not_before) : null,
         qa_retry_prior_503: retry ? (row.qa.input_retries.length === 1 ? row.qa.input_error_receipt : row.qa.input_retries.at(-2)?.error_receipt) : null,
         qa_retry_claims: prior.exists ? prior.data().qa_retry_claims || {} : {},
+        qa_correction_bindings:correctionBindings,
+        qa_correction_number:correction?.number || null, qa_correction_state:correction?.state || null,
+        qa_correction_claims:prior.exists ? prior.data().qa_correction_claims || {} : {},
         repair_request_digest: row.validation_repairs?.at(-1)?.request_digest || null,
         repair_deadline_ms: row.validation_repairs?.at(-1)?.deadline_ms || null,
         repair_number: row.validation_repairs?.at(-1)?.number || null,
@@ -192,7 +201,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-|-repair-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -209,9 +218,16 @@ export class Store {
     const files = {}, missing = [];
     for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
       ...(row.qa?.input_file ? ['qa-input'] : []),
+      ...(row.qa?.corrections?.length ? ['qa-original','qa-original-evidence'] : []),
+      ...(row.qa?.corrections || []).flatMap(c=>[`qa-correction-${c.number}-input`,
+        ...(c.artifact_file ? [`qa-correction-${c.number}-artifact`] : []),
+        ...(c.evidence_file ? [`qa-correction-${c.number}-evidence`] : [])]),
       ...(row.validation_repairs || []).flatMap(r=>[`repair-${r.number}-input`, ...(r.artifact_file ? [`repair-${r.number}-artifact`] : [])]),
       ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
-      try {files[kind] = await this.fileGet(`${day}-${kind}.json`);}
+      const names={'qa':row.qa?.artifact_file,'qa-evidence':row.qa?.evidence_file,
+        'qa-original':row.qa?.corrections?.[0]?.previous_review?.artifact_file,
+        'qa-original-evidence':row.qa?.corrections?.[0]?.previous_review?.evidence_file};
+      try {files[kind] = await this.fileGet(names[kind] || `${day}-${kind}.json`);}
       catch (error) {
         if (!(error instanceof Refusal) || error.message !== 'firestore_file_missing') throw error;
         if (kind === 'artifact' && row.artifact_downloaded) refuse('artifact_not_downloaded_or_digest_mismatch');
@@ -306,7 +322,7 @@ export class Store {
   async activeQA() {
     const runs=this.db.collection(`${ROOT}/runs`);
     const groups=await Promise.all([
-      ...['qa_running','qa_input_unresolved','qa_cancel_pending'].map(state=>['qa_state',state]),
+      ...['qa_running','qa_input_unresolved','qa_correction_input_unresolved','qa_cancel_pending'].map(state=>['qa_state',state]),
       ...['running','input_unresolved','cancel_pending'].map(state=>['repair_state',state])]
       .map(([field,state])=>runs.where(field,'==',state).limit(1).get()));
     const days=groups.flatMap(s=>s.docs.map(d=>d.id)).sort();
@@ -346,6 +362,29 @@ export class Store {
         refuse('qa_retry_input_not_admitted');
       this.budgetGate(control,run);
       tx.set(ref,{qa_retry_claims:{...run.qa_retry_claims,[number]:requestDigest}},{merge:true});return true;
+    });
+  }
+  async qaCorrectionCheck(day, requestDigest, deadlineMS, number) {
+    if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest) || ![1,2].includes(number))
+      refuse('qa_correction_request_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),snap=await tx.get(ref),run=snap.data();
+      const binding=run?.qa_correction_bindings?.[number];
+      if (!snap.exists || run.state!=='awaiting_review' || run.qa_state!=='qa_correction_input_unresolved'
+          || run.qa_request_claimed!==true || run.qa_correction_number!==number
+          || run.qa_correction_state!=='input_unresolved' || binding?.request_digest!==requestDigest
+          || binding.authority_reference!==control.workflow.qa_authority_reference
+          || (run.qa_retry_workflow_authority && binding.authority_reference!==run.qa_retry_workflow_authority)
+          || binding.idempotency_key!==`blueprint-researcher:${day}:qa:correction:${number}`
+          || !/^[a-f0-9]{64}$/.test(binding.previous_review?.artifact_digest || '')
+          || binding.previous_review?.turn_status!=='completed'
+          || !Number.isSafeInteger(deadlineMS) || binding.deadline_ms!==deadlineMS
+          || (run.qa_retry_deadline_ms || run.qa_deadline_ms)!==deadlineMS || this.clock()>=deadlineMS
+          || run.qa_correction_claims?.[number] || (number===2 && !run.qa_correction_claims?.[1]))
+        refuse('qa_correction_input_not_admitted');
+      this.budgetGate(control,run);
+      tx.set(ref,{qa_correction_claims:{...run.qa_correction_claims,[number]:requestDigest}},{merge:true});return true;
     });
   }
   async publish(day) {
@@ -534,6 +573,7 @@ export class Store {
       case 'active_qa': return this.activeQA();
       case 'qa_check': return this.qaCheck(request.day,request.request_digest,request.deadline_ms);
       case 'qa_retry_check': return this.qaRetryCheck(request.day,request.request_digest,request.deadline_ms,request.number);
+      case 'qa_correction_check': return this.qaCorrectionCheck(request.day,request.request_digest,request.deadline_ms,request.number);
       case 'repair_check': return this.repairCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
       case 'refresh_crm': {
