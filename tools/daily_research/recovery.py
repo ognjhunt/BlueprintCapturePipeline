@@ -184,6 +184,7 @@ RULES = {
     "evidence_field_invalid": "Use the contract's evidence semantics: classification operator/vendor/independent, claim_kind fact/vendor_claim/hypothesis, the allowed role, and the actual claim, publisher and quote.",
     "vendor_claim_presented_as_fact": "A vendor source supports vendor_claim, never fact.",
     "source_date_in_future": "Publication dates cannot follow the run date {day}; an unknown date is null.",
+    "knowledge_date_invalid": "Publication dates use YYYY-MM-DD or null. When only a year or month is known, use null and preserve that known period in the source quote or proposal unknowns; never invent a day. Source review dates/timestamps must retain their actual supported precision and timezone.",
     "site_evidence_level_must_be_null": "Task and geography evidence describe the site, not robot maturity: evidence_level is null.",
     "evidence_level_invalid": "Capability evidence needs a supported robot grade; background evidence may be null. Never invent maturity.",
     "unsupported_evidence_level": "Capability evidence cannot be unknown; use the supported grade or keep the gap in unknowns.",

@@ -123,7 +123,12 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         result = runner.start_or_resume(allow_create=False)
     if result["state"] in {"running", "collecting"}:
         result = runner.cancel_current(result["date"], "observation_deadline")
-    if result["state"] in {"awaiting_review", "reviewed"} and workflow(bridge.call("control")):
+    repairable_artifact = (result["state"] == "failed" and result.get("turn_status") == "completed"
+                           and result.get("artifact_downloaded") is True and not result.get("cancel_attempted")
+                           and result.get("error") != "terminal_guard_exceeded")
+    # A completed first research turn can fail local output validation. Hand
+    # its retained artifact to the existing same-session repair/QA workflow.
+    if (result["state"] in {"awaiting_review", "reviewed"} or repairable_artifact) and workflow(bridge.call("control")):
         return consume_workflow(bridge, cache, stopped=stopped, day=result["date"], api_factory=api_factory)
     return status_summary(result)
 

@@ -15,7 +15,7 @@ from tests.test_daily_research_consumer import consumer_setup
 from tests.test_daily_research_knowledge import policy_bundle, v3
 from tests.test_daily_research_runner import AGENT, DAY, NOW
 from tools.daily_research import recovery, render, search
-from tools.daily_research.runner import Ledger, Refusal, canonical, digest, validate_output
+from tools.daily_research.runner import Ledger, Refusal, Runner, canonical, digest, validate_output
 
 
 @pytest.mark.parametrize("raw", [b'{"duplicate": "false", "unknown": null}',
@@ -205,14 +205,30 @@ def test_malformed_urls_produce_corrective_feedback_instead_of_parser_exception(
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
-def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tmp_path, monkeypatch, wrapped):
-    generator = consumer_setup(tmp_path, failed=True)
+@pytest.mark.parametrize("entrypoint", ["consume", "run"])
+def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tmp_path, monkeypatch, wrapped, entrypoint):
+    generator = consumer_setup(tmp_path, failed=entrypoint == "consume", research_running=entrypoint == "run")
     consumer, api, ledger, bridge, _ = next(generator)
     try:
         original = ledger.get(DAY)
-        raw = ledger.read_bytes(DAY + "-artifact.json")
+        if entrypoint == "run":
+            from tests.test_daily_research_knowledge import delta
+            report = json.loads(api.raw)
+            proposal = delta()
+            proposal["evidence"][0]["publication_date"] = "2026-08" if wrapped else "2025-06"
+            report["proposed_knowledge_deltas"] = [proposal]
+            api.raw = canonical(report).encode()
+            api.turn_status = "completed"
+            assert original["state"] == "running" and not original.get("artifact_downloaded")
+        raw = api.raw if entrypoint == "run" else ledger.read_bytes(DAY + "-artifact.json")
         repaired = json.loads(raw)
-        repaired["proposed_knowledge_deltas"] = []
+        if entrypoint == "run":
+            proposal = repaired["proposed_knowledge_deltas"][0]
+            month = proposal["evidence"][0]["publication_date"]
+            proposal["evidence"][0]["publication_date"] = None
+            proposal["unknowns"].append("Publication month is " + month + "; exact day is unknown.")
+        else:
+            repaired["proposed_knowledge_deltas"] = []
         repair_turns, calls = [], []
         listing, artifact = api.listing, api.artifact
         def repair_input(sid, event, key, day, request_digest, deadline_ms):
@@ -240,16 +256,31 @@ def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tm
                 return consumer.clock()
         monkeypatch.setattr(render, "datetime", FixedDatetime)
         monkeypatch.setattr(render, "configured", lambda *_: consumer.config)
+        monkeypatch.setattr(render, "Runner", lambda *a, **kw: Runner(*a, **kw, clock=consumer.clock))
         monkeypatch.setattr(render, "Consumer", lambda *a, **kw: type(consumer)(*a, **kw, clock=consumer.clock))
         monkeypatch.setattr(render.time, "sleep", lambda _: None)
-        assert bridge.call("work_item")["stage"] == "validation_repair_pending"
-        result = render.consume_workflow(bridge, tmp_path, api_factory=lambda *_: api)
+        if entrypoint == "consume":
+            assert bridge.call("work_item")["stage"] == "validation_repair_pending"
+            result = render.consume_workflow(bridge, tmp_path, api_factory=lambda *_: api)
+        else:
+            assert bridge.call("active_qa") is None
+            result = render.invoke("run", bridge, tmp_path, api_factory=lambda *_: api)
         assert result["state"] == "completed"
         final = ledger.get(DAY)
         assert len(api.payloads) == len(calls) == len(api.inputs) == 1
         assert final["started_at"] == final["validation_repair_authority"]["started_at"] == original["started_at"]
-        assert final["raw_output_digest"] == original["raw_output_digest"] and ledger.read_bytes(DAY + "-artifact.json") == raw
-        assert final["original_validation_failure"]["error"] == "knowledge_delta_evidence_invalid"
+        assert final["raw_output_digest"] == hashlib.sha256(raw).hexdigest() and ledger.read_bytes(DAY + "-artifact.json") == raw
+        assert final["original_validation_failure"]["error"] == ("knowledge_date_invalid" if entrypoint == "run" else "knowledge_delta_evidence_invalid")
+        if entrypoint == "run":
+            feedback = final["original_validation_failure"]["feedback"]
+            issue = next(issue for issue in feedback if issue["path"] == "/proposed_knowledge_deltas/0/evidence/0/publication_date"
+                         and issue["reason"] == "knowledge_date_invalid")
+            assert "YYYY-MM-DD or null" in issue["allowed_semantics"]
+            assert "preserve" in issue["allowed_semantics"] and "never invent a day" in issue["allowed_semantics"]
+            correction, _ = recovery.parse_artifact_json(ledger.read_bytes(final["validation_repairs"][-1]["artifact_file"]))
+            proposal = correction["proposed_knowledge_deltas"][0]
+            assert proposal["evidence"][0]["publication_date"] is None
+            assert any(month in unknown for unknown in proposal["unknowns"])
         if wrapped:
             revision = final["validation_repairs"][-1]
             assert revision["artifact_format_normalization"]["raw_sha256"] == revision["artifact_digest"]
@@ -258,6 +289,50 @@ def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tm
         with ledger.lock(), pytest.raises(Refusal, match="not_admitted"):
             revision = final["validation_repairs"][-1]
             bridge.call("repair_check", day=DAY, request_digest=revision["request_digest"], deadline_ms=revision["deadline_ms"])
+    finally:
+        generator.close()
+
+
+@pytest.mark.parametrize("field,value", [("turn_status", "failed"), ("artifact_downloaded", False),
+    ("cancel_attempted", True), ("error", "terminal_guard_exceeded")])
+def test_run_does_not_handoff_incomplete_cancelled_or_guard_failed_roots(tmp_path, monkeypatch, field, value):
+    generator = consumer_setup(tmp_path, failed=True)
+    consumer, api, ledger, bridge, _ = next(generator)
+    try:
+        with ledger.lock():
+            row = ledger.get(DAY)
+            row[field] = value
+            ledger.put(row)
+        monkeypatch.setattr(render, "configured", lambda *_: consumer.config)
+        monkeypatch.setattr(render, "Runner", lambda *a, **kw: Runner(*a, **kw, clock=consumer.clock))
+        def unexpected_handoff(*_a, **_kw):
+            pytest.fail("This failed root must not enter validation repair")
+        monkeypatch.setattr(render, "consume_workflow", unexpected_handoff)
+        result = render.invoke("run", bridge, tmp_path, api_factory=lambda *_: api)
+        assert result["state"] == "failed"
+        assert len(api.payloads) == 1 and not api.inputs
+        assert not ledger.get(DAY).get("validation_repairs")
+    finally:
+        generator.close()
+
+
+@pytest.mark.parametrize("interruption", ["disabled", "stopped"])
+def test_run_validation_handoff_keeps_existing_workflow_admission(tmp_path, monkeypatch, interruption):
+    generator = consumer_setup(tmp_path, failed=True)
+    consumer, api, ledger, bridge, _ = next(generator)
+    try:
+        if interruption == "disabled":
+            with ledger.lock():
+                control = bridge.call("control")
+                control["workflow"]["enabled"] = False
+                bridge.call("configure", value=control)
+        monkeypatch.setattr(render, "configured", lambda *_: consumer.config)
+        monkeypatch.setattr(render, "Runner", lambda *a, **kw: Runner(*a, **kw, clock=consumer.clock))
+        result = render.invoke("run", bridge, tmp_path, stopped=lambda: interruption == "stopped",
+                               api_factory=lambda *_: api)
+        assert result["state"] == ("failed" if interruption == "disabled" else "workflow_disabled")
+        assert len(api.payloads) == 1 and not api.inputs
+        assert not ledger.get(DAY).get("validation_repairs")
     finally:
         generator.close()
 
