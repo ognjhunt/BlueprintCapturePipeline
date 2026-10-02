@@ -209,9 +209,10 @@ def test_non_reference_refusals_never_trigger_another_attempt(tmp_path, code):
     assert calls == [ACTION]
 
 
-def test_exact_unfinished_owner_handling_uses_existing_three_unit_cadence(tmp_path):
+@pytest.mark.parametrize('status', ['kept', 'failed'])
+def test_exact_unfinished_owner_handling_uses_existing_three_unit_cadence(tmp_path, status):
     path, raw = original_journal(tmp_path)
-    missing = dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')
+    missing = dict(status=status, code='historical_generation_restore_reconciliation_approval_missing')
     results = iter([dict(REFUSED), missing, None])
     calls, approvals = [], []
     def invoke():
@@ -229,9 +230,10 @@ def test_exact_unfinished_owner_handling_uses_existing_three_unit_cadence(tmp_pa
     assert (path / 'e-00000.json').read_bytes() == raw
 
 
-def test_last_failed_unit_cannot_issue_an_unused_recovery_grant(tmp_path):
+@pytest.mark.parametrize('status', ['kept', 'failed'])
+def test_last_failed_unit_cannot_issue_an_unused_recovery_grant(tmp_path, status):
     original_journal(tmp_path)
-    missing = dict(status='failed', code='historical_generation_restore_reconciliation_approval_missing')
+    missing = dict(status=status, code='historical_generation_restore_reconciliation_approval_missing')
     calls, approvals = [], []
     def invoke():
         calls.append(ACTION)
@@ -243,10 +245,11 @@ def test_last_failed_unit_cannot_issue_an_unused_recovery_grant(tmp_path):
 
 @pytest.mark.parametrize('last_code', ['historical_generation_restore_reconciliation_approval_missing',
                                       'historical_generation_process_unknown', 'arbitrary_failure'])
-def test_one_extra_unit_requires_a_real_missing_decision_receipt(tmp_path, last_code):
+@pytest.mark.parametrize('status', ['kept', 'failed'])
+def test_one_extra_unit_requires_a_real_missing_decision_receipt(tmp_path, last_code, status):
     path, raw = original_journal(tmp_path)
     calls, approvals = [], []
-    last = dict(status='failed', code=last_code)
+    last = dict(status=status, code=last_code)
     def invoke():
         calls.append(ACTION)
         return dict(REFUSED) if len(calls) < 3 else last if len(calls) == 3 else None

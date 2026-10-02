@@ -562,7 +562,7 @@ def _later_reference_attempts(invoke, journals, action_id, *, observations=None,
             # This is an observed fixture death, never a worker success receipt.
             # Ordinary callers still require an actual completed worker result.
             return None
-        if receipt.get('status') == 'failed' and receipt.get('code') == \
+        if receipt.get('status') in ('kept', 'failed') and receipt.get('code') == \
                 'historical_generation_restore_reconciliation_approval_missing' \
                 and on_unfinished is not None and attempt < 2:
             # A changed unfinished row needs its own explicit fixture-owner
@@ -604,7 +604,7 @@ def _reconciled_reference_attempts(invoke, journals, action_id, *, observations=
     """
     receipt = _later_reference_attempts(invoke, journals, action_id,
         observations=observations, on_unfinished=on_unfinished)
-    if receipt is None or receipt.get('status') != 'failed' or receipt.get('code') != \
+    if receipt is None or receipt.get('status') not in ('kept', 'failed') or receipt.get('code') != \
             'historical_generation_restore_reconciliation_approval_missing' or on_unfinished is None:
         return receipt
     directory = journals / action_id
