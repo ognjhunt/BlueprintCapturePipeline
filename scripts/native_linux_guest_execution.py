@@ -175,6 +175,8 @@ def run_vm(image, serial_path, *, phase, deadline_monotonic, required_disk_bytes
         image_fd = image_stream.fileno()
         command = qemu_command(image, phase=phase, image_fd=image_fd)
         os.fchmod(output.fileno(), 0o600)
+        created_serial = _file_identity(os.fstat(output.fileno()))[:6]
+        serial_digest = hashlib.sha256()
         try:
             _deadline(deadline_monotonic)
             process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
@@ -194,6 +196,7 @@ def run_vm(image, serial_path, *, phase, deadline_monotonic, required_disk_bytes
                         continue
                     _require(count + len(raw) <= MAX_SERIAL_BYTES, 'serial_limit')
                     output.write(raw)
+                    serial_digest.update(raw)
                     count += len(raw)
             process.wait(timeout=max(0.001, deadline_monotonic - time.monotonic()))
             _require(process.returncode == 0, 'qemu_failed')
@@ -205,7 +208,8 @@ def run_vm(image, serial_path, *, phase, deadline_monotonic, required_disk_bytes
                     if process.stdout is not None:
                         process.stdout.close()
         snapshot = _file_snapshot(output.fileno(), deadline_monotonic, 'serial_changed')
-        _require(snapshot[0][6] == count, 'serial_changed')
+        _require(snapshot[0][:6] == created_serial and snapshot[0][6] == count
+                 and snapshot[1] == serial_digest.hexdigest(), 'serial_changed')
         final = image.lstat()
         _require((final.st_dev, final.st_ino) == identity, 'image_changed')
         _check_ancestry(serial_path.parent, ancestry, 'serial_changed')
@@ -374,6 +378,15 @@ def _extract_files(image, destination, names, deadline_monotonic):
         _check_ancestry(destination, ancestry, 'evidence_destination_changed')
         for fd, name, snapshot in leaves:
             _check_leaf(fd, directory, name, snapshot, deadline_monotonic, 'evidence_copy_invalid')
+        # Digest work for a later file must not invalidate an earlier leaf.
+        # This last closure reads metadata only and retains every descriptor.
+        for fd, name, snapshot in leaves:
+            try:
+                _require(_file_identity(os.fstat(fd)) == snapshot[0]
+                         == _file_identity(os.stat(name, dir_fd=directory, follow_symlinks=False)),
+                         'evidence_copy_invalid')
+            except OSError:
+                raise GuestExecutionError('native_guest_evidence_copy_invalid') from None
         _check_ancestry(destination, ancestry, 'evidence_destination_changed')
         _deadline(deadline_monotonic)
     finally:

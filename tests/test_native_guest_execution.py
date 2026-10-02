@@ -477,3 +477,52 @@ def test_ancestor_replacement_during_final_digest_is_refused(tmp_path, monkeypat
         else:
             execution.extract_evidence(guest, tmp_path / 'image', parent / 'evidence', ['native-junit.xml'],
                                        deadline_monotonic=time.monotonic() + 60)
+
+
+def test_last_leaf_digest_cannot_change_an_already_rechecked_xml(tmp_path, monkeypatch):
+    guest = _receipt(tmp_path)
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    destination = tmp_path / 'evidence'
+    terminal_fd = []
+    def guestfish(image, arguments, deadline, **kwargs):
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        fd = int(arguments[-1].rsplit('/', 1)[1])
+        if arguments[1].endswith('terminal.json'):
+            terminal_fd.append(fd)
+        execution.os.write(fd, b'guest00\n')
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    original = execution.os.pread
+    reads = [0]
+    def pread(fd, size, offset):
+        raw = original(fd, size, offset)
+        if terminal_fd and fd == terminal_fd[0]:
+            reads[0] += 1
+            if reads[0] == 3:
+                (destination / 'native-junit.xml').write_bytes(b'foreign\n')
+        return raw
+    monkeypatch.setattr(execution.os, 'pread', pread)
+    with pytest.raises(execution.GuestExecutionError, match='evidence_copy_invalid'):
+        execution.extract_evidence(guest, tmp_path / 'image', destination,
+                                   ['native-junit.xml', 'terminal.json'],
+                                   deadline_monotonic=time.monotonic() + 60)
+
+
+def test_serial_digest_matches_observed_process_bytes_before_reap(tmp_path, monkeypatch):
+    (tmp_path / 'image').write_bytes(b'tiny private fixture')
+    serial = tmp_path / 'serial.log'
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kwargs: None)
+    monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kwargs: [sys.executable, '-c', 'print("done")'])
+    original = execution._reap
+    def reap(process):
+        original(process)
+        assert serial.read_bytes() == b'done\n'
+        serial.write_bytes(b'evil\n')
+    monkeypatch.setattr(execution, '_reap', reap)
+    with pytest.raises(execution.GuestExecutionError, match='serial_changed'):
+        execution.run_vm(tmp_path / 'image', serial, phase='test',
+                         required_disk_bytes=1, deadline_monotonic=time.monotonic() + 3)
