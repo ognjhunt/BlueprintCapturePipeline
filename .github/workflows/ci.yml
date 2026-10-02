@@ -437,8 +437,14 @@ jobs:
 
   cross-cutting-full-suite:
     name: Cross-cutting full suite
-    needs: impact
-    if: needs.impact.outputs.requires_full_suite == 'true'
+    needs: [impact, native-feature-linux, native-scene-linux]
+    if: >-
+      always() && needs.impact.result == 'success' &&
+      needs.impact.outputs.requires_full_suite == 'true' &&
+      ((needs.impact.outputs.native_feature_required == 'true' && needs.native-feature-linux.result == 'success') ||
+       (needs.impact.outputs.native_feature_required != 'true' && needs.native-feature-linux.result == 'skipped')) &&
+      ((needs.impact.outputs.native_scene_required == 'true' && needs.native-scene-linux.result == 'success') ||
+       (needs.impact.outputs.native_scene_required != 'true' && needs.native-scene-linux.result == 'skipped'))
     uses: ./.github/workflows/full-test-lane.yml
     with:
       reason: cross_cutting_dependency_impact
@@ -456,6 +462,7 @@ jobs:
           IMPACT_RESULT: ${{ needs.impact.result }}
           IMPACTED_RESULT: ${{ needs.impacted-tests.result }}
           FULL_RESULT: ${{ needs.cross-cutting-full-suite.result }}
+          FULL_REQUIRED: ${{ needs.impact.outputs.requires_full_suite }}
           NATIVE_SCENE_REQUIRED: ${{ needs.impact.outputs.native_scene_required }}
           NATIVE_SCENE_RESULT: ${{ needs.native-scene-linux.result }}
           NATIVE_REQUIRED: ${{ needs.impact.outputs.native_feature_required }}
@@ -473,7 +480,11 @@ jobs:
           else
             test "${NATIVE_SCENE_RESULT}" = "skipped"
           fi
-          test "${FULL_RESULT}" = "success" || test "${FULL_RESULT}" = "skipped"
+          if test "${FULL_REQUIRED}" = "true"; then
+            test "${FULL_RESULT}" = "success"
+          else
+            test "${FULL_RESULT}" = "skipped"
+          fi
 
   lint:
     name: Ruff and claim lint

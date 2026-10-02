@@ -41,6 +41,57 @@ def test_full_fallback_keeps_required_diagnostic_native_gate(tmp_path, monkeypat
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_full_lane_waits_for_requested_native_acceptance():
+    import itertools
+    import yaml
+
+    jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    job = jobs['cross-cutting-full-suite']
+    assert set(job['needs']) == {'impact', 'native-feature-linux', 'native-scene-linux'}
+    condition = job['if'].replace('${{', '').replace('}}', '').strip()
+    for full, registered, scene, impact, first, second in itertools.product(
+            (False, True), (False, True), (False, True), ('success', 'failure'),
+            ('success', 'failure', 'skipped', 'cancelled'),
+            ('success', 'failure', 'skipped', 'cancelled')):
+        observed = condition
+        values = {
+            'needs.impact.outputs.requires_full_suite': str(full).lower(),
+            'needs.impact.outputs.native_feature_required': str(registered).lower(),
+            'needs.impact.outputs.native_scene_required': str(scene).lower(),
+            'needs.impact.result': impact,
+            'needs.native-feature-linux.result': first,
+            'needs.native-scene-linux.result': second,
+        }
+        for key, value in values.items():
+            observed = observed.replace(key, repr(value))
+        observed = observed.replace('always()', 'True').replace('&&', ' and ').replace('||', ' or ')
+        assert 'needs.' not in observed
+        expected = (full and impact == 'success'
+                    and first == ('success' if registered else 'skipped')
+                    and second == ('success' if scene else 'skipped'))
+        assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
+def test_final_gate_refuses_missing_requested_full_evidence():
+    import yaml
+
+    jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    step = jobs['impacted-gate']['steps'][0]
+    for required in (False, True):
+        for result in ('success', 'skipped', 'failure', 'cancelled'):
+            environment = os.environ | {
+                'IMPACT_RESULT': 'success', 'IMPACTED_RESULT': 'success',
+                'NATIVE_REQUIRED': 'false', 'NATIVE_RESULT': 'skipped',
+                'NATIVE_SCENE_REQUIRED': 'false', 'NATIVE_SCENE_RESULT': 'skipped',
+                'FULL_REQUIRED': str(required).lower(), 'FULL_RESULT': result,
+            }
+            outcome = subprocess.run(['bash', '-e', '-c', step['run']],
+                                     env=environment, capture_output=True, check=False)
+            expected = result == ('success' if required else 'skipped')
+            assert (outcome.returncode == 0) is expected, (required, result)
+    assert step['env']['FULL_REQUIRED'] == '${{ needs.impact.outputs.requires_full_suite }}'
+
+
 def _run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(ROOT / "scripts" / name), *args],
