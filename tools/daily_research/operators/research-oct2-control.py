@@ -48,7 +48,7 @@ def verify_failed(row, raw):
         raise Refusal("oct1_failed_history_or_raw_changed")
 
 
-def package_receipt(root, archive):
+def package_receipt(root, archive, *, verify_import=True):
     root = Path(root).resolve()
     archive = Path(archive)
     if archive.stat().st_size != 409600 or hashlib.sha256(archive.read_bytes()).hexdigest() != ARCHIVE:
@@ -67,10 +67,10 @@ def package_receipt(root, archive):
                 or hashlib.sha256(path.read_bytes()).hexdigest() != expected):
             raise Refusal("oct2_installed_file_binding_mismatch")
     # Verify the actual imported implementation, not just an unrelated directory.
-    if Path(render.__file__).resolve() != root / "tools/daily_research/render.py":
+    if verify_import and Path(render.__file__).resolve() != root / "tools/daily_research/render.py":
         raise Refusal("oct2_imported_package_mismatch")
     return {"source_commit": SOURCE, "archive_sha256_reference": ARCHIVE,
-            "manifest_digest": digest(manifest), "files_verified": len(files),
+            "manifest_digest": digest(manifest), "files_verified": len(files), "imported_package_verified": verify_import,
             "tool_definitions_digest": digest(search.tools()),
             "application_instructions_sha256": hashlib.sha256(search.instructions().encode()).hexdigest()}
 

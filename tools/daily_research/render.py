@@ -46,9 +46,13 @@ def next_wake(now):
     return target.astimezone(timezone.utc)
 
 
-def configured(bridge, cache):
+def configured(bridge, cache, *, allow_create=True):
     control = bridge.call("control")
     cfg = control_configuration(control)
+    if not allow_create:
+        # An offline repair can import a newer reviewed validator while keeping
+        # the installed/intent package unchanged. Only local config is disabled.
+        cfg["enabled"] = False
     if workflow(control) and cfg.get("research_contract_version") != 3:
         raise Refusal("automatic_workflow_requires_reviewed_v3_contract")
     manifest_path = Path(__file__).resolve().parents[2] / "manifest.json"
@@ -156,6 +160,12 @@ def export_snapshot(bridge, day, destination):
             matches = False
         if not matches:
             raise Refusal("output_artifact_binding_mismatch")
+    if row.get("output_recovery"):
+        recovery = row["output_recovery"]
+        if (recovery.get("file") != day + "-recovery.json" or "recovery" not in files
+                or digest(json.loads(files["recovery"])) != recovery.get("digest")
+                or recovery.get("request", {}).get("raw_output_sha256") != row.get("raw_output_digest")):
+            raise Refusal("output_recovery_export_binding_mismatch")
     if "evidence" in files and digest(json.loads(files["evidence"])) != row.get("evidence_digest"):
         raise Refusal("evidence_digest_mismatch")
     if "review" in files:

@@ -142,16 +142,7 @@ def daily_config(cache):
 def spend_observation(api, row):
     # Sum only this test's turns; reasoning is already part of output_tokens.
     turns = api.listing("turns", row["session_id"])
-    usage = {"input_tokens": 0, "output_tokens": 0}
-    if not turns:
-        return {"known": False, "estimate_usd": None, "hard_total_cap": False}
-    for turn in turns:
-        estimate = discovery.estimated_model_cost(turn.get("usage"))
-        if not estimate["known"]:
-            return estimate
-        for field in usage:
-            usage[field] += turn["usage"][field]
-    return discovery.estimated_model_cost(usage)
+    return discovery.model_cost_observation(turns)
 
 
 def stage(bridge, profile, source, cache, api, clock):
@@ -215,7 +206,7 @@ def invoke(bridge, profile, source, cache, api, *, execute=False, clock=lambda: 
         while row["state"] not in FINAL and clock() < observation_until:
             active = not stopped() and bridge.call("control").get("enabled") is True
             try:
-                row["model_cost_estimate"] = spend_observation(scoped, row)
+                discovery.preserve_estimate(row, "model_cost_estimate", spend_observation(scoped, row))
             except Exception:  # noqa: BLE001 - unknown usage is a stop, never zero
                 row["model_cost_estimate"] = {"known": False, "estimate_usd": None, "hard_total_cap": False}
             estimate = row["model_cost_estimate"]
