@@ -158,7 +158,7 @@ export class Store {
       observer_receipt_required: false, scope: 'research_only_no_outreach'
     });
   }
-  async put(row) {
+  async put(row,terminalWrite=null) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}`) refuse('firestore_row_binding_invalid');
     if (row.search_provider === 'perplexity-fast-v1' && Buffer.byteLength(JSON.stringify(row)) > 7000000)
       refuse('research_tool_record_resource_ceiling');
@@ -167,6 +167,10 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
+      if(terminalWrite) {
+        if(prior.data()?.blob!==terminalWrite.expected_blob) refuse('terminal_sheets_recovery_source_changed');
+        this.terminalSheetsGate(control,row,terminalWrite.context);
+      }
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
       const historyBinding=row.history_profile==='agent-history-v1'?valueHash(row.history_binding):null;
@@ -264,7 +268,8 @@ export class Store {
       try {await this.transaction(async tx=>{
         const control=(await tx.get(this.control)).data();this.fence(control);
         const current=await tx.get(ref);
-        if(current.data()?.blob===hash) tx.set(ref,{learning_observation:observation},{merge:true});
+        if(current.data()?.blob===hash) tx.set(this.db.doc(`${ROOT}/learningObservations/${hash}`),
+          {...observation,run_ref:ref.path,source_row_blob:hash},{merge:true});
       });}catch { /* The committed research row remains authoritative. */ }
     }
     return true;
@@ -753,7 +758,8 @@ export class Store {
         || qaResult.source_support_verified!==true || !Array.isArray(qaResult.accepted_keys)
         || !review.accepted_keys.every(key=>qaResult.accepted_keys.includes(key))) refuse('terminal_sheets_recovery_qa_invalid');
     const evidence=JSON.parse(Buffer.from(await this.fileGet(p.evidence_file),'base64').toString('utf8'));
-    if(p.evidence_file!==`${source.date}-publication-evidence.json` || pythonHash(evidence)!==p.evidence_digest)
+    if(p.evidence_file!==`${source.date}-publication-evidence.json` || !Array.isArray(evidence)
+        || evidence.some(item=>item.turn_id!==p.turn_id) || pythonHash(evidence)!==p.evidence_digest)
       refuse('terminal_sheets_recovery_evidence_invalid');
     const call=source.application_tool_calls?.[request.rejected_call_id],action=call?.request;
     let args;try {args=typeof action?.arguments==='string'?JSON.parse(action.arguments):action?.arguments;}catch {}
@@ -783,7 +789,9 @@ export class Store {
     const current=await this.get(request.day);this.terminalSheetsGate((await this.control.get()).data(),current,context);
     if(current.delivery.sheets.receipt && valueHash(current.delivery.sheets.receipt)!==valueHash(receipt))
       refuse('delivery_receipt_already_bound');
-    current.delivery.sheets.receipt=receipt;current.delivery.sheets.state='acknowledged';await this.put(current);
+    const expected_blob=sha(JSON.stringify(current));
+    current.delivery.sheets.receipt=receipt;current.delivery.sheets.state='acknowledged';
+    await this.put(current,{expected_blob,context});
     await this.transaction(async tx=>{
       const ctrl=(await tx.get(this.control)).data();this.terminalSheetsGate(ctrl,current,context);
       const saved=(await tx.get(recoveryRef)).data();
@@ -818,7 +826,11 @@ export class Store {
     try {
       if(terminalRecovery && attemptState((await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row,destination).claimed && !d.plan)
         refuse('terminal_sheets_recovery_claim_plan_missing');
-      if (!d.plan) {d.plan=await this.publisher.prepare(row,destination);await this.put(row);}
+      if (!d.plan) {
+        const expected_blob=terminalRecovery?sha(JSON.stringify(row)):null;
+        d.plan=await this.publisher.prepare(row,destination);
+        await this.put(row,terminalRecovery?{expected_blob,context:terminalRecovery}:null);
+      }
       if(terminalRecovery) await this.transaction(async tx=>{
         const control=(await tx.get(this.control)).data();this.terminalSheetsGate(control,row,terminalRecovery);
         const saved=(await tx.get(terminalRecovery.recoveryRef)).data(),plan_digest=valueHash(d.plan);

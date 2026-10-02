@@ -655,6 +655,31 @@ test('terminal recovery rechecks the stopped flag after the final CRM read befor
   assert.equal(f.writes.length,0);assert.ok(f.db.values.get(`${ROOT}/runs/${f.r.date}`).publication_claimed.sheets);
 });
 
+test('terminal recovery refuses a source change during plan preparation without overwriting it',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),prepare=f.publisher.prepare.bind(f.publisher);
+  f.publisher.prepare=async(...args)=>{
+    const plan=await prepare(...args),changed=await f.store.get(f.r.date);
+    changed.review.summary='Concurrent source owner change';await f.store.put(changed);return plan;
+  };
+  await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_source_changed/);
+  assert.equal(f.writes.length,0);assert.equal((await f.store.get(f.r.date)).review.summary,'Concurrent source owner change');
+  assert.equal((await f.store.get(f.r.date)).delivery.sheets.plan,undefined);
+});
+
+test('terminal recovery refuses a source change before receipt commit without overwriting or appending twice',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),put=f.store.blobPut.bind(f.store);let changed=false;
+  f.store.blobPut=async encoded=>{
+    const hash=await put(encoded),value=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+    if(!changed && value.delivery?.sheets?.state==='acknowledged') {
+      changed=true;const latest=await f.store.get(f.r.date);latest.review.summary='Concurrent receipt source change';await f.store.put(latest);
+    }
+    return hash;
+  };
+  await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_source_changed/);
+  assert.equal(f.writes.length,1);assert.equal((await f.store.get(f.r.date)).review.summary,'Concurrent receipt source change');
+  assert.equal((await f.store.get(f.r.date)).delivery.sheets.state,'pending');
+});
+
 test('agent-owned publication requires explicit choice; inspect returns full approved source without provider writes',async()=>{
   const f=await agentFixture('Retained complete supported finding '.repeat(5000));
   await assert.rejects(f.store.publish(f.r.date),/publication_agent_choice_required/);

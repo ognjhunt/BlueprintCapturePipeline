@@ -18,19 +18,26 @@ const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-3
   state: 'creating', cleanup_required: true});
 
 test('supported source commits await the existing learning writer, and observation failure cannot undo research',async()=>{
-  const {db,store}=await fixture(),calls=[];
+  const {db,store}=await fixture(),calls=[],sourceHashes=[];let committed;
   store.learning=async request=>{
     assert.equal((await store.get(request.day)).state,'reviewed');calls.push(request);
+    committed=structuredClone(db.values.get(`${ROOT}/runs/${request.day}`));
+    sourceHashes.push(createHash('sha256').update(JSON.stringify(committed)).digest('hex'));
     return {event:{eventId:'source-bound-event'},append:'existing'};
   };
   await store.put(row());assert.equal(calls.length,0);
   await store.put({...row(),state:'reviewed'});
   assert.deepEqual(calls,[{op:'learning_after_run',day:'2026-09-30'}]);
-  assert.equal(db.values.get(`${ROOT}/runs/2026-09-30`).learning_observation.status,'observed');
+  assert.deepEqual(db.values.get(`${ROOT}/runs/2026-09-30`),committed);
+  const hash=committed.blob;
+  assert.equal(db.values.get(`${ROOT}/learningObservations/${hash}`).status,'observed');
+  await store.learning({op:'learning_after_run',day:'2026-09-30'});
+  assert.equal(sourceHashes[0],sourceHashes[1]);
   store.learning=async()=>{throw new Error('private provider message contains spaces');};
   assert.equal(await store.put({...row(),state:'reviewed'}),true);
   assert.equal((await store.get('2026-09-30')).state,'reviewed');
-  assert.equal(db.values.get(`${ROOT}/runs/2026-09-30`).learning_observation.code,'research_learning_observation_unavailable');
+  assert.deepEqual(db.values.get(`${ROOT}/runs/2026-09-30`),committed);
+  assert.equal(db.values.get(`${ROOT}/learningObservations/${hash}`).code,'research_learning_observation_unavailable');
 });
 
 test('terminal collection alone may publish validated evidence while control stays stopped', async () => {
