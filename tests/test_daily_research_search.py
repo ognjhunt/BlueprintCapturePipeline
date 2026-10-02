@@ -291,6 +291,30 @@ def test_owner_notion_is_frozen_and_session_tools_are_only_official_reads(fixtur
     assert not api.executions
 
 
+def test_owner_firebase_preserves_connection_but_admits_only_database_metadata(fixture):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "firebase",
+        "transport": {"type": "http", "server_url": "https://firestore.googleapis.com/mcp", "headers": {}},
+        "credential_id": "credential_synthetic_owner_firebase", "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(deepcopy(tool))
+    original = deepcopy(api.agent)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    assert api.agent == original and row["mcp_binding"] == [tool]
+    assert row["metadata"]["mcp_binding_digest"] == digest([tool])
+    assert api.payloads[0]["agent"]["tools"][-1] == {**tool, "allowed_tools": ["get_database"]}
+    assert api.payloads[0]["vault_ids"] == ["vault_synthetic_firebase"]
+    assert "existing scoped search_company_history/fetch_company_history_record" in api.payloads[0]["agent"]["instructions"]
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    session["agent"]["tools"][-1]["allowed_tools"].append("get_document")
+    with pytest.raises(Refusal, match="agent_search_profile_mismatch"):
+        Consumer.check_session(row, session)
+    assert len(api.payloads) == 1 and not api.executions
+    assert ledger.get(DAY)["create_payload"] == row["create_payload"]
+
+
 @pytest.mark.parametrize("change", ["headers", "metadata", "endpoint", "origin", "unknown_server", "malformed_label"])
 def test_owner_mcp_rejects_unsafe_configuration_before_intent_or_create(fixture, change):
     runner, api, ledger = fixture

@@ -91,7 +91,7 @@ remain immutable and exportable; a repeated pending call reuses its saved result
 The legacy learning-context path and saved tool definitions remain unchanged.
 
 `mcp_profile=owner-readonly-mcp-v1` explicitly preserves the owner's existing
-official Sheets, Slack and Notion service connections in a new session, alongside the
+official Sheets, Slack, Notion and Firestore service connections in a new session, alongside the
 selected search, publication and history tools. Preflight retains their exact
 non-secret configuration and digest before creation; session/QA recovery checks
 that frozen binding. Credential references and optional initialization remain
@@ -109,13 +109,18 @@ resolve or acquire new vaults. No vault, token, credential or grant is created.
 Session allowlists expose only Sheets `get_values`/`get_spreadsheet` and Slack
 public/channel search and channel/thread reads, plus Notion
 `notion-get-tool-access`/`notion-search`/`notion-fetch`, intersected with any existing
-owner allowlist. All writes and sends stay with the existing authorized canonical
+owner allowlist. Firebase's official remote Firestore endpoint admits only
+`get_database` database metadata. Native document reads, queries and collection
+lists are excluded because they cannot enforce the existing subject/prospect
+history grants; business records continue through bounded inputs and the scoped
+company-history search/full-record fetch tools. All writes and sends stay with the existing authorized canonical
 transports. Saved-agent configuration and previously charged sessions are not
 changed. Source/catalog validation is not proof of authentication or successful
 MCP reads; unavailable optional connections remain explicit gaps.
 Tool-name sources are the [official Sheets catalog](https://developers.google.com/workspace/sheets/api/reference/mcp)
 and [Slack's own tool guidance](https://github.com/slackapi/slack-skills-plugin/blob/main/skills/slack-search/SKILL.md),
-plus the [official Notion catalog](https://developers.notion.com/guides/mcp/mcp-supported-tools).
+plus the [official Notion catalog](https://developers.notion.com/guides/mcp/mcp-supported-tools)
+and [Firestore database metadata tool](https://docs.cloud.google.com/firestore/docs/reference/mcp/tools_list/get_database).
 Notion access metadata is checked once when available before content search;
 dropped filters, truncation and unavailable tools remain explicit coverage gaps.
 Adding an owner connection affects only fresh preflight/create bindings;
