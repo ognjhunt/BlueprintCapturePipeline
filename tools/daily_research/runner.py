@@ -1035,9 +1035,11 @@ class Runner:
         if not validate:
             return True
         try:
-            output = json.loads(raw)
+            output, normalization = recovery.parse_artifact_json(raw)
         except (ValueError, UnicodeError):
             raise Refusal("artifact_json_invalid") from None
+        if normalization:
+            row["artifact_format_normalization"] = normalization
         self.ledger.write_json(row["date"] + "-output.json", output)
         return self.prepare_output(row, output)
 
@@ -1127,7 +1129,7 @@ class Runner:
             if len(raw) > LIMIT_BYTES or hashlib.sha256(raw).hexdigest() != receipt["raw_output_sha256"]:
                 raise Refusal("output_recovery_artifact_digest_mismatch")
             try:
-                original = json.loads(raw)
+                original, _normalization = recovery.parse_artifact_json(raw)
                 if original != json.loads(self.ledger.read_bytes(day + "-output.json")):
                     raise Refusal("output_recovery_original_output_mismatch")
                 derived, quarantined = recovery.quarantine_null_operator_deltas(original)

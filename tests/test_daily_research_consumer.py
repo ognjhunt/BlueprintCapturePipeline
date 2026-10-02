@@ -183,6 +183,21 @@ def test_long_qa_reasoning_is_retained_and_published_without_another_paid_turn(f
     assert render.export_snapshot(bridge, DAY, tmp_path / "export")["missing_files"] == []
 
 
+def test_fenced_qa_is_collected_losslessly_without_repeating_completed_review(fixture):
+    consumer, api, ledger, _, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    artifact = api.artifact
+    raw = ("```json\n" + canonical(api.qa_result) + "\n```").encode()
+    api.artifact = lambda sid, aid: raw if aid == "artifact_qa" else artifact(sid, aid)
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert ledger.read_bytes(DAY + "-qa.json") == raw
+    assert row["qa"]["artifact_digest"] == row["qa"]["artifact_format_normalization"]["raw_sha256"]
+    assert row["review"]["summary"] == api.qa_result["summary"]
+    assert len(api.inputs) == len(api.payloads) == 1 and api.cancellations == []
+
+
 def test_run_entrypoint_automatically_finishes_qa_and_both_publication_receipts(fixture, monkeypatch, tmp_path):
     consumer, api, ledger, bridge, _ = fixture
     monkeypatch.setattr(render, "configured", lambda *args: consumer.config)

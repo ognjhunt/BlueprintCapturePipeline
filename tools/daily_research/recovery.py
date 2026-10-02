@@ -13,6 +13,36 @@ from tools.daily_research.contracts import checked_day
 REPAIR_PATH = "/workspace/outputs/daily-research-repaired.json"
 
 
+def parse_artifact_json(raw):
+    """Read one JSON value, preserving evidence for a harmless outer wrapper.
+
+    Only a UTF-8 BOM and one complete JSON code fence may be removed. Prose,
+    multiple documents, invalid JSON and field types still require agent repair.
+    Callers retain the original artifact bytes and bind authority to their hash.
+    """
+    text = raw.decode("utf-8")
+    transformations = []
+    if text.startswith("\ufeff"):
+        text = text[1:]
+        transformations.append("utf8_bom")
+    try:
+        output = json.loads(text)
+    except json.JSONDecodeError:
+        fence = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*)\r?\n```", text.strip(), re.DOTALL | re.IGNORECASE)
+        if fence is None:
+            raise
+        text = fence[1]
+        output = json.loads(text)
+        transformations.append("single_json_fence")
+    if not transformations:
+        return output, None
+    normalized = text.encode("utf-8")
+    return output, {"schema_version": "blueprint.artifact-format-normalization.v1",
+        "raw_sha256": hashlib.sha256(raw).hexdigest(), "raw_bytes": len(raw),
+        "normalized_sha256": hashlib.sha256(normalized).hexdigest(), "normalized_bytes": len(normalized),
+        "transformations": transformations}
+
+
 def repair_error_receipt(error, stage):
     """Diagnostic metadata only; never retain exception text or request bodies."""
     from tools.daily_research.runner import Refusal
@@ -97,7 +127,7 @@ def replay_saved_artifact(row, raw_artifact, tool_files, known, observed_at):
             or digest(row.get("knowledge_context")) != row.get("knowledge_context_digest")
             or digest(row.get("refresh_policy")) != row.get("refresh_policy_digest")):
         raise Refusal("offline_fixture_artifact_or_context_binding_invalid")
-    output = json.loads(raw_artifact)
+    output, normalization = parse_artifact_json(raw_artifact)
     original_feedback = validation_feedback(output, row, known, observed_at)
     try:
         derived, quarantined = quarantine_null_operator_deltas(output)
@@ -116,13 +146,16 @@ def replay_saved_artifact(row, raw_artifact, tool_files, known, observed_at):
             contract_version=row["research_contract_version"], knowledge_context=row["knowledge_context"],
             refresh_policy=row["refresh_policy"], observed_at=observed_at)
         counts = {"candidate_count": len(candidates), "duplicate_count": len(duplicates)}
-    return {"schema_version": "blueprint.saved-research-replay.v1", "provider_calls": 0,
+    result = {"schema_version": "blueprint.saved-research-replay.v1", "provider_calls": 0,
             "database_writes": 0, "publication_writes": 0, "session_id": row["session_id"],
             "root_turn_id": row["turn_id"], "raw_output_sha256": row["raw_output_digest"],
             "original_validation_errors": original_feedback, "remaining_validation_errors": remaining,
             "quarantined_proposal_count": len(quarantined), "date_normalizations": precision,
             "derived_report_sha256": digest(derived), "valid": not remaining, "counts": counts,
             "qa_and_publication_verified": False}
+    if normalization:
+        result["artifact_format_normalization"] = normalization
+    return result
 
 
 RULES = {
@@ -367,7 +400,9 @@ class RepairLoop:
                 if hashlib.sha256(raw).hexdigest() != expected:
                     raise Refusal("validation_repair_artifact_binding_invalid")
                 try:
-                    output = json.loads(raw)
+                    output, normalization = parse_artifact_json(raw)
+                    if normalization:
+                        (current if current else row)["artifact_format_normalization"] = normalization
                 except (ValueError, UnicodeError):
                     output = raw.decode("utf-8", errors="replace")
                 feedback = validation_feedback(output, row, known, self.clock())
@@ -498,7 +533,9 @@ class RepairLoop:
                         self.ledger.put(row)
                         return self.finalize(row)
                     try:
-                        output = json.loads(raw)
+                        output, normalization = parse_artifact_json(raw)
+                        if normalization:
+                            current["artifact_format_normalization"] = normalization
                     except (ValueError, UnicodeError):
                         output = raw.decode("utf-8", errors="replace")
                     _, known = Consumer(self.ledger, self.config, self.api, clock=self.clock).refresh_crm()
@@ -553,7 +590,7 @@ class RepairLoop:
             if hashlib.sha256(raw).hexdigest() != expected:
                 raise Refusal("validation_repair_artifact_binding_invalid")
             try:
-                document = json.loads(raw)
+                document, _normalization = parse_artifact_json(raw)
             except (ValueError, UnicodeError):
                 continue
             derived, excluded = exclude_located_items(document, validation_feedback(document, row, known, self.clock()))

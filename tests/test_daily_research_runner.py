@@ -54,6 +54,21 @@ def output(day=DAY):
             "candidates": [c]}
 
 
+@pytest.mark.parametrize("wrapper", ["```json\n{}\n```", "\ufeff```json\n{}\n```"])
+def test_research_json_fence_retains_raw_without_another_agent_turn(fixture, wrapper):
+    runner, api, ledger = fixture
+    original = api.raw
+    api.raw = wrapper.format(original.decode()).encode()
+    row = runner.start_or_resume()
+    assert row["state"] == "awaiting_review"
+    assert row["raw_output_digest"] == hashlib.sha256(api.raw).hexdigest()
+    assert ledger.read_bytes(DAY + "-artifact.json") == api.raw
+    receipt = row["artifact_format_normalization"]
+    assert receipt["raw_sha256"] == row["raw_output_digest"]
+    assert "single_json_fence" in receipt["transformations"]
+    assert len(api.payloads) == 1
+
+
 class NotFound(Exception):
     status_code = 404
 

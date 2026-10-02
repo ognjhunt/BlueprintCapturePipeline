@@ -31,7 +31,12 @@ PYTHONPATH=src python -m blueprint_pipeline.daily_spend_snapshot \
   --source-receipt /path/to/billing-audit/run/provider_billing_source_receipt.json
 ```
 
-It verifies receipt/export and response hash/size bindings. Retained response
+It verifies receipt/export and response hash/size bindings. Export/receipt
+observation times compare valid timezone-aware instants, allowing equivalent
+timezone and fractional-second spelling without rewriting their original bytes.
+Fractional precision beyond Python's microseconds is compared without truncation.
+Missing, malformed, timezone-free or genuinely different times remain unbound.
+Retained response
 basenames are resolved beside the receipt, supporting authorized copied exports.
 Historical AWS sources are excluded. No GCP data source is invented. By default
 offline files are unverified; custom transports are development-only. Neither
@@ -50,6 +55,17 @@ creates publishable actual-spend rows.
   overlap across pages is flagged. Cash/prepaid/reservations are not synthesized.
 - Cumulative changes are posting changes, never proven usage-day costs. Signed
   credits and revisions are preserved; exact duplicate source revisions collapse.
+- Vast charge IDs now identify an event within its provider/account namespace;
+  corrected intervals and project/resource attribution create retained revisions,
+  rather than another charge. Conflicting observations in one snapshot quarantine
+  only that charge; unrelated valid rows remain available. Missing IDs keep their
+  existing uncertainty. The current collector reads one account per provider;
+  additional accounts must supply their account namespace. Existing snapshots and
+  published ledger keys are not rewritten or matched by an inferred alias. Before
+  publishing these new keys into a ledger containing the prior interval-based
+  keys, reconcile those existing rows against retained provider charge evidence
+  and preserve their revision history. This offline observer does not perform
+  that ledger migration or resume publication.
 - UTC intervals are only allocated when wholly inside one Chicago day, using
   timezone-aware, end-exclusive boundaries including 23/25-hour DST days.
   Unallocatable intervals remain visible with a gap. Observed slices are partial;
