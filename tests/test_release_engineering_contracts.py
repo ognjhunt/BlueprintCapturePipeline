@@ -6,12 +6,36 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - exercised by Python 3.10 CI
     import tomli as tomllib
+
+
+def test_full_fallback_keeps_required_diagnostic_native_gate(tmp_path, monkeypatch):
+    workflow = (Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text()
+    step = workflow.split("id: native-plan\n", 1)[1].split("      - name:", 1)[0]
+    script = textwrap.dedent(re.search(
+        r"python3 - <<'PYTHON'\n(.*?)\n          PYTHON", step, re.S).group(1))
+    plan, output = tmp_path / "plan.json", tmp_path / "output"
+    monkeypatch.setenv("IMPACT_PLAN", str(plan))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    for changed, required in [
+        ("src/blueprint_pipeline/control_plane_lane_disk_diagnostic.py", True),
+        ("src/blueprint_pipeline/control_plane_lane_experiment_archive.py", True),
+        ("src/blueprint_pipeline/s3_compatible_transport.py", True),
+        ("docs/runbooks/control-plane-capacity.md", False),
+    ]:
+        # Full fallback selects sentinels only; it must retain native proof.
+        plan.write_text(json.dumps({"changed_files": [changed], "selected_tests": [
+            "tests/test_success_claim_contracts.py::test_freshness_fails_closed_without_any_signal"],
+            "requires_full_suite": True}))
+        output.write_text("")
+        exec(compile(script, "actual-native-workflow-plan", "exec"), {})
+        assert output.read_text() == "required=" + str(required).lower() + "\n", changed
 
 
 ROOT = Path(__file__).resolve().parents[1]
