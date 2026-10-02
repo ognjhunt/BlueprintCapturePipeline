@@ -12,6 +12,16 @@ import pytest
 from scripts import native_linux_guest_execution as execution
 
 
+def _receipt(tmp_path, *, live=False):
+    # A portable double is deliberately not a native execution receipt.
+    image = tmp_path / 'image'
+    image.write_bytes(b'tiny private fixture')
+    info = image.stat()
+    command = execution.qemu_command(image, phase='test', image_fd=41)
+    process = SimpleNamespace(args=command, poll=lambda: None if live else 0, wait=lambda timeout: 0)
+    return execution.GuestRun(process, str(image), (info.st_dev, info.st_ino), tuple(command), 'test', 41)
+
+
 def test_test_boot_has_kvm_private_disk_and_no_guest_control_channel(tmp_path):
     image = tmp_path / 'private.qcow2'
     command = execution.qemu_command(image, phase='test')
@@ -45,7 +55,7 @@ def test_provision_network_is_available_only_in_explicit_provision_phase(tmp_pat
 
 
 def test_live_guest_cannot_be_opened_for_offline_evidence(tmp_path, monkeypatch):
-    process = SimpleNamespace(poll=lambda: None)
+    process = _receipt(tmp_path, live=True)
     called = []
     monkeypatch.setattr(execution.subprocess, 'run', lambda *a, **kw: called.append(a))
     with pytest.raises(execution.GuestExecutionError, match='guest_not_reaped'):
@@ -55,7 +65,7 @@ def test_live_guest_cannot_be_opened_for_offline_evidence(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize('names', [['../etc/shadow'], ['a/b'], ['native-junit.xml', 'native-junit.xml'], []])
 def test_unbounded_or_unapproved_evidence_selector_refuses(tmp_path, names, monkeypatch):
-    process = SimpleNamespace(poll=lambda: 0, wait=lambda timeout: 0)
+    process = _receipt(tmp_path)
     called = []
     monkeypatch.setattr(execution.subprocess, 'run', lambda *a, **kw: called.append(a))
     with pytest.raises(execution.GuestExecutionError, match='evidence_selection_invalid'):
@@ -64,27 +74,27 @@ def test_unbounded_or_unapproved_evidence_selector_refuses(tmp_path, names, monk
 
 
 def test_guest_evidence_alias_is_refused_without_download(tmp_path, monkeypatch):
-    process = SimpleNamespace(poll=lambda: 0, wait=lambda timeout: 0)
+    process = _receipt(tmp_path)
     calls = []
     monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
     def run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, 'true\n', '')
-    monkeypatch.setattr(execution.subprocess, 'run', run)
+        return subprocess.CompletedProcess(command, 0, b'true\n', b'')
+    monkeypatch.setattr(execution, '_bounded_command', run)
     with pytest.raises(execution.GuestExecutionError, match='evidence_alias'):
         execution.extract_evidence(process, tmp_path / 'image', tmp_path / 'evidence', ['native-junit.xml'], deadline_monotonic=time.monotonic() + 60)
     assert all('download' not in call for call in calls)
 
 
 def test_guest_evidence_size_checked_before_download(tmp_path, monkeypatch):
-    process = SimpleNamespace(poll=lambda: 0, wait=lambda timeout: 0)
+    process = _receipt(tmp_path)
     calls = []
     monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
     def run(command, **kwargs):
         calls.append(command)
         return subprocess.CompletedProcess(command, 0,
-            'false\n' if 'is-symlink' in command else str(execution.MAX_EVIDENCE_BYTES + 1) + '\n', '')
-    monkeypatch.setattr(execution.subprocess, 'run', run)
+            b'false\n' if 'is-symlink' in command else (str(execution.MAX_EVIDENCE_BYTES + 1) + '\n').encode(), b'')
+    monkeypatch.setattr(execution, '_bounded_command', run)
     with pytest.raises(execution.GuestExecutionError, match='evidence_size'):
         execution.extract_evidence(process, tmp_path / 'image', tmp_path / 'evidence', ['native-junit.xml'], deadline_monotonic=time.monotonic() + 60)
     assert all('download' not in call for call in calls)
@@ -102,6 +112,7 @@ def test_original_process_failure_timeout_and_output_are_reaped(tmp_path, monkey
     monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kwargs: None)
     monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kwargs: [sys.executable, '-c', behavior])
     monkeypatch.setattr(execution, 'MAX_SERIAL_BYTES', 128)
+    (tmp_path / 'image').write_bytes(b'tiny private image fixture')
     processes = []
     original = execution.subprocess.Popen
     def popen(*args, **kwargs):
@@ -109,13 +120,13 @@ def test_original_process_failure_timeout_and_output_are_reaped(tmp_path, monkey
         processes.append(process)
         return process
     monkeypatch.setattr(execution.subprocess, 'Popen', popen)
-    arguments = dict(phase='test', deadline_monotonic=time.monotonic() + 0.5, required_disk_bytes=1)
+    arguments = dict(phase='test', deadline_monotonic=time.monotonic() + (0.5 if 'sleep' in behavior else 3), required_disk_bytes=1)
     if code:
         with pytest.raises(execution.GuestExecutionError, match=code):
             execution.run_vm(tmp_path / 'image', tmp_path / 'serial.log', **arguments)
     else:
         result = execution.run_vm(tmp_path / 'image', tmp_path / 'serial.log', **arguments)
-        assert result is processes[0]
+        assert result.process is processes[0]
         assert (tmp_path / 'serial.log').read_text() == 'original stdout\n'
     assert len(processes) == 1 and processes[0].poll() is not None
     assert processes[0].stdout.closed
@@ -128,3 +139,122 @@ def test_sealed_image_refuses_symlink_before_boot_or_extraction(tmp_path):
     alias.symlink_to(payload)
     with pytest.raises(execution.GuestExecutionError, match='image_untrusted'):
         execution._sealed_image(alias)
+
+
+def test_arbitrary_reaped_host_process_is_not_a_vm_disk_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    called = []
+    monkeypatch.setattr(execution, '_guestfish', lambda *args: called.append(args) or 'false')
+    process = SimpleNamespace(poll=lambda: 0, wait=lambda timeout: 0)
+    with pytest.raises(execution.GuestExecutionError, match='guest_result_unbound'):
+        execution.extract_evidence(process, tmp_path / 'image', tmp_path / 'evidence',
+                                   ['native-junit.xml'], deadline_monotonic=time.monotonic() + 60)
+    assert not called
+
+
+def test_bounded_external_tool_output_stops_and_reaps_original_process(monkeypatch):
+    processes = []
+    original = execution.subprocess.Popen
+    def popen(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+    monkeypatch.setattr(execution.subprocess, 'Popen', popen)
+    with pytest.raises(execution.GuestExecutionError, match='tool_output_limit'):
+        execution._bounded_command([sys.executable, '-c', 'print("x" * 10000)'],
+                                   deadline=time.monotonic() + 2, max_output_bytes=128)
+    assert len(processes) == 1 and processes[0].poll() is not None
+    assert processes[0].stdout.closed and processes[0].stderr.closed
+
+
+def test_replaced_host_destination_never_overwrites_foreign_bytes(tmp_path, monkeypatch):
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    destination = tmp_path / 'evidence'
+    foreign = destination / 'native-junit.xml'
+    process = _receipt(tmp_path)
+    def guestfish(image, arguments, deadline, **kwargs):
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        destination.rename(tmp_path / 'owned-evidence')
+        destination.mkdir()
+        foreign.write_bytes(b'foreign-original')
+        selected = arguments[-1]
+        if selected.startswith('/proc/self/fd/'):
+            execution.os.write(int(selected.rsplit('/', 1)[1]), b'guest00\n')
+        else:
+            Path(selected).write_bytes(b'guest00\n')
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    with pytest.raises(execution.GuestExecutionError, match='evidence_destination_changed'):
+        execution.extract_evidence(process, tmp_path / 'image', destination, ['native-junit.xml'],
+                                   deadline_monotonic=time.monotonic() + 60)
+    assert foreign.read_bytes() == b'foreign-original'
+
+
+def test_final_extraction_after_original_deadline_never_returns_success(tmp_path, monkeypatch):
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    process = _receipt(tmp_path)
+    observed = [time.monotonic()]
+    deadline = observed[0] + 60
+    monkeypatch.setattr(execution.time, 'monotonic', lambda: observed[0])
+    def guestfish(image, arguments, original_deadline, **kwargs):
+        assert original_deadline == deadline
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        selected = arguments[-1]
+        if selected.startswith('/proc/self/fd/'):
+            execution.os.write(int(selected.rsplit('/', 1)[1]), b'guest00\n')
+        else:
+            Path(selected).write_bytes(b'guest00\n')
+        observed[0] = deadline + 1
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    with pytest.raises(execution.GuestExecutionError, match='phase_deadline_expired'):
+        execution.extract_evidence(process, tmp_path / 'image', tmp_path / 'evidence', ['native-junit.xml'],
+                                   deadline_monotonic=deadline)
+
+
+def test_replacement_disk_cannot_use_prior_guest_result(tmp_path, monkeypatch):
+    guest = _receipt(tmp_path)
+    image = tmp_path / 'image'
+    image.rename(tmp_path / 'original-image')
+    image.write_bytes(b'foreign replacement')
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    calls = []
+    monkeypatch.setattr(execution, '_guestfish', lambda *args, **kw: calls.append(args))
+    with pytest.raises(execution.GuestExecutionError, match='guest_result_unbound'):
+        execution.extract_evidence(guest, image, tmp_path / 'evidence', ['native-junit.xml'],
+                                   deadline_monotonic=time.monotonic() + 60)
+    assert calls == []
+    assert image.read_bytes() == b'foreign replacement'
+
+
+def test_vm_uses_preopened_disk_descriptor_instead_of_reopening_a_path(tmp_path):
+    command = execution.qemu_command(tmp_path / 'image', phase='test', image_fd=41)
+    assert command[command.index('-add-fd') + 1] == 'fd=41,set=1,opaque=blueprint-private'
+    assert command[command.index('-drive') + 1] == 'file=/dev/fdset/1,format=qcow2,if=virtio,cache=none'
+
+
+def test_setup_that_consumes_phase_deadline_never_launches_process(tmp_path, monkeypatch):
+    (tmp_path / 'image').write_bytes(b'tiny private fixture')
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kw: None)
+    observed = [time.monotonic()]
+    deadline = observed[0] + 60
+    monkeypatch.setattr(execution.time, 'monotonic', lambda: observed[0])
+    original = execution.selectors.DefaultSelector
+    class SlowSetup(original):
+        def __enter__(self):
+            observed[0] = deadline + 1
+            return super().__enter__()
+    monkeypatch.setattr(execution.selectors, 'DefaultSelector', SlowSetup)
+    calls = []
+    monkeypatch.setattr(execution.subprocess, 'Popen', lambda *args, **kw: calls.append(args))
+    with pytest.raises(execution.GuestExecutionError, match='phase_deadline_expired'):
+        execution.run_vm(tmp_path / 'image', tmp_path / 'serial.log', phase='test',
+                         required_disk_bytes=1, deadline_monotonic=deadline)
+    assert calls == []
