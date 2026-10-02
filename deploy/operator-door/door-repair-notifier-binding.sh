@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-umask 077
+umask 022  # Safe result metadata is read by the unprivileged door; backups stay 0700/0600.
 . "$(dirname "$0")/door-common.sh"
 door_init_request unit
 : "${DOOR_INSTALL_ROOT:?}" "${DOOR_EXPECTED_POSTCHECK_SHA256:?}" "${DOOR_EXPECTED_SOURCE_COMMIT:?}"

@@ -67,6 +67,11 @@ def _replacement(original: bytes) -> bytes:
         argv = shlex.split(value)
         if len(argv) != 3 or argv[:2] != ["/bin/bash", "-lc"]:
             raise RepairRefused("postcheck_shape_unknown")
+        if argv[2].endswith(NEW_INVOCATION):
+            # Verify the complete fixed repo/interpreter/script invocation;
+            # replay must not wrap an existing env command a second time.
+            changed += 1
+            continue
         match = re.search(r"(?:exec )?/bin/bash (?:/opt/blueprint/task-evaluation-control-plane/)?"
                           + re.escape(SCRIPT) + r"$", argv[2])
         if match is None:
@@ -111,6 +116,16 @@ def _atomic_write(path: Path, payload: bytes, mode: int) -> None:
         os.close(directory)
 
 
+def _receipt(original: bytes, changed: bytes, expected_sha256: str, expected_commit: str,
+             script_bytes: bytes, backup: Path | None) -> dict:
+    return {"schema": "blueprint.notifier_binding_repair.v1", "status": "repaired" if backup else "already_correct",
+            "unit": UNIT, "source_commit": expected_commit, "drop_in_provenance": "unknown_external_owner",
+            "drop_in_path": str(DROPIN), "backup_path": str(backup / "original.conf") if backup else None,
+            "original_sha256": _digest(original), "replacement_sha256": _digest(changed),
+            "observed_postcheck_sha256_before": expected_sha256, "release_postchecks_sha256": _digest(script_bytes),
+            "restart_performed": False, "slack_send_performed": False, "dispatcher_stop_verified": True}
+
+
 def repair_binding(expected_sha256: str, expected_commit: str, *, runner: CommandRunner | None = None) -> dict:
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", expected_sha256) or not re.fullmatch(r"[a-f0-9]{40}", expected_commit):
         raise RepairRefused("expected_identity_invalid")
@@ -138,6 +153,10 @@ def repair_binding(expected_sha256: str, expected_commit: str, *, runner: Comman
         current, _ = _read_original()
         if current != original or _command_digest(runner) != expected_sha256 or ACTIVE.resolve() != release:
             raise RepairRefused("postcheck_command_drift")
+        if changed == original:
+            if NEW_INVOCATION not in _command_value(runner):
+                raise RepairRefused("effective_binding_not_verified")
+            return _receipt(original, changed, expected_sha256, expected_commit, script_bytes, None)
         backup = Path(tempfile.mkdtemp(dir=DROPIN.parent, prefix=".blueprint-postcheck-backup."))
         _atomic_write(backup / "original.conf", original, 0o600)
         # Allocate both candidates before the critical swap. Rollback only
@@ -152,9 +171,7 @@ def repair_binding(expected_sha256: str, expected_commit: str, *, runner: Comman
             if reload.returncode != 0:
                 raise RepairRefused("reload_failed")
             effective = _command_value(runner)
-            if ("BLUEPRINT_PIPELINE_REPO=/opt/blueprint/task-evaluation-control-plane" not in effective
-                    or "/opt/blueprint/task-evaluation-control-plane/" + SCRIPT not in effective
-                    or ACTIVE.resolve() != release):
+            if NEW_INVOCATION not in effective or ACTIVE.resolve() != release:
                 raise RepairRefused("effective_binding_not_verified")
         except BaseException as error:
             if swapped:
@@ -164,12 +181,7 @@ def repair_binding(expected_sha256: str, expected_commit: str, *, runner: Comman
                 if isinstance(error, RepairRefused):
                     raise RepairRefused(str(error) + "_original_restored") from error
             raise
-    return {"schema": "blueprint.notifier_binding_repair.v1", "status": "repaired", "unit": UNIT,
-            "source_commit": expected_commit, "drop_in_provenance": "unknown_external_owner",
-            "drop_in_path": str(DROPIN), "backup_path": str(backup / "original.conf"),
-            "original_sha256": _digest(original), "replacement_sha256": _digest(changed),
-            "observed_postcheck_sha256_before": expected_sha256, "release_postchecks_sha256": _digest(script_bytes),
-            "restart_performed": False, "slack_send_performed": False, "dispatcher_stop_verified": True}
+    return _receipt(original, changed, expected_sha256, expected_commit, script_bytes, backup)
 
 
 def main() -> int:

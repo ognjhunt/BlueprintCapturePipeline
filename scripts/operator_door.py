@@ -60,7 +60,7 @@ MAX_CHECKED_HTTP_ERROR_BYTES = 4096
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
-                "legacy_owner_census_observed"}
+                "legacy_owner_census_observed", "repaired"}
 
 
 class DoorError(Exception):

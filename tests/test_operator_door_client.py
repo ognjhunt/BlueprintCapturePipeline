@@ -327,6 +327,18 @@ def test_waiting_on_a_retirement_exits_by_its_outcome(door: dict[str, Any], stat
     assert code == exit_code and json.loads(out)["outcome"] == outcome  # a retained scene says why
 
 
+def test_waiting_on_notifier_repair_accepts_its_success_outcome(door: dict[str, Any]) -> None:
+    code, out = _run("unit", "repair-notifier-binding", "blueprint-pipeline-control-plane.service",
+                     "--expected-postcheck-sha256", "sha256:" + "a" * 64, "--expected-source-commit", SHA)
+    request_id = json.loads(out)["id"]
+    results = door["state"] / "requests" / "results"
+    (results / f"{request_id}.json").write_text(json.dumps({"status": "launched", "unit": "u.service"}))
+    outcome = {"status": "repaired", "exit_code": 0}
+    (results / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+    code, out = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+    assert code == 0 and json.loads(out)["outcome"] == outcome
+
+
 def test_client_submits_a_canonical_scene_restore(door: dict[str, Any]) -> None:
     code, out = _run("restore-scene-workspace", "scene-1", "--bucket", "blueprint-8c1ca.appspot.com")
     request_id = json.loads(out)["id"]

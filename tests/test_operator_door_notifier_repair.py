@@ -90,6 +90,32 @@ def test_repair_changes_only_matching_invocation_and_retains_private_backup(inst
     assert not any(call[1] in {"start", "restart", "enable"} for call in runner.calls)
 
 
+def test_already_correct_binding_is_verified_without_rewrite_or_reload(installed: tuple[Path, bytes]) -> None:
+    path, original = installed
+    first = repair.repair_binding(EXPECTED, COMMIT, runner=Runner())
+    before = (path.read_bytes(), path.stat().st_ino, sorted(path.parent.iterdir()))
+    runner = Runner()
+    runner.reloaded = True
+    expected = "sha256:" + hashlib.sha256(repair.NEW_INVOCATION.encode()).hexdigest()
+    receipt = repair.repair_binding(expected, COMMIT, runner=runner)
+    assert receipt["status"] == "already_correct" and receipt["backup_path"] is None
+    assert (path.read_bytes(), path.stat().st_ino, sorted(path.parent.iterdir())) == before
+    assert Path(first["backup_path"]).read_bytes() == original
+    assert Path(first["backup_path"]).stat().st_mode & 0o777 == 0o600
+    assert not any(call[1] == "daemon-reload" for call in runner.calls)
+
+
+def test_already_correct_file_with_stale_effective_binding_refuses(installed: tuple[Path, bytes]) -> None:
+    path, _original = installed
+    repair.repair_binding(EXPECTED, COMMIT, runner=Runner())
+    before = (path.read_bytes(), path.stat().st_ino, sorted(path.parent.iterdir()))
+    runner = Runner()
+    with pytest.raises(repair.RepairRefused, match="effective_binding_not_verified"):
+        repair.repair_binding(EXPECTED, COMMIT, runner=runner)
+    assert (path.read_bytes(), path.stat().st_ino, sorted(path.parent.iterdir())) == before
+    assert not any(call[1] == "daemon-reload" for call in runner.calls)
+
+
 @pytest.mark.parametrize("failure", ["metadata", "source", "shape", "symlink", "hold"])
 def test_preflight_refusals_preserve_original_bytes(installed: tuple[Path, bytes], monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
     path, original = installed
