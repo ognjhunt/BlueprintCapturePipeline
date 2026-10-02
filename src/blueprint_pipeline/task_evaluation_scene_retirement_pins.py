@@ -6,7 +6,7 @@ import stat
 import re
 
 from .task_evaluation_scene_retirement_access import _canonical, _opened, _identity, _require
-from .task_evaluation_scene_retirement_authority import selected_document
+from .task_evaluation_scene_retirement_authority import CAPTURE_MEMBER_KEYS, selected_document
 from .task_evaluation_scene_retirement_declared_bytes import _selector
 from .task_evaluation_scene_downstream_contracts import bounded_size
 from .task_evaluation_scene_lineage_budget import _Rows
@@ -54,7 +54,8 @@ def select_terminal_pins(fresh,policy,consent,documents,allowance,*,history=None
         return []
     context=fresh.get('planner_context')
     _require(type(context) is dict and policy.get('reference_context')==context
-        and fresh.get('finished_observation',{}).get('status') in {'completed','cancelled','failed'},_REASON)
+        and fresh.get('finished_observation',{}).get('status') in {
+            'completed','revoked_grace_elapsed','expired_grace_elapsed'},_REASON)
     root=_canonical(context.get('pins_root'))
     roots=context.get('roots')
     _require(type(roots) is dict,_REASON)
@@ -63,8 +64,15 @@ def select_terminal_pins(fresh,policy,consent,documents,allowance,*,history=None
     members=_rows(consent['members'],256)
     for member in members:
         allowance.tick()
-        _require(member.get('owner_intent_id')==consent['intent_id']
-                 and member.get('owner_raw_ref')==consent['intent_raw_ref'],_REASON)
+        if 'capture_owner_user_id' in member:
+            # The engine separately authenticates the original capture owner.
+            # Pin closure binds its existing scene sponsor without transferring ownership.
+            _require(set(member)==CAPTURE_MEMBER_KEYS
+                     and member.get('sponsoring_intent_id')==consent['intent_id']
+                     and member.get('scene_intent_raw_ref')==consent['intent_raw_ref'],_REASON)
+        else:
+            _require(member.get('owner_intent_id')==consent['intent_id']
+                     and member.get('owner_raw_ref')==consent['intent_raw_ref'],_REASON)
     values={}
     for protection in _rows(fresh['reference_observation']['protections'],10000):
         allowance.tick()

@@ -63,6 +63,111 @@ def test_real_terminal_preparation_pin_is_selected_before_any_ledger_mutation(tm
     assert result['references_clear'] is False and result['consumer_fence_checked'] is False
 
 
+@pytest.mark.parametrize('authority_end', ['revoked', 'expired'])
+@pytest.mark.parametrize('grace_offset', [-1, 0, 1])
+def test_terminal_pin_selection_uses_actual_authority_end_grace_observation(
+        tmp_path, monkeypatch, authority_end, grace_offset):
+    """Compose the actual finished predicate and pin observer; no action clearance."""
+    from tests.test_scene_lifecycle_finished import data, observe
+    from tests.test_scene_inventory_history import seal
+    from blueprint_pipeline.control_plane_storage_pin_observation import observe_storage_pins
+    from blueprint_pipeline.task_evaluation_scene_retirement_preservation import ActionAllowance
+    fresh, policy, consent, _ = fixture(tmp_path, monkeypatch)
+    args, intent, owner, rows = data()
+    ended_at = 100
+    if authority_end == 'revoked':
+        revocation = seal({
+            'schema_version': 'task_evaluation_scene_intent_revocation.v1',
+            'intent_id': args['intent_id'], 'intent_digest': intent['intent_digest'],
+            'owner': intent['request']['owner'], 'status': 'revoked',
+            'scope': 'future_execution', 'revoked_at_epoch': ended_at,
+            'provider_mutation_performed': False}, 'receipt_digest')
+        rows.append({'role': 'revocations', 'path': owner + '/revoked.json',
+                     'value': revocation})
+    observed_at = ended_at + 7 * 86400 + grace_offset
+    fresh['finished_observation'] = observe(rows, args, observed_at)
+    assert fresh['finished_observation']['status'] == (
+        authority_end + '_grace_elapsed' if grace_offset >= 0 else 'unknown')
+    # Reobserve the exact pin at the same time; expiry never erases its protection.
+    observation = json.loads(json.dumps(asdict(observe_storage_pins(
+        fresh['planner_context']['pins_root'], observed_at_epoch=observed_at,
+        monotonic=lambda: 0).rows[0])))
+    fresh['reference_observation']['protections'][-1]['observation'] = observation
+    allowance = ActionAllowance(expires_at=observed_at + 900,
+                                now=lambda: observed_at, monotonic=lambda: 0)
+    pin = Path(consent['terminal_pin_refs'][0]['path'])
+    before = pin.read_bytes()
+    if grace_offset < 0:
+        with pytest.raises(ValueError, match='scene_retirement_terminal_pin_unproven'):
+            selected(fresh, policy, consent, allowance)
+    else:
+        result = selected(fresh, policy, consent, allowance)
+        assert len(result['terminal_pin_release_rows']) == 1
+        assert result['terminal_pin_release_rows'][0]['original_raw_ref'] == consent['terminal_pin_refs'][0]
+        assert result['references_clear'] is False
+        assert result['consumer_fence_checked'] is False
+    assert pin.read_bytes() == before
+
+
+@pytest.mark.parametrize('status', [
+    'cancelled', 'failed', 'blocked', 'needs_input', 'running', 'unknown', 'revoked', 'expired'])
+def test_non_cleanup_terminal_status_cannot_select_a_terminal_pin(tmp_path, monkeypatch, status):
+    fresh, policy, consent, allowance = fixture(tmp_path, monkeypatch)
+    fresh['finished_observation'] = {'status': status}
+    pin = Path(consent['terminal_pin_refs'][0]['path'])
+    before = pin.read_bytes()
+    with pytest.raises(ValueError, match='scene_retirement_terminal_pin_unproven'):
+        selected(fresh, policy, consent, allowance)
+    assert pin.read_bytes() == before
+
+
+@pytest.mark.parametrize('change', ['none', 'sponsor', 'intent_raw', 'hybrid'])
+def test_capture_generation_and_ordinary_pin_keep_distinct_owner_schemas(
+        tmp_path, monkeypatch, change):
+    """Real capture birth/generation plus pin-stage scope, never capture action admission."""
+    from tests.test_capture_generation_birth import _fixture as capture_fixture
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
+    from blueprint_pipeline.task_evaluation_scene_retirement import _generation
+    from blueprint_pipeline.task_evaluation_scene_retirement_authority import CAPTURE_MEMBER_KEYS
+    fresh, policy, consent, allowance = fixture(tmp_path, monkeypatch)
+    capture_root = tmp_path / 'capture-fixture'
+    capture_root.mkdir()
+    _, capture_policy, target, owner, selector, membership = capture_fixture(capture_root, monkeypatch)
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+                                membership_raw=membership)
+    member = dict(canonical_path=str(target), **{'class': 'site_capture'},
+        generation_id=born['generation_id'], dev=born['dev'], ino=born['ino'], mode=born['mode'],
+        inventory_sha256='sha256:' + 'b' * 64,
+        capture_owner_user_id=born['capture_owner_user_id'], request_id=owner['request_id'],
+        sponsoring_intent_id=consent['intent_id'], scene_intent_raw_ref=consent['intent_raw_ref'],
+        owner_observation_raw_ref=born['owner_observation_raw_ref'],
+        birth_delivery_raw_ref=born['birth_delivery_raw_ref'],
+        source_membership_raw_ref=json.loads(Path(born['birth_delivery_raw_ref']['path']).read_bytes())[
+            'source_membership_raw_ref'], association_raw_ref=born['birth_delivery_raw_ref'])
+    assert set(member) == CAPTURE_MEMBER_KEYS
+    assert _generation(capture_policy, member, expected_states={'active'})[0] == born
+    original_owner = copy.deepcopy(member)
+    if change == 'sponsor':
+        member['sponsoring_intent_id'] = 'other-intent'
+    elif change == 'intent_raw':
+        member['scene_intent_raw_ref'] = dict(consent['intent_raw_ref'], sha256='sha256:' + 'f' * 64)
+    elif change == 'hybrid':
+        member.update(owner_intent_id=consent['intent_id'], owner_raw_ref=consent['intent_raw_ref'])
+    consent['members'].append(member)
+    pin = Path(consent['terminal_pin_refs'][0]['path'])
+    before = pin.read_bytes()
+    if change == 'none':
+        result = selected(fresh, policy, consent, allowance)
+        assert len(result['terminal_pin_release_rows']) == 1
+        assert result['references_clear'] is False and result['consumer_fence_checked'] is False
+        assert member == original_owner and 'owner_intent_id' not in member
+        assert _generation(capture_policy, member, expected_states={'active'})[0] == born
+    else:
+        with pytest.raises(ValueError, match='scene_retirement_terminal_pin_unproven'):
+            selected(fresh, policy, consent, allowance)
+    assert pin.read_bytes() == before
+
+
 @pytest.mark.parametrize('change',['omitted','foreign_path','changed_raw','young','outside_member','other_dependent','missing_terminal_result'])
 def test_terminal_pin_selection_never_clears_unknown_live_or_unrelated_rows(tmp_path,monkeypatch,change):
     fresh,policy,consent,allowance=fixture(tmp_path,monkeypatch)
