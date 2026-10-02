@@ -175,6 +175,8 @@ export class Store {
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
       if(row.mcp_profile && (row.mcp_profile!=='owner-readonly-mcp-v1'
           || valueHash(row.mcp_binding)!==row.metadata?.mcp_binding_digest)) refuse('research_mcp_binding_changed');
+      if(row.metadata?.mcp_vault_binding_digest && (!row.mcp_profile
+          || valueHash(row.mcp_vault_binding)!==row.metadata.mcp_vault_binding_digest)) refuse('research_mcp_vault_binding_changed');
       const historyBinding=row.history_profile==='agent-history-v1'?valueHash(row.history_binding):null;
       if(row.history_profile && row.history_profile!=='agent-history-v1') refuse('company_history_profile_invalid');
       if(prior.exists && ((prior.data().history_profile || null)!==(row.history_profile || null)

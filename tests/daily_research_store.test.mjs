@@ -31,6 +31,19 @@ test('owner MCP creation requires its frozen binding and explicit current profil
   assert.deepEqual((await store.get(value.date)).mcp_binding,binding);
 });
 
+test('new owner MCP vault metadata is immutable while old charged intents stay unchanged',async()=>{
+  const {store}=await fixture(),binding=[{server_label:'synthetic-owner-connection'}];
+  const vaults=[{credential_id:'credential_synthetic',vault_id:'vault_synthetic'}];
+  const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const value={...row(),mcp_profile:'owner-readonly-mcp-v1',mcp_binding:binding,mcp_vault_binding:vaults,
+    metadata:{...row().metadata,mcp_binding_digest:hash(binding),mcp_vault_binding_digest:hash(vaults)}};
+  await store.put(value);
+  await assert.rejects(store.put({...value,mcp_vault_binding:[]}),/research_mcp_vault_binding_changed/);
+  const legacy={...value,metadata:{...value.metadata}};delete legacy.metadata.mcp_vault_binding_digest;
+  await assert.rejects(store.put(legacy),/firestore_intent_conflict/);
+  assert.deepEqual((await store.get(value.date)).mcp_vault_binding,vaults);
+});
+
 test('supported source commits await the existing learning writer, and observation failure cannot undo research',async()=>{
   const {db,store}=await fixture(),calls=[],sourceHashes=[];let committed;
   store.learning=async request=>{

@@ -526,6 +526,52 @@ class Provider:
     def search_binding_present(self):
         return bool(os.environ.get("PERPLEXITY_API_KEY"))
 
+    @staticmethod
+    def _metadata_pages(endpoint, *args, **filters):
+        query, result, seen = {"limit": 100, "order": "asc", **filters}, [], set()
+        for _ in range(10):
+            page = endpoint.list(*args, **query)
+            result.extend(x.model_dump(mode="json") for x in page.data)
+            if not page.has_more:
+                return result
+            cursor = identifier(page.last_id)
+            if cursor in seen:
+                raise Refusal("provider_pagination_invalid")
+            seen.add(cursor)
+            query["after"] = cursor
+        raise Refusal("provider_pagination_limit")
+
+    def resolve_mcp_vaults(self, connections):
+        """Resolve existing owner references using metadata-only SDK GETs."""
+        wanted = {tool["credential_id"]: tool for tool in connections}
+        if len(wanted) != len(connections):
+            raise Refusal("research_mcp_vault_binding_invalid")
+        matches = {}
+        for vault in self._metadata_pages(self.api.vaults, status="active"):
+            vault_id = vault.get("id")
+            if not isinstance(vault_id, str) or not re.fullmatch(r"vault_[A-Za-z0-9_-]{1,150}", vault_id):
+                raise Refusal("research_mcp_vault_binding_invalid")
+            # Attaching a whole vault must not expose any unrelated credential.
+            credentials = self._metadata_pages(self.api.vaults.credentials, vault_id)
+            selected = [credential for credential in credentials if credential.get("id") in wanted]
+            if not selected:
+                continue
+            ids = [credential.get("id") for credential in credentials]
+            if len(ids) != len(set(ids)) or any(credential_id not in wanted for credential_id in ids):
+                raise Refusal("research_mcp_vault_scope_mismatch")
+            for credential in selected:
+                credential_id, auth = credential["id"], credential.get("auth")
+                tool = wanted[credential_id]
+                if (credential_id in matches or credential.get("vault_id") != vault_id
+                        or not isinstance(auth, dict) or auth.get("type") not in {"mcp_oauth", "static_bearer"}
+                        or auth.get("mcp_server_url") != tool["transport"]["server_url"]):
+                    raise Refusal("research_mcp_vault_binding_invalid")
+                matches[credential_id] = {"server_label": tool["server_label"], "credential_id": credential_id,
+                    "vault_id": vault_id, "auth_type": auth["type"], "mcp_server_url": auth["mcp_server_url"]}
+        if set(matches) != set(wanted):
+            raise Refusal("research_mcp_vault_credential_missing")
+        return [matches[tool["credential_id"]] for tool in connections]
+
     def application_tool(self, name, arguments):
         return search.ApplicationTools()(name, arguments)
 
@@ -650,6 +696,9 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
         result["session_agent_override"]["instructions"] += history_instructions()
     if connections is not None:
         result.update(mcp_profile=mcp_profile, mcp_binding=connections, mcp_binding_digest=digest(connections))
+        vault_binding = api.resolve_mcp_vaults(connections)
+        result.update(mcp_vault_binding=vault_binding, mcp_vault_binding_digest=digest(vault_binding),
+                      vault_ids=sorted({item["vault_id"] for item in vault_binding}))
         result["session_agent_override"]["tools"].extend(search.mcp_tools(connections))
         result["session_agent_override"]["instructions"] += (
             " The owner's existing Sheets, Slack and Notion MCP connections, when present, provide read-only context. "
@@ -664,6 +713,33 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
                 "on them, preserving source dates and verification metadata. Dropped-filter notices, unavailable "
                 "tools and truncated content remain coverage gaps. Do not upgrade plans or create access or sessions.")
     return result
+
+
+def check_mcp_vault_binding(row, session):
+    """New intents bind attachments; charged legacy intents are never retrofitted."""
+    expected_digest = row.get("metadata", {}).get("mcp_vault_binding_digest")
+    if expected_digest is None:
+        return
+    binding = row.get("mcp_vault_binding")
+    connections = row.get("mcp_binding")
+    if (row.get("mcp_profile") != search.MCP_PROFILE or not isinstance(binding, list)
+            or not isinstance(connections, list) or len(binding) != len(connections)
+            or digest(binding) != expected_digest):
+        raise Refusal("research_mcp_vault_binding_changed")
+    for item, tool in zip(binding, connections, strict=True):
+        if (not isinstance(item, dict) or set(item) != {"server_label", "credential_id", "vault_id", "auth_type", "mcp_server_url"}
+                or item.get("server_label") != tool.get("server_label")
+                or item.get("credential_id") != tool.get("credential_id")
+                or item.get("mcp_server_url") != tool.get("transport", {}).get("server_url")
+                or item.get("auth_type") not in {"mcp_oauth", "static_bearer"}
+                or not isinstance(item.get("vault_id"), str)
+                or not re.fullmatch(r"vault_[A-Za-z0-9_-]{1,150}", item["vault_id"])):
+            raise Refusal("research_mcp_vault_binding_changed")
+    expected = sorted({item["vault_id"] for item in binding})
+    actual = session.get("vault_ids")
+    if (row.get("create_payload", {}).get("vault_ids") != expected or not isinstance(actual, list)
+            or any(not isinstance(value, str) for value in actual) or sorted(actual) != expected):
+        raise Refusal("research_mcp_vault_binding_changed")
 
 
 def check_agent(agent, search_provider=None, publication_profile=None, history_profile=None, mcp_profile=None, mcp_binding=None):
@@ -934,6 +1010,8 @@ class Runner:
                 body["metadata"]["learning_input_digest"] = learning["inputHash"]
             if checked.get("mcp_profile"):
                 body["metadata"]["mcp_binding_digest"] = checked["mcp_binding_digest"]
+                body["metadata"]["mcp_vault_binding_digest"] = checked["mcp_vault_binding_digest"]
+                body["vault_ids"] = checked["vault_ids"]
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),
                    "run_key": body["metadata"]["run_key"], "metadata": body["metadata"],
@@ -944,7 +1022,8 @@ class Runner:
             if self.config.get("publication_profile"):
                 row["publication_profile"] = self.config["publication_profile"]
             if checked.get("mcp_profile"):
-                row.update(mcp_profile=checked["mcp_profile"], mcp_binding=checked["mcp_binding"])
+                row.update(mcp_profile=checked["mcp_profile"], mcp_binding=checked["mcp_binding"],
+                           mcp_vault_binding=checked["mcp_vault_binding"])
             if agent_history:
                 row.update(history_profile="agent-history-v1", history_binding=history_binding)
             row["research_crm_context"] = crm_context
@@ -1024,6 +1103,7 @@ class Runner:
                 raise Refusal("session_environment_mismatch")
             if row.get("mcp_profile") and digest(row.get("mcp_binding")) != row["metadata"].get("mcp_binding_digest"):
                 raise Refusal("research_mcp_binding_changed")
+            check_mcp_vault_binding(row, session)
             check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"))
             if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
                 raise Refusal("session_search_instructions_mismatch")

@@ -95,7 +95,14 @@ official Sheets, Slack and Notion service connections in a new session, alongsid
 selected search, publication and history tools. Preflight retains their exact
 non-secret configuration and digest before creation; session/QA recovery checks
 that frozen binding. Credential references and optional initialization remain
-as configured by the owner; no vault, token, credential or grant is created.
+as configured by the owner; metadata-only SDK GETs resolve each exact credential
+to its existing active project vault and approved MCP endpoint. Only matching
+vaults are attached through `vault_ids`; a vault containing an unrelated
+credential, an ambiguous match or a missing credential is refused before intent
+or create. The non-secret credential/vault binding and digest are frozen in the
+original create payload and verified against session attachments during recovery.
+Older charged payloads keep their original omitted vault attachment and never
+resolve or acquire new vaults. No vault, token, credential or grant is created.
 Session allowlists expose only Sheets `get_values`/`get_spreadsheet` and Slack
 public/channel search and channel/thread reads, plus Notion
 `notion-get-tool-access`/`notion-search`/`notion-fetch`, intersected with any existing

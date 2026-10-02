@@ -16,6 +16,7 @@ from tools.daily_research.runner import (
     Runner,
     canonical,
     check_agent,
+    check_mcp_vault_binding,
     crm_snapshot,
     digest,
     identifier,
@@ -620,6 +621,7 @@ class Consumer:
             raise Refusal("agent_qa_session_binding_mismatch")
         if row.get("mcp_profile") and digest(row.get("mcp_binding")) != row["metadata"].get("mcp_binding_digest"):
             raise Refusal("research_mcp_binding_changed")
+        check_mcp_vault_binding(row, session)
         if row.get("mcp_profile") and row["create_payload"]["agent"]["tools"] != (
                 search.tools(row.get("publication_profile"), row.get("history_profile")) + search.mcp_tools(row["mcp_binding"])):
             raise Refusal("research_mcp_binding_changed")

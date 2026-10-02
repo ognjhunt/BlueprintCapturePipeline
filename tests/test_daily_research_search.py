@@ -123,9 +123,12 @@ def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
     payload = api.payloads[0]
     assert payload["agent"]["tools"] == search.tools("agent-owned-v1") + search.mcp_tools(connections)
     assert api.agent == original and payload["environment"]["network"] == {"access": "disabled"}
-    assert "vault_ids" not in payload and "headers" not in payload["environment"]
+    assert payload["vault_ids"] == ["vault_synthetic_googlesheets", "vault_synthetic_slack"]
+    assert "headers" not in payload["environment"]
     assert row["mcp_binding"] == connections == row["preflight"]["mcp_binding"]
     assert payload["metadata"]["mcp_binding_digest"] == digest(connections)
+    assert payload["metadata"]["mcp_vault_binding_digest"] == digest(row["mcp_vault_binding"])
+    assert len(row["mcp_vault_binding"]) == 2
     assert ledger.get(DAY)["create_payload"] == payload
     assert all(tool["required"] is False and tool["credential_id"] == source["credential_id"]
         for tool, source in zip(payload["agent"]["tools"][-2:], connections, strict=True))
@@ -150,6 +153,89 @@ def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
     fresh = preflight(api, search_provider=search.PROFILE, mcp_profile=search.MCP_PROFILE)
     assert fresh["mcp_binding"] == changed + [notion] and row["mcp_binding"] == connections
     assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == payload
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "unrelated", "endpoint", "auth_type", "vault_id"])
+def test_owner_vault_metadata_rejects_unbound_scope_before_intent_or_create(fixture, change):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "notion", "transport": {"type": "http", "server_url": "https://mcp.notion.com/mcp"},
+        "credential_id": "credential_synthetic_notion", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    credential = {"id": tool["credential_id"], "vault_id": "vault_synthetic_notion",
+        "auth": {"type": "mcp_oauth", "mcp_server_url": tool["transport"]["server_url"]}}
+    api.vault_credentials = {"vault_synthetic_notion": [credential]}
+    if change == "missing":
+        api.vault_credentials = {}
+    elif change == "duplicate":
+        api.vault_credentials["vault_synthetic_second"] = [{**credential, "vault_id": "vault_synthetic_second"}]
+    elif change == "unrelated":
+        api.vault_credentials["vault_synthetic_notion"].append({**credential, "id": "credential_unrelated"})
+    elif change == "endpoint":
+        credential["auth"]["mcp_server_url"] += "/unreviewed"
+    elif change == "auth_type":
+        credential["auth"]["type"] = "environment_variable"
+    else:
+        credential["vault_id"] = "vault_different"
+    with pytest.raises(Refusal, match="research_mcp_vault_"):
+        runner.start_or_resume()
+    assert ledger.rows() == [] and not api.payloads and not api.executions
+    assert all(call[0] == "GET" for call in api.calls)
+
+
+@pytest.mark.parametrize("change", ["missing_attachment", "extra_attachment", "duplicate_attachment", "binding", "payload"])
+def test_charged_mcp_vault_binding_cannot_change_during_recovery(fixture, change):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "slack", "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"},
+        "credential_id": "credential_synthetic_slack", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    original = deepcopy(row["create_payload"])
+    session = api.get("session", row["session_id"])
+    if change == "missing_attachment":
+        session.pop("vault_ids")
+    elif change == "extra_attachment":
+        session["vault_ids"].append("vault_unrelated")
+    elif change == "duplicate_attachment":
+        session["vault_ids"] *= 2
+    elif change == "binding":
+        row["mcp_vault_binding"][0]["vault_id"] = "vault_other"
+    else:
+        row["create_payload"]["vault_ids"] = ["vault_other"]
+    with pytest.raises(Refusal, match="research_mcp_vault_binding_changed"):
+        Consumer.check_session(row, session)
+    assert ledger.get(DAY)["create_payload"] == original and len(api.payloads) == 1 and not api.executions
+
+
+def test_old_charged_mcp_intent_does_not_gain_vaults_or_read_new_inventory(fixture):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "slack", "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"},
+        "credential_id": "credential_synthetic_slack", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    # Reproduce the original, already charged pre-vault intent without changing its tools/instructions.
+    row.pop("mcp_vault_binding")
+    row["metadata"].pop("mcp_vault_binding_digest")
+    row["create_payload"].pop("vault_ids")
+    legacy_digest_input = deepcopy(row["create_payload"])
+    legacy_digest_input["metadata"].pop("payload_digest")
+    row["metadata"]["payload_digest"] = digest(legacy_digest_input)
+    api.payloads[0] = deepcopy(row["create_payload"])
+    api.sessions[0]["metadata"] = deepcopy(row["metadata"])
+    api.sessions[0].pop("vault_ids")
+    ledger.put(row)
+    original = deepcopy(row["create_payload"])
+    api.resolve_mcp_vaults = lambda _: pytest.fail("charged recovery must not resolve or attach new vaults")
+    api.agent["tools"].append({"type": "mcp", "server_label": "later_owner_connection"})
+    resumed = runner.start_or_resume(allow_create=False)
+    Consumer.check_session(resumed, api.get("session", resumed["session_id"]))
+    assert resumed["create_payload"] == original and "mcp_vault_binding" not in resumed
+    assert "vault_ids" not in resumed["create_payload"] and len(api.payloads) == 1
 
 
 @pytest.mark.parametrize("allowed", [None, ["notion-fetch", "notion-create-pages"]])
