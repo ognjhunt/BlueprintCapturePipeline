@@ -67,8 +67,20 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'
 for unit in "${units[@]}"; do [ -f "$units_dir/$unit" ] || { echo "missing $units_dir/$unit" >&2; exit 1; }; done
 
 # 1. Stage and check the code before touching the running door.
+# Preserve prior staging and backups: they can contain untracked recovery data.
+# A normal upgrade does not grant authority to delete an earlier generation.
+preserve_existing() {
+  local original="$1"
+  if [ -e "$original" ] || [ -L "$original" ]; then
+    [ ! -L "$original" ] || { echo "refused symlink backup path" >&2; return 1; }
+    local retained
+    retained="$(mktemp -d "$install_root.preserved.XXXXXXXX")"
+    mv "$original" "$retained/tree"
+    echo "operator door retained prior tree at $retained/tree"
+  fi
+}
 stage="$install_root.new"
-rm -rf "$stage"
+preserve_existing "$stage"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 if [ "$dispatcher_hold_only" -eq 1 ]; then
@@ -101,7 +113,7 @@ rollback() {
   trap - ERR TERM INT
   echo "operator door install failed; rolling back" >&2
   if [ "$swapped" -eq 1 ]; then
-    rm -rf "$install_root.failed"
+    preserve_existing "$install_root.failed"
     mv "$install_root" "$install_root.failed" 2>/dev/null || true
   fi
   if [ "$moved_previous" -eq 1 ] && [ -d "$install_root.previous" ]; then
@@ -127,13 +139,13 @@ trap 'rollback; exit 143' TERM
 trap 'rollback; exit 130' INT
 
 # 2. Back up the current units, then swap code, keeping the previous version.
-rm -rf "$units_backup"
+preserve_existing "$units_backup"
 mkdir -p "$units_backup"
 for unit in "${units[@]}"; do
   if [ -f "$systemd_dir/$unit" ]; then cp -p "$systemd_dir/$unit" "$units_backup/$unit"; fi
 done
 if [ "$had_previous" -eq 1 ]; then
-  rm -rf "$install_root.previous"
+  preserve_existing "$install_root.previous"
   moved_previous=1
   mv "$install_root" "$install_root.previous"
 fi

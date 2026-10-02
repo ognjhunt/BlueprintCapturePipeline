@@ -54,6 +54,13 @@ def test_restricted_installer_preserves_credentials_and_recovers_old_door(
                  "blueprint-operator-door-runner.path"):
         (units / name).write_text("development-only old unit fixture\n")
     original_units = {path.name: path.read_bytes() for path in units.iterdir()}
+    recovery_bytes = {}
+    for suffix in (".previous", ".previous-units", ".new", ".failed"):
+        old = Path(str(door) + suffix)
+        old.mkdir()
+        marker = old / ("retained-" + suffix[1:] + ".bin")
+        marker.write_bytes(b"untracked recovery bytes: " + suffix.encode())
+        recovery_bytes[marker.name] = marker.read_bytes()
     caddy = tmp_path / "Caddyfile"
     caddy.write_text("development-only Caddy fixture\n")
     binary = tmp_path / "bin"
@@ -114,6 +121,9 @@ else:
     # Stubbing ownership tools must not conceal any attempted credential ownership change.
     assert all(str(path) not in calls.read_text() for path in credentials)
     assert door.is_dir(), result.stderr
+    for name, content in recovery_bytes.items():
+        retained = list(tmp_path.glob("door*/**/" + name))
+        assert len(retained) == 1 and retained[0].read_bytes() == content, name
     if case == "success":
         assert result.returncode == 0, result.stderr
         assert "DISPATCHER_HOLD_ONLY = True" in (
