@@ -1399,8 +1399,8 @@ if __name__ == "__main__":
     else:
         assert len(sys.argv) == 3
         if sys.argv[1] == "--diagnostic-root-phase":
-            from tests.registered_disk_diagnostic_native_acceptance import run
-            value = run(Path(sys.argv[2]))
+            from tests.registered_disk_diagnostic_native_acceptance import run_observed
+            value = run_observed(Path(sys.argv[2]))
         else:
             assert sys.argv[1] == "--contained-root-phase"
             value = _linux_contained_phase(Path(sys.argv[2]))

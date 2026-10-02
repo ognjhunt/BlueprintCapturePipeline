@@ -12,12 +12,73 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import select
+import sys
 import time
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
 
 from tests.test_registered_feature_linux import encoded, install_protected_feature, _run_shipped_gc_sandbox
+
+
+def failure_evidence(error):
+    """Read retained contexts only after failure; never observe or alter the host.
+
+    No arbitrary exception text, paths, frame locals or input bytes are emitted.
+    Suppressed contexts survive ``from None``. This is post-unwind evidence,
+    never a reconstruction of the earlier ownership or reference census.
+    """
+    value = dict(observation_phase='post_unwind', exceptions=[], truncated=False)
+    pending, seen = [error], set()
+    while pending and len(value['exceptions']) < 8:
+        selected = pending.pop()
+        if id(selected) in seen:
+            value['truncated'] = True
+            continue
+        seen.add(id(selected))
+        row = {'class': type(selected).__name__[:64],
+               'module': type(selected).__module__[:96], 'frames': []}
+        if selected.args and type(selected.args[0]) is str and re.fullmatch(
+                r'(?:experiment_|historical_generation_|reference_|owner_target_)[a-z0-9_]{1,80}',
+                selected.args[0]):
+            row['code'] = selected.args[0]
+        if isinstance(selected, OSError) and type(selected.errno) is int:
+            row['errno'] = selected.errno
+        traceback = selected.__traceback__
+        while traceback is not None and len(row['frames']) < 16:
+            code = traceback.tb_frame.f_code
+            row['frames'].append(dict(source=Path(code.co_filename).name[:96],
+                                      function=code.co_name[:64], line=traceback.tb_lineno))
+            traceback = traceback.tb_next
+        value['truncated'] |= traceback is not None
+        value['exceptions'].append(row)
+        # Retain both causal links, including context suppressed for display.
+        if selected.__context__ is not None:
+            pending.append(selected.__context__)
+        if selected.__cause__ is not None and selected.__cause__ is not selected.__context__:
+            pending.append(selected.__cause__)
+    value['truncated'] |= bool(pending)
+    while len(json.dumps(value).encode()) > 8192:
+        value['truncated'] = True
+        row = next((row for row in reversed(value['exceptions']) if row['frames']), None)
+        if row is not None:
+            row['frames'].pop()
+        else:
+            value['exceptions'].pop()
+    return value
+
+
+def run_observed(root):
+    """Execute unchanged acceptance and preserve the same original failure."""
+    try:
+        return run(root)
+    except Exception as error:
+        try:
+            print(json.dumps(failure_evidence(error), sort_keys=True), file=sys.stderr)
+        except Exception:
+            pass  # An evidence write cannot replace the original refusal.
+        raise
 
 
 def _ordinary_denied(target, value, account):
