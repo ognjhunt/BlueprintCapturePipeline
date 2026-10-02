@@ -19,6 +19,41 @@ def test_legacy_tools_are_unchanged_and_history_is_explicit():
     assert [t["name"] for t in search.tools(publication.PROFILE, history.PROFILE)][-2:] == [history.SEARCH, history.FETCH]
 
 
+def test_rejected_history_and_early_publication_expose_native_error(tmp_path):
+    generator = consumer_setup(tmp_path, publication=True, history=True, research_running=True)
+    consumer, api, ledger, _, _ = next(generator)
+    try:
+        events, state = [], {"actions": []}
+        original_get = api.get
+        def get(resource, rid):
+            value = original_get(resource, rid)
+            if resource == "session":
+                value["required_actions"] = deepcopy(state["actions"])
+            return value
+        api.get = get
+        provider = object.__new__(FencedProvider)
+        provider.ledger, provider.get, provider.listing, provider.clock = ledger, get, api.listing, consumer.clock
+        api.tool_admit = provider.tool_admit
+        api.tool_result = lambda sid, event, key: events.append(deepcopy(event))
+        runner = Runner(ledger, consumer.config, api, clock=consumer.clock)
+        runner.required_history = True
+        for cid, name, arguments, code in [
+            ("early_upload", publication.PUBLISH, {"destination": "notion", "strategy": "full"}, "publication_requires_review"),
+            ("invalid_history", history.SEARCH, {"query": "", "page_size": "50"}, "company_history_arguments_invalid"),
+        ]:
+            state["actions"] = [{"type": "function_call", "turn_id": "turn_1", "call_id": cid,
+                                 "name": name, "arguments": arguments}]
+            assert runner.start_or_resume(allow_create=False)["state"] == "running"
+            event = events[-1]
+            result = json.loads(event["output"])
+            assert event["call_id"] == cid and event["success"] is False
+            assert json.loads(event["error"]) == result["error"]
+            assert result["error"]["code"] == code
+        assert ledger.get(DAY)["delivery"] == {}
+    finally:
+        generator.close()
+
+
 def test_agent_selects_history_queries_pages_records_and_corrects_errors_in_all_phases(tmp_path):
     generator = consumer_setup(tmp_path, publication=True, history=True, research_running=True)
     consumer, api, ledger, bridge, _ = next(generator)

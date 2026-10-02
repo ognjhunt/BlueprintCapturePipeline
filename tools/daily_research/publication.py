@@ -193,6 +193,10 @@ def advance(consumer, row):
                     outcome = {"success": False, "error": {"code": code, "guidance": "Inspect saved receipts and claims. An uncertain write is observation-only; never resend or replace its plan."}}
                 event = {"type": "agent.session.input.tool_result", "turn_id": phase["turn_id"], "call_id": cid,
                          "success": outcome.get("success") is True, "output": canonical(outcome)}
+                if event["success"] is False:
+                    event["error"] = canonical(outcome.get("error") or {
+                        "code": "publication_attempt_unresolved",
+                        "guidance": "Inspect saved receipts before correcting an unclaimed request; never replay an uncertain write."})
                 raw = (canonical(event) + "\n").encode()
                 ledger.write_bytes(filename, raw)
             updated = ledger.get(row["date"])
