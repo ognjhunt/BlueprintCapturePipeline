@@ -10,6 +10,9 @@ export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
 const TERMINAL = ['awaiting_review', 'reviewed', 'completed', 'failed', 'cancelled'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const canonicalValue = value => Array.isArray(value) ? value.map(canonicalValue) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalValue(value[key])])) : value;
+const valueHash = value => sha(JSON.stringify(canonicalValue(value)));
 const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.stringify(Object.entries(b || {}).sort());
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
@@ -17,11 +20,14 @@ const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
 const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
-  constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null) {
+  constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
+    terminalCollectionReceipt = null) {
     this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
     this.publisher = publisher;
+    this.learning = learning;
+    this.terminalCollectionReceipt = terminalCollectionReceipt;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -252,6 +258,13 @@ export class Store {
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
       this.budgetGate(control, snap.data());
+      if (control.learning?.enabled === true || metadata.learning_binding_digest) {
+        if (control.learning?.enabled !== true || metadata.learning_binding_digest !== valueHash(control.learning)
+            || ['binding','businessScope','learningGrant'].some(key => {
+              const expiry = Date.parse(control.learning[key]?.expiresAt);
+              return !Number.isFinite(expiry) || expiry <= this.clock();
+            })) refuse('research_learning_create_scope_changed_or_expired');
+      }
       tx.set(this.db.doc(`${ROOT}/runs/${day}`), {create_attempt_claimed: true}, {merge: true});
       return true;
     });
@@ -266,9 +279,9 @@ export class Store {
     return {latest_date: latest.docs[0]?.id || null, unfinished: unfinished.docs.length > 0,
       cleanup_required: uncleaned.docs.length > 0};
   }
-  workflowGate(control) {
+  workflowGate(control, allowStopped = false) {
     const workflow=control?.workflow;
-    if (control?.enabled !== true || workflow?.enabled !== true
+    if (!(control?.enabled === true || allowStopped && control?.enabled === false) || workflow?.enabled !== true
         || ['qa_authority_reference','publication_authority_reference'].some(k=>typeof workflow[k]!=='string'
           || !workflow[k].trim() || workflow[k].startsWith('PENDING'))) refuse('workflow_authority_missing');
   }
@@ -336,9 +349,15 @@ export class Store {
     });
   }
   async publish(day) {
-    await this.assertLease(); const initialControl=(await this.control.get()).data();this.workflowGate(initialControl);
+    await this.assertLease(); const initialControl=(await this.control.get()).data();
+    this.workflowGate(initialControl,!!this.terminalCollectionReceipt);
     if (!this.publisher) refuse('publication_binding_unavailable');
     const row=await this.get(day);
+    const proof=this.terminalCollectionReceipt;
+    if (proof && (!['reviewed','completed'].includes(row?.state) || row?.qa?.state!=='validated'
+        || valueHash(row.qa.terminal_collection_recovery?.native_receipt||null)!==valueHash(proof)
+        || row.session_id!==proof.session_id || row.qa.artifact_digest!==proof.qa_artifact_sha256))
+      refuse('terminal_qa_collection_validated_receipt_required');
     const collectionAuthority=row?.qa?.terminal_collection_recovery?.workflow_authority;
     if (collectionAuthority && !same(collectionAuthority,initialControl.workflow)) refuse('publication_authority_changed');
     const destination=['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
@@ -351,7 +370,7 @@ export class Store {
       const ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
       if (before.data().publication_claimed?.[destination]) return null; // uncertain: GET reconciliation only
       await this.transaction(async tx=>{
-        const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+        const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control,!!proof);
         if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || run.publication_claimed?.[destination]) refuse('publication_attempt_not_admitted');
@@ -456,6 +475,9 @@ export class Store {
     return this.blobGet(snap.data().blob);
   }
   async dispatch(request) {
+    if (this.terminalCollectionReceipt && !['acquire','renew','release','assert_lease','control','read_crm',
+      'get','blob_receipt','rows','summary','work_item','active_qa','publish','refresh_crm','put',
+      'file_put','file_get','snapshot'].includes(request.op)) refuse('terminal_qa_operation_forbidden');
     switch (request.op) {
       case 'init': {
         const value = request.value;
@@ -480,6 +502,20 @@ export class Store {
       case 'release': return this.release();
       case 'assert_lease': return this.assertLease();
       case 'control': return (await this.control.get()).data() || null;
+      case 'learning_context':
+      {
+        const control = (await this.control.get()).data();
+        if (control?.learning?.enabled !== true) return null;
+        await this.assertLease();
+        if (typeof request.allow_create !== 'boolean') refuse('research_learning_create_direction_required');
+        if (!this.learning) refuse('research_learning_binding_unavailable');
+        try {return await this.learning(request, control.learning);}
+        catch (error) {
+          const code=error.message;
+          refuse(/^(?:research_learning|business_daily|business_run|learning_consumer)_[a-z_]{1,75}$/.test(code)
+            ? code : 'research_learning_unavailable');
+        }
+      }
       case 'read_crm': {
         if (!this.crmReader) refuse('canonical_crm_read_unavailable');
         return this.crmReader();
@@ -575,7 +611,11 @@ async function main() {
   if (account.project_id !== 'blueprint-8c1ca') refuse('firestore_project_binding_mismatch');
   const crmReader=()=>readCanonicalCRM(account);
   const publisher=await livePublisher(account,crmReader,process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY);
-  const store = new Store(getFirestore(initializeApp({credential: cert(account)})), undefined, undefined,crmReader,publisher);
+  const db = getFirestore(initializeApp({credential: cert(account)}));
+  // The trusted worker supplies a local compiled module, never a model URL.
+  const learningPath = process.env.BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE;
+  const learning = learningPath ? (await import(pathToFileURL(learningPath).href)).researchLearningHost(db) : null;
+  const store = new Store(db, undefined, undefined,crmReader,publisher,learning);
   const channel = new LeaseChannel(store);
   for await (const line of createInterface({input: process.stdin})) {
     try {

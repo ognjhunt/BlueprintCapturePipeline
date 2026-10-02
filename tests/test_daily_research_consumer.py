@@ -135,7 +135,7 @@ def test_automatic_qa_exact_artifact_review_and_private_export(fixture, tmp_path
     assert render.export_snapshot(bridge, DAY, tmp_path / "export")["missing_files"] == []
 
 
-def test_adaptive_qa_uses_reserved_total_time_and_checks_quota_without_legacy_activity_cap(fixture):
+def test_adaptive_qa_uses_reserved_total_time_and_checks_coverage_without_quota_or_legacy_activity_cap(fixture):
     consumer, api, ledger, _, _ = fixture
     with ledger.lock():
         row = ledger.get(DAY)
@@ -156,8 +156,9 @@ def test_adaptive_qa_uses_reserved_total_time_and_checks_quota_without_legacy_ac
     saved = ledger.get(DAY)
     assert saved["qa"]["state"] == "validated" and len(api.inputs) == 1
     text = saved["qa"]["event"]["input"][0]["content"][0]["text"]
-    assert "target of 10 new" in text and "Existing deployments" in text
-    assert "At most" not in text and "shortfall" in text
+    assert "target of 10 new" not in text and "Existing deployments" in text
+    assert "count never establishes completion" in text and "Check contact relevance" in text
+    assert "At most" not in text and "why work stopped" in text
 
 
 def test_long_qa_reasoning_is_retained_and_published_without_another_paid_turn(fixture, tmp_path):
@@ -344,6 +345,24 @@ def test_fresh_crm_dedupe_and_source_attestation_required(fixture):
         ledger.put(row)
     with pytest.raises(Refusal, match="cleanup_not_terminal"):
         Runner(ledger, consumer.config, api).record_cleanup(DAY, {})
+
+
+def test_qa_extra_metadata_is_retained_without_weakening_dispositions(fixture):
+    consumer, api, ledger, _, _ = fixture
+    api.lost_reply = True
+    consumer.step()
+    row = ledger.get(DAY)
+    row["qa"]["turn_id"] = "turn_qa"
+    row["qa"]["artifact_digest"] = "a" * 64
+    result = deepcopy(api.qa_result)
+    result["source_notes"] = {"dates_unknown": True}
+    result["checks"][0]["source_notes"] = {"employer_affiliation": "primary public page"}
+    preserved = deepcopy(result)
+    assert qa_decision(row, result, set())["accepted_keys"] == result["accepted_keys"]
+    assert result == preserved
+    result["checks"][0]["duplicate"] = 0
+    with pytest.raises(Refusal, match="candidate_checks_invalid"):
+        qa_decision(row, result, set())
 
 
 def test_qa_context_excludes_crm_contacts(fixture):

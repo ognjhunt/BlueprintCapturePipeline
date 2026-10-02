@@ -19,6 +19,37 @@ test('disabled startup never spawns', async () => {
   await startDailyResearchWorker({enabled: false, spawnImpl: () => {spawned = true;}}).stop();
   assert.equal(spawned, false);
 });
+test('learning host travels only in the existing child environment and not status output', async () => {
+  let captured; const child=new EventEmitter();child.stdout=new EventEmitter();child.pid=100;
+  const handle=startDailyResearchWorker({bundleRoot:'/isolated',python:'/venv/python',enabled:true,
+    learningHostModule:'/reviewed/research-worker-host.js',killGroup:()=>{},spawnImpl:(_python,_args,options)=>{captured=options;return child;}});
+  assert.equal(captured.env.BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE,'/reviewed/research-worker-host.js');
+  const stop=handle.stop();child.emit('exit');await stop;
+});
+test('canonical native hook alone receives durable terminal observations', async () => {
+  const recorded=[], logs=[], child=new EventEmitter(); child.stdout=new EventEmitter(); child.pid=100;
+  const handle=startDailyResearchWorker({bundleRoot:'/isolated',python:'/venv/python',enabled:true,
+    learningHooks:{afterRun:async day=>recorded.push(day)},log:line=>logs.push(line),killGroup:()=>{},
+    spawnImpl:()=>child});
+  child.stdout.emit('data',JSON.stringify({date:'2026-10-02',state:'running'})+'\n');
+  child.stdout.emit('data',JSON.stringify({date:'2026-10-02',state:'completed',secret:'never forwarded'})+'\n');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(recorded,['2026-10-02']);
+  assert.equal(logs.some(line=>line.includes('never forwarded')),false);
+  const stop=handle.stop(); child.emit('exit'); await stop;
+});
+test('shutdown drains the canonical terminal hook after the child has stopped', async () => {
+  let finish, drained = false;
+  const terminal = new Promise(resolve => {finish = resolve;});
+  const {handle, children} = fixture({learningHooks:{afterRun:() => terminal}});
+  children[0].stdout.emit('data','{"date":"2026-10-02","state":"completed"}\n');
+  const stop = handle.stop().then(() => {drained = true;});
+  children[0].emit('exit');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false);
+  finish(); await stop;
+  assert.equal(drained, true);
+});
 test('Perplexity secret passes only to the application worker, never logs', async () => {
   const previous = process.env.PERPLEXITY_API_KEY;
   process.env.PERPLEXITY_API_KEY = 'offline-placeholder';

@@ -53,9 +53,10 @@ def qa_deadline(row, config):
     return retry_deadline(row, instant(value["started_at"]) + timedelta(seconds=600))
 
 
-def workflow(control):
+def workflow(control, *, allow_stopped=False):
     value = control.get("workflow", {})
-    if value.get("enabled") is not True or control.get("enabled") is not True:
+    if value.get("enabled") is not True or not (control.get("enabled") is True
+            or allow_stopped and control.get("enabled") is False):
         return None
     if (set(value) != {"enabled", "qa_authority_reference", "publication_authority_reference"}
             or any(not isinstance(value.get(k), str) or not value[k].strip()
@@ -77,10 +78,14 @@ def qa_text(row, snapshot, crm_digest):
                            "duplicate": False, "reason": "exact claim/source scope or duplicate reason"}]}
     adaptive = row.get("discovery_profile") == "adaptive-sites-v1"
     allowance = "Adaptively open the sources required for QA; retain actual coverage and honest incomplete checks. " if adaptive else f"At most {remaining} further observed web activities across search/open, then stop. "
-    assessment = ("Existing deployments and CRM duplicates must not count toward the target of 10 new "
+    assessment = ("Existing deployments and CRM duplicates must not count toward new "
                   "site/task opportunities. Unknown interest, owner, budget or pilot readiness is not a discovery "
                   "rejection by itself. Check exact location, actual work, incumbent automation, supported fit "
-                  "hypotheses and one useful first-question angle. Explain final supported count and shortfall. ") if adaptive else ""
+                  "hypotheses and one useful first-question angle. Explain actual defined scope, source coverage, "
+                  "rejected/duplicate findings, unresolved promising branches and why work stopped; count never "
+                  "establishes completion. Check contact relevance and public professional provenance, prior "
+                  "contact/history, counterevidence and explicit interest/owner/budget unknowns. Count distinct "
+                  "site/task opportunities separately from findings and robotics-team knowledge. ") if adaptive else ""
     trusted = ("Blueprint QA phase for the preceding research only. Read the reviewed evidence skill. "
                "Check every material finding, claim scope, quoted passage and candidate source against the actual sources; "
                "check semantic site/task duplicates against the supplied complete CRM identities. Reject unsupported findings and candidates. "
@@ -116,8 +121,9 @@ def qa_text(row, snapshot, crm_digest):
 
 def qa_decision(row, result, known):
     qa = row["qa"]
-    if (not isinstance(result, dict) or set(result) != {"schema_version", "packet_digest", "crm_digest",
+    if (not isinstance(result, dict) or not {"schema_version", "packet_digest", "crm_digest",
             "source_support_verified", "accepted_keys", "summary", "checks"}
+            <= set(result)
             or result["schema_version"] != "blueprint.research-qa.v1"
             or result["packet_digest"] != row["packet_digest"] or result["crm_digest"] != qa["crm_digest"]
             or result["source_support_verified"] is not True or not isinstance(result["accepted_keys"], list)
@@ -127,7 +133,7 @@ def qa_decision(row, result, known):
     candidates = {c["candidate_key"]: c for c in row["packet"]["candidates"]}
     checks = {}
     for c in result["checks"]:
-        if (not isinstance(c, dict) or set(c) != {"candidate_key", "source_support_verified", "duplicate", "reason"}
+        if (not isinstance(c, dict) or not {"candidate_key", "source_support_verified", "duplicate", "reason"} <= set(c)
                 or c["candidate_key"] not in candidates or c["candidate_key"] in checks
                 or type(c["source_support_verified"]) is not bool or type(c["duplicate"]) is not bool
                 or not isinstance(c["reason"], str) or not c["reason"] or len(c["reason"].encode()) > LIMIT_BYTES):
@@ -172,9 +178,11 @@ def completed_before_deadline_cancel(row, turn, session, deadline):
 
 
 class Consumer:
-    def __init__(self, ledger, config, api, clock=lambda: datetime.now(timezone.utc), stopped=lambda: False):
+    def __init__(self, ledger, config, api, clock=lambda: datetime.now(timezone.utc), stopped=lambda: False,
+                 terminal_collection_receipt=None):
         self.ledger, self.config, self.api, self.clock, self.stopped = ledger, config, api, clock, stopped
         self.active_day = None
+        self.terminal_collection_receipt = terminal_collection_receipt
 
     def refresh_crm(self):
         self.ledger.bridge.call("refresh_crm")
@@ -184,7 +192,8 @@ class Consumer:
     def step(self):
         decision = None
         with self.ledger.lock():
-            enabled = workflow(self.ledger.bridge.call("control")) and not self.stopped()
+            enabled = workflow(self.ledger.bridge.call("control"),
+                allow_stopped=self.terminal_collection_receipt is not None) and not self.stopped()
             if not enabled and not self.active_day:
                 return {"state": "workflow_disabled"}
             item = {"date": self.active_day} if self.active_day else self.ledger.bridge.call("work_item")
@@ -195,6 +204,9 @@ class Consumer:
                     or (item.get("packet_digest") and row["packet_digest"] != item["packet_digest"])):
                 raise Refusal("workflow_packet_binding_invalid")
             self.active_day = row["date"]
+            if self.terminal_collection_receipt is not None and (row.get("qa", {}).get("state") != "validated"
+                    or row["qa"].get("terminal_collection_recovery", {}).get("native_receipt") != self.terminal_collection_receipt):
+                raise Refusal("terminal_qa_collection_validated_receipt_required")
             if not enabled and (not row.get("qa") or row["state"] != "awaiting_review"):
                 return {"state": "workflow_disabled"}
             if row["state"] == "awaiting_review":
@@ -206,7 +218,8 @@ class Consumer:
                     decision = self.qa(row)
                 if not decision:
                     return {"date": row["date"], "state": row["qa"]["state"]}
-                if self.stopped() or not workflow(self.ledger.bridge.call("control")):
+                if self.stopped() or not workflow(self.ledger.bridge.call("control"),
+                        allow_stopped=self.terminal_collection_receipt is not None):
                     return {"date": row["date"], "state": row["qa"]["state"]}
             elif row["state"] == "reviewed":
                 if row.get("qa", {}).get("state") != "validated":
