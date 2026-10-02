@@ -579,6 +579,15 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     restore.add_argument("scene_id")
     restore.add_argument("--bucket", required=True)
     _add_wait(restore, 2 * 3600 + 600)
+    for action in ("retire-scene", "restore-scene"):
+        lifecycle = commands.add_parser(action, help="use one protected consent for the complete scene lifecycle")
+        lifecycle.add_argument("intent_id")
+        lifecycle.add_argument("--consent-id", required=True)
+        lifecycle.add_argument("--expected-sha256", required=True)
+        lifecycle.add_argument("--expected-size-bytes", required=True, type=int)
+        if action == "retire-scene":
+            lifecycle.add_argument("--apply", action="store_true")
+        _add_wait(lifecycle, 2 * 3600 + 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
     resume = commands.add_parser(
@@ -674,6 +683,12 @@ def run(args: argparse.Namespace) -> int:
     elif command == "restore-scene-workspace":
         return _submit({"kind": "restore-scene-workspace", "scene_id": args.scene_id,
                         "bucket": args.bucket}, args)
+    elif command in ("retire-scene", "restore-scene"):
+        body = {"kind": command, "intent_id": args.intent_id, "consent_id": args.consent_id,
+                "expected_sha256": args.expected_sha256, "expected_size_bytes": args.expected_size_bytes}
+        if command == "retire-scene":
+            body["apply"] = args.apply
+        return _submit(body, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
     elif command == "provider-output-resume":

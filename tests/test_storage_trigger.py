@@ -238,6 +238,48 @@ def test_on_storage_finalize_publishes_handoff_for_bridge_primary_raw_completion
     )
 
 
+def test_raw_completion_handoff_retains_original_finalize_version(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from blueprint_pipeline.pubsub_handoff_listener import parse_handoff_payload
+
+    storage_trigger = _load_storage_trigger_module()
+    published = []
+    monkeypatch.setenv("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", "true")
+    monkeypatch.setenv("SWAP_TRIGGER_DISPATCH_MODE", "pubsub")
+    monkeypatch.setattr(storage_trigger, "_publish_handoff_message",
+                        lambda payload: published.append(payload) or "pubsub:handoff-2")
+    event = {"bucket": "bucket", "name": "scenes/scene-1/captures/capture-1/raw/capture_upload_complete.json",
+             "generation": "17000000000000000001"}
+    context = SimpleNamespace(event_id="finalize-123", event_type="google.storage.object.finalize")
+
+    storage_trigger.on_storage_finalize(event, context)
+
+    assert len(published) == 1
+    assert published[0]["source_finalize"] == {
+        "bucket": event["bucket"], "object_name": event["name"],
+        "generation": event["generation"], "event_id": context.event_id,
+        "event_source": context.event_type,
+    }
+    assert parse_handoff_payload(published[0]).source_finalize == published[0]["source_finalize"]
+
+
+def test_raw_completion_handoff_refuses_unusable_event_generation_before_publish(monkeypatch) -> None:
+    from types import SimpleNamespace
+    import pytest
+
+    storage_trigger = _load_storage_trigger_module()
+    published = []
+    monkeypatch.setenv("SWAP_TRIGGER_USE_CAPTURE_BRIDGE_HANDOFF", "true")
+    monkeypatch.setenv("SWAP_TRIGGER_DISPATCH_MODE", "pubsub")
+    monkeypatch.setattr(storage_trigger, "_publish_handoff_message", lambda payload: published.append(payload))
+    event = {"bucket": "bucket", "name": "scenes/scene-1/captures/capture-1/raw/capture_upload_complete.json",
+             "generation": "01"}
+    context = SimpleNamespace(event_id="finalize-123", event_type="google.storage.object.finalize")
+    with pytest.raises(ValueError, match="capture_finalize_source_invalid"):
+        storage_trigger.on_storage_finalize(event, context)
+    assert not published
+
+
 def test_build_handoff_payload_matches_listener_contract() -> None:
     """XR-04 contract: the handoff publisher emits exactly what parse_handoff_payload accepts."""
 

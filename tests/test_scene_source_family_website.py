@@ -18,6 +18,7 @@ from tests.test_scene_downstream_execution import ROLES as DOWNSTREAM_ROLES
 
 ROLES = ('website_registrations', 'website_bindings', 'website_handoffs', 'website_preparations',
          'website_runtime_inputs', 'website_task_contexts', 'submission_publications', 'sam_parent_envelopes',
+         'sam_parent_results',
          'source_progress', 'source_resume_signals', 'sam_plans', 'sam_profiles', 'sam_recipes',
          'sam_stage_configurations', 'sam_jobs', 'sam_results', 'sam_execution_receipts',
          'sam_execution_progress', 'sam_adoptions', 'sam_prefix_selections', 'sam_host_tasks',
@@ -468,3 +469,36 @@ def test_known_owner_binding_selected_future_registration_keeps_raw_without_inte
     result = api().join_retained_scene_source_family_inventory(**args)
     assert any(r['path'] == future[0] for r in result['raw_versions'])
     assert not any(m['kind'] == 'capture_dependency' for m in result['lexical_members'])
+
+
+def test_activation_profile_requires_exact_produced_seal_for_selected_provenance():
+    """ADP-009D/day 28: a profile selector needs its owned original bytes."""
+    from tests.test_scene_downstream_execution import fixture as downstream_fixture
+
+    args = fixture()
+    downstream = downstream_fixture()
+    args['seed_records'] = downstream['seed_records']
+    args['downstream_records'] = downstream['downstream_records']
+    args['roots'].update(downstream['roots'])
+    profile_raw = downstream['downstream_records']['launch_profiles'][0][1]
+    profile = json.loads(profile_raw)
+    owned_profile = (args['roots']['activation_output_root'] + '/activation-1/profiles/'
+                     + profile['profile_id'] + '.json', profile_raw)
+    args['source_records']['opaque_evidence'].append(owned_profile)
+    result = api().join_retained_scene_source_family_inventory(**args)
+    selected = [proof for member in result['lexical_members']
+                if member['kind'] == 'activation_workspace'
+                for proof in member['source_provenance']
+                if proof['path'] == owned_profile[0]]
+    assert len(selected) == 1
+    assert selected[0]['seal_field'] == 'profile_digest'
+    assert selected[0]['seal_digest'] == profile['profile_digest']
+    changed = copy.deepcopy(args)
+    altered = dict(profile, profile_id='another-profile')
+    changed['source_records']['opaque_evidence'] = [
+        (owned_profile[0], json.dumps(seal(altered, 'profile_digest'), sort_keys=True).encode())]
+    retained = api().join_retained_scene_source_family_inventory(**changed)
+    assert not any(proof.get('seal_digest') == profile['profile_digest']
+                   and proof['path'] == owned_profile[0]
+                   for member in retained['lexical_members']
+                   for proof in member['source_provenance'])

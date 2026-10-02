@@ -264,7 +264,7 @@ def test_deployer_installs_and_authority_gates_exact_child_units():
     assert f"{stem}.path" not in constants["DEFAULT_ALWAYS_ARM_PATH_UNITS"]
     assert f"{stem}.timer" in constants["DEFAULT_ALWAYS_ARM_TIMER_UNITS"]
     service = (repository / "deploy/systemd" / f"{stem}.service").read_text()
-    assert "-m blueprint_pipeline.task_evaluation_sam31_preparation_execution" in service
+    assert "-m blueprint_pipeline.task_evaluation_scene_retirement_supervisor --worker blueprint_pipeline.task_evaluation_sam31_preparation_execution -- --source-commit" in service
     assert "--max-messages 1" in service
     assert "paid_resource_allocator" not in service
     assert "TimeoutStartSec=75m" in service

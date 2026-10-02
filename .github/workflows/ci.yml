@@ -21,6 +21,7 @@ jobs:
       requires_full_suite: ${{ steps.plan.outputs.requires_full_suite }}
       selected_test_count: ${{ steps.plan.outputs.selected_test_count }}
       native_feature_required: ${{ steps.native-plan.outputs.required }}
+      native_scene_required: ${{ steps.native-scene-plan.outputs.required }}
     steps:
       - name: Checkout with comparison history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -56,6 +57,27 @@ jobs:
           native_tests = {"tests/test_registered_feature_linux.py", "tests/test_legacy_owner_linux.py",
                           "tests/test_historical_generation_linux.py"}
           required = bool(native_tests.intersection(changed)) or any(row.split("::", 1)[0] in native_tests for row in selected)
+          native_sources = {"src/blueprint_pipeline/control_plane_lane_disk_diagnostic.py",
+                            "src/blueprint_pipeline/control_plane_lane_experiment_archive.py",
+                            "src/blueprint_pipeline/s3_compatible_transport.py"}
+          required = required or bool(native_sources.intersection(changed))
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write("required=" + str(required).lower() + "\n")
+          PYTHON
+
+      - name: Require real scene startup proof when its feature changes
+        id: native-scene-plan
+        env:
+          IMPACT_PLAN: ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ["IMPACT_PLAN"]).read_text())
+          selected, changed = plan["selected_tests"], plan["changed_files"]
+          assert all(isinstance(rows, list) and all(isinstance(row, str) for row in rows) for rows in (selected, changed))
+          required = any("scene_retirement" in row or row == "deploy/operator-door/door-scene-lifecycle.sh" for row in changed)
+          required = required or any(row.split("::", 1)[0] == "tests/test_scene_retirement_linux.py" for row in selected)
           with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
               output.write("required=" + str(required).lower() + "\n")
           PYTHON
@@ -200,6 +222,88 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  native-scene-linux:
+    name: Real protected scene startup on Linux
+    needs: impact
+    if: needs.impact.outputs.native_scene_required == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
+    steps:
+      - name: Checkout exact feature sources
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+
+      - name: Checkout exact locked native Contracts input
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ognjhunt/BlueprintContracts
+          ref: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+          token: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+          path: BlueprintContractsNative
+          persist-credentials: false
+
+      - name: Bind exact nonsecret locked native inputs
+        env:
+          EXPECTED_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          test "$(git -C BlueprintContractsNative rev-parse HEAD)" = 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+          printf '%s\n' "BLUEPRINT_NATIVE_SOURCE_ROOT=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_SOURCE_COMMIT=${EXPECTED_SOURCE}" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_CONTRACTS_ROOT=${GITHUB_WORKSPACE}/BlueprintContractsNative" >> "${GITHUB_ENV}"
+
+      - name: Prepare the disposable systemd proof runner
+        run: |
+          set -euo pipefail
+          sudo -n true
+          test "$(sudo -n readlink -f /proc/1/exe)" = /usr/lib/systemd/systemd
+          test -f /sys/fs/cgroup/cgroup.controllers
+          uv venv --python /usr/bin/python3 "${RUNNER_TEMP}/scene-proof-venv"
+          # The proof runner imports stdlib/pytest only. The enabled case
+          # acquires the exact locked CPU service SDK separately under actual
+          # isolated system Python/root ownership; no user-venv SDK is copied.
+          uv pip install --python "${RUNNER_TEMP}/scene-proof-venv/bin/python" pytest==9.1.1
+
+      - name: Prove the actual installed bootstrap and credential drop
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP}/scene-native-evidence"
+          mkdir -p "$evidence"
+          test_temp="$(mktemp -d "${RUNNER_TEMP}/scene-native-tests.XXXXXX")"
+          trap 'rm -rf -- "$test_temp"' EXIT
+          "${RUNNER_TEMP}/scene-proof-venv/bin/python" -m pytest --noconftest \
+            tests/test_scene_retirement_linux.py::test_actual_default_off_root_bootstrap_drops_blueprint_uid_and_all_caps \
+            tests/test_scene_retirement_linux.py::test_actual_locked_system_sdk_current_selection_and_enabled_service_imports \
+            -m 'slow or not slow' --basetemp="$test_temp" \
+            -o junit_logging=all -o junit_log_passing_tests=true \
+            --junitxml="$evidence/native-junit.xml" -q
+          "${RUNNER_TEMP}/scene-proof-venv/bin/python" - "$evidence/native-junit.xml" <<'PYTHON'
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          assert len(cases) == 2, "both exact native startup selectors must execute"
+          assert {case.attrib["name"] for case in cases} == {"test_actual_default_off_root_bootstrap_drops_blueprint_uid_and_all_caps", "test_actual_locked_system_sdk_current_selection_and_enabled_service_imports"}
+          assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "a skip/refusal is not native startup proof"
+          PYTHON
+
+      - name: Retain actual native startup evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scene-native-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/scene-native-evidence/native-junit.xml
+          if-no-files-found: error
+          retention-days: 7
+
   native-feature-linux:
     name: Real registered scratch and cache on Linux
     needs: impact
@@ -333,8 +437,14 @@ jobs:
 
   cross-cutting-full-suite:
     name: Cross-cutting full suite
-    needs: impact
-    if: needs.impact.outputs.requires_full_suite == 'true'
+    needs: [impact, native-feature-linux, native-scene-linux]
+    if: >-
+      always() && needs.impact.result == 'success' &&
+      needs.impact.outputs.requires_full_suite == 'true' &&
+      ((needs.impact.outputs.native_feature_required == 'true' && needs.native-feature-linux.result == 'success') ||
+       (needs.impact.outputs.native_feature_required != 'true' && needs.native-feature-linux.result == 'skipped')) &&
+      ((needs.impact.outputs.native_scene_required == 'true' && needs.native-scene-linux.result == 'success') ||
+       (needs.impact.outputs.native_scene_required != 'true' && needs.native-scene-linux.result == 'skipped'))
     uses: ./.github/workflows/full-test-lane.yml
     with:
       reason: cross_cutting_dependency_impact
@@ -342,7 +452,7 @@ jobs:
 
   impacted-gate:
     name: Impacted test and sentinel gate
-    needs: [impact, impacted-tests, native-feature-linux, cross-cutting-full-suite]
+    needs: [impact, impacted-tests, native-scene-linux, native-feature-linux, cross-cutting-full-suite]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -352,6 +462,9 @@ jobs:
           IMPACT_RESULT: ${{ needs.impact.result }}
           IMPACTED_RESULT: ${{ needs.impacted-tests.result }}
           FULL_RESULT: ${{ needs.cross-cutting-full-suite.result }}
+          FULL_REQUIRED: ${{ needs.impact.outputs.requires_full_suite }}
+          NATIVE_SCENE_REQUIRED: ${{ needs.impact.outputs.native_scene_required }}
+          NATIVE_SCENE_RESULT: ${{ needs.native-scene-linux.result }}
           NATIVE_REQUIRED: ${{ needs.impact.outputs.native_feature_required }}
           NATIVE_RESULT: ${{ needs.native-feature-linux.result }}
         run: |
@@ -362,7 +475,16 @@ jobs:
           else
             test "${NATIVE_RESULT}" = "skipped"
           fi
-          test "${FULL_RESULT}" = "success" || test "${FULL_RESULT}" = "skipped"
+          if test "${NATIVE_SCENE_REQUIRED}" = "true"; then
+            test "${NATIVE_SCENE_RESULT}" = "success"
+          else
+            test "${NATIVE_SCENE_RESULT}" = "skipped"
+          fi
+          if test "${FULL_REQUIRED}" = "true"; then
+            test "${FULL_RESULT}" = "success"
+          else
+            test "${FULL_RESULT}" = "skipped"
+          fi
 
   lint:
     name: Ruff and claim lint

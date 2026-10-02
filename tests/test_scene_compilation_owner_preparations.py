@@ -104,6 +104,34 @@ def test_exact_native_handoff_inverse_has_final_provenance_without_fake_raw_pre_
     assert not any(p.get('role') == 'derived_pre_handoff_raw' for p in result['raw_versions'])
 
 
+def test_verified_handoff_retains_original_revision_and_intake_provenance():
+    result=api().join_retained_scene_compilation_native_owner_inventory(**fixture())
+    observed=next(row for row in result['preparation_handoff_observations']
+                  if row['pre_handoff_binding_verified'] is True)
+    roles={proof['role'] for proof in observed['source_provenance']}
+    assert {'configured_revisions','compilation_intake_receipts'}<=roles
+
+
+def test_verified_native_preparation_projects_its_exact_local_payload_for_retirement():
+    args = fixture()
+    result = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    reference = json.loads(args['bridge_records']['native_preparation_results'][0][1])['references'][0]
+    projected = [row for row in result['declared_lexical_members']
+                 if row['path'] == reference['materialized_path']]
+    assert len(projected) == 1
+    assert projected[0]['kind'] == 'preparation_projected_file'
+    assert projected[0]['binding']['result_digest'] == json.loads(
+        args['bridge_records']['native_preparation_results'][0][1])['result_digest']
+    assert projected[0]['binding']['sha256'] == reference['digest']
+    assert {'native_preparation_results', 'compilation_envelopes'} <= {
+        proof['role'] for proof in projected[0]['source_provenance']}
+    args = fixture()
+    change(args, 'native_preparation_results', {'future_field': 'unknown'}, 'result_digest')
+    unverified = api().join_retained_scene_compilation_native_owner_inventory(**args)
+    assert not any(row['path'] == reference['materialized_path']
+                   for row in unverified['declared_lexical_members'])
+
+
 @pytest.mark.parametrize('edit', [
     {'reference_count': True}, {'unique_object_count': 2}, {'content_addressed_reuse_count': 1},
     {'source_commit': 'c'*40}, {'run_id': 'foreign-run'}, {'team_namespace': 'foreign'},

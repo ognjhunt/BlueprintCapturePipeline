@@ -115,6 +115,205 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
     --shell /usr/sbin/nologin "${SERVICE_USER}"
 fi
 
+# Prepare immutable system-ABI runtime before changing source ownership or
+# exposing units. Existing installations execute only the retained root helper;
+# first install accepts only a genuinely root-protected initial checkout script.
+if [[ "${DRY_RUN}" == "true" ]]; then
+  run /usr/bin/python3 -I -S "${REPO_ROOT}/scripts/install_scene_retirement_runtime.py" \
+    --source "${REPO_ROOT}" --source-commit "<validated-Git-commit>" --locked-sdk
+else
+  /usr/bin/python3 -I -S - "${REPO_ROOT}" <<'PY_RUNTIME'
+import hashlib, json, os, pathlib, re, stat, subprocess, sys, time
+Path = pathlib.Path
+ControlPlaneDeployError = ValueError
+_SCENE_RUNTIME_BOOT_ROOT = Path("/usr/lib/blueprint/scene-retirement-runtime")
+_SCENE_RUNTIME_OWNER = 0
+def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str, *, deadline: float) -> None:
+    """Authenticate installer Git data before the first privileged execution."""
+    import fcntl
+    import selectors
+    error = "deploy_scene_retirement_runtime_unproven"
+    deadline = min(deadline, time.monotonic() + 30)
+    def require(value):
+        if not value:
+            raise ControlPlaneDeployError(error)
+    require(re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None)
+    require(source_repo.is_absolute() and ".." not in source_repo.parts and not source_repo.is_symlink())
+    def object_bytes(kind, digest, cap):
+        command = ["/usr/bin/git", "--no-replace-objects", "-C", str(source_repo),
+                   "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                   "-c", "safe.directory=" + str(source_repo), "cat-file", kind, digest]
+        environment = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1",
+                       "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "",
+                       "GIT_PROTOCOL_FROM_USER": "0", "GIT_TERMINAL_PROMPT": "0"}
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=environment)
+        output, errors = bytearray(), bytearray()
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, (output, cap))
+                selector.register(process.stderr, selectors.EVENT_READ, (errors, 4096))
+                while selector.get_map():
+                    require(time.monotonic() <= deadline)
+                    for key, _ in selector.select(min(.1, max(0, deadline-time.monotonic()))):
+                        buffer, limit = key.data
+                        raw = os.read(key.fd, min(65536, limit+1-len(buffer)))
+                        if not raw:
+                            selector.unregister(key.fileobj)
+                        else:
+                            require(len(buffer)+len(raw) <= limit)
+                            buffer.extend(raw)
+            require(process.wait(timeout=max(.001, deadline-time.monotonic())) == 0)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            process.stdout.close()
+            process.stderr.close()
+        raw = bytes(output)
+        require(hashlib.sha1(kind.encode()+b" "+str(len(raw)).encode()+b"\0"+raw).hexdigest() == digest)
+        return raw
+    commit = object_bytes("commit", source_commit, 1024*1024)
+    trees = [line[5:] for line in commit.split(b"\n\n",1)[0].splitlines() if line.startswith(b"tree ")]
+    require(len(trees) == 1 and re.fullmatch(rb"[0-9a-f]{40}",trees[0]) is not None)
+    digest = trees[0].decode()
+    for name in ("scripts", "install_scene_retirement_runtime.py"):
+        raw = object_bytes("tree", digest, 1024*1024)
+        offset, rows = 0, {}
+        while offset < len(raw):
+            separator = raw.index(b" ",offset)
+            zero = raw.index(b"\0",separator)
+            mode, leaf = raw[offset:separator], raw[separator+1:zero]
+            require(leaf and leaf not in rows and b"/" not in leaf and leaf not in {b".",b".."}
+                    and zero+21 <= len(raw) and len(rows) < 32768)
+            rows[leaf] = (mode,raw[zero+1:zero+21].hex())
+            offset = zero+21
+        require(name.encode() in rows)
+        mode,digest = rows[name.encode()]
+        require(mode in ({b"40000"} if name == "scripts" else {b"100644",b"100755"}))
+    body = object_bytes("blob", digest, 1024*1024)
+    require(body)
+    root = _SCENE_RUNTIME_BOOT_ROOT
+    def protected_directory(path):
+        if not path.exists() and not path.is_symlink():
+            protected_directory(path.parent)
+            path.mkdir(mode=0o755)
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid in {0,_SCENE_RUNTIME_OWNER} and not info.st_mode & 0o022)
+        if path != Path('/'):
+            protected_directory(path.parent)
+    protected_directory(root)
+    lock = os.open(root / ".installer-bootstrap.lock",os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+    try:
+        info = os.fstat(lock)
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == _SCENE_RUNTIME_OWNER and info.st_nlink == 1
+                and stat.S_IMODE(info.st_mode) == 0o600)
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        target = root / "runtime_installer.py"
+        value = json.dumps({"schema":"scene-retirement-runtime-installer.v1",
+                 "sha256":"sha256:"+hashlib.sha256(body).hexdigest(),"size_bytes":len(body)},
+                 sort_keys=True,separators=(",", ":" )).encode()
+        def publish(path, raw):
+            if path.exists() or path.is_symlink():
+                check = os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+                try:
+                    old = os.fstat(check)
+                    require(stat.S_ISREG(old.st_mode) and old.st_uid == _SCENE_RUNTIME_OWNER
+                            and old.st_nlink == 1 and not old.st_mode & 0o022
+                            and old.st_size == len(raw) and os.read(check,len(raw)+1) == raw)
+                finally:
+                    os.close(check)
+                return
+            partial = path.with_name(path.name+".bootstrap-pending")
+            flags = os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC
+            if not partial.exists() and not partial.is_symlink():
+                flags |= os.O_CREAT|os.O_EXCL
+            fd = os.open(partial,flags,0o600)
+            try:
+                original = os.fstat(fd)
+                require(stat.S_ISREG(original.st_mode) and original.st_uid == _SCENE_RUNTIME_OWNER
+                        and original.st_nlink == 1 and stat.S_IMODE(original.st_mode) in {0o600,0o644}
+                        and original.st_size <= len(raw) and os.read(fd,original.st_size) == raw[:original.st_size])
+                view = memoryview(raw)[original.st_size:]
+                while view:
+                    require(time.monotonic() <= deadline)
+                    written = os.write(fd,view)
+                    require(written>0)
+                    view = view[written:]
+                os.fsync(fd)
+                os.fchmod(fd,0o644)
+                require(partial.lstat().st_ino == original.st_ino)
+                os.link(partial,path,follow_symlinks=False)
+                os.unlink(partial)
+                parent = os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
+            finally:
+                os.close(fd)
+        pending = root / "runtime-installer-pending.json"
+        if target.exists() or target.is_symlink():
+            require(pending.exists())
+            publish(pending,value)
+            publish(target,body)
+        else:
+            publish(pending,value)
+            publish(target,body)
+        publish(root/"runtime-installer.json",value)
+    finally:
+        os.close(lock)
+deadline = time.monotonic() + 300
+source = pathlib.Path(sys.argv[1])
+root = pathlib.Path('/usr/lib/blueprint/scene-retirement-runtime')
+helper = root / 'runtime_installer.py'
+held = []
+def identity(info):
+    return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid,info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+def read(path, cap):
+    for parent in (*reversed(path.parent.parents), path.parent):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise SystemExit('scene_retirement_runtime_unproven')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    held.append(fd)
+    first = os.fstat(fd)
+    if not stat.S_ISREG(first.st_mode) or first.st_uid != 0 or first.st_mode & 0o022 or first.st_nlink != 1 or first.st_size > cap:
+        raise SystemExit('scene_retirement_runtime_unproven')
+    raw = os.read(fd, cap+1)
+    if len(raw) != first.st_size or identity(os.fstat(fd)) != identity(first) or identity(path.lstat()) != identity(first):
+        raise SystemExit('scene_retirement_runtime_unproven')
+    return raw, fd
+commit = subprocess.check_output(['/usr/bin/git','--no-replace-objects','-C',str(source),'-c','core.hooksPath=/dev/null',
+                                 '-c','core.fsmonitor=false','-c','safe.directory='+str(source),'rev-parse','HEAD'],
+                                 env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','GIT_CONFIG_NOSYSTEM':'1',
+                                      'GIT_CONFIG_GLOBAL':'/dev/null'},timeout=10).decode().strip()
+if not helper.exists() and not helper.is_symlink():
+    _bootstrap_scene_retirement_installer(source,commit,deadline=deadline)
+if helper.exists() or helper.is_symlink():
+    raw, fd = read(helper, 1024*1024)
+    selected = {'sha256':'sha256:'+hashlib.sha256(raw).hexdigest(), 'size_bytes':len(raw)}
+    match = False
+    for name in ('runtime-installer.json','runtime-installer-pending.json'):
+        path = root / name
+        if path.exists() or path.is_symlink():
+            body, _ = read(path,4096)
+            value = json.loads(body)
+            match |= (type(value) is dict and set(value) == {'schema','sha256','size_bytes'} and
+                      value['schema'] == 'scene-retirement-runtime-installer.v1' and
+                      {key:value[key] for key in selected} == selected)
+    if not match:
+        raise SystemExit('scene_retirement_runtime_unproven')
+os.lseek(fd,0,os.SEEK_SET)
+subprocess.run(['/usr/bin/python3','-I','-S',f'/proc/self/fd/{fd}','--source',str(source),
+                '--source-commit',commit,'--locked-sdk','--deadline-monotonic',str(deadline)],
+                pass_fds=(fd,),check=True,timeout=max(.001,deadline-time.monotonic()),
+                env={'PATH':'/usr/bin:/bin','HOME':'/nonexistent','LC_ALL':'C'})
+for selected_fd in reversed(held):
+    os.close(selected_fd)
+PY_RUNTIME
+fi
+
 # The service account runs git against this checkout to pin the allocator's
 # source identity. A root-owned checkout makes git refuse with "detected
 # dubious ownership", the identity probe fails, and a paid launch is rejected
@@ -275,6 +474,62 @@ run install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" \
 run chown -R --no-dereference "${SERVICE_USER}:${SERVICE_GROUP}" \
   "${HANDOFF_DIR}" \
   "${STATE_DIR}"
+# BEGIN scene retirement stores
+# Outside STATE_DIR: its legacy recursive ownership migration must never grant
+# service ownership of private consent, archive or recovery records. Provision
+# storage only; installing these directories does not issue or enable a policy.
+SCENE_RETIREMENT_ROOT="/var/lib/blueprint/scene-retirement"
+SCENE_RETIREMENT_STORES=(
+  "${SCENE_RETIREMENT_ROOT}"
+  "${SCENE_RETIREMENT_ROOT}/coordinator"
+  "${SCENE_RETIREMENT_ROOT}/generations"
+  "${SCENE_RETIREMENT_ROOT}/journals"
+  "${SCENE_RETIREMENT_ROOT}/journals/processes"
+  "${SCENE_RETIREMENT_ROOT}/journals/retired"
+  "${SCENE_RETIREMENT_ROOT}/journals.metadata"
+  "${SCENE_RETIREMENT_ROOT}/consents"
+)
+SCENE_RETIREMENT_MODES=(755 755 700 700 700 700 750 700)
+SCENE_RETIREMENT_OWNERS=(root root "${SERVICE_USER}" root root root root root)
+# Preflight every named directory and ancestry before the first mutation.
+# Existing authority is validated, never repaired or recursively re-owned.
+for SCENE_INDEX in "${!SCENE_RETIREMENT_STORES[@]}"; do
+  SCENE_DIRECTORY="${SCENE_RETIREMENT_STORES[SCENE_INDEX]}"
+  SCENE_ANCESTOR="${SCENE_DIRECTORY}"
+  while [[ "${SCENE_ANCESTOR}" != / ]]; do
+    if [[ -L "${SCENE_ANCESTOR}" ]] || \
+       [[ -e "${SCENE_ANCESTOR}" && ! -d "${SCENE_ANCESTOR}" ]]; then
+      echo "ERROR: scene retirement storage contains a linked or non-directory component" >&2
+      exit 1
+    fi
+    if [[ "${DRY_RUN}" != true && -d "${SCENE_ANCESTOR}" && \
+          "${SCENE_ANCESTOR}" != "${SCENE_DIRECTORY}" ]]; then
+      SCENE_PARENT_UID="$(stat -c '%u' "${SCENE_ANCESTOR}")"
+      SCENE_PARENT_MODE="$(stat -c '%a' "${SCENE_ANCESTOR}")"
+      if [[ "${SCENE_PARENT_UID}" != 0 ]] || (( (8#${SCENE_PARENT_MODE} & 8#022) != 0 )); then
+        echo "ERROR: scene retirement storage ancestry is not root-protected" >&2
+        exit 1
+      fi
+    fi
+    SCENE_ANCESTOR="$(dirname -- "${SCENE_ANCESTOR}")"
+  done
+  if [[ "${DRY_RUN}" != true && -d "${SCENE_DIRECTORY}" ]]; then
+    SCENE_EXPECTED="${SCENE_RETIREMENT_OWNERS[SCENE_INDEX]}:${SERVICE_GROUP}:${SCENE_RETIREMENT_MODES[SCENE_INDEX]}"
+    if [[ "$(stat -c '%U:%G:%a' "${SCENE_DIRECTORY}")" != "${SCENE_EXPECTED}" ]]; then
+      echo "ERROR: existing scene retirement store has unexpected ownership or permissions" >&2
+      exit 1
+    fi
+  fi
+done
+run install -d -m 0755 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}"
+run install -d -m 0755 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/coordinator"
+run install -d -m 0700 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/generations"
+run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals"
+run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals/processes"
+run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals/retired"
+run install -d -m 0750 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/journals.metadata"
+run install -d -m 0700 -o root -g "${SERVICE_GROUP}" "${SCENE_RETIREMENT_ROOT}/consents"
+# END scene retirement stores
 # Host hygiene that used to be hand-applied: bound journald and age /var/tmp.
 run install -d -m 0755 /etc/systemd/journald.conf.d /etc/tmpfiles.d
 run install -m 0644 \

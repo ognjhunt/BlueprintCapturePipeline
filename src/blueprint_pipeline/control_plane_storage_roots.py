@@ -47,9 +47,12 @@ so a unit environment that points a reaper at an evidence root is refused.
 
 from __future__ import annotations
 
+
 import fnmatch
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+
+DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 
 
 STORAGE_CLASSES = frozenset(
@@ -90,6 +93,13 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/mnt/blueprint-work/lanes/*", "lane_scratch", "blueprint", "owned lane scratch folders"),
     StorageRoot(f"{_INPUTS}/lanes", "container", "blueprint", "lane input scratch parent"),
     StorageRoot(f"{_INPUTS}/lanes/*", "lane_scratch", "blueprint", "owned lane input scratch folders"),
+    StorageRoot("/var/lib/blueprint/scene-retirement", "container", "root", "protected scene lifecycle metadata"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/coordinator", "ledger", "root", "reader and retirement coordination locks"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/generations", "ledger", "blueprint", "immutable scene incarnation and reader identity"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/journals", "evidence_hot", "root", "retirement and native process receipts; never reclaimed"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/journals.metadata", "evidence_hot", "root", "public lifecycle receipt metadata"),
+    StorageRoot("/var/lib/blueprint/scene-retirement/consents", "evidence_hot", "root", "owner-bound immutable action authorization"),
+    StorageRoot("/mnt/blueprint-work/scene-retirement-runtime", "evidence_hot", "root", "protected installed executable snapshot; no GC authority"),
     StorageRoot("/var/lib/blueprint-staging", "staging", "blueprint", "isolated staging intake"),
     # --- evidence that live services read; never evicted or offloaded
     StorageRoot(f"{_CONTROL_PLANE}/agent-execution", "evidence_hot", "blueprint", "durable agent task and operation journals with inference budget evidence"),
@@ -132,6 +142,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot(f"{_CONTROL_PLANE}/remote-cpu-jobs", "ledger", "blueprint",
                 "remote CPU job leases held until provider zero, hand-offs, receipts, teardown and parity records"),
     # --- queues and scratch
+    StorageRoot(f"{_INPUTS}/completed-scene-preparation", "work", "blueprint", "mixed owner-scoped source preparation work and evidence; report only"),
+    StorageRoot(f"{_INPUTS}/completed-scene-preparation-inputs", "work", "blueprint", "mixed owner-scoped materialized preparation work; report only"),
     StorageRoot(f"{_CONTROL_PLANE}/task-evaluation-launches", "work", "blueprint", "launch queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-campaigns", "work", "blueprint", "owner-scoped G1 campaign intent queue"),
     StorageRoot(f"{_CONTROL_PLANE}/native-g1-team-policy-runs", "work", "blueprint", "owner-scoped team policy run intent queue"),

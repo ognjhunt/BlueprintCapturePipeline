@@ -8,6 +8,8 @@ dispatcher resolves the exact profile from local Pipeline state and invokes
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
+from .task_evaluation_scene_retirement_launch_births import create_launch_output
 import argparse
 import contextlib
 import hashlib
@@ -41,9 +43,7 @@ from .control_plane_registered_reference_gate import (
     _publisher_observation,
 )
 from .decision_evidence_contracts import cross_runtime_canonical_digest
-from .episode_interpretation_batch_authority import (
-    validate_episode_interpretation_batch_authority_shape,
-)
+from .episode_interpretation_batch_authority import validate_episode_interpretation_batch_authority_shape
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
@@ -63,9 +63,7 @@ from .task_evaluation_immutable_input_resolver import (
 from .task_evaluation_launch_context import is_identifier as _is_identifier
 from .task_evaluation_launch_context import validate_task_evaluation_run_context
 from .task_evaluation_launch_evidence_contracts import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
-from .task_evaluation_launch_terminal_evidence import (
-    terminal_evidence as _build_terminal_evidence,
-)
+from .task_evaluation_launch_terminal_evidence import (terminal_evidence as _build_terminal_evidence)
 from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
     validate_policy_run_setup,
@@ -1462,6 +1460,7 @@ def _native_policy_terminal_visual_evidence(
     return None
 
 
+@scene_participant('request_path', 'profile_dir', 'state_root')
 @_publisher_observation
 def dispatch_launch_request(
     *,
@@ -1594,7 +1593,7 @@ def dispatch_launch_request(
 
     run_root = Path(state_root).expanduser().resolve() / str(request.get("launch_id") or "invalid")
     _publisher_checkpoint()
-    run_root.mkdir(parents=True, exist_ok=True)
+    create_launch_output(run_root, request=request, profile=profile)
     prior_receipt_path = run_root / "launch_receipt.json"
     if prior_receipt_path.is_file():
         prior_receipt = _read_json(prior_receipt_path)
@@ -1913,6 +1912,7 @@ def dispatch_launch_request(
     return receipt
 
 
+@scene_participant('queue_root', 'profile_dir', 'state_root')
 def process_launch_queue(
     *,
     queue_root: str | Path,

@@ -127,6 +127,28 @@ def _owner_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str,
             "DOOR_CONSENT_SIZE_BYTES": str(request["expected_size_bytes"])}
 
 
+def _lifecycle_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python,
+            "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SCENE_ACTION": "retire" if request["kind"] == "retire-scene" else "restore",
+            "DOOR_SCENE_INTENT_ID": request["intent_id"],
+            "DOOR_SCENE_CONSENT_ID": request["consent_id"],
+            "DOOR_SCENE_CONSENT_SHA256": request["expected_sha256"],
+            "DOOR_SCENE_CONSENT_SIZE_BYTES": str(request["expected_size_bytes"]),
+            "DOOR_SCENE_APPLY": "1" if request.get("apply", True) else "0"}
+
+
+def _lifecycle_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    # Fixed installed containers only. The native engine further requires exact
+    # consented members, installed policy and generation/reference admission.
+    roots = " ".join("/var/lib/blueprint/" + root for root in
+                     ("scene-retirement", "pubsub-handoffs", "task-evaluation-inputs", "pipeline-control-plane"))
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes",
+            "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER CAP_SYS_PTRACE",
+            f"ReadWritePaths={roots} /mnt/blueprint-work {Path(config.spool_root) / 'results'}")
+
+
 def _legacy_owner_environment(config: DoorConfig, _request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python,
             "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
@@ -215,6 +237,12 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
+    "retire-scene": _LaunchSpec("blueprint-operator-door-scene-retire", "door-scene-lifecycle.sh", "2h",
+                                lambda request: request["consent_id"][:12],
+                                _lifecycle_environment, _lifecycle_properties),
+    "restore-scene": _LaunchSpec("blueprint-operator-door-scene-restore", "door-scene-lifecycle.sh", "2h",
+                                 lambda request: request["consent_id"][:12],
+                                 _lifecycle_environment, _lifecycle_properties),
     "unit": _LaunchSpec(
         "blueprint-operator-door-notifier-repair", "door-repair-notifier-binding.sh", "60s",
         lambda _request: "postchecks",

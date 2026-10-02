@@ -66,3 +66,7 @@ async def result_artifact_response(
             "X-Blueprint-Artifact-SHA256": str(record["sha256"]),
         },
     )
+
+# These real manual lifetimes are retained through resolver cleanup and ASGI send.
+result_artifact_response.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'
+ResultArtifactFileResponse.__call__.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'

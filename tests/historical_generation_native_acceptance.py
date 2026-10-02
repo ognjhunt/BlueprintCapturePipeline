@@ -118,6 +118,36 @@ def _outer_scan_failure(error, processes):
     return dict(outer_scan_errors=errors)
 
 
+def _failed_process_view(local):
+    """Project already-read failed snapshots; never reread or clear a PID."""
+    result = {}
+    raw, pid, started = (local.get(key) for key in ('initial_stat', 'pid', 'started'))
+    if type(raw) is bytes and 0 < len(raw) <= 16384 and type(pid) is str \
+            and pid.isascii() and pid.isdecimal() and len(pid) <= 20 and type(started) is int:
+        prefix, separator, tail = raw.rpartition(b') ')
+        values = tail.split()
+        if separator and prefix.startswith(pid.encode() + b' (') and len(values) >= 20 \
+                and all(value.isdigit() and len(value) <= 20 for value in (values[1], values[19])) \
+                and int(values[19]) == started:
+            result['initial_process'] = dict(pid=int(pid), parent_pid=int(values[1]), start_tick=started)
+            result['final_process_identity_verified'] = False
+    before, after = local.get('names'), local.get('after_names')
+    if all(type(rows) is list and len(rows) <= 16384
+           and all(type(name) is str and name.isascii() and name.isdecimal() and len(name) <= 10
+                   and str(int(name)) == name for name in rows)
+           and len(set(rows)) == len(rows) for rows in (before, after)):
+        added, removed = sorted(set(after)-set(before), key=int), sorted(set(before)-set(after), key=int)
+        def digest(rows):
+            return hashlib.sha256('\n'.join(sorted(rows, key=int)).encode()).hexdigest()
+        result['fd_names'] = dict(before_count=len(before), after_count=len(after),
+            before_sha256=digest(before), after_sha256=digest(after),
+            before_names=[int(name) for name in sorted(before, key=int)[:8]],
+            after_names=[int(name) for name in sorted(after, key=int)[:8]],
+            added=[int(name) for name in added[:8]], removed=[int(name) for name in removed[:8]],
+            truncated=any(len(rows) > 8 for rows in (before, after, added, removed)))
+    return result
+
+
 def worker_main(root, action_id):
     root = Path(root)
     # The controller retains its startup and cgroup descriptors before allowing
@@ -163,6 +193,11 @@ def worker_main(root, action_id):
                                        line=trace.tb_lineno))
                     if trace.tb_frame.f_code.co_name == '_inspect_process':
                         local = trace.tb_frame.f_locals
+                        try:
+                            scan_failure['same_failed_view'] = _failed_process_view(local)
+                        except Exception:
+                            # Diagnostics cannot replace the original refusal.
+                            scan_failure['same_failed_view'] = {}
                         scan_failure['process_id'] = int(args[2])
                         scan_failure['process_start_tick'] = local.get('started')
                         slot = local.get('name')

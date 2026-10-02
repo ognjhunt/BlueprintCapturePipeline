@@ -31,16 +31,22 @@ def _no_symlinks(path: Path) -> None:
 
 
 def sha(path: Path) -> str:
+    from .task_evaluation_scene_retirement_metadata import read_logical_metadata
+    retained = read_logical_metadata(path)
+    if retained is not None:
+        return 'sha256:' + hashlib.sha256(retained).hexdigest()
     _no_symlinks(path)
     return sha256_file(path)
 
 
 def read(path: str | Path, *, digest_field: str | None = None) -> dict[str, Any]:
     path = Path(path)
+    from .task_evaluation_scene_retirement_metadata import read_logical_metadata
+    retained = read_logical_metadata(path)
     _no_symlinks(path)
-    require(path.is_file() and not path.is_symlink(), "input_file_invalid")
+    require(retained is not None or path.is_file() and not path.is_symlink(), "input_file_invalid")
     try:
-        raw = path.read_bytes()
+        raw = retained if retained is not None else path.read_bytes()
         value = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise SceneConfigurationSubmissionError(
@@ -48,7 +54,8 @@ def read(path: str | Path, *, digest_field: str | None = None) -> dict[str, Any]
         ) from exc
     require(isinstance(value, dict), "input_json_invalid")
     from .validation_file_digests import _identity, record_touched
-    record_touched(path, _identity(path.lstat()), "sha256:" + hashlib.sha256(raw).hexdigest())
+    if retained is None:
+        record_touched(path, _identity(path.lstat()), "sha256:" + hashlib.sha256(raw).hexdigest())
     if digest_field:
         require(value.get(digest_field) == canonical_digest(
             value, digest_field=digest_field
@@ -62,6 +69,15 @@ def checked_file(path: str | Path, record: dict[str, Any]) -> Path:
     size = record.get("size_bytes")
     require(isinstance(size, int) and not isinstance(size, bool) and size > 0,
             "input_bytes_mismatch")
+    require(type(record.get('sha256')) is str and re.fullmatch(r'sha256:[0-9a-f]{64}', record['sha256']),
+            'input_bytes_mismatch')
+    from .task_evaluation_scene_retirement_metadata import read_logical_metadata
+    retained = read_logical_metadata(path, expected_sha256=record.get('sha256'), expected_size_bytes=size)
+    if retained is not None:
+        # Preserve the producer's logical selector; only readonly adapters
+        # understand the closure, while new execution/output admission denies
+        # this same retired generation at the actual participant boundary.
+        return path
     require(path.is_file() and not path.is_symlink(), "input_file_invalid")
     require(path.stat().st_size == record.get("size_bytes") and
             sha(path) == record.get("sha256"), "input_bytes_mismatch")

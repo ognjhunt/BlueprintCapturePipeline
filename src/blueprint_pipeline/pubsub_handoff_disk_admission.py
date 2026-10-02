@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -57,7 +58,20 @@ def download_with_reservation(
     manifest_rows: Sequence[Mapping[str, Any]],
     storage_root: Path,
     capture_root: Path,
+    selected_generations: Mapping[str, str] | None = None,
 ) -> None:
+    if selected_generations is not None:
+        rows = {row.get("name"): row for row in manifest_rows}
+        if (len(rows) != len(manifest_rows)
+                or set(rows) != set(selected_generations)
+                or any(type(generation) is not str
+                       or re.fullmatch(r"[1-9][0-9]{0,19}", generation) is None
+                       or row.get("generation") != generation
+                       for name, generation in selected_generations.items()
+                       for row in (rows[name],))
+                or any(str(getattr(blob, "generation", "")) != selected_generations.get(str(blob.name))
+                       for blob, _ in downloads)):
+            raise PipelineError("handoff_source_generation_unproven")
     listed_sizes = {row["name"]: row["size"] or 0 for row in manifest_rows}
     expected_bytes = sum(
         listed_sizes[str(blob.name)] for blob, _destination in downloads
@@ -84,7 +98,14 @@ def download_with_reservation(
                 health.check()
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with destination.open("wb") as stream:
-                    blob.download_to_file(_CheckedWriter(stream, health))
+                    if selected_generations is None:
+                        blob.download_to_file(_CheckedWriter(stream, health))
+                    else:
+                        blob.download_to_file(
+                            _CheckedWriter(stream, health),
+                            if_generation_match=int(selected_generations[str(blob.name)]),
+                            timeout=60, retry=None,
+                        )
                 health.check()
     except ControlPlaneDiskBudgetError as exc:
         raise HandoffStagingCapacityError(

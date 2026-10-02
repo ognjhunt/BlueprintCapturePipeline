@@ -17,6 +17,10 @@ MAX_RECEIPT_BYTES = 64 * 1024
 
 
 def read_receipt_bytes(path: Path) -> bytes:
+    from .task_evaluation_scene_retirement_metadata import read_logical_metadata
+    retained = read_logical_metadata(path)
+    if retained is not None:
+        return retained
     if any(p.is_symlink() for p in (path, *path.parents)):
         raise ValueError("unstarted_controls_evidence_unsafe")
     if path.is_file():

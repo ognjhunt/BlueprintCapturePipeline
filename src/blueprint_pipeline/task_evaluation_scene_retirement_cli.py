@@ -1,0 +1,610 @@
+"""Installed fixed-consent door and timer bridge for the same scene engine.
+
+ADP-009D day-28: verified scene storage retirement. Public callers select one
+protected consent by opaque id/raw identity. They cannot supply local paths,
+policy, owner scopes or remote locations. No switch is enabled by this module.
+"""
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager, nullcontext
+import datetime
+import json
+import os
+import re
+import stat
+import sys
+import time
+from pathlib import Path
+
+from . import task_evaluation_scene_retirement as engine
+from . import task_evaluation_scene_retirement_access as access
+from .task_evaluation_scene_retirement_authority import load_authority, load_document
+from .object_store_multipart_stream import MultipartStream
+
+CONSENT_ROOT = Path('/var/lib/blueprint/scene-retirement/consents')
+GC_SELECTION = Path('/var/lib/blueprint/scene-retirement/gc-selection.json')
+ENVIRONMENT_FILE = Path('/etc/blueprint/pipeline-control-plane.env')
+_DOOR_CONFIG = Path('/etc/blueprint-operator-door/door.json')
+_PREFIX = 'blueprint/arm-decision-proof-v1/scene-retirement/'
+_CHUNK = 1024*1024
+_ARCHIVE_MAX = 48*1024**3
+_SETTING = 'BLUEPRINT_CONTROL_PLANE_SCENE_RETIREMENT'
+_FILES = dict(access_key='ACCESS_KEY_ID', secret_key='SECRET_ACCESS_KEY', bucket='BUCKET',
+              endpoint='ENDPOINT_URL', region='REGION')
+_ENV_FILES = {key:'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_'+name+'_FILE' for key,name in _FILES.items()}
+_PUBLICATION_ENV_FILES = {key:'BLUEPRINT_WAM_OBJECT_STORE_'+name+'_FILE' for key,name in _FILES.items()}
+_PUBLICATION_DEFAULT_FILES = dict(access_key='digitalocean_spaces_access_key_id',
+    secret_key='digitalocean_spaces_secret_access_key',bucket='digitalocean_spaces_bucket',
+    endpoint='digitalocean_spaces_endpoint_url',region='digitalocean_spaces_region')
+_DEFAULT_FILES = dict(access_key='backblaze_b2_key_id', secret_key='backblaze_b2_application_key',
+    bucket='backblaze_b2_bucket', endpoint='backblaze_b2_s3_endpoint_url', region='backblaze_b2_region')
+
+
+def _require(value, code='scene_retirement_operator_selection_invalid'):
+    access._require(value, code)
+
+
+def _options(action, intent_id, consent_id, expected_sha256, expected_size_bytes, apply):
+    _require(action in {'retire','restore'} and type(apply) is bool)
+    _require(type(intent_id) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', intent_id))
+    _require(type(consent_id) is str and re.fullmatch('[0-9a-f]{32}', consent_id))
+    _require(type(expected_sha256) is str and re.fullmatch('sha256:[0-9a-f]{64}', expected_sha256))
+    _require(type(expected_size_bytes) is int and 0 < expected_size_bytes <= 512*1024)
+    _require(action != 'restore' or apply)
+
+
+def _kept(code):
+    return dict(status='kept', reason=code, mutations=0)
+
+
+def run_selected_action(action, *, intent_id, consent_id, expected_sha256, expected_size_bytes,
+                        apply=False, now=time.time, transport_factory=None):
+    """Select only original root-protected bytes, then call the actual engine."""
+    entered=False
+    try:
+        _options(action,intent_id,consent_id,expected_sha256,expected_size_bytes,apply)
+        path = CONSENT_ROOT/(consent_id+'.json')
+        with access._opened(CONSENT_ROOT,directory=True,protected=True) as (_, info):
+            _require(stat.S_IMODE(info.st_mode)==0o700, 'scene_retirement_authority_permissions')
+        authority = load_authority(path,action=action,now=now)
+        _require(authority['consent_raw_ref']==dict(path=str(path),sha256=expected_sha256,
+            size_bytes=expected_size_bytes), 'scene_retirement_raw_reference_changed')
+        consent = authority['consent']
+        _require(consent['consent_id']==consent_id and consent['intent_id']==intent_id)
+        selected = consent['plan_raw_ref' if action=='retire' else 'retired_journal_raw_ref']
+        if not apply:
+            # A selected KEEP plan is an observation, never current action clearance.
+            from .task_evaluation_scene_retirement_authority import selected_document
+            plan = selected_document(selected,maximum=16*1024*1024)
+            _require(plan.get('schema_version')=='task_evaluation_scene_lifecycle_plan.v1'
+                     and plan.get('intent_id')==intent_id)
+            return dict(status='planned', intent_id=intent_id, cleanup_authorized=False,
+                        plan_sha256=selected['sha256'], mutations=0)
+        transport = (transport_factory or installed_transport)()
+        result=None
+        try:
+            function = engine.retire_scene if action=='retire' else engine.restore_scene
+            entered=True
+            result=function(selected['path'],path,transport=transport,now=now)
+        finally:
+            incoming=sys.exc_info()[1]
+            try:
+                transport.close()
+            except Exception:
+                if result is not None:
+                    # Preserve actual outcomes and proven counters. A cleanup
+                    # fault cannot rewrite real removal as zero mutations.
+                    result=dict(result,status='incomplete',reason='scene_retirement_remote_cleanup_unproven')
+                elif incoming is None:
+                    raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
+                else:
+                    incoming.add_note('scene_retirement_remote_cleanup_unproven')
+        return result
+    except access.SceneRetirementAccessError as error:
+        code=str(error)
+        reason=code if re.fullmatch('scene_retirement_[a-z_]{1,100}',code) else 'scene_retirement_operator_refused'
+        return dict(status='incomplete',reason=reason,mutations=None) if entered else _kept(reason)
+    except Exception:
+        return (dict(status='incomplete',reason='scene_retirement_operator_refused',mutations=None)
+                if entered else _kept('scene_retirement_operator_refused'))
+
+
+class SceneArchiveTransport:
+    """Native multipart sink, fixed private namespace, single action allowance."""
+    def __init__(self, *, client, bucket):
+        config = client.meta.config
+        _require(config.connect_timeout==5 and config.read_timeout==30
+                 and config.retries.get('total_max_attempts')==1 and config.max_pool_connections==4,
+                 'scene_retirement_transport_timeouts_unproven')
+        _require(type(bucket) is str and re.fullmatch('[a-z0-9][a-z0-9.-]{1,221}',bucket))
+        self.client, self.bucket = client, bucket
+        self.allowance = None
+        self.upload = None
+        self.closed = False
+        self.publication = None
+
+    def bind_allowance(self, allowance):
+        from .task_evaluation_scene_retirement_preservation import ActionAllowance
+        _require(self.allowance is None and isinstance(allowance,ActionAllowance),
+                 'scene_retirement_transport_origin_unproven')
+        self.allowance = allowance
+        allowance.tick()
+
+    def _tick(self):
+        _require(not self.closed and self.allowance is not None,'scene_retirement_transport_origin_unproven')
+        self.allowance.tick()
+
+    def _call(self, name, **kwargs):
+        self._tick()
+        try:
+            response = getattr(self.client,name)(**kwargs)
+        except Exception:
+            raise access.SceneRetirementAccessError('scene_retirement_transport_failure') from None
+        _require(name=='complete_multipart_upload' or type(response) is dict,
+                 'scene_retirement_transport_response_unproven')
+        # Retain ONLY the id this invocation created, even if the post-call clock
+        # fails. Its bounded abort is cleanup and never action authorization.
+        if name=='create_multipart_upload':
+            upload = response.get('UploadId')
+            _require(type(upload) is str and 0 < len(upload) <= 1024,
+                     'scene_retirement_transport_response_unproven')
+            self.upload = dict(Bucket=kwargs['Bucket'],Key=kwargs['Key'],UploadId=upload)
+        try:
+            self._tick()
+        except BaseException:
+            if name=='get_object' and callable(getattr(response.get('Body'),'close',None)):
+                self._close_response(response['Body'])
+            raise
+        return response
+
+    def create_multipart_upload(self, **kwargs):
+        return self._call('create_multipart_upload',**kwargs)
+    def upload_part(self, **kwargs):
+        return self._call('upload_part',**kwargs)
+    def complete_multipart_upload(self, **kwargs):
+        return self._call('complete_multipart_upload',**kwargs)
+
+    def put_archive(self, name, chunks):
+        _require(type(name) is str and re.fullmatch(r'[0-9a-f]{32}(?:\.[1-9][0-9]{0,2})?\.tar',name)
+                 and (name.count('.')==1 or int(name.split('.')[1])<=256))
+        self._tick()
+        _require(self.upload is None,'scene_retirement_transport_upload_busy')
+        key = _PREFIX+name
+        sink = None
+        try:
+            sink = MultipartStream(client=self,bucket=self.bucket,key=key,
+                metadata={'ContentType':'application/x-tar'}, expected_digest=None,
+                expected_size=min(_ARCHIVE_MAX,self.allowance.limits['archive_bytes']))
+            for chunk in chunks:
+                self._tick()
+                _require(type(chunk) is bytes and 0 < len(chunk) <= _CHUNK,
+                         'scene_retirement_transport_chunk_unproven')
+                # Engine charges the same stream allowance before yielding. Do
+                # not refund or charge it a second time in the SDK adapter.
+                sink.write(chunk)
+                self._tick()
+            self._tick()
+            digest, size = 'sha256:'+sink.digest.hexdigest(), sink.size
+            _require(size > 0,'scene_retirement_transport_empty_archive')
+            # Native sink initially admits only the hard/lower action ceiling.
+            # Exact one-shot observed identity is sealed after full exhaustion.
+            sink.expected_digest, sink.expected_size = digest, size
+            sink.finish()
+            self.upload = None
+            return dict(uri='s3://'+self.bucket+'/'+key,sha256=digest,size_bytes=size)
+        except BaseException:
+            if self.upload is not None:
+                try:
+                    self.client.abort_multipart_upload(**self.upload)
+                except Exception:
+                    pass  # Preserve original failure; no evidence may be removed.
+                self.upload = None
+            raise
+
+    def read_archive(self, uri):
+        return self._read_archive(uri,charge=False)
+
+    def read_archive_charged(self, uri, allowance):
+        _require(allowance is self.allowance,'scene_retirement_transport_origin_unproven')
+        return self._read_archive(uri,charge=True)
+
+    def read_published_object_charged(self, uri, allowance, *, expected_size_bytes):
+        """Read only an exact receipt-selected derivative from its existing store.
+
+        Publication URIs really use Bucket=blueprint with the legacy credential
+        set. They are not aliases for this transport's private B2 archive bucket.
+        The engine additionally proves the namespace, full digest and owner.
+        """
+        from urllib.parse import urlsplit
+        self._tick()
+        _require(allowance is self.allowance,'scene_retirement_transport_origin_unproven')
+        _require(type(uri) is str and 0<len(uri)<=4096,
+                 'scene_retirement_transport_publication_scope_invalid')
+        parsed=urlsplit(uri)
+        parts=parsed.path.removeprefix('/').split('/')
+        _require(parsed.scheme=='s3' and parsed.netloc=='blueprint'
+                 and not parsed.query and not parsed.fragment and 4<=len(parts)<=64
+                 and parts[:2]==['task-evaluation','production-inputs'] and parts[3]!='source'
+                 and all(0<len(part)<=255 and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*',part)
+                         for part in parts)
+                 and uri=='s3://blueprint/'+'/'.join(parts),
+                 'scene_retirement_transport_publication_scope_invalid')
+        _require(type(expected_size_bytes) is int and 0<expected_size_bytes<=_ARCHIVE_MAX
+                 and expected_size_bytes<=allowance.limits['remote_bytes']-allowance.counts['remote_bytes'],
+                 'scene_retirement_byte_limit')
+        if self.publication is None:
+            client=installed_publication_client()
+            try:
+                publication=SceneArchiveTransport(client=client,bucket='blueprint')
+                publication.bind_allowance(allowance)
+            except BaseException as failure:
+                try:
+                    client.close()
+                except Exception:
+                    failure.add_note('scene_retirement_remote_cleanup_unproven')
+                raise
+            self.publication=publication
+        response=self.publication._call('get_object',Bucket='blueprint',Key='/'.join(parts))
+        body=response.get('Body')
+        try:
+            _require(type(response.get('ContentLength')) is int
+                     and response['ContentLength']==expected_size_bytes,
+                     'scene_retirement_transport_readback_unproven')
+            received=0
+            while received<expected_size_bytes:
+                self._tick()
+                count=min(_CHUNK,expected_size_bytes-received)
+                allowance.charge('remote_bytes',count)
+                chunk=self._read_body(body,count)
+                self._tick()
+                _require(type(chunk) is bytes and 0<len(chunk)<=count,
+                         'scene_retirement_transport_readback_unproven')
+                received+=len(chunk)
+                yield chunk
+            self._tick()
+            allowance.charge('remote_bytes',1)
+            _require(self._read_body(body,1)==b'','scene_retirement_transport_readback_unproven')
+            self._tick()
+        finally:
+            if callable(getattr(body,'close',None)):
+                self._close_response(body)
+
+    def _read_body(self, body, count):
+        try:
+            return body.read(count)
+        except Exception:
+            raise access.SceneRetirementAccessError('scene_retirement_transport_failure') from None
+
+    def _close_response(self, body):
+        incoming=sys.exc_info()[1]
+        try:
+            body.close()
+        except Exception:
+            if incoming is not None:
+                incoming.add_note('scene_retirement_remote_cleanup_unproven')
+            else:
+                raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
+
+    def _read_archive(self, uri, *, charge):
+        self._tick()
+        prefix = 's3://'+self.bucket+'/'+_PREFIX
+        _require(type(uri) is str and uri.startswith(prefix)
+                 and re.fullmatch(r'[0-9a-f]{32}(?:\.[1-9][0-9]{0,2})?\.tar',uri[len(prefix):])
+                 and (uri[len(prefix):].count('.')==1 or int(uri[len(prefix):].split('.')[1])<=256),
+                 'scene_retirement_transport_archive_scope_invalid')
+        response = self._call('get_object',Bucket=self.bucket,Key=uri[len('s3://'+self.bucket+'/'):])
+        body = response.get('Body')
+        try:
+            size = response.get('ContentLength')
+            _require(type(size) is int and 0 < size <= _ARCHIVE_MAX
+                     and size <= self.allowance.limits['remote_bytes']-self.allowance.counts['remote_bytes'],
+                     'scene_retirement_byte_limit')
+            received = 0
+            while received < size:
+                self._tick()
+                count = min(_CHUNK,size-received)
+                _require(count <= self.allowance.limits['remote_bytes']-self.allowance.counts['remote_bytes'],
+                         'scene_retirement_byte_limit')
+                if charge:
+                    # Charge the requested physical read BEFORE the socket can
+                    # allocate. Short/faulted reads never refund this origin.
+                    self.allowance.charge('remote_bytes',count)
+                chunk = self._read_body(body,count)
+                self._tick()
+                _require(type(chunk) is bytes and 0 < len(chunk) <= count,
+                         'scene_retirement_transport_readback_unproven')
+                received += len(chunk)
+                yield chunk
+            self._tick()
+            # The EOF probe is physical I/O and is not yielded for a legacy
+            # caller to charge. Reserve it here before touching the socket.
+            self.allowance.charge('remote_bytes',1)
+            _require(self._read_body(body,1)==b'', 'scene_retirement_transport_readback_unproven')
+            self._tick()
+        finally:
+            if callable(getattr(body,'close',None)):
+                self._close_response(body)
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            incoming=sys.exc_info()[1]
+            failed=False
+            for owned in (self.publication,self.client):
+                if owned is None:
+                    continue
+                try:
+                    owned.close()
+                except Exception:
+                    failed=True
+            if failed:
+                if incoming is not None:
+                    incoming.add_note('scene_retirement_remote_cleanup_unproven')
+                else:
+                    raise access.SceneRetirementAccessError('scene_retirement_remote_cleanup_unproven') from None
+
+
+def _scalar(path):
+    path=access._canonical(str(path))
+    with access._opened(path,protected=True) as (fd,before):
+        _require(stat.S_IMODE(before.st_mode) in {0o600,0o640} and 0 < before.st_size <= 4096)
+        raw=os.read(fd,4097)
+        after=os.fstat(fd)
+        _require(len(raw)==before.st_size and (access._identity(after),after.st_size,after.st_mtime_ns,after.st_ctime_ns)
+                 == (access._identity(before),before.st_size,before.st_mtime_ns,before.st_ctime_ns))
+    value=raw.decode().strip()
+    _require(value and '\n' not in value and '\r' not in value)
+    return value
+
+
+def installed_publication_client():
+    """Existing protected Spaces binding; no generic object-store fallback."""
+    import boto3
+    from botocore.config import Config
+    from urllib.parse import urlsplit
+    values={key:_scalar(os.environ.get(_PUBLICATION_ENV_FILES[key]) or
+            '/etc/blueprint/provider-secrets/'+_PUBLICATION_DEFAULT_FILES[key]) for key in _FILES}
+    _require(values['bucket']=='blueprint','scene_retirement_transport_publication_scope_invalid')
+    endpoint=urlsplit(values['endpoint'])
+    _require(endpoint.scheme=='https' and endpoint.hostname and not endpoint.username and not endpoint.password
+             and not endpoint.query and not endpoint.fragment,
+             'scene_retirement_transport_publication_scope_invalid')
+    return boto3.client('s3',aws_access_key_id=values['access_key'],aws_secret_access_key=values['secret_key'],
+        endpoint_url=values['endpoint'],region_name=values['region'],config=Config(signature_version='s3v4',
+        connect_timeout=5,read_timeout=30,retries={'total_max_attempts':1},max_pool_connections=4))
+
+
+def installed_transport():
+    """Use existing B2 artifact bindings, with explicit action-only socket caps."""
+    import boto3
+    from botocore.config import Config
+    values={key:_scalar(os.environ.get(_ENV_FILES[key]) or
+        '/etc/blueprint/provider-secrets/'+_DEFAULT_FILES[key]) for key in _FILES}
+    expected=os.environ.get('BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET',
+                            'blueprint-task-evaluation-artifacts-prod')
+    _require(values['bucket']==expected,'scene_retirement_transport_archive_scope_invalid')
+    from urllib.parse import urlsplit
+    endpoint=urlsplit(values['endpoint'])
+    _require(endpoint.scheme=='https' and endpoint.hostname and not endpoint.username and not endpoint.password
+             and not endpoint.query and not endpoint.fragment)
+    client=boto3.client('s3',aws_access_key_id=values['access_key'],aws_secret_access_key=values['secret_key'],
+        endpoint_url=values['endpoint'],region_name=values['region'],config=Config(signature_version='s3v4',
+        connect_timeout=5,read_timeout=30,retries={'total_max_attempts':1},max_pool_connections=4))
+    try:
+        return SceneArchiveTransport(client=client,bucket=values['bucket'])
+    except BaseException:
+        client.close()
+        raise
+
+
+def load_installed_environment():
+    """Read only this action's literal settings from the protected host file."""
+    allowed=set(_ENV_FILES.values()) | set(_PUBLICATION_ENV_FILES.values()) | {'BLUEPRINT_SCENE_RETIREMENT_POLICY_FILE',
+        'BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET'}
+    def version(info):
+        return (access._identity(info),info.st_uid,info.st_gid,info.st_size,
+                info.st_mtime_ns,info.st_ctime_ns)
+    # Permissions, contents and publication all refer to the same acquisition.
+    # Reopening without an exact version tie could substitute a different file
+    # after the private-mode proof but before importing its settings.
+    with access._opened(ENVIRONMENT_FILE,protected=True) as (fd,info):
+        _require(stat.S_IMODE(info.st_mode) in {0o600,0o640}, 'scene_retirement_authority_permissions')
+        _require(0<info.st_size<=access._MAX_JSON_BYTES)
+        expected=version(info)
+        raw=os.read(fd,access._MAX_JSON_BYTES+1)
+        _require(len(raw)==info.st_size and version(os.fstat(fd))==expected,
+                 'scene_retirement_environment_changed')
+    with access._opened(ENVIRONMENT_FILE,protected=True) as (_,current):
+        _require(version(current)==expected,'scene_retirement_environment_changed')
+    selected={}
+    for line in raw.decode().splitlines():
+        key,separator,value=line.partition('=')
+        if not separator or key not in allowed:
+            continue
+        _require(key not in selected,'scene_retirement_environment_duplicate_setting')
+        if len(value)>=2 and value[0] in "\"'" and value[-1]==value[0]:
+            value=value[1:-1]
+        _require(value and '\x00' not in value and '\r' not in value)
+        if key!='BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET':
+            access._canonical(value)
+        selected[key]=value
+    # Validate the entire selection before any process environment publication.
+    for key,value in selected.items():
+        os.environ[key]=value
+
+
+def run_gc_phase(*, apply, now=time.time):
+    """One exact protected selection per tick; no store sweep or consent minting."""
+    setting=os.environ.get(_SETTING,'0')
+    if setting!='1' or not apply:
+        return dict(status='disabled' if setting in {'0','1',''} else 'setting_invalid',
+                    removed_allocated_bytes=0,mutations=0)
+    try:
+        selection,_=load_document(GC_SELECTION,maximum=65536,protected=True)
+        _require(set(selection)=={'schema_version','retirement'}
+                 and selection['schema_version']=='scene_retirement_gc_selection.v1')
+        chosen=selection['retirement']
+        _require(type(chosen) is dict and set(chosen)=={'intent_id','consent_id','expected_sha256','expected_size_bytes'})
+        result=run_selected_action('retire',**chosen,apply=True,now=now)
+        return _summary(result)
+    except (OSError,ValueError,KeyError,TypeError):
+        return dict(status='kept',reason='scene_retirement_gc_selection_unproven',mutations=0,
+                    removed_allocated_bytes=0)
+
+
+def _summary(result):
+    # Only proven counters/typed status leave the private action context. Never
+    # include private consent, local member paths, credentials or SDK errors.
+    keys=('status','reason','mutations','intent_id','logical_bytes','removed_allocated_bytes',
+          'planned_unique_allocated_bytes','cleanup_authorized','plan_sha256')
+    return {key:result[key] for key in keys if key in result}
+
+
+@contextmanager
+def _door_context(action):
+    """Bind runner metadata to the protected installed spool, never CLI paths."""
+    _require(os.geteuid()==access._POLICY_UID, 'scene_retirement_door_context_unproven')
+    config={}
+    if os.path.lexists(_DOOR_CONFIG):
+        raw=access._bytes(_DOOR_CONFIG,protected=True)
+        _require(len(raw)<=65536,'scene_retirement_door_context_unproven')
+        config=access._document(raw)
+    state=access._canonical(config.get('state_root','/var/lib/blueprint-operator-door'))
+    directory=state/'requests/results'
+    identity=os.environ.get('DOOR_REQUEST_ID','')
+    _require(re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-'+action+r'-scene-[0-9a-f]{8}',identity)
+             and os.environ.get('DOOR_RESULTS_DIR')==str(directory),
+             'scene_retirement_door_context_unproven')
+    with access._opened(directory,directory=True,protected=True) as (parent,_):
+        for suffix in ('.scene-lifecycle.json','.outcome.json'):
+            try:
+                os.stat(identity+suffix,dir_fd=parent,follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise access.SceneRetirementAccessError('scene_retirement_door_context_unproven')
+        yield directory,identity,parent
+
+
+def _door_publish(directory, identity, parent, intent_id, result):
+    """Publish public counters before the terminal outcome, in the action PID."""
+    status=result.get('status')
+    successful=status in {'planned','retired','restored','kept'}
+    rc=0 if successful else 1
+    document=dict(schema='blueprint_operator_door_outcome.v1',
+        status=('retained' if status=='kept' else status if successful else 'failed'),
+        code=('scene_lifecycle_kept' if status=='kept' else None if successful else 'scene_lifecycle_incomplete'),
+        exit_code=rc,finished_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+        intent_id=intent_id,result=str(directory/(identity+'.scene-lifecycle.json')))
+    payloads=[(suffix,(json.dumps(value,sort_keys=True,allow_nan=False)+'\n').encode())
+              for suffix,value in (('.scene-lifecycle.json',_summary(result)),('.outcome.json',document))]
+    _require(all(len(raw)<=8192 for _,raw in payloads),'scene_retirement_door_publication_unproven')
+    def binding():
+        with access._opened(directory,directory=True,protected=True) as (current,_):
+            _require(access._identity(os.fstat(current))==access._identity(os.fstat(parent)),
+                     'scene_retirement_door_publication_unproven')
+    for suffix,raw in payloads:
+        # A retained directory must still be the installed public destination.
+        binding()
+        name=identity+suffix
+        temporary=name+'.tmp.'+str(os.getpid())
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,
+                   0o644,dir_fd=parent)
+        # Until the new named inode independently matches, this numeric token
+        # is unproven and must never be adopted or closed as our descriptor.
+        named=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
+        _require(stat.S_ISREG(named.st_mode) and named.st_nlink==1
+                 and named.st_uid==access._POLICY_UID,'scene_retirement_door_publication_unproven')
+        owned=access._identity(named)
+        _require(access._identity(os.fstat(fd))==owned,'scene_retirement_door_publication_unproven')
+        published=False
+        close_attempted=False
+        try:
+            with os.fdopen(fd,'wb',closefd=False) as stream:
+                _require(access._identity(os.stat(temporary,dir_fd=parent,follow_symlinks=False))==owned,
+                         'scene_retirement_door_publication_unproven')
+                os.fchmod(stream.fileno(),0o644)
+                owned=(owned[0],owned[1],stat.S_IFREG|0o644)
+                named=os.stat(temporary,dir_fd=parent,follow_symlinks=False)
+                _require((named.st_dev,named.st_ino)==owned[:2]
+                         and access._identity(os.fstat(stream.fileno()))==access._identity(named),
+                         'scene_retirement_door_publication_unproven')
+                owned=access._identity(named)
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+                binding()
+                _require(access._identity(os.fstat(stream.fileno()))==owned
+                         and access._identity(os.stat(temporary,dir_fd=parent,follow_symlinks=False))==owned,
+                         'scene_retirement_door_publication_unproven')
+                # Atomic publication refuses a conflicting file or destination alias.
+                os.link(temporary,name,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False)
+                published=True
+                _require(access._identity(os.stat(name,dir_fd=parent,follow_symlinks=False))==owned
+                         and access._identity(os.stat(temporary,dir_fd=parent,follow_symlinks=False))==owned,
+                         'scene_retirement_door_publication_unproven')
+                os.unlink(temporary,dir_fd=parent)
+                os.fsync(parent)
+                binding()
+            close_attempted=True
+            _require(access._close_owned(fd,owned) is None,'scene_retirement_door_publication_unproven')
+        except BaseException as error:
+            if not close_attempted:
+                if access._close_owned(fd,owned) is not None:
+                    error.add_note('scene_retirement_descriptor_cleanup_unproven')
+            # A failed durability proof must not leave a successful terminal
+            # name. Remove only this acquisition; never a conflicting inode.
+            for selected in ([name] if published else [])+[temporary]:
+                try:
+                    info=os.stat(selected,dir_fd=parent,follow_symlinks=False)
+                    _require(access._identity(info)==owned,'scene_retirement_door_publication_unproven')
+                    os.unlink(selected,dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+                except (OSError,ValueError):
+                    error.add_note('scene_retirement_door_publication_cleanup_unproven')
+            try:
+                os.fsync(parent)
+            except OSError:
+                error.add_note('scene_retirement_door_publication_cleanup_unproven')
+            raise
+    return rc
+
+
+def main(argv=None):
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action',choices=('retire','restore'))
+    parser.add_argument('--intent-id',required=True)
+    parser.add_argument('--consent-id',required=True)
+    parser.add_argument('--expected-sha256',required=True)
+    parser.add_argument('--expected-size-bytes',required=True,type=int)
+    parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--operator-door',action='store_true')
+    args=vars(parser.parse_args(argv))
+    action=args.pop('action')
+    door=args.pop('operator_door')
+    result=None
+    try:
+        if door:
+            _options(action,**args)
+        with _door_context(action) if door else nullcontext(None) as context:
+            try:
+                load_installed_environment()
+                result=run_selected_action(action,**args)
+            except (OSError,ValueError,UnicodeError):
+                result=_kept('scene_retirement_installed_environment_unproven')
+            rc=_door_publish(*context,args['intent_id'],result) if context is not None else 0
+    except (OSError,ValueError,TypeError):
+        if result is None:
+            result=_kept('scene_retirement_door_context_unproven')
+        else:
+            # Do not erase proven action counters when public publication fails.
+            result=dict(result,status='incomplete',reason='scene_retirement_door_publication_unproven')
+        print(json.dumps(_summary(result),sort_keys=True))
+        return 1
+    print(json.dumps(_summary(result),sort_keys=True))
+    return rc
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

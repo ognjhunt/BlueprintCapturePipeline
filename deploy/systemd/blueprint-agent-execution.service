@@ -20,11 +20,12 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/agent-execution
+ReadWritePaths=/var/lib/blueprint/scene-retirement/journals/processes
 ReadOnlyPaths=/etc/blueprint
 MemoryMax=2G
 TasksMax=128
@@ -33,7 +34,7 @@ Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json
 Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=1
 Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
 WorkingDirectory=/opt/blueprint/task-evaluation-control-plane
-ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.agent_execution.production
+ExecStart=!/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py --continuous-module blueprint_pipeline.agent_execution.production --
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

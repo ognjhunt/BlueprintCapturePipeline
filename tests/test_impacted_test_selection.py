@@ -4,10 +4,33 @@ import signal
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from blueprint_pipeline import impacted_test_selection as MODULE
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("changed_path", [
+    "src/blueprint_pipeline/widget.py",
+    "src/blueprint_pipeline/owned/__init__.py",
+])
+def test_unrelated_source_does_not_require_an_import_regex_scan(monkeypatch, changed_path):
+    """No import pattern can match when its required module literal is absent."""
+    calls = []
+    original_search = MODULE.re.search
+
+    def observe(pattern, source):
+        calls.append(pattern)
+        return original_search(pattern, source)
+
+    monkeypatch.setattr(MODULE.re, "search", observe)
+    assert MODULE._matching_tests(
+        changed_path=changed_path,
+        test_sources={"tests/test_unrelated.py": "import blueprint_pipeline.unrelated\n"},
+    ) == set()
+    assert calls == []
 
 
 def test_documentation_change_uses_sentinels_without_full_suite() -> None:

@@ -241,7 +241,8 @@ def _known_filesystem_view(scan, directory, view, target, identities, root_ident
 
 def _inspect_process(scan, directory, pid, target, identities, namespaces, host_mount, root_identity):
     """Private parser seam; native acceptance uses an actual foreign UID PID."""
-    started = _process_start(scan.read(directory, 'stat', 16384), pid)
+    initial_stat = scan.read(directory, 'stat', 16384)
+    started = _process_start(initial_stat, pid)
     kernel = kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid)
     view = _namespace(directory, kernel=kernel)
     _require(view[:2] == namespaces[:2])
@@ -293,7 +294,8 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
             path = os.readlink(name, dir_fd=descriptors)
             if (info.st_dev, info.st_ino) in identities or os.fsencode(target) in os.fsencode(path):
                 channels.add('fd')
-        _require(scan.names(descriptors, 16384) == names)
+        after_names = scan.names(descriptors, 16384)
+        _require(after_names == names)
     finally:
         os.close(descriptors)
     _require(_process_start(scan.read(directory, 'stat', 16384), pid) == started

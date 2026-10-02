@@ -1,6 +1,8 @@
 """Execute closed, immutable SAM preparation phases outside the no-spend parent."""
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
+from .task_evaluation_scene_retirement_producer_births import create_preparation_output
 import argparse
 import hashlib
 import json
@@ -89,6 +91,7 @@ def _wake_parent(root: Path, job: dict, parent_queue: Path, roots: Sequence[Path
     return True
 
 
+@scene_participant('queue_root', 'parent_queue_root', 'preparation_input_root', 'execution_root')
 def process_sam31_phase_queue(
     *, queue_root: str | Path = DEFAULT_QUEUE, parent_queue_root: str | Path = DEFAULT_PARENT_QUEUE,
     preparation_input_root: str | Path = DEFAULT_INPUT_ROOT,
@@ -123,7 +126,12 @@ def process_sam31_phase_queue(
                     _require(not any(p.is_symlink() for p in (output, *output.parents))
                              and any(output.resolve().is_relative_to(p.resolve()) for p in approved_roots),
                              "execution_path_invalid")
-                    output.mkdir(parents=True, exist_ok=True)
+                    _, job_input_root = configured_parent_route(job, parent_queue, input_root)
+                    # The configured execution root is shared infrastructure;
+                    # only this exact native digest group and child are born.
+                    Path(execution_root).mkdir(parents=True, exist_ok=True)
+                    for member in (output.parent, output):
+                        create_preparation_output(member, preparation_root=job_input_root / job['parent_preparation_id'], request=request)
                     started = root / "started" / claimed.name
                     resume_only = started.exists()
                     _write(started, {"job_digest": job["job_digest"], "child_id": job["child_id"]})
@@ -139,7 +147,6 @@ def process_sam31_phase_queue(
                         executor = execute_stage
                     else:
                         executor = phase_executor
-                    _, job_input_root = configured_parent_route(job, parent_queue, input_root)
                     outcome = executor({**job, "request": request, "plan": plan,
                                         "queue_root": str(root), "output_root": str(output),
                                         "preparation_input_root": str(job_input_root),

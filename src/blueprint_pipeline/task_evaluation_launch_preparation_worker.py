@@ -8,6 +8,7 @@ catalog, issue paid authority, call the allocator, or allocate a provider.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
 
 import argparse
@@ -55,6 +56,9 @@ from .control_plane_storage_pins import (
 )
 from .task_evaluation_launch_preparation_contract import (
     validate_launch_preparation_request,
+    TaskEvaluationLaunchPreparationWorkerError,
+    collect_preparation_references,
+    validate_recipe_request_binding,
 )
 from .task_evaluation_policy_run_contract import (
     TaskEvaluationPolicyRunContractError,
@@ -120,8 +124,6 @@ SceneRenderInputMaterializer = Callable[..., dict[str, Any]]
 ALLOWED_REFERENCE_SCHEMES = frozenset({"gs", "https", "s3"})
 
 
-class TaskEvaluationLaunchPreparationWorkerError(RuntimeError):
-    """A claimed no-spend preparation could not be completed safely."""
 
 
 # The exact release identity lives in one shared module; the historical name stays exported.
@@ -138,39 +140,6 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
     return "sha256:" + digest.hexdigest(), size
 
 
-def collect_preparation_references(value: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Collect every typed immutable reference with its JSON contract path."""
-
-    references: list[dict[str, Any]] = []
-
-    def visit(node: Any, path: tuple[str, ...]) -> None:
-        if isinstance(node, Mapping):
-            if set(node) == {"uri", "digest", "size_bytes"}:
-                references.append(
-                    {
-                        "contract_path": ".".join(path),
-                        "uri": str(node["uri"]),
-                        "digest": str(node["digest"]),
-                        "size_bytes": int(node["size_bytes"]),
-                    }
-                )
-                return
-            for key, child in node.items():
-                visit(child, (*path, str(key)))
-        elif isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
-            for index, child in enumerate(node):
-                visit(child, (*path, str(index)))
-
-    visit(value, ())
-    identities: dict[str, tuple[str, int]] = {}
-    for reference in references:
-        identity = (reference["digest"], reference["size_bytes"])
-        prior = identities.setdefault(reference["uri"], identity)
-        if prior != identity:
-            raise TaskEvaluationLaunchPreparationWorkerError(
-                "launch_preparation_reference_uri_identity_conflict"
-            )
-    return references
 
 
 def validate_allowed_uri_prefixes(prefixes: Sequence[str]) -> tuple[str, ...]:
@@ -408,6 +377,7 @@ def default_reference_fetcher(uri: str, destination: Path, maximum_bytes: int) -
     )
 
 
+@scene_participant('input_root', 'content_store_root')
 def materialize_preparation_references(
     *,
     request: Mapping[str, Any],
@@ -510,14 +480,18 @@ def _materialize_reference_records(
     allowed_uri_prefixes: Sequence[str],
     fetcher: ReferenceFetcher,
     installed_sources: InstalledSourceBindings | None = None,
+    publication_authorities: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch and hash typed references without assuming their parent contract."""
 
+    from . import task_evaluation_scene_retirement_cache as scene_cache
     root = Path(input_root).resolve(strict=True)
+    storage_authority = scene_cache.publication_authority(root)
     content_root = Path(content_store_root or root).resolve(strict=True)
     rows: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, int], Path] = {}
     for reference in references:
+        authority = storage_authority if publication_authorities is None else publication_authorities[reference["contract_path"]]
         uri = reference["uri"]
         digest = reference["digest"]
         size = reference["size_bytes"]
@@ -566,10 +540,13 @@ def _materialize_reference_records(
                         os.fsync(descriptor)
                     finally:
                         os.close(descriptor)
-                    try:
-                        os.link(temporary, cached, follow_symlinks=False)
-                    except FileExistsError:
-                        pass
+                    published = scene_cache.publish_content_generation(cached, temporary,
+                        digest=digest, size_bytes=size, authority=authority)
+                    if not published:
+                        try:
+                            os.link(temporary, cached, follow_symlinks=False)
+                        except FileExistsError:
+                            pass
                     directory = os.open(
                         content_root,
                         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
@@ -598,11 +575,13 @@ def _materialize_reference_records(
                         "launch_preparation_materialized_target_unsafe"
                     )
                 projection_created = False
-                try:
-                    os.link(cached, destination, follow_symlinks=False)
-                    projection_created = True
-                except FileExistsError:
-                    pass
+                projected = scene_cache.project_content(cached, destination, authority=authority)
+                if not projected:
+                    try:
+                        os.link(cached, destination, follow_symlinks=False)
+                        projection_created = True
+                    except FileExistsError:
+                        pass
                 if projection_created:
                     directory = os.open(
                         root,
@@ -647,6 +626,7 @@ def _materialize_reference_records(
     return rows, len(by_identity)
 
 
+@scene_participant('input_root')
 def materialize_recipe_configuration_references(
     *,
     recipe: Mapping[str, Any],
@@ -698,6 +678,7 @@ SUPPLEMENTAL_DESTINATION_CONTRACT_PREFIX = (
 )
 
 
+@scene_participant('input_root')
 def materialize_recipe_supplemental_destination_references(
     *,
     recipe: Mapping[str, Any],
@@ -783,50 +764,9 @@ def _validated_production_recipe(
         raise TaskEvaluationLaunchPreparationWorkerError(
             "launch_preparation_construction_recipe_invalid"
         ) from exc
-    # ``revision.source_commit`` identifies the historical configuration
-    # release and is already protected by the revision digest.  The current
-    # evaluator release is independently bound by the preparation request and
-    # worker source-commit check; requiring those two identities to be equal
-    # would make every immutable configured scene expire when main advances.
-    expected = {
-        "team_namespace": request["team_namespace"],
-        "scene_identity": request["scene"]["identity"],
-        "task_identity": request["task"]["identity"],
-        "subject_identity": request["task"]["subject"]["identity"],
-        "source_manifest_digest": request["scene"]["source_manifest"]["digest"],
-        "rights_admission_digest": request["scene"]["rights"]["admission"]["digest"],
-        "output_identity": request["construction"]["output_identity"],
-    }
-    if any(recipe.get(key) != expected_value for key, expected_value in expected.items()):
-        raise TaskEvaluationLaunchPreparationWorkerError(
-            "launch_preparation_construction_recipe_binding_mismatch"
-        )
-    # A pick_and_place request declares its supplemental destination once; the
-    # recipe must bind the same identity, relation, and exact asset, static
-    # qualification, and rights bytes, and may not smuggle in a destination the
-    # request never declared.
-    destination = request["task"].get("destination")
-    supplemental = recipe.get("supplemental_destination")
-    if (destination is None) != (supplemental is None):
-        raise TaskEvaluationLaunchPreparationWorkerError(
-            "launch_preparation_supplemental_destination_binding_mismatch"
-        )
-    if supplemental is not None:
-        expected_binding = {
-            "identity": destination["identity"],
-            "relation": destination["relation"],
-            "asset": destination["asset"],
-            "static_qualification": destination["static_qualification"],
-            "rights_admission": destination["rights_admission"],
-        }
-        if any(
-            supplemental.get(key) != expected_value
-            for key, expected_value in expected_binding.items()
-        ):
-            raise TaskEvaluationLaunchPreparationWorkerError(
-                "launch_preparation_supplemental_destination_binding_mismatch"
-            )
-    return recipe
+    return validate_recipe_request_binding(request=request, recipe=recipe)
+
+
 
 
 def _validated_configured_scene_revision(
@@ -1084,12 +1024,17 @@ def _materialize_runtime_source_external_layers(
                 disk_reservation_root=disk_reservation_root,
                 disk_reservations=disk_reservations,
             )
+    from .task_evaluation_scene_retirement_generated import publish_runtime_layer_authority
+    authorities={reference["contract_path"]: publish_runtime_layer_authority(
+        request=request,runtime_source=runtime_source,layer=layer,input_root=input_root)
+        for reference,layer in zip(references,layers)}
     rows, _ = _materialize_reference_records(
         references=references,
         input_root=input_root,
         content_store_root=content_store_root,
         allowed_uri_prefixes=validate_allowed_uri_prefixes(allowed_uri_prefixes),
         fetcher=fetcher,
+        publication_authorities=authorities,
     )
     return rows
 
@@ -1113,6 +1058,7 @@ def worker_failure_blocker(exc: BaseException) -> str:
     return annotate_blocker(code, exc)
 
 
+@scene_participant('queue_root', 'input_root', 'construction_queue_root', 'episode_compilation_queue_root')
 def process_launch_preparation_queue(
     *,
     queue_root: str | Path,
@@ -1179,6 +1125,8 @@ def process_launch_preparation_queue(
         disk_reservations: list[DiskReservation] = []
         try:
             envelope = _load_envelope(claimed)
+            from .task_evaluation_scene_retirement_cache import enroll_preparation_storage
+            enroll_preparation_storage(queue_path=claimed,input_root=input_root)
             if disk_reservation_root is not None:
                 # Reserve what this message will actually fetch: references the
                 # content store does not already hold, plus a margin for the
@@ -1585,6 +1533,12 @@ def process_launch_preparation_queue(
                     raise TaskEvaluationLaunchPreparationWorkerError(
                         "launch_preparation_scene_construction_queue_missing"
                     )
+                # Stage and supplemental materialization extend the exact
+                # pre-handoff references. Bind the construction envelope to
+                # that complete result, rather than its earlier fetch seal.
+                result["result_digest"] = canonical_digest(
+                    result, digest_field="result_digest"
+                )
                 construction_intake = stage_scene_construction(
                     request=envelope["request"],
                     preparation_result=result,

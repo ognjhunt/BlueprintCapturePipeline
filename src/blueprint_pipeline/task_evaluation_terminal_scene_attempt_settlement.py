@@ -28,6 +28,8 @@ field existed.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
+
 import hashlib
 import json
 import re
@@ -99,6 +101,7 @@ def _factory_binds_link(reference, retired, link):
             and request.get("preparation_id") == link["preparation_id"])
 
 
+@scene_participant()
 def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping[str, Any]) -> None:
     """Fail closed unless the settlement still binds live, byte-identical evidence."""
     _require(
@@ -173,6 +176,7 @@ def _derive_settled_spend(*, maximum_spend_usd: Any, dependency: Mapping[str, An
     return {"basis": "terminal_launch_unreconciled", "retained_spend_usd": cap, "counts_as_attempt": False}
 
 
+@scene_participant()
 def retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """The hold a settled row keeps against the cap and whether it still counts as an attempt.
 
@@ -195,6 +199,7 @@ def retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
     return hold
 
 
+@scene_participant()
 def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """Use bound terminal evidence without rewriting historical settlements.
 
@@ -321,6 +326,7 @@ def _launch_state(*, launch_id: str, launch_execution_root: Path, launch_queue_r
     return {"launch_id": launch_id, "launch_receipt": None, "launch_never_queued": True}
 
 
+@scene_participant()
 def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str, Any],
         retirement_record: Mapping[str, Any], ownership_record: Mapping[str, Any],
         launch_execution_root: Path, launch_queue_root: Path, dry_run: bool = False,
@@ -399,6 +405,7 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
             "rows": settled, "skipped": skipped, "provider_mutation_performed": False}
 
 
+@scene_participant()
 def sweep_retired_attempts(*, directory: Path, state: Mapping[str, Any], config: Mapping[str, Any],
                            dry_run: bool = False) -> dict[str, Any]:
     """Settle rows for every predecessor the progression already retired; never raises."""

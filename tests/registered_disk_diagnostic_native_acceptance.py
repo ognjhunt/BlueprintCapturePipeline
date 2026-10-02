@@ -12,12 +12,146 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import select
+import sys
 import time
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
 
 from tests.test_registered_feature_linux import encoded, install_protected_feature, _run_shipped_gc_sandbox
+
+
+def failure_evidence(error):
+    """Read retained contexts only after failure; never observe or alter the host.
+
+    No arbitrary exception text, paths, frame locals or input bytes are emitted.
+    Suppressed contexts survive ``from None``. This is post-unwind evidence,
+    never a reconstruction of the earlier ownership or reference census.
+    """
+    value = dict(observation_phase='post_unwind', exceptions=[], truncated=False)
+    pending, seen = [error], set()
+    while pending and len(value['exceptions']) < 8:
+        selected = pending.pop()
+        if id(selected) in seen:
+            value['truncated'] = True
+            continue
+        seen.add(id(selected))
+        row = {'class': type(selected).__name__[:64],
+               'module': type(selected).__module__[:96], 'frames': []}
+        if selected.args and type(selected.args[0]) is str and re.fullmatch(
+                r'(?:experiment_|historical_generation_|reference_|owner_target_)[a-z0-9_]{1,80}',
+                selected.args[0]):
+            row['code'] = selected.args[0]
+        if isinstance(selected, OSError) and type(selected.errno) is int:
+            row['errno'] = selected.errno
+        traceback = selected.__traceback__
+        while traceback is not None and len(row['frames']) < 16:
+            code = traceback.tb_frame.f_code
+            row['frames'].append(dict(source=Path(code.co_filename).name[:96],
+                                      function=code.co_name[:64], line=traceback.tb_lineno))
+            traceback = traceback.tb_next
+        value['truncated'] |= traceback is not None
+        value['exceptions'].append(row)
+        # Retain both causal links, including context suppressed for display.
+        if selected.__context__ is not None:
+            pending.append(selected.__context__)
+        if selected.__cause__ is not None and selected.__cause__ is not selected.__context__:
+            pending.append(selected.__cause__)
+    value['truncated'] |= bool(pending)
+    while len(json.dumps(value).encode()) > 8192:
+        value['truncated'] = True
+        row = next((row for row in reversed(value['exceptions']) if row['frames']), None)
+        if row is not None:
+            row['frames'].pop()
+        else:
+            value['exceptions'].pop()
+    return value
+
+
+def run_observed(root):
+    """Execute unchanged acceptance and preserve the same original failure."""
+    try:
+        return run(root)
+    except Exception as error:
+        try:
+            print(json.dumps(failure_evidence(error), sort_keys=True), file=sys.stderr)
+        except Exception:
+            pass  # An evidence write cannot replace the original refusal.
+        raise
+
+
+def observe_reference_failures(reference_type, evidence):
+    """Retain an actual caught UNKNOWN before GC consumes it; never clear it.
+
+    Wrapping methods preserves the concrete class and original calls. Guard and
+    constructor may observe the same exception at two explicitly named catch
+    boundaries. No host access, clock, budget or reference predicate is added.
+    """
+    from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    from blueprint_pipeline.control_plane_lane_disk_diagnostic_references import OwnerTargetVersionError
+    from tests.historical_generation_native_acceptance import _failed_process_view
+
+    inspector_code = processes._inspect_process.__code__
+
+    def record(error, boundary):
+        if len(evidence['records']) >= 4:
+            evidence['truncated'] = True
+            return
+        selected = failure_evidence(error)
+        selected.update(boundary=boundary, observation_phase='caught_unknown_before_gc_consumption',
+                        final_process_identity_verified=False, same_failed_views=[])
+        pending, seen = [error], set()
+        while pending and len(seen) < 8:
+            current = pending.pop()
+            if id(current) in seen:
+                selected['truncated'] = True
+                continue
+            seen.add(id(current))
+            trace, frames = current.__traceback__, 0
+            while trace is not None and frames < 16:
+                # A same-named foreign frame is not the installed inspector.
+                if trace.tb_frame.f_code is inspector_code:
+                    view = _failed_process_view(trace.tb_frame.f_locals)
+                    if view:
+                        if len(selected['same_failed_views']) < 4:
+                            selected['same_failed_views'].append(view)
+                        else:
+                            selected['truncated'] = True
+                trace, frames = trace.tb_next, frames + 1
+            selected['truncated'] |= trace is not None
+            if current.__context__ is not None:
+                pending.append(current.__context__)
+            if current.__cause__ is not None and current.__cause__ is not current.__context__:
+                pending.append(current.__cause__)
+        selected['truncated'] |= bool(pending)
+        candidate = {'records': [*evidence['records'], selected], 'truncated': evidence['truncated']}
+        if len(json.dumps(candidate).encode()) > 16384:
+            evidence['truncated'] = True
+            return
+        evidence['records'].append(selected)
+
+    def wrap(original, boundary):
+        @functools.wraps(original)
+        def observed(self, *args, **kwargs):
+            try:
+                return original(self, *args, **kwargs)
+            except Exception as error:
+                if type(error) is OwnerTargetVersionError and error.code == 'experiment_diagnostic_references_unknown':
+                    try:
+                        record(error, boundary)
+                    except Exception:
+                        try:
+                            evidence['truncated'] = True
+                        except Exception:
+                            pass  # Evidence failure cannot replace the original refusal.
+                raise
+        return observed
+
+    originals = reference_type.__init__, reference_type.guard
+    reference_type.__init__ = wrap(originals[0], 'constructor')
+    reference_type.guard = wrap(originals[1], 'guard')
+    return originals
 
 
 def _ordinary_denied(target, value, account):
@@ -336,7 +470,7 @@ def run(root):
         _current_queue_keeps(value, action, pins, report, directory_alias=method == 'offload')
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=1)
         row = next(row for row in result['report']['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
-        assert row['decision'] == 'retired' and row['receipt'] and row['removed_logical_bytes'] == len(before), (row, result.get('native_limit_failures'))
+        assert row['decision'] == 'retired' and row['receipt'] and row['removed_logical_bytes'] == len(before), (row, result.get('native_limit_failures'), result.get('native_reference_failures'))
         assert target.stat().st_ino == original_inode
         assert {p.name for p in target.iterdir()} == {'.lane-scratch.v1.json', '.registered-experiment.v1.json'}
         repeated = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=2)

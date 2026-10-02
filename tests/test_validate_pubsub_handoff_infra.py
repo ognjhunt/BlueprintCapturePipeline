@@ -130,6 +130,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _VALIDATED_FILES = (
     "pyproject.toml",
     "src/blueprint_pipeline/pubsub_handoff_listener.py",
+    "src/blueprint_pipeline/pubsub_handoff_scene_operations.py",
     "deploy/terraform/main.tf",
     "deploy/scripts/deploy.sh",
     "deploy/systemd/blueprint-pubsub-handoff-listener.service",

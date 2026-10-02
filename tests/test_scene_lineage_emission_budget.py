@@ -1,6 +1,8 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_scene_lineage_budget.py
 """ADP-009D/day28: every retained child emission shares one bounded sink."""
+import json
+
 import pytest
 
 
@@ -165,3 +167,70 @@ def test_each_emitted_proof_alias_reserves_future_seal_bytes_without_changing_ou
     assert context.obligations[0]['source_provenance'][0] is row[1]
     assert context.obligations[0]['matched_provenance'] is row[1]
     assert row[1]['seal_field'] == 'result_digest'
+
+
+def test_private_retained_measurement_bounds_clock_work_per_character_block():
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    calls = []
+    budget = ReferenceCollectionBudget(monotonic=lambda: calls.append(1) or 0)
+    value = 'exact retained receipt' * 200
+    assert budget_api()._measure(value, 8192, work_budget=budget) == len(value) + 2
+    assert len(calls) <= 16  # Five bounded blocks, not one call per character.
+
+
+@pytest.mark.parametrize('value', ['', 'plain text', 'quote"slash\\\b\f\n\r\t\x00',
+                                  'é€😀' * 500])
+def test_private_retained_measurement_keeps_exact_utf8_escape_and_byte_caps(value):
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    c = budget_api()
+    exact = len(json.dumps(value, ensure_ascii=False).encode('utf-8'))
+    assert c._measure(value, exact, work_budget=ReferenceCollectionBudget()) == exact
+    with pytest.raises(c.RetainedEmissionBudgetError):
+        c._measure(value, exact - 1, work_budget=ReferenceCollectionBudget())
+
+
+@pytest.mark.parametrize('value', ['x', 'x' * 1025])
+def test_private_retained_measurement_refuses_elapsed_original_deadline(monkeypatch, value):
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    c = budget_api()
+    elapsed = [0]
+    original_encode = json.dumps
+    def work(fragment, **kwargs):
+        elapsed[0] = 30
+        return original_encode(fragment, **kwargs)
+    monkeypatch.setattr(c.json, 'dumps', work)
+    budget = ReferenceCollectionBudget._for_scene_lifecycle_plan(monotonic=lambda: elapsed[0])
+    with pytest.raises(ValueError, match='reference_deadline_exceeded'):
+        c._measure(value, 4096, work_budget=budget)
+
+
+def test_private_retained_measurement_encodes_only_finite_string_fragments(monkeypatch):
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    c = budget_api()
+    original = json.dumps
+    value = 'é€😀\x00\\"' * 600
+    exact = len(original(value, ensure_ascii=False).encode('utf-8'))
+    seen = []
+    def encode(fragment, **kwargs):
+        assert type(fragment) is str and len(fragment) <= 1024
+        seen.append(len(fragment))
+        return original(fragment, **kwargs)
+    monkeypatch.setattr(c.json, 'dumps', encode)
+    budget = ReferenceCollectionBudget()
+    assert c._measure(value, exact, work_budget=budget) == exact
+    assert sum(seen) == len(value) and len(seen) == 4
+    assert budget.counts['values'] == 1
+
+
+def test_private_retained_measurement_rejects_minimum_size_before_encoding(monkeypatch):
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    c = budget_api()
+    monkeypatch.setattr(c.json, 'dumps', lambda *a, **k: pytest.fail('encode before minimum-size admission'))
+    with pytest.raises(c.RetainedEmissionBudgetError):
+        c._measure('x' * 1024, 1025, work_budget=ReferenceCollectionBudget())
+
+
+def test_private_retained_measurement_keeps_surrogate_refusal():
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    with pytest.raises(budget_api().RetainedEmissionBudgetError):
+        budget_api()._measure('x' * 1024 + '\ud800', 4096, work_budget=ReferenceCollectionBudget())

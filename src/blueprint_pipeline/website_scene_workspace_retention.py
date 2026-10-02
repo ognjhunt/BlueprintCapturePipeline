@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .completed_replay_cache_retention import active_reference
+from .capture_delivery_ledger import ended_producer_delivery_keys
 from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
 from .control_plane_evidence_offload import ControlPlaneEvidenceOffloadError, _HashingSink, _pack_stream
 from .control_plane_storage_gc import _pinned_workspace
@@ -1797,8 +1798,10 @@ def retired_capture_status(*, storage_root: Path, bucket: str, scene_id: str,
         digests.add(ack["payload_sha256"])
     if status == TERMINAL_AUTHORITY_STATUS:
         digests |= ended_payload_digests(ledger)
+    delivery_keys = ended_producer_delivery_keys(ledger)
     return {"status": status, "queue_disposition": disposition, "covers_every_payload": status == "completed",
-            "payload_sha256s": sorted(digests), "receipt": str(path),
+            "payload_sha256s": sorted(digests), "producer_delivery_keys": sorted(delivery_keys),
+            "receipt": str(path),
             "retired_at_epoch": receipt.get("retired_at_epoch")}
 
 

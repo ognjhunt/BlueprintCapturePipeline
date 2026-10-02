@@ -26,6 +26,11 @@ _CHILD = "sam31-" + _HEX
 _SEQ = r"[0-9]{6,}"
 # Literal source layouts, not caller-selectable traversal policies.
 _ROLES = {
+    "activation": (
+        ("identities", "identity", _ID + r"\.json", None),
+        ("results", "result", _STEM + r"\.json", None),
+        ("results/conflicts", "result_conflict", _STEM + "-" + _HEX + r"\.json", None),
+    ),
     "preparation": (
         ("identities", "identity", _ID + r"\.json", None),
         ("results", "result", _STEM + r"\.json", None),
@@ -51,7 +56,7 @@ class AuxiliaryQueueObservationError(ValueError):
 
 @dataclass(frozen=True)
 class AuxiliaryQueueContract:
-    family: Literal["preparation", "sam"]
+    family: Literal["preparation", "activation", "sam"]
     root_path: str
 
 
@@ -123,7 +128,7 @@ def _attempted(family: str) -> tuple[str, ...]:
     roles = {row[1] for row in _ROLES[family]}
     if family == "preparation":
         roles.add("resume_failure")
-    else:
+    elif family in {"activation", "sam"}:
         roles.add("result_conflict")
     return tuple(sorted(roles))
 
@@ -176,7 +181,7 @@ class _AuxScan(primary._Scan):
         for name in names:
             self.tick()
             # Only the reviewed reserved child is processed by a separate role.
-            if contract.family == "preparation" and relative == "results" and name == "conflicts":
+            if contract.family in {"preparation", "activation"} and relative == "results" and name == "conflicts":
                 continue
             try:
                 self.location(contract.root_path, relative + "/" + name)
