@@ -107,7 +107,7 @@ def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
         "transport": {"type": "http", "server_url": url, "headers": {}},
         "credential_id": "credential_synthetic_owner_" + label, "allowed_tools": None,
         "connection_origin": "service", "required": False, "request_metadata": {}}
-        for label, (url, _) in search.MCP_READ_TOOLS.items()]
+        for label, (url, _) in search.MCP_READ_TOOLS.items() if label in {"googlesheets", "slack"}]
     api.agent["tools"].extend(deepcopy(connections))
     original = deepcopy(api.agent)
     with pytest.raises(Refusal, match="agent_configuration_mismatch"):
@@ -141,10 +141,41 @@ def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
     changed = deepcopy(connections)
     changed[0]["credential_id"] += "_changed"
     api.agent["tools"][-2:] = changed
+    notion = {"type": "mcp", "server_label": "notion",
+        "transport": {"type": "http", "server_url": "https://mcp.notion.com/mcp", "headers": {}},
+        "credential_id": "credential_synthetic_owner_notion", "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(notion)
     Consumer.check_session(row, api.get("session", row["session_id"]))
     fresh = preflight(api, search_provider=search.PROFILE, mcp_profile=search.MCP_PROFILE)
-    assert fresh["mcp_binding"] == changed and row["mcp_binding"] == connections
+    assert fresh["mcp_binding"] == changed + [notion] and row["mcp_binding"] == connections
     assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == payload
+
+
+@pytest.mark.parametrize("allowed", [None, ["notion-fetch", "notion-create-pages"]])
+def test_owner_notion_is_frozen_and_session_tools_are_only_official_reads(fixture, allowed):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "notion",
+        "transport": {"type": "http", "server_url": "https://mcp.notion.com/mcp", "headers": {}},
+        "credential_id": "credential_synthetic_owner_notion", "allowed_tools": allowed,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(deepcopy(tool))
+    original = deepcopy(api.agent)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    expected = ["notion-get-tool-access", "notion-search", "notion-fetch"] if allowed is None else ["notion-fetch"]
+    assert api.agent == original and row["mcp_binding"] == [tool]
+    assert row["metadata"]["mcp_binding_digest"] == digest([tool])
+    assert api.payloads[0]["agent"]["tools"][-1] == {**tool, "allowed_tools": expected}
+    assert "notion-create-pages" not in api.payloads[0]["agent"]["tools"][-1]["allowed_tools"]
+    assert "notion-get-tool-access" in api.payloads[0]["agent"]["instructions"]
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    session["agent"]["tools"][-1]["allowed_tools"].append("notion-update-page")
+    with pytest.raises(Refusal, match="agent_search_profile_mismatch"):
+        Consumer.check_session(row, session)
+    assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == row["create_payload"]
+    assert not api.executions
 
 
 @pytest.mark.parametrize("change", ["headers", "metadata", "endpoint", "origin", "unknown_server", "malformed_label"])

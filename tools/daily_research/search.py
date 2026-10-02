@@ -23,6 +23,7 @@ MCP_PROFILE = "owner-readonly-mcp-v1"
 MCP_READ_TOOLS = {
     "googlesheets": ("https://sheetsmcp.googleapis.com/mcp/v1", ("get_values", "get_spreadsheet")),
     "slack": ("https://mcp.slack.com/mcp", ("slack_search_public", "slack_search_channels", "slack_read_channel", "slack_read_thread")),
+    "notion": ("https://mcp.notion.com/mcp", ("notion-get-tool-access", "notion-search", "notion-fetch")),
 }
 SEARCH = "blueprint_search"
 READ = "blueprint_read_source"
