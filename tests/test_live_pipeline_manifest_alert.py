@@ -170,6 +170,7 @@ def test_live_pipeline_manifest_alert_sends_bounded_webhook(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(alert, "running_release_commit", lambda module_path: "")
     manifest = tmp_path / "manifest.json"
     _write_json(
         manifest,
