@@ -104,17 +104,17 @@ def _deadline(deadline):
     return remaining
 
 
-def _bounded_command(command, *, deadline, max_output_bytes=65536, pass_fds=()):
+def _bounded_command(command, *, deadline, max_output_bytes=65536, pass_fds=(), stdin=None, env=None):
     """Receive tool output under its cap and reap on every exit path."""
     process = None
     buffers = [bytearray(), bytearray()]
     with selectors.DefaultSelector() as selector:
         try:
             _deadline(deadline)
-            process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL if stdin is None else stdin,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True, pass_fds=pass_fds,
-                env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/root',
-                     'LIBGUESTFS_BACKEND': 'direct'})
+                env=env if env is not None else {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'HOME': '/root',
+                                                 'LIBGUESTFS_BACKEND': 'direct'})
             for index, stream in enumerate((process.stdout, process.stderr)):
                 selector.register(stream, selectors.EVENT_READ, index)
             while selector.get_map():
@@ -191,25 +191,34 @@ def run_vm(image, serial_path, *, phase, deadline_monotonic, required_disk_bytes
     _deadline(deadline_monotonic)
     final = image.lstat()
     _require((final.st_dev, final.st_ino) == identity, 'image_changed')
+    _deadline(deadline_monotonic)
     return GuestRun(process, str(image), identity, tuple(command), phase, image_fd)
 
 
 def _guestfish(image, arguments, deadline, *, pass_fds=()):
     _deadline(deadline)
-    result = _bounded_command(['/usr/bin/guestfish', '--ro', '-a', str(image), '-i', *arguments],
+    result = _bounded_command(['/usr/bin/guestfish', '--ro', '--format=qcow2', '-a', str(image), '-i', *arguments],
                               deadline=min(deadline, time.monotonic() + 60), pass_fds=pass_fds)
     _require(result.returncode == 0, 'offline_extraction_failed')
     return result.stdout.decode('ascii').strip()
 
 
-def _open_directory(path):
+def _directory_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid)
+
+
+def _open_directory(path, identities=None):
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
+        if identities is not None:
+            identities.append(_directory_identity(os.fstat(fd)))
         for name in path.parts[1:]:
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                             dir_fd=fd)
             os.close(fd)
             fd = child
+            if identities is not None:
+                identities.append(_directory_identity(os.fstat(fd)))
         return fd
     except BaseException:
         os.close(fd)
@@ -240,7 +249,24 @@ def extract_evidence(guest, image, destination, names, *, deadline_monotonic):
     _require(destination.is_absolute()
              and not any(p.is_symlink() for p in (destination, *destination.parents)),
              'evidence_destination_untrusted')
-    # The stopped private disk cannot change between no-follow checks and copy.
+    fd = os.open(image, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        _require((opened.st_dev, opened.st_ino) == guest.image_identity, 'image_changed')
+        # Parent PID remains alive with this descriptor until every helper is
+        # reaped. Backend descendants therefore resolve the same held inode.
+        bound = Path(f'/proc/{os.getpid()}/fd/{fd}')
+        sizes = _extract_files(bound, destination, names, deadline_monotonic)
+        final = image.lstat()
+        _require((final.st_dev, final.st_ino) == guest.image_identity, 'image_changed')
+        _deadline(deadline_monotonic)
+        return sizes
+    finally:
+        os.close(fd)
+
+
+def _extract_files(image, destination, names, deadline_monotonic):
+    # The guest is stopped and the source descriptor is retained by the caller.
     for parent in ('/var', '/var/lib', '/var/lib/blueprint-ci', EVIDENCE_ROOT):
         _require(_guestfish(image, ['is-symlink', parent], deadline_monotonic) == 'false', 'evidence_alias')
     sizes = {}
@@ -253,13 +279,15 @@ def extract_evidence(guest, image, destination, names, *, deadline_monotonic):
         _require(0 < size <= MAX_EVIDENCE_BYTES and sum(sizes.values()) + size <= MAX_EVIDENCE_BYTES,
                  'evidence_size')
         sizes[name] = size
-    parent = _open_directory(destination.parent)
+    ancestry = []
+    parent = _open_directory(destination.parent, ancestry)
     directory = None
     try:
         os.mkdir(destination.name, mode=0o700, dir_fd=parent)
         directory = os.open(destination.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                             dir_fd=parent)
         original = os.fstat(directory)
+        ancestry.append(_directory_identity(original))
         for name, size in sizes.items():
             _deadline(deadline_monotonic)
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -275,9 +303,15 @@ def extract_evidence(guest, image, destination, names, *, deadline_monotonic):
                          == (named.st_dev, named.st_ino), 'evidence_copy_invalid')
             finally:
                 os.close(fd)
-        final = destination.lstat()
-        _require((final.st_dev, final.st_ino) == (original.st_dev, original.st_ino),
-                 'evidence_destination_changed')
+        final_ancestry = []
+        try:
+            final_fd = _open_directory(destination, final_ancestry)
+        except OSError:
+            raise GuestExecutionError('native_guest_evidence_destination_changed') from None
+        try:
+            _require(final_ancestry == ancestry, 'evidence_destination_changed')
+        finally:
+            os.close(final_fd)
     finally:
         if directory is not None:
             os.close(directory)

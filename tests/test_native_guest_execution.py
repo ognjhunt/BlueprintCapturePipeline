@@ -258,3 +258,76 @@ def test_setup_that_consumes_phase_deadline_never_launches_process(tmp_path, mon
         execution.run_vm(tmp_path / 'image', tmp_path / 'serial.log', phase='test',
                          required_disk_bytes=1, deadline_monotonic=deadline)
     assert calls == []
+
+
+def test_image_replacement_during_extraction_cannot_change_observed_disk(tmp_path, monkeypatch):
+    guest = _receipt(tmp_path)
+    source = tmp_path / 'image'
+    original = source.read_bytes()
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    observed = []
+    def guestfish(image, arguments, deadline, **kwargs):
+        if not observed:
+            source.rename(tmp_path / 'original')
+            source.write_bytes(b'foreign replacement')
+        if str(image).startswith(f'/proc/{execution.os.getpid()}/fd/'):
+            observed.append(execution.os.pread(int(image.name), 100, 0))
+        else:
+            observed.append(Path(image).read_bytes())
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        execution.os.write(int(arguments[-1].rsplit('/', 1)[1]), b'guest00\n')
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    with pytest.raises(execution.GuestExecutionError, match='image_changed'):
+        execution.extract_evidence(guest, source, tmp_path / 'evidence', ['native-junit.xml'],
+                                   deadline_monotonic=time.monotonic() + 60)
+    assert observed and all(raw == original for raw in observed)
+    assert source.read_bytes() == b'foreign replacement'
+
+
+def test_ancestor_alias_cannot_pass_destination_inode_equality(tmp_path, monkeypatch):
+    guest = _receipt(tmp_path)
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    parent = tmp_path / 'parent'
+    parent.mkdir()
+    def guestfish(image, arguments, deadline, **kwargs):
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        moved = tmp_path / 'original-parent'
+        parent.rename(moved)
+        parent.symlink_to(moved, target_is_directory=True)
+        execution.os.write(int(arguments[-1].rsplit('/', 1)[1]), b'guest00\n')
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    with pytest.raises(execution.GuestExecutionError, match='evidence_destination_changed'):
+        execution.extract_evidence(guest, tmp_path / 'image', parent / 'evidence', ['native-junit.xml'],
+                                   deadline_monotonic=time.monotonic() + 60)
+
+
+def test_last_named_image_guard_cannot_return_after_phase_deadline(tmp_path, monkeypatch):
+    image = tmp_path / 'image'
+    image.write_bytes(b'tiny fixture')
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kw: None)
+    monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kw: [sys.executable, '-c', 'print("done")'])
+    observed = [time.monotonic()]
+    deadline = observed[0] + 60
+    monkeypatch.setattr(execution.time, 'monotonic', lambda: observed[0])
+    original = Path.lstat
+    calls = [0]
+    def lstat(path):
+        value = original(path)
+        if path == image:
+            calls[0] += 1
+            if calls[0] == 2:
+                observed[0] = deadline + 1
+        return value
+    monkeypatch.setattr(Path, 'lstat', lstat)
+    with pytest.raises(execution.GuestExecutionError, match='phase_deadline_expired'):
+        execution.run_vm(image, tmp_path / 'serial.log', phase='test',
+                         required_disk_bytes=1, deadline_monotonic=deadline)
