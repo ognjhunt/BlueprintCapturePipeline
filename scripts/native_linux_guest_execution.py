@@ -211,6 +211,7 @@ def run_vm(image, serial_path, *, phase, deadline_monotonic, required_disk_bytes
         _check_ancestry(serial_path.parent, ancestry, 'serial_changed')
         _check_leaf(output.fileno(), parent, serial_path.name, snapshot,
                     deadline_monotonic, 'serial_changed')
+        _check_ancestry(serial_path.parent, ancestry, 'serial_changed')
         _deadline(deadline_monotonic)
         return GuestRun(process, str(image), identity, tuple(command), phase, image_fd)
 
@@ -285,6 +286,10 @@ def _check_leaf(fd, directory, name, snapshot, deadline, code):
         raise GuestExecutionError('native_guest_' + code) from None
     _require(_file_identity(named) == snapshot[0]
              and _file_snapshot(fd, deadline, code) == snapshot, code)
+    try:
+        _require(_file_identity(os.stat(name, dir_fd=directory, follow_symlinks=False)) == snapshot[0], code)
+    except OSError:
+        raise GuestExecutionError('native_guest_' + code) from None
 
 
 def extract_evidence(guest, image, destination, names, *, deadline_monotonic):
@@ -369,6 +374,7 @@ def _extract_files(image, destination, names, deadline_monotonic):
         _check_ancestry(destination, ancestry, 'evidence_destination_changed')
         for fd, name, snapshot in leaves:
             _check_leaf(fd, directory, name, snapshot, deadline_monotonic, 'evidence_copy_invalid')
+        _check_ancestry(destination, ancestry, 'evidence_destination_changed')
         _deadline(deadline_monotonic)
     finally:
         for fd, _, _ in leaves:

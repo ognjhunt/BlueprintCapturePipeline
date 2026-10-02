@@ -440,3 +440,39 @@ def test_evidence_is_still_bound_after_last_named_image_guard(tmp_path, monkeypa
     with pytest.raises(execution.GuestExecutionError, match='evidence_copy_invalid'):
         execution.extract_evidence(guest, image, destination, ['native-junit.xml'],
                                    deadline_monotonic=time.monotonic() + 60)
+
+
+@pytest.mark.parametrize('operation', ['serial', 'evidence'])
+def test_ancestor_replacement_during_final_digest_is_refused(tmp_path, monkeypatch, operation):
+    guest = _receipt(tmp_path)
+    parent = tmp_path / 'parent'
+    parent.mkdir()
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kwargs: None)
+    monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kwargs: [sys.executable, '-c', 'print("done")'])
+    def guestfish(image, arguments, deadline, **kwargs):
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        execution.os.write(int(arguments[-1].rsplit('/', 1)[1]), b'guest00\n')
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    original = execution.os.pread
+    reads = [0]
+    def pread(fd, size, offset):
+        raw = original(fd, size, offset)
+        reads[0] += 1
+        if reads[0] == (2 if operation == 'serial' else 3):
+            moved = tmp_path / 'owned-parent'
+            parent.rename(moved)
+            parent.symlink_to(moved, target_is_directory=True)
+        return raw
+    monkeypatch.setattr(execution.os, 'pread', pread)
+    with pytest.raises(execution.GuestExecutionError, match='serial_changed|evidence_destination_changed'):
+        if operation == 'serial':
+            execution.run_vm(tmp_path / 'image', parent / 'serial.log', phase='test',
+                             required_disk_bytes=1, deadline_monotonic=time.monotonic() + 3)
+        else:
+            execution.extract_evidence(guest, tmp_path / 'image', parent / 'evidence', ['native-junit.xml'],
+                                       deadline_monotonic=time.monotonic() + 60)
