@@ -1153,6 +1153,10 @@ def _gc_sandbox_main(selected):
     _TargetFiles.slot = _retain_native_limit(_TargetFiles.slot, native_limit_failures)
     _TargetFiles.read_bytes = _retain_native_limit(_TargetFiles.read_bytes, native_limit_failures)
     _ReferenceFiles.read_bytes = _retain_native_limit(_ReferenceFiles.read_bytes, native_limit_failures)
+    from blueprint_pipeline.control_plane_lane_disk_diagnostic_references import DiagnosticReferences
+    from tests.registered_disk_diagnostic_native_acceptance import observe_reference_failures
+    native_reference_failures = {'records': [], 'truncated': False}
+    observe_reference_failures(DiagnosticReferences, native_reference_failures)
     report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(),
         pins_root=Path(selection['pins']), apply=True, ack=RUN_ACK,
         lane_scratch_roots=(settings['lane_scratch_work_root'], settings['lane_scratch_inputs_root']),
@@ -1172,6 +1176,7 @@ def _gc_sandbox_main(selected):
         assert not cloud.objects and not cloud.bodies
     result = dict(report={'registered_experiments': report['registered_experiments']},
         native_limit_failures=native_limit_failures,
+        native_reference_failures=native_reference_failures,
         objects=[dict(key=key, payload=base64.b64encode(raw).decode('ascii'))
                  for key, raw in cloud.objects.items()], object_metadata=cloud.metadata,
         all_native_responses_closed=True, actual_shipped_sandbox=True,

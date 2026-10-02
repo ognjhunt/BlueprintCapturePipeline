@@ -81,6 +81,76 @@ def run_observed(root):
         raise
 
 
+def observe_reference_failures(reference_type, evidence):
+    """Retain an actual caught UNKNOWN before GC consumes it; never clear it.
+
+    Wrapping methods preserves the concrete class and original calls. Guard and
+    constructor may observe the same exception at two explicitly named catch
+    boundaries. No host access, clock, budget or reference predicate is added.
+    """
+    from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    from blueprint_pipeline.control_plane_lane_disk_diagnostic_references import OwnerTargetVersionError
+    from tests.historical_generation_native_acceptance import _failed_process_view
+
+    inspector_code = processes._inspect_process.__code__
+
+    def record(error, boundary):
+        if len(evidence['records']) >= 4:
+            evidence['truncated'] = True
+            return
+        selected = failure_evidence(error)
+        selected.update(boundary=boundary, observation_phase='caught_unknown_before_gc_consumption',
+                        final_process_identity_verified=False, same_failed_views=[])
+        pending, seen = [error], set()
+        while pending and len(seen) < 8:
+            current = pending.pop()
+            if id(current) in seen:
+                selected['truncated'] = True
+                continue
+            seen.add(id(current))
+            trace, frames = current.__traceback__, 0
+            while trace is not None and frames < 16:
+                # A same-named foreign frame is not the installed inspector.
+                if trace.tb_frame.f_code is inspector_code:
+                    view = _failed_process_view(trace.tb_frame.f_locals)
+                    if view:
+                        if len(selected['same_failed_views']) < 4:
+                            selected['same_failed_views'].append(view)
+                        else:
+                            selected['truncated'] = True
+                trace, frames = trace.tb_next, frames + 1
+            selected['truncated'] |= trace is not None
+            if current.__context__ is not None:
+                pending.append(current.__context__)
+            if current.__cause__ is not None and current.__cause__ is not current.__context__:
+                pending.append(current.__cause__)
+        selected['truncated'] |= bool(pending)
+        candidate = {'records': [*evidence['records'], selected], 'truncated': evidence['truncated']}
+        if len(json.dumps(candidate).encode()) > 16384:
+            evidence['truncated'] = True
+            return
+        evidence['records'].append(selected)
+
+    def wrap(original, boundary):
+        @functools.wraps(original)
+        def observed(self, *args, **kwargs):
+            try:
+                return original(self, *args, **kwargs)
+            except Exception as error:
+                if type(error) is OwnerTargetVersionError and error.code == 'experiment_diagnostic_references_unknown':
+                    try:
+                        record(error, boundary)
+                    except Exception:
+                        pass  # Evidence failure cannot replace the original refusal.
+                raise
+        return observed
+
+    originals = reference_type.__init__, reference_type.guard
+    reference_type.__init__ = wrap(originals[0], 'constructor')
+    reference_type.guard = wrap(originals[1], 'guard')
+    return originals
+
+
 def _ordinary_denied(target, value, account):
     before = {path.name: path.read_bytes() for path in target.iterdir()}
     read, write = os.pipe()
@@ -397,7 +467,7 @@ def run(root):
         _current_queue_keeps(value, action, pins, report, directory_alias=method == 'offload')
         result = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=1)
         row = next(row for row in result['report']['registered_experiments']['outcomes'] if row['action_id'] == action['action_id'])
-        assert row['decision'] == 'retired' and row['receipt'] and row['removed_logical_bytes'] == len(before), (row, result.get('native_limit_failures'))
+        assert row['decision'] == 'retired' and row['receipt'] and row['removed_logical_bytes'] == len(before), (row, result.get('native_limit_failures'), result.get('native_reference_failures'))
         assert target.stat().st_ino == original_inode
         assert {p.name for p in target.iterdir()} == {'.lane-scratch.v1.json', '.registered-experiment.v1.json'}
         repeated = _run_shipped_gc_sandbox(value, action, time.time(), pins, realtime=True, invocation=2)
