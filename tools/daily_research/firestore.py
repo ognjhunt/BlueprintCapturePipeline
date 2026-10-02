@@ -155,6 +155,7 @@ class FencedProvider(Provider):
             raise Refusal("validation_repair_input_not_admitted")
         self.ledger.bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         self.repair_action_guard(day, deadline_ms)
+        self.repair_input_phase = "provider_submission"
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
     def repair_action_guard(self, day, deadline_ms):
