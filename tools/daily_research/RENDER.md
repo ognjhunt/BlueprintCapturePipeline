@@ -233,3 +233,42 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
 Rollback: disable the research worker flag and Firestore control, preserve all
 dated state and artifacts, and return to the previous WebApp release if needed.
 Never restore an empty ledger or an older snapshot of run state.
+
+## Same-session agent repair (Oct 2)
+
+Owner request `Sentinel_3b6171ff167c8191b378202c5f0c54c0` authorizes an agent
+repair loop for the already retained baseline. `repair-output --attempt 1
+--date 2026-10-01` uses the same installed/isolated package and archive arguments
+above, under `timeout --signal=TERM --kill-after=60s 1860s`. It pins one immutable
+30-minute correction-plus-QA window against the exact original session/root/raw
+hash and existing shared $25 soft baseline authority. Invoking it again resumes
+that window; it never resets the root clock or creates another research session.
+No additional `recover-output` or ten-minute QA receipt is required for this path.
+
+The agent receives precise validation failures and retained evidence/context,
+fresh CRM identity keys only, and writes a complete corrected report. It chooses
+its strategy and configured tools, preserving supported work and marking gaps
+honestly. Ordinary operator background requires no robot maturity grade;
+employer-hosted job boards require semantic affiliation checks in agent QA.
+Original bytes, failure and every correction input/artifact remain immutable in
+durable state. Expected pending usage does not block correction or QA. Duplicate
+effect claims, disabled/revoked authority, late cancellation and genuine lack of
+progress remain bounded. An accepted request with a lost reply is observed by GET
+and never resubmitted. A validated correction proceeds through existing QA and
+canonical publication. Restart after QA/publication starts resumes that phase.
+
+For the native fixture owner, `recovery.replay_saved_artifact(row, raw_artifact,
+tool_files, known, observed_at)` is a pure offline full-contract replay. Supply
+the complete retained row, exact raw report bytes, immutable source/tool files
+keyed by filename, original CRM identity set and an aware observation time. It
+verifies raw/context hashes, collects all independent feedback, derives only
+evidence-bound precision and optional proposal quarantine, then revalidates the
+entire report/coverage. The sanitized return includes remaining errors, derived
+hash, counts and exact normalization receipts; it makes no provider/database or
+publication call and cannot claim QA/newness. Keep the private fixture outside
+the repository. After verified live QA/publication use `export-recovered` from
+this overlay; it includes all hash-verified versioned repair inputs/artifacts.
+
+Ordinary daily runs use this same loop automatically within their existing
+workflow authorization, original total deadline and daily soft budget. They do
+not require this one-time baseline command or any Dot/parent runtime step.
