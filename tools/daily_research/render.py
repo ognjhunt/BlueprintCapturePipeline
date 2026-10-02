@@ -203,6 +203,10 @@ def export_snapshot(bridge, day, destination):
                 "number": current["number"], "turn_id": current["turn_id"],
                 "artifact_sha256": current["artifact_digest"], "original_artifact_sha256": row["raw_output_digest"]}:
             raise Refusal("validation_repair_export_packet_binding_mismatch")
+    outcome = row.get("validation_repair_outcome")
+    if outcome and row.get("packet", {}).get("research_exclusions") != {key: outcome[key] for key in (
+            "revision", "turn_id", "artifact_sha256", "original_artifact_sha256", "excluded")}:
+        raise Refusal("validation_repair_export_packet_binding_mismatch")
     if "evidence" in files and digest(json.loads(files["evidence"])) != row.get("evidence_digest"):
         raise Refusal("evidence_digest_mismatch")
     if "review" in files:

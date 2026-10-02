@@ -1018,10 +1018,18 @@ def test_repair_loop_stops_repeated_failure_without_new_session(fixture, monkeyp
     try:
         api.repaired_raw = api.raw
         result = canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api,
-                                     clock=lambda: NOW + timedelta(hours=1), sleep=lambda _: None)
+                                     clock=lambda: NOW + timedelta(hours=1), sleep=lambda _: None,
+                                     authority_reference='synthetic-recorded-repair-approval')
+        # The repeated failure stops correction; its located proposal is excluded
+        # so the valid candidate still reaches the same QA and publication gates.
         assert result['validation_repairs'][-1]['state'] == 'no_progress'
-        assert len(api.repair_calls) == len(api.payloads) == 1 and not api.inputs
-        assert ledger.get(canary.DAY)['state'] == 'failed'
+        assert result['state'] == 'completed' and result['qa_state'] == 'validated'
+        assert len(api.repair_calls) == len(api.payloads) == len(api.inputs) == 1
+        final = ledger.get(canary.DAY)
+        assert final['validation_repair_outcome']['state'] == 'accepted_with_exclusions'
+        assert [e['field'] for e in final['validation_repair_outcome']['excluded']] == ['proposed_knowledge_deltas']
+        request = final['validation_repair_authority']['request']
+        assert request['authority_reference'] == 'synthetic-recorded-repair-approval'
     finally:
         bridge.close()
 
@@ -1118,11 +1126,16 @@ def test_late_completed_repair_is_retained_but_never_qualified(fixture, monkeypa
             return values
         api.listing = late
         result = canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api, clock=lambda: later, sleep=lambda _: None)
-        revision = ledger.get(canary.DAY)["validation_repairs"][-1]
-        assert revision["state"] == "no_progress" and result["state"] == "failed"
+        final = ledger.get(canary.DAY)
+        revision = final["validation_repairs"][-1]
+        assert revision["state"] == "no_progress"
         assert revision["error"] == "validation_repair_terminal_guard_failed"
         assert ledger.read_bytes(revision["artifact_file"]) == api.repaired_raw
-        assert not api.inputs
+        # The late correction is retained but never qualified: the in-window
+        # original continues with only its located failure excluded.
+        assert final["validation_repair_outcome"]["revision"] == 0
+        assert final["packet"]["research_exclusions"]["artifact_sha256"] == final["raw_output_digest"]
+        assert result["state"] == "completed" and len(api.inputs) == 1
     finally:
         bridge.close()
 

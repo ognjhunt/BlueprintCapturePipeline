@@ -291,6 +291,28 @@ Ordinary daily runs use this same loop automatically within their existing
 workflow authorization, original total deadline and daily soft budget. They do
 not require this one-time baseline command or any Dot/parent runtime step.
 
+**Feedback is the gate itself.** `validation_feedback` reports every failure at
+once from the same ordered rules the strict gate raises (`runner.output_issues`,
+verified against a frozen copy of the previous gate). Each failure is located
+to the exact field, and one defect never cascades into a second report.
+
+**No progress keeps valid work instead of blocking it.** When a correction ends
+in `no_progress` (an identical repeat, a failed or late turn, or no artifact),
+the loop takes the best eligible revision: the original or an in-window
+diagnosed correction. It excludes only items whose every failure is located
+inside them (a candidate, a knowledge proposal or a summary line) and sends the
+rest through the unchanged strict gate to the same QA and publication. Late or
+unread corrections are retained but never used. Excluded items stay in
+`validation_repair_outcome` and the packet's `research_exclusions`, and agent QA
+reports them as rejected. Global failures, and corrections an operator or
+deadline cancelled, stay blocked with the complete feedback.
+
+**Approvals are data, not code.** The core window check binds a correction's
+recorded approval to the row's own admitted baseline (id, soft total, budget
+reference). A new approval needs `repair-output --authority-reference
+EXISTING_APPROVAL`, never a release. The helper's default remains the reference
+recorded above.
+
 If a baseline correction expires without a confirmed turn, preserve its input,
 claim, deadline and cancellation evidence. The existing provider-free
 `recover-output` path may prepare the retained original report only after full

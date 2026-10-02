@@ -254,99 +254,215 @@ def load_knowledge_context(config, now):
     return load_knowledge_bundle(config, now)[0]
 
 
-def validate_output(output, run_date, known, *, contract_version=1, knowledge_context=None, observed_at=None, refresh_policy=None):
-    if not isinstance(output, dict):
-        raise Refusal("output_schema_invalid")
-    required_output = {"checked_date", "findings", "blockers", "proposed_next_actions", "candidates"}
+CANDIDATE_FIELDS = frozenset({"organization", "organization_url", "site", "location", "task", "potential_robot_match",
+                              "qualification_status", "confidence", "unknowns", "proposed_next_action", "evidence"})
+SUMMARY_FIELDS = ("findings", "blockers", "proposed_next_actions")
+REQUIRED_ROLES = frozenset({"task", "capability", "geography"})
+
+
+def evidence_fields(contract_version):
+    fields = {"claim", "url", "publisher", "source_date", "checked_date", "classification", "claim_kind", "role", "quote"}
     if contract_version in {2, 3}:
-        required_output |= {"schema_version", "snapshot_content_hash", "proposed_knowledge_deltas"}
-        if (output.get("schema_version") != f"blueprint.daily-research.v{contract_version}" or not knowledge_context
-                or output.get("snapshot_content_hash") != knowledge_context["content_hash"]):
-            raise Refusal("output_version_or_snapshot_binding_invalid")
+        fields |= contracts.EVIDENCE_V2
         if contract_version == 3:
-            required_output.add("refresh_policy_hash")
-            try:
+            fields.add("assertion_scope")
+    return fields
+
+
+def required_output_fields(output, contract_version):
+    fields = {"checked_date", "findings", "blockers", "proposed_next_actions", "candidates"}
+    if contract_version in {2, 3}:
+        fields |= {"schema_version", "snapshot_content_hash", "proposed_knowledge_deltas"}
+    if contract_version == 3:
+        fields.add("refresh_policy_hash")
+        if isinstance(output, dict) and "coverage" in output:
+            fields.add("coverage")
+    return fields
+
+
+def _probe(check, collect, malformed="output_schema_invalid"):
+    """One strict check: its stable code or None. Strict mode re-raises malformed values."""
+    try:
+        check()
+    except (Refusal, knowledge.SnapshotError) as exc:
+        return str(exc)
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        if not collect:
+            raise
+        return malformed
+    return None
+
+
+def _issue(pointer, code, *, system=False):
+    return {"pointer": pointer, "code": code, **({"system": True} if system else {})}
+
+
+def output_issues(output, run_date, *, contract_version=1, knowledge_context=None, observed_at=None,
+                  refresh_policy=None, collect=False):
+    """Every strict output rule, in the exact fail-fast order, as located issues.
+
+    validate_output raises the first issue, so the acceptance gate and repair
+    feedback cannot disagree about a rule. Strict mode lets malformed values raise
+    exactly as before; collect=True reports them and keeps checking siblings.
+    System issues describe Blueprint's own bindings, never the agent's output.
+    """
+    if not isinstance(output, dict):
+        yield _issue("", "output_schema_invalid")
+        return
+    v23 = contract_version in {2, 3}
+    if v23:
+        if not knowledge_context:
+            yield _issue("", "output_version_or_snapshot_binding_invalid", system=True)
+            return
+        if output.get("schema_version") != f"blueprint.daily-research.v{contract_version}":
+            yield _issue("/schema_version", "output_version_or_snapshot_binding_invalid")
+        if output.get("snapshot_content_hash") != knowledge_context["content_hash"]:
+            yield _issue("/snapshot_content_hash", "output_version_or_snapshot_binding_invalid")
+        if contract_version == 3:
+            def policy_context():
                 knowledge.require(isinstance(refresh_policy, dict), "refresh_policy_context_missing")
                 freshness.validate_context(knowledge_context, refresh_policy)
-                knowledge.require(output.get("refresh_policy_hash") == refresh_policy["policy_hash"], "output_refresh_policy_binding_invalid")
-            except knowledge.SnapshotError as exc:
-                raise Refusal(str(exc)) from None
-        try:
-            contracts.deltas(output.get("proposed_knowledge_deltas"), run_date, knowledge_context, observed_at, contract_version)
-        except knowledge.SnapshotError as exc:
-            raise Refusal(str(exc)) from None
+            code = _probe(policy_context, collect)
+            if code:
+                yield _issue("", code, system=True)
+            else:
+                code = _probe(lambda: knowledge.require(output.get("refresh_policy_hash") == refresh_policy["policy_hash"],
+                                                        "output_refresh_policy_binding_invalid"), collect)
+                if code:
+                    yield _issue("/refresh_policy_hash", code)
+        for pointer, code in contracts.delta_issues(output.get("proposed_knowledge_deltas"), run_date, knowledge_context,
+                                                    observed_at, contract_version, collect=collect):
+            yield _issue("/proposed_knowledge_deltas" + pointer, code)
     elif contract_version != 1:
-        raise Refusal("research_contract_version_unsupported")
+        yield _issue("", "research_contract_version_unsupported", system=True)
+        return
     if contract_version == 3 and "coverage" in output:
-        required_output.add("coverage")
         try:
             discovery.validate_coverage(output["coverage"], len(output.get("candidates", [])))
         except (ValueError, TypeError) as exc:
-            raise Refusal(str(exc) if isinstance(exc, ValueError) else "discovery_coverage_invalid") from None
-    if set(output) != required_output:
-        raise Refusal("output_schema_invalid")
+            yield _issue("/coverage", str(exc) if isinstance(exc, ValueError) else "discovery_coverage_invalid")
+    if set(output) != required_output_fields(output, contract_version):
+        yield _issue("", "output_schema_invalid")
     limit = discovery.MAX_CANDIDATES if contract_version == 3 else 3
-    if output["checked_date"] != run_date or not isinstance(output["candidates"], list) or len(output["candidates"]) > limit:
-        raise Refusal("output_date_or_count_invalid")
-    for field in ("findings", "blockers", "proposed_next_actions"):
-        if (not isinstance(output[field], list)
-                or (contract_version in {2, 3} and len(output[field]) > 20)
-                or any(not isinstance(x, str) or len(x) > 2000 or (contract_version in {2, 3} and not x.strip()) for x in output[field])):
-            raise Refusal("output_summary_invalid")
-    accepted, duplicates = [], []
-    required = {"organization", "organization_url", "site", "location", "task",
-                "potential_robot_match", "qualification_status", "confidence", "unknowns",
-                "proposed_next_action", "evidence"}
-    for c in output["candidates"]:
-        if not isinstance(c, dict) or set(c) != required:
-            raise Refusal("candidate_schema_invalid")
-        for field in required - {"unknowns", "evidence"}:
-            if not isinstance(c[field], str) or not c[field].strip() or len(c[field]) > 2000:
-                raise Refusal("candidate_field_invalid")
-        if c["confidence"] not in {"low", "medium", "high"} or c["qualification_status"] not in {"unqualified", "needs_review"}:
-            raise Refusal("candidate_claim_ceiling_invalid")
-        if not isinstance(c["unknowns"], list) or not c["unknowns"] or any(not isinstance(x, str) for x in c["unknowns"]):
-            raise Refusal("candidate_unknowns_required")
-        if contract_version in {2, 3} and (len(c["unknowns"]) > 20 or any(not x.strip() or len(x) > 2000 for x in c["unknowns"])):
-            raise Refusal("candidate_unknowns_required")
-        if not isinstance(c["evidence"], list) or not 3 <= len(c["evidence"]) <= 12:
-            raise Refusal("candidate_evidence_required")
-        roles = set()
-        for e in c["evidence"]:
-            evidence_fields = {"claim", "url", "publisher", "source_date", "checked_date", "classification", "claim_kind", "role", "quote"}
-            if contract_version in {2, 3}:
-                evidence_fields |= contracts.EVIDENCE_V2
-                if contract_version == 3:
-                    evidence_fields.add("assertion_scope")
-            if not isinstance(e, dict) or set(e) != evidence_fields:
-                raise Refusal("evidence_schema_invalid")
-            public_url(e["url"])
-            text_fields = ("claim", "publisher") if contract_version in {2, 3} and e["origin"] == "snapshot" else ("claim", "publisher", "quote")
-            if ((contract_version == 1 and e["checked_date"] != run_date) or e["classification"] not in {"operator", "vendor", "independent"}
-                    or e["claim_kind"] not in {"fact", "vendor_claim", "hypothesis"}
-                    or e["role"] not in ({"task", "capability", "geography", "background"} if contract_version == 3 else {"task", "capability", "geography"})
-                    or any(not isinstance(e[x], str) or not e[x].strip() or len(e[x]) > 2000 for x in text_fields)):
+    if "checked_date" in output and output["checked_date"] != run_date:
+        yield _issue("/checked_date", "output_date_or_count_invalid")
+    candidates = output.get("candidates")
+    if "candidates" in output and (not isinstance(candidates, list) or len(candidates) > limit):
+        yield _issue("/candidates", "output_date_or_count_invalid")
+        candidates = None
+    for field in SUMMARY_FIELDS:
+        if field not in output:
+            continue
+        values = output[field]
+        if not isinstance(values, list) or (v23 and len(values) > 20):
+            yield _issue("/" + field, "output_summary_invalid")
+            continue
+        for index, value in enumerate(values):
+            if not isinstance(value, str) or len(value) > 2000 or (v23 and not value.strip()):
+                yield _issue(f"/{field}/{index}", "output_summary_invalid")
+    for index, candidate in enumerate(candidates or []):
+        for pointer, code in _candidate_issues(candidate, run_date, contract_version, knowledge_context,
+                                               observed_at, refresh_policy, collect):
+            yield _issue(f"/candidates/{index}{pointer}", code)
+
+
+def _candidate_issues(c, run_date, contract_version, knowledge_context, observed_at, refresh_policy, collect):
+    if not isinstance(c, dict) or set(c) != CANDIDATE_FIELDS:
+        yield "", "candidate_schema_invalid"
+        return
+    invalid = set()
+    for field in sorted(CANDIDATE_FIELDS - {"unknowns", "evidence"}):
+        if not isinstance(c[field], str) or not c[field].strip() or len(c[field]) > 2000:
+            invalid.add(field)
+            yield "/" + field, "candidate_field_invalid"
+    if "confidence" not in invalid and c["confidence"] not in {"low", "medium", "high"}:
+        yield "/confidence", "candidate_claim_ceiling_invalid"
+    if "qualification_status" not in invalid and c["qualification_status"] not in {"unqualified", "needs_review"}:
+        yield "/qualification_status", "candidate_claim_ceiling_invalid"
+    unknowns = c["unknowns"]
+    malformed = not isinstance(unknowns, list) or not unknowns or any(not isinstance(x, str) for x in unknowns)
+    if malformed or contract_version in {2, 3} and (len(unknowns) > 20 or any(not x.strip() or len(x) > 2000 for x in unknowns)):
+        yield "/unknowns", "candidate_unknowns_required"
+    evidence = c["evidence"]
+    if not isinstance(evidence, list) or not 3 <= len(evidence) <= 12:
+        yield "/evidence", "candidate_evidence_required"
+        if not isinstance(evidence, list):
+            return
+    # Cross-entry rules read every structurally valid entry, even one with an
+    # unrelated defect. An entry whose own role/classification is already reported
+    # is unknowable rather than missing, so its defect never cascades into a second
+    # issue. Strict mode only reaches these rules when every entry already passed.
+    roles, operator_tasks, roles_unknown, operator_unknown = set(), 0, False, False
+    for position, entry in enumerate(evidence):
+        reported = set()
+        for pointer, code in _evidence_issues(entry, run_date, contract_version, knowledge_context, observed_at,
+                                              refresh_policy, collect):
+            reported.add(pointer)
+            yield f"/evidence/{position}{pointer}", code
+        if not isinstance(entry, dict) or set(entry) != evidence_fields(contract_version) or "/role" in reported:
+            roles_unknown = operator_unknown = True
+            continue
+        roles.add(entry["role"])
+        operator_unknown |= entry["role"] == "task" and "/classification" in reported
+        operator_tasks += entry["role"] == "task" and entry["classification"] == "operator"
+    if not roles_unknown and (not REQUIRED_ROLES <= roles if contract_version == 3 else roles != REQUIRED_ROLES):
+        yield "/evidence", "task_capability_geography_evidence_required"
+    if not operator_tasks:
+        if not operator_unknown:
+            yield "/evidence", "operator_task_source_required"
+        return
+    # Affiliation is agent QA's decision; only an unusable organization URL fails here.
+    code = _probe(lambda: public_url(c["organization_url"]), collect, "source_url_invalid")
+    if code:
+        yield "/organization_url", code
+
+
+def _evidence_issues(e, run_date, contract_version, knowledge_context, observed_at, refresh_policy, collect):
+    if not isinstance(e, dict) or set(e) != evidence_fields(contract_version):
+        yield "", "evidence_schema_invalid"
+        return
+    code = _probe(lambda: public_url(e["url"]), collect, "source_url_invalid")
+    if code:
+        yield "/url", code
+    v23 = contract_version in {2, 3}
+    roles = REQUIRED_ROLES | ({"background"} if contract_version == 3 else set())
+    text_fields = ("claim", "publisher") if v23 and e["origin"] == "snapshot" else ("claim", "publisher", "quote")
+    checks = [("/checked_date", lambda: contract_version == 1 and e["checked_date"] != run_date),
+              ("/classification", lambda: e["classification"] not in contracts.CLASSIFICATIONS),
+              ("/claim_kind", lambda: e["claim_kind"] not in {"fact", "vendor_claim", "hypothesis"}),
+              ("/role", lambda: e["role"] not in roles)]
+    checks += [("/" + name, lambda name=name: not isinstance(e[name], str) or not e[name].strip() or len(e[name]) > 2000)
+               for name in text_fields]
+    for pointer, invalid in checks:
+        def check(invalid=invalid):
+            if invalid():
                 raise Refusal("evidence_field_invalid")
-            if e["classification"] == "vendor" and e["claim_kind"] == "fact":
-                raise Refusal("vendor_claim_presented_as_fact")
-            if e["source_date"] is not None:
-                try:
-                    published = knowledge.calendar_date(e["source_date"]) if contract_version in {2, 3} else date.fromisoformat(e["source_date"])
-                except knowledge.SnapshotError as exc:
-                    raise Refusal(str(exc)) from None
-                if published > date.fromisoformat(run_date):
-                    raise Refusal("source_date_in_future")
-            if contract_version in {2, 3}:
-                try:
-                    contracts.evidence(e, run_date, knowledge_context, observed_at, policy=refresh_policy if contract_version == 3 else None)
-                except knowledge.SnapshotError as exc:
-                    raise Refusal(str(exc)) from None
-            roles.add(e["role"])
-        if (not {"task", "capability", "geography"} <= roles if contract_version == 3 else roles != {"task", "capability", "geography"}):
-            raise Refusal("task_capability_geography_evidence_required")
+        code = _probe(check, collect)
+        if code:
+            yield pointer, code
+    if e["classification"] == "vendor" and e["claim_kind"] == "fact":
+        yield "/claim_kind", "vendor_claim_presented_as_fact"
+
+    def source_date():
+        if e["source_date"] is not None:
+            published = knowledge.calendar_date(e["source_date"]) if v23 else date.fromisoformat(e["source_date"])
+            if published > date.fromisoformat(run_date):
+                raise Refusal("source_date_in_future")
+    code = _probe(source_date, collect)
+    if code:
+        yield "/source_date", code
+    if v23:
+        yield from contracts.evidence_issues(e, run_date, knowledge_context, observed_at,
+                                             policy=refresh_policy if contract_version == 3 else None, collect=collect)
+
+
+def validate_output(output, run_date, known, *, contract_version=1, knowledge_context=None, observed_at=None, refresh_policy=None):
+    for found in output_issues(output, run_date, contract_version=contract_version, knowledge_context=knowledge_context,
+                               observed_at=observed_at, refresh_policy=refresh_policy):
+        raise Refusal(found["code"])
+    accepted, duplicates = [], []
+    for c in output["candidates"]:
         operator_task_sources = [e for e in c["evidence"] if e["role"] == "task" and e["classification"] == "operator"]
-        if not operator_task_sources:
-            raise Refusal("operator_task_source_required")
         affiliation_review = not any(public_url(e["url"]) == public_url(c["organization_url"])
                                      for e in operator_task_sources)
         identities = keys(c)
