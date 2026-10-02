@@ -46,15 +46,19 @@ def test_diagnostic_request_binds_exact_compatible_transport_source(installation
 
 
 def test_changed_compatible_transport_after_producer_close_cannot_mint_completion(
-        installation, monkeypatch, tmp_path):  # noqa: F811
+        installation, monkeypatch):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_disk_diagnostic as diagnostic
     from blueprint_pipeline.control_plane_lane_experiment_publication import _BirthFiles
     # Mirror only the bounded source closure; preserve every real checkout byte.
     source = Path(diagnostic.__file__).parent
-    mirror = tmp_path / "source-mirror"
-    mirror.mkdir()
+    # Protected source cannot live beneath the writable pytest runner ancestor.
+    # Reuse only this fixture's private protected installation, keeping the
+    # actual ancestor checks unchanged on Linux as well as the Mac.
+    mirror = installation[0].parent / "source-mirror"
+    mirror.mkdir(mode=0o700)
     for name in diagnostic.SOURCE_MODULES | {"s3_compatible_transport"}:
         (mirror / (name + ".py")).write_bytes((source / (name + ".py")).read_bytes())
+        (mirror / (name + ".py")).chmod(0o600)
     monkeypatch.setattr(diagnostic, "__file__", str(mirror / Path(diagnostic.__file__).name))
     public, request, grant, born = enrolled(installation, monkeypatch)
     actual_finish = _BirthFiles.finish
