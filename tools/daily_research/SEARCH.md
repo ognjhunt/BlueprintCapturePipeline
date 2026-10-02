@@ -77,6 +77,17 @@ This profile grants no additional time, spending, destinations or sends. Deployi
 source alone cannot add tools to an existing session; activation requires this
 explicit profile in a newly admitted session. The example remains disabled.
 
+`history_profile=agent-history-v1` adds `search_company_history` and
+`fetch_company_history_record` to a newly admitted session. The agent chooses
+queries, optional city/industry/task/company/kind filters, pages and exact record
+IDs across research, QA and publication. It receives full record content,
+provenance, coverage, semantic-search availability and correctable field errors
+through the same saved tool-result loop. This profile uses the trusted company
+access binding and omits the legacy preselected history preload. Query arguments
+cannot grant access or choose another company scope. Original requests/results
+remain immutable and exportable; a repeated pending call reuses its saved result.
+The legacy learning-context path and saved tool definitions remain unchanged.
+
 No native web-search fallback is enabled. API errors, missing credentials,
 unsupported sources and evidence size ceilings are visible gaps. This avoids an
 unobserved second search provider or search fee. An application HTTPS source

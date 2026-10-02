@@ -74,6 +74,40 @@ test('learning uses the existing fenced pipe and absent control performs no hand
   assert.equal(invoked,1);
 });
 
+test('agent history admits the original company binding without a relevance grant or frozen preload',async()=>{
+  const {db,store,time}=await fixture(),expiry=new Date(time.now+60000).toISOString();
+  const binding={enabled:true,binding:{companyId:'authorized-company',expiresAt:expiry},
+    businessScope:{subjectKeys:['company-history'],expiresAt:expiry}};
+  Object.assign(db.values.get(ROOT),{learning:binding,config:{history_profile:'agent-history-v1'}});
+  const value={...row(),history_profile:'agent-history-v1',history_binding:binding};
+  await store.put(value);
+  const calls=[];store.learning=async(request,scope)=>{calls.push({request,scope});return {ok:true,rows:[],next_cursor:null,coverage:{complete:true},semantic:{status:'unavailable'}};};
+  await store.createCheck(value.date,value.metadata);
+  const request={op:'history_search',day:value.date,query:'agent chosen unfamiliar task',filters:{city:'Seattle'},page_size:3};
+  assert.equal((await store.dispatch(request)).ok,true);
+  assert.deepEqual(calls,[{request,scope:binding}]);
+  await assert.rejects(store.put({...value,history_binding:{...binding,binding:{companyId:'other'}}}),/company_history_intent_conflict/);
+  store.learning=async()=>{throw new Error('company_history_cursor_invalid');};
+  assert.equal((await store.dispatch({...request,cursor:'wrong'})).error.code,'company_history_cursor_invalid');
+  store.learning=async()=>{throw new Error('PRIVATE_UPSTREAM_SECRET');};
+  assert.equal((await store.dispatch(request)).error.code,'company_history_unavailable');
+  time.now+=60001;
+  await assert.rejects(store.dispatch(request),/company_history_scope_expired/);
+  store.terminalCollectionReceipt={};
+  await assert.rejects(store.dispatch(request),/terminal_qa_operation_forbidden/);
+});
+
+test('legacy saved sessions cannot silently acquire the company history profile',async()=>{
+  const {store,db,time}=await fixture();await store.put(row());
+  const expiry=new Date(time.now+60000).toISOString();
+  const binding={enabled:true,binding:{expiresAt:expiry},businessScope:{expiresAt:expiry}};
+  Object.assign(db.values.get(ROOT),{learning:binding,config:{history_profile:'agent-history-v1'}});
+  await assert.rejects(store.put({...row(),history_profile:'agent-history-v1',history_binding:binding}),/company_history_intent_conflict/);
+  let called=false;store.learning=async()=>{called=true;};
+  await assert.rejects(store.dispatch({op:'history_fetch',day:row().date,record_id:'chosen'}),/company_history_authority_changed/);
+  assert.equal(called,false);
+});
+
 test('learning scope drift, disable or expiry cannot claim provider creation', async () => {
   const {db,store,time}=await fixture(), expiry=new Date(time.now+60000).toISOString();
   const learning={binding:{expiresAt:expiry},businessScope:{expiresAt:expiry},enabled:true,learningGrant:{expiresAt:expiry}};

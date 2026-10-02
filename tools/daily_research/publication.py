@@ -42,7 +42,7 @@ def cancel(consumer, row, reason):
 
 
 def advance(consumer, row):
-    from tools.daily_research import recovery, search
+    from tools.daily_research import history, recovery, search
     from tools.daily_research.consumer import Consumer, qa_deadline, workflow
     from tools.daily_research.runner import (
         AGENT,
@@ -127,13 +127,14 @@ def advance(consumer, row):
         return {"date": row["date"], "state": "publication_cancel_pending"}
     if consumer.clock() >= deadline:
         return cancel(consumer, row, "publication_deadline_reached")
-    source_actions = [a for a in session.get("required_actions", []) if a.get("name") in {search.SEARCH, search.READ}]
+    source_names = {search.SEARCH, search.READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
+    source_actions = [a for a in session.get("required_actions", []) if a.get("name") in source_names]
     if source_actions:
         view = deepcopy(session)
         view["required_actions"] = source_actions
         search.respond(row, view, ledger, api, phase="publication", clock=consumer.clock, stopped=consumer.stopped)
     for action in session.get("required_actions", []):
-        if action.get("name") in {search.SEARCH, search.READ} or action.get("type") == "environment_connection":
+        if action.get("name") in source_names or action.get("type") == "environment_connection":
             continue
         if (action.get("type") != "function_call" or action.get("name") not in {INSPECT, PUBLISH}
                 or action.get("turn_id") != phase["turn_id"]):

@@ -72,7 +72,7 @@ class QAAPI(FakeAPI):
         return canonical(self.qa_result).encode() if aid == "artifact_qa" else super().artifact(sid, aid)
 
 
-def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False):
+def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False):
     crm = tmp_path / "crm.json"
     save_json(crm, {"sheet_id": SHEET, "complete": True, "captured_at": NOW.isoformat(),
                     "values": [["CRM"], [], [], [], HEADERS]})
@@ -88,7 +88,8 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         "let rejectInitial=" + json.dumps(publication_rejection) + "; const sha=v=>createHash('sha256').update(v).digest('hex');",
         "const notion=async(method,path,body)=>{if(method==='POST'){if(rejectInitial){rejectInitial=false;const raw=JSON.stringify({object:'error',status:400,code:'validation_error',message:'Requested presentation rejected'});const error=new Error('publication_notion_unavailable');error.provider_response=raw;error.provider_feedback={provider:'notion',http_status:400,code:'validation_error',request_digest:sha(JSON.stringify(body)),response_digest:sha(raw)};throw error;}pages.push(body);return {id:'page-result'};}if(method==='PATCH'){pages[0].children.push(...body.children);return {};}if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:pages.map(p=>({id:'page-result',type:'child_page',child_page:{title:p.properties.title.title[0].text.content}}))};if(path==='/pages/page-result')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};const start=Number(new URL('https://fixture.invalid'+path).searchParams.get('start_cursor')||0),results=pages[0].children.slice(start,start+100).map((b,i)=>({id:'block-'+(start+i),...b})),next=start+results.length;return {has_more:next<pages[0].children.length,next_cursor:String(next),results};};",
         "const publisher=new Publisher({crmReader,google,notion});",
-        "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher));",
+        "const historyLog=" + json.dumps(str(tmp_path / "history-requests.json")) + ";let requests=[];const learning=async(request,binding)=>{requests.push({request,binding});await import('node:fs').then(fs=>fs.writeFileSync(historyLog,JSON.stringify(requests)));if(request.op==='history_search')return {ok:true,rows:[{record_id:request.cursor?'record_b':'record_a',title:'Retained task evidence'}],next_cursor:request.cursor?null:'page-2',coverage:{complete:true},semantic:{status:'unavailable',error:'offline_fixture'}};if(request.op==='history_fetch')return request.record_id==='record_a'?{ok:true,record:{record_id:'record_a',content:'Complete original evidence — '.repeat(400),source:'synthetic-company-record',created_at:'2026-09-29T08:00:00Z'}}:{ok:false,error:{code:'company_history_record_not_found',issues:[{field:'record_id',expected:'existing authorized exact ID'}]}};throw new Error('company_history_unexpected_frozen_preload');};",
+        "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher,learning));",
         "for await (const line of createInterface({input:process.stdin})) {try {const r=JSON.parse(line);if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}const value=await channel.call(r);process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
         "catch(error){process.stdout.write(JSON.stringify({ok:false,error:error.message})+'\\n');}} await channel.close();",
     ]))
@@ -113,11 +114,15 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         proposal = delta()
         proposal["evidence"][0].update(classification="operator", evidence_level=None)
         output["proposed_knowledge_deltas"] = [proposal]
-    if publication:
+    if publication or history:
         from tools.daily_research import search
-        cfg.update(publication_profile="agent-owned-v1", search_provider=search.PROFILE,
+        cfg.update(search_provider=search.PROFILE,
             discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800, qa_reserved_seconds=600,
             recurring_budget_authority_reference="approved-shared-research-total")
+        if publication:
+            cfg["publication_profile"] = "agent-owned-v1"
+        if history:
+            cfg["history_profile"] = "agent-history-v1"
         output["coverage"] = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
             "stop_reason": "Synthetic bounded corpus checked", "shortfall_reason": None,
             "defined_run_scope": ["Synthetic bounded site task corpus"], "unresolved_promising_branches": [],
@@ -134,9 +139,15 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         with ledger.lock():
             control = bridge.call("control")
             control["config"] = cfg
+            if history:
+                expiry = (NOW + timedelta(hours=1)).isoformat()
+                control["learning"] = {"enabled": True, "binding": {"companyId": "synthetic-company", "principal": "company-owner", "expiresAt": expiry},
+                    "businessScope": {"subjectKeys": ["all-authorized-company-history"], "expiresAt": expiry}}
             bridge.call("configure", value=control)
     api.raw = canonical(output).encode()
-    assert Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()["state"] == ("failed" if failed else "awaiting_review")
+    if research_running:
+        api.turn_status = "in_progress"
+    assert Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()["state"] == ("running" if research_running else "failed" if failed else "awaiting_review")
     consumer = Consumer(ledger, cfg, api, clock=lambda: NOW + timedelta(seconds=30))
     yield consumer, api, ledger, bridge, script
     bridge.close()
