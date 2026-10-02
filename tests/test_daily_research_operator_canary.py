@@ -131,8 +131,8 @@ def fixture(tmp_path, monkeypatch):
         "const crmPath=" + json.dumps(str(crm)) + ", pagesPath=" + json.dumps(str(pages_file)) + ";",
         "const crmReader=async()=>JSON.parse(readFileSync(crmPath,'utf8'));",
         "const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]};const c=await crmReader();c.values.push(...body.values);writeFileSync(crmPath,JSON.stringify(c));return {};};",
-        "const notion=async(method,path,body)=>{const p=existsSync(pagesPath)?JSON.parse(readFileSync(pagesPath,'utf8')):[];if(method==='POST'){p.push(body);writeFileSync(pagesPath,JSON.stringify(p));return {id:'synthetic-page'};}",
-        "if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:p.map(x=>({id:'synthetic-page',type:'child_page',child_page:{title:x.properties.title.title[0].text.content}}))};if(path==='/pages/synthetic-page')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};return {has_more:false,results:p[0]?.children||[]};};",
+        "const notion=async(method,path,body)=>{const p=existsSync(pagesPath)?JSON.parse(readFileSync(pagesPath,'utf8')):[];if(method==='POST'){p.push(body);writeFileSync(pagesPath,JSON.stringify(p));return {id:'synthetic-page-'+p.length};}",
+        "if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:p.map((x,i)=>({id:'synthetic-page-'+(i+1),type:'child_page',child_page:{title:x.properties.title.title[0].text.content}}))};if(path.startsWith('/pages/synthetic-page-'))return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};const number=Number(path.match(/synthetic-page-(\\d+)/)?.[1]);return {has_more:false,results:p[number-1]?.children||[]};};",
         "const channel=new CanaryChannel(db,crmReader,new Publisher({crmReader,google,notion}),()=>" + str(int(NOW.timestamp()*1000)) + ");",
         "for await(const line of createInterface({input:process.stdin})){try{const r=JSON.parse(line);",
         "if(r.op==='test_origin_change'){await normal.acquire();await normal.put({...await normal.get('2026-10-01'),cleanup_receipt:{action_time_approval_reference:'changed-synthetic'}});await normal.release();process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}",
@@ -503,3 +503,320 @@ def test_test_approval_is_not_recurring_or_delete_approval():
         canary.admission({**APPROVAL, "scope": "delete-session"}, NOW)
     with pytest.raises(Refusal, match="admission"):
         canary.admission({**APPROVAL, "ceiling_usd": 26}, NOW)
+
+
+def closed_original(fixture):
+    """Real fake-provider cancellation/cleanup path, not an empty namespace."""
+    bridge, ledger, api, receipt, plan, cache, *_ = fixture
+    canary.stage(bridge, plan, receipt)
+    api.turn_status = "in_progress"
+    runner = Runner(ledger, canary.render.configured(bridge, cache), api, clock=lambda: NOW)
+    runner.start_or_resume()
+    runner.cancel_current(canary.DAY, "synthetic_historical_stop")
+    api.turn_status = "cancelled"
+    assert canary.run(bridge, cache, api_factory=lambda *_: api, clock=lambda: NOW)["state"] == "cancelled"
+    cleanup_fake(bridge, ledger, api, cache)
+    retained = ledger.get(canary.DAY)
+    bridge.close()
+    return retained
+
+
+def cleanup_fake(bridge, ledger, api, cache):
+    class Missing(Exception):
+        status_code = 404
+
+    def absent(*_):
+        raise Missing
+
+    get = api.get
+    api.get = absent
+    try:
+        row = ledger.get(canary.DAY)
+        canary.record_cleanup(bridge, cache, {"session_id": row["session_id"],
+            "environment_id": row["environment_id"], "action_time_approval_reference": "synthetic-separate-cleanup"},
+            api_factory=lambda *_: api)
+    finally:
+        api.get = get
+
+
+def attempt_bridge(fixture, monkeypatch, number, date="2026-10-01"):
+    for name in ("TEST", "ROOT", "DAY", "BASELINE"):
+        monkeypatch.setattr(canary, name, getattr(canary, name))
+    canary.select_attempt(number, date)
+    cache, source = fixture[5], fixture[6]
+    target = cache / f"attempt-{number}"
+    target.mkdir(exist_ok=True)
+    generated = canary.driver(ROOT, target)
+    driver = target / "hermetic-driver.mjs"
+    driver.write_text(source.read_text().replace(
+        json.dumps((cache / "canary-bridge.mjs").as_uri()), json.dumps(generated.as_uri())))
+    bridge = canary.CanaryBridge(script=driver)
+    ledger = FirestoreLedger(bridge)
+    api = API(ledger, policy_bundle(now=NOW)[3])
+    approval = {**APPROVAL, "test_id": canary.TEST, "scope": canary.BASELINE_SCOPE,
+                "authority_reference": canary.BASELINE_AUTHORITY}
+    return bridge, ledger, api, approval, driver
+
+
+def complete_baseline(bridge, api, cache):
+    """Exercise the actual application tool/result path before terminal output."""
+    api.turn_status = "in_progress"
+    api.actions = [{"type": "function_call", "turn_id": "turn_1", "call_id": "search_" + canary.TEST,
+                    "name": canary.search.SEARCH, "arguments": {"query": "synthetic exact operator task"}}]
+
+    def tick(_):
+        if api.result_events:
+            api.turn_status, api.actions = "completed", []
+
+    return canary.run(bridge, cache, execute=True, api_factory=lambda *_: api, clock=lambda: NOW, sleep=tick)
+
+
+def test_baseline_repeat_restart_and_success_close_retries(fixture, monkeypatch):
+    prior = closed_original(fixture)
+    bridge, ledger, api, approval, driver = attempt_bridge(fixture, monkeypatch, 1)
+    receipt, cache = fixture[3], fixture[5]
+    try:
+        before = bridge.call("origin")
+        plan = canary.inspect(bridge, approval, receipt, api, cache, now=NOW)
+        assert plan["baseline_budget"]["attempts"] == []
+        assert bridge.call("control") is None  # inspection has no writes
+        canary.stage(bridge, plan, receipt)
+        canary.stage(bridge, plan, receipt)  # same unconsumed intent/inputs only
+        assert len(bridge.call("baseline_status")["attempts"]) == 1
+        result = complete_baseline(bridge, api, cache)
+        assert result["state"] == "completed" and len(api.payloads) == len(api.inputs) == 1
+        assert bridge.call("origin") == before
+        cleanup_fake(bridge, ledger, api, cache)
+        finished = ledger.get(canary.DAY)
+        bridge.close()
+        bridge = canary.CanaryBridge(script=driver)
+        api.ledger = FirestoreLedger(bridge)
+        assert canary.run(bridge, cache, execute=True, api_factory=lambda *_: api, clock=lambda: NOW)["state"] == "completed"
+        assert len(api.payloads) == len(api.inputs) == 1
+        budget = bridge.call("baseline_status")
+        assert budget["complete_model_estimate_usd"] is not None and budget["prior_scope_included"] is False
+        assert budget["baseline"]["soft_total_usd"] == 25 and len(budget["attempts"]) == 1
+        assert float(budget["reported_search_estimate_usd"]) > 0 and budget["total_billed_usd"] is None
+        assert finished["delivery"]["notion"]["key"] == "blueprint-research-canary:baseline-20261002-attempt-0001:notion"
+        assert prior["state"] == "cancelled" and prior["cleanup_required"] is False
+        assert finished["canary"]["baseline"]["attempt_number"] == 1
+    finally:
+        bridge.close()
+    next_bridge, _, next_api, next_approval, _ = attempt_bridge(fixture, monkeypatch, 2)
+    try:
+        with pytest.raises(Refusal, match="baseline_already_completed"):
+            canary.inspect(next_bridge, next_approval, receipt, next_api, cache, now=NOW)
+        assert next_bridge.call("control") is None and not next_api.payloads
+    finally:
+        next_bridge.close()
+
+
+def test_baseline_cancelled_retry_preserves_claims_and_cumulative_pending_usage(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 1)
+    receipt, cache = fixture[3], fixture[5]
+    try:
+        canary.stage(bridge, canary.inspect(bridge, approval, receipt, api, cache, now=NOW), receipt)
+        api.turn_status = "in_progress"
+        runner = Runner(ledger, canary.render.configured(bridge, cache), api, clock=lambda: NOW)
+        runner.start_or_resume()
+        first = canary.run(bridge, cache, execute=False, api_factory=lambda *_: api, clock=lambda: NOW, stopped=lambda: True)
+        assert first["state"] == "cancel_pending" and len(api.payloads) == 1
+        api.turn_status = "cancelled"
+        assert canary.run(bridge, cache, execute=True, api_factory=lambda *_: api, clock=lambda: NOW)["state"] == "cancelled"
+        assert len(api.payloads) == 1  # same identity never recreated
+        with ledger.lock():
+            row = ledger.get(canary.DAY)
+            row["canary_model_estimate"] = {"known": False, "usage_state": "pending", "estimate_usd": None,
+                                            "reported_estimate_usd": "0.15"}
+            ledger.put(row)
+        bridge.close()
+        blocked, _, blocked_api, blocked_approval, _ = attempt_bridge(fixture, monkeypatch, 2)
+        try:
+            with pytest.raises(Refusal, match="predecessor_unreconciled"):
+                canary.inspect(blocked, blocked_approval, receipt, blocked_api, cache, now=NOW)
+            assert not blocked_api.payloads
+        finally:
+            blocked.close()
+        # Reopen the exact previous attempt and perform separately approved
+        # synthetic cleanup; selecting attempt 2 never mutates its predecessor.
+        bridge, ledger, _, _, _ = attempt_bridge(fixture, monkeypatch, 1)
+        cleanup_fake(bridge, ledger, api, cache)
+        retained = ledger.get(canary.DAY)
+    finally:
+        bridge.close()
+    bridge, ledger, api2, approval2, _ = attempt_bridge(fixture, monkeypatch, 2)
+    try:
+        canary.stage(bridge, canary.inspect(bridge, approval2, receipt, api2, cache, now=NOW), receipt)
+        result = complete_baseline(bridge, api2, cache)
+        assert result["state"] == "completed" and len(api2.payloads) == len(api2.inputs) == 1
+        budget = bridge.call("baseline_status")
+        assert len(budget["attempts"]) == 2 and budget["complete_model_estimate_usd"] is None
+        assert float(budget["reported_model_estimate_usd"]) > .15
+        assert budget["attempts"][0]["usage_state"] == "pending"
+        assert budget["baseline"]["soft_total_usd"] == 25  # not $25 per retry
+        assert retained["state"] == "cancelled" and retained["canary"]["baseline"]["attempt_number"] == 1
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("number,date", [(0, "2026-10-01"), (-1, "2026-10-01"), (True, "2026-10-01"),
+    (1, None), (1, "2026-10-01/other"), (1, "2026-10-01T00:00:00")])
+def test_baseline_identity_rejects_invalid_host_parameters(number, date):
+    with pytest.raises(Refusal, match="attempt_identity_invalid"):
+        canary.select_attempt(number, date)
+
+
+def test_baseline_attempt_order_and_exact_approval(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 2)
+    try:
+        with pytest.raises(Refusal, match="attempt_order_invalid"):
+            canary.inspect(bridge, approval, fixture[3], api, fixture[5], now=NOW)
+        assert ledger.rows() == [] and bridge.call("control") is None
+        with pytest.raises(Refusal, match="admission"):
+            canary.admission({**approval, "authority_reference": APPROVAL["authority_reference"]}, NOW)
+        with pytest.raises(Refusal, match="admission"):
+            canary.admission({**approval, "scope": canary.SCOPE}, NOW)
+        assert not api.payloads and not api.inputs
+    finally:
+        bridge.close()
+
+
+def test_baseline_concurrent_stage_transaction_keeps_one_attempt(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, _, api, approval, driver = attempt_bridge(fixture, monkeypatch, 1)
+    try:
+        plan = canary.inspect(bridge, approval, fixture[3], api, fixture[5], now=NOW)
+    finally:
+        bridge.close()
+    source = driver.read_text()
+    old = "const value=await channel.call(r);"
+    probe = ("if(r.op==='test_stage_race'){let arrived=0,release;const gate=new Promise(resolve=>release=resolve);"
+        "const guard=channel.guard.bind(channel);channel.guard=async(...a)=>{await guard(...a);"
+        "if(++arrived===2)release();await gate;};"
+        "const outcomes=await Promise.allSettled([channel.call(r.request),channel.call(r.request)]);"
+        "channel.guard=guard;process.stdout.write(JSON.stringify({ok:true,value:outcomes.map(x=>"
+        "({status:x.status,value:x.value,error:x.reason?.message}))})+'\\n');continue;}" + old)
+    driver.write_text(source.replace(old, probe))
+    bridge = canary.CanaryBridge(script=driver)
+    try:
+        outcomes = bridge.call("test_stage_race", request={"op": "stage", "value": plan["candidate"]})
+        assert sum(x["status"] == "fulfilled" for x in outcomes) == 1
+        assert any(x.get("error") == "canary_baseline_predecessor_changed" for x in outcomes)
+        assert len(bridge.call("baseline_status")["attempts"]) == 1
+        assert not api.payloads
+        canary.stage(bridge, plan, fixture[3])
+        assert len(bridge.call("baseline_status")["attempts"]) == 1
+    finally:
+        bridge.close()
+
+
+def test_baseline_completed_partial_report_allows_retry_with_distinct_publication_identity(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 1)
+    receipt, cache = fixture[3], fixture[5]
+    try:
+        canary.stage(bridge, canary.inspect(bridge, approval, receipt, api, cache, now=NOW), receipt)
+        report = json.loads(api.raw)
+        report["coverage"].update(completion_state="time_interrupted", stop_reason="Synthetic interruption",
+            shortfall_reason="Synthetic unresolved branch", unresolved_promising_branches=["Synthetic second task"])
+        api.raw = canonical(report).encode()
+        result = complete_baseline(bridge, api, cache)
+        assert result["state"] == "completed" and len(api.payloads) == len(api.inputs) == 1
+        cleanup_fake(bridge, ledger, api, cache)
+        first = ledger.get(canary.DAY)
+        assert first["packet"]["coverage"]["completion_state"] == "time_interrupted"
+    finally:
+        bridge.close()
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 2)
+    try:
+        canary.stage(bridge, canary.inspect(bridge, approval, receipt, api, cache, now=NOW), receipt)
+        result = complete_baseline(bridge, api, cache)
+        assert result["state"] == "completed" and len(api.payloads) == len(api.inputs) == 1
+        second = ledger.get(canary.DAY)
+        assert first["delivery"]["notion"]["key"] != second["delivery"]["notion"]["key"]
+        assert first["delivery"]["notion"]["receipt"]["reference"] != second["delivery"]["notion"]["receipt"]["reference"]
+        assert len(json.loads(fixture[8].read_text())) == 2
+        # Fresh CRM dedupe excludes the already-published task from the retry.
+        assert len(json.loads(fixture[7].read_text())["values"]) == 6
+        assert len(bridge.call("baseline_status")["attempts"]) == 2
+    finally:
+        bridge.close()
+
+
+def test_identical_empty_partial_reports_have_distinct_notion_titles(fixture, monkeypatch):
+    closed_original(fixture)
+    records = []
+    for number in (1, 2):
+        bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, number)
+        try:
+            canary.stage(bridge, canary.inspect(bridge, approval, fixture[3], api, fixture[5], now=NOW), fixture[3])
+            report = json.loads(api.raw)
+            report["candidates"] = []
+            report["coverage"].update(completion_state="time_interrupted", stop_reason="Synthetic interruption",
+                shortfall_reason="Synthetic unresolved branch", unresolved_promising_branches=["Synthetic second task"])
+            api.raw = canonical(report).encode()
+            assert complete_baseline(bridge, api, fixture[5])["state"] == "completed"
+            cleanup_fake(bridge, ledger, api, fixture[5])
+            records.append(ledger.get(canary.DAY))
+            assert len(api.payloads) == len(api.inputs) == 1
+        finally:
+            bridge.close()
+    assert records[0]["review"]["summary"] == records[1]["review"]["summary"]
+    deliveries = [row["delivery"]["notion"] for row in records]
+    assert deliveries[0]["plan"]["title"] != deliveries[1]["plan"]["title"]
+    assert deliveries[0]["receipt"]["reference"] != deliveries[1]["receipt"]["reference"]
+    assert len(json.loads(fixture[8].read_text())) == 2
+    assert len(json.loads(fixture[7].read_text())["values"]) == 5
+
+
+def test_staged_uncreated_attempt_can_be_closed_after_due_date_advances(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 1)
+    try:
+        plan = canary.inspect(bridge, approval, fixture[3], api, fixture[5], now=NOW)
+        canary.stage(bridge, plan, fixture[3])
+        origin = bridge.call("origin")
+        with pytest.raises(Refusal, match="admission"):
+            canary.admission(approval, datetime(2026, 10, 2, 13, tzinfo=timezone.utc))
+        with ledger.lock(), pytest.raises(Refusal, match="runner_overlap"):
+            bridge.call("abandon_unstarted")
+        closed = bridge.call("abandon_unstarted")
+        assert closed["state"] == "abandoned_unstarted" and closed["provider_mutations"] == 0
+        assert bridge.call("abandon_unstarted")["existing"] is True
+        assert ledger.rows() == [] and not api.payloads
+        assert bridge.call("origin") == origin
+        assert bridge.call("control")["enabled"] is False
+        assert bridge.call("baseline_status")["attempts"][0]["usage_state"] == "not_started_no_provider_intent"
+        with pytest.raises(Refusal, match="attempt_abandoned"):
+            canary.stage(bridge, plan, fixture[3])
+    finally:
+        bridge.close()
+    next_bridge, next_ledger, next_api, next_approval, _ = attempt_bridge(fixture, monkeypatch, 2, "2026-10-02")
+    try:
+        assert canary.admission(next_approval, datetime(2026, 10, 2, 13, tzinfo=timezone.utc))
+        assert next_bridge.call("baseline_check") is True
+        assert next_ledger.rows() == [] and next_bridge.call("control") is None
+        assert not next_api.payloads
+    finally:
+        next_bridge.close()
+
+
+def test_no_create_abandonment_never_releases_existing_uncertain_intent(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 1)
+    try:
+        canary.stage(bridge, canary.inspect(bridge, approval, fixture[3], api, fixture[5], now=NOW), fixture[3])
+        api.turn_status = "in_progress"
+        api.lost_create_reply = True
+        runner = Runner(ledger, canary.render.configured(bridge, fixture[5]), api, clock=lambda: NOW)
+        runner.start_or_resume()
+        before, control, budget = ledger.get(canary.DAY), bridge.call("control"), bridge.call("baseline_status")
+        assert before["state"] == "creation_unresolved"
+        with pytest.raises(Refusal, match="abandonment_not_proven"):
+            bridge.call("abandon_unstarted")
+        assert ledger.get(canary.DAY) == before and bridge.call("control") == control
+        assert bridge.call("baseline_status") == budget and len(api.payloads) == 1
+    finally:
+        bridge.close()

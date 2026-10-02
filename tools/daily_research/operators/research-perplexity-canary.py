@@ -50,16 +50,40 @@ ROOT = "blueprintDailyResearch/sites-first/canaries/" + TEST
 DAY = "2026-10-01"
 SCOPE = "one-time-fresh-research-agent-qa-canonical-publication-no-outreach"
 EXPIRES = "2026-10-02T10:00:00+00:00"
+ORIGIN_DAY = "2026-10-01"
+BASELINE = None
+BASELINE_AUTHORITY = "Sentinel_c2046c5f146c81918921eba1ed7f6caa"
+BASELINE_SCOPE = "baseline-research-agent-qa-canonical-publication-with-retries-no-outreach"
+
+
+def select_attempt(number, day):
+    """Host-selected retry identity; never rename or clear a previous attempt."""
+    global TEST, ROOT, DAY, BASELINE  # One CLI context per process.
+    if type(number) is not int or number < 1 or not isinstance(day, str):
+        raise Refusal("baseline_attempt_identity_invalid")
+    try:
+        if datetime.fromisoformat(day).date().isoformat() != day:
+            raise ValueError
+    except ValueError:
+        raise Refusal("baseline_attempt_identity_invalid") from None
+    TEST = f"baseline-20261002-attempt-{number:04d}"
+    ROOT = "blueprintDailyResearch/sites-first/canaries/" + TEST
+    DAY = day
+    BASELINE = {"baseline_id": "baseline-20261002", "attempt_number": number,
+                "root": "blueprintDailyResearch/sites-first/baselines/baseline-20261002",
+                "authority_reference": BASELINE_AUTHORITY, "soft_total_usd": 25}
 
 
 def admission(value, now=None):
     now = now or datetime.now(timezone.utc)
+    scope = BASELINE_SCOPE if BASELINE else SCOPE
     if (not isinstance(value, dict) or set(value) != {"schema_version", "test_id", "authority_reference", "ceiling_usd", "scope"}
             or value["schema_version"] != "blueprint.perplexity-canary-admission.v1"
             or value["test_id"] != TEST or type(value["ceiling_usd"]) is not int or value["ceiling_usd"] != 25
-            or value["scope"] != SCOPE or not isinstance(value["authority_reference"], str)
+            or value["scope"] != scope or not isinstance(value["authority_reference"], str)
             or not value["authority_reference"].strip() or value["authority_reference"].startswith("PENDING")
-            or now >= instant(EXPIRES) or due_date(now, DAY) != DAY):
+            or (BASELINE and value["authority_reference"] != BASELINE_AUTHORITY)
+            or (not BASELINE and now >= instant(EXPIRES)) or due_date(now, DAY) != DAY):
         raise Refusal("canary_one_time_admission_invalid_or_expired")
     return copy.deepcopy(value)
 
@@ -67,6 +91,7 @@ def admission(value, now=None):
 def driver(package, destination):
     text = Path(__file__).with_suffix(".mjs").read_text()
     text = text.replace("__RESEARCH_PACKAGE_URL__", Path(package).resolve().as_uri() + "/")
+    text = text.replace("__CANARY_CONTEXT__", canonical({"test_id": TEST, "day": DAY, "baseline": BASELINE}))
     path = Path(destination) / "canary-bridge.mjs"
     path.write_text(text)
     path.chmod(0o600)
@@ -77,12 +102,28 @@ class CanaryBridge(Bridge):
     def call(self, op, **fields):
         if op == "put":
             row = fields["row"]
+            if BASELINE:
+                # Core date keys remain intact. External publication uses the
+                # stable private attempt ID, so a retry cannot impersonate a
+                # previous attempt or the normal dated research publication.
+                for name, delivery in row.get("delivery", {}).items():
+                    if delivery.get("key") == row["run_key"] + ":" + name:
+                        delivery["key"] = "blueprint-research-canary:" + TEST + ":" + name
+                        if name == "notion":
+                            delivery["payload"]["summary"] = ("Blueprint baseline attempt " + TEST + "\n"
+                                + delivery["payload"]["summary"])
+                            delivery["payload_json"] = canonical(delivery["payload"])
+                            delivery["payload_digest"] = digest(delivery["payload"])
             if row.get("state") == "creating" and not row.get("canary"):
                 binding = super().call("control")["canary"]
                 body = row["create_payload"]
                 # Mutate the core's SAME body object before Store and actual POST.
                 # Node-only rewriting would fail to change the provider payload.
-                body["input"] = ("This is the one-time Blueprint Perplexity canary; explicitly label the resulting "
+                baseline_note = (f"This is baseline attempt {BASELINE['attempt_number']} under one shared $25 soft "
+                    "TOTAL testing allowance across the baseline and all retries, including model/search/hosted compute. "
+                    "Measure normal scope-complete research and QA; missing cost counts are unknown, not zero or a stop. "
+                    "The recurring daily target is separate. " if BASELINE else "")
+                body["input"] = (baseline_note + "This is the one-time Blueprint Perplexity canary; explicitly label the resulting "
                     "brief as a test. Prioritize publicly verified named decision contacts relevant to each "
                     "site/task opportunity, then role/team channels; generic contact channels are last. "
                     "Do not invent contact details or add fields outside the strict output schema. " + body["input"])
@@ -90,6 +131,11 @@ class CanaryBridge(Bridge):
                 metadata.pop("payload_digest", None)
                 metadata.update(purpose="blueprint_research_perplexity_canary", test_id=TEST,
                                 canary_root=ROOT, admission_digest=binding["admission_digest"])
+                if BASELINE:
+                    metadata.update(baseline_id=BASELINE["baseline_id"],
+                                    baseline_attempt=str(BASELINE["attempt_number"]),
+                                    budget_authority_reference=BASELINE["authority_reference"],
+                                    blueprint_run_id="blueprint-research-canary:" + TEST)
                 metadata["payload_digest"] = digest(body)
                 row["metadata"] = metadata
                 row["canary"] = copy.deepcopy(binding)
@@ -106,7 +152,7 @@ def inspect(bridge, approval, receipt, api, cache, now=None):
             or origin["summary"].get("cleanup_required") or origin.get("active_qa")
             or not row or row.get("cleanup_required") is not False or not row.get("cleanup_receipt")):
         raise Refusal("canary_daily_guard_unreconciled_or_changed")
-    raw = base64.b64decode(bridge.call("origin_file", name=DAY + "-artifact.json"), validate=True)
+    raw = base64.b64decode(bridge.call("origin_file", name=ORIGIN_DAY + "-artifact.json"), validate=True)
     migration.verify_failed(row, raw)
     inputs = {"knowledge.json": base64.b64decode(bridge.call("origin_file", name="knowledge.json"), validate=True),
               "refresh-policy.json": base64.b64decode(bridge.call("origin_file", name="refresh-policy.json"), validate=True)}
@@ -131,10 +177,16 @@ def inspect(bridge, approval, receipt, api, cache, now=None):
         "admission_digest": digest(approved), "origin_control": copy.deepcopy(control),
         "origin_row_digest": digest(row), "origin_raw_sha256": migration.RAW,
         "origin_row_blob": origin["oct1_row_blob"],
-        "expires_at": EXPIRES, "package": receipt, "research_seconds": 1200,
+        "expires_at": None if BASELINE else EXPIRES, "package": receipt, "research_seconds": 1200,
         "total_seconds": 1800, "usage_observation_policy": "best-effort-post-run-v1", "hard_total_cap": False,
         "input_digests": {name: hashlib.sha256(value).hexdigest() for name, value in inputs.items()},
         "tool_definitions_digest": digest(checked["session_agent_override"]["tools"])}
+    if BASELINE:
+        candidate["canary"]["baseline"] = copy.deepcopy(BASELINE)
+        candidate["canary"]["run_date"] = DAY
+        # Read-only sequential/cleanup and aggregate-budget evidence, before
+        # staging any intent. Stage rechecks atomically; this is not a lease.
+        bridge.call("baseline_check")
     if (candidate["config"].get("max_runtime_seconds") != 1800
             or candidate["config"].get("qa_reserved_seconds") != 600
             or candidate["config"].get("search_provider") != search.PROFILE
@@ -152,6 +204,11 @@ def inspect(bridge, approval, receipt, api, cache, now=None):
               "known_crm_identity_keys": len(known), "crm_values_digest": digest(snapshot["values"]),
               "provider_calls_read_only": True, "provider_mutations": 0, "firestore_writes": 0}
     result["plan_digest"] = digest(result)
+    if BASELINE:
+        # The retained plan remains immutable; budget telemetry is part of it.
+        result["baseline_budget"] = bridge.call("baseline_status")
+        result.pop("plan_digest")
+        result["plan_digest"] = digest(result)
     return result
 
 
@@ -357,6 +414,8 @@ def summary(row):
                   delivery={name: {"state": value.get("state"), "receipt": value.get("receipt")}
                             for name, value in row.get("delivery", {}).items()},
                   admission_digest=row.get("canary", {}).get("admission_digest"))
+    if BASELINE:
+        result["baseline"] = copy.deepcopy(BASELINE)
     return result
 
 
@@ -373,14 +432,20 @@ def record_cleanup(bridge, cache, receipt, *, api_factory=FencedProvider):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup"])
+    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted"])
     parser.add_argument("--package", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--approval")
     parser.add_argument("--plan")
     parser.add_argument("--output")
     parser.add_argument("--receipt")
+    parser.add_argument("--attempt", type=int, help="Sequential attempt under the approved shared baseline allowance")
+    parser.add_argument("--date", help="Chicago due date for this private attempt; normal dated history is unchanged")
     args = parser.parse_args()
+    if args.attempt is not None:
+        select_attempt(args.attempt, args.date)
+    elif args.date is not None:
+        raise Refusal("baseline_attempt_identity_invalid")
     receipt = migration.package_receipt(args.package, args.archive)
     if args.command in {"execute", "reconcile"}:
         verify_process_watchdog()
@@ -415,8 +480,14 @@ def main():
                 if not args.receipt:
                     raise Refusal("canary_required_argument_missing")
                 result = record_cleanup(bridge, cache, read_json(args.receipt))
+            elif args.command == "abandon-unstarted":
+                if not BASELINE:
+                    raise Refusal("canary_baseline_not_selected")
+                result = bridge.call("abandon_unstarted")
             else:
                 result = run(bridge, cache, execute=args.command == "execute", stopped=lambda: stop["requested"])
+            if BASELINE:
+                result["baseline_budget"] = bridge.call("baseline_status")
             print(canonical(result), flush=True)
         finally:
             if api:
