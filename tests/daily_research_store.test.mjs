@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,createHash} from 'node:crypto';
 import {Store, ROOT, LeaseChannel, ADAPTIVE_TEST} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 
@@ -12,6 +12,32 @@ async function fixture() {
 }
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
+
+test('learning uses the existing fenced pipe and absent control performs no handler work', async () => {
+  const {db,store,time}=await fixture();
+  let invoked=0; store.learning=async request=>{invoked++;return {op:request.op};};
+  assert.equal(await store.dispatch({op:'learning_context',day:row().date}),null);
+  assert.equal(invoked,0);
+  db.values.get(ROOT).learning={enabled:true};
+  assert.deepEqual(await store.dispatch({op:'learning_context',day:row().date}),{op:'learning_context'});
+  time.now+=180001;
+  await assert.rejects(store.dispatch({op:'learning_daily',day:row().date}),/lease_lost/);
+  assert.equal(invoked,1);
+});
+
+test('learning scope drift, disable or expiry cannot claim provider creation', async () => {
+  const {db,store,time}=await fixture(), expiry=new Date(time.now+60000).toISOString();
+  const learning={binding:{expiresAt:expiry},businessScope:{expiresAt:expiry},enabled:true,learningGrant:{expiresAt:expiry}};
+  const bindingHash=createHash('sha256').update(JSON.stringify(learning)).digest('hex');
+  db.values.get(ROOT).learning=learning;
+  const value={...row(),metadata:{...row().metadata,learning_binding_digest:bindingHash}};
+  await store.put(value);
+  learning.enabled=false;
+  await assert.rejects(store.createCheck(value.date,value.metadata),/scope_changed_or_expired/);
+  learning.enabled=true; time.now+=60001; await store.renew();
+  await assert.rejects(store.createCheck(value.date,value.metadata),/scope_changed_or_expired/);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).create_attempt_claimed,false);
+});
 
 test('Perplexity row overflow is refused before a durable run or publication claim', async () => {
   const {db, store} = await fixture();

@@ -220,3 +220,65 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
 Rollback: disable the research worker flag and Firestore control, preserve all
 dated state and artifacts, and return to the previous WebApp release if needed.
 Never restore an empty ledger or an older snapshot of run state.
+
+## Shared learning caller
+
+The existing research clock can run deterministic business analysis at **06:45
+America/Chicago**, before the unchanged 07:00 research date. The WebApp bundles
+`server/research-learning/research-worker-host.ts` as `dist/research-learning/research-worker-host.js`
+and passes its local path through the existing private Python/Node bridge.
+This creates no daemon, network endpoint, model-analysis call or ops-scheduler
+dependency. `server/worker.ts` and communications scheduling are unchanged.
+
+Activation uses optional, host-owned `control.learning`, validated by WebApp's
+`researchLearningControlSchema`: version `blueprint.research-learning-worker.v1`,
+`enabled: true`, `startDate`, existing consumer `binding` and `selection`,
+`businessScope`, `learningGrant`, and `terminalSubjectKey`. Omission or
+`{enabled:false}` retains the prior runner. The research worker flag still owns
+process startup. An enabled learning binding can aggregate while provider
+research is disabled; it does not authorize provider creation.
+
+The native source owner supplies the reconciled source-snapshot hash, exact
+CRM/prospect/capability IDs, authorized business subject keys, principal and
+actual grant expirations. All five outcome sections must already be authorized;
+the caller neither broadens nor renews grants. Grant renewal/reconciliation
+belongs to Blueprint's authorized control plane and review surface, with no
+required Dot task. Original business messages must be captured with original
+IDs/times/source hashes by their existing owner; this caller seeds no summaries
+as historical evidence. No new key, OAuth grant or external permission is needed
+for these Firestore-only hooks.
+
+Daily identity is `research-learning:YYYY-MM-DD:0645`, with `asOf` bound to that
+date's Chicago 06:45 instant. Restart/retry reuses the same retained overview
+receipt. The scheduler reads only the small control on idle ticks; aggregation
+and bounded native-terminal reconciliation occur at startup, the learning date
+change or recovery, rather than every minute. At most 100 native projections
+from `startDate` are reconciled before an explicit scoped export/reconciliation
+is required. Private baseline/canary roots are excluded.
+
+Before a new create, the real overview and relevant business, outcome, native
+research and site history are captured from one scoped consumer closure. The
+input has exact UTF-8 JSON bytes and SHA-256, original source dates, explicit
+unknowns, up to 500 events per selected history, and a 600 KB resource limit.
+Any remaining pages are explicit; cached directory coverage stays partial.
+An enabled binding with no verified overview refuses creation. Hypotheses are
+provisional and never automatic prospect filters. The input, hash and full
+create payload are persisted in the dated immutable intent before the provider
+call. The final create claim rechecks the learning binding and expiry. Recovery
+keeps the original captured context and does not reread it or create again.
+
+After a native terminal state, the caller invokes the existing deterministic
+`recordTerminalRun` against the exact `runs/YYYY-MM-DD` projection/hash. Stable
+Blueprint observation IDs retain each source state; counts, finish times and
+delivery remain unknown when unsupported. Retry is idempotent and changes no
+native source or approval state. `render export` retains the full context in
+`status.json`; canonical history/overviews and their linked snapshots live
+under `blueprintResearchLearning/default`, exportable as standard JSON with
+source hashes to existing company storage. Derived review payloads are not
+connector-write receipts.
+
+Release only after the active baseline settles: preserve research disabled,
+review/verify the new archive and compiled host, reconcile the actual binding
+and original-message inputs, then exercise scoped offline aggregation/readback
+without provider calls. Verify the captured context before a separately
+authorized daily cutover. Never replace a running test's installed package.

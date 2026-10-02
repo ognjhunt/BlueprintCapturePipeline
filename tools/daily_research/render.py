@@ -38,12 +38,32 @@ INPUTS = {"crm_snapshot": "crm.json", "knowledge_snapshot": "knowledge.json",
           "knowledge_refresh_policy": "refresh-policy.json"}
 
 
-def next_wake(now):
+def next_wake(now, *, learning=False):
     local = now.astimezone(CENTRAL)
-    target = local.replace(hour=7, minute=0, second=0, microsecond=0)
-    if target <= local:
-        target += timedelta(days=1)
+    times = [(7, 0), (6, 45)] if learning else [(7, 0)]
+    targets = [local.replace(hour=hour, minute=minute, second=0, microsecond=0) for hour, minute in times]
+    target = min(value if value > local else value + timedelta(days=1) for value in targets)
     return target.astimezone(timezone.utc)
+
+
+def learning_due(now, first_date):
+    local = now.astimezone(CENTRAL)
+    target = local.replace(hour=6, minute=45, second=0, microsecond=0)
+    if target > local:
+        target -= timedelta(days=1)
+    day = target.date().isoformat()
+    return {"day": day, "as_of": target.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")} if day >= first_date else None
+
+
+def learning_terminal(bridge, result):
+    if result.get("date") and result.get("state") in {"awaiting_review", "reviewed", "completed", "failed", "cancelled"}:
+        try:
+            with FirestoreLedger(bridge).lock():
+                bridge.call("learning_terminal", day=result["date"])
+        except Exception as exc:  # noqa: BLE001 - optional projection cannot block recovery
+            emit({"state": "learning_blocked", "error": str(exc) if isinstance(exc, Refusal)
+                  else "research_learning_unavailable"})
+    return result
 
 
 def configured(bridge, cache):
@@ -68,7 +88,12 @@ def configured(bridge, cache):
     return configuration(cfg)
 
 
-def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=None, api_factory=FencedProvider):
+def invoke(command, bridge, cache, **kwargs):
+    result = _invoke(command, bridge, cache, **kwargs)
+    return learning_terminal(bridge, result) if command != "status" else result
+
+
+def _invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=None, api_factory=FencedProvider):
     ledger = FirestoreLedger(bridge)
     if command == "status":
         return {"store": "firestore", "root": "blueprintDailyResearch/sites-first",
@@ -87,6 +112,11 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
             # Recovery bypasses this read so it can still cancel an older run.
             with ledger.lock():
                 bridge.call("refresh_crm")
+                control = bridge.call("control")
+                if control.get("learning", {}).get("enabled") is True and day:
+                    due = learning_due(datetime.now(timezone.utc), control["learning"]["startDate"])
+                    if due and due["day"] == day:
+                        bridge.call("learning_daily", **due)
             save_bytes(cache / "crm.json", ledger.read_bytes("crm.json"))
     api = None if command in {"review", "receipt"} else api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
     runner = Runner(ledger, cfg, api)
@@ -95,6 +125,9 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         from tools.daily_research.runner import crm_snapshot, load_knowledge_bundle
         crm_snapshot(cfg["crm_snapshot"], datetime.now(timezone.utc))
         load_knowledge_bundle(cfg, datetime.now(timezone.utc))
+        if day:
+            with ledger.lock():
+                ledger.learning_context(day)
         return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider")), "enabled": cfg["enabled"],
                 "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
     if command in {"review", "receipt", "record-cleanup"}:
@@ -135,7 +168,7 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
         while True:
             result = consumer.step()
             if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_cancel_pending", "reviewed"}:
-                return result
+                return learning_terminal(bridge, result)
             if time.monotonic() >= until:
                 raise Refusal("workflow_observation_deadline")
             time.sleep(3)
@@ -197,6 +230,7 @@ def export_snapshot(bridge, day, destination):
 def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(timezone.utc)):
     # One child bridge, with no lease held during idle ticks.
     last_signature, last_day, retry_at, bridge = None, None, None, None
+    last_learning, learning_retry_at = None, None
     try:
         while not stopped.is_set():
             try:
@@ -205,6 +239,7 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 control = bridge.call("control")
                 cfg = configuration(control_configuration(control))
                 signature = digest({key: value for key, value in control.items() if key != "lease"})
+                learning = control.get("learning", {}).get("enabled") is True
                 day = due_date(clock(), cfg["first_date"])
                 if signature != last_signature or day != last_day or (retry_at and clock() >= retry_at):
                     last_signature, last_day = signature, day
@@ -220,6 +255,24 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 elif workflow(control) and (not retry_at or clock() >= retry_at):
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
                         emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
+                if learning:
+                    try:
+                        due = learning_due(clock(), control["learning"]["startDate"])
+                        learning_key = (digest(control["learning"]), due["day"] if due else None)
+                        if due and learning_key != last_learning and (not learning_retry_at or clock() >= learning_retry_at):
+                            with FirestoreLedger(bridge).lock():
+                                bridge.call("learning_reconcile")
+                                learning_result = bridge.call("learning_daily", **due)
+                            emit({"state": "learning_completed", "date": due["day"],
+                                  "overview_id": learning_result["overviewId"]})
+                            last_learning, learning_retry_at = learning_key, None
+                    except Exception as exc:  # noqa: BLE001 - preserve existing-intent recovery
+                        emit({"state": "learning_blocked", "error": str(exc) if isinstance(exc, Refusal)
+                              else "research_learning_unavailable"})
+                        learning_retry_at = clock() + timedelta(minutes=5)
+                        if getattr(bridge, "broken", False) or getattr(bridge, "closed", False):
+                            bridge.close()
+                            bridge = None
             except Exception as exc:  # noqa: BLE001 - fixed codes, never upstream exception bodies
                 emit({"state": "blocked", "error": str(exc) if isinstance(exc, Refusal) else "research_runtime_unavailable"})
                 retry_at = clock() + timedelta(minutes=5)
@@ -230,7 +283,7 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 break
             # Idle ticks read the small control document only. Full history is
             # read at startup, a due date/control change or bounded recovery.
-            stopped.wait(min(60, max(0.01, (next_wake(clock()) - clock()).total_seconds())))
+            stopped.wait(min(60, max(0.01, (next_wake(clock(), learning=learning if bridge else False) - clock()).total_seconds())))
     finally:
         if bridge is not None:
             bridge.close()
