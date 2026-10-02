@@ -106,22 +106,73 @@ def _hash_open_pack(fd, path, before, deadline):
 def _verified_pack(path, deadline):
     _remaining(deadline)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
-        with os.fdopen(fd, 'rb', buffering=0) as stream:
+        with ExitStack() as stack:
+            ancestry = []
+            parent = _open_directory(path.parent, ancestry)
+            stack.callback(os.close, parent)
+            fd = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=parent)
+            stream = stack.enter_context(os.fdopen(fd, 'rb', buffering=0))
             before = os.fstat(fd)
             _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
                      and 0 < before.st_size <= MAX_PACK_BYTES, 'pack')
             size, digest = _hash_open_pack(fd, path, before, deadline)
             stream.seek(0)
-            yield stream, before, size, digest
-            _validate_pack(fd, path, before, deadline)
+            _check_pack_namespace(path, ancestry, deadline)
+            # Callers perform their last pack and namespace guards while all
+            # descriptors are held. Exit only closes descriptors; it must not
+            # introduce later pathname work after a caller's final closure.
+            yield stream, before, size, digest, ancestry
     except OSError:
         raise GitInputError('native_guest_git_pack') from None
 
 
 def _pack_hash(path, deadline):
-    with _verified_pack(path, deadline) as (_, _, size, digest):
+    with _verified_pack(path, deadline) as (stream, before, size, digest, ancestry):
+        _validate_pack(stream.fileno(), path, before, deadline)
+        _check_pack_namespace(path, ancestry, deadline)
         return size, digest
+
+
+def _check_pack_namespace(path, ancestry, deadline):
+    try:
+        _check_ancestry(path.parent, ancestry, 'git_pack')
+    except GuestExecutionError:
+        raise GitInputError('native_guest_git_pack') from None
+    _remaining(deadline)
+
+
+def _read_shallow(path, deadline):
+    _remaining(deadline)
+    try:
+        with ExitStack() as stack:
+            ancestry = []
+            parent = _open_directory(path.parent, ancestry)
+            stack.callback(os.close, parent)
+            fd = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=parent)
+            stack.callback(os.close, fd)
+            before = os.fstat(fd)
+            _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+                     and 0 < before.st_size <= 1024**2, 'shallow')
+            _require(_file_identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False))
+                     == _file_identity(before), 'shallow')
+            raw = bytearray()
+            while True:
+                _remaining(deadline)
+                part = os.read(fd, min(65536, 1024**2 + 1 - len(raw)))
+                if not part:
+                    break
+                raw.extend(part)
+                _require(len(raw) <= 1024**2, 'shallow')
+            _require(len(raw) == before.st_size
+                     and _file_identity(os.fstat(fd)) == _file_identity(before)
+                     == _file_identity(os.stat(path.name, dir_fd=parent, follow_symlinks=False)), 'shallow')
+            _check_ancestry(path.parent, ancestry, 'git_shallow')
+            _remaining(deadline)
+            return bytes(raw)
+    except (OSError, GuestExecutionError):
+        raise GitInputError('native_guest_git_shallow') from None
 
 
 def _tree_footprint(root, commit, deadline):
@@ -157,8 +208,7 @@ def write_git_input(checkout, expected_commit, output, *, deadline_monotonic):
         name = _git(checkout, ['rev-parse', '--git-path', 'shallow'], deadline_monotonic).decode().strip()
         path = Path(name)
         path = path if path.is_absolute() else checkout / path
-        with _path(path).open('rb') as stream:
-            raw = stream.read(1024**2 + 1)
+        raw = _read_shallow(_path(path), deadline_monotonic)
         _require(0 < len(raw) <= 1024**2, 'shallow')
         shallow = [_oid(row) for row in raw.decode('ascii').splitlines()]
         _require(len(shallow) == len(set(shallow)), 'shallow')
@@ -222,8 +272,8 @@ def write_git_input(checkout, expected_commit, output, *, deadline_monotonic):
             pack_size, digest = _hash_open_pack(fd, output, before, deadline_monotonic)
             _require(pack_size == transferred and digest == transferred_digest.hexdigest(), 'pack')
             _require(_git(checkout, ['rev-parse', 'HEAD'], deadline_monotonic).decode().strip() == commit, 'selection')
-            _check_ancestry(output.parent, ancestry, 'git_pack')
             _validate_pack(fd, output, before, deadline_monotonic)
+            _check_pack_namespace(output, ancestry, deadline_monotonic)
             _remaining(deadline_monotonic)
             return dict(schema='native-guest-git-input.v1', commit=commit, tree=tree,
                         shallow=shallow, pack_size_bytes=pack_size, pack_sha256=digest,
@@ -241,7 +291,7 @@ def restore_git_input(pack, manifest, destination, *, deadline_monotonic):
     shallow = manifest.get('shallow')
     _require(type(shallow) is list and len(shallow) <= 25000
              and len(set(_oid(row) for row in shallow)) == len(shallow), 'shallow')
-    with _verified_pack(pack, deadline_monotonic) as (stream, before, size, digest), ExitStack() as stack:
+    with _verified_pack(pack, deadline_monotonic) as (stream, before, size, digest, pack_ancestry), ExitStack() as stack:
         _require((size, digest) == (manifest.get('pack_size_bytes'), manifest.get('pack_sha256')), 'pack')
         ancestry = []
         parent = _open_directory(destination.parent, ancestry)
@@ -312,8 +362,9 @@ def restore_git_input(pack, manifest, destination, *, deadline_monotonic):
                  and footprint == (manifest['working_tree_bytes'], manifest['working_tree_files']), 'tree_footprint')
         command(['checkout', '--detach', commit])
         _require(command(['rev-parse', 'HEAD']).decode().strip() == commit, 'selection')
-        validate_destination()
         _validate_pack(stream.fileno(), pack, before, deadline_monotonic)
+        validate_destination()
+        _check_pack_namespace(pack, pack_ancestry, deadline_monotonic)
         _remaining(deadline_monotonic)
         return dict(commit=commit, tree=tree, credentials_transferred=False,
                     guest_acceptance_proven=False)

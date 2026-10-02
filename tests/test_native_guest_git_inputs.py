@@ -7,6 +7,7 @@ import hashlib
 import os
 import sys
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -152,7 +153,7 @@ def test_nonregular_pack_is_acquired_without_blocking_on_fifo(tmp_path, monkeypa
     os.mkfifo(fifo)
     original = inputs.os.open
     def open_file(path, flags, *args, **kwargs):
-        if path == fifo:
+        if path == fifo or path == fifo.name:
             assert flags & os.O_NONBLOCK, 'FIFO acquisition can otherwise block past its deadline'
         return original(path, flags, *args, **kwargs)
     monkeypatch.setattr(inputs.os, 'open', open_file)
@@ -273,3 +274,90 @@ def test_export_pack_cannot_change_after_final_selection_guard(source, tmp_path,
     monkeypatch.setattr(inputs, '_git', git_command)
     with pytest.raises(inputs.GitInputError, match='pack'):
         inputs.write_git_input(root, commit, pack, deadline_monotonic=time.monotonic() + 10)
+
+
+def test_last_pack_guard_cannot_alias_previously_verified_export_parent(source, tmp_path, monkeypatch):
+    root, commit, _ = source
+    parent = tmp_path / 'parent'
+    parent.mkdir()
+    pack = parent / 'input.pack'
+    original = Path.lstat
+    calls = [0]
+    def lstat(path):
+        result = original(path)
+        if path == pack:
+            calls[0] += 1
+            if calls[0] == 3:
+                moved = tmp_path / 'owned-parent'
+                parent.rename(moved)
+                parent.symlink_to(moved, target_is_directory=True)
+        return result
+    monkeypatch.setattr(Path, 'lstat', lstat)
+    with pytest.raises(inputs.GitInputError, match='pack'):
+        inputs.write_git_input(root, commit, pack, deadline_monotonic=time.monotonic() + 10)
+
+
+@linux_restore
+def test_last_pack_guard_cannot_alias_previously_verified_restore_parent(source, tmp_path, monkeypatch):
+    root, commit, _ = source
+    pack = tmp_path / 'input.pack'
+    manifest = inputs.write_git_input(root, commit, pack, deadline_monotonic=time.monotonic() + 10)
+    parent = tmp_path / 'parent'
+    parent.mkdir()
+    original = Path.lstat
+    calls = [0]
+    def lstat(path):
+        result = original(path)
+        if path == pack:
+            calls[0] += 1
+            if calls[0] == 5:
+                moved = tmp_path / 'owned-parent'
+                parent.rename(moved)
+                parent.symlink_to(moved, target_is_directory=True)
+        return result
+    monkeypatch.setattr(Path, 'lstat', lstat)
+    with pytest.raises(inputs.GitInputError, match='destination'):
+        inputs.restore_git_input(pack, manifest, parent / 'restored',
+                                 deadline_monotonic=time.monotonic() + 10)
+
+
+def test_shallow_metadata_fifo_does_not_block_before_deadline(source, tmp_path, monkeypatch):
+    root, commit, _ = source
+    fifo = tmp_path / 'shallow-fifo'
+    os.mkfifo(fifo)
+    original_git = inputs._git
+    def git_command(root, arguments, deadline, **kwargs):
+        if arguments == ['rev-parse', '--is-shallow-repository']:
+            return b'true\n'
+        if arguments == ['rev-parse', '--git-path', 'shallow']:
+            return (str(fifo) + '\n').encode()
+        return original_git(root, arguments, deadline, **kwargs)
+    monkeypatch.setattr(inputs, '_git', git_command)
+    original_open = Path.open
+    def path_open(path, *args, **kwargs):
+        assert path != fifo, 'blocking Path.open would hang on this actual FIFO'
+        return original_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', path_open)
+    original_fd_open = inputs.os.open
+    def fd_open(path, flags, *args, **kwargs):
+        if path == fifo or path == fifo.name:
+            assert flags & os.O_NONBLOCK
+        return original_fd_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(inputs.os, 'open', fd_open)
+    with pytest.raises(inputs.GitInputError, match='shallow'):
+        inputs.write_git_input(root, commit, tmp_path / 'input.pack',
+                               deadline_monotonic=time.monotonic() + 10)
+
+
+def test_authentic_shallow_boundary_exports_without_dirty_files(source, tmp_path):
+    root, commit, _ = source
+    shallow = tmp_path / 'shallow'
+    subprocess.run(['git', 'clone', '-q', '--depth=1', root.as_uri(), str(shallow)],
+                   check=True, env=inputs._environment() | {'GIT_ALLOW_PROTOCOL': 'file'})
+    (shallow / 'payload.txt').write_bytes(b'dirty bytes remain excluded')
+    pack = tmp_path / 'input.pack'
+    manifest = inputs.write_git_input(shallow, commit, pack, deadline_monotonic=time.monotonic() + 10)
+    assert manifest['shallow'] == [commit]
+    assert manifest['pack_size_bytes'] == pack.stat().st_size
+    assert manifest['pack_sha256'] == hashlib.sha256(pack.read_bytes()).hexdigest()
+    assert (shallow / 'payload.txt').read_bytes() == b'dirty bytes remain excluded'
