@@ -91,7 +91,9 @@ def qa_text(row, snapshot, crm_digest):
                "Ordinary live background facts do not require a robot-capability maturity grade and never supply "
                "positive capability coverage. "
                "Any output_recovery quarantined_proposals are excluded from approved knowledge; do not invent "
-               "their evidence levels or silently restore them. Newness and coverage remain unverified until QA. "
+               "their evidence levels or silently restore them. Any research_exclusions items still failed the strict "
+               "contract after same-session correction: report them as rejected, never as accepted candidates or "
+               "approved knowledge. Newness and coverage remain unverified until QA. "
                "Unknown interest/availability stays unknown. No outreach, drafting, credentials, installs, "
                "sandbox networking, providers, models, subagents or external writes. Native web search only. "
                + allowance + assessment + "The $1 TOTAL research+QA+"
@@ -230,10 +232,14 @@ class Consumer:
             if row.get("qa_continuation") and (session.get("status") != "idle" or session.get("required_actions")):
                 raise Refusal("recovered_qa_session_not_idle")
             turns = self.api.listing("turns", row["session_id"])
+            # After an exclusion outcome every bound correction turn is part of the
+            # session's history; each must be terminal, and the research turn completed.
+            excluded = bool(row.get("validation_repair_outcome"))
             expected_turns = {row["turn_id"], *(r["turn_id"] for r in row.get("validation_repairs", [])
-                                               if r.get("turn_id") and r.get("state") in {"invalid", "validated"})}
-            if ({t["id"] for t in turns} != expected_turns
-                    or any(t["status"] != "completed" or t.get("subagent_id") for t in turns)):
+                                               if r.get("turn_id") and (excluded or r.get("state") in {"invalid", "validated"}))}
+            allowed = {"completed", "failed", "cancelled"} if excluded else {"completed"}
+            if ({t["id"] for t in turns} != expected_turns or any(t.get("subagent_id") for t in turns)
+                    or any(t["status"] not in ({"completed"} if t["id"] == row["turn_id"] else allowed) for t in turns)):
                 raise Refusal("agent_qa_initial_turn_scope_mismatch")
             crm_digest = digest(snapshot["values"])
             event = {"type": "agent.session.input.message", "input": [{"role": "user", "content": [

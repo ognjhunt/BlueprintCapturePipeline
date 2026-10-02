@@ -125,13 +125,77 @@ def replay_saved_artifact(row, raw_artifact, tool_files, known, observed_at):
             "qa_and_publication_verified": False}
 
 
-def validation_feedback(output, row, known, observed_at):
-    """Collect independent failures; feedback is data, never agent authority."""
-    from tools.daily_research import contracts, discovery
-    from tools.daily_research.runner import Refusal, public_url, validate_output
+RULES = {
+    "output_schema_invalid": "The document must be one JSON object with exactly the contract's top-level fields, each of the contract type.",
+    "output_version_or_snapshot_binding_invalid": "Copy schema_version blueprint.daily-research.v{version} and the trusted snapshot_content_hash exactly.",
+    "output_refresh_policy_binding_invalid": "Copy the trusted refresh_policy_hash exactly.",
+    "output_date_or_count_invalid": "checked_date is the run date {day}; candidates is a list of at most {limit} entries.",
+    "output_summary_invalid": "findings, blockers and proposed_next_actions are lists of at most 20 nonempty strings of at most 2000 characters.",
+    "discovery_coverage_invalid": "Report coverage with its exact fields: query/page counts, branches, rejections, stop and shortfall reasons, scope, unresolved branches and completion state.",
+    "discovery_scope_or_completion_invalid": "defined_run_scope is nonempty; completion_state is coverage_complete, budget_interrupted, time_interrupted or access_blocked.",
+    "discovery_completion_has_unresolved_branches": "coverage_complete cannot have unresolved promising branches; resolve them or report the honest interrupted state.",
+    "research_scope_coverage_required": "coverage includes defined_run_scope, unresolved_promising_branches and completion_state.",
+    "candidate_schema_invalid": "A candidate has exactly the contract's candidate fields; unsupported extra fields are removed, not invented.",
+    "candidate_field_invalid": "Use a supported nonempty string of at most 2000 characters, or quarantine the unsupported candidate.",
+    "candidate_claim_ceiling_invalid": "confidence is low, medium or high; qualification_status is unqualified or needs_review, never qualified.",
+    "candidate_unknowns_required": "unknowns is a nonempty list (at most 20) of nonempty strings; unverified availability, interest or deployment belongs here.",
+    "candidate_evidence_required": "evidence is a list of 3 to 12 entries.",
+    "task_capability_geography_evidence_required": "Keep supported task, capability and geography evidence; a candidate missing one stays unknown or is quarantined.",
+    "operator_task_source_required": "At least one task evidence entry is an operator source for the actual work; a delegated employer job board is allowed and QA verifies affiliation.",
+    "source_url_invalid": "Use the actual public http(s) source URL with a hostname: no credentials, IP addresses or malformed brackets.",
+    "evidence_schema_invalid": "An evidence entry has exactly the contract's evidence fields.",
+    "evidence_field_invalid": "Use the contract's evidence semantics: classification operator/vendor/independent, claim_kind fact/vendor_claim/hypothesis, the allowed role, and the actual claim, publisher and quote.",
+    "vendor_claim_presented_as_fact": "A vendor source supports vendor_claim, never fact.",
+    "source_date_in_future": "Publication dates cannot follow the run date {day}; an unknown date is null.",
+    "site_evidence_level_must_be_null": "Task and geography evidence describe the site, not robot maturity: evidence_level is null.",
+    "evidence_level_invalid": "Capability evidence needs a supported robot grade; background evidence may be null. Never invent maturity.",
+    "unsupported_evidence_level": "Capability evidence cannot be unknown; use the supported grade or keep the gap in unknowns.",
+    "evidence_date_integrity_invalid": "checked_date is the America/Chicago date of source_checked_at; a precise review time is the saved source-read timestamp in source_checked_at.",
+    "evidence_date_in_future": "Checked times cannot be in the future or after the snapshot load time.",
+    "evidence_assertion_scope_invalid": "assertion_scope is as_of_background, current_operational or deployment_critical.",
+    "cached_operational_assertion_forbidden": "Snapshot citations are as_of_background only.",
+    "live_evidence_binding_invalid": "Live evidence is checked on {day} and has null snapshot bindings.",
+    "evidence_origin_invalid": "origin is live or snapshot.",
+    "live_task_geography_required": "Task and geography evidence must be live; snapshot facts support capability or background only.",
+    "snapshot_fact_not_in_context": "Cite only a record_id/fact_id present in the trusted knowledge context.",
+    "cached_fact_not_usable": "This snapshot fact cannot be positive evidence; use a live source or keep the gap.",
+    "cached_positive_capability_not_supported": "Only a reviewed vendor task_claim fact gives capability coverage; otherwise cite it as background.",
+    "cached_fact_binding_invalid": "Copy the cited fact's statement, evidence_level and snapshot_loaded_at exactly; snapshot facts are not hypotheses.",
+    "cached_source_binding_invalid": "Copy one of the cited fact's sources exactly.",
+    "knowledge_deltas_invalid": "proposed_knowledge_deltas is a list of at most 10 proposals.",
+    "knowledge_delta_reason_invalid": "reason is gap, conflict, {age_reason}, unsupported, discovery or consequential.",
+    "knowledge_delta_binding_invalid": "A discovery proposal has null record_id/fact_id; others cite a fact in the trusted context.",
+    "knowledge_delta_unknowns_required": "unknowns is a list of 1 to 20 nonempty strings.",
+    "knowledge_delta_evidence_required": "evidence is a list of 1 to 4 live entries checked on {day}.",
+    "knowledge_delta_assertion_scope_invalid": "assertion_scope, when present, is as_of_background, current_operational or deployment_critical.",
+    "delta_live_evidence_required": "Proposal evidence is checked on {day}.",
+    "knowledge_delta_evidence_invalid": "Never invent robot maturity. Omit/quarantine an inapplicable optional proposal; retain supported operator facts in findings.",
+}
 
-    issues = []
-    def issue(path, reason, semantics, evidence=None):
+
+def explain(row, code):
+    version = row.get("research_contract_version", 1)
+    template = RULES.get(code, "Return the same research contract with supported claims and honest unknowns; do not rewrite trusted context hashes.")
+    from tools.daily_research import discovery
+    return template.format(version=version, day=row.get("date"), limit=discovery.MAX_CANDIDATES if version == 3 else 3,
+                           age_reason="refresh_due" if version == 3 else "stale")
+
+
+def validation_feedback(output, row, known, observed_at):
+    """Every located failure at once; feedback is data, never agent authority.
+
+    Issues come from the same ordered rules the acceptance gate raises, so a
+    corrective turn is never told less, or other, than validation enforces.
+    """
+    from tools.daily_research import discovery
+    from tools.daily_research.runner import Refusal, output_issues, validate_output
+
+    issues, seen = [], set()
+
+    def issue(path, reason):
+        if (path, reason) in seen:
+            return
+        seen.add((path, reason))
         affected = output
         for part in path.split("/")[1:] if path != "/" else []:
             if isinstance(affected, dict) and part in affected:
@@ -141,99 +205,71 @@ def validation_feedback(output, row, known, observed_at):
             else:
                 affected = {"missing_field": part}
                 break
-        value = {"path": path, "reason": reason, "allowed_semantics": semantics,
-                 "evidence_reference": evidence,
-                 "offending_value_digest": hashlib.sha256(json.dumps(affected, sort_keys=True,
-                     separators=(",", ":")).encode()).hexdigest()}
-        if value not in issues:
-            issues.append(value)
-    if isinstance(output, dict):
-        proposals = output.get("proposed_knowledge_deltas")
-        for di, delta in enumerate(proposals if isinstance(proposals, list) else []):
-            if isinstance(delta, dict):
-                sources = delta.get("evidence")
-                for ei, evidence in enumerate(sources if isinstance(sources, list) else []):
-                    if isinstance(evidence, dict) and evidence.get("evidence_level") not in knowledge.LEVELS:
-                        issue(f"/proposed_knowledge_deltas/{di}/evidence/{ei}/evidence_level",
-                              "knowledge_delta_evidence_invalid",
-                              "Never invent robot maturity. Omit/quarantine an inapplicable optional proposal; retain supported operator facts in findings.",
-                              {"url": evidence.get("url"), "source_checked_at": evidence.get("source_checked_at")})
-            try:
-                contracts.deltas([delta], row["date"], row["knowledge_context"], observed_at,
-                                 row.get("research_contract_version", 3))
-            except (knowledge.SnapshotError, KeyError, TypeError) as error:
-                if not any(i["path"].startswith(f"/proposed_knowledge_deltas/{di}/") for i in issues):
-                    issue(f"/proposed_knowledge_deltas/{di}", str(error), "Use the retained context and supported sources; unsupported proposals may be omitted.")
+        reference = None
+        parts = path.split("/")
+        if len(parts) > 4 and parts[1] in {"candidates", "proposed_knowledge_deltas"} and parts[3] == "evidence":
+            entry = output[parts[1]][int(parts[2])]["evidence"][int(parts[4])] if parts[2].isdigit() and parts[4].isdigit() else None
+            if isinstance(entry, dict):
+                fields = ("url", "source_checked_at", "revalidated_at", "role") if parts[1] == "candidates" else ("url", "source_checked_at")
+                reference = {k: entry.get(k) for k in fields}
+        issues.append({"path": path, "reason": reason, "allowed_semantics": explain(row, reason),
+                       "evidence_reference": reference,
+                       "offending_value_digest": hashlib.sha256(json.dumps(affected, sort_keys=True,
+                           separators=(",", ":")).encode()).hexdigest()})
+
+    version = row.get("research_contract_version", 1)
+    options = {"contract_version": version, "knowledge_context": row.get("knowledge_context"),
+               "observed_at": observed_at, "refresh_policy": row.get("refresh_policy")}
+    for found in output_issues(output, row["date"], collect=True, **options):
+        issue(found["pointer"] or "/", found["code"])
+    if row.get("discovery_profile") == "adaptive-sites-v1" and isinstance(output, dict):
         candidates = output.get("candidates")
-        for ci, candidate in enumerate(candidates if isinstance(candidates, list) else []):
-            if not isinstance(candidate, dict):
-                issue(f"/candidates/{ci}", "candidate_schema_invalid", "Return a supported candidate object or quarantine the unsupported candidate.")
-                continue
-            for field in ("organization", "organization_url", "site", "location", "task",
-                          "potential_robot_match", "qualification_status", "confidence", "proposed_next_action"):
-                value = candidate.get(field)
-                if not isinstance(value, str) or not value.strip() or len(value) > 2000:
-                    issue(f"/candidates/{ci}/{field}", "candidate_field_invalid",
-                          "Use a supported nonempty string of at most 2000 characters, or quarantine the unsupported candidate.")
-            try:
-                public_url(candidate.get("organization_url"))
-            except (Refusal, ValueError, TypeError) as error:
-                issue(f"/candidates/{ci}/organization_url", str(error) if isinstance(error, Refusal) else "source_url_invalid",
-                      "Use the actual public organization URL; do not invent an affiliation.")
-            sources = candidate.get("evidence")
-            for ei, evidence in enumerate(sources if isinstance(sources, list) else []):
-                if isinstance(evidence, dict):
-                    fields = ("claim", "publisher") if evidence.get("origin") == "snapshot" else ("claim", "publisher", "quote")
-                    for field in fields:
-                        value = evidence.get(field)
-                        if not isinstance(value, str) or not value.strip() or len(value) > 2000:
-                            issue(f"/candidates/{ci}/evidence/{ei}/{field}", "evidence_field_invalid",
-                                  "Preserve the actual supported claim, publisher and source quote; unsupported evidence may be quarantined.")
-                    for field, allowed in (("classification", {"operator", "vendor", "independent"}),
-                                           ("claim_kind", {"fact", "vendor_claim", "hypothesis"}),
-                                           ("role", {"task", "capability", "geography", "background"})):
-                        value = evidence.get(field)
-                        if not isinstance(value, str) or value not in allowed:
-                            issue(f"/candidates/{ci}/evidence/{ei}/{field}", "evidence_field_invalid",
-                                  "Use the evidence semantics from the original contract; never promote a vendor assertion to fact.")
-                    try:
-                        public_url(evidence.get("url"))
-                    except (Refusal, ValueError, TypeError) as error:
-                        issue(f"/candidates/{ci}/evidence/{ei}/url", str(error) if isinstance(error, Refusal) else "source_url_invalid",
-                              "Use the actual public source URL from the retained evidence.")
-                try:
-                    contracts.evidence(evidence, row["date"], row["knowledge_context"], observed_at,
-                                       policy=row.get("refresh_policy"))
-                except (knowledge.SnapshotError, KeyError, TypeError) as error:
-                    suffix = "/source_checked_at" if str(error) == "evidence_date_integrity_invalid" else ""
-                    issue(f"/candidates/{ci}/evidence/{ei}" + suffix, str(error),
-                          "Preserve genuine dates and quotes. Live review timestamps must come from saved source receipts; background facts need no robot grade. Unsupported claims stay unknown or are quarantined.",
-                          {k: evidence.get(k) for k in ("url", "source_checked_at", "revalidated_at", "role")} if isinstance(evidence, dict) else None)
-            try:
-                single = {**output, "candidates": [candidate], "proposed_knowledge_deltas": []}
-                # Coverage describes the entire report; check it separately.
-                single.pop("coverage", None)
-                validate_output(single, row["date"], set(known), contract_version=row.get("research_contract_version", 1),
-                                knowledge_context=row.get("knowledge_context"), observed_at=observed_at,
-                                refresh_policy=row.get("refresh_policy"))
-            except (Refusal, ValueError, KeyError, TypeError) as error:
-                if not any(i["reason"] == str(error) and i["path"].startswith(f"/candidates/{ci}/") for i in issues):
-                    issue(f"/candidates/{ci}", str(error), "Preserve supported task/capability/geography evidence; an unsupported candidate may be quarantined with its precise gap.")
-        if row.get("discovery_profile") == "adaptive-sites-v1":
-            try:
-                discovery.validate_coverage(output.get("coverage"), len(candidates) if isinstance(candidates, list) else 0)
-                if row.get("search_provider") == search.PROFILE and "defined_run_scope" not in output["coverage"]:
-                    raise Refusal("research_scope_coverage_required")
-            except (Refusal, ValueError, KeyError, TypeError) as error:
-                issue("/coverage", str(error), "Report actual scope, sources, unresolved branches and stopping reason; no result count establishes completion.")
-    try:
-        validate_output(output, row["date"], set(known), contract_version=row.get("research_contract_version", 1),
-                        knowledge_context=row.get("knowledge_context"), observed_at=observed_at,
-                        refresh_policy=row.get("refresh_policy"))
-    except (Refusal, ValueError, KeyError, TypeError) as error:
-        if not any(i["reason"] == str(error) for i in issues):
-            issue("/", str(error), "Return the same research contract with supported claims and honest unknowns; do not rewrite trusted context hashes.")
+        try:
+            discovery.validate_coverage(output.get("coverage"), len(candidates) if isinstance(candidates, list) else 0)
+            if row.get("search_provider") == search.PROFILE and "defined_run_scope" not in output["coverage"]:
+                raise Refusal("research_scope_coverage_required")
+        except (Refusal, ValueError, KeyError, TypeError) as error:
+            issue("/coverage", str(error) if isinstance(error, (Refusal, ValueError)) else "discovery_coverage_invalid")
+    if not issues:
+        # The strict gate stays the authority; a diagnosis gap never passes silently.
+        try:
+            validate_output(output, row["date"], set(known), **options)
+        except (Refusal, ValueError, KeyError, TypeError) as error:
+            issue("/", str(error) if isinstance(error, Refusal) else "output_schema_invalid")
     return issues
+
+
+ITEM_FIELDS = ("candidates", "proposed_knowledge_deltas", "findings", "blockers", "proposed_next_actions")
+
+
+def exclude_located_items(document, feedback):
+    """Drop only items whose every failure is located inside them; else (None, None).
+
+    Excluded items are retained (digest, failures, candidate identity) for audit
+    and QA; nothing is rewritten, promoted or invented.
+    """
+    from tools.daily_research.runner import digest
+    targets = {}
+    for found in feedback:
+        parts = found["path"].split("/")[1:]
+        if len(parts) < 2 or parts[0] not in ITEM_FIELDS or not parts[1].isdigit() or not isinstance(document, dict):
+            return None, None
+        targets.setdefault((parts[0], int(parts[1])), []).append({"path": found["path"], "reason": found["reason"]})
+    derived, excluded = deepcopy(document), []
+    for field in ITEM_FIELDS:
+        indexes = sorted(index for name, index in targets if name == field)
+        values = derived.get(field)
+        if not indexes:
+            continue
+        if not isinstance(values, list) or indexes[-1] >= len(values):
+            return None, None
+        for index in indexes:
+            record = {"field": field, "index": index, "failures": targets[(field, index)], "item_digest": digest(values[index])}
+            if field == "candidates" and isinstance(values[index], dict):
+                record["identity"] = {k: values[index].get(k) for k in ("organization", "organization_url", "site", "task")}
+            excluded.append(record)
+        derived[field] = [value for index, value in enumerate(values) if index not in set(indexes)]
+    return derived, excluded
 
 
 def feedback_signature(issues):
@@ -241,10 +277,17 @@ def feedback_signature(issues):
     return sorted({(issue["path"], issue["reason"], issue.get("offending_value_digest", "")) for issue in issues})
 
 
+def approved(reference):
+    return isinstance(reference, str) and bool(reference.strip()) and not reference.startswith("PENDING")
+
+
 def repair_deadline(row):
+    """The row's own pinned window. Approvals are data bound to the row's admitted
+    baseline, never constants in code, so a new approval needs no release."""
     from tools.daily_research.runner import Refusal, instant
     authority = row.get("validation_repair_authority", {})
     request = authority.get("request", {})
+    baseline = row.get("canary", {}).get("baseline", {})
     if authority.get("kind") == "workflow":
         reference = request.get("authority_reference")
         seconds = row.get("total_runtime_seconds")
@@ -262,9 +305,10 @@ def repair_deadline(row):
             or request.get("scope") != "same-session-validation-repair-and-qa-no-outreach"
             or request.get("session_id") != row.get("session_id") or request.get("root_turn_id") != row.get("turn_id")
             or request.get("raw_output_sha256") != row.get("raw_output_digest")
-            or request.get("authority_reference") != "Sentinel_3b6171ff167c8191b378202c5f0c54c0"
-            or request.get("baseline_id") != "baseline-20261002" or request.get("soft_total_usd") != 25
-            or request.get("budget_authority_reference") != row.get("canary", {}).get("baseline", {}).get("authority_reference")):
+            or not approved(request.get("authority_reference")) or not baseline.get("baseline_id")
+            or request.get("baseline_id") != baseline.get("baseline_id")
+            or request.get("soft_total_usd") != baseline.get("soft_total_usd")
+            or request.get("budget_authority_reference") != baseline.get("authority_reference")):
         raise Refusal("validation_repair_authority_or_binding_invalid")
     return instant(authority["started_at"]) + timedelta(seconds=1800)
 
@@ -293,7 +337,7 @@ class RepairLoop:
                     or digest(row.get("refresh_policy")) != row.get("refresh_policy_digest")):
                 raise Refusal("validation_repair_context_binding_invalid")
             revisions = row.setdefault("validation_repairs", [])
-            if revisions and revisions[-1]["state"] == "validated":
+            if revisions and revisions[-1]["state"] == "validated" or row.get("validation_repair_outcome"):
                 return row
             if not row.get("validation_repair_authority"):
                 permission = workflow(self.ledger.bridge.call("control"))
@@ -312,7 +356,7 @@ class RepairLoop:
                 raise Refusal("validation_repair_side_effects_already_started")
             current = revisions[-1] if revisions else None
             if current and current["state"] == "no_progress":
-                return row
+                return self.finalize(row)
             if current is None or current["state"] == "invalid":
                 if self.stopped() or self.clock() >= deadline or not workflow(self.ledger.bridge.call("control")):
                     raise Refusal("validation_repair_window_exhausted")
@@ -431,12 +475,13 @@ class RepairLoop:
                     if turn["status"] != "completed":
                         current.update(state="no_progress", error="validation_repair_turn_" + turn["status"])
                         self.ledger.put(row)
-                        return row
+                        return self.finalize(row)
                     artifacts = [a for a in self.api.listing("artifacts", row["session_id"]) if a.get("turn_id") == turn_id and a.get("path") == REPAIR_PATH]
                     if not artifacts:
                         if self.clock() >= deadline:
                             current.update(state="no_progress", error="validation_repair_completed_artifact_missing")
                             self.ledger.put(row)
+                            return self.finalize(row)
                         return row  # Terminal publication may lag within the original window.
                     if len(artifacts) != 1:
                         raise Refusal("validation_repair_artifact_ambiguous")
@@ -451,7 +496,7 @@ class RepairLoop:
                             or turn["completed_at"] > deadline.timestamp()):
                         current.update(state="no_progress", error="validation_repair_terminal_guard_failed")
                         self.ledger.put(row)
-                        return row
+                        return self.finalize(row)
                     try:
                         output = json.loads(raw)
                     except (ValueError, UnicodeError):
@@ -465,7 +510,7 @@ class RepairLoop:
                         if repeated:
                             current["error"] = "validation_repair_no_progress"
                         self.ledger.put(row)
-                        return row
+                        return self.finalize(row) if repeated else row
                     Runner(self.ledger, self.config, None, clock=self.clock).prepare_output(row, output)
                     row["packet"]["research_revision"] = {"number": current["number"], "turn_id": turn_id,
                         "artifact_sha256": current["artifact_digest"], "original_artifact_sha256": row["raw_output_digest"]}
@@ -484,6 +529,50 @@ class RepairLoop:
                 return row
             self.ledger.put(row)
             return row
+
+    def finalize(self, row):
+        """No admissible correction remains: keep every valid item, block only the rest.
+
+        Uses the best eligible revision (the original or an in-window diagnosed
+        correction) and excludes only items whose every failure is located inside
+        them. Late, unread or operator-cancelled corrections are retained, never
+        used. Anything global stays blocked with the complete feedback.
+        """
+        from tools.daily_research.consumer import Consumer
+        from tools.daily_research.runner import Refusal, Runner, digest
+        latest = row["validation_repairs"][-1]
+        if row["state"] != "failed" or latest.get("cancel_attempted"):
+            return row
+        _, known = Consumer(self.ledger, self.config, self.api, clock=self.clock).refresh_crm()
+        eligible = [(0, None, row["date"] + "-artifact.json", row["raw_output_digest"])] + [
+            (r["number"], r.get("turn_id"), r["artifact_file"], r["artifact_digest"]) for r in row["validation_repairs"]
+            if r.get("artifact_file") and (r["state"] == "invalid" or r.get("error") == "validation_repair_no_progress")]
+        best = None
+        for number, turn_id, name, expected in reversed(eligible):
+            raw = self.ledger.read_bytes(name)
+            if hashlib.sha256(raw).hexdigest() != expected:
+                raise Refusal("validation_repair_artifact_binding_invalid")
+            try:
+                document = json.loads(raw)
+            except (ValueError, UnicodeError):
+                continue
+            derived, excluded = exclude_located_items(document, validation_feedback(document, row, known, self.clock()))
+            if derived is None or validation_feedback(derived, row, known, self.clock()):
+                continue
+            kept = tuple(len(derived.get(field) or []) for field in ITEM_FIELDS)
+            if best is None or kept > best[0]:
+                best = (kept, {"revision": number, "turn_id": turn_id, "artifact_sha256": expected,
+                               "original_artifact_sha256": row["raw_output_digest"], "excluded": excluded}, derived)
+        if best is None:
+            return row
+        _, binding, derived = best
+        Runner(self.ledger, self.config, None, clock=self.clock).prepare_output(row, derived)
+        row["validation_repair_outcome"] = {"state": "accepted_with_exclusions", "reason": latest.get("error"), **binding}
+        row["packet"]["research_exclusions"] = binding
+        row["packet_digest"] = digest(row["packet"])
+        self.ledger.write_json(row["date"] + "-review.json", {**row["packet"], "packet_digest": row["packet_digest"]})
+        self.ledger.put(row)
+        return row
 
     def cancel(self, row, current, reason):
         current.update(state="cancel_pending", error=reason)

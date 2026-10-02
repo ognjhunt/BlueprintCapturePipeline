@@ -849,13 +849,17 @@ def summary(row):
     result["validation_repairs"] = [{k: revision.get(k) for k in (
         "number", "state", "turn_id", "turn_status", "artifact_digest", "error", "feedback", "input_error_receipt")}
         for revision in row.get("validation_repairs", [])]
+    result["validation_repair_outcome"] = row.get("validation_repair_outcome")
     if BASELINE:
         result["baseline"] = copy.deepcopy(BASELINE)
     return result
 
 
+REPAIR_AUTHORITY = "Sentinel_3b6171ff167c8191b378202c5f0c54c0"
+
+
 def repair_report(bridge, cache, *, api_factory=CanaryProvider, stopped=lambda: False,
-                  clock=lambda: datetime.now(timezone.utc), sleep=time.sleep):
+                  clock=lambda: datetime.now(timezone.utc), sleep=time.sleep, authority_reference=REPAIR_AUTHORITY):
     """One existing-session repair/QA continuation; preserve the root history."""
     from tools.daily_research.recovery import RepairLoop, repair_deadline
     ledger = FirestoreLedger(bridge)
@@ -874,7 +878,7 @@ def repair_report(bridge, cache, *, api_factory=CanaryProvider, stopped=lambda: 
                 row["validation_repair_authority"] = {
                     "started_at": clock().isoformat(), "duration_seconds": 1800,
                     "request": {"scope": "same-session-validation-repair-and-qa-no-outreach",
-                        "authority_reference": "Sentinel_3b6171ff167c8191b378202c5f0c54c0",
+                        "authority_reference": authority_reference,
                         "budget_authority_reference": BASELINE["authority_reference"],
                         "baseline_id": BASELINE["baseline_id"], "soft_total_usd": 25,
                         "session_id": row["session_id"], "root_turn_id": row["turn_id"],
@@ -886,7 +890,10 @@ def repair_report(bridge, cache, *, api_factory=CanaryProvider, stopped=lambda: 
         loop = RepairLoop(ledger, cfg, api, clock=clock, stopped=stopped)
         while True:
             row = loop.step(DAY)
-            if row.get("validation_repairs", [{}])[-1].get("state") == "validated":
+            # A validated correction, or the original/correction with only located
+            # item-scoped failures excluded, both continue to the same QA and
+            # publication gates, including after a restart past QA.
+            if row["state"] in {"awaiting_review", "reviewed", "completed"}:
                 # Existing consumer provides the distinct evidence-backed QA
                 # and publication gates; no second research/session creation.
                 return run(bridge, cache, api_factory=api_factory, recovery_only=True,
@@ -924,6 +931,8 @@ def main():
     parser.add_argument("--repair-source")
     parser.add_argument("--repair-sha256")
     parser.add_argument("--attempt", type=int, help="Sequential attempt under the approved shared baseline allowance")
+    parser.add_argument("--authority-reference", default=REPAIR_AUTHORITY,
+                        help="repair-output: the existing approval for this same-session correction; no code change per approval")
     parser.add_argument("--date", help="Chicago due date for this private attempt; normal dated history is unchanged")
     args = parser.parse_args()
     if args.attempt is not None:
@@ -1008,7 +1017,8 @@ def main():
             elif args.command == "collect-completed-qa":
                 result = collect_completed_qa(bridge, cache, stopped=lambda: stop["requested"])
             elif args.command == "repair-output":
-                result = repair_report(bridge, cache, stopped=lambda: stop["requested"])
+                result = repair_report(bridge, cache, stopped=lambda: stop["requested"],
+                                       authority_reference=args.authority_reference)
             elif args.command == "export-recovered":
                 row = FirestoreLedger(bridge).get(DAY)
                 if not args.output or not (row.get("output_recovery") or row.get("validation_repairs")):
