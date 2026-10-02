@@ -9,6 +9,7 @@ import sys
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,6 +93,7 @@ class FakeAPI:
         self.environment_status = "connected"
         self.environment_missing = False
         self.calls = []
+        self.vault_credentials = None
 
     def get(self, resource, resource_id):
         self.calls.append(("GET", resource, resource_id))
@@ -116,9 +118,31 @@ class FakeAPI:
         self.payloads.append(deepcopy(payload))
         self.sessions.append({"id": "sess_1", "environment": {"id": "env_1", "type": "openai_hosted", "container_size": None},
                               "metadata": payload["metadata"]})
+        if "vault_ids" in payload:
+            self.sessions[-1]["vault_ids"] = deepcopy(payload["vault_ids"])
         if self.lost_create_reply:
             raise TimeoutError()
         return self.sessions[0]
+
+    def resolve_mcp_vaults(self, connections):
+        credentials = self.vault_credentials
+        if credentials is None:
+            credentials = {"vault_synthetic_" + tool["server_label"]: [{"id": tool["credential_id"],
+                "vault_id": "vault_synthetic_" + tool["server_label"], "auth": {"type": "mcp_oauth",
+                "mcp_server_url": tool["transport"]["server_url"]}}] for tool in connections}
+        def page(values):
+            return SimpleNamespace(data=[SimpleNamespace(model_dump=lambda mode, exclude_unset, value=value: deepcopy(value))
+                for value in values], has_more=False)
+        def vault_list(**query):
+            self.calls.append(("GET", "vaults", query))
+            return page([{"id": key} for key in credentials])
+        def credential_list(vault_id, **query):
+            self.calls.append(("GET", "vault_credentials", vault_id))
+            return page(credentials[vault_id])
+        provider = Provider.__new__(Provider)
+        provider.api = SimpleNamespace(vaults=SimpleNamespace(list=vault_list,
+            credentials=SimpleNamespace(list=credential_list)))
+        return provider.resolve_mcp_vaults(connections)
 
     def listing(self, resource, session_id=None):
         if resource == "sessions":
@@ -136,6 +160,19 @@ class FakeAPI:
 
     def cancel(self, session_id, run_key):
         self.cancellations.append((session_id, run_key))
+
+
+@pytest.mark.parametrize("repeating", [True, False])
+def test_vault_metadata_inventory_must_finish_before_attachment(repeating):
+    calls = []
+    def listing(**query):
+        calls.append(query)
+        return SimpleNamespace(data=[], has_more=True,
+            last_id="vault_repeat" if repeating else "vault_page_" + str(len(calls)))
+    with pytest.raises(Refusal, match="provider_pagination_invalid" if repeating else "provider_pagination_limit"):
+        Provider._metadata_pages(SimpleNamespace(list=listing), status="active")
+    assert len(calls) == (2 if repeating else 10)
+    assert all(call["limit"] == 100 and call["status"] == "active" for call in calls)
 
 
 @pytest.fixture
