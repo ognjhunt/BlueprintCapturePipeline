@@ -378,3 +378,100 @@ or cleanup receipt. The next numbered attempt can then use the current due
 date. An existing intent, uncertain POST or active lease refuses abandonment;
 those retain their existing reconciliation and separately approved cleanup
 requirements. Repeated abandonment is idempotent and never re-enables a slot.
+
+## Preserved baseline output recovery and corrected cost reporting
+
+This repair addresses the retained Oct 2 baseline artifact
+`011c09c6e5900e910c65c71a7852a8a8aefb4b394a98abd91e8c4c9498085a36`.
+The observed third knowledge proposal has operator sources and null evidence
+levels at `/proposed_knowledge_deltas/2/evidence/{0,1,2}/evidence_level`.
+The candidate site-evidence contract permits null; the robot-knowledge proposal
+contract does not. Never substitute a demonstration/deployment grade. The
+explicit recovery quarantines that entire optional proposal, preserves raw and
+normalized output, and strictly validates every remaining field/candidate before
+preparing QA. Quarantine does not establish source support or newness.
+
+The CRM snapshot was retained at admission outside the research payload. The
+adaptive prompt replaces the original task envelope, so the basic CRM note is
+not necessarily present. `diagnose-output` inspects the exact saved payload and
+context hashes, verifies raw bytes, and replays both original and quarantined
+validation with no provider calls or Firestore writes. Search/page counts alone
+cannot explain the one-candidate result; QA must examine actual scope, findings,
+blockers, stopping reason and duplicates. It receives fresh canonical CRM
+identities through the existing reader. The future prompt explicitly separates
+nullable candidate evidence from nonnull robot-knowledge proposal levels.
+
+Use the final reviewed repair archive in a **new temporary directory**, leaving
+`dist/daily-research` unchanged. The repair archive includes the operator helpers.
+Use its `release` root on `PYTHONPATH`, with the installed package's existing
+Python interpreter/SDK. Every repair command verifies both the old installed
+archive/manifest and the new repair archive/source/file/import hashes. Supply:
+
+```bash
+PYTHONPATH=/tmp/blueprint-research-repair/release \
+  /opt/render/project/src/dist/daily-research/venv/bin/python \
+  /tmp/blueprint-research-repair/release/tools/daily_research/operators/research-perplexity-canary.py \
+  diagnose-output --attempt 1 --date 2026-10-01 \
+  --package /opt/render/project/src/dist/daily-research/release \
+  --archive /opt/render/project/src/vendor/daily-research/blueprint-research.tar \
+  --repair-package /tmp/blueprint-research-repair/release \
+  --repair-archive /tmp/blueprint-research-repair/blueprint-research.tar \
+  --repair-source FULL_REVIEWED_COMMIT --repair-sha256 REVIEWED_ARCHIVE_SHA256
+```
+
+Run this read-only diagnosis first. Require the exact artifact SHA above,
+original error `knowledge_delta_evidence_invalid`, three exact invalid pointers,
+matching immutable knowledge/policy context, and successful derived validation.
+Any other error is a blocker. No assertion of verified coverage/newness is made.
+
+Use the same verified command arguments with `reprice` next. It makes only GETs
+for this existing session's turns and writes the corrected private estimate,
+retaining the unversioned estimate in `canary_model_estimate_history`. Version2
+uses mutually exclusive input/cache-read/cache-write rates. For the recorded
+root usage (3,363,036 input, 3,224,626 cached, 15,233 output including reasoning),
+standard/global recorded-token scenarios span $0.7516126–$1.5654702. Unknown
+per-request context/cache writes are ranges, regional premium/hosting/tool fees
+stay separate, and billed dollars remain null. The old $33.5454009 estimate is
+excluded from current baseline totals; neither amount is an invoice.
+
+`recover-output --receipt PRIVATE_JSON` is provider-free but writes the private
+run and immutable `DATE-recovery.json`. Its exact receipt shape is:
+
+```json
+{
+  "session_id": "sess_06ea8f997fa27202006abf0b37b9f4819aacfaa2cb1414eb14",
+  "turn_id": "EXACT_RETAINED_ROOT_TURN_ID",
+  "raw_output_sha256": "011c09c6e5900e910c65c71a7852a8a8aefb4b394a98abd91e8c4c9498085a36",
+  "approval_reference": "Sentinel_dac3e21091cc819196cb4e5799b7229d",
+  "scope": "quarantine-null-operator-deltas-no-inference-no-publication"
+}
+```
+
+Require `awaiting_review`, one quarantined proposal, unchanged root session/turn,
+unchanged raw SHA and zero provider/publication mutations. This action does not
+start QA. Original failure and excluded evidence remain in the durable recovery
+receipt and portable export, without modifying the original output files.
+
+The original research window can already be exhausted. Do not reset its
+`started_at`, runtime fields, completion time or original cost history.
+`authorize-recovered-qa --receipt PRIVATE_JSON` instead pins one new ten-minute
+QA continuation under the existing shared $25 baseline allowance. It performs
+no provider calls; repeat invocations never extend the pinned window. Its receipt
+contains exactly: `authority_reference` (the approval above),
+`scope`=`same-session-recovered-qa-and-existing-publication-no-new-research`,
+`baseline_id`=`baseline-20261002`, `soft_total_usd`=25, exact `session_id`,
+`root_turn_id`, `raw_output_sha256`, current recovered `packet_digest` and the
+canonical SHA256 `model_observation_digest` of the corrected private estimate.
+It refuses unknown/unversioned model usage and mismatched session/artifact/cost
+bindings. Budget authority remains a shared soft target, not a newly claimed cap.
+
+Only after the runtime owner assesses those receipts may it invoke `resume-qa`
+with the same pinned repair arguments and the existing reviewed external process
+watchdog. This is an explicitly paid command. It requires an existing recovered,
+authorized session, has no root-create path, sends at most the already-fenced
+single QA input, and uses the original source/duplicate checks and publication
+readback gates. Unknown replies are observed, not blindly resubmitted. Expiry
+blocks new QA and still observes/cancels an existing QA. Verified publication,
+canonical export, cleanup approval and dated-ledger reconciliation remain
+required before enabling the normal schedule. No permanent deletion is authorized
+by recovery or the renewed baseline allowance.

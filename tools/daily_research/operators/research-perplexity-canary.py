@@ -9,8 +9,11 @@ import base64
 import copy
 import hashlib
 import importlib.util
+import json
 import os
+import re
 import signal
+import tarfile
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -18,7 +21,7 @@ from pathlib import Path
 
 from tools.daily_research import discovery, render, search
 from tools.daily_research.adaptive_runtime import verify_process_watchdog
-from tools.daily_research.consumer import Consumer
+from tools.daily_research.consumer import Consumer, qa_deadline
 from tools.daily_research.firestore import (
     Bridge,
     FencedProvider,
@@ -40,6 +43,7 @@ from tools.daily_research.runner import (
     preflight,
     read_json,
     save_bytes,
+    validate_output,
 )
 
 spec = importlib.util.spec_from_file_location("reviewed_oct2_control", Path(__file__).with_name("research-oct2-control.py"))
@@ -96,6 +100,111 @@ def driver(package, destination):
     path.write_text(text)
     path.chmod(0o600)
     return path
+
+
+def repair_package_receipt(package, archive, expected_sha256, expected_source):
+    """Verify an isolated reviewed overlay; never modify the installed package."""
+    root, archive = Path(package).resolve(), Path(archive)
+    if (not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+            or not isinstance(expected_source, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_source)
+            or hashlib.sha256(archive.read_bytes()).hexdigest() != expected_sha256):
+        raise Refusal("repair_archive_binding_invalid")
+    manifest = read_json(root / "manifest.json")
+    with tarfile.open(archive) as bundle:
+        if bundle.extractfile("manifest.json").read() != (root / "manifest.json").read_bytes():
+            raise Refusal("repair_manifest_binding_invalid")
+    if manifest.get("source_commit") != expected_source or not isinstance(manifest.get("files"), dict):
+        raise Refusal("repair_source_binding_invalid")
+    for name, sha256 in manifest["files"].items():
+        original = root / name
+        path = original.resolve()
+        if (not path.is_relative_to(root) or original.is_symlink() or not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != sha256):
+            raise Refusal("repair_file_binding_invalid")
+    if Path(render.__file__).resolve() != root / "tools/daily_research/render.py":
+        raise Refusal("repair_imported_package_mismatch")
+    return {"source_commit": expected_source, "archive_sha256": expected_sha256,
+            "manifest_digest": digest(manifest), "files_verified": len(manifest["files"])}
+
+
+def diagnose_saved_output(ledger, cfg, *, now=None):
+    """Exact dated run only; no provider calls, store writes or private text dumps."""
+    from tools.daily_research import recovery
+    row = ledger.get(DAY)
+    if not row or row.get("artifact_downloaded") is not True:
+        raise Refusal("diagnostic_artifact_missing")
+    raw = ledger.read_bytes(DAY + "-artifact.json")
+    if hashlib.sha256(raw).hexdigest() != row.get("raw_output_digest"):
+        raise Refusal("diagnostic_artifact_digest_mismatch")
+    output = json.loads(raw)
+    checked = now or datetime.now(timezone.utc)
+    _, known = crm_snapshot(cfg["crm_snapshot"], checked)
+    context, policy = row.get("knowledge_context"), row.get("refresh_policy")
+    if digest(context) != row.get("knowledge_context_digest") or digest(policy) != row.get("refresh_policy_digest"):
+        raise Refusal("diagnostic_context_binding_invalid")
+    options = {"contract_version": row.get("research_contract_version"), "knowledge_context": context,
+               "refresh_policy": policy, "observed_at": checked}
+    def check(value):
+        try:
+            candidates, duplicates = validate_output(value, DAY, known, **options)
+            discovery.validate_coverage(value.get("coverage"), len(value["candidates"]))
+            return {"valid": True, "exact_deduped_candidate_count": len(candidates), "duplicate_count": len(duplicates)}
+        except Refusal as exc:
+            return {"valid": False, "error": str(exc)}
+        except (ValueError, TypeError, KeyError):
+            return {"valid": False, "error": "output_schema_invalid"}
+    original_validation = check(output)
+    try:
+        derived, quarantine = recovery.quarantine_null_operator_deltas(output)
+        replay = check(derived)
+    except ValueError:
+        quarantine, replay = [], {"valid": False, "error": "output_recovery_no_matching_proposal"}
+    payload_input = row.get("create_payload", {}).get("input", "")
+    return {"raw_output_sha256": row["raw_output_digest"], "session_id": row["session_id"], "turn_id": row["turn_id"],
+            "original_validation": original_validation, "quarantined_derivation_validation": replay,
+            "invalid_fields": [field for proposal in quarantine for field in proposal["invalid_fields"]],
+            "candidate_count": len(output.get("candidates", [])), "finding_count": len(output.get("findings", [])),
+            "knowledge_delta_count": len(output.get("proposed_knowledge_deltas", [])),
+            "blocker_count": len(output.get("blockers", [])), "coverage_digest": digest(output.get("coverage")),
+            "application_tool_usage": row.get("application_tool_usage"),
+            "input_sha256": hashlib.sha256(payload_input.encode()).hexdigest(),
+            "knowledge_context_attached": canonical(canonical(context)) in payload_input,
+            "knowledge_context_digest": row.get("knowledge_context_digest"),
+            "crm_snapshot_digest": digest(row.get("crm_snapshot")),
+            "crm_snapshot_complete": row.get("crm_snapshot", {}).get("complete") is True,
+            "crm_snapshot_attached_to_research": any(value in payload_input for value in (
+                canonical(row.get("crm_snapshot")), canonical(canonical(row.get("crm_snapshot"))))),
+            "crm_instruction_note_present": ("No CRM is supplied to the sandbox" in payload_input
+                or "not supplied to this research sandbox" in payload_input),
+            "newness_verified": False, "provider_mutations": 0, "store_writes": 0}
+
+
+def authorize_recovered_qa(bridge, receipt, *, clock=lambda: datetime.now(timezone.utc)):
+    """Pin one bounded QA-only continuation under the existing shared allowance.
+
+    No inference here. Root dates/deadlines, original spend proof and create guard
+    are preserved. Repeating this request never extends the ten-minute window.
+    """
+    ledger = FirestoreLedger(bridge)
+    with ledger.lock():
+        row = ledger.get(DAY)
+        required = {"authority_reference", "scope", "baseline_id", "soft_total_usd", "session_id", "root_turn_id",
+                    "raw_output_sha256", "packet_digest", "model_observation_digest"}
+        if (BASELINE is None or not row or row.get("state") != "awaiting_review" or row.get("qa")
+                or not isinstance(receipt, dict) or set(receipt) != required
+                or row.get("canary") != bridge.call("control").get("canary")):
+            raise Refusal("recovered_qa_state_not_admitted")
+        previous = row.get("qa_continuation")
+        if previous:
+            if previous["request"] != receipt:
+                raise Refusal("recovered_qa_already_bound")
+            return row
+        row["qa_continuation"] = {"schema_version": "blueprint.recovered-research-qa.v1", "request": receipt,
+                                   "started_at": clock().isoformat(), "duration_seconds": 600,
+                                   "model_observation": copy.deepcopy(row.get("canary_model_estimate"))}
+        qa_deadline(row, {})  # Validate every session/artifact/scope/cost binding before the write.
+        ledger.put(row)
+        return row
 
 
 class CanaryBridge(Bridge):
@@ -252,22 +361,7 @@ def spend(api, row):
     except Exception:  # noqa: BLE001 - telemetry failure is not proof of spend
         return {"known": False, "estimate_usd": None, "reported_estimate_usd": None,
                 "usage_state": "unavailable", "hard_total_cap": False}
-    usage = {"input_tokens": 0, "output_tokens": 0}
-    reported, pending = 0, []
-    for turn in turns:
-        if not discovery.estimated_model_cost(turn.get("usage"))["known"]:
-            pending.append({"turn_id": turn.get("id"), "status": turn.get("status")})
-            continue
-        reported += 1
-        for field in usage:
-            usage[field] += turn["usage"][field]
-    estimate = discovery.estimated_model_cost(usage) if reported else {"estimate_usd": None}
-    if not turns or pending:
-        return {"known": False, "estimate_usd": None, "reported_estimate_usd": estimate["estimate_usd"],
-                "usage_state": "pending", "reported_turn_count": reported, "pending_turns": pending,
-                "hard_total_cap": False}
-    return {**estimate, "usage_state": "reported_best_effort", "reported_turn_count": reported,
-            "pending_turns": []}
+    return discovery.model_cost_observation(turns)
 
 
 class CanaryProvider(FencedProvider):
@@ -284,7 +378,7 @@ class CanaryProvider(FencedProvider):
         if row.get("canary") != binding:
             raise Refusal("canary_admission_binding_invalid")
         estimate = spend(self, row)
-        row["canary_model_estimate"] = estimate
+        discovery.preserve_estimate(row, "canary_model_estimate", estimate)
 
     def create(self, payload):
         self.safe()
@@ -315,14 +409,18 @@ class CanaryProvider(FencedProvider):
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
 
-def run(bridge, cache, *, execute=False, api_factory=CanaryProvider,
+def run(bridge, cache, *, execute=False, api_factory=CanaryProvider, recovery_only=False,
         stopped=lambda: False, clock=lambda: datetime.now(timezone.utc), sleep=time.sleep):
     ledger = FirestoreLedger(bridge)
-    cfg = render.configured(bridge, cache)
+    cfg = render.configured(bridge, cache, allow_create=not recovery_only)
     control = bridge.call("control")
     if not control or control.get("canary", {}).get("test_id") != TEST:
         raise Refusal("canary_not_staged")
     existing = ledger.get(DAY)
+    if recovery_only:
+        if not existing or not existing.get("qa_continuation") or existing["state"] not in {"awaiting_review", "reviewed", "completed"}:
+            raise Refusal("recovered_qa_intent_required")
+        qa_deadline(existing, cfg)
     if not existing:
         if not execute:
             return {"state": "no_canary_intent", "provider_mutations": 0}
@@ -359,14 +457,15 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider,
                     estimate = spend(api, row)
                     with ledger.lock():
                         fresh = ledger.get(DAY)
-                        fresh["canary_model_estimate"] = estimate
+                        discovery.preserve_estimate(fresh, "canary_model_estimate", estimate)
                         ledger.put(fresh)
                         row = fresh
                 except Exception:  # noqa: BLE001 - no upstream secrets
                     reason = "canary_guard_or_state_unavailable"
             if terminal:
                 return {**summary(row), **({"observer_error": reason} if reason else {})}
-            total_exhausted = (clock() - instant(row["started_at"])).total_seconds() >= row["total_runtime_seconds"]
+            total_exhausted = (clock() >= qa_deadline(row, cfg)) if recovery_only else (
+                (clock() - instant(row["started_at"])).total_seconds() >= row["total_runtime_seconds"])
             if total_exhausted:
                 reason = "canary_total_observation_deadline"
             if row["state"] in {"running", "collecting", "cancel_pending", "creating"}:
@@ -432,13 +531,17 @@ def record_cleanup(bridge, cache, receipt, *, api_factory=FencedProvider):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted"])
+    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa"])
     parser.add_argument("--package", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--approval")
     parser.add_argument("--plan")
     parser.add_argument("--output")
     parser.add_argument("--receipt")
+    parser.add_argument("--repair-package", help="Isolated new reviewed package; offline/read-only provider repairs only")
+    parser.add_argument("--repair-archive")
+    parser.add_argument("--repair-source")
+    parser.add_argument("--repair-sha256")
     parser.add_argument("--attempt", type=int, help="Sequential attempt under the approved shared baseline allowance")
     parser.add_argument("--date", help="Chicago due date for this private attempt; normal dated history is unchanged")
     args = parser.parse_args()
@@ -446,15 +549,24 @@ def main():
         select_attempt(args.attempt, args.date)
     elif args.date is not None:
         raise Refusal("baseline_attempt_identity_invalid")
-    receipt = migration.package_receipt(args.package, args.archive)
-    if args.command in {"execute", "reconcile"}:
+    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa"}
+    repair_arguments = (args.repair_package, args.repair_archive, args.repair_source, args.repair_sha256)
+    if repair_command != all(repair_arguments) or not repair_command and any(repair_arguments):
+        raise Refusal("repair_package_required_or_command_not_admitted")
+    receipt = migration.package_receipt(args.package, args.archive, verify_import=not repair_command)
+    repair_receipt = None
+    if repair_command:
+        if Path(args.repair_package).resolve() == Path(args.package).resolve():
+            raise Refusal("repair_must_preserve_installed_package")
+        repair_receipt = repair_package_receipt(args.repair_package, args.repair_archive, args.repair_sha256, args.repair_source)
+    if args.command in {"execute", "reconcile", "resume-qa"}:
         verify_process_watchdog()
     stop = {"requested": False}
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stop.update(requested=True))
     with tempfile.TemporaryDirectory(prefix="blueprint-perplexity-canary-") as temporary:
         cache = Path(temporary)
-        bridge = CanaryBridge(script=driver(args.package, cache))
+        bridge = CanaryBridge(script=driver(args.repair_package if repair_command else args.package, cache))
         api = None
         try:
             if args.command == "inspect":
@@ -480,6 +592,34 @@ def main():
                 if not args.receipt:
                     raise Refusal("canary_required_argument_missing")
                 result = record_cleanup(bridge, cache, read_json(args.receipt))
+            elif args.command == "recover-output":
+                if not args.receipt:
+                    raise Refusal("canary_required_argument_missing")
+                ledger = FirestoreLedger(bridge)
+                row = Runner(ledger, render.configured(bridge, cache, allow_create=False), None).recover_output(DAY, read_json(args.receipt))
+                result = {**summary(row), "provider_mutations": 0, "publication_writes": 0,
+                          "quarantined_proposal_count": len(row["packet"]["output_recovery"]["quarantined_proposals"])}
+            elif args.command == "diagnose-output":
+                result = diagnose_saved_output(FirestoreLedger(bridge), render.configured(bridge, cache, allow_create=False))
+            elif args.command == "reprice":
+                ledger = FirestoreLedger(bridge)
+                with ledger.lock():
+                    row = ledger.get(DAY)
+                    if not row or row.get("turn_status") not in {"completed", "failed", "cancelled"}:
+                        raise Refusal("reprice_requires_retained_terminal_turn")
+                    api = Provider(os.environ.get("OPENAI_API_KEY", ""))
+                    discovery.preserve_estimate(row, "canary_model_estimate", spend(api, row))
+                    ledger.put(row)
+                    result = {**summary(row), "provider_mutations": 0, "publication_writes": 0}
+            elif args.command == "authorize-recovered-qa":
+                if not args.receipt:
+                    raise Refusal("canary_required_argument_missing")
+                result = {**summary(authorize_recovered_qa(bridge, read_json(args.receipt))),
+                          "provider_mutations": 0, "publication_writes": 0}
+            elif args.command == "resume-qa":
+                # This explicitly paid command is distinct from diagnosis,
+                # repricing and packet recovery, and has no root-create path.
+                result = run(bridge, cache, recovery_only=True, stopped=lambda: stop["requested"])
             elif args.command == "abandon-unstarted":
                 if not BASELINE:
                     raise Refusal("canary_baseline_not_selected")
@@ -488,6 +628,8 @@ def main():
                 result = run(bridge, cache, execute=args.command == "execute", stopped=lambda: stop["requested"])
             if BASELINE:
                 result["baseline_budget"] = bridge.call("baseline_status")
+            if repair_receipt:
+                result["repair_package"] = repair_receipt
             print(canonical(result), flush=True)
         finally:
             if api:

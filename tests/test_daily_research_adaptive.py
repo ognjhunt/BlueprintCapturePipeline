@@ -214,7 +214,7 @@ def test_exact_session_receipts_require_idle_usable_standard_and_original_root(f
 
 def test_cost_estimate_counts_reasoning_once_and_never_claims_total_ceiling():
     estimate = discovery.estimated_model_cost({"input_tokens":100000, "output_tokens":10000, "reasoning_tokens":9000})
-    assert estimate["estimate_usd"] == "1.155" and estimate["hard_total_cap"] is False
+    assert estimate["estimate_usd"] == "0.65" and estimate["hard_total_cap"] is False
     assert "tool_fees" in estimate["excludes"]
     assert discovery.estimated_model_cost(None)["known"] is False
     assert discovery.estimated_model_cost({"input_tokens":True, "output_tokens":1})["known"] is False
