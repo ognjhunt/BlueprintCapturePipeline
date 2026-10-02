@@ -7,6 +7,8 @@ immutable inputs, guest security prerequisites and complete result coverage.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import ExitStack, contextmanager
+import hashlib
 import os
 import math
 from pathlib import Path
@@ -129,9 +131,13 @@ def _bounded_command(command, *, deadline, max_output_bytes=65536, pass_fds=(), 
             process.wait(timeout=_deadline(deadline))
         finally:
             if process is not None:
-                _reap(process)
-                process.stdout.close()
-                process.stderr.close()
+                try:
+                    _reap(process)
+                finally:
+                    try:
+                        process.stdout.close()
+                    finally:
+                        process.stderr.close()
     _deadline(deadline)
     return subprocess.CompletedProcess(command, process.returncode, bytes(buffers[0]), bytes(buffers[1]))
 
@@ -153,8 +159,16 @@ def run_vm(image, serial_path, *, phase, deadline_monotonic, required_disk_bytes
     _require(serial_path.is_absolute() and not serial_path.exists()
              and not any(p.is_symlink() for p in (serial_path, *serial_path.parents)), 'serial_untrusted')
     process = None
-    with os.fdopen(os.open(image, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC), 'r+b', buffering=0) as image_stream, \
-            serial_path.open('xb') as output, selectors.DefaultSelector() as selector:
+    with ExitStack() as stack:
+        image_stream = stack.enter_context(os.fdopen(
+            os.open(image, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC), 'r+b', buffering=0))
+        ancestry = []
+        parent = _open_directory(serial_path.parent, ancestry)
+        stack.callback(os.close, parent)
+        output = stack.enter_context(os.fdopen(os.open(serial_path.name,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600, dir_fd=parent), 'r+b', buffering=0))
+        selector = stack.enter_context(selectors.DefaultSelector())
         opened = os.fstat(image_stream.fileno())
         _require((opened.st_dev, opened.st_ino) == identity and opened.st_uid == info.st_uid
                  and opened.st_mode == info.st_mode and opened.st_nlink == 1, 'image_changed')
@@ -185,14 +199,20 @@ def run_vm(image, serial_path, *, phase, deadline_monotonic, required_disk_bytes
             _require(process.returncode == 0, 'qemu_failed')
         finally:
             if process is not None:
-                _reap(process)
-                if process.stdout is not None:
-                    process.stdout.close()
-    _deadline(deadline_monotonic)
-    final = image.lstat()
-    _require((final.st_dev, final.st_ino) == identity, 'image_changed')
-    _deadline(deadline_monotonic)
-    return GuestRun(process, str(image), identity, tuple(command), phase, image_fd)
+                try:
+                    _reap(process)
+                finally:
+                    if process.stdout is not None:
+                        process.stdout.close()
+        snapshot = _file_snapshot(output.fileno(), deadline_monotonic, 'serial_changed')
+        _require(snapshot[0][6] == count, 'serial_changed')
+        final = image.lstat()
+        _require((final.st_dev, final.st_ino) == identity, 'image_changed')
+        _check_ancestry(serial_path.parent, ancestry, 'serial_changed')
+        _check_leaf(output.fileno(), parent, serial_path.name, snapshot,
+                    deadline_monotonic, 'serial_changed')
+        _deadline(deadline_monotonic)
+        return GuestRun(process, str(image), identity, tuple(command), phase, image_fd)
 
 
 def _guestfish(image, arguments, deadline, *, pass_fds=()):
@@ -223,6 +243,48 @@ def _open_directory(path, identities=None):
     except BaseException:
         os.close(fd)
         raise
+
+
+def _check_ancestry(path, identities, code):
+    current = []
+    try:
+        fd = _open_directory(path, current)
+    except OSError:
+        raise GuestExecutionError('native_guest_' + code) from None
+    try:
+        _require(current == identities, code)
+    finally:
+        os.close(fd)
+
+
+def _file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _file_snapshot(fd, deadline, code):
+    before = os.fstat(fd)
+    _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1
+             and 0 <= before.st_size <= MAX_EVIDENCE_BYTES, code)
+    digest, offset = hashlib.sha256(), 0
+    while offset < before.st_size:
+        _deadline(deadline)
+        raw = os.pread(fd, min(1024**2, before.st_size - offset), offset)
+        _require(bool(raw), code)
+        offset += len(raw)
+        digest.update(raw)
+    _require(_file_identity(os.fstat(fd)) == _file_identity(before), code)
+    _deadline(deadline)
+    return _file_identity(before), digest.hexdigest()
+
+
+def _check_leaf(fd, directory, name, snapshot, deadline, code):
+    try:
+        named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError:
+        raise GuestExecutionError('native_guest_' + code) from None
+    _require(_file_identity(named) == snapshot[0]
+             and _file_snapshot(fd, deadline, code) == snapshot, code)
 
 
 def extract_evidence(guest, image, destination, names, *, deadline_monotonic):
@@ -256,15 +318,16 @@ def extract_evidence(guest, image, destination, names, *, deadline_monotonic):
         # Parent PID remains alive with this descriptor until every helper is
         # reaped. Backend descendants therefore resolve the same held inode.
         bound = Path(f'/proc/{os.getpid()}/fd/{fd}')
-        sizes = _extract_files(bound, destination, names, deadline_monotonic)
-        final = image.lstat()
-        _require((final.st_dev, final.st_ino) == guest.image_identity, 'image_changed')
-        _deadline(deadline_monotonic)
-        return sizes
+        with _extract_files(bound, destination, names, deadline_monotonic) as sizes:
+            final = image.lstat()
+            _require((final.st_dev, final.st_ino) == guest.image_identity, 'image_changed')
+            _deadline(deadline_monotonic)
+            return sizes
     finally:
         os.close(fd)
 
 
+@contextmanager
 def _extract_files(image, destination, names, deadline_monotonic):
     # The guest is stopped and the source descriptor is retained by the caller.
     for parent in ('/var', '/var/lib', '/var/lib/blueprint-ci', EVIDENCE_ROOT):
@@ -282,6 +345,7 @@ def _extract_files(image, destination, names, deadline_monotonic):
     ancestry = []
     parent = _open_directory(destination.parent, ancestry)
     directory = None
+    leaves = []
     try:
         os.mkdir(destination.name, mode=0o700, dir_fd=parent)
         directory = os.open(destination.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -290,31 +354,25 @@ def _extract_files(image, destination, names, deadline_monotonic):
         ancestry.append(_directory_identity(original))
         for name, size in sizes.items():
             _deadline(deadline_monotonic)
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                          0o600, dir_fd=directory)
-            try:
-                before = os.fstat(fd)
-                _guestfish(image, ['download', EVIDENCE_ROOT + '/' + name, f'/proc/self/fd/{fd}'],
-                           deadline_monotonic, pass_fds=(fd,))
-                info = os.fstat(fd)
-                named = os.stat(name, dir_fd=directory, follow_symlinks=False)
-                _require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size == size
-                         and (info.st_dev, info.st_ino) == (before.st_dev, before.st_ino)
-                         == (named.st_dev, named.st_ino), 'evidence_copy_invalid')
-            finally:
-                os.close(fd)
-        final_ancestry = []
-        try:
-            final_fd = _open_directory(destination, final_ancestry)
-        except OSError:
-            raise GuestExecutionError('native_guest_evidence_destination_changed') from None
-        try:
-            _require(final_ancestry == ancestry, 'evidence_destination_changed')
-        finally:
-            os.close(final_fd)
+            leaves.append((fd, name, None))
+            before = os.fstat(fd)
+            _guestfish(image, ['download', EVIDENCE_ROOT + '/' + name, f'/proc/self/fd/{fd}'],
+                       deadline_monotonic, pass_fds=(fd,))
+            snapshot = _file_snapshot(fd, deadline_monotonic, 'evidence_copy_invalid')
+            _require(snapshot[0][:5] == _file_identity(before)[:5]
+                     and snapshot[0][6] == size, 'evidence_copy_invalid')
+            _check_leaf(fd, directory, name, snapshot, deadline_monotonic, 'evidence_copy_invalid')
+            leaves[-1] = (fd, name, snapshot)
+        yield sizes
+        _check_ancestry(destination, ancestry, 'evidence_destination_changed')
+        for fd, name, snapshot in leaves:
+            _check_leaf(fd, directory, name, snapshot, deadline_monotonic, 'evidence_copy_invalid')
+        _deadline(deadline_monotonic)
     finally:
+        for fd, _, _ in leaves:
+            os.close(fd)
         if directory is not None:
             os.close(directory)
         os.close(parent)
-    _deadline(deadline_monotonic)
-    return sizes

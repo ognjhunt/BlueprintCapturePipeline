@@ -331,3 +331,112 @@ def test_last_named_image_guard_cannot_return_after_phase_deadline(tmp_path, mon
     with pytest.raises(execution.GuestExecutionError, match='phase_deadline_expired'):
         execution.run_vm(image, tmp_path / 'serial.log', phase='test',
                          required_disk_bytes=1, deadline_monotonic=deadline)
+
+
+@pytest.mark.parametrize('change', ['replace', 'rewrite', 'mode'])
+def test_later_download_cannot_change_an_earlier_evidence_leaf(tmp_path, monkeypatch, change):
+    guest = _receipt(tmp_path)
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    destination = tmp_path / 'evidence'
+    first = destination / 'native-junit.xml'
+    def guestfish(image, arguments, deadline, **kwargs):
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        if arguments[1].endswith('terminal.json'):
+            if change == 'replace':
+                first.rename(destination / 'original-xml')
+                first.write_bytes(b'foreign\n')
+            elif change == 'rewrite':
+                first.write_bytes(b'foreign\n')
+            else:
+                first.chmod(0o644)
+        execution.os.write(int(arguments[-1].rsplit('/', 1)[1]), b'guest00\n')
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    with pytest.raises(execution.GuestExecutionError, match='evidence_copy_invalid'):
+        execution.extract_evidence(guest, tmp_path / 'image', destination,
+                                   ['native-junit.xml', 'terminal.json'],
+                                   deadline_monotonic=time.monotonic() + 60)
+
+
+@pytest.mark.parametrize('change', ['ancestor_alias', 'leaf_replace'])
+def test_serial_publication_refuses_replaced_namespace(tmp_path, monkeypatch, change):
+    (tmp_path / 'image').write_bytes(b'tiny private fixture')
+    parent = tmp_path / 'serial-parent'
+    parent.mkdir()
+    serial = parent / 'serial.log'
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kwargs: None)
+    monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kwargs: [sys.executable, '-c', 'print("done")'])
+    original = execution.subprocess.Popen
+    def popen(*args, **kwargs):
+        if change == 'ancestor_alias':
+            moved = tmp_path / 'owned-parent'
+            parent.rename(moved)
+            parent.symlink_to(moved, target_is_directory=True)
+        else:
+            serial.rename(parent / 'original-serial')
+            serial.write_bytes(b'foreign-original')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(execution.subprocess, 'Popen', popen)
+    with pytest.raises(execution.GuestExecutionError, match='serial_changed'):
+        execution.run_vm(tmp_path / 'image', serial, phase='test',
+                         required_disk_bytes=1, deadline_monotonic=time.monotonic() + 3)
+    if change == 'leaf_replace':
+        assert serial.read_bytes() == b'foreign-original'
+
+
+@pytest.mark.parametrize('operation', ['tool', 'vm'])
+def test_reaping_exception_still_closes_every_process_pipe(tmp_path, monkeypatch, operation):
+    (tmp_path / 'image').write_bytes(b'tiny private fixture')
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kwargs: None)
+    command = [sys.executable, '-c', 'print("done")']
+    monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kwargs: command)
+    processes = []
+    original = execution.subprocess.Popen
+    def popen(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+    monkeypatch.setattr(execution.subprocess, 'Popen', popen)
+    def failed_reap(process):
+        assert process.poll() is not None
+        raise execution.GuestExecutionError('native_guest_guest_not_reaped')
+    monkeypatch.setattr(execution, '_reap', failed_reap)
+    with pytest.raises(execution.GuestExecutionError, match='guest_not_reaped'):
+        if operation == 'tool':
+            execution._bounded_command(command, deadline=time.monotonic() + 3)
+        else:
+            execution.run_vm(tmp_path / 'image', tmp_path / 'serial.log', phase='test',
+                             required_disk_bytes=1, deadline_monotonic=time.monotonic() + 3)
+    assert len(processes) == 1 and processes[0].poll() is not None
+    assert processes[0].stdout.closed
+    assert processes[0].stderr is None or processes[0].stderr.closed
+
+
+def test_evidence_is_still_bound_after_last_named_image_guard(tmp_path, monkeypatch):
+    guest = _receipt(tmp_path)
+    image = tmp_path / 'image'
+    destination = tmp_path / 'evidence'
+    monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
+    def guestfish(image, arguments, deadline, **kwargs):
+        if arguments[0] == 'is-symlink':
+            return 'false'
+        if arguments[0] == 'filesize':
+            return '8'
+        execution.os.write(int(arguments[-1].rsplit('/', 1)[1]), b'guest00\n')
+        return ''
+    monkeypatch.setattr(execution, '_guestfish', guestfish)
+    original = Path.lstat
+    def lstat(path):
+        result = original(path)
+        if path == image and (destination / 'native-junit.xml').exists():
+            (destination / 'native-junit.xml').write_bytes(b'foreign\n')
+        return result
+    monkeypatch.setattr(Path, 'lstat', lstat)
+    with pytest.raises(execution.GuestExecutionError, match='evidence_copy_invalid'):
+        execution.extract_evidence(guest, image, destination, ['native-junit.xml'],
+                                   deadline_monotonic=time.monotonic() + 60)
