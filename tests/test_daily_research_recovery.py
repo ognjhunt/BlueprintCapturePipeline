@@ -195,3 +195,41 @@ def test_cold_disabled_recovery_discovers_and_cancels_active_correction(tmp_path
         assert not api.inputs and not bridge.call("active_qa")
     finally:
         generator.close()
+
+
+@pytest.mark.parametrize("reason", ["disabled", "expired", "stopped"])
+def test_status_read_failure_does_not_skip_one_durable_repair_cancellation(tmp_path, reason):
+    generator = consumer_setup(tmp_path, failed=True)
+    consumer, api, ledger, bridge, _ = next(generator)
+    try:
+        turns, calls = [], []
+        listing = api.listing
+        def repair_input(sid, _event, key, day, request_digest, deadline_ms):
+            bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+            calls.append(key)
+            turns.append({"id": "turn_repair", "agent_id": AGENT, "session_id": sid,
+                          "subagent_id": None, "status": "in_progress"})
+        def values(resource, sid=None):
+            result = listing(resource, sid)
+            if resource == "turns":
+                result.extend(turns)
+            return result
+        api.repair_input, api.listing = repair_input, values
+        recovery.RepairLoop(ledger, consumer.config, api, clock=consumer.clock).step(DAY)
+        if reason == "disabled":
+            with ledger.lock():
+                bridge.call("configure", value={**bridge.call("control"), "enabled": False})
+        def unavailable(_resource, _identifier):
+            raise TimeoutError("synthetic provider status unavailable")
+        api.get = unavailable
+        clock = (lambda: NOW + timedelta(seconds=181)) if reason == "expired" else consumer.clock
+        for _ in range(2):
+            row = recovery.RepairLoop(ledger, consumer.config, api, clock=clock, stopped=lambda: reason == "stopped").step(DAY)
+            revision = row["validation_repairs"][-1]
+            assert revision["state"] == "cancel_pending" and revision["cancel_attempted"] is True
+            assert revision["observation_error"] == "validation_repair_provider_observation_unavailable"
+            assert revision.get("turn_status") != "cancelled"  # GET failure proves no native terminal state.
+        assert bridge.call("active_qa") == DAY
+        assert len(api.cancellations) == len(api.payloads) == len(calls) == 1 and not api.inputs
+    finally:
+        generator.close()

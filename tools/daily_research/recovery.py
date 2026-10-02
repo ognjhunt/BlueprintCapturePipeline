@@ -275,10 +275,25 @@ class RepairLoop:
                     current["state"] = "running"
                     self.ledger.put(row)
                 except Exception:  # noqa: BLE001 - an uncertain event is observed, never resent
+                    if self.stopped() or self.clock() >= deadline or not workflow(self.ledger.bridge.call("control")):
+                        self.cancel(row, current, "validation_repair_stopped_disabled_or_expired")
                     return row
-            session = self.api.get("session", row["session_id"])
-            Consumer.check_session(row, session)
-            turns = [t for t in self.api.listing("turns", row["session_id"]) if t["id"] not in current["baseline_turn_ids"]]
+            # Cancellation must not depend on a successful provider status GET.
+            # The exact previously admitted session/claim remains durable even
+            # when provider observation is unavailable or cancellation is lost.
+            if self.stopped() or not workflow(self.ledger.bridge.call("control")):
+                self.cancel(row, current, "validation_repair_stopped_disabled_or_expired")
+            try:
+                session = self.api.get("session", row["session_id"])
+                Consumer.check_session(row, session)
+                turns = [t for t in self.api.listing("turns", row["session_id"]) if t["id"] not in current["baseline_turn_ids"]]
+            except Exception:  # noqa: BLE001 - retain uncertainty, never repeat the repair input
+                current["observation_error"] = "validation_repair_provider_observation_unavailable"
+                if self.stopped() or self.clock() >= deadline or not workflow(self.ledger.bridge.call("control")):
+                    self.cancel(row, current, "validation_repair_stopped_disabled_or_expired")
+                else:
+                    self.ledger.put(row)
+                return row
             if len(turns) > 1 or any(t.get("subagent_id") or t.get("agent_id") != AGENT or t.get("session_id") != row["session_id"] for t in turns):
                 raise Refusal("validation_repair_turn_scope_mismatch")
             if turns:
