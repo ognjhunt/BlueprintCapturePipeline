@@ -2,12 +2,13 @@
 import {spawn} from 'node:child_process';
 
 export function startDailyResearchWorker({bundleRoot, python,
+  learningHostModule, learningHooks,
   enabled = process.env.BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED === 'true',
   spawnImpl = spawn, killGroup = (pid, signal) => process.kill(-pid, signal),
   log = console.log, shutdownMs = 25000, retryMs = 30000} = {}) {
   if (!enabled) return {stop: async () => {}};
   if (!bundleRoot || !python) throw new Error('research_runtime_paths_required');
-  let child = null, retry = null, stopping = false, stopPromise = null;
+  let child = null, retry = null, stopping = false, stopPromise = null, terminalWork = Promise.resolve();
   function signal(target, name) {
     try { if (target.pid) killGroup(target.pid, name); else target.kill(name); } catch { /* process already gone */ }
   }
@@ -19,7 +20,8 @@ export function startDailyResearchWorker({bundleRoot, python,
         OPENAI_API_KEY: process.env.OPENAI_API_KEY,
         PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
         FIREBASE_SERVICE_ACCOUNT_JSON: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
-        NOTION_API_TOKEN: process.env.NOTION_API_TOKEN, NOTION_API_KEY: process.env.NOTION_API_KEY
+        NOTION_API_TOKEN: process.env.NOTION_API_TOKEN, NOTION_API_KEY: process.env.NOTION_API_KEY,
+        BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE: learningHostModule
       }, stdio: ['ignore', 'pipe', 'ignore']
     });
     child = target;
@@ -36,6 +38,14 @@ export function startDailyResearchWorker({bundleRoot, python,
           log(JSON.stringify({research: true, state: result.state,
             date: /^\d{4}-\d{2}-\d{2}$/.test(result.date || '') ? result.date : null,
             error: /^[a-z_]{1,100}$/.test(result.error || '') ? result.error : null}));
+          if (learningHooks?.afterRun && /^\d{4}-\d{2}-\d{2}$/.test(result.date || '')
+              && ['awaiting_review','reviewed','completed','failed','cancelled'].includes(result.state)) {
+            // Only the canonical native hook writes terminal learning records;
+            // its source hash comes from the durable manifest, never stdout.
+            terminalWork = terminalWork.then(() => learningHooks.afterRun(result.date))
+              .catch(() => log(JSON.stringify({research:true,state:'learning_blocked',date:result.date,
+                error:'research_learning_terminal_unavailable'})));
+          }
         } catch { /* arbitrary output never enters worker logs */ }
       }
     });
@@ -55,11 +65,14 @@ export function startDailyResearchWorker({bundleRoot, python,
     if (stopPromise) return stopPromise;
     stopping = true; clearTimeout(retry); retry = null;
     const target = child;
-    stopPromise = !target ? Promise.resolve() : new Promise(resolve => {
+    const childStopped = !target ? Promise.resolve() : new Promise(resolve => {
       const deadline = setTimeout(() => {signal(target, 'SIGKILL'); resolve();}, shutdownMs);
       target.once('exit', () => {clearTimeout(deadline); resolve();});
       signal(target, 'SIGTERM');
     });
+    // A terminal frame is emitted only after the durable write. Finish handing
+    // it to the canonical owner before the application closes its database.
+    stopPromise = childStopped.then(() => terminalWork);
     return stopPromise;
   }};
 }

@@ -95,10 +95,15 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
     api = None if command in {"review", "receipt"} else api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
     runner = Runner(ledger, cfg, api)
     runner.stop_requested = stopped
+    runner.required_history = True
     if command == "preflight":
         from tools.daily_research.runner import crm_snapshot, load_knowledge_bundle
         crm_snapshot(cfg["crm_snapshot"], datetime.now(timezone.utc))
         load_knowledge_bundle(cfg, datetime.now(timezone.utc))
+        if cfg["enabled"]:
+            with ledger.lock():
+                if not day or ledger.learning_context(day, allow_create=False) is None:
+                    raise Refusal("research_learning_input_required")
         return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider")), "enabled": cfg["enabled"],
                 "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
     if command in {"review", "receipt", "record-cleanup"}:

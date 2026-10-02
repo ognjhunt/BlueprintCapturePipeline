@@ -77,10 +77,14 @@ def qa_text(row, snapshot, crm_digest):
                            "duplicate": False, "reason": "exact claim/source scope or duplicate reason"}]}
     adaptive = row.get("discovery_profile") == "adaptive-sites-v1"
     allowance = "Adaptively open the sources required for QA; retain actual coverage and honest incomplete checks. " if adaptive else f"At most {remaining} further observed web activities across search/open, then stop. "
-    assessment = ("Existing deployments and CRM duplicates must not count toward the target of 10 new "
+    assessment = ("Existing deployments and CRM duplicates must not count toward new "
                   "site/task opportunities. Unknown interest, owner, budget or pilot readiness is not a discovery "
                   "rejection by itself. Check exact location, actual work, incumbent automation, supported fit "
-                  "hypotheses and one useful first-question angle. Explain final supported count and shortfall. ") if adaptive else ""
+                  "hypotheses and one useful first-question angle. Explain actual defined scope, source coverage, "
+                  "rejected/duplicate findings, unresolved promising branches and why work stopped; count never "
+                  "establishes completion. Check contact relevance and public professional provenance, prior "
+                  "contact/history, counterevidence and explicit interest/owner/budget unknowns. Count distinct "
+                  "site/task opportunities separately from findings and robotics-team knowledge. ") if adaptive else ""
     trusted = ("Blueprint QA phase for the preceding research only. Read the reviewed evidence skill. "
                "Check every material finding, claim scope, quoted passage and candidate source against the actual sources; "
                "check semantic site/task duplicates against the supplied complete CRM identities. Reject unsupported findings and candidates. "
@@ -114,8 +118,9 @@ def qa_text(row, snapshot, crm_digest):
 
 def qa_decision(row, result, known):
     qa = row["qa"]
-    if (not isinstance(result, dict) or set(result) != {"schema_version", "packet_digest", "crm_digest",
+    if (not isinstance(result, dict) or not {"schema_version", "packet_digest", "crm_digest",
             "source_support_verified", "accepted_keys", "summary", "checks"}
+            <= set(result)
             or result["schema_version"] != "blueprint.research-qa.v1"
             or result["packet_digest"] != row["packet_digest"] or result["crm_digest"] != qa["crm_digest"]
             or result["source_support_verified"] is not True or not isinstance(result["accepted_keys"], list)
@@ -125,7 +130,7 @@ def qa_decision(row, result, known):
     candidates = {c["candidate_key"]: c for c in row["packet"]["candidates"]}
     checks = {}
     for c in result["checks"]:
-        if (not isinstance(c, dict) or set(c) != {"candidate_key", "source_support_verified", "duplicate", "reason"}
+        if (not isinstance(c, dict) or not {"candidate_key", "source_support_verified", "duplicate", "reason"} <= set(c)
                 or c["candidate_key"] not in candidates or c["candidate_key"] in checks
                 or type(c["source_support_verified"]) is not bool or type(c["duplicate"]) is not bool
                 or not isinstance(c["reason"], str) or not c["reason"] or len(c["reason"].encode()) > LIMIT_BYTES):

@@ -170,8 +170,13 @@ def test_saved_resources_one_create_and_exact_bytes(fixture):
     assert environment["environment_template_id"] == TEMPLATE
     assert environment["network"] == {"access": "disabled"}
     assert environment["capability_directories"] == [capabilities.ROOT]
-    assert len(environment["files"]) == 4
+    assert len(environment["files"]) == 5
     for item in environment["files"]:
+        if item["path"] == "/workspace/inputs/blueprint-research-crm-identities.json":
+            raw = base64.b64decode(item["data"], validate=True)
+            assert hashlib.sha256(raw).hexdigest() == result["metadata"]["research_crm_digest"]
+            assert json.loads(raw) == result["research_crm_context"]
+            continue
         name = item["path"].removeprefix(capabilities.ROOT + "/")
         raw = base64.b64decode(item["data"], validate=True)
         assert (len(raw), hashlib.sha256(raw).hexdigest()) == capabilities.FILES[name]
@@ -180,6 +185,53 @@ def test_saved_resources_one_create_and_exact_bytes(fixture):
     assert (ledger.root / (DAY + "-artifact.json")).read_bytes() == api.raw
     assert result["raw_output_digest"] == hashlib.sha256(api.raw).hexdigest()
     assert result["delivery"] == {}  # The Blueprint QA agent must review before publication.
+
+
+def test_normal_history_requirement_fails_before_any_provider_action(fixture):
+    runner, api, ledger = fixture
+    runner.required_history = True
+    with pytest.raises(Refusal, match="research_learning_input_required"):
+        runner.start_or_resume()
+    assert api.calls == api.payloads == [] and ledger.get(DAY) is None
+    # Observation of a legacy ledger does not acquire new learning input.
+    ledger.learning_context = lambda day: pytest.fail("legacy recovery must not create learning input")
+    assert runner.start_or_resume(allow_create=False)["state"] == "nothing_to_reconcile"
+
+
+def test_frozen_history_and_crm_identities_reach_agent_before_create_and_survive_recovery(fixture):
+    runner, api, ledger = fixture
+    original_crm = json.loads(Path(runner.config["crm_snapshot"]).read_bytes())
+    original_crm["values"].append(["BP-000001", "Prior Plant", "Facility / site", "South plant", "Private Person",
+        "private@example.invalid", "verified", "https://plant.example/contact", "Robot hypothesis",
+        "https://plant.example/tasks", "contacted", "Internal Owner", "Follow up", "", "Pallet moving"])
+    save_json(runner.config["crm_snapshot"], original_crm)
+    raw = json.dumps({"date": DAY, "paidAnalysisCalls": 0, "sendsAuthorized": False,
+        "overview": "Dated overview with counterevidence", "history": "Exact prior conversation " + "é" * 5000})
+    learning = {"version": "blueprint.research-learning-input.v1", "date": DAY, "paidAnalysisCalls": 0,
+        "sendsAuthorized": False, "content_json": raw, "inputHash": hashlib.sha256(raw.encode()).hexdigest(),
+        "bindingHash": "a" * 64}
+    reads = []
+    ledger.learning_context = lambda day: reads.append(day) or deepcopy(learning)
+    runner.required_history = True
+    row = runner.start_or_resume()
+    assert reads == [DAY] and len(api.payloads) == 1
+    payload = api.payloads[0]
+    inline = {entry["path"]: base64.b64decode(entry["data"], validate=True) for entry in payload["environment"]["files"]}
+    assert inline["/workspace/inputs/blueprint-research-learning.json"] == raw.encode()
+    crm = json.loads(inline["/workspace/inputs/blueprint-research-crm-identities.json"])
+    assert crm["identities"][0]["organization"] == "Prior Plant"
+    assert "private@example.invalid" not in payload["input"] and "private@example.invalid" not in str(inline)
+    assert "No CRM is supplied" not in payload["input"]
+    assert learning["inputHash"] in payload["input"]
+    assert row["learning_context"] == learning
+    assert row["metadata"]["learning_input_digest"] == learning["inputHash"]
+    ledger.learning_context = lambda day: pytest.fail("recovery must use frozen prior bytes")
+    resumed = runner.start_or_resume(allow_create=False)
+    assert resumed["create_payload"] == payload and resumed["learning_context"] == learning
+    assert len(api.payloads) == 1
+    assert (ledger.root / (DAY + "-artifact.json")).read_bytes() == api.raw
+    assert row["raw_output_digest"] == hashlib.sha256(api.raw).hexdigest()
+    assert row["delivery"] == {}
 
 
 @pytest.mark.parametrize("environment_status", ["expired", "failed", "missing"])
