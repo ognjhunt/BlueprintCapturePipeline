@@ -1,4 +1,5 @@
 """503 replay lifecycle against the real fenced bridge; no network/credentials."""
+import base64
 import hashlib
 from copy import deepcopy
 from datetime import timedelta
@@ -484,11 +485,34 @@ def terminal_native_fixture(fixture, monkeypatch):
         ledger.put(row)
     deadline = canary.qa_deadline(row, {})
     proof = deepcopy(canary.TERMINAL_QA_RECEIPT)
-    proof.update(source_row_digest=digest(row), session_id="sess_1", qa_turn_id="turn_qa",
+    proof.update(session_id="sess_1", qa_turn_id="turn_qa",
                  qa_artifact_sha256=hashlib.sha256(raw).hexdigest(), completed_at=completed,
                  phase_started_at=row["qa_retry_continuation"]["started_at"], phase_deadline=deadline.isoformat(),
-                 cancellation_not_before=deadline.isoformat(),
+                 cancellation_not_before=(deadline + timedelta(seconds=3)).isoformat(),
                  inventory={"turns": len(turns), "items": len(items), "artifacts": len(artifacts)})
+    blobs = {}
+    def blob(value, when):
+        data = canonical(value).encode()
+        sha = hashlib.sha256(data).hexdigest()
+        blobs[sha] = {"sha256": sha, "bytes": base64.b64encode(data).decode(),
+                      "created_at": {"seconds": int(when.timestamp()), "nanoseconds": when.microsecond * 1000}}
+        return sha
+    proof["source_blob_sha256"] = blob(row, deadline + timedelta(seconds=5))
+    proof["ordering_blobs"] = []
+    for number, stage in enumerate(("before_cancel", "cancel_intent", "cancel_reply"), start=2):
+        previous = deepcopy(row)
+        previous["qa"]["cancel_attempted"] = stage != "before_cancel"
+        previous["qa"]["cancel_reply_received"] = stage == "cancel_reply"
+        if stage == "before_cancel":
+            previous["qa"]["error"] = "agent_qa_terminal_collection_unavailable"
+        sha = blob(previous, deadline + timedelta(seconds=number))
+        proof["ordering_blobs"].append({"stage": stage, "sha256": sha, "created_at": blobs[sha]["created_at"]})
+    original_call = bridge.call
+    def call(op, **fields):
+        if op == "blob_receipt":
+            return deepcopy(blobs[fields["hash"]])
+        return original_call(op, **fields)
+    monkeypatch.setattr(bridge, "call", call)
     monkeypatch.setattr(canary, "TERMINAL_QA_RECEIPT", proof)
     tick(deadline + timedelta(seconds=5))
     for method in ("create", "qa_input", "qa_retry_input", "cancel", "repair_input"):
@@ -530,13 +554,15 @@ def render_export(bridge, destination):
     return export_snapshot(bridge, canary.DAY, destination)
 
 
-@pytest.mark.parametrize("change", ["row", "artifact", "provider", "early", "stopped", "disabled", "evidence", "authority_race"])
+@pytest.mark.parametrize("change", ["row", "artifact", "provider", "early", "stopped", "disabled", "evidence", "authority_race", "creation_time", "ordering_bytes"])
 def test_native_terminal_collection_refuses_drift_and_never_resets_cancellation(fixture, monkeypatch, change):
     bridge, ledger, api, cache, clock, source, proof, posts = terminal_native_fixture(fixture, monkeypatch)
     stopped = lambda: False
     try:
         if change == "row":
-            proof["source_row_digest"] = "0" * 64
+            with ledger.lock():
+                source["qa"]["observation_failures"] += 1
+                ledger.put(source)
         elif change == "early":
             proof["cancellation_not_before"] = (instant(proof["phase_deadline"]) - timedelta(seconds=1000)).isoformat()
         elif change == "artifact":
@@ -561,6 +587,17 @@ def test_native_terminal_collection_refuses_drift_and_never_resets_cancellation(
                     control = original_call("control")
                     control["workflow"]["qa_authority_reference"] = "different-approved-scope"
                     original_call("configure", value=control)
+                return result
+            monkeypatch.setattr(bridge, "call", call)
+        elif change in {"creation_time", "ordering_bytes"}:
+            original_call = bridge.call
+            def call(op, **fields):
+                result = original_call(op, **fields)
+                if op == "blob_receipt" and fields["hash"] == proof["ordering_blobs"][1]["sha256"]:
+                    if change == "creation_time":
+                        result["created_at"]["seconds"] -= 1000
+                    else:
+                        result["bytes"] = base64.b64encode(canonical(source).encode()).decode()
                 return result
             monkeypatch.setattr(bridge, "call", call)
         else:

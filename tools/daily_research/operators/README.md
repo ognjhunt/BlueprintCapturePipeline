@@ -524,9 +524,11 @@ No new session, model change, grants, keys, outreach or deletion is included.
 ## Collect the retained in-time QA result without inference
 
 `collect-completed-qa` is scoped to baseline attempt 1 and its exact native
-source-row, QA-turn and raw-artifact hashes. The authenticated native receipt
-records completion at 09:38:27 UTC before the later timeout's verified lower
-bound, 09:39:14.788518 UTC. The exact cancellation request time remains unknown.
+source-blob, QA-turn and raw-artifact hashes. It GETs the three exact immutable
+Firestore snapshots and verifies their raw bytes, native creation times and
+pre-cancel/intent/reply flags. The authenticated native receipt records completion
+at 09:38:27 UTC, before the 09:39:14.788518 deadline and the cancellation dispatch
+interval 09:39:28.549726–09:39:29.639687 UTC. The exact request time remains unknown.
 The receipt references the existing private GCS export and native metadata;
 it does not invent a `cancel_record`, erase cancellation flags, resend the QA
 input, create another phase, extend a clock, or admit ordinary unknown-timing

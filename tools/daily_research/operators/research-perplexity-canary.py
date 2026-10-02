@@ -335,7 +335,8 @@ TERMINAL_QA_RECEIPT = {
     "authority_reference": "Sentinel_c2046c5f146c81918921eba1ed7f6caa",
     "delegation_reference": "01a0ef70-d046-74f6-9434-a19e5456b0ef",
     "scope": "existing-terminal-qa-collection-and-canonical-publication-no-provider-mutations",
-    "source_row_digest": "fa9bed98db3d81646b360185267d32a5776040487f3683782ccfed487a34ef0a",
+    "native_qa_ledger_file_sha256": "fa9bed98db3d81646b360185267d32a5776040487f3683782ccfed487a34ef0a",
+    "source_blob_sha256": "59327fce14de04a18679932162a4342ddd3513b6e123d43dbc85d2693e957b9b",
     "session_id": "sess_06ea8f997fa27202006abf0b37b9f4819aacfaa2cb1414eb14",
     "qa_turn_id": "turn_06ea8f997fa27202006abf79b571b4819abe9ca8872a73cbaa",
     "qa_artifact_sha256": "e58c22f954dc9e70c6a8982b7bc6189473bc4a19a01737606724df97f90338b3",
@@ -343,10 +344,18 @@ TERMINAL_QA_RECEIPT = {
     "phase_started_at": "2026-10-02T09:29:14.788518Z",
     "phase_deadline": "2026-10-02T09:39:14.788518Z",
     "cancellation_reason": "canary_total_observation_deadline",
-    "cancellation_not_before": "2026-10-02T09:39:14.788518Z",
+    "cancellation_not_before": "2026-10-02T09:39:28.549726Z",
     "cancellation_requested_at": None,
     "inventory": {"turns": 2, "items": 190, "artifacts": 6},
     "native_metadata_sha256": "c0059f9be8d307648f951fd79903e8c1056ba104804bc69e0f50bf99e089295c",
+    "native_ordering_evidence_sha256": "4eaa0246140f0191bc06245abb28800bde86fef127acbbc0ca1575dde961be60",
+    "ordering_blobs": [
+        {"stage": "before_cancel", "sha256": "810a291fa405c58d1c891c9cd7771a98ed4ae0873b0953796a7246e42ecbe9c9",
+         "created_at": {"seconds": 1790933963, "nanoseconds": 342442000}},
+        {"stage": "cancel_intent", "sha256": "a2302b4408e575d21049cb09a6366d8ad867bf7f21a1f8402f66e60cc141e876",
+         "created_at": {"seconds": 1790933968, "nanoseconds": 549726000}},
+        {"stage": "cancel_reply", "sha256": "6a0e9e8054df2c90240fbaa9d10a0bcf47e6c28c7e550ebcab291735061f00b6",
+         "created_at": {"seconds": 1790933969, "nanoseconds": 639687000}}],
     "native_export": {
         "bucket": "blueprint-8c1ca.appspot.com",
         "object": "research-backups/retained-sessions/sess_06ea8f997fa27202006abf0b37b9f4819aacfaa2cb1414eb14/2026-10-02/qa-diagnostics/d43dd996521940543e5324dbc0173eb9118cc24fc4081834da391519168998a5.json.gz",
@@ -399,7 +408,39 @@ def collect_completed_qa(bridge, cache, *, api_factory=None, stopped=lambda: Fal
             else:
                 qa = row.get("qa", {})
                 deadline = qa_deadline(row, cfg)
-                if (digest(row) != proof["source_row_digest"] or row["state"] != "awaiting_review"
+                source = bridge.call("blob_receipt", hash=proof["source_blob_sha256"])
+                source_raw = base64.b64decode(source["bytes"], validate=True)
+                if (hashlib.sha256(source_raw).hexdigest() != proof["source_blob_sha256"]
+                        or digest(json.loads(source_raw)) != digest(row)):
+                    raise Refusal("terminal_qa_collection_source_or_timing_changed")
+                ordering = []
+                for binding in proof["ordering_blobs"]:
+                    observed = bridge.call("blob_receipt", hash=binding["sha256"])
+                    raw = base64.b64decode(observed["bytes"], validate=True)
+                    value = json.loads(raw)
+                    previous = value.get("qa", {})
+                    if (observed.get("created_at") != binding["created_at"]
+                            or hashlib.sha256(raw).hexdigest() != binding["sha256"]
+                            or any(value.get(k) != row.get(k) for k in ("session_id", "turn_id", "packet_digest", "raw_output_digest", "qa_retry_continuation"))
+                            or previous.get("turn_id") != proof["qa_turn_id"] or previous.get("turn_status") != "completed"
+                            or previous.get("artifact_digest") != proof["qa_artifact_sha256"]
+                            or previous.get("request_digest") != qa.get("request_digest")
+                            or previous.get("baseline_turn_ids") != qa.get("baseline_turn_ids")
+                            or previous.get("cancel_reply_unresolved") is True):
+                        raise Refusal("terminal_qa_collection_ordering_changed")
+                    stage = binding["stage"]
+                    if ((stage == "before_cancel" and (previous.get("cancel_attempted") is not False
+                                                      or previous.get("error") != "agent_qa_terminal_collection_unavailable"))
+                            or (stage != "before_cancel" and (previous.get("cancel_attempted") is not True
+                                or previous.get("error") != proof["cancellation_reason"]
+                                or previous.get("cancel_idempotency_key") != row["run_key"] + ":qa:retry-phase:cancel"
+                                or previous.get("cancel_reply_received") is not (stage == "cancel_reply")))):
+                        raise Refusal("terminal_qa_collection_ordering_changed")
+                    ordering.append(binding["created_at"]["seconds"] + binding["created_at"]["nanoseconds"] / 1e9)
+                if (proof["completed_at"] + 1 > ordering[0] or not ordering[0] < ordering[1] < ordering[2]
+                        or ordering[1] != instant(proof["cancellation_not_before"]).timestamp()):
+                    raise Refusal("terminal_qa_collection_ordering_changed")
+                if (row["state"] != "awaiting_review"
                         or qa.get("turn_id") != proof["qa_turn_id"] or qa.get("turn_status") != "completed"
                         or qa.get("artifact_digest") != proof["qa_artifact_sha256"]
                         or digest(row["packet"]) != row.get("packet_digest")
@@ -448,7 +489,8 @@ def collect_completed_qa(bridge, cache, *, api_factory=None, stopped=lambda: Fal
                 _, known = consumer.refresh_crm()
                 decision = qa_decision(row, json.loads(raw), known)
                 guard(row, authority)
-                receipt = {"native_receipt": proof, "previous_qa": copy.deepcopy(qa), "workflow_authority": authority,
+                receipt = {"native_receipt": proof, "source_row_digest": digest(row),
+                           "previous_qa": copy.deepcopy(qa), "workflow_authority": authority,
                            "root_turn_id": row["turn_id"], "packet_digest": row["packet_digest"],
                            "raw_output_sha256": row["raw_output_digest"], "request_digest": qa["request_digest"],
                            "idempotency_key": row["run_key"] + ":qa", "turns_digest": digest(turns),

@@ -107,6 +107,12 @@ export class Store {
       refuse('firestore_row_binding_invalid');
     return row;
   }
+  async blobReceipt(hash) {
+    const bytes=await this.blobGet(hash),snap=await this.db.doc(`${ROOT}/blobs/${hash}`).get(),time=snap.createTime;
+    if (!Number.isSafeInteger(time?.seconds) || !Number.isSafeInteger(time?.nanoseconds)
+        || time.nanoseconds<0 || time.nanoseconds>=1000000000) refuse('firestore_blob_creation_time_unavailable');
+    return {sha256:hash,bytes,created_at:{seconds:time.seconds,nanoseconds:time.nanoseconds}};
+  }
   async rows() {
     const snaps = await this.db.collection(`${ROOT}/runs`).limit(10001).get();
     if (snaps.docs.length > 10000) refuse('firestore_history_limit');
@@ -485,6 +491,7 @@ export class Store {
       case 'adaptive_file_put': return this.adaptiveFilePut(request.name,request.bytes);
       case 'adaptive_file_get': return this.adaptiveFileGet(request.name);
       case 'get': return this.get(request.day);
+      case 'blob_receipt': return this.blobReceipt(request.hash);
       case 'rows': return this.rows();
       case 'summary': return this.summary();
       case 'work_item': return this.workItem();
