@@ -449,7 +449,8 @@ def test_ancestor_replacement_during_final_digest_is_refused(tmp_path, monkeypat
     parent.mkdir()
     monkeypatch.setattr(execution, '_sealed_image', lambda path: path)
     monkeypatch.setattr(execution, 'host_preflight', lambda *args, **kwargs: None)
-    monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kwargs: [sys.executable, '-c', 'print("done")'])
+    if operation == 'serial':
+        monkeypatch.setattr(execution, 'qemu_command', lambda *args, **kwargs: [sys.executable, '-c', 'print("done")'])
     def guestfish(image, arguments, deadline, **kwargs):
         if arguments[0] == 'is-symlink':
             return 'false'
