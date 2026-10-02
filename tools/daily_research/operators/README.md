@@ -254,10 +254,127 @@ by GET without repeating research, QA or publication.
 The first accepted test was cancelled by the historical missing-usage guard.
 Its create has been consumed. This code correction preserves cancellation and
 never clears an intent, resets its start/deadline, resubmits a create, or opens
-another test identity. The runtime owner must reconcile that exact session's
-terminal status, available usage and tools/hosted charges, retain portable
-evidence, and complete separately approved cleanup. New paid testing waits for
-the owner's total testing allowance and recovery authority; unknown charges
-must remain explicit in that reconciliation. This fix is preparation, not a
-new paid-session or permanent-deletion authorization. Production remains
-disabled until real coverage/QA/publication, cleanup and cutover are verified.
+another test identity. The runtime owner has retained its terminal/usage
+diagnostics and completed separately approved cleanup; the baseline section
+below records that newer receipt and renewed testing authority. Do not repeat
+deletion or observation of the absent provider resources. Unknown charges stay
+explicit. This fix alone is not paid-session or permanent-deletion authority.
+Production remains disabled until real coverage/QA/publication, cleanup and
+cutover are verified.
+
+## Approved baseline with sequential retries
+
+The consumed `perplexity-fast-20261001` test is terminal cancelled, deleted under
+separate action-time approval, and durably recorded with cleanup false. Both
+provider resources returned authenticated 404. Preserve its original intent,
+row and private diagnostic backup; do not recreate it or reconcile a missing
+provider session. This is a historical failed test, not a successful baseline.
+
+The renewed approval `Sentinel_c2046c5f146c81918921eba1ed7f6caa` permits **another
+$25 soft TOTAL across the baseline and retries**, including model, search and
+hosted environment, with possible in-flight overshoot. The old test belongs to
+the previous scope and is not charged against this new allowance. Recurring
+production authority and permanent deletion remain separate.
+
+The same reviewed helper now accepts `--attempt N --date YYYY-MM-DD`. It derives
+`baseline-20261002-attempt-0001`, `...0002`, etc. Each attempt has its own
+`blueprintDailyResearch/sites-first/canaries/TEST_ID` immutable intent and one
+create claim. A shared coordinator at
+`blueprintDailyResearch/sites-first/baselines/baseline-20261002` retains the one
+approved allowance and ordered attempt references. There is no retry count
+quota. Repeating `execute` or `reconcile` for the same identity never creates
+again; a new numbered attempt is admitted only after its predecessor is
+terminal, separately cleaned up, and has no unacknowledged publication. A
+baseline with complete coverage, terminal QA and both publication readbacks
+closes further attempts; a completed partial/interrupted report can be retried
+after cleanup, without resetting its publication history. Staging compares the predecessor
+blob and shared coordinator transactionally; overlapping callers cannot stage
+different concurrent attempts or replenish the allowance. Normal production
+control/history are unchanged.
+
+The internal reviewed date key remains intact. Publication markers and the
+bound Notion report provenance use `blueprint-research-canary:TEST_ID`, so even
+identical same-date partial reports have distinct report titles/readback
+bindings. Each retry refreshes the full canonical CRM before research and QA;
+previously published prospects are deduplicated instead of appended again.
+
+Create a private approval JSON from the actual renewed receipt, naming the
+chosen attempt (this is not a request for another grant):
+
+```json
+{
+  "schema_version": "blueprint.perplexity-canary-admission.v1",
+  "test_id": "baseline-20261002-attempt-0001",
+  "authority_reference": "Sentinel_c2046c5f146c81918921eba1ed7f6caa",
+  "ceiling_usd": 25,
+  "scope": "baseline-research-agent-qa-canonical-publication-with-retries-no-outreach"
+}
+```
+
+Materialize the exact reviewed `.py`, `.mjs` and unchanged control helper into
+a new private directory through the existing authenticated GitHub/operator
+route and verify all three hashes. This is an operator source update only:
+the installed standalone package remains pinned to `35f5c9ad...`, with its
+manifest/archive/import receipt checked by each command. No worker restart,
+deployment, package rewrite, normal control write, key or security change is
+needed. Keep research disabled.
+
+For October 2 before 12:00 UTC, the Chicago research due date remains
+`2026-10-01`. Use that same bound date for this attempt's recovery even after
+the calendar advances. For a genuinely new numbered attempt, choose the current
+Chicago due date; admission rejects a stale date before a fresh create.
+From `/opt/render/project/src`, after hash verification:
+
+```sh
+PYTHONPATH=/opt/render/project/src/dist/daily-research/release \
+  /opt/render/project/src/dist/daily-research/venv/bin/python \
+  /tmp/blueprint-baseline-reviewed/research-perplexity-canary.py inspect \
+  --attempt 1 --date 2026-10-01 \
+  --package /opt/render/project/src/dist/daily-research/release \
+  --archive /opt/render/project/src/vendor/daily-research/blueprint-research.tar \
+  --approval /tmp/blueprint-baseline-reviewed/baseline-attempt-1-approval.json \
+  --output /tmp/blueprint-baseline-reviewed/baseline-attempt-1-plan.json
+```
+
+`inspect` is read-only except its exclusive private plan file. Repeat the same
+command with `stage`, replacing approval/output with
+`--plan /tmp/blueprint-baseline-reviewed/baseline-attempt-1-plan.json`; this writes
+only the new private attempt control/inputs and shared coordinator. After the
+native owner clears the current deployment window, execute the admitted attempt
+with the existing independent watchdog:
+
+```sh
+PYTHONPATH=/opt/render/project/src/dist/daily-research/release \
+  timeout --signal=TERM --kill-after=60s 1860s \
+  /opt/render/project/src/dist/daily-research/venv/bin/python \
+  /tmp/blueprint-baseline-reviewed/research-perplexity-canary.py execute \
+  --attempt 1 --date 2026-10-01 \
+  --package /opt/render/project/src/dist/daily-research/release \
+  --archive /opt/render/project/src/vendor/daily-research/blueprint-research.tar
+```
+
+Use `reconcile` under the same watchdog for that exact attempt; it never creates
+a replacement. `status` with the same attempt/date/package/archive is read-only,
+reports all admitted baseline attempts and cumulative best-effort model/search
+estimates, and keeps pending accounting and unverified total billing explicit.
+There is no missing-usage cancellation or artificial dollar/prospect cutoff.
+The $25 allowance is not multiplied by attempt count, estimated charges are not
+final billed totals, and unknown tools/environment charges are not zero.
+
+`export` and `record-cleanup` accept the same attempt/date arguments and retain
+existing artifact/QA/readback/absence guards. Each new session's permanent
+deletion requires its own exact action-time approval; the renewed $25 receipt
+does not authorize it. A retry uses N+1 and a fresh approval JSON/immutable plan
+under the SAME renewed budget reference, preserving all preceding attempts and
+reported exposure. No automatic fresh retry, outreach, scheduler activation or
+additional paid analysis is introduced by installing the helper.
+
+If an attempt was staged but never acquired a durable run intent and its due
+date advances, `abandon-unstarted` with that exact attempt/date/package/archive
+atomically proves no run document/create claim exists and no active lease,
+disables only its private control, and records an abandoned admission in the
+shared coordinator. It makes no provider calls and fabricates no terminal run
+or cleanup receipt. The next numbered attempt can then use the current due
+date. An existing intent, uncertain POST or active lease refuses abandonment;
+those retain their existing reconciliation and separately approved cleanup
+requirements. Repeated abandonment is idempotent and never re-enables a slot.
