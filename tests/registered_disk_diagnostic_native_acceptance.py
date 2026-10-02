@@ -141,7 +141,10 @@ def observe_reference_failures(reference_type, evidence):
                     try:
                         record(error, boundary)
                     except Exception:
-                        pass  # Evidence failure cannot replace the original refusal.
+                        try:
+                            evidence['truncated'] = True
+                        except Exception:
+                            pass  # Evidence failure cannot replace the original refusal.
                 raise
         return observed
 

@@ -88,6 +88,7 @@ def test_observer_failure_cannot_replace_original_unknown(monkeypatch):
         Reference().guard()
     assert raised.value is error and not evidence['records']
     assert error.__context__ is None and error.__cause__ is None
+    assert evidence['truncated'] is True
 
 
 def test_real_inspector_frame_projects_only_already_read_initial_identity(monkeypatch):
