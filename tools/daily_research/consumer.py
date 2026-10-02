@@ -5,11 +5,10 @@ Every request/attempt is durable before its mutation; uncertain attempts reconci
 by GET only. Credentials and CRM contacts are never sent to the hosted agent.
 """
 import hashlib
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools.daily_research import discovery, search
+from tools.daily_research import discovery, recovery, search
 from tools.daily_research.runner import (
     AGENT,
     LIMIT_BYTES,
@@ -399,7 +398,10 @@ class Consumer:
                 self.ledger.write_bytes(row["date"] + "-qa.json", raw)
                 qa["artifact_digest"] = hashlib.sha256(raw).hexdigest()
                 _, known = self.refresh_crm()
-                decision = qa_decision(row, json.loads(raw), known)
+                result, normalization = recovery.parse_artifact_json(raw)
+                if normalization:
+                    qa["artifact_format_normalization"] = normalization
+                decision = qa_decision(row, result, known)
                 if late_deadline_cancel:
                     qa["terminal_collection_receipt"] = {"turn_id": tid, "completed_at": turn["completed_at"],
                                                          "deadline_ms": int(deadline.timestamp() * 1000),

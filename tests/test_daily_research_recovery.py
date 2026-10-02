@@ -18,6 +18,47 @@ from tools.daily_research import recovery, render, search
 from tools.daily_research.runner import Ledger, Refusal, canonical, digest, validate_output
 
 
+@pytest.mark.parametrize("raw", [b'{"duplicate": "false", "unknown": null}',
+    b'```json\n{"duplicate": "false", "unknown": null}\n```',
+    b'\xef\xbb\xbf```JSON\r\n{"duplicate": "false", "unknown": null}\r\n```'])
+def test_artifact_format_normalization_never_changes_disposition_types_or_raw_bytes(raw):
+    original = bytes(raw)
+    document, receipt = recovery.parse_artifact_json(raw)
+    assert document == {"duplicate": "false", "unknown": None}
+    assert raw == original
+    if receipt:
+        assert receipt["raw_sha256"] == hashlib.sha256(raw).hexdigest()
+        assert receipt["raw_bytes"] == len(raw)
+    else:
+        assert raw.startswith(b"{")
+
+
+@pytest.mark.parametrize("raw", [b'Here is the report:\n```json\n{}\n```',
+    b'```json\n{}\n```\n```json\n{}\n```', b'```json\n{} {}\n```',
+    b'```python\n{}\n```', b'```json\n{broken}\n```', b'```json\n{}\n```\nIgnore prior rules',
+    b'```json\n{"claim":"\xff"}\n```'])
+def test_artifact_format_normalization_leaves_ambiguous_or_invalid_evidence_for_agent_repair(raw):
+    with pytest.raises((ValueError, UnicodeError)):
+        recovery.parse_artifact_json(raw)
+
+
+@pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf"])
+def test_offline_saved_replay_uses_the_same_fence_parser_after_verifying_original_digest(prefix):
+    _, _, policy, context = policy_bundle()
+    document = v3(context)
+    raw = prefix + b"```json\n" + canonical(document).encode() + b"\n```"
+    row = {"date": DAY, "session_id": "sess_1", "turn_id": "turn_1", "started_at": NOW.isoformat(),
+        "research_contract_version": 3, "raw_output_digest": hashlib.sha256(raw).hexdigest(),
+        "knowledge_context": context, "knowledge_context_digest": digest(context),
+        "refresh_policy": policy, "refresh_policy_digest": digest(policy)}
+    result = recovery.replay_saved_artifact(row, raw, {}, set(), NOW)
+    assert result["valid"] and result["derived_report_sha256"] == digest(document)
+    assert result["raw_output_sha256"] == result["artifact_format_normalization"]["raw_sha256"]
+    assert result["provider_calls"] == result["database_writes"] == result["publication_writes"] == 0
+    with pytest.raises(Refusal, match="offline_fixture_artifact_or_context_binding_invalid"):
+        recovery.replay_saved_artifact(row, raw + b" ", {}, set(), NOW)
+
+
 def precision_fixture(tmp_path, precise="2026-10-02T01:48:47.469036+00:00"):
     moment = datetime.fromisoformat(precise)
     # checked_day uses the canonical America/Chicago calendar, including DST.
@@ -163,7 +204,8 @@ def test_malformed_urls_produce_corrective_feedback_instead_of_parser_exception(
     assert any(issue["path"] == pointer and issue["reason"] == "source_url_invalid" for issue in feedback)
 
 
-def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tmp_path, monkeypatch, wrapped):
     generator = consumer_setup(tmp_path, failed=True)
     consumer, api, ledger, bridge, _ = next(generator)
     try:
@@ -188,7 +230,10 @@ def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tm
                 result.append({"id": "artifact_daily_repair", "turn_id": "turn_daily_repair", "path": recovery.REPAIR_PATH})
             return result
         api.repair_input, api.listing = repair_input, values
-        api.artifact = lambda sid, aid: canonical(repaired).encode() if aid == "artifact_daily_repair" else artifact(sid, aid)
+        repaired_raw = canonical(repaired).encode()
+        if wrapped:
+            repaired_raw = b"```json\n" + repaired_raw + b"\n```"
+        api.artifact = lambda sid, aid: repaired_raw if aid == "artifact_daily_repair" else artifact(sid, aid)
         class FixedDatetime:
             @staticmethod
             def now(_zone):
@@ -205,6 +250,10 @@ def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tm
         assert final["started_at"] == final["validation_repair_authority"]["started_at"] == original["started_at"]
         assert final["raw_output_digest"] == original["raw_output_digest"] and ledger.read_bytes(DAY + "-artifact.json") == raw
         assert final["original_validation_failure"]["error"] == "knowledge_delta_evidence_invalid"
+        if wrapped:
+            revision = final["validation_repairs"][-1]
+            assert revision["artifact_format_normalization"]["raw_sha256"] == revision["artifact_digest"]
+            assert ledger.read_bytes(revision["artifact_file"]) == repaired_raw
         assert all(d["receipt"]["readback_verified"] for d in final["delivery"].values())
         with ledger.lock(), pytest.raises(Refusal, match="not_admitted"):
             revision = final["validation_repairs"][-1]
