@@ -3,6 +3,8 @@ import base64
 import hashlib
 import json
 import os
+import subprocess
+import sys
 from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
@@ -601,9 +603,11 @@ def test_stopped_terminal_collection_keeps_both_controls_disabled_and_rejects_pa
         bridge.close()
 
 
-def test_terminal_provider_refuses_mutations_and_search_before_transport(monkeypatch):
+def _terminal_provider_probe():
     import httpx2 as httpx
     import openai
+    assert openai.__version__ == "3.22.1", "wire proof requires the deployed SDK pin"
+    monkeypatch = pytest.MonkeyPatch()
     requests = []
     def send(request):
         requests.append(request.method)
@@ -623,6 +627,21 @@ def test_terminal_provider_refuses_mutations_and_search_before_transport(monkeyp
         assert requests == ["GET"]
     finally:
         api.client.close()
+        monkeypatch.undo()
+
+
+def test_terminal_provider_refuses_mutations_and_search_before_transport():
+    # The repository's provider SDK differs from the standalone research pin.
+    # Exercise the real transport hook in the existing isolated research runtime.
+    runtime = os.environ.get("BLUEPRINT_RESEARCH_SDK_PYTHON", sys.executable)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("OPENAI_")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    probe = ("import runpy,sys; runpy.run_path(sys.argv[1])['_terminal_provider_probe'](); "
+             "print('terminal_provider_get_only_verified')")
+    result = subprocess.run([runtime, "-c", probe, str(Path(__file__).resolve())],
+                            cwd=Path(__file__).resolve().parents[1], env=env,
+                            capture_output=True, text=True, timeout=30, check=True)
+    assert result.stdout.strip() == "terminal_provider_get_only_verified"
 
 
 def render_export(bridge, destination):
