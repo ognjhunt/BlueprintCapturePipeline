@@ -81,6 +81,8 @@ def read(root: Path, unit: str) -> dict[str, Any] | None:
         or record.get("status") not in {"active", "releasing", "released", "expired_released", "failed_released"}
         or not isinstance(record.get("owner"), str)
         or type(record.get("expires_at_epoch")) is not int
+        or ("require_explicit_release" in record and type(record["require_explicit_release"]) is not bool)
+        or (record.get("require_explicit_release") is True and unit != "blueprint-agent-run-dispatcher.timer")
         or ("enabled_before" in record and type(record["enabled_before"]) is not bool)
         or ("restart_on_release" in record and type(record["restart_on_release"]) is not bool)
         or (record.get("status") == "releasing" and record.get("release_status")
@@ -219,6 +221,8 @@ def expire(root: Path, unit: str, request_id: str, *, now: float | None = None) 
             return 0
         if record["expires_at_epoch"] > moment:
             return 0
+        if record.get("require_explicit_release") is True:
+            return 0  # The deadline requests review; it never restores paid dispatch.
         begin_release(root, unit, record, released_by="expiry", status="expired_released", now=moment)
         return finish_release(root, unit)
     return 0
@@ -238,7 +242,7 @@ def sweep(root: Path, *, now: float | None = None) -> int:
             failed |= finish_release(root, unit) != 0
     for snapshot in active(root):
         unit = snapshot["unit"]
-        if snapshot["expires_at_epoch"] <= moment:
+        if snapshot["expires_at_epoch"] <= moment and snapshot.get("require_explicit_release") is not True:
             if expire(root, unit, snapshot["request_id"], now=moment) != 0:
                 failed = True
             continue
@@ -246,7 +250,7 @@ def sweep(root: Path, *, now: float | None = None) -> int:
             record = read(root, unit)
             if record is None or record["status"] != "active" or record["request_id"] != snapshot["request_id"]:
                 continue
-            if record["expires_at_epoch"] <= moment:
+            if record["expires_at_epoch"] <= moment and record.get("require_explicit_release") is not True:
                 continue  # the next sweep or the existing expiry job releases it
             disabled = subprocess.run(["systemctl", "disable", "--", unit], check=False)
             stopped = subprocess.run(["systemctl", "stop", "--", unit], check=False)

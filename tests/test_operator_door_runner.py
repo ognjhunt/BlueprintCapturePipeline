@@ -139,6 +139,31 @@ def _hold(config: DoorConfig, owner: str = "alice") -> str:
                              "owner": owner, "reason": "inspect capture", "expires_in_seconds": 3600})
 
 
+def test_explicit_dispatch_stop_cannot_change_owner_or_auto_expire_on_renewal(config: DoorConfig) -> None:
+    unit = "blueprint-agent-run-dispatcher.timer"
+    body = {"kind": "hold", "unit": unit, "owner": "founder-stop", "reason": "Founder stop",
+            "expires_in_seconds": 60, "require_explicit_release": True}
+    initial = _spooled(config, body)
+    process_spool(config, runner=FakeRunner())
+    assert _result(config, initial)["hold"]["require_explicit_release"] is True
+    path = Path(config.spool_root) / "holds" / f"{unit}.json"
+    # An overdue review deadline does not surrender stop ownership.
+    record = {**json.loads(path.read_text()), "expires_at_epoch": 1}
+    holds.write(path.parent, unit, record)
+    for change, code in [({"owner": "other"}, "hold_active:founder-stop"),
+                         ({"require_explicit_release": False}, "hold_explicit_release_required")]:
+        request_id = _spooled(config, {**body, **change})
+        runner = FakeRunner()
+        process_spool(config, runner=runner)
+        assert _result(config, request_id)["code"] == code
+        assert runner.calls == []
+        assert json.loads(path.read_text()) == record
+    renewed = _spooled(config, body)
+    process_spool(config, runner=FakeRunner())
+    assert _result(config, renewed)["status"] == "done"
+    assert json.loads(path.read_text())["require_explicit_release"] is True
+
+
 def test_hold_stops_a_timer_records_owner_and_schedules_expiry(config: DoorConfig) -> None:
     request_id = _hold(config)
     runner = FakeRunner()

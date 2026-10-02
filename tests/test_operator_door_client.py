@@ -87,6 +87,16 @@ def test_whoami_prints_identity_json(door: dict[str, Any]) -> None:
     assert code == 0 and json.loads(out) == {"name": "cloud", "scopes": ["deploy", "operate", "read"]}
 
 
+def test_hold_client_explicit_release_remains_an_owned_bounded_request(door: dict[str, Any]) -> None:
+    code, out = _run("hold", "blueprint-agent-run-dispatcher.timer", "--owner", "founder-stop",
+                     "--reason", "Founder stop", "--for", "24h", "--until-released")
+    assert code == 0
+    request_id = json.loads(out)["id"]
+    request = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())["request"]
+    assert request["require_explicit_release"] is True
+    assert request["expires_in_seconds"] == 86400
+
+
 def test_lane_scratch_client_submits_bounded_commands(door: dict[str, Any]) -> None:
     digest = "sha256:" + "a" * 64
     def submitted(out: str) -> dict[str, Any]:

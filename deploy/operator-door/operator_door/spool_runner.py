@@ -323,9 +323,13 @@ def _act_hold(
             return {"status": "refused", "code": "hold_release_in_progress"}
         current = holds.read(root, unit)
         prior_active = (current is not None and current["status"] == "active"
-                        and current["expires_at_epoch"] > time.time())
+                        and (current["expires_at_epoch"] > time.time()
+                             or current.get("require_explicit_release") is True))
         if prior_active and current["owner"] != request["owner"]:
             return {"status": "refused", "code": f"hold_active:{current['owner']}"}
+        if (prior_active and current.get("require_explicit_release") is True
+                and request.get("require_explicit_release") is not True):
+            return {"status": "refused", "code": "hold_explicit_release_required"}
         if not _has_hold_guard(runner, unit, root):
             return {"status": "refused", "code": "hold_unit_guard_missing"}
         if current is not None and current["status"] == "active" and isinstance(current.get("enabled_before"), bool):
@@ -371,7 +375,8 @@ def _act_hold(
                   "reason": request["reason"], "requested_by": requested_by, "request_id": request_id,
                   "created_at": holds.timestamp(now), "expires_at": holds.timestamp(expires_at_epoch),
                   "expires_at_epoch": expires_at_epoch, "enabled_before": enabled_before,
-                  "status": "active"}
+                  "status": "active", **({"require_explicit_release": True}
+                                         if request.get("require_explicit_release") is True else {})}
 
         def rollback() -> int:
             if prior_active:

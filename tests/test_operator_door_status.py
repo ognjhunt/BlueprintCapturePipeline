@@ -212,19 +212,25 @@ def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree:
     root.mkdir()
     now = int(time.time())
     for unit, expiry in (("blueprint-scene-progression.timer", now + 120),
-                         ("blueprint-pubsub-handoff-listener.timer", now - 1)):
+                         ("blueprint-pubsub-handoff-listener.timer", now - 1),
+                         ("blueprint-agent-run-dispatcher.timer", now - 1)):
         (root / f"{unit}.json").write_text(json.dumps({
             "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
             "reason": "inspect", "requested_by": "cloud", "request_id": "20260926T120000Z-hold-0000abcd",
             "created_at": "2026-09-26T12:00:00+00:00", "expires_at": "2026-09-26T13:00:00+00:00",
-            "expires_at_epoch": expiry, "status": "active"}), encoding="utf-8")
+            "expires_at_epoch": expiry, "status": "active",
+            **({"require_explicit_release": True} if unit == "blueprint-agent-run-dispatcher.timer" else {})}),
+            encoding="utf-8")
     status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
-    assert len(status["holds"]) == 2
+    assert len(status["holds"]) == 3
     hold = next(row for row in status["holds"] if row["unit"] == "blueprint-scene-progression.timer")
     assert hold["unit"] == "blueprint-scene-progression.timer" and hold["owner"] == "alice"
     assert 0 < hold["remaining_seconds"] <= 120
     overdue = next(row for row in status["holds"] if row["unit"] == "blueprint-pubsub-handoff-listener.timer")
     assert overdue["remaining_seconds"] == 0 and overdue["expired"] is True
+    assert overdue["require_explicit_release"] is False
+    stopped = next(row for row in status["holds"] if row["unit"] == "blueprint-agent-run-dispatcher.timer")
+    assert stopped["expired"] is True and stopped["require_explicit_release"] is True
 
 
 def test_status_counts_unreported_break_glass_notes(host_tree: dict[str, Path]) -> None:
