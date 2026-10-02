@@ -53,9 +53,10 @@ def qa_deadline(row, config):
     return retry_deadline(row, instant(value["started_at"]) + timedelta(seconds=600))
 
 
-def workflow(control):
+def workflow(control, *, allow_stopped=False):
     value = control.get("workflow", {})
-    if value.get("enabled") is not True or control.get("enabled") is not True:
+    if value.get("enabled") is not True or not (control.get("enabled") is True
+            or allow_stopped and control.get("enabled") is False):
         return None
     if (set(value) != {"enabled", "qa_authority_reference", "publication_authority_reference"}
             or any(not isinstance(value.get(k), str) or not value[k].strip()
@@ -175,9 +176,11 @@ def completed_before_deadline_cancel(row, turn, session, deadline):
 
 
 class Consumer:
-    def __init__(self, ledger, config, api, clock=lambda: datetime.now(timezone.utc), stopped=lambda: False):
+    def __init__(self, ledger, config, api, clock=lambda: datetime.now(timezone.utc), stopped=lambda: False,
+                 terminal_collection_receipt=None):
         self.ledger, self.config, self.api, self.clock, self.stopped = ledger, config, api, clock, stopped
         self.active_day = None
+        self.terminal_collection_receipt = terminal_collection_receipt
 
     def refresh_crm(self):
         self.ledger.bridge.call("refresh_crm")
@@ -187,7 +190,8 @@ class Consumer:
     def step(self):
         decision = None
         with self.ledger.lock():
-            enabled = workflow(self.ledger.bridge.call("control")) and not self.stopped()
+            enabled = workflow(self.ledger.bridge.call("control"),
+                allow_stopped=self.terminal_collection_receipt is not None) and not self.stopped()
             if not enabled and not self.active_day:
                 return {"state": "workflow_disabled"}
             item = {"date": self.active_day} if self.active_day else self.ledger.bridge.call("work_item")
@@ -198,6 +202,9 @@ class Consumer:
                     or (item.get("packet_digest") and row["packet_digest"] != item["packet_digest"])):
                 raise Refusal("workflow_packet_binding_invalid")
             self.active_day = row["date"]
+            if self.terminal_collection_receipt is not None and (row.get("qa", {}).get("state") != "validated"
+                    or row["qa"].get("terminal_collection_recovery", {}).get("native_receipt") != self.terminal_collection_receipt):
+                raise Refusal("terminal_qa_collection_validated_receipt_required")
             if not enabled and (not row.get("qa") or row["state"] != "awaiting_review"):
                 return {"state": "workflow_disabled"}
             if row["state"] == "awaiting_review":
@@ -209,7 +216,8 @@ class Consumer:
                     decision = self.qa(row)
                 if not decision:
                     return {"date": row["date"], "state": row["qa"]["state"]}
-                if self.stopped() or not workflow(self.ledger.bridge.call("control")):
+                if self.stopped() or not workflow(self.ledger.bridge.call("control"),
+                        allow_stopped=self.terminal_collection_receipt is not None):
                     return {"date": row["date"], "state": row["qa"]["state"]}
             elif row["state"] == "reviewed":
                 if row.get("qa", {}).get("state") != "validated":

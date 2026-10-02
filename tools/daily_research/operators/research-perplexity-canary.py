@@ -97,10 +97,11 @@ def admission(value, now=None):
     return copy.deepcopy(value)
 
 
-def driver(package, destination):
+def driver(package, destination, *, terminal_collection_only=False):
     text = Path(__file__).with_suffix(".mjs").read_text()
     text = text.replace("__RESEARCH_PACKAGE_URL__", Path(package).resolve().as_uri() + "/")
-    text = text.replace("__CANARY_CONTEXT__", canonical({"test_id": TEST, "day": DAY, "baseline": BASELINE}))
+    text = text.replace("__CANARY_CONTEXT__", canonical({"test_id": TEST, "day": DAY, "baseline": BASELINE,
+        "terminal_collection_receipt": TERMINAL_QA_RECEIPT if terminal_collection_only else None}))
     path = Path(destination) / "canary-bridge.mjs"
     path.write_text(text)
     path.chmod(0o600)
@@ -376,16 +377,16 @@ def collect_completed_qa(bridge, cache, *, api_factory=None, stopped=lambda: Fal
     ledger = FirestoreLedger(bridge)
     cfg = render.configured(bridge, cache, allow_create=False)
     proof = copy.deepcopy(TERMINAL_QA_RECEIPT)
-    api = (api_factory or CanaryProvider)(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    api = (api_factory or TerminalCollectionProvider)(ledger, os.environ.get("OPENAI_API_KEY", ""))
     api.clock, api.stopped = clock, stopped
-    consumer = Consumer(ledger, cfg, api, clock=clock, stopped=stopped)
+    consumer = Consumer(ledger, cfg, api, clock=clock, stopped=stopped, terminal_collection_receipt=proof)
     consumer.active_day = DAY
 
     def guard(row, expected_authority=None):
         bridge.call("guard")
         bridge.call("assert_lease")
         control = bridge.call("control")
-        authority = workflow(control)
+        authority = workflow(control, allow_stopped=True)
         if (stopped() or not authority or row.get("canary") != control.get("canary")
                 or (expected_authority is not None and authority != expected_authority)):
             raise Refusal("terminal_qa_collection_stopped_disabled_or_changed")
@@ -562,6 +563,18 @@ class CanaryBridge(Bridge):
                 row["metadata"] = metadata
                 row["canary"] = copy.deepcopy(binding)
         return super().call(op, **fields)
+
+
+class TerminalCollectionProvider(Provider):
+    """Exact completed collection uses provider GETs only, even if code drifts."""
+    def __init__(self, ledger, api_key):
+        super().__init__(api_key, read_only=True)
+        self.ledger = ledger
+
+    def mutation_forbidden(self, *args, **kwargs):
+        raise Refusal("terminal_qa_provider_mutation_forbidden")
+
+    create = cancel = qa_input = qa_retry_input = repair_input = tool_result = application_tool = tool_admit = mutation_forbidden
 
 
 def inspect(bridge, approval, receipt, api, cache, now=None):
@@ -954,7 +967,8 @@ def main():
         signal.signal(signum, lambda *_: stop.update(requested=True))
     with tempfile.TemporaryDirectory(prefix="blueprint-perplexity-canary-") as temporary:
         cache = Path(temporary)
-        bridge = CanaryBridge(script=driver(args.repair_package if repair_command else args.package, cache))
+        bridge = CanaryBridge(script=driver(args.repair_package if repair_command else args.package, cache,
+            terminal_collection_only=args.command == "collect-completed-qa"))
         api = None
         try:
             if args.command == "inspect":

@@ -558,6 +558,73 @@ def test_native_terminal_collection_retains_late_cancel_long_prose_and_publishes
         bridge.close()
 
 
+def test_stopped_terminal_collection_keeps_both_controls_disabled_and_rejects_paid_ops(fixture, monkeypatch):
+    bridge, ledger, api, cache, clock, source, proof, posts = terminal_native_fixture(fixture, monkeypatch)
+    with ledger.lock():
+        control = bridge.call("control")
+        bridge.call("configure", value={**control, "enabled": False})
+    origin = bridge.call("origin")
+    bridge.close()
+    # Use the actual Store terminal-publication gate with a synthetic receipt.
+    # Production obtains this immutable receipt from the command's generated
+    # CanaryChannel context, never from a request or changed control.
+    driver = cache / "attempt-1" / "hermetic-driver.mjs"
+    driver.write_text(driver.read_text().replace("for await(const line",
+        "channel.store.terminalCollectionReceipt=" + canonical(proof) + ";for await(const line"))
+    bridge = canary.CanaryBridge(script=driver)
+    original_call = bridge.call
+    blobs = {}
+    for binding in [*proof["ordering_blobs"], {"sha256": proof["source_blob_sha256"]}]:
+        # Existing test witness retains the exact synthetic raw blob receipts.
+        # blob_receipt in the original helper was the only overridden read.
+        blobs[binding["sha256"]] = ledger.bridge.call("blob_receipt", hash=binding["sha256"])
+    def call(op, **fields):
+        if op == "blob_receipt":
+            return deepcopy(blobs[fields["hash"]])
+        return original_call(op, **fields)
+    monkeypatch.setattr(bridge, "call", call)
+    try:
+        bridge.call("test_clock", now=int(clock["now"].timestamp()*1000))
+        api.ledger = FirestoreLedger(bridge)
+        for op in ("create_check", "qa_check", "qa_retry_check", "repair_check", "learning_context"):
+            with pytest.raises(Refusal, match="terminal_qa_operation_forbidden"):
+                bridge.call(op, day=canary.DAY)
+        with pytest.raises(Refusal, match="canary_admission_already_bound"):
+            bridge.call("configure", day=canary.DAY)
+        result = canary.collect_completed_qa(bridge, cache, api_factory=lambda *_: api, clock=lambda: clock["now"])
+        assert result["state"] == "completed" and result["provider_mutations"] == 0
+        assert bridge.call("control")["enabled"] is False
+        assert bridge.call("origin") == origin and origin["control"]["enabled"] is False
+        assert api.ledger.get(canary.DAY)["qa"]["terminal_collection_recovery"]["previous_qa"] == source["qa"]
+        assert posts == []
+    finally:
+        bridge.close()
+
+
+def test_terminal_provider_refuses_mutations_and_search_before_transport(monkeypatch):
+    import httpx2 as httpx
+    import openai
+    requests = []
+    def send(request):
+        requests.append(request.method)
+        return httpx.Response(200, json={})
+    monkeypatch.setattr(openai, "DefaultHttpxClient", lambda **options:
+        httpx.Client(transport=httpx.MockTransport(send), **options))
+    api = canary.TerminalCollectionProvider(None, "offline-fake-key")
+    try:
+        api.client._client.get("https://api.openai.com/v1/agents")
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            with pytest.raises(Refusal, match="terminal_qa_provider_mutation_forbidden"):
+                api.client._client.request(method, "https://api.openai.com/v1/agents")
+        for method in ("create", "cancel", "qa_input", "qa_retry_input", "repair_input",
+                       "tool_result", "application_tool", "tool_admit"):
+            with pytest.raises(Refusal, match="terminal_qa_provider_mutation_forbidden"):
+                getattr(api, method)({})
+        assert requests == ["GET"]
+    finally:
+        api.client.close()
+
+
 def render_export(bridge, destination):
     from tools.daily_research.render import export_snapshot
     return export_snapshot(bridge, canary.DAY, destination)
@@ -657,7 +724,7 @@ def test_exact_retained_native_terminal_collection_when_evidence_is_supplied(mon
             if op in {"guard", "assert_lease"}:
                 return True
             if op == "control":
-                return {"enabled": True, "workflow": authority, "canary": original["canary"]}
+                return {"enabled": False, "workflow": authority, "canary": original["canary"]}
             if op == "blob_receipt":
                 return deepcopy(observations[fields["hash"]])
             pytest.fail("retained replay attempted unexpected operation " + op)

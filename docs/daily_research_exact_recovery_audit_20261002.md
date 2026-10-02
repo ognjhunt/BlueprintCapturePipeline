@@ -91,6 +91,16 @@ records. The research worker forwards sanitized terminal date/state to
 `learningHooks.afterRun`; that owner reads the durable manifest/source hash.
 The private bridge exposes no second daily scheduler or terminal writer.
 
+The exact `collect-completed-qa` command also admits terminal collection while
+the canary's top-level `enabled` switch remains false, using its existing workflow references
+and the pinned terminal proof. It does not change either control. Its provider
+client permits GET only and refuses model/search/tool mutations; its fenced
+bridge rejects create, QA, retry, repair, learning and configuration operations.
+Publication requires the validated, identical terminal receipt and unchanged
+publication authority. Ordinary consumers and schedulers retain their stop gate.
+Focused stopped-collection/proof/transport regressions and the exact private
+replay passed; controls remain disabled throughout the hermetic sink readbacks.
+
 ## Reproducible private replay and remaining acceptance
 
 Retrieve the exact four Firestore blobs and the pinned GCS bundle using existing

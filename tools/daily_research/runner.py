@@ -362,10 +362,16 @@ def validate_output(output, run_date, known, *, contract_version=1, knowledge_co
 
 class Provider:
     """Documented SDK, with automatic retries and redirects disabled."""
-    def __init__(self, api_key):
+    def __init__(self, api_key, *, read_only=False):
         from openai import DefaultHttpxClient, OpenAI
+        http_options = {"follow_redirects": False}
+        if read_only:
+            def get_only(request):
+                if request.method != "GET":
+                    raise Refusal("terminal_qa_provider_mutation_forbidden")
+            http_options["event_hooks"] = {"request": [get_only]}
         self.client = OpenAI(api_key=api_key, project=PROJECT, max_retries=0, timeout=20,
-                             http_client=DefaultHttpxClient(follow_redirects=False))
+                             http_client=DefaultHttpxClient(**http_options))
         self.api = self.client.beta.agents
 
     def get(self, resource, resource_id):

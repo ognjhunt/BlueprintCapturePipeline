@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,createHash} from 'node:crypto';
+import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {Store, ROOT, LeaseChannel, ADAPTIVE_TEST} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 
@@ -12,6 +16,51 @@ async function fixture() {
 }
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
+
+test('terminal collection alone may publish validated evidence while control stays stopped', async () => {
+  const {db,store}=await fixture(), proof={session_id:'synthetic-session',qa_artifact_sha256:'a'.repeat(64)}, writes=[];
+  const workflow={enabled:true,qa_authority_reference:'owner-qa',publication_authority_reference:'owner-publication'};
+  Object.assign(db.values.get(ROOT),{workflow});
+  store.publisher={prepare:async()=>({request_digest:'b'.repeat(64)}),reconcile:async()=>null,write:async()=>writes.push('one')};
+  const value={...row(),state:'reviewed',session_id:proof.session_id,
+    qa:{state:'validated',artifact_digest:proof.qa_artifact_sha256,
+      terminal_collection_recovery:{native_receipt:proof,workflow_authority:workflow}},
+    delivery:{notion:{state:'acknowledged'},sheets:{state:'pending'}}};
+  await store.put({...value,state:'creating'});
+  db.values.get(ROOT).enabled=false;
+  store.terminalCollectionReceipt=proof;
+  await store.put(value);
+  for(const op of ['create_check','qa_check','qa_retry_check','repair_check','configure','learning_context'])
+    await assert.rejects(store.dispatch({op}),/terminal_qa_operation_forbidden/);
+  await store.publish(value.date);
+  assert.deepEqual(writes,['one']); assert.equal(db.values.get(ROOT).enabled,false);
+  db.values.get(ROOT).workflow.publication_authority_reference='changed';
+  await assert.rejects(store.publish(value.date),/publication_authority_changed/);
+  db.values.get(ROOT).workflow={...workflow,publication_authority_reference:'owner-publication'};
+  store.terminalCollectionReceipt={...proof,qa_artifact_sha256:'c'.repeat(64)};
+  await assert.rejects(store.publish(value.date),/validated_receipt_required/);
+  assert.deepEqual(writes,['one']);
+});
+
+test('only the exact terminal collector command enables the stopped publication pipe', async () => {
+  const temporary=mkdtempSync(join(tmpdir(),'research-terminal-command-'));
+  const baseline={baseline_id:'baseline-20261002',attempt_number:1,
+    root:ROOT+'/baselines/baseline-20261002',authority_reference:'Sentinel_c2046c5f146c81918921eba1ed7f6caa',soft_total_usd:25};
+  const context={test_id:'baseline-20261002-attempt-0001',day:'2026-10-01',baseline,
+    terminal_collection_receipt:{schema_version:'blueprint.qa-terminal-reconciliation.v1',
+      source_blob_sha256:'59327fce14de04a18679932162a4342ddd3513b6e123d43dbc85d2693e957b9b'}};
+  const source=readFileSync(new URL('../tools/daily_research/operators/research-perplexity-canary.mjs',import.meta.url),'utf8')
+    .replace('__RESEARCH_PACKAGE_URL__',new URL('../',import.meta.url).href)
+    .replace('__CANARY_CONTEXT__',JSON.stringify(context));
+  const file=join(temporary,'terminal.mjs');writeFileSync(file,source);
+  try {
+    const {CanaryChannel}=await import(pathToFileURL(file).href);
+    const channel=new CanaryChannel(new MemoryFirestore());
+    for(const op of ['stage','configure','create_check','qa_check','qa_retry_check','repair_check','learning_context'])
+      await assert.rejects(channel.call({op,day:context.day}),/terminal_qa_operation_forbidden/);
+    assert.equal(await channel.call({op:'control'}),null);
+  } finally {rmSync(temporary,{recursive:true,force:true});}
+});
 
 test('learning uses the existing fenced pipe and absent control performs no handler work', async () => {
   const {db,store,time}=await fixture();
