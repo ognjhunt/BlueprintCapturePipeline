@@ -2170,7 +2170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout=args.timeout,
         required="gcp" in required_providers,
     )
-    aws_instances = []
+    aws_instances: list[Mapping[str, Any]] = []
     aws_inventory = {
         "provider": "aws", "required": "aws" in required_providers,
         "credential_present": False, "status": "unavailable", "row_count": None,
