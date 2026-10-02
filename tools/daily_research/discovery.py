@@ -71,17 +71,115 @@ def validate_coverage(value, candidate_count):
     return value
 
 
-def estimated_model_cost(usage):
-    """Upper-rate token estimate, never a bound on unsettled total provider cost.
+ESTIMATOR_VERSION = "blueprint.model-token-estimate.v2"
+RATE_REFERENCE = {
+    "verified_on": "2026-10-02", "model": "gpt-6.1-sol", "service_tier": "default",
+    "sources": ["https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+                "https://developers.openai.com/api/docs/guides/prompt-caching"],
+    "short_usd_per_million": {"uncached_input": "2", "cached_input": "0.10", "cache_write": "2.50", "output": "10"},
+    "long_usd_per_million": {"uncached_input": "4", "cached_input": "0.20", "cache_write": "5", "output": "15"},
+    "long_context_threshold_input_tokens_per_request": 272000,
+}
 
-    Charge all input at combined long-context input + cache-write rates ($9/M), all output
-    including reasoning at $15/M, and add the documented 10% regional premium.
-    This ignores cache discounts conservatively. Standard service is required
-    by test admission; fast mode is excluded. SDK usage can lag or be absent.
+
+def estimated_model_cost(usage, *, model="gpt-6.1-sol", service_tier="default",
+                         context_regime="unknown", regional_processing=None):
+    """Versioned conditional range for recorded tokens, never an invoice/total cap.
+
+    Read/write/uncached input categories are mutually exclusive. Turn aggregates
+    cannot establish the >272K PER REQUEST tier. Reasoning is already in output.
+    Unknown cache writes/context are ranges; unknown regional/hosting/tool costs
+    stay separate. Defaults describe the pinned researcher, not arbitrary models.
     """
+    result = {"estimator_version": ESTIMATOR_VERSION, "rate_reference": RATE_REFERENCE,
+              "model": model, "service_tier": service_tier, "known": False,
+              "estimate_usd": None, "billed_usd": None, "hard_total_cap": False,
+              "estimate_kind": "conditional_upper_for_recorded_model_tokens",
+              "excludes": ["unreported_or_lagged_usage", "tool_fees", "hosted_environment"],
+              "unknown_components": []}
+    if model != RATE_REFERENCE["model"] or service_tier != "default":
+        return {**result, "error": "model_or_service_tier_rates_unverified"}
     if (not isinstance(usage, dict) or any(type(usage.get(k)) is not int or usage[k] < 0
                                          for k in ("input_tokens", "output_tokens"))):
-        return {"known": False, "estimate_usd": None, "hard_total_cap": False}
-    price = (Decimal(usage["input_tokens"]) * 9 + Decimal(usage["output_tokens"]) * 15) * Decimal("1.1") / 1000000
-    return {"known": True, "estimate_usd": str(price), "hard_total_cap": False,
-            "excludes": ["unreported_or_lagged_usage", "tool_fees", "hosted_environment"]}
+        return {**result, "error": "token_usage_unavailable_or_invalid"}
+    if context_regime not in {"short", "long", "unknown"} or (regional_processing is not None and type(regional_processing) is not bool):
+        return {**result, "error": "pricing_context_invalid"}
+    details = usage.get("input_tokens_details") or {}
+    if not isinstance(details, dict):
+        return {**result, "error": "input_token_details_invalid"}
+    total, output = usage["input_tokens"], usage["output_tokens"]
+    cached, writes = details.get("cached_tokens"), details.get("cache_write_tokens")
+    if any(value is not None and (type(value) is not int or not 0 <= value <= total)
+           for value in (cached, writes)) or cached is not None and writes is not None and cached + writes > total:
+        return {**result, "error": "input_token_categories_invalid"}
+    unknown = result["unknown_components"]
+    if cached is None:
+        unknown.append("cache_read_count")
+    if writes is None:
+        unknown.append("cache_write_classification")
+    if context_regime == "unknown":
+        unknown.append("per_request_context_regime")
+    if regional_processing is None:
+        unknown.append("regional_processing_premium")
+        result["excludes"].append("unverified_regional_processing_premium")
+
+    def cost(regime, upper):
+        rates = {key: Decimal(value) for key, value in RATE_REFERENCE[regime + "_usd_per_million"].items()}
+        write_count = writes if writes is not None else (total - (cached or 0) if upper else 0)
+        read_count = cached if cached is not None else (0 if upper else total - write_count)
+        uncached_count = total - read_count - write_count
+        price = (uncached_count * rates["uncached_input"] + read_count * rates["cached_input"]
+                 + write_count * rates["cache_write"] + output * rates["output"]) / 1000000
+        return price * (Decimal("1.1") if regional_processing is True else 1)
+
+    minimum = cost("short" if context_regime == "unknown" else context_regime, False)
+    maximum = cost("long" if context_regime == "unknown" else context_regime, True)
+    return {**result, "known": True, "estimate_usd": str(maximum),
+            "recorded_tokens_usd": {"minimum": str(minimum), "maximum": str(maximum)},
+            "context_regime": context_regime, "regional_processing": regional_processing,
+            "usage": usage}
+
+
+def model_cost_observation(turns, *, model="gpt-6.1-sol", service_tier="default"):
+    """Each turn once; retain its exact token details rather than flattening cache.
+
+    Caller supplies only turns from the exact admitted session. Session aggregate
+    usage is deliberately never added. Missing/unsupported turns remain unknown.
+    """
+    observed, pending, seen, lower, upper, unknown = [], [], set(), Decimal(0), Decimal(0), set()
+    for turn in turns:
+        turn_id = turn.get("id")
+        if not isinstance(turn_id, str) or not turn_id or turn_id in seen:
+            return {"estimator_version": ESTIMATOR_VERSION, "known": False, "estimate_usd": None,
+                    "reported_estimate_usd": None, "billed_usd": None, "hard_total_cap": False,
+                    "usage_state": "invalid_turn_inventory"}
+        seen.add(turn_id)
+        estimate = estimated_model_cost(turn.get("usage"), model=model, service_tier=service_tier)
+        observed.append({"turn_id": turn_id, "status": turn.get("status"), "usage": turn.get("usage")})
+        if not estimate["known"]:
+            pending.append({"turn_id": turn_id, "status": turn.get("status")})
+            continue
+        lower += Decimal(estimate["recorded_tokens_usd"]["minimum"])
+        upper += Decimal(estimate["recorded_tokens_usd"]["maximum"])
+        unknown.update(estimate["unknown_components"])
+    reported = len(observed) - len(pending)
+    complete = bool(observed) and not pending
+    return {"estimator_version": ESTIMATOR_VERSION, "rate_reference": RATE_REFERENCE,
+            "model": model, "service_tier": service_tier, "known": complete,
+            "estimate_usd": str(upper) if complete else None,
+            "reported_estimate_usd": str(upper) if reported else None,
+            "recorded_tokens_usd": {"minimum": str(lower), "maximum": str(upper)} if reported else None,
+            "usage_state": "reported_best_effort" if complete else "pending",
+            "reported_turn_count": reported, "pending_turns": pending, "observed_turns": observed,
+            "unknown_components": sorted(unknown), "billed_usd": None, "hard_total_cap": False,
+            "excludes": ["unreported_or_lagged_usage", "tool_fees", "hosted_environment", "unverified_regional_processing_premium"]}
+
+
+def preserve_estimate(row, field, estimate):
+    """Never replace original proof with a corrected interpretation without trace."""
+    previous = row.get(field)
+    if previous and previous.get("estimator_version") != ESTIMATOR_VERSION:
+        history = row.setdefault(field + "_history", [])
+        if previous not in history:
+            history.append(previous)
+    row[field] = estimate

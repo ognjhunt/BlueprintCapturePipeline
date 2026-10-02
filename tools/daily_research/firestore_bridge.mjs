@@ -14,7 +14,7 @@ const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.s
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|qa|qa-evidence|qa-input|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null) {
@@ -153,7 +153,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -168,7 +168,7 @@ export class Store {
     const row = await this.get(day);
     if (!row) refuse('run_missing');
     const files = {}, missing = [];
-    for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.qa ? ['qa','qa-evidence'] : []),
+    for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
       ...(row.qa?.input_file ? ['qa-input'] : []), ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
       try {files[kind] = await this.fileGet(`${day}-${kind}.json`);}
       catch (error) {

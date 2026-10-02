@@ -143,7 +143,9 @@ export class CanaryChannel {
           usage_state:'not_started_no_provider_intent',reported_estimate_usd:'0'});
         any=true;continue;
       }
-      const value=usage?.reported_estimate_usd??usage?.estimate_usd;
+      const current=usage?.estimator_version==='blueprint.model-token-estimate.v2';
+      const legacyValue=current?null:usage?.reported_estimate_usd??usage?.estimate_usd;
+      const value=current?(usage?.reported_estimate_usd??usage?.estimate_usd):null;
       const usable=value!==null && value!==undefined && Number.isFinite(Number(value)) && Number(value)>=0;
       if (usable) {reported+=Number(value);any=true;}
       if (!usage?.known || !usable) known=false;
@@ -153,12 +155,17 @@ export class CanaryChannel {
       }
       attempts.push({test_id:a.test_id,date:a.date,state:row?.state||'intent_not_created',
         cleanup_required:row?.cleanup_required??null,usage_state:usage?.usage_state||'pending',
-        reported_estimate_usd:usable?value:null,application_tool_usage:tools||null});
+        reported_estimate_usd:usable?value:null,legacy_model_estimate_usd:legacyValue??null,
+        legacy_model_estimate_history:row?.canary_model_estimate_history??[],
+        estimator_version:current?usage.estimator_version:null,
+        recorded_tokens_usd:current?usage.recorded_tokens_usd??null:null,
+        application_tool_usage:tools||null});
     }
     return {baseline:BASELINE_SCOPE,attempts,reported_model_estimate_usd:any?String(reported):null,
       complete_model_estimate_usd:known&&attempts.length?String(reported):null,
       reported_search_estimate_usd:searchAny?String(searchReported):null,
-      total_billed_usd:null,all_attempts_share_one_allowance:true,
+      estimator_version:'blueprint.model-token-estimate.v2',model_estimate_kind:'conditional_upper_for_recorded_model_tokens',
+      legacy_estimates_excluded:true,total_billed_usd:null,all_attempts_share_one_allowance:true,
       tool_and_environment_costs:'unknown_until_billing_reconciled',hard_total_cap:false,
       prior_scope_included:false,source_refresh_performed:false};
   }

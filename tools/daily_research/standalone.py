@@ -11,7 +11,7 @@ from pathlib import Path
 
 FILES = (
     "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "ADAPTIVE.md", "standalone.py", "runner.py", "knowledge.py",
-    "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "adaptive.py", "adaptive_runtime.py", "search.py", "SEARCH.md",
+    "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "recovery.py", "adaptive.py", "adaptive_runtime.py", "search.py", "SEARCH.md",
     "adaptive-test.config.example.json", "adaptive-daily.config.example.json", "perplexity-daily.config.example.json",
     "consumer.py", "publisher.mjs", "requirements.txt", "standalone.config.example.json",
     "capabilities/blueprint-evidence-qualification/SKILL.md",
@@ -22,6 +22,8 @@ FILES = (
     "daily-research.v2.schema.json", "daily-research.v3.schema.json",
     "knowledge-snapshot.v1.schema.json", "knowledge-refresh-policy.v1.schema.json",
     "systemd/blueprint-researcher-daily.service", "systemd/blueprint-researcher-daily.timer",
+    "operators/research-oct2-control.py", "operators/research-perplexity-canary.py",
+    "operators/research-perplexity-canary.mjs", "operators/README.md",
 )
 PREFIX = "tools/daily_research/"
 

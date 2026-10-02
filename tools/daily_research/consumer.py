@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools.daily_research import search
+from tools.daily_research import discovery, search
 from tools.daily_research.runner import (
     AGENT,
     LIMIT_BYTES,
@@ -26,6 +26,27 @@ from tools.daily_research.runner import (
 )
 
 QA_PATH = "/workspace/outputs/daily-research-qa.json"
+
+
+def qa_deadline(row, config):
+    value = row.get("qa_continuation")
+    if not value:
+        return instant(row["started_at"]) + timedelta(seconds=phase_runtime_seconds(row, config, "qa"))
+    request = value.get("request", {})
+    if (value.get("schema_version") != "blueprint.recovered-research-qa.v1"
+            or request.get("authority_reference") != "Sentinel_dac3e21091cc819196cb4e5799b7229d"
+            or request.get("scope") != "same-session-recovered-qa-and-existing-publication-no-new-research"
+            or request.get("baseline_id") != "baseline-20261002" or request.get("soft_total_usd") != 25
+            or request.get("session_id") != row.get("session_id") or request.get("root_turn_id") != row.get("turn_id")
+            or request.get("raw_output_sha256") != row.get("raw_output_digest")
+            or request.get("packet_digest") != row.get("packet_digest")
+            or row.get("canary", {}).get("baseline", {}).get("baseline_id") != request["baseline_id"]
+            or not row.get("output_recovery") or value.get("duration_seconds") != 600
+            or digest(value.get("model_observation")) != request.get("model_observation_digest")
+            or value.get("model_observation", {}).get("estimator_version") != discovery.ESTIMATOR_VERSION
+            or value.get("model_observation", {}).get("known") is not True):
+        raise Refusal("recovered_qa_authority_or_binding_invalid")
+    return instant(value["started_at"]) + timedelta(seconds=600)
 
 
 def workflow(control):
@@ -59,6 +80,8 @@ def qa_text(row, snapshot, crm_digest):
     trusted = ("Blueprint QA phase for the preceding research only. Read the reviewed evidence skill. "
                "Check every material finding, claim scope, quoted passage and candidate source against the actual sources; "
                "check semantic site/task duplicates against the supplied complete CRM identities. Reject unsupported "
+               "Any output_recovery quarantined_proposals are excluded from approved knowledge; do not invent "
+               "their evidence levels or silently restore them. Newness and coverage remain unverified until QA. "
                "candidates; unknown interest/availability stays unknown. No outreach, drafting, credentials, installs, "
                "sandbox networking, providers, models, subagents or external writes. Native web search only. "
                + allowance + assessment + "The $1 TOTAL research+QA+"
@@ -160,7 +183,7 @@ class Consumer:
         return {"date": row["date"], "state": result["state"]}
 
     def qa(self, row):
-        deadline = instant(row["started_at"]) + timedelta(seconds=phase_runtime_seconds(row, self.config, "qa"))
+        deadline = qa_deadline(row, self.config)
         if not row.get("qa"):
             if self.clock() >= deadline:
                 raise Refusal("agent_qa_total_runtime_exhausted")

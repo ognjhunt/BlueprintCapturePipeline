@@ -24,7 +24,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from tools.daily_research import capabilities, contracts, discovery, freshness, knowledge, search
+from tools.daily_research import (
+    capabilities,
+    contracts,
+    discovery,
+    freshness,
+    knowledge,
+    recovery,
+    search,
+)
 
 PROJECT = "proj_F2tFJuxLaovJru8RrtXRaqNj"
 AGENT = "agent_5a01ec367d1042ef8632bb5f2e6af8b4919909d2abed48ed95"
@@ -575,14 +583,19 @@ def prompt(day, knowledge_context=None, contract_version=2, *, adaptive=False, t
                    "live source review. Stale, conflicted, unknown and unsupported facts are gaps, never positive matches. "
                    "Availability, geography, deployment, integrations, support, price, supervision and safety require live sources. "
                    "Capability evidence levels distinguish vendor_claim, demonstrated_capability, named_deployment, current_availability. "
-                   "For ordinary task/geography site facts use evidence_level null; these are not robot demonstrations. "
+                   "For ordinary task/geography facts in CANDIDATE evidence only use evidence_level null; these are not robot demonstrations. "
                    "Hardware specifications need units and conditions; max payload never proves a bounded task. Software-only "
                    "teams need no hardware specs. Keep company and exact product/version, supported hardware and task scope separate. "
                    "Do not infer service eligibility from unknown geography or deployment from a shipment announcement. "
                    "Return up to ten proposed_knowledge_deltas, proposals only for Blueprint agent review: record_id/fact_id (null for "
                    "discovery), reason gap/conflict/stale/unsupported/discovery/consequential, proposed_statement, unknowns, "
                    "and 1-4 fresh live evidence entries with url,publisher,publication_date,source_checked_at,classification, "
-                   "evidence_level,quote. No Notion or CRM writes.")
+                   "evidence_level,quote. EVERY proposed_knowledge_delta evidence_level must be one of vendor_claim, "
+                   "demonstrated_capability, named_deployment, current_availability, unknown; never null. "
+                   "These are robot-capability knowledge proposals. Keep ordinary site/task observations in findings "
+                   "and candidate evidence instead; omit an inapplicable knowledge proposal rather than inventing a maturity level. "
+                   "The admission CRM snapshot is used by Blueprint dedupe/QA, not supplied to this research sandbox: "
+                   "newness is provisional until those checks finish. No Notion or CRM writes.")
     if knowledge_context is not None and contract_version == 3:
         # Deliberately replace v2 hard expiry instructions; never reinterpret old rows.
         result = result.replace("Research gaps, conflicts, stale or unsupported facts",
@@ -836,6 +849,10 @@ class Runner:
         except (ValueError, UnicodeError):
             raise Refusal("artifact_json_invalid") from None
         self.ledger.write_json(row["date"] + "-output.json", output)
+        return self.prepare_output(row, output)
+
+    def prepare_output(self, row, output, *, output_recovery=None):
+        """The same strict output/CRM validation for collection and offline replay."""
         _, known = crm_snapshot(self.config["crm_snapshot"], self.clock())
         for previous in self.ledger.rows():
             if previous["date"] != row["date"]:
@@ -880,6 +897,8 @@ class Runner:
                                           "semantic_and_deployment_qa_pending": True}
             if row.get("search_provider") == search.PROFILE:
                 packet["discovery_counts"].update(target_new=None, shortfall=None, candidate_count_is_stopping_rule=False)
+        if output_recovery is not None:
+            packet["output_recovery"] = output_recovery
         packet["remote_completion_timestamp_verified"] = row.get("remote_completed_at") is not None
         if row.get("search_provider") == search.PROFILE and len(canonical(packet).encode()) > search.MAX_PACKET:
             raise Refusal("research_profile_packet_resource_ceiling_raw_retained")
@@ -888,6 +907,58 @@ class Runner:
         row.pop("error", None)
         self.ledger.write_json(row["date"] + "-review.json", {**packet, "packet_digest": row["packet_digest"]})
         return True
+
+    def recover_output(self, day, receipt):
+        """Explicit, zero-provider recovery of a retained terminal artifact.
+
+        Raw/output files, failed state proof and excluded proposals remain durable.
+        This only prepares a packet; it never starts QA or writes external sinks.
+        """
+        with self.ledger.lock():
+            row = self.ledger.get(day)
+            required = {"session_id", "turn_id", "raw_output_sha256", "approval_reference", "scope"}
+            if (not row or not isinstance(receipt, dict) or set(receipt) != required
+                    or receipt["scope"] != "quarantine-null-operator-deltas-no-inference-no-publication"
+                    or not isinstance(receipt["approval_reference"], str) or not receipt["approval_reference"].strip()
+                    or receipt["approval_reference"].startswith("PENDING")
+                    or receipt["session_id"] != row.get("session_id") or receipt["turn_id"] != row.get("turn_id")
+                    or receipt["raw_output_sha256"] != row.get("raw_output_digest")
+                    or row.get("turn_status") != "completed" or row.get("artifact_downloaded") is not True
+                    or row.get("research_contract_version") not in {2, 3} or row.get("qa") or row.get("delivery")):
+                raise Refusal("output_recovery_binding_or_state_invalid")
+            existing = row.get("output_recovery")
+            if existing and existing.get("request") != receipt:
+                raise Refusal("output_recovery_already_bound")
+            if existing and row["state"] == "awaiting_review":
+                return row
+            if row["state"] != "failed" or row.get("error") != "knowledge_delta_evidence_invalid":
+                raise Refusal("output_recovery_failure_not_admitted")
+            raw = self.ledger.read_bytes(day + "-artifact.json")
+            if len(raw) > LIMIT_BYTES or hashlib.sha256(raw).hexdigest() != receipt["raw_output_sha256"]:
+                raise Refusal("output_recovery_artifact_digest_mismatch")
+            try:
+                original = json.loads(raw)
+                if original != json.loads(self.ledger.read_bytes(day + "-output.json")):
+                    raise Refusal("output_recovery_original_output_mismatch")
+                derived, quarantined = recovery.quarantine_null_operator_deltas(original)
+            except (ValueError, UnicodeError, TypeError, AttributeError):
+                raise Refusal("output_recovery_derivation_invalid") from None
+            envelope = {"schema_version": "blueprint.research-output-recovery.v1", "request": receipt,
+                        "original_failure": "knowledge_delta_evidence_invalid", "raw_output_sha256": receipt["raw_output_sha256"],
+                        "derived_output": derived, "derived_output_digest": digest(derived),
+                        "quarantined_proposals": quarantined, "knowledge_approved": False,
+                        "provider_mutations": 0, "qa_required": True}
+            binding = {"file": day + "-recovery.json", "digest": digest(envelope), "request": receipt}
+            if existing and existing != binding:
+                raise Refusal("output_recovery_derivation_changed")
+            # Pin the derivation before packet preparation so restart cannot alter it.
+            self.ledger.write_json(binding["file"], envelope)
+            row["output_recovery"] = binding
+            self.ledger.put(row)
+            self.prepare_output(row, derived, output_recovery={**binding,
+                                "quarantined_proposals": quarantined, "knowledge_approved": False})
+            self.ledger.put(row)
+            return row
 
     def review(self, day, decision):
         with self.ledger.lock():

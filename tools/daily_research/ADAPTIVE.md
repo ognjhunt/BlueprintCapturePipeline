@@ -127,14 +127,19 @@ total spend nor ten accepted prospects.
 
 ## Spend admission limits
 
-The token estimate charges all input at $9/M (the sum of long-context input
-and cache-write rates), all output including reasoning at $15/M, then includes the documented
-10% regional premium. This deliberately reserves both input and cache-write
-charges because SDK usage does not expose separate cache writes; it does not
-claim both are always billed. Reasoning is not counted twice. Standard service tier is
-required; no cache discount is assumed. This is a conservative token estimate,
-**not settled total spend**: it excludes unreported/lagged usage, web-search tool
-fees and hosted-environment charges. Null/invalid usage is unknown. Preparation
+The versioned `blueprint.model-token-estimate.v2` uses the verified GPT-6.1 Sol
+standard rates and retains each turn's input/cache/output details. Input categories
+are mutually exclusive: uncached $2/M, cache-read $0.10/M, cache-write $2.50/M;
+output is $10/M. Above 272K input **per request**, input/cache rates double and
+output is $15/M. Aggregate turn/session input does not prove that threshold.
+Unknown per-request tiers and cache-write classification produce a conditional
+minimum/maximum for recorded tokens; `estimate_usd` is that range's upper end.
+Unverified regional premiums, hosting, tools and lagged usage remain separate
+unknowns. Reasoning is already in output. This is **not settled total spend**.
+The previous unversioned $9/M plus regional calculation was incorrect; corrected
+observations retain it in the estimate history and exclude it from current
+baseline totals. See the rate sources/version in `discovery.RATE_REFERENCE`.
+Null/invalid usage is unknown. Preparation
 never runs a spend watcher. The single-test adapter applies the $8 stop to
 complete new-turn usage, retaining the estimate and exclusions in its record.
 

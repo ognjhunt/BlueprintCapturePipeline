@@ -322,7 +322,7 @@ def test_expired_immutable_research_deadline_never_creates(monkeypatch):
 
 
 def test_unknown_usage_is_pending_and_never_zero():
-    api = SimpleNamespace(listing=lambda *_: [{"usage": None}])
+    api = SimpleNamespace(listing=lambda *_: [{"id": "root", "usage": None}])
     observation = canary.spend(api, {"session_id": "sess-test"})
     assert observation["usage_state"] == "pending"
     assert observation["known"] is observation["hard_total_cap"] is False
@@ -348,7 +348,7 @@ def test_usage_read_failure_is_unavailable_and_never_zero():
                            "usage_state": "unavailable", "hard_total_cap": False}
 
 
-@pytest.mark.parametrize("usage", [None, {"input_tokens": 1_000_000, "output_tokens": 50}])
+@pytest.mark.parametrize("usage", [None, {"input_tokens": 2_000_000, "output_tokens": 50}])
 def test_baseline_paid_guard_does_not_invent_a_spend_cap(fixture, usage):
     bridge, _, _, receipt, plan, _, _, _, _ = fixture
     canary.stage(bridge, plan, receipt)
@@ -652,7 +652,8 @@ def test_baseline_cancelled_retry_preserves_claims_and_cumulative_pending_usage(
         assert result["state"] == "completed" and len(api2.payloads) == len(api2.inputs) == 1
         budget = bridge.call("baseline_status")
         assert len(budget["attempts"]) == 2 and budget["complete_model_estimate_usd"] is None
-        assert float(budget["reported_model_estimate_usd"]) > .15
+        assert float(budget["reported_model_estimate_usd"]) > 0
+        assert budget["attempts"][0]["legacy_model_estimate_usd"] == "0.15"
         assert budget["attempts"][0]["usage_state"] == "pending"
         assert budget["baseline"]["soft_total_usd"] == 25  # not $25 per retry
         assert retained["state"] == "cancelled" and retained["canary"]["baseline"]["attempt_number"] == 1
@@ -820,3 +821,195 @@ def test_no_create_abandonment_never_releases_existing_uncertain_intent(fixture,
         assert bridge.call("baseline_status") == budget and len(api.payloads) == 1
     finally:
         bridge.close()
+
+
+def null_operator_output(api):
+    from copy import deepcopy
+
+    from tests.test_daily_research_knowledge import delta
+    out = json.loads(api.raw)
+    vendor = delta()
+    vendor['evidence'][0]['source_checked_at'] = canary.DAY
+    operator = deepcopy(vendor)
+    operator.update(record_id=None, fact_id=None, reason='discovery',
+                    proposed_statement='Synthetic ordinary site observation; robot maturity unknown')
+    operator['evidence'] *= 3
+    for evidence in operator['evidence']:
+        evidence.update(classification='operator', evidence_level=None)
+    out['proposed_knowledge_deltas'] = [vendor, deepcopy(vendor), operator]
+    return out
+
+
+def recovery_receipt(row):
+    return {'session_id': row['session_id'], 'turn_id': row['turn_id'],
+            'raw_output_sha256': row['raw_output_digest'], 'approval_reference': 'synthetic-recovery-approval',
+            'scope': 'quarantine-null-operator-deltas-no-inference-no-publication'}
+
+
+def test_retained_null_operator_proposal_recovery_is_offline_strict_and_exportable(fixture):
+    bridge, ledger, api, receipt, plan, cache, _, _crm, pages = fixture
+    canary.stage(bridge, plan, receipt)
+    original = null_operator_output(api)
+    api.raw = canonical(original).encode()
+    runner = Runner(ledger, canary.render.configured(bridge, cache), api, clock=lambda: NOW)
+    failed = runner.start_or_resume()
+    assert failed['state'] == 'failed' and failed['error'] == 'knowledge_delta_evidence_invalid'
+    admission = recovery_receipt(failed)
+    before = ledger.read_bytes(canary.DAY + '-artifact.json')
+    # No API is available for the recovery; a provider request would fail this test.
+    offline = Runner(ledger, runner.config, None, clock=lambda: NOW)
+    recovered = offline.recover_output(canary.DAY, admission)
+    assert recovered['state'] == 'awaiting_review' and recovered['turn_id'] == failed['turn_id']
+    assert ledger.read_bytes(canary.DAY + '-artifact.json') == before
+    assert json.loads(ledger.read_bytes(canary.DAY + '-output.json')) == original
+    assert recovered['packet']['proposed_knowledge_deltas'] == original['proposed_knowledge_deltas'][:2]
+    quarantined = recovered['packet']['output_recovery']['quarantined_proposals']
+    assert quarantined[0]['delta_index'] == 2 and quarantined[0]['approved'] is False
+    assert len(quarantined[0]['invalid_fields']) == 3
+    assert all(e['evidence_level'] is None for e in quarantined[0]['proposal']['evidence'])
+    assert len(api.payloads) == 1 and not api.inputs and not pages.exists()
+    assert offline.recover_output(canary.DAY, admission) == recovered
+    exported = cache / 'recovered-export'
+    assert not canary.render.export_snapshot(bridge, canary.DAY, exported)['missing_files']
+    assert (exported / (canary.DAY + '-recovery.json')).exists()
+    with pytest.raises(Refusal, match='binding_or_state_invalid'):
+        offline.recover_output(canary.DAY, {**admission, 'raw_output_sha256': '0' * 64})
+
+
+def test_quarantine_does_not_weaken_candidate_or_remaining_delta_evidence(fixture):
+    bridge, ledger, api, receipt, plan, cache, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    original = null_operator_output(api)
+    api.raw = canonical(original).encode()
+    runner = Runner(ledger, canary.render.configured(bridge, cache), api, clock=lambda: NOW)
+    failed = runner.start_or_resume()
+    # Another invalid, nonnull delta must still block recovery.
+    original['proposed_knowledge_deltas'][0]['evidence'][0]['evidence_level'] = 'invented_deployment'
+    from tools.daily_research import recovery
+    from tools.daily_research.runner import validate_output
+    derived, _ = recovery.quarantine_null_operator_deltas(original)
+    with pytest.raises(Refusal, match='knowledge_delta_evidence_invalid'):
+        validate_output(derived, canary.DAY, set(), contract_version=3,
+                        knowledge_context=failed['knowledge_context'], refresh_policy=failed['refresh_policy'], observed_at=NOW)
+    assert ledger.get(canary.DAY)['state'] == 'failed' and not api.inputs
+
+
+def continued_qa_receipt(row):
+    return {'authority_reference': 'Sentinel_dac3e21091cc819196cb4e5799b7229d',
+            'scope': 'same-session-recovered-qa-and-existing-publication-no-new-research',
+            'baseline_id': 'baseline-20261002', 'soft_total_usd': 25,
+            'session_id': row['session_id'], 'root_turn_id': row['turn_id'],
+            'raw_output_sha256': row['raw_output_digest'], 'packet_digest': row['packet_digest'],
+            'model_observation_digest': canary.digest(row['canary_model_estimate'])}
+
+
+def recovered_baseline(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 1)
+    receipt, cache = fixture[3], fixture[5]
+    canary.stage(bridge, canary.inspect(bridge, approval, receipt, api, cache, now=NOW), receipt)
+    api.raw = canonical(null_operator_output(api)).encode()
+    runner = Runner(ledger, canary.render.configured(bridge, cache), api, clock=lambda: NOW)
+    failed = runner.start_or_resume()
+    assert failed['error'] == 'knowledge_delta_evidence_invalid'
+    recovered = Runner(ledger, runner.config, None, clock=lambda: NOW).recover_output(canary.DAY, recovery_receipt(failed))
+    from tools.daily_research import discovery
+    with ledger.lock():
+        discovery.preserve_estimate(recovered, 'canary_model_estimate', canary.spend(api, recovered))
+        ledger.put(recovered)
+    return bridge, ledger, api, cache, recovered
+
+
+def test_recovered_qa_has_its_own_bounded_window_without_resetting_research(fixture, monkeypatch):
+    bridge, ledger, api, cache, row = recovered_baseline(fixture, monkeypatch)
+    try:
+        later = NOW + timedelta(hours=1)  # Original total/research window is exhausted.
+        before = {key: row.get(key) for key in ('started_at', 'research_deadline_ms', 'research_runtime_seconds', 'total_runtime_seconds', 'turn_id', 'raw_output_digest')}
+        receipt = continued_qa_receipt(row)
+        armed = canary.authorize_recovered_qa(bridge, receipt, clock=lambda: later)
+        assert canary.qa_deadline(armed, {}) == later + timedelta(seconds=600)
+        assert canary.authorize_recovered_qa(bridge, receipt, clock=lambda: later + timedelta(minutes=5)) == armed
+        original_listing, original_input = api.listing, api.qa_input
+        state = {'qa': 'in_progress'}
+        def listing(resource, sid=None):
+            values = original_listing(resource, sid)
+            for turn in values if resource == 'turns' else []:
+                if turn['id'] == 'turn_qa':
+                    turn['status'] = state['qa']
+                    turn['completed_at'] = int(later.timestamp()) + 20
+            return values
+        def qa_input(*args):
+            original_input(*args)
+            api.actions = [{'type': 'function_call', 'turn_id': 'turn_qa', 'call_id': 'recovered_qa_search',
+                            'name': canary.search.SEARCH, 'arguments': {'query': 'Synthetic recovered QA source'}}]
+        def tick(_):
+            assert not api.cancellations
+            if api.result_events:
+                state['qa'], api.actions = 'completed', []
+        api.listing, api.qa_input = listing, qa_input
+        result = canary.run(bridge, cache, recovery_only=True, api_factory=lambda *_: api, clock=lambda: later, sleep=tick)
+        assert len(api.executions) == len(api.result_events) == 1 and not api.cancellations
+        assert result['state'] == 'completed' and len(api.payloads) == len(api.inputs) == 1
+        final = ledger.get(canary.DAY)
+        assert {key: final.get(key) for key in before} == before
+        assert final['qa']['deadline_ms'] == int((later + timedelta(seconds=600)).timestamp() * 1000)
+        assert final['delivery']['notion']['key'].endswith('baseline-20261002-attempt-0001:notion')
+        assert final['qa_continuation']['model_observation'] == armed['qa_continuation']['model_observation']
+    finally:
+        bridge.close()
+
+
+def test_recovered_qa_cannot_renew_expired_window_or_use_wrong_authority(fixture, monkeypatch):
+    bridge, ledger, api, cache, row = recovered_baseline(fixture, monkeypatch)
+    try:
+        later = NOW + timedelta(hours=1)
+        receipt = continued_qa_receipt(row)
+        with pytest.raises(Refusal, match='authority_or_binding_invalid'):
+            canary.authorize_recovered_qa(bridge, {**receipt, 'authority_reference': 'unapproved'}, clock=lambda: later)
+        assert not ledger.get(canary.DAY).get('qa_continuation')
+        canary.authorize_recovered_qa(bridge, receipt, clock=lambda: later)
+        result = canary.run(bridge, cache, recovery_only=True, api_factory=lambda *_: api,
+                            clock=lambda: later + timedelta(seconds=601))
+        assert result['observer_error'] == 'canary_total_observation_deadline'
+        assert not api.inputs and len(api.payloads) == 1
+        assert ledger.get(canary.DAY)['started_at'] == row['started_at']
+    finally:
+        bridge.close()
+
+
+def test_saved_artifact_diagnosis_checks_actual_bindings_without_store_writes(fixture):
+    bridge, ledger, api, receipt, plan, cache, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    api.raw = canonical(null_operator_output(api)).encode()
+    cfg = canary.render.configured(bridge, cache)
+    row = Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()
+    before = canary.digest(row)
+    result = canary.diagnose_saved_output(ledger, cfg, now=NOW)
+    assert result['original_validation'] == {'valid': False, 'error': 'knowledge_delta_evidence_invalid'}
+    assert result['quarantined_derivation_validation']['valid'] is True
+    assert result['knowledge_context_attached'] is True and result['crm_snapshot_attached_to_research'] is False
+    assert result['store_writes'] == result['provider_mutations'] == 0
+    assert canary.digest(ledger.get(canary.DAY)) == before
+    assert 'candidate_count' in result and not result['newness_verified']
+
+
+def test_recovery_receipt_is_immutable_even_when_crash_precedes_row_pointer(fixture, monkeypatch):
+    bridge, ledger, api, receipt, plan, cache, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    api.raw = canonical(null_operator_output(api)).encode()
+    cfg = canary.render.configured(bridge, cache)
+    row = Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()
+    original_put = ledger.put
+    def crash(_):
+        raise RuntimeError('synthetic crash after derivation file commit')
+    monkeypatch.setattr(ledger, 'put', crash)
+    runner = Runner(ledger, cfg, None, clock=lambda: NOW)
+    with pytest.raises(RuntimeError, match='synthetic crash'):
+        runner.recover_output(canary.DAY, recovery_receipt(row))
+    raw = ledger.read_bytes(canary.DAY + '-recovery.json')
+    assert not ledger.get(canary.DAY).get('output_recovery')
+    with ledger.lock(), pytest.raises(Refusal, match='artifact_identity_conflict'):
+        ledger.write_bytes(canary.DAY + '-recovery.json', b'{}')
+    assert ledger.read_bytes(canary.DAY + '-recovery.json') == raw
+    monkeypatch.setattr(ledger, 'put', original_put)
+    assert runner.recover_output(canary.DAY, recovery_receipt(row))['state'] == 'awaiting_review'
