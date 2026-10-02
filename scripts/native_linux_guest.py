@@ -17,6 +17,11 @@ KVM_GET_API_VERSION = 0xAE00
 KVM_CREATE_VM = 0xAE01
 GUEST_MEMORY_MIB = 4096
 HOST_OVERHEAD_BYTES = 512 * 1024**2
+# Linux v6.8 include/linux/proc_ns.h and nsfs.h: initial cgroup namespace
+# inode and NS_GET_NSTYPE. Unknown/new semantics refuse rather than hide ancestry.
+INITIAL_CGROUP_NAMESPACE_INODE = 0xEFFFFFFB
+NS_GET_NSTYPE = 0xB703
+CLONE_NEWCGROUP = 0x02000000
 
 
 class GuestFeasibilityError(ValueError):
@@ -72,7 +77,24 @@ def _bounded_text(path, limit=4096):
         os.close(fd)
 
 
+def _initial_cgroup_namespace():
+    fd = None
+    try:
+        # This exact kernel namespace magic link is intentionally followed;
+        # the opened nsfs descriptor supplies the namespace type and identity.
+        fd = os.open('/proc/self/ns/cgroup', os.O_RDONLY | os.O_CLOEXEC)
+        _require(fcntl.ioctl(fd, NS_GET_NSTYPE, 0) == CLONE_NEWCGROUP
+                 and os.fstat(fd).st_ino == INITIAL_CGROUP_NAMESPACE_INODE,
+                 'host_cgroup_namespace_unknown')
+    except OSError:
+        raise GuestFeasibilityError('native_guest_host_cgroup_namespace_unknown') from None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _cgroup_path():
+    _initial_cgroup_namespace()
     rows = _bounded_text('/proc/self/cgroup').splitlines()
     _require(len(rows) == 1 and rows[0].startswith('0::/'), 'host_cgroup_unknown')
     relative = rows[0][3:]

@@ -180,16 +180,49 @@ def test_unknown_cgroup_limits_never_become_unlimited(cgroup_tree, bad):
         guest._cgroup_limits()
 
 
+@pytest.fixture
+def initial_namespace(monkeypatch):
+    monkeypatch.setattr(guest, '_initial_cgroup_namespace', lambda: None)
+
+
 @pytest.mark.parametrize('row', ['0::/../worker', '0::/worker\n1:cpu:/other', '0::/a//b'])
-def test_ambiguous_cgroup_membership_refuses(row, monkeypatch):
+def test_ambiguous_cgroup_membership_refuses(row, monkeypatch, initial_namespace):
     monkeypatch.setattr(guest, '_bounded_text', lambda path, limit=4096: row)
     with pytest.raises(guest.GuestFeasibilityError, match='host_cgroup_unknown'):
         guest._cgroup_path()
 
 
-def test_cgroup_subtree_mount_does_not_hide_parent_limits(monkeypatch):
+def test_cgroup_subtree_mount_does_not_hide_parent_limits(monkeypatch, initial_namespace):
     monkeypatch.setattr(guest, '_bounded_text', lambda path, limit=4096:
                         '0::/worker' if str(path) == '/proc/self/cgroup' else
                         '1 0 0:1 /hidden-parent /sys/fs/cgroup rw - cgroup2 cgroup rw\n')
     with pytest.raises(guest.GuestFeasibilityError, match='host_cgroup_unknown'):
         guest._cgroup_path()
+
+
+def test_virtual_namespace_root_cannot_claim_unlimited_kernel_ancestry(monkeypatch):
+    monkeypatch.setattr(guest, '_bounded_text', lambda path, limit=4096:
+                        '0::/' if str(path) == '/proc/self/cgroup' else
+                        '1 0 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw\n')
+    monkeypatch.setattr(guest.os, 'open', lambda *args: 41)
+    monkeypatch.setattr(guest.os, 'fstat', lambda fd: type('Stat', (), {'st_ino': 12345})())
+    monkeypatch.setattr(guest.fcntl, 'ioctl', lambda *args: 0x02000000)
+    monkeypatch.setattr(guest.os, 'close', lambda fd: None)
+    with pytest.raises(guest.GuestFeasibilityError, match='host_cgroup_namespace_unknown'):
+        guest._cgroup_path()
+
+
+@pytest.mark.skipif(not (guest.sys.platform == 'linux' and
+                        os.environ.get('BLUEPRINT_DISPOSABLE_LINUX_TEST') == '1'),
+                    reason='real cgroup namespace boundary requires disposable Linux; portable skip is unproven')
+def test_actual_new_cgroup_namespace_is_not_initial_host_ancestry():
+    import subprocess
+    script = ('import importlib.util; '
+              f's=importlib.util.spec_from_file_location("guest", {str(guest.__file__)!r}); '
+              'm=importlib.util.module_from_spec(s); s.loader.exec_module(m); '
+              'm._cgroup_path()')
+    result = subprocess.run(['sudo', '-n', 'unshare', '--cgroup', '--',
+                             '/usr/bin/python3', '-I', '-S', '-c', script],
+                            capture_output=True, text=True, timeout=10, check=False)
+    assert result.returncode != 0
+    assert 'native_guest_host_cgroup_namespace_unknown' in result.stderr, result.stderr
