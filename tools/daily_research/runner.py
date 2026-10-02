@@ -130,7 +130,7 @@ def configuration(value):
                "crm_snapshot", "slack_channel_id", "max_runtime_seconds", "soft_target_usd",
                "research_contract_version", "knowledge_snapshot", "knowledge_filters", "knowledge_refresh_policy",
                "expected_agent_instructions_sha256", "discovery_profile", "qa_reserved_seconds", "search_provider",
-               "recurring_budget_authority_reference"}
+               "recurring_budget_authority_reference", "publication_profile"}
     if set(value) - allowed or type(value.get("enabled")) is not bool:
         raise Refusal("config_invalid")
     date.fromisoformat(value["first_date"])
@@ -140,6 +140,8 @@ def configuration(value):
     if value.get("search_provider") not in (None, search.PROFILE) or value.get("search_provider") and not adaptive:
         raise Refusal("search_profile_invalid")
     selected_search = value.get("search_provider") == search.PROFILE
+    if value.get("publication_profile") not in (None, "agent-owned-v1") or value.get("publication_profile") and not selected_search:
+        raise Refusal("publication_profile_invalid")
     target = value.get("soft_target_usd")
     if selected_search:
         valid_target = type(target) in {int, float} and 0 < target <= 1_000_000 and math.isfinite(target)
@@ -596,7 +598,7 @@ class Ledger:
         return (self.root / name).read_bytes()
 
 
-def preflight(api, expected_instructions_sha256=None, search_provider=None):
+def preflight(api, expected_instructions_sha256=None, search_provider=None, publication_profile=None):
     agent, template = api.get("agent", AGENT), api.get("template", TEMPLATE)
     check_agent(agent)
     instructions = agent.get("instructions")
@@ -621,20 +623,24 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None):
             raise Refusal("agent_instructions_unavailable")
         result["search_provider"] = search.PROFILE
         result["session_agent_override"] = {
-            "tools": search.tools(), "service_tier": "default",
+            "tools": search.tools(publication_profile), "service_tier": "default",
             "instructions": instructions + "\nFor this explicitly selected search profile, the following "
             "application-tool instructions replace prior native-web-search-only restrictions. All other "
             "evidence, authority and safety boundaries remain in force. " + search.instructions()}
+    if publication_profile == "agent-owned-v1":
+        result["session_agent_override"]["instructions"] += (" Publication tools are available only in the subsequent, "
+            "QA-validated publication phase. You own format, destination choice, uploads and error correction through "
+            "the approved Notion/CRM tool transports. No sends, new access or new spending/runtime authority.")
     return result
 
 
-def check_agent(agent, search_provider=None):
+def check_agent(agent, search_provider=None, publication_profile=None):
     if (agent.get("id") != AGENT or agent.get("model") != MODEL
             or agent.get("reasoning", {}).get("effort") != "medium"
             or agent.get("multi_agent", {}).get("enabled") is not False):
         raise Refusal("agent_configuration_mismatch")
     if search_provider == search.PROFILE:
-        if agent.get("tools") != search.tools() or agent.get("service_tier") != "default":
+        if agent.get("tools") != search.tools(publication_profile) or agent.get("service_tier") != "default":
             raise Refusal("agent_search_profile_mismatch")
     elif not agent.get("tools") or any(x.get("type") != "web_search" or x.get("mode") == "disabled" for x in agent["tools"]):
         raise Refusal("agent_configuration_mismatch")
@@ -755,6 +761,21 @@ def prompt(day, knowledge_context=None, contract_version=2, *, adaptive=False, t
     return result
 
 
+def record_delivery_receipt(row, receipt, *, complete=True):
+    destination = receipt.get("destination")
+    delivery = row.get("delivery", {}).get(destination) if row else None
+    if (not delivery or receipt.get("payload_digest") != delivery["payload_digest"]
+            or receipt.get("key") != delivery["key"] or receipt.get("readback_verified") is not True
+            or not receipt.get("reference")):
+        raise Refusal("delivery_readback_or_binding_missing")
+    if delivery.get("receipt") and delivery["receipt"] != receipt:
+        raise Refusal("delivery_receipt_already_bound")
+    delivery["receipt"], delivery["state"] = receipt, "acknowledged"
+    if complete and all(x["state"] == "acknowledged" for name, x in row["delivery"].items() if name != "parent_status"):
+        row["state"] = "completed"
+    return row
+
+
 class Runner:
     def __init__(self, ledger, config, api, clock=lambda: datetime.now(timezone.utc)):
         self.ledger, self.config, self.api, self.clock = ledger, configuration(config), api, clock
@@ -789,7 +810,7 @@ class Runner:
             learning = self.ledger.learning_context(day) if hasattr(self.ledger, "learning_context") else None
             if self.required_history and learning is None:
                 raise Refusal("research_learning_input_required")
-            checked = preflight(self.api, self.config.get("expected_agent_instructions_sha256"), self.config.get("search_provider"))
+            checked = preflight(self.api, self.config.get("expected_agent_instructions_sha256"), self.config.get("search_provider"), self.config.get("publication_profile"))
             if self.stop_requested():
                 return {"date": day, "state": "stopped_before_create"}
             body = {"agent_id": AGENT, "environment": {"type": "openai_hosted", "container_size": "small",
@@ -862,6 +883,8 @@ class Runner:
                    "environment_id": None, "cleanup_required": True, "cancel_attempted": False,
                    "soft_target_usd": self.config["soft_target_usd"], "budget_is_hard_cap": False, "usage": None,
                    "cost_status": "unknown_pending_billing_reconciliation", "delivery": {}}
+            if self.config.get("publication_profile"):
+                row["publication_profile"] = self.config["publication_profile"]
             row["research_crm_context"] = crm_context
             if learning is not None:
                 row.update(learning_context=learning, learning_context_digest=learning["inputHash"])
@@ -937,7 +960,7 @@ class Runner:
                 raise Refusal("session_binding_mismatch")
             if session["environment"].get("type") != "openai_hosted":
                 raise Refusal("session_environment_mismatch")
-            check_agent(session["agent"], row.get("search_provider"))
+            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"))
             if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
                 raise Refusal("session_search_instructions_mismatch")
             row["reported_container_size"] = session["environment"].get("container_size")
@@ -1187,17 +1210,7 @@ class Runner:
     def receipt(self, day, receipt):
         with self.ledger.lock():
             row = self.ledger.get(day)
-            destination = receipt.get("destination")
-            delivery = row.get("delivery", {}).get(destination) if row else None
-            if (not delivery or receipt.get("payload_digest") != delivery["payload_digest"]
-                    or receipt.get("key") != delivery["key"] or receipt.get("readback_verified") is not True
-                    or not receipt.get("reference")):
-                raise Refusal("delivery_readback_or_binding_missing")
-            if delivery.get("receipt") and delivery["receipt"] != receipt:
-                raise Refusal("delivery_receipt_already_bound")
-            delivery["receipt"], delivery["state"] = receipt, "acknowledged"
-            if all(x["state"] == "acknowledged" for name, x in row["delivery"].items() if name != "parent_status"):
-                row["state"] = "completed"
+            record_delivery_receipt(row, receipt)
             self.ledger.put(row)
             return row
 

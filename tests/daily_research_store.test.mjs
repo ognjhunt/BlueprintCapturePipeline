@@ -297,3 +297,16 @@ test('adaptive artifact files are immutable in their own namespace and preserve 
   assert.equal(Buffer.from(await store.adaptiveFileGet(name),'base64').toString(),'test result');
   await assert.rejects(store.adaptiveFilePut(name,Buffer.from('replacement').toString('base64')),/identity_conflict/);
 });
+
+test('replacement observer discovers saved publication cancellation states while control is disabled without admissions',async()=>{
+  const {db,store}=await fixture();db.values.get(ROOT).enabled=false;
+  const replacement=new Store(db,Date.now,'replacement');
+  for(const state of ['running','input_unresolved','cancel_pending']) {
+    db.values.set(`${ROOT}/runs/2026-09-30`,{date:'2026-09-30',state:'reviewed',publication_state:state});
+    const before=JSON.stringify([...db.values]);
+    assert.equal(await replacement.dispatch({op:'active_qa'}),'2026-09-30');
+    assert.equal(JSON.stringify([...db.values]),before);
+  }
+  db.values.get(`${ROOT}/runs/2026-09-30`).publication_state='cancelled';
+  assert.equal(await replacement.activeQA(),null);
+});

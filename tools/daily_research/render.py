@@ -104,7 +104,7 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
             with ledger.lock():
                 if not day or ledger.learning_context(day, allow_create=False) is None:
                     raise Refusal("research_learning_input_required")
-        return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider")), "enabled": cfg["enabled"],
+        return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider"), cfg.get("publication_profile")), "enabled": cfg["enabled"],
                 "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
     if command in {"review", "receipt", "record-cleanup"}:
         if not day or decision is None:
@@ -164,7 +164,7 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
                     time.sleep(3)
                     continue
             result = consumer.step()
-            if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_correction_input_unresolved", "qa_cancel_pending", "reviewed"}:
+            if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_correction_input_unresolved", "qa_cancel_pending", "reviewed", "publication_running", "publication_input_unresolved"}:
                 return result
             if time.monotonic() >= until:
                 raise Refusal("workflow_observation_deadline")
@@ -173,9 +173,128 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
         api.client.close()
 
 
+def publication_manifest(row, manifest):
+    """Inspect exact company-owned plan/claim proof without granting restore authority."""
+    error = "publication_manifest_binding_invalid"
+    paginated = row.get("delivery", {}).get("notion", {}).get("plan", {}).get("protocol") == "notion-paginated-v1"
+    if manifest is None:
+        if paginated:
+            raise Refusal(error)
+        return None
+    envelope = manifest
+    try:
+        if hashlib.sha256(envelope["manifest_json"].encode("utf-8")).hexdigest() != envelope["manifest_digest"]:
+            raise Refusal(error)
+        manifest = json.loads(envelope["manifest_json"])
+        if (manifest["schema_version"] != "blueprint.research-publication-manifest.v1"
+                or manifest["date"] != row["date"] or manifest["run_key"] != row["run_key"]
+                or len(manifest["source_row_blob"]) != 64
+                or any(c not in "0123456789abcdef" for c in manifest["source_row_blob"])):
+            raise Refusal(error)
+        if (hashlib.sha256(manifest["source_row_json"].encode("utf-8")).hexdigest() != manifest["source_row_blob"]
+                or json.loads(manifest["source_row_json"]) != row):
+            raise Refusal(error)
+        plans = manifest["plans"]
+        expected = {name for name, delivery in row.get("delivery", {}).items() if delivery.get("plan")}
+        if set(plans) != expected:
+            raise Refusal(error)
+        for name, proof in plans.items():
+            if (json.loads(proof["plan_json"]) != row["delivery"][name]["plan"]
+                    or hashlib.sha256(proof["plan_json"].encode("utf-8")).hexdigest() != proof["plan_digest"]):
+                raise Refusal(error)
+        for name, claimed in manifest["publication_claimed"].items():
+            if name not in plans or claimed != row["delivery"][name]["plan"]["request_digest"]:
+                raise Refusal(error)
+            if (row["delivery"][name]["plan"].get("protocol") == "notion-paginated-v1"
+                    and not manifest["publication_batches"].get(name, {}).get("0")):
+                raise Refusal(error)
+        for name, claims in manifest["publication_batches"].items():
+            plan = row["delivery"][name]["plan"]
+            if (name != "notion" or plan["protocol"] != "notion-paginated-v1"
+                    or claims and name not in manifest["publication_claimed"]):
+                raise Refusal(error)
+            if set(claims) != {str(number) for number in range(len(claims))}:
+                raise Refusal(error)
+            page_ids, authorities = [], []
+            for number in range(len(claims)):
+                claim, batch = claims[str(number)], plan["batches"][number]
+                if (any(type(claim[field]) is not int for field in ("number", "start", "end"))
+                        or any(claim[field] != batch[field] for field in ("number", "start", "end", "request_digest"))
+                        or claim["plan_digest"] != plans[name]["plan_digest"]
+                        or claim["request_digest"] != hashlib.sha256(batch["body_json"].encode("utf-8")).hexdigest()
+                        or (number == 0 and claim["page_id"] is not None)
+                        or (number > 0 and (not isinstance(claim["page_id"], str) or not claim["page_id"]))):
+                    raise Refusal(error)
+                if number:
+                    page_ids.append(claim["page_id"])
+                authorities.append(claim["workflow_authority"])
+            if len(set(page_ids)) > 1 or any(authority != authorities[0] for authority in authorities):
+                raise Refusal(error)
+        history = manifest.get("attempt_history", {})
+        for name, attempts in history.items():
+            active = row["delivery"][name].get("attempt_number", 0)
+            if (name != "notion" or type(active) is not int or active < 1
+                    or set(attempts) != {str(n) for n in range(active + 1)}):
+                raise Refusal(error)
+            for number in range(active + 1):
+                attempt = attempts[str(number)]
+                if number:
+                    previous = attempts[str(number - 1)]
+                    if (attempt["prior_attempt"] != number - 1 or attempt["absence_verified"] is not True
+                            or attempt["rejection_digest"] != previous["rejection"]["response_digest"]):
+                        raise Refusal(error)
+                if number == active:
+                    if (attempt.get("archived") or attempt.get("claimed") != manifest["publication_claimed"].get(name)
+                            or attempt.get("batches", {}) != manifest["publication_batches"].get(name, {})
+                            or attempt["presentation_digest"] != (row["delivery"][name].get("presentation") or {}).get("decision_digest")):
+                        raise Refusal(error)
+                    continue
+                source_raw = attempt["source_row_json"]
+                source = json.loads(source_raw)
+                prior_delivery = source["delivery"][name]
+                prior_plan = prior_delivery["plan"]
+                plan_raw = json.dumps(prior_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                rejection = attempt["rejection"]
+                response_raw = attempt["response_json"]
+                response = json.loads(response_raw)
+                claims = attempt.get("batches", {})
+                if prior_plan.get("protocol") == "notion-paginated-v1":
+                    batch = prior_plan["batches"][0]
+                    if (set(claims) != {"0"} or claims["0"]["plan_digest"] != rejection["plan_digest"]
+                            or any(claims["0"][field] != batch[field] for field in ("number", "start", "end", "request_digest"))
+                            or claims["0"]["page_id"] is not None):
+                        raise Refusal(error)
+                elif claims:
+                    raise Refusal(error)
+                if (attempt.get("archived") is not True
+                        or hashlib.sha256(source_raw.encode("utf-8")).hexdigest() != attempt["source_row_blob"]
+                        or any(source[field] != row[field] for field in ("date", "run_key", "session_id"))
+                        or source["qa"]["artifact_digest"] != row["qa"]["artifact_digest"]
+                        or any(prior_delivery[field] != row["delivery"][name][field]
+                               for field in ("payload", "payload_json", "payload_digest"))
+                        or prior_delivery.get("attempt_number", 0) != number
+                        or attempt["claimed"] != prior_plan["request_digest"]
+                        or rejection["request_digest"] != attempt["claimed"]
+                        or rejection["plan_digest"] != hashlib.sha256(plan_raw.encode("utf-8")).hexdigest()
+                        or hashlib.sha256(prior_plan["body_json"].encode("utf-8")).hexdigest() != attempt["claimed"]
+                        or hashlib.sha256(response_raw.encode("utf-8")).hexdigest() != rejection["response_digest"]
+                        or rejection["response_blob"] != rejection["response_digest"]
+                        or rejection["http_status"] != 400 or rejection["provider_code"] != "validation_error"
+                        or response.get("object") != "error" or response.get("status") != 400
+                        or response.get("code") != "validation_error"):
+                    raise Refusal(error)
+        if any(delivery.get("attempt_number", 0) and name not in history
+               for name, delivery in row.get("delivery", {}).items()):
+            raise Refusal(error)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError, UnicodeError):
+        raise Refusal(error) from None
+    return envelope
+
+
 def export_snapshot(bridge, day, destination):
     snapshot = bridge.call("snapshot", day=day)
     row = snapshot["row"]
+    publication = publication_manifest(row, snapshot.get("publication_manifest"))
     files = {kind: base64.b64decode(raw, validate=True) for kind, raw in snapshot["files"].items()}
     if "artifact" in files and hashlib.sha256(files["artifact"]).hexdigest() != row.get("raw_output_digest"):
         raise Refusal("artifact_not_downloaded_or_digest_mismatch")
@@ -247,11 +366,23 @@ def export_snapshot(bridge, day, destination):
         if (hashlib.sha256(files.get("qa-original", b"")).hexdigest() != original["artifact_digest"]
                 or digest(json.loads(files.get("qa-original-evidence", b"null"))) != original["evidence_digest"]):
             raise Refusal("agent_qa_correction_export_digest_mismatch")
+    publication_phase = row.get("publication")
+    if publication_phase:
+        raw = files.get("publication-input")
+        if (publication_phase["input_file"] != day + "-publication-input.json" or raw is None
+                or digest(json.loads(raw)) != publication_phase["request_digest"]
+                or publication_phase["idempotency_key"] != row["run_key"] + ":publication"):
+            raise Refusal("publication_agent_export_digest_mismatch")
+        if publication_phase.get("evidence_file") and (publication_phase["evidence_file"] != day + "-publication-evidence.json"
+                or "publication-evidence" not in files
+                or digest(json.loads(files["publication-evidence"])) != publication_phase["evidence_digest"]):
+            raise Refusal("publication_agent_export_digest_mismatch")
     for cid, call in row.get("application_tool_calls", {}).items():
         if not call.get("result_file"):
             continue
         raw = files.get("tool-" + cid)
-        expected_turns = ({row.get("turn_id")} if call.get("phase") == "research" else
+        expected_turns = ({row.get("publication", {}).get("turn_id")} if call.get("phase") == "publication" else
+                          {row.get("turn_id")} if call.get("phase") == "research" else
                           {r.get("turn_id") for r in row.get("validation_repairs", [])} if call.get("phase") == "repair"
                           else {row.get("qa", {}).get("turn_id"),
                                 *(c.get("turn_id") for c in row.get("qa", {}).get("corrections", [])),
@@ -269,6 +400,8 @@ def export_snapshot(bridge, day, destination):
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     save_bytes(destination / "status.json", canonical(row).encode())
+    if publication is not None:
+        save_bytes(destination / "publication-manifest.json", canonical(publication).encode())
     for kind, raw in files.items():
         save_bytes(destination / (day + "-" + kind + ".json"), raw)
     return {"state": "exported", "directory": str(destination), "missing_files": snapshot["missing_files"]}

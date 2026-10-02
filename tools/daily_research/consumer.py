@@ -245,6 +245,12 @@ class Consumer:
             enabled = workflow(self.ledger.bridge.call("control"),
                 allow_stopped=self.terminal_collection_receipt is not None) and not self.stopped()
             if not enabled and not self.active_day:
+                active = self.ledger.bridge.call("active_qa")
+                saved = self.ledger.get(active) if active else None
+                if saved and saved.get("publication", {}).get("state") in {"running", "input_unresolved", "cancel_pending"}:
+                    from tools.daily_research.publication import cancel
+                    self.active_day = saved["date"]
+                    return cancel(self, saved, "publication_stopped_or_disabled")
                 return {"state": "workflow_disabled"}
             item = {"date": self.active_day} if self.active_day else self.ledger.bridge.call("work_item")
             if not item:
@@ -258,6 +264,9 @@ class Consumer:
                     or row["qa"].get("terminal_collection_recovery", {}).get("native_receipt") != self.terminal_collection_receipt):
                 raise Refusal("terminal_qa_collection_validated_receipt_required")
             if not enabled and (not row.get("qa") or row["state"] != "awaiting_review"):
+                if row.get("publication", {}).get("state") in {"running", "input_unresolved", "cancel_pending"}:
+                    from tools.daily_research.publication import cancel
+                    return cancel(self, row, "publication_stopped_or_disabled")
                 return {"state": "workflow_disabled"}
             if row["state"] == "awaiting_review":
                 if row.get("qa", {}).get("state") == "validated":
@@ -274,6 +283,9 @@ class Consumer:
             elif row["state"] == "reviewed":
                 if row.get("qa", {}).get("state") != "validated":
                     raise Refusal("publication_agent_qa_required")
+                if row.get("publication_profile") == "agent-owned-v1":
+                    from tools.daily_research.publication import advance
+                    return advance(self, row)
                 receipt = self.ledger.bridge.call("publish", day=row["date"])
                 if not receipt:
                     return {"date": row["date"], "state": "publication_pending"}
@@ -288,7 +300,7 @@ class Consumer:
         if not row.get("qa"):
             if self.clock() >= deadline:
                 raise Refusal("agent_qa_total_runtime_exhausted")
-            preflight(self.api, self.config.get("expected_agent_instructions_sha256"), row.get("search_provider"))
+            preflight(self.api, self.config.get("expected_agent_instructions_sha256"), row.get("search_provider"), row.get("publication_profile"))
             snapshot, _ = self.refresh_crm()
             session = self.api.get("session", row["session_id"])
             self.check_session(row, session)
@@ -591,6 +603,6 @@ class Consumer:
                 or session.get("environment", {}).get("id") != row["environment_id"]
                 or session.get("environment", {}).get("type") != "openai_hosted"):
             raise Refusal("agent_qa_session_binding_mismatch")
-        check_agent(session["agent"], row.get("search_provider"))
+        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"))
         if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
             raise Refusal("session_search_instructions_mismatch")

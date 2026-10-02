@@ -17,7 +17,24 @@ const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.s
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const sourceBinding=d=>valueHash({key:d.key,payload:d.payload,payload_json:d.payload_json,payload_digest:d.payload_digest});
+const deliveryBinding=d=>valueHash({key:d.key,payload:d.payload,payload_json:d.payload_json,payload_digest:d.payload_digest,
+  plan:d.plan||null,presentation:d.presentation||null});
+const attemptState=(run,row,name)=>row.delivery[name].attempt_number
+  ?run.publication_attempts?.[name]?.[row.delivery[name].attempt_number] || {}
+  :{claimed:run.publication_claimed?.[name],batches:run.publication_batches?.[name] || {},
+    delivery_binding:run.publication_delivery_bindings?.[name],rejection:run.publication_rejections?.[name]};
+const claimUpdate=(run,row,name,digest,batches=null)=>{
+  const d=row.delivery[name],binding=deliveryBinding(d);
+  if(d.attempt_number) return {publication_attempts:{...run.publication_attempts,[name]:{
+    ...run.publication_attempts?.[name],[d.attempt_number]:{...attemptState(run,row,name),claimed:digest,
+      delivery_binding:binding,...(batches?{batches}:{})}}}};
+  return {publication_claimed:{...run.publication_claimed,[name]:digest},
+    publication_delivery_bindings:{...run.publication_delivery_bindings,[name]:binding},
+    publication_source_bindings:{...run.publication_source_bindings,[name]:sourceBinding(d)},
+    ...(batches?{publication_batches:{...run.publication_batches,[name]:batches}}:{})};
+};
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
@@ -165,6 +182,26 @@ export class Store {
         authority_reference:c.authority_reference,previous_review:c.previous_review,baseline_turn_ids:c.baseline_turn_ids}]));
       if (Object.entries(prior.data()?.qa_correction_bindings || {}).some(([n,b])=>!same(b,correctionBindings[n])))
         refuse('qa_correction_already_bound');
+      const publication=row.publication;
+      const publicationBinding=publication?valueHash({profile:publication.profile,request_digest:publication.request_digest,
+        session_id:publication.session_id,
+        input_file:publication.input_file,idempotency_key:publication.idempotency_key,deadline_ms:publication.deadline_ms,
+        authority_reference:publication.authority_reference,workflow_authority:publication.workflow_authority,
+        baseline_turn_ids:publication.baseline_turn_ids}):null;
+      if(prior.data()?.publication_input_binding && prior.data().publication_input_binding!==publicationBinding)
+        refuse('publication_input_already_bound');
+      if(prior.data()?.publication_turn_id && prior.data().publication_turn_id!==publication?.turn_id)
+        refuse('publication_turn_already_bound');
+      for(const [name,binding] of Object.entries(prior.data()?.publication_delivery_bindings || {})) {
+        // Receipts/state may advance; immutable request/plan/presentation evidence may not.
+        const d=row.delivery?.[name];
+        const active= d?.attempt_number?prior.data().publication_attempts?.[name]?.[d.attempt_number]:null;
+        if(d?.attempt_number && (!active || sourceBinding(d)!==prior.data().publication_source_bindings?.[name]
+            || (d.presentation?.decision_digest || null)!==active.presentation_digest))
+          refuse('publication_attempt_not_admitted');
+        const expected=active?active.delivery_binding:binding;
+        if(expected && expected!==deliveryBinding(d)) refuse('publication_delivery_already_bound');
+      }
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
@@ -190,7 +227,15 @@ export class Store {
         repair_number: row.validation_repairs?.at(-1)?.number || null,
         repair_state: row.validation_repairs?.at(-1)?.state || null,
         repair_claims: prior.exists ? prior.data().repair_claims || {} : {},
-        publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
+        publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {},
+        publication_batches: prior.exists ? prior.data().publication_batches || {} : {},
+        publication_delivery_bindings:prior.exists ? prior.data().publication_delivery_bindings || {} : {},
+        publication_source_bindings:prior.data()?.publication_source_bindings || {},
+        publication_attempts:prior.data()?.publication_attempts || {},publication_rejections:prior.data()?.publication_rejections || {},
+        publication_input_binding:publicationBinding,publication_input_claimed:prior.data()?.publication_input_claimed || false,
+        publication_request_digest:publication?.request_digest || null,publication_deadline_ms:publication?.deadline_ms || null,
+        publication_authority_reference:publication?.authority_reference || null,
+        publication_state:publication?.state || null,publication_turn_id:publication?.turn_id || null});
       this.projectWorkItem(tx, row, hash);
     });
     return true;
@@ -201,7 +246,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-publication-input.json') || name.endsWith('-publication-evidence.json') || name.endsWith('-recovery.json') || /-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -213,11 +258,18 @@ export class Store {
     return this.blobGet(snap.data().blob);
   }
   async snapshot(day) {
-    const row = await this.get(day);
-    if (!row) refuse('run_missing');
+    if(!dateOK(day)) refuse('firestore_date_invalid');
+    const manifest=(await this.db.doc(`${ROOT}/runs/${day}`).get());
+    if(!manifest.exists) refuse('run_missing');
+    const metadata=manifest.data(),source_row_json=Buffer.from(await this.blobGet(metadata.blob),'base64').toString('utf8');
+    const row=JSON.parse(source_row_json);
+    if(row.date!==day || row.run_key!==`blueprint-researcher:${day}` || !same(row.metadata,metadata.metadata))
+      refuse('firestore_row_binding_invalid');
     const files = {}, missing = [];
     for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
       ...(row.qa?.input_file ? ['qa-input'] : []),
+      ...(row.publication?.input_file ? ['publication-input'] : []),
+      ...(row.publication?.evidence_file ? ['publication-evidence'] : []),
       ...(row.qa?.corrections?.length ? ['qa-original','qa-original-evidence'] : []),
       ...(row.qa?.corrections || []).flatMap(c=>[`qa-correction-${c.number}-input`,
         ...(c.artifact_file ? [`qa-correction-${c.number}-artifact`] : []),
@@ -247,7 +299,32 @@ export class Store {
         || !files[`tool-${call.request.call_id}`] || call.result_sha256 !== sha(Buffer.from(files[`tool-${call.request.call_id}`], 'base64'))))
         refuse('research_tool_result_digest_mismatch');
     }
-    return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing};
+    const plans=Object.fromEntries(Object.entries(row.delivery || {}).filter(([,d])=>d.plan).map(([name,d])=>{
+      const plan_json=JSON.stringify(canonicalValue(d.plan));return [name,{plan_json,plan_digest:sha(plan_json)}];
+    }));
+    const attempt_history={};
+    for(const [name,attempts] of Object.entries(metadata.publication_attempts || {})) {
+      attempt_history[name]={};
+      for(const [number,attempt] of Object.entries(attempts)) {
+        const history={...attempt};
+        if(attempt.source_row_blob) history.source_row_json=Buffer.from(await this.blobGet(attempt.source_row_blob),'base64').toString('utf8');
+        if(attempt.rejection?.response_blob) history.response_json=Buffer.from(await this.blobGet(attempt.rejection.response_blob),'base64').toString('utf8');
+        attempt_history[name][number]=history;
+      }
+    }
+    const activeClaims=Object.fromEntries(Object.keys(row.delivery || {}).filter(name=>attemptState(metadata,row,name).claimed)
+      .map(name=>[name,attemptState(metadata,row,name).claimed]));
+    const activeBatches=Object.fromEntries(Object.keys(row.delivery || {}).filter(name=>Object.keys(attemptState(metadata,row,name).batches || {}).length)
+      .map(name=>[name,attemptState(metadata,row,name).batches]));
+    const publicationProof={
+        schema_version:'blueprint.research-publication-manifest.v1',date:row.date,run_key:row.run_key,
+        source_row_blob:metadata.blob,source_row_json,plans,publication_claimed:activeClaims,
+        publication_batches:activeBatches,...(Object.keys(attempt_history).length?{attempt_history}:{} )};
+    const manifest_json=JSON.stringify(publicationProof);
+    const publication=Object.keys(plans).length || Object.keys(metadata.publication_claimed || {}).length
+      || Object.keys(metadata.publication_batches || {}).length ? {publication_manifest:{
+        manifest_json,manifest_digest:sha(manifest_json)}} : {};
+    return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing,...publication};
   }
   async importRun(row) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}` || !row.metadata)
@@ -259,6 +336,13 @@ export class Store {
       const prior = await tx.get(ref);
       if (control.enabled !== false) refuse('firestore_import_requires_disabled');
       if (prior.exists && prior.data().blob !== hash) refuse('firestore_import_date_conflict');
+      // An identical import is archival reconciliation, never a reset of consumed claims.
+      if(prior.exists) {this.projectWorkItem(tx,row,hash);return true;}
+      const archived=row.state==='completed' && ['notion','sheets'].every(name=>
+        row.delivery?.[name]?.state==='acknowledged' && row.delivery[name].receipt?.readback_verified===true);
+      if((row.delivery?.notion?.plan?.protocol==='notion-paginated-v1' || row.publication
+          || row.delivery?.notion?.attempt_number) && !archived)
+        refuse('firestore_publication_restore_manifest_required');
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: true, session_id: row.session_id || null, turn_id: row.turn_id || null,
         environment_id: row.environment_id || null});
@@ -323,7 +407,8 @@ export class Store {
     const runs=this.db.collection(`${ROOT}/runs`);
     const groups=await Promise.all([
       ...['qa_running','qa_input_unresolved','qa_correction_input_unresolved','qa_cancel_pending'].map(state=>['qa_state',state]),
-      ...['running','input_unresolved','cancel_pending'].map(state=>['repair_state',state])]
+      ...['running','input_unresolved','cancel_pending'].map(state=>['repair_state',state]),
+      ...['running','input_unresolved','cancel_pending'].map(state=>['publication_state',state])]
       .map(([field,state])=>runs.where(field,'==',state).limit(1).get()));
     const days=groups.flatMap(s=>s.docs.map(d=>d.id)).sort();
     return days[0] || null;
@@ -387,11 +472,180 @@ export class Store {
       tx.set(ref,{qa_correction_claims:{...run.qa_correction_claims,[number]:requestDigest}},{merge:true});return true;
     });
   }
-  async publish(day) {
+  publicationAgentGate(control,row,requestDigest,action=null) {
+    this.fence(control);this.workflowGate(control);this.budgetGate(control,row || {});
+    const p=row?.publication;
+    if(row?.publication_profile!=='agent-owned-v1' || p?.profile!=='agent-owned-v1'
+        || row.state!=='reviewed' || row.qa?.state!=='validated' || !/^[a-f0-9]{64}$/.test(requestDigest || '')
+        || p.request_digest!==requestDigest || p.input_file!==`${row.date}-publication-input.json`
+        || p.idempotency_key!==`${row.run_key}:publication` || !Number.isSafeInteger(p.deadline_ms)
+        || p.deadline_ms<=this.clock() || p.authority_reference!==control.workflow.publication_authority_reference
+        || !p.workflow_authority || !same(p.workflow_authority,control.workflow)
+        || typeof row.session_id!=='string' || !row.session_id || p.session_id!==row.session_id)
+      refuse('publication_agent_input_not_admitted');
+    if(action) {
+      const intent=row.application_tool_calls?.[action.call_id];
+      let exactRequest;try {exactRequest=JSON.parse(intent?.request_json);}catch {}
+      if(p.state!=='running' || typeof action.turn_id!=='string' || action.turn_id!==p.turn_id
+          || typeof action.call_id!=='string' || !action.call_id || intent?.phase!=='publication'
+          || intent.attempted!==true || typeof intent.request_json!=='string' || intent.request_digest!==sha(intent.request_json)
+          || valueHash(exactRequest || null)!==valueHash(action)
+          || valueHash(intent.request)!==valueHash(action)) refuse('publication_agent_tool_not_admitted');
+    }
+  }
+  async publicationInputCheck(day,requestDigest,deadlineMS) {
+    const row=await this.get(day),ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
+    if(!row?.publication?.input_file) refuse('publication_input_binding_invalid');
+    const input=Buffer.from(await this.fileGet(row.publication.input_file),'base64');
+    let event;try {event=JSON.parse(input.toString('utf8'));}catch {refuse('publication_input_binding_invalid');}
+    if(input.at(-1)!==10 || sha(input.subarray(0,-1))!==requestDigest || event?.type!=='agent.session.input.message')
+      refuse('publication_input_binding_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.publicationAgentGate(control,row,requestDigest);
+      const run=(await tx.get(ref)).data();
+      if(row.publication.state!=='input_unresolved' || row.publication.deadline_ms!==deadlineMS
+          || run.blob!==before.data().blob || run.publication_input_claimed
+          || run.publication_request_digest!==requestDigest || run.publication_deadline_ms!==deadlineMS)
+        refuse('publication_agent_input_not_admitted');
+      tx.set(ref,{publication_input_claimed:true},{merge:true});return true;
+    });
+  }
+  async admitRejectedPresentation(row,presentation,context) {
+    const name='notion',d=row.delivery[name],ref=this.db.doc(`${ROOT}/runs/${row.date}`),before=(await ref.get()).data();
+    const state=attemptState(before,row,name),rejection=state.rejection;
+    if(!state.claimed || !rejection || rejection.request_digest!==state.claimed
+        || rejection.plan_digest!==valueHash(d.plan) || Object.keys(state.batches || {}).some(n=>n!=='0'))
+      refuse('publication_presentation_already_bound');
+    const raw=Buffer.from(await this.blobGet(rejection.response_blob),'base64').toString('utf8');
+    let body;try {body=JSON.parse(raw);}catch {refuse('publication_rejection_receipt_invalid');}
+    if(sha(raw)!==rejection.response_digest || body.object!=='error' || body.status!==400
+        || body.code!=='validation_error' || rejection.http_status!==400)
+      refuse('publication_rejection_receipt_invalid');
+    const observation=await this.publisher.notionProgress(row,d.plan);
+    if(!observation.absence_verified || observation.receipt) refuse('publication_rejection_absence_not_verified');
+    const number=(d.attempt_number || 0)+1;
+    const pending=before.publication_attempts?.[name]?.[number];
+    if(pending && (pending.prior_attempt!==(d.attempt_number || 0) || pending.rejection_digest!==rejection.response_digest
+        || pending.presentation_digest!==(presentation?.decision_digest || null) || pending.claimed || pending.archived))
+      refuse('publication_attempt_not_admitted');
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.publicationAgentGate(control,row,context.request_digest,context.action);
+      const run=(await tx.get(ref)).data();
+      if(run.blob!==before.blob || valueHash(attemptState(run,row,name))!==valueHash(state)
+          || valueHash(run.publication_attempts?.[name]?.[number] || null)!==valueHash(pending || null))
+        refuse('publication_attempt_not_admitted');
+      if(pending) return;
+      const priorNumber=d.attempt_number || 0;
+      tx.set(ref,{publication_attempts:{...run.publication_attempts,[name]:{...run.publication_attempts?.[name],
+        [priorNumber]:{...state,source_row_blob:run.blob,archived:true},
+        [number]:{prior_attempt:priorNumber,rejection_digest:rejection.response_digest,
+          presentation_digest:presentation?.decision_digest || null,absence_verified:true}}}},{merge:true});
+    });
+    d.attempt_number=number;delete d.plan;d.presentation=presentation;
+    await this.put(row);
+  }
+  async publicationAgentTool(day,action,requestDigest) {
+    let destination, row;
+    try {
+      row=await this.get(day);
+      const control=(await this.control.get()).data();this.publicationAgentGate(control,row,requestDigest,action);
+      let args=action?.arguments;
+      if(typeof args==='string') {try {args=JSON.parse(args);}catch {refuse('publication_agent_tool_arguments_invalid');}}
+      if(action?.name==='blueprint_inspect_publication' && args==null) args={};
+      if(!action || !['blueprint_inspect_publication','blueprint_publish_research'].includes(action.name)
+          || !args || typeof args!=='object' || Array.isArray(args))
+        refuse('publication_agent_tool_arguments_invalid');
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),run=(await ref.get()).data();
+      if(!run.publication_input_claimed) refuse('publication_agent_input_not_claimed');
+      if(action.name==='blueprint_inspect_publication') {
+        if(Object.keys(args).length) refuse('publication_agent_tool_arguments_invalid');
+        return {success:true,output:{validated_research:row.qa.decision || null,packet:row.packet,
+          destinations:Object.fromEntries(Object.entries(row.delivery || {}).map(([name,d])=>[name,{
+            key:d.key,payload:d.payload,payload_digest:d.payload_digest,presentation:d.presentation || null,
+            state:d.state,receipt:d.receipt || null,plan:d.plan || null,
+            claimed:!!attemptState(run,row,name).claimed,batches:attemptState(run,row,name).batches || {},
+            rejection:attemptState(run,row,name).rejection || null,attempts:run.publication_attempts?.[name] || {}}])),
+          transport_limits:{notion:{blocks_per_request:90,utf8_json_bytes_per_request:450000,text_code_units_per_block:1800}},
+          guidance:'Choose the destination and full or concise presentation before a write claim. Complete canonical research is retained. Unknown writes are observation-only; never replace a consumed plan.'}};
+      }
+      const a=args;destination=a.destination;
+      if(Object.keys(a).some(key=>!['destination','strategy','summary'].includes(key))
+          || !['notion','sheets'].includes(destination) || !['full','concise'].includes(a.strategy)
+          || a.strategy==='full' && a.summary!==undefined
+          || a.strategy==='concise' && (destination!=='notion' || typeof a.summary!=='string'
+            || !a.summary.trim() || Buffer.byteLength(a.summary)>2000000))
+        refuse('publication_agent_tool_arguments_invalid');
+      const d=row.delivery?.[destination];if(!d) refuse('publication_destination_invalid');
+      let presentation=null;
+      if(a.strategy==='concise') {
+        const decision_json=JSON.stringify({destination,strategy:a.strategy,summary:a.summary,source_payload_digest:d.payload_digest});
+        presentation={schema_version:'blueprint.research-presentation.v1',strategy:a.strategy,summary:a.summary,
+          source_payload_digest:d.payload_digest,decision_json,decision_digest:sha(decision_json)};
+      }
+      if((d.plan || attemptState(run,row,destination).claimed || d.state==='acknowledged')
+          && valueHash(d.presentation || null)!==valueHash(presentation)) {
+        if(destination!=='notion' || d.state==='acknowledged') refuse('publication_presentation_already_bound');
+        await this.admitRejectedPresentation(row,presentation,{request_digest:requestDigest,action});
+      }
+      if(valueHash(d.presentation || null)!==valueHash(presentation)) {d.presentation=presentation;await this.put(row);}
+      const receipt=d.state==='acknowledged'?d.receipt:await this.publish(day,destination,{request_digest:requestDigest,action});
+      const latest=(await ref.get()).data();
+      return {success:true,output:{destination,status:receipt?'acknowledged':'pending',
+        mutation_policy:attemptState(latest,row,destination).claimed?'reconcile_exact_claims_only':'not_claimed',
+        canonical_payload_digest:d.payload_digest,presentation_digest:presentation?.decision_digest || null,
+        guidance:receipt?'Exact destination readback verified.':'Inspect and retry the same choice to reconcile or advance verified ordered batches; never resend an unobserved claimed request.'},...(receipt?{receipt}:{})};
+    } catch(error) {
+      const code=/^(?:publication|workflow|firestore|research_tool)_[a-z_]{1,100}$/.test(error.message)
+        ?error.message:'publication_attempt_unresolved';
+      let evidence_file,definitive_rejection=false;
+      if(typeof error.provider_response==='string') {
+        evidence_file=`${day}-tool-publication-error-${sha(error.provider_response)}.json`;
+        try {await this.filePut(evidence_file,Buffer.from(error.provider_response).toString('base64'));}catch {evidence_file=null;}
+        let parsed;try {parsed=JSON.parse(error.provider_response);}catch {}
+        if(destination==='notion' && error.provider_feedback?.http_status===400 && parsed?.object==='error'
+            && parsed.status===400 && parsed.code==='validation_error'
+            && sha(error.provider_response)===error.provider_feedback.response_digest) {
+          try {
+            const current=await this.get(day),ref=this.db.doc(`${ROOT}/runs/${day}`),before=(await ref.get()).data();
+            const state=attemptState(before,current,destination),plan=current.delivery.notion.plan;
+            const response_blob=await this.blobPut(Buffer.from(error.provider_response).toString('base64'));
+            if(state.claimed===error.provider_feedback.request_digest && plan?.request_digest===state.claimed
+                && !Object.keys(state.batches || {}).some(n=>n!=='0')) {
+              const rejection={http_status:400,provider_code:'validation_error',response_blob,
+                response_digest:sha(error.provider_response),request_digest:state.claimed,plan_digest:valueHash(plan)};
+              await this.transaction(async tx=>{
+                const control=(await tx.get(this.control)).data();this.publicationAgentGate(control,current,requestDigest,action);
+                const run=(await tx.get(ref)).data();
+                if(run.blob!==before.blob || valueHash(attemptState(run,current,destination))!==valueHash(state))
+                  refuse('publication_attempt_not_admitted');
+                if(current.delivery.notion.attempt_number) tx.set(ref,{publication_attempts:{...run.publication_attempts,
+                  notion:{...run.publication_attempts?.notion,[current.delivery.notion.attempt_number]:{...state,rejection}}}},{merge:true});
+                else tx.set(ref,{publication_rejections:{...run.publication_rejections,notion:rejection}},{merge:true});
+              });
+              definitive_rejection=true;
+            }
+          } catch { /* Failed rejection proof never grants another write. */ }
+        }
+      }
+      return {success:false,error:{code,destination:destination || null,
+        recovery_policy:definitive_rejection?'new_agent_presentation_after_verified_absence':'preserve_claims_and_inspect',
+        guidance:definitive_rejection
+          ?'The provider definitively rejected the initial create request. Choose a revised presentation; a new attempt is admitted only after complete readback proves the report absent. Original plan, claim and error remain retained.'
+          :'Inspect retained source and current claims. An uncertain write is GET-only until exact readback; choose a revised presentation before a claim or after a proven initial validation rejection.',
+        ...(error.provider_feedback?{provider_feedback:error.provider_feedback}:{}),
+        ...(typeof error.provider_response==='string'?{provider_response_json:error.provider_response}:{}),
+        ...(evidence_file?{evidence_file}:{})}};
+    }
+  }
+  async publish(day,selectedDestination=null,agentContext=null) {
     await this.assertLease(); const initialControl=(await this.control.get()).data();
     this.workflowGate(initialControl,!!this.terminalCollectionReceipt);
     if (!this.publisher) refuse('publication_binding_unavailable');
     const row=await this.get(day);
+    if(row?.publication_profile==='agent-owned-v1') {
+      if(!agentContext || !selectedDestination) refuse('publication_agent_choice_required');
+      this.publicationAgentGate(initialControl,row,agentContext.request_digest,agentContext.action);
+    }
     const proof=this.terminalCollectionReceipt;
     if (proof && (!['reviewed','completed'].includes(row?.state) || row?.qa?.state!=='validated'
         || valueHash(row.qa.terminal_collection_recovery?.native_receipt||null)!==valueHash(proof)
@@ -399,27 +653,78 @@ export class Store {
       refuse('terminal_qa_collection_validated_receipt_required');
     const collectionAuthority=row?.qa?.terminal_collection_recovery?.workflow_authority;
     if (collectionAuthority && !same(collectionAuthority,initialControl.workflow)) refuse('publication_authority_changed');
-    const destination=['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
+    const destination=selectedDestination || ['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
+    if(selectedDestination && !['notion','sheets'].includes(selectedDestination)) refuse('publication_destination_invalid');
     if (!destination) return null;
     const d=row.delivery[destination];
     try {
       if (!d.plan) {d.plan=await this.publisher.prepare(row,destination);await this.put(row);}
+      if(destination==='notion' && d.plan.protocol==='notion-paginated-v1')
+        return await this.publishNotionBatch(row,d.plan,initialControl.workflow,collectionAuthority,proof,agentContext);
       const receipt=await this.publisher.reconcile(row,destination,d.plan);
       if (receipt) return receipt;
       const ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
-      if (before.data().publication_claimed?.[destination]) return null; // uncertain: GET reconciliation only
+      if (attemptState(before.data(),row,destination).claimed) return null; // uncertain: GET reconciliation only
       await this.transaction(async tx=>{
         const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control,!!proof);
         if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
-        if (run.blob!==before.data().blob || run.publication_claimed?.[destination]) refuse('publication_attempt_not_admitted');
-        tx.set(ref,{publication_claimed:{...run.publication_claimed,[destination]:d.plan.request_digest}},{merge:true});
+        if (run.blob!==before.data().blob || attemptState(run,row,destination).claimed) refuse('publication_attempt_not_admitted');
+        if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+        tx.set(ref,claimUpdate(run,row,destination,d.plan.request_digest),{merge:true});
       });
+      if(agentContext) {
+        if(this.publisher.beforeNotionStep) await this.publisher.beforeNotionStep(row,d.plan,null);
+        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+        if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
+          refuse('publication_authority_or_plan_changed');
+      }
       await this.publisher.write(row,destination,d.plan);
       return await this.publisher.reconcile(row,destination,d.plan);
     } catch(error) {
-      refuse(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
+      if(error instanceof Refusal && /^(?:publication|workflow|firestore|research_tool)_[a-z_]+$/.test(error.message)) throw error;
+      const wrapped=new Refusal(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
+      if(error.provider_feedback) wrapped.provider_feedback=error.provider_feedback;
+      if(error.provider_response) wrapped.provider_response=error.provider_response;
+      throw wrapped;
     }
+  }
+  async publishNotionBatch(row,plan,authority,collectionAuthority,proof,agentContext=null) {
+    const ref=this.db.doc(`${ROOT}/runs/${row.date}`),before=await ref.get();
+    const claims=attemptState(before.data(),row,'notion').batches || {},planDigest=valueHash(plan);
+    if(Object.values(claims).some(claim=>claim.plan_digest!==planDigest || !same(claim.workflow_authority,authority)))
+      refuse('publication_authority_or_plan_changed');
+    const progress=await this.publisher.notionProgress(row,plan);
+    if(progress.receipt) return progress.receipt;
+    const step=progress.step;
+    if(claims[step.number]) return null; // Unknown acknowledgment: observe this exact batch, never replay it.
+    if(step.number>0 && (!claims[step.number-1] || claims[step.number-1].end!==step.start
+        || step.number>1 && claims[step.number-1].page_id!==step.page_id))
+      refuse('publication_notion_unclaimed_prefix');
+    const claim={...step,plan_digest:planDigest,workflow_authority:authority};
+    // The immutable plan already holds full request bytes. Store only exact bindings in the manifest.
+    delete claim.body_json;
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control,!!proof);
+      if(!same(authority,control.workflow) || collectionAuthority && !same(collectionAuthority,control.workflow))
+        refuse('publication_authority_changed');
+      if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+      const snap=await tx.get(ref),run=snap.data();
+      if(run.blob!==before.data().blob || attemptState(run,row,'notion').batches?.[step.number])
+        refuse('publication_attempt_not_admitted');
+      tx.set(ref,claimUpdate(run,row,'notion',plan.request_digest,{...claims,[step.number]:claim}),{merge:true});
+    });
+    // Reads and the claim can be slow. Check current authority and lease immediately before mutation.
+    if(this.publisher.beforeNotionStep) await this.publisher.beforeNotionStep(row,plan,step);
+    const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+    this.fence(control);
+    this.workflowGate(control,!!proof);
+    if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+    if(!same(authority,control.workflow) || latest.blob!==before.data().blob
+        || !same(attemptState(latest,row,'notion').batches?.[step.number],claim)) refuse('publication_authority_or_plan_changed');
+    await this.publisher.writeNotionStep(row,plan,step);
+    return await this.publisher.reconcile(row,'notion',plan);
   }
   async repairCheck(day, requestDigest, deadlineMS) {
     if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest)) refuse('validation_repair_request_invalid');
@@ -576,6 +881,8 @@ export class Store {
       case 'qa_correction_check': return this.qaCorrectionCheck(request.day,request.request_digest,request.deadline_ms,request.number);
       case 'repair_check': return this.repairCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
+      case 'publication_input_check': return this.publicationInputCheck(request.day,request.request_digest,request.deadline_ms);
+      case 'publication_agent_tool': return this.publicationAgentTool(request.day,request.action,request.request_digest);
       case 'refresh_crm': {
         await this.assertLease();
         if (!this.crmReader) refuse('canonical_crm_read_unavailable');

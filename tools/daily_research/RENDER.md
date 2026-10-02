@@ -141,7 +141,29 @@ QA prose is retained losslessly under the existing 2 MB artifact ceiling rather
 than arbitrary summary/reason lengths. Notion uses the existing 1800-character
 blocks, native request limits and exact full-content readback; Sheets never receives
 the QA prose. Accepted evidence remains an unqualified discovery, not proof of
-buying intent or pilot readiness. A first cancellation records its actual reason,
+buying intent or pilot readiness.
+
+Reports that exceed one Notion request use a digest-bound paginated plan in the
+same company-owned ledger and one page under the existing research parent. Each
+create/append request has at most 90 blocks and 450,000 UTF-8 JSON bytes; text
+chunks preserve Unicode character boundaries. One durable claim precedes each
+request, with a fresh workflow-authority and lease check before the write. Each
+worker pass may advance one new batch. Ordered readback traverses all page
+children and must match the complete original report before a receipt is issued.
+After an uncertain reply, the same batch is never sent again: a later complete
+ordered batch readback may admit the next batch. An unobserved write remains
+pending; partial batches, conflicting content, repeated block IDs or duplicate
+pages return explicit diagnostics without deleting, replacing or truncating
+the source report. Existing single-request plans and receipts replay unchanged.
+Portable exports include a separate hash-bound `publication-manifest.json` with
+the exact plan JSON and consumed ordered claims; historical row and artifact
+bytes are unchanged. Importing an identical row preserves its live company
+manifest and unknown-write claims. The generic import command cannot resume
+unfinished paginated publication into a new database without its verified claim
+history; it refuses rather than inventing write authority. Completed records
+with both acknowledged readbacks may be imported for archival inspection.
+
+A first cancellation records its actual reason,
 time, deadline and key before submission. Only an in-time completed result proven
 to precede a later deadline-only cancellation may be collected with that history
 intact; early, disabled, interrupted and unknown-timing cancellations stay blocked.

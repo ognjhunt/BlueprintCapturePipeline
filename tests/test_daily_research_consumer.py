@@ -34,7 +34,8 @@ class QAAPI(FakeAPI):
 
     def qa_input(self, sid, event, key, day, request_digest, deadline_ms):
         row = self.ledger.get(day)
-        assert row["qa"]["event"] == event and row["qa"]["request_digest"] == request_digest
+        saved = row["qa"].get("event") or json.loads(self.ledger.read_bytes(row["qa"]["input_file"]))
+        assert saved == event and row["qa"]["request_digest"] == request_digest
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         self.inputs.append((sid, key))
         self.qa_exists = True
@@ -71,20 +72,21 @@ class QAAPI(FakeAPI):
         return canonical(self.qa_result).encode() if aid == "artifact_qa" else super().artifact(sid, aid)
 
 
-def consumer_setup(tmp_path, *, failed=False):
+def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False):
     crm = tmp_path / "crm.json"
     save_json(crm, {"sheet_id": SHEET, "complete": True, "captured_at": NOW.isoformat(),
                     "values": [["CRM"], [], [], [], HEADERS]})
     script = tmp_path / "bridge.mjs"
     script.write_text("\n".join([
-        "import {createInterface} from 'node:readline'; import {readFileSync} from 'node:fs';",
+        "import {createInterface} from 'node:readline'; import {readFileSync} from 'node:fs'; import {createHash} from 'node:crypto';",
         "import {Store,LeaseChannel} from " + json.dumps((ROOT / "tools/daily_research/firestore_bridge.mjs").as_uri()) + ";",
         "import {Publisher} from " + json.dumps((ROOT / "tools/daily_research/publisher.mjs").as_uri()) + ";",
         "import {MemoryFirestore} from " + json.dumps((ROOT / "tests/fixtures/daily_research/firestore-memory.mjs").as_uri()) + ";",
         "const db=new MemoryFirestore(" + json.dumps(str(tmp_path / "db.json")) + ");",
         "const crmReader=async()=>JSON.parse(readFileSync(" + json.dumps(str(crm)) + ",'utf8'));",
         "const pages=[]; const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]}; const crm=await crmReader();crm.values.push(...body.values);await import('node:fs').then(fs=>fs.writeFileSync(" + json.dumps(str(crm)) + ",JSON.stringify(crm)));return {};};",
-        "const notion=async(method,path,body)=>{if(method==='POST'){pages.push(body);return {id:'page-result'};}if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:pages.map(p=>({id:'page-result',type:'child_page',child_page:{title:p.properties.title.title[0].text.content}}))};if(path==='/pages/page-result')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};return {has_more:false,results:pages[0].children};};",
+        "let rejectInitial=" + json.dumps(publication_rejection) + "; const sha=v=>createHash('sha256').update(v).digest('hex');",
+        "const notion=async(method,path,body)=>{if(method==='POST'){if(rejectInitial){rejectInitial=false;const raw=JSON.stringify({object:'error',status:400,code:'validation_error',message:'Requested presentation rejected'});const error=new Error('publication_notion_unavailable');error.provider_response=raw;error.provider_feedback={provider:'notion',http_status:400,code:'validation_error',request_digest:sha(JSON.stringify(body)),response_digest:sha(raw)};throw error;}pages.push(body);return {id:'page-result'};}if(method==='PATCH'){pages[0].children.push(...body.children);return {};}if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:pages.map(p=>({id:'page-result',type:'child_page',child_page:{title:p.properties.title.title[0].text.content}}))};if(path==='/pages/page-result')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};const start=Number(new URL('https://fixture.invalid'+path).searchParams.get('start_cursor')||0),results=pages[0].children.slice(start,start+100).map((b,i)=>({id:'block-'+(start+i),...b})),next=start+results.length;return {has_more:next<pages[0].children.length,next_cursor:String(next),results};};",
         "const publisher=new Publisher({crmReader,google,notion});",
         "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher));",
         "for await (const line of createInterface({input:process.stdin})) {try {const r=JSON.parse(line);if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}const value=await channel.call(r);process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
@@ -111,6 +113,28 @@ def consumer_setup(tmp_path, *, failed=False):
         proposal = delta()
         proposal["evidence"][0].update(classification="operator", evidence_level=None)
         output["proposed_knowledge_deltas"] = [proposal]
+    if publication:
+        from tools.daily_research import search
+        cfg.update(publication_profile="agent-owned-v1", search_provider=search.PROFILE,
+            discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800, qa_reserved_seconds=600,
+            recurring_budget_authority_reference="approved-shared-research-total")
+        output["coverage"] = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
+            "stop_reason": "Synthetic bounded corpus checked", "shortfall_reason": None,
+            "defined_run_scope": ["Synthetic bounded site task corpus"], "unresolved_promising_branches": [],
+            "completion_state": "coverage_complete"}
+        api.search_binding_present = lambda: True
+        api.agent["instructions"] = "Reviewed research; no outreach or sends."
+        original_get = api.get
+        def selected_get(resource, rid):
+            value = original_get(resource, rid)
+            if resource == "session" and api.payloads:
+                value["agent"].update(deepcopy(api.payloads[0]["agent"]))
+            return value
+        api.get = selected_get
+        with ledger.lock():
+            control = bridge.call("control")
+            control["config"] = cfg
+            bridge.call("configure", value=control)
     api.raw = canonical(output).encode()
     assert Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()["state"] == ("failed" if failed else "awaiting_review")
     consumer = Consumer(ledger, cfg, api, clock=lambda: NOW + timedelta(seconds=30))
@@ -260,6 +284,63 @@ def test_malformed_qa_returns_precise_feedback_to_same_session_and_preserves_bot
     assert final["qa"]["deadline_ms"] == correction["deadline_ms"]
     assert all(d["receipt"]["readback_verified"] for d in final["delivery"].values())
     assert render.export_snapshot(bridge, DAY, tmp_path / "correction-export")["missing_files"] == []
+
+
+def test_valid_234kb_qa_report_completes_canonical_publication_without_truncation(fixture, tmp_path):
+    consumer, api, ledger, bridge, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    summary = "Supported source https://plant.example/tasks; actual buying interest unknown. " * 3100
+    assert 234000 < len(summary.encode()) < 2_000_000
+    api.qa_result["summary"] = summary
+    assert consumer.step()["state"] == "reviewed"
+    for _ in range(30):
+        if consumer.step()["state"] == "completed":
+            break
+    row = ledger.get(DAY)
+    assert row["state"] == "completed"
+    assert row["review"]["summary"] == row["delivery"]["notion"]["payload"]["summary"] == summary
+    plan = row["delivery"]["notion"]["plan"]
+    assert plan["protocol"] == "notion-paginated-v1" and len(plan["batches"]) > 1
+    assert summary in "".join(plan["paragraphs"][1:])
+    assert json.loads(ledger.read_bytes(DAY + "-qa.json"))["summary"] == summary
+    assert all(delivery["receipt"]["readback_verified"] for delivery in row["delivery"].values())
+    exported = tmp_path / "large-report-export"
+    assert render.export_snapshot(bridge, DAY, exported)["missing_files"] == []
+    envelope = json.loads((exported / "publication-manifest.json").read_bytes())
+    proof = json.loads(envelope["manifest_json"])
+    assert len(proof["publication_batches"]["notion"]) == len(plan["batches"])
+    assert json.loads(proof["plans"]["notion"]["plan_json"]) == plan
+
+
+@pytest.mark.parametrize("change", ["missing", "claim", "plan", "row_bytes", "missing_claim", "claim_rehashed"])
+def test_paginated_publication_export_refuses_missing_or_tampered_manifest(fixture, tmp_path, change):
+    consumer, api, _ledger, bridge, _ = fixture
+    api.lost_reply = True
+    consumer.step()
+    api.qa_result["summary"] = "Supported source https://plant.example/tasks; actual interest unknown. " * 3500
+    assert consumer.step()["state"] == "reviewed"
+    assert consumer.step()["state"] == "publication_pending"
+    snapshot = bridge.call("snapshot", day=DAY)
+    if change == "missing":
+        snapshot.pop("publication_manifest")
+    else:
+        proof = json.loads(snapshot["publication_manifest"]["manifest_json"])
+        if change in {"claim", "claim_rehashed"}:
+            proof["publication_batches"]["notion"]["0"]["request_digest"] = "f" * 64
+        elif change == "plan":
+            proof["plans"]["notion"]["plan_json"] += " "
+        elif change == "row_bytes":
+            proof["source_row_json"] += " "
+        else:
+            proof["publication_batches"].pop("notion")
+        snapshot["publication_manifest"]["manifest_json"] = canonical(proof)
+        if change in {"row_bytes", "missing_claim", "claim_rehashed"}:
+            snapshot["publication_manifest"]["manifest_digest"] = __import__("hashlib").sha256(canonical(proof).encode()).hexdigest()
+    changed = SimpleNamespace(call=lambda *_a, **_k: snapshot)
+    with pytest.raises(Refusal, match="publication_manifest_binding_invalid"):
+        render.export_snapshot(changed, DAY, tmp_path / change)
+    assert not (tmp_path / change).exists()
 
 
 def test_correction_history_files_are_immutable_and_export_rejects_tampering(fixture, tmp_path):

@@ -56,8 +56,8 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools():
-    return [
+def tools(publication_profile=None):
+    declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
          "description": "Search public web evidence using Perplexity Search API Fast. Returns complete provider passages, URLs and dates. Choose follow-up queries yourself; passages are leads, not complete primary-page verification.",
@@ -73,6 +73,11 @@ def tools():
          "parameters": {"type": "object", "additionalProperties": False,
                         "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     ]
+
+    if publication_profile == "agent-owned-v1":
+        from tools.daily_research.publication import tools as publication_tools
+        declared.extend(publication_tools())
+    return declared
 
 
 def instructions():
@@ -306,7 +311,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
         return False
     if len(canonical(row).encode()) > MAX_RECORD:
         raise Refusal("research_tool_record_resource_ceiling")
-    tid = row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
+    tid = row.get("publication", {}).get("turn_id") if phase == "publication" else row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
           if phase == "repair" else row.get("qa", {}).get("turn_id"))
     deadline = instant(row["started_at"]).timestamp() + phase_runtime_seconds(row, {}, phase)
     if phase == "qa" and row.get("qa_continuation"):
@@ -317,6 +322,9 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     if phase == "repair" or phase == "qa" and row.get("validation_repair_authority") and not row.get("qa_continuation"):
         from tools.daily_research.recovery import repair_deadline
         deadline = repair_deadline(row).timestamp()
+    if phase == "publication":
+        from tools.daily_research.consumer import qa_deadline
+        deadline = qa_deadline(row, {}).timestamp()
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":

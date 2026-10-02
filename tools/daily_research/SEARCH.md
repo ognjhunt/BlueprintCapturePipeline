@@ -62,6 +62,21 @@ Unknown execution becomes a visible no-replay error. Render rechecks the lease,
 enabled flag and pinned search profile before execution and result submission.
 Stop/deadline checks preserve the pinned shared research/QA watchdog.
 
+The explicit `publication_profile=agent-owned-v1` additionally advertises
+`blueprint_inspect_publication` and `blueprint_publish_research` when creating a
+new session. After QA validates the research, that same saved session receives
+the complete validated results and retained history. The agent inspects approved
+destinations, selects full or concise presentation, uploads to each destination,
+and receives structured transport errors and exact readback receipts. The worker
+executes these requests and retains original results, decisions, claims and
+receipts. A definitive initial Notion 400 validation rejection permits a revised
+agent choice only after complete readback proves absence; unknown writes retain
+their claims and remain observation-only. Stop and the original absolute
+deadline cancel the bound publication session once, preserving an unknown reply.
+This profile grants no additional time, spending, destinations or sends. Deploying
+source alone cannot add tools to an existing session; activation requires this
+explicit profile in a newly admitted session. The example remains disabled.
+
 No native web-search fallback is enabled. API errors, missing credentials,
 unsupported sources and evidence size ceilings are visible gaps. This avoids an
 unobserved second search provider or search fee. An application HTTPS source

@@ -128,12 +128,45 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("assert_lease")
         control = self.ledger.bridge.call("control")
         if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
-                or phase in {"qa", "repair"} and control.get("workflow", {}).get("enabled") is not True):
+                or phase in {"qa", "repair", "publication"} and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
         if (
                 control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
                 or control.get("config", {}).get("soft_target_usd") != row["soft_target_usd"]):
             raise Refusal("research_tool_budget_authority_changed")
+        if phase == "publication" and control.get("workflow") != row["publication"]["workflow_authority"]:
+            raise Refusal("publication_agent_authority_changed")
+
+    def publication_input(self, session_id, event, key, day, request_digest, deadline_ms):
+        from tools.daily_research.consumer import Consumer, qa_deadline
+        from tools.daily_research.runner import digest
+        self.publication_input_phase = "preconditions"
+        row = self.ledger.get(day)
+        phase = row["publication"]
+        if (row.get("publication_profile") != "agent-owned-v1" or row["state"] != "reviewed"
+                or row["qa"]["state"] != "validated" or session_id != row["session_id"]
+                or key != row["run_key"] + ":publication" or phase["idempotency_key"] != key
+                or digest(event) != phase["request_digest"] or request_digest != phase["request_digest"]
+                or deadline_ms != phase["deadline_ms"] or deadline_ms != int(qa_deadline(row, {}).timestamp() * 1000)
+                or json.loads(self.ledger.read_bytes(phase["input_file"])) != event):
+            raise Refusal("publication_agent_input_not_admitted")
+        def guard():
+            session = self.get("session", session_id)
+            Consumer.check_session(row, session)
+            turns = self.listing("turns", session_id)
+            if (session.get("status") != "idle" or session.get("required_actions")
+                    or {t["id"] for t in turns} != set(phase["baseline_turn_ids"]) or any(t.get("subagent_id") for t in turns)):
+                raise Refusal("publication_agent_turn_scope_changed")
+            self.tool_admit(row, "publication")
+            control = self.ledger.bridge.call("control")
+            if (getattr(self, "stopped", lambda: False)() or control.get("workflow") != phase["workflow_authority"]
+                    or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+                raise Refusal("publication_agent_input_not_admitted")
+        guard()
+        self.ledger.bridge.call("publication_input_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+        guard()
+        self.publication_input_phase = "provider_submission"
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
     def qa_input(self, session_id, event, key, day, request_digest, deadline_ms):
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
