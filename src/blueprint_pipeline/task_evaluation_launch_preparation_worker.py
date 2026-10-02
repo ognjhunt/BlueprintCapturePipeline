@@ -9,6 +9,8 @@ catalog, issue paid authority, call the allocator, or allocate a provider.
 from __future__ import annotations
 
 from .task_evaluation_scene_retirement_access import scene_participant
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import argparse
 import hashlib
 import json
@@ -309,7 +311,7 @@ def _s3_client(bucket: str) -> Any:
         kwargs["endpoint_url"] = endpoint
     if region:
         kwargs["region_name"] = region
-    return boto3.client("s3", **kwargs)
+    return s3_compatible_client(boto3, **kwargs)
 
 
 def default_reference_fetcher(uri: str, destination: Path, maximum_bytes: int) -> None:

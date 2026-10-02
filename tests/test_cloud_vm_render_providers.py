@@ -281,68 +281,10 @@ class _FakeIAM:
         }
 
 
-def test_aws_preflight_binds_account_network_image_and_quota(monkeypatch, tmp_path: Path) -> None:
-    _aws_env(monkeypatch)
-    provider = AWSRenderProvider()
-    monkeypatch.setattr(provider, "_ec2", lambda: _FakeEC2())
-    monkeypatch.setattr(provider, "_service_quotas", lambda: _FakeQuota())
-    monkeypatch.setattr(provider, "_sts", lambda: _FakeSTS())
-    monkeypatch.setattr(provider, "_iam", lambda: _FakeIAM())
-    request = provider.build_request(_spec(), tmp_path)
-    result = provider.capacity_preflight(request)
-    assert result["status"] == "available"
-    assert result["checks"]["account"] is True
-    assert result["checks"]["quota"]["required_vcpus"] == 8
-    assert result["selected_offer"]["gpu_ram_mb"] == 49152
-    assert result["selected_offer"]["on_demand_price_usd_per_hour"] == 1.86
-    assert request["run_instances"]["MetadataOptions"]["HttpTokens"] == "required"
-    assert request["run_instances"]["ClientToken"]
-    assert request["run_instances"]["BlockDeviceMappings"][0]["Ebs"]["DeleteOnTermination"] is True
-    startup = request["run_instances"]["UserData"]
-    assert "docker pull" not in startup
-    assert "docker login" not in startup
-    assert "test -f /etc/blueprint/worker-image-ref" in startup
 
 
-def test_aws_windows_preflight_does_not_invent_an_instance_role(
-    monkeypatch, tmp_path: Path
-) -> None:
-    _aws_env(monkeypatch)
-    monkeypatch.setenv("BLUEPRINT_AWS_WORKER_PLATFORM", "windows")
-    monkeypatch.delenv("BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN", raising=False)
-    provider = AWSRenderProvider()
-    monkeypatch.setattr(provider, "_ec2", lambda: _FakeEC2())
-    monkeypatch.setattr(provider, "_service_quotas", lambda: _FakeQuota())
-    monkeypatch.setattr(provider, "_sts", lambda: _FakeSTS())
-
-    def forbidden_iam():
-        raise AssertionError("a signed-URL Windows worker must not query IAM")
-
-    monkeypatch.setattr(provider, "_iam", forbidden_iam)
-    request = provider.build_request(_spec(), tmp_path)
-    result = provider.capacity_preflight(request)
-    assert result["status"] == "available"
-    assert "IamInstanceProfile" not in request["run_instances"]
-    assert result["checks"]["iam_instance_profile"] is True
 
 
-def test_aws_launch_and_inventory_contract(monkeypatch, tmp_path: Path) -> None:
-    _aws_env(monkeypatch)
-    provider = AWSRenderProvider()
-    monkeypatch.setattr(provider, "_ec2", lambda: _FakeEC2())
-    monkeypatch.setattr(provider, "capacity_preflight", lambda request: {"status": "available", "blockers": []})
-    request = provider.build_request(_spec(), tmp_path)
-    request["prelaunch_spend_guard"] = {
-        "required_before_provider_launch": True,
-        "can_launch": True,
-    }
-    result = provider.launch(tmp_path, request)
-    assert result["status"] == "launched"
-    assert result["instance_id"] == "i-0123456789abcdef0"
-    assert (tmp_path / "started_aws_instance_id.txt").read_text() == result["instance_id"]
-    inventory = provider.billable_inventory(name_prefix="blueprint-gpu-test")
-    assert inventory["api_confirmed"] is True
-    assert inventory["live_resource_count"] == 0
 
 
 def test_cloud_adapters_fail_closed_when_account_configuration_missing(monkeypatch, tmp_path: Path) -> None:
@@ -374,9 +316,9 @@ def test_cloud_adapters_fail_closed_when_account_configuration_missing(monkeypat
     for name in names:
         monkeypatch.delenv(name, raising=False)
     gcp = GCPRenderProvider().build_request(_spec(), tmp_path)
-    aws = AWSRenderProvider().build_request(_spec(), tmp_path)
     assert "gcp_project_missing" in gcp["configuration_blockers"]
-    assert "aws_account_id_missing" in aws["configuration_blockers"]
+    with pytest.raises(ValueError, match="aws_provider_integration_removed"):
+        AWSRenderProvider().build_request(_spec(), tmp_path)
 
 
 def test_provider_closure_reports_gcp_and_aws_credentials_without_reading_values(
@@ -393,6 +335,24 @@ def test_provider_closure_reports_gcp_and_aws_credentials_without_reading_values
     gcp = provider_closure_audit._credential_audit("gcp")
     aws = provider_closure_audit._credential_audit("aws")
     assert gcp["credential_configured"] is True
-    assert aws["credential_configured"] is True
+    assert aws["credential_configured"] is False
+    assert aws["reason"] == "aws_provider_integration_removed"
     assert gcp["raw_secret_values_read"] is False
     assert aws["raw_secret_values_recorded"] is False
+
+
+def test_retired_aws_never_discovers_credentials_or_claims_provider_zero(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("AWS SDK invoked")
+    import sys
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(Session=forbidden, client=forbidden))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/must-not-read")
+    provider = AWSRenderProvider()
+    assert provider.available()["available"] is False
+    inventory = provider.billable_inventory(name_prefix="anything")
+    assert inventory["live_resource_count"] is None
+    assert inventory["api_confirmed"] is False
+    for method in (provider.build_request, provider.capacity_preflight, provider.launch, provider.poll, provider.stop, provider.terminate):
+        with pytest.raises(ValueError, match="aws_provider_integration_removed"):
+            method()

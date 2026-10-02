@@ -174,6 +174,8 @@ def test_robot_eval_worker_uri_bundle_and_upload_helpers(
     with pytest.raises(RuntimeError, match="r2:// storage requires"):
         rew._s3_compatible_endpoint_url("r2")
     monkeypatch.setenv("R2_ENDPOINT_URL", "https://r2.local")
+    monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_ACCESS_KEY_ID", "fixture-access")
+    monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_SECRET_ACCESS_KEY", "fixture-secret")
     monkeypatch.setenv("AWS_REGION", "us-test-1")
 
     assert rew._parse_s3_compatible_uri("s3://bucket/key.json") == ("s3", "bucket", "key.json")

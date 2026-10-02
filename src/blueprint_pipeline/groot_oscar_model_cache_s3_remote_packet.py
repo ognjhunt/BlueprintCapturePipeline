@@ -40,13 +40,16 @@ _SAFE_WHEEL = re.compile(r"[A-Za-z0-9_.+-]+[.]whl")
 _CONTEXT_MODULES = (
     "__init__.py",
     "common.py",
+    "core/__init__.py",
+    "core/common.py",
     "groot_oscar_carrier_remote_build_packet.py",
-    "groot_oscar_infrastructure_admission.py",
+    "runpod_storage_regions.py",
     "groot_oscar_model_cache.py",
     "groot_oscar_model_cache_s3_remote_executor.py",
     "groot_oscar_runpod_carrier_volume.py",
     "groot_oscar_runpod_s3_model_cache.py",
     "paid_resource_admission.py",
+    "s3_compatible_transport.py",
 )
 _ENTRYPOINT = """from blueprint_pipeline.groot_oscar_model_cache_s3_remote_executor import execute_remote_packet
 raise SystemExit(0 if execute_remote_packet()["status"] == "completed" else 2)

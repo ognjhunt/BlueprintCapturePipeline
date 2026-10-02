@@ -314,7 +314,9 @@ def fake_wam(monkeypatch, *, hit):
             self.__dict__.update(kwargs)
     monkeypatch.setitem(sys.modules, 'boto3', SimpleNamespace(client=client))
     monkeypatch.setitem(sys.modules, 'botocore.client', SimpleNamespace(Config=Config))
-    monkeypatch.setattr(wam, '_read_first_file', lambda **kw: ('fixture', {'available': True}))
+    monkeypatch.setattr(wam, '_read_first_file', lambda **kw: (
+        'https://spaces.example.invalid' if kw['label'] == 'object_store_endpoint_url' else 'fixture',
+        {'available': True}))
     return events
 
 

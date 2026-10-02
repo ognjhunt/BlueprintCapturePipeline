@@ -35,7 +35,7 @@ from blueprint_pipeline.gpu_render_providers import (
     run_vast_ssh_control,
     validate_runpod_restart_storage_contract,
 )
-from blueprint_pipeline.cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
+from blueprint_pipeline.cloud_vm_render_providers import GCPRenderProvider
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -47,7 +47,6 @@ _ORIGINAL_PROVIDER_LAUNCHES = {
     RunPodRenderProvider: RunPodRenderProvider.launch,
     VastRenderProvider: VastRenderProvider.launch,
     DigitalOceanRenderProvider: DigitalOceanRenderProvider.launch,
-    AWSRenderProvider: AWSRenderProvider.launch,
     GCPRenderProvider: GCPRenderProvider.launch,
 }
 
@@ -140,7 +139,8 @@ def test_registry_returns_known_providers_and_rejects_unknown() -> None:
     assert isinstance(get_render_provider(None), RunPodRenderProvider)  # default
     assert isinstance(get_render_provider("VAST"), VastRenderProvider)  # case-insensitive
     assert isinstance(get_render_provider("gcp"), GCPRenderProvider)
-    assert isinstance(get_render_provider("aws"), AWSRenderProvider)
+    with pytest.raises(ValueError, match="aws_provider_integration_removed"):
+        get_render_provider("aws")
     with pytest.raises(ValueError):
         get_render_provider("lambda-labs")
 
@@ -148,7 +148,7 @@ def test_registry_returns_known_providers_and_rejects_unknown() -> None:
 def test_list_render_providers_reports_both_with_availability() -> None:
     listed = list_render_providers()
     names = {p["provider"] for p in listed}
-    assert names == {"runpod", "vast", "digitalocean", "gcp", "aws"}
+    assert names == {"runpod", "vast", "digitalocean", "gcp"}
     for entry in listed:
         assert "available" in entry  # bool reflecting credential presence
 

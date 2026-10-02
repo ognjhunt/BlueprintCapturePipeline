@@ -1530,3 +1530,45 @@ def test_outbound_http_call_sites_route_through_the_safe_boundary() -> None:
     )
     assert boundary.count("urllib.request.build_opener(") == 1
     assert "# nosec" not in boundary
+
+
+def test_archive_cli_requires_explicit_compatible_transport_and_private_files(tmp_path, monkeypatch, capsys):
+    import sys
+    from types import SimpleNamespace
+    from scripts import archive_release_evidence as archive
+    manifest = tmp_path / "manifest.json"
+    policy = tmp_path / "policy.json"
+    manifest.write_text("{}")
+    policy.write_text("{}")
+    access = tmp_path / "access"
+    secret = tmp_path / "secret"
+    for path in (access, secret):
+        path.write_text("fixture-credential")
+        path.chmod(0o600)
+    calls = []
+    client = object()
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *a, **kw: calls.append((a, kw)) or client))
+    monkeypatch.setattr(archive, "archive_bundle", lambda **kwargs: {"status": "archived_immutable", "blockers": []})
+    args = ["--bundle", str(tmp_path / "bundle"), "--bundle-manifest", str(manifest), "--policy", str(policy), "--archive-uri", "s3://existing-compatible-store/release", "--output", str(tmp_path / "receipt.json"), "--access-key-file", str(access), "--secret-key-file", str(secret), "--endpoint-url", "https://s3.us-west-004.backblazeb2.com"]
+    assert archive.main(args) == 0
+    assert calls[0][1]["endpoint_url"] == "https://s3.us-west-004.backblazeb2.com"
+    calls.clear()
+    args[-1] = "https://s3.amazonaws.com"
+    assert archive.main(args) == 1
+    assert calls == []
+    assert "fixture-credential" not in capsys.readouterr().err
+    args[-1] = "https://nyc3.digitaloceanspaces.com"
+    secret.chmod(0o644)
+    assert archive.main(args) == 1
+    assert calls == []
+
+
+def test_retention_workflow_has_no_aws_account_binding_or_implicit_endpoint():
+    text = (Path(__file__).parents[1] / ".github/workflows/release-evidence-retention.yml").read_text()
+    assert "BLUEPRINT_RELEASE_EVIDENCE_AWS_" not in text
+    assert "AWS_ACCESS_KEY_ID:" not in text
+    assert "AWS_SESSION_TOKEN:" not in text
+    for argument in ("--endpoint-url", "--access-key-file", "--secret-key-file"):
+        assert argument in text
+    assert "s3_compatible_archive_configuration_unavailable" in text
+    assert "require_compatible_endpoint" in text

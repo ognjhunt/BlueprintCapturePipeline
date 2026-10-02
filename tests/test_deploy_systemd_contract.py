@@ -410,7 +410,7 @@ def test_pubsub_handoff_listener_has_repeated_deployed_runner():
     assert "${HANDOFF_DIR}" in installer
 
 
-def test_capture_reconstruction_queue_is_path_activated_and_automatically_executes_governed_work():
+def test_capture_reconstruction_queue_retains_dispatch_without_retired_worker_requirement():
     service = _read("blueprint-capture-reconstruction-dispatcher.service")
     path = _read("blueprint-capture-reconstruction-dispatcher.path")
     timer = _read("blueprint-capture-reconstruction-dispatcher.timer")
@@ -449,7 +449,9 @@ def test_capture_reconstruction_queue_is_path_activated_and_automatically_execut
     assert "uv build" not in worker_builder
     assert 'WORKER_RELEASE_DIR="/opt/blueprint/releases/canonical-3dgs-worker/${SOURCE_COMMIT}"' in installer
     assert "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL" in installer
-    assert "REPLACED_BY_INSTALLER_EXACT_RELEASE_WHEEL" in env_example
+    assert "BLUEPRINT_CANONICAL_3DGS_WORKER_WHEEL" not in env_example
+    assert "REPLACED_BY_INSTALLER_EXACT_RELEASE_WHEEL" not in env_example
+    assert "BLUEPRINT_AWS_" not in env_example
     runtime_requirements = _read("production-control-plane-requirements.txt")
     assert "production-control-plane-requirements.txt" in installer
     assert "--require-hashes" in installer

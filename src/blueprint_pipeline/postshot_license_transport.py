@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import hashlib
 import os
 import secrets
@@ -59,7 +61,7 @@ def _client() -> tuple[Any, str]:  # pragma: no cover - production credential se
     }
     if endpoint_path:
         kwargs["endpoint_url"] = _secret(endpoint_path, label="object_store_endpoint")
-    return boto3.client("s3", **kwargs), bucket
+    return s3_compatible_client(boto3, **kwargs), bucket
 
 
 def stage_postshot_license(

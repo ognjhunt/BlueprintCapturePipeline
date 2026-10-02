@@ -57,7 +57,6 @@ PRODUCTION_SCAN_EXCLUSIONS = {
     "scripts/verify_paid_resource_allocator.py",
 }
 APPROVED_ADMISSION_ISSUERS = {
-    "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
     "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
     "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
@@ -85,7 +84,6 @@ APPROVED_ADMISSION_ISSUERS = {
     "src/blueprint_pipeline/website_task_context.py",
 }
 APPROVED_LANE_ADMISSION_BUILDERS = {
-    "src/blueprint_pipeline/capture_reconstruction_postshot_allocator.py",
     "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
     "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
     "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",

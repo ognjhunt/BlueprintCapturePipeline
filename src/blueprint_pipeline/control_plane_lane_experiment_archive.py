@@ -5,6 +5,8 @@ request during tests, detached worker, or unverified pointer permits removal.
 """
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import hashlib
 import math
 import os
@@ -74,7 +76,7 @@ def _client(files, config):
                 connect_timeout=45, read_timeout=45, retries={'total_max_attempts': 1}))
         if secrets['endpoint']:
             kwargs['endpoint_url'] = secrets['endpoint']
-        client = boto3.client('s3', **kwargs)
+        client = s3_compatible_client(boto3, **kwargs)
     except Exception:
         raise OwnerTargetVersionError('experiment_archive_client_unavailable') from None
     return client, secrets['bucket']

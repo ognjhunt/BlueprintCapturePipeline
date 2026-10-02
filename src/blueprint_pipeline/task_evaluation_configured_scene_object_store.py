@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import argparse
 import hashlib
 import json
@@ -214,7 +216,7 @@ def _client_from_file_environment(
     }
     if endpoint:
         kwargs["endpoint_url"] = endpoint
-    return boto3.client("s3", **kwargs), bucket
+    return s3_compatible_client(boto3, **kwargs), bucket
 
 
 def _object_store_client() -> tuple[Any, str]:

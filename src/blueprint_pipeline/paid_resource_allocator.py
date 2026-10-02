@@ -111,12 +111,6 @@ from .policy_ranking_cosmos_reasoner_gpu_admission import (
     run_gpu_lane as run_cosmos_reasoner_gpu_lane,
 )
 from .policy_ranking_successor_retained_session import refresh_retained_session
-from .canonical_3dgs_vast_output import (
-    validate_canonical_3dgs_vast_output_bundle as _windows_output_validator,
-)
-from .reconstruction_vast_operation import (
-    _default_output_fetcher as _windows_output_fetcher,
-)
 from .reconstruction_gpu_admission import (
     PROBE_KIND as RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND,
     WINDOWS_TRAINER_ADAPTER_IDS,
@@ -1380,6 +1374,13 @@ def _run_reconstruction_gpu_canary(
 ) -> dict[str, Any]:
     """Admit and optionally execute the Vast-first worker smoke."""
 
+    if args.provider == "aws":
+        return {"status": "blocked", "blockers": ["aws_provider_integration_removed"], "provider_mutations_performed": 0}
+    request_path = Path(args.provider_launch_request).expanduser()
+    requested = _load(request_path).get("requested_execution_adapter_id") if request_path.is_file() else None
+    if requested in WINDOWS_TRAINER_ADAPTER_IDS:
+        return {"status": "blocked", "blockers": ["aws_provider_integration_removed"], "provider_mutations_performed": 0}
+
     if getattr(args, "reconstruction_refresh_preflight", False):
         seed = _load(args.preflight_bundle)
         provider = get_render_provider(args.provider)
@@ -1404,37 +1405,6 @@ def _run_reconstruction_gpu_canary(
         ):
             container_disk_bytes = 0
         capacity_probe = provider.capacity_preflight
-        if args.provider == "aws":
-            canary_request = _load(args.provider_launch_request)
-            probe_spec = RenderLaunchSpec(
-                name=str(
-                    getattr(
-                        args,
-                        "reconstruction_name_prefix",
-                        "blueprint-postshot-preflight",
-                    )
-                )[:255],
-                image=str(canary_request.get("worker_image_digest") or ""),
-                env={
-                    "BLUEPRINT_WORKER_HARD_TTL_SECONDS": str(
-                        getattr(args, "reconstruction_hard_ttl_seconds", 0) or 0
-                    )
-                },
-                bootstrap_argv=[],
-                entrypoint=[],
-                container_disk_gb=max(100, int(container_disk_bytes) // 1024**3),
-                volume_gb=0,
-                max_hourly_rate_usd=float(max_hourly_rate),
-                min_gpu_ram_mb=24_000,
-                requires_rtx=False,
-            )
-            aws_probe_request = provider.build_request(
-                probe_spec,
-                Path(args.adapter_output).expanduser().resolve().parent
-                / "aws_preflight",
-            )
-            def capacity_probe(_request: Mapping[str, Any]) -> Mapping[str, Any]:
-                return provider.capacity_preflight(aws_probe_request)
         refreshed = collect_reconstruction_vast_preflight(
             name_prefix=getattr(
                 args,
@@ -1538,34 +1508,7 @@ def _run_reconstruction_gpu_canary(
     elif operation in {"pose_canary", "trainer_canary"} and str(
         admission.get("execution_adapter_id") or ""
     ) in WINDOWS_TRAINER_ADAPTER_IDS:
-        # Postshot is Windows-only, so this arm gets its own executor rather
-        # than the Vast operation below, which is a Linux container.
-        from .reconstruction_aws_windows_operation import (
-            run_reconstruction_aws_windows_operation,
-        )
-
-        result = run_reconstruction_aws_windows_operation(
-            bound_request=_load(args.bound_request_out),
-            preflight=_load(args.preflight_bundle),
-            job_dir=adapter_path.parent / "reconstruction_aws_windows_operation",
-            output_bundle_get_url=resolved_urls["provider_output_get_url"],
-            input_bundle_get_url=resolved_urls["provider_bundle_url"],
-            input_receipt_get_url=resolved_urls["operation_receipt_get_url"],
-            input_receipt_file_digest=(
-                "sha256:"
-                + hashlib.sha256(
-                    Path(args.reconstruction_operation_bundle_receipt).read_bytes()
-                ).hexdigest()
-            ),
-            output_bundle_put_url=resolved_urls["provider_output_put_url"],
-            provider=get_render_provider("aws"),
-            allocator_admission=admission,
-            paid_resource_admission_grant=grant,
-            name_prefix=str(admission.get("name_prefix") or "blueprint-postshot"),
-            hard_ttl_seconds=int(admission.get("hard_ttl_seconds") or 0),
-            output_fetcher=_windows_output_fetcher,
-            output_validator=_windows_output_validator,
-        )
+        return {"status": "blocked", "blockers": ["aws_provider_integration_removed"], "provider_mutations_performed": 0}
     elif operation in {"pose_canary", "trainer_canary", "website_mapanything"}:
         result = run_reconstruction_vast_operation(
             bound_request=_load(args.bound_request_out),
@@ -2176,6 +2119,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         model.add_argument("--campaign-spent-to-date-usd", type=float)
         model.add_argument("--campaign-total-spend-cap-usd", type=float, default=20.0)
     args = parser.parse_args(argv)
+    retired_aws = getattr(args, "provider", None) == "aws"
+    if args.command == "gpu-canary" and getattr(args, "probe_kind", None) == RECONSTRUCTION_WORKER_SMOKE_PROBE_KIND and getattr(args, "provider_launch_request", None) and Path(args.provider_launch_request).expanduser().is_file():
+        retired_aws = retired_aws or _load(args.provider_launch_request).get("requested_execution_adapter_id") in WINDOWS_TRAINER_ADAPTER_IDS
+    if retired_aws:
+        result = {"status": "blocked", "blockers": ["aws_provider_integration_removed"], "provider_mutations_performed": 0, "success": False}
+        if getattr(args, "admission_out", None):
+            write_json(Path(args.admission_out), result)
+        print(json.dumps(result, sort_keys=True))
+        return 2
     if args.command == "gpu-canary":
         normal_required = (
             "provider_launch_request", "release_evidence", "model_cache_evidence",

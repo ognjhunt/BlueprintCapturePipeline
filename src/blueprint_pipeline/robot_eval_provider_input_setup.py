@@ -8,6 +8,8 @@ not call RunPod or any other GPU provider.
 
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import argparse
 import contextlib
 import hashlib
@@ -321,7 +323,7 @@ def _upload_file_to_s3_compatible(
     if access_key and secret_key:
         kwargs["aws_access_key_id"] = access_key
         kwargs["aws_secret_access_key"] = secret_key
-    client = boto3.client("s3", **kwargs)
+    client = s3_compatible_client(boto3, **kwargs)
     if exclusive:
         # A content-addressed publication must never silently replace an
         # object. S3-compatible stores expose this conditional PutObject
@@ -383,7 +385,7 @@ def _validate_uploaded_object(source: Path, destination_uri: str) -> Dict[str, A
             if access_key and secret_key:
                 kwargs["aws_access_key_id"] = access_key
                 kwargs["aws_secret_access_key"] = secret_key
-            response = boto3.client("s3", **kwargs).get_object(
+            response = s3_compatible_client(boto3, **kwargs).get_object(
                 Bucket=parsed.netloc,
                 Key=parsed.path.lstrip("/"),
             )
@@ -716,23 +718,15 @@ def _storage_upload_commands(*, source: str, destination_uri: str) -> list[str]:
             f"gcloud storage cp {quoted_source} {quoted_destination}",
             f"gcloud storage ls {quoted_destination} >/dev/null",
         ]
-    if scheme == "s3":
-        return [
-            'test -n "${AWS_ACCESS_KEY_ID:-}" || { echo "missing AWS_ACCESS_KEY_ID" >&2; exit 2; }',
-            'test -n "${AWS_SECRET_ACCESS_KEY:-}" || { echo "missing AWS_SECRET_ACCESS_KEY" >&2; exit 2; }',
-            f"aws s3 cp {quoted_source} {quoted_destination}",
-            f"aws s3 ls {quoted_destination} >/dev/null",
-        ]
-    if scheme == "r2":
+    if scheme in {"s3", "r2"}:
         s3_destination = f"s3://{parsed.netloc}{parsed.path}"
         return [
-            "# Configure AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and an R2 endpoint env in the shell.",
-            'test -n "${AWS_ACCESS_KEY_ID:-}" || { echo "missing AWS_ACCESS_KEY_ID" >&2; exit 2; }',
-            'test -n "${AWS_SECRET_ACCESS_KEY:-}" || { echo "missing AWS_SECRET_ACCESS_KEY" >&2; exit 2; }',
-            'BLUEPRINT_R2_ENDPOINT_URL="${BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL:-${R2_ENDPOINT_URL:-${AWS_ENDPOINT_URL:-}}}"',
-            'test -n "$BLUEPRINT_R2_ENDPOINT_URL" || { echo "missing BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL or R2_ENDPOINT_URL or AWS_ENDPOINT_URL" >&2; exit 2; }',
-            f'aws s3 cp {quoted_source} "{s3_destination}" --endpoint-url "$BLUEPRINT_R2_ENDPOINT_URL"',
-            f'aws s3 ls "{s3_destination}" --endpoint-url "$BLUEPRINT_R2_ENDPOINT_URL" >/dev/null',
+            'test -n "${AWS_ACCESS_KEY_ID:-}" || { echo "missing explicit object-store access key" >&2; exit 2; }',
+            'test -n "${AWS_SECRET_ACCESS_KEY:-}" || { echo "missing explicit object-store secret key" >&2; exit 2; }',
+            'BLUEPRINT_S3_ENDPOINT="${BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL:-${R2_ENDPOINT_URL:-${AWS_ENDPOINT_URL:-}}}"',
+            "python -c 'import sys; from blueprint_pipeline.s3_compatible_transport import require_compatible_endpoint; require_compatible_endpoint(sys.argv[1])' \"$BLUEPRINT_S3_ENDPOINT\"",
+            f'aws s3 cp {quoted_source} "{s3_destination}" --endpoint-url "$BLUEPRINT_S3_ENDPOINT"',
+            f'aws s3 ls "{s3_destination}" --endpoint-url "$BLUEPRINT_S3_ENDPOINT" >/dev/null',
         ]
     if scheme in {"", "file"}:
         return [f"cp {quoted_source} {quoted_destination}"]
