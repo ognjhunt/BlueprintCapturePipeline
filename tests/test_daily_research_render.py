@@ -187,3 +187,63 @@ def test_selected_instruction_hash_drift_refuses_before_create():
     api.agent["instructions"] = "changed"
     with pytest.raises(Refusal, match="pin_mismatch"):
         preflight(api, sha)
+
+
+@pytest.mark.parametrize("command", ["run", "reconcile"])
+@pytest.mark.parametrize("boundary", [
+    "eligible", "stopped", "workflow_disabled", "control_disabled",
+    "canary", "artifact_missing", "turn_failed", "qa_started", "publication_started",
+])
+def test_completed_validation_failure_enters_existing_workflow_only_when_eligible(
+        fixture, tmp_path, monkeypatch, command, boundary):
+    run, api, ledger, bridge, _ = fixture
+    api.raw = b"{invalid retained research"
+    failed = run.start_or_resume()
+    assert failed["state"] == "failed" and failed["turn_status"] == "completed"
+    assert failed["artifact_downloaded"] is True
+    retained = ledger.read_bytes(DAY + "-artifact.json")
+    with ledger.lock():
+        control = bridge.call("control")
+        control["workflow"] = {"enabled": boundary != "workflow_disabled",
+                               "qa_authority_reference": "approved-same-session-QA",
+                               "publication_authority_reference": "approved-fixed-targets"}
+        control["enabled"] = boundary != "control_disabled"
+        bridge.call("configure", value=control)
+        if boundary == "canary":
+            failed["canary"] = {"test_id": "retained-canary"}
+        elif boundary == "artifact_missing":
+            failed["artifact_downloaded"] = False
+        elif boundary == "turn_failed":
+            failed["turn_status"] = "failed"
+        elif boundary == "qa_started":
+            failed["qa"] = {"state": "validated"}
+        elif boundary == "publication_started":
+            failed["delivery"] = {"notion": {"state": "pending"}}
+        ledger.put(failed)
+    delegated, creation_modes = [], []
+    def stopped():
+        return boundary == "stopped"
+    def api_factory(*_args):
+        return api
+    def runner_factory(*args):
+        actual = Runner(*args, clock=lambda: NOW)
+        start = actual.start_or_resume
+        def observed_start(*, allow_create):
+            creation_modes.append(allow_create)
+            return start(allow_create=allow_create)
+        actual.start_or_resume = observed_start
+        return actual
+    def consume(actual_bridge, cache, **options):
+        assert actual_bridge is bridge and cache == tmp_path
+        assert options == {"stopped": stopped, "day": DAY, "api_factory": api_factory}
+        assert ledger.get(DAY)["session_id"] == failed["session_id"]
+        delegated.append(DAY)
+        return {"state": "existing_workflow_called", "date": DAY}
+    monkeypatch.setattr(render, "configured", lambda *_args: run.config)
+    monkeypatch.setattr(render, "Runner", runner_factory)
+    monkeypatch.setattr(render, "consume_workflow", consume)
+    result = render.invoke(command, bridge, tmp_path, stopped=stopped, api_factory=api_factory)
+    assert delegated == ([DAY] if boundary == "eligible" else [])
+    assert result["state"] == ("existing_workflow_called" if boundary == "eligible" else "failed")
+    assert creation_modes == [command == "run"] and len(api.payloads) == 1
+    assert ledger.read_bytes(DAY + "-artifact.json") == retained
