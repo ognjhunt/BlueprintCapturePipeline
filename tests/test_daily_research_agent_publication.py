@@ -60,7 +60,12 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
             state["actions"] = [{"type": "function_call", "turn_id": "turn_publication", "call_id": cid,
                                  "name": name, "arguments": arguments}]
             assert consumer.step()["state"] == "publication_running"
-            return json.loads(events[-1][1]["output"])
+            event = events[-1][1]
+            result = json.loads(event["output"])
+            if result["success"] is False:
+                assert event["success"] is False
+                assert json.loads(event["error"]) == result["error"]
+            return result
         inspected = ask("inspect_delivery", publication.INSPECT, {})
         assert inspected["success"] and "destinations" in inspected["output"]
         failed = ask("bad_format", publication.PUBLISH, {"destination": "notion", "strategy": "concise"})
@@ -74,6 +79,14 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
             fixed = ask("agent_corrected_provider_error", publication.PUBLISH, {"destination": "notion", "strategy": "concise",
                 "summary": "Supported source https://plant.example/tasks; commercial interest remains unknown."})
         assert fixed["receipt"]["readback_verified"] is True
+        for cid, args in [("crm_concise", {"destination": "sheets", "strategy": "concise", "summary": "Supported findings"}),
+                          ("crm_concise_without_summary", {"destination": "sheets", "strategy": "concise"})]:
+            rejected_crm = ask(cid, publication.PUBLISH, args)
+            assert rejected_crm["success"] is False
+            assert rejected_crm["error"]["code"] == "publication_agent_tool_arguments_invalid"
+            assert '{destination:"sheets",strategy:"full"}' in rejected_crm["error"]["guidance"]
+            current = ledger.get(DAY)["delivery"]["sheets"]
+            assert current["state"] == "pending" and not current.get("plan") and not current.get("receipt")
         sheet = ask("chosen_crm", publication.PUBLISH, {"destination": "sheets", "strategy": "full"})
         assert sheet["receipt"]["readback_verified"] is True
         # A stopped/rebound worker may collect an already-terminal exact turn

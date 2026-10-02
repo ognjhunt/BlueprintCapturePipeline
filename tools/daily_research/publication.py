@@ -14,7 +14,7 @@ def tools():
          "description": "Inspect approved research destinations, full validated results, publication state and readback receipts. No sends or writes.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {}, "required": []}},
         {"type": "function", "name": PUBLISH, "defer_loading": False,
-         "description": "Upload validated research to one approved destination you select. Choose full or concise presentation before a write claim; original evidence remains retained. Inspect structured errors/receipts, correct unclaimed presentation, and reconcile uncertain writes without replay.",
+         "description": "Upload validated research to one approved destination you select. Sheets requires strategy full with no summary; Notion accepts full with no summary or concise with a supported summary. Original evidence remains retained. Inspect structured errors/receipts, correct unclaimed presentation, and reconcile uncertain writes without replay.",
          "parameters": {"type": "object", "additionalProperties": False,
              "properties": {"destination": {"type": "string", "enum": ["notion", "sheets"]},
                  "strategy": {"type": "string", "enum": ["full", "concise"]}, "summary": {"type": "string"}},
@@ -190,6 +190,11 @@ def advance(consumer, row):
                     outcome = {"success": False, "error": {"code": code, "guidance": "Inspect saved receipts and claims. An uncertain write is observation-only; never resend or replace its plan."}}
                 event = {"type": "agent.session.input.tool_result", "turn_id": phase["turn_id"], "call_id": cid,
                          "success": outcome.get("success") is True, "output": canonical(outcome)}
+                if event["success"] is False:
+                    # Failed function calls expose `error`, not `output`, to the model.
+                    event["error"] = canonical(outcome.get("error") or {
+                        "code": "publication_attempt_unresolved",
+                        "guidance": "Inspect saved receipts before correcting an unclaimed request; never replay an uncertain write."})
                 raw = (canonical(event) + "\n").encode()
                 ledger.write_bytes(filename, raw)
             updated = ledger.get(row["date"])

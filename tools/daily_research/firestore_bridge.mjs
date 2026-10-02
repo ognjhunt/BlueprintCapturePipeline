@@ -580,7 +580,7 @@ export class Store {
             claimed:!!attemptState(run,row,name).claimed,batches:attemptState(run,row,name).batches || {},
             rejection:attemptState(run,row,name).rejection || null,attempts:run.publication_attempts?.[name] || {}}])),
           transport_limits:{notion:{blocks_per_request:90,utf8_json_bytes_per_request:450000,text_code_units_per_block:1800}},
-          guidance:'Choose the destination and full or concise presentation before a write claim. Complete canonical research is retained. Unknown writes are observation-only; never replace a consumed plan.'}};
+          guidance:'For Sheets use {destination:"sheets",strategy:"full"} without summary. Notion accepts full without summary or concise with summary. Complete canonical research is retained. Unknown writes are observation-only; never replace a consumed plan.'}};
       }
       const a=args;destination=a.destination;
       if(Object.keys(a).some(key=>!['destination','strategy','summary'].includes(key))
@@ -643,7 +643,9 @@ export class Store {
       }
       return {success:false,error:{code,destination:destination || null,
         recovery_policy:definitive_rejection?'new_agent_presentation_after_verified_absence':'preserve_claims_and_inspect',
-        guidance:definitive_rejection
+        guidance:code==='publication_agent_tool_arguments_invalid'
+          ?'Use {destination:"sheets",strategy:"full"} without summary for CRM. For Notion use {destination:"notion",strategy:"full"} without summary or {destination:"notion",strategy:"concise",summary:"supported summary"}. Argument rejection made no new write claim; inspect retained claims before correcting.'
+          :definitive_rejection
           ?'The provider definitively rejected the initial create request. Choose a revised presentation; a new attempt is admitted only after complete readback proves the report absent. Original plan, claim and error remain retained.'
           :'Inspect retained source and current claims. An uncertain write is GET-only until exact readback; choose a revised presentation before a claim or after a proven initial validation rejection.',
         ...(error.provider_feedback?{provider_feedback:error.provider_feedback}:{}),

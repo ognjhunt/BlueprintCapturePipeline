@@ -56,7 +56,12 @@ def test_agent_selects_history_queries_pages_records_and_corrects_errors_in_all_
             else:
                 assert consumer.step()["state"] == ("qa_running" if phase == "qa" else "publication_running")
             assert events[-1][0] == "sess_1" and events[-1][1]["turn_id"] == tid
-            return json.loads(events[-1][1]["output"])
+            event = events[-1][1]
+            result = json.loads(event["output"])
+            if result.get("ok") is False:
+                assert event["success"] is False
+                assert json.loads(event["error"]) == result["error"]
+            return result
         premature = ask("research", "premature_upload", publication.PUBLISH, {"destination": "notion", "strategy": "full"})
         assert not premature["ok"] and premature["error"]["code"] == "publication_requires_review"
         assert ledger.get(DAY)["delivery"] == {} and not (tmp_path / "history-requests.json").exists()
