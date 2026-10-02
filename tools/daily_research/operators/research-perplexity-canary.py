@@ -430,12 +430,19 @@ def collect_completed_qa(bridge, cache, *, api_factory=None, stopped=lambda: Fal
                         raise Refusal("terminal_qa_collection_ordering_changed")
                     stage = binding["stage"]
                     if ((stage == "before_cancel" and (previous.get("cancel_attempted") is not False
+                                                      or ("cancel_reply_received" in previous
+                                                          and previous["cancel_reply_received"] is not False)
                                                       or previous.get("error") != "agent_qa_terminal_collection_unavailable"))
                             or (stage != "before_cancel" and (previous.get("cancel_attempted") is not True
                                 or previous.get("error") != proof["cancellation_reason"]
-                                or (stage == "cancel_intent" and previous.get("cancel_idempotency_key") is not None)
+                                or (stage == "cancel_intent" and "cancel_idempotency_key" in previous)
                                 or (stage == "cancel_reply" and previous.get("cancel_idempotency_key") != row["run_key"] + ":qa:retry-phase:cancel")
-                                or previous.get("cancel_reply_received") is not (stage == "cancel_reply")))):
+                                # Legacy intent precedes recording any reply. Missing is
+                                # retained as missing, never rewritten to a false receipt.
+                                # Explicit null/true/other values do not prove this stage.
+                                or (stage == "cancel_intent" and "cancel_reply_received" in previous
+                                    and previous["cancel_reply_received"] is not False)
+                                or (stage == "cancel_reply" and previous.get("cancel_reply_received") is not True)))):
                         raise Refusal("terminal_qa_collection_ordering_changed")
                     ordering.append(binding["created_at"]["seconds"] + binding["created_at"]["nanoseconds"] / 1e9)
                 if (proof["completed_at"] + 1 > ordering[0] or not ordering[0] < ordering[1] < ordering[2]
