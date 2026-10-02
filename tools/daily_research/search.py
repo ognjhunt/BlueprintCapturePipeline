@@ -41,6 +41,8 @@ class ToolFailure(ValueError):
 
 def mcp_connections(declared):
     """Retain only the existing owner connections' non-secret configuration."""
+    if not isinstance(declared, list) or any(not isinstance(tool, dict) for tool in declared):
+        raise ToolFailure("research_mcp_configuration_invalid")
     connections, labels = [], set()
     for tool in declared:
         if tool.get("type") != "mcp":
@@ -49,7 +51,7 @@ def mcp_connections(declared):
         allowed = tool.get("allowed_tools")
         if (set(tool) != {"type", "server_label", "transport", "allowed_tools", "connection_origin",
                          "credential_id", "request_metadata", "required"}
-                or label not in MCP_READ_TOOLS or label in labels
+                or not isinstance(label, str) or label not in MCP_READ_TOOLS or label in labels
                 or not isinstance(transport, dict) or set(transport) - {"type", "server_url", "headers"}
                 or transport.get("type") != "http" or transport.get("server_url") != MCP_READ_TOOLS[label][0]
                 or transport.get("headers", {}) != {} or tool["request_metadata"] != {}

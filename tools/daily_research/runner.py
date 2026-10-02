@@ -603,16 +603,17 @@ class Ledger:
 
 
 def preflight(api, expected_instructions_sha256=None, search_provider=None, publication_profile=None, history_profile=None,
-              mcp_profile=None, mcp_binding=None):
+              mcp_profile=None):
     if mcp_profile and search_provider != search.PROFILE:
         raise Refusal("research_mcp_profile_invalid")
     agent, template = api.get("agent", AGENT), api.get("template", TEMPLATE)
     check_agent(agent, mcp_profile=mcp_profile)
     connections = None
     if mcp_profile:
-        connections = search.mcp_connections(agent["tools"])
-        if mcp_binding is not None and connections != mcp_binding:
-            raise Refusal("research_mcp_binding_changed")
+        try:
+            connections = search.mcp_connections(agent["tools"])
+        except search.ToolFailure as exc:
+            raise Refusal(str(exc)) from None
     instructions = agent.get("instructions")
     instructions_hash = hashlib.sha256(instructions.encode()).hexdigest() if isinstance(instructions, str) else None
     if expected_instructions_sha256 and instructions_hash != expected_instructions_sha256:
@@ -673,7 +674,18 @@ def check_agent(agent, search_provider=None, publication_profile=None, history_p
         except (search.ToolFailure, TypeError):
             raise Refusal("research_mcp_configuration_invalid") from None
     if search_provider == search.PROFILE:
-        if agent.get("tools") != search.tools(publication_profile, history_profile) + mcp_tools or agent.get("service_tier") != "default":
+        expected_tools = search.tools(publication_profile, history_profile) + mcp_tools
+        actual_tools = agent.get("tools")
+        if mcp_profile:
+            # Optional empty request headers are absent from SDK HTTP responses.
+            def normalize(tool):
+                transport = tool.get("transport")
+                if tool.get("type") != "mcp" or not isinstance(transport, dict) or transport.get("headers") != {}:
+                    return tool
+                return {**tool, "transport": {k: v for k, v in transport.items() if k != "headers"}}
+            expected_tools = [normalize(tool) for tool in expected_tools]
+            actual_tools = [normalize(tool) for tool in actual_tools] if isinstance(actual_tools, list) else actual_tools
+        if actual_tools != expected_tools or agent.get("service_tier") != "default":
             raise Refusal("agent_search_profile_mismatch")
     elif not agent.get("tools") or any(x.get("type") != "web_search" or x.get("mode") == "disabled"
             for x in agent["tools"] if not mcp_profile or x.get("type") != "mcp"):

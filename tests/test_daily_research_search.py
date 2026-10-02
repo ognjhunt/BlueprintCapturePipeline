@@ -133,16 +133,21 @@ def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
         for tool in payload["agent"]["tools"][-2:] for name in tool["allowed_tools"])
     assert [tool["name"] for tool in search.tools("agent-owned-v1", "agent-history-v1")][-2:] == [
         "search_company_history", "fetch_company_history_record"]
-    Consumer.check_session(row, api.get("session", row["session_id"]))
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    for tool in session["agent"]["tools"][-2:]:
+        tool["transport"].pop("headers")
+    Consumer.check_session(row, session)
     changed = deepcopy(connections)
     changed[0]["credential_id"] += "_changed"
     api.agent["tools"][-2:] = changed
-    with pytest.raises(Refusal, match="research_mcp_binding_changed"):
-        preflight(api, search_provider=search.PROFILE, mcp_profile=search.MCP_PROFILE, mcp_binding=row["mcp_binding"])
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+    fresh = preflight(api, search_provider=search.PROFILE, mcp_profile=search.MCP_PROFILE)
+    assert fresh["mcp_binding"] == changed and row["mcp_binding"] == connections
     assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == payload
 
 
-@pytest.mark.parametrize("change", ["headers", "metadata", "endpoint", "origin", "unknown_server"])
+@pytest.mark.parametrize("change", ["headers", "metadata", "endpoint", "origin", "unknown_server", "malformed_label"])
 def test_owner_mcp_rejects_unsafe_configuration_before_intent_or_create(fixture, change):
     runner, api, ledger = fixture
     tool = {"type": "mcp", "server_label": "googlesheets",
@@ -157,8 +162,10 @@ def test_owner_mcp_rejects_unsafe_configuration_before_intent_or_create(fixture,
         tool["transport"]["server_url"] += "/unreviewed"
     elif change == "origin":
         tool["connection_origin"] = "environment"
-    else:
+    elif change == "unknown_server":
         tool["server_label"] = "unreviewed"
+    else:
+        tool["server_label"] = ["googlesheets"]
     api.agent["tools"].append(tool)
     runner.config["mcp_profile"] = search.MCP_PROFILE
     with pytest.raises(Refusal, match="research_mcp_configuration_invalid"):
@@ -166,7 +173,7 @@ def test_owner_mcp_rejects_unsafe_configuration_before_intent_or_create(fixture,
     assert not api.payloads and ledger.rows() == []
 
 
-@pytest.mark.parametrize("change", ["credential", "write_tool", "required", "binding"])
+@pytest.mark.parametrize("change", ["credential", "write_tool", "required", "binding", "headers", "payload"])
 def test_owner_mcp_session_uses_only_original_read_only_binding(fixture, change):
     runner, api, _ = fixture
     tool = {"type": "mcp", "server_label": "slack",
@@ -184,8 +191,12 @@ def test_owner_mcp_session_uses_only_original_read_only_binding(fixture, change)
         session["agent"]["tools"][-1]["allowed_tools"].append("slack_send_message")
     elif change == "required":
         session["agent"]["tools"][-1]["required"] = True
-    else:
+    elif change == "binding":
         row["mcp_binding"][0]["credential_id"] += "_changed"
+    elif change == "headers":
+        session["agent"]["tools"][-1]["transport"]["headers"] = {"Authorization": "synthetic-unsafe-header"}
+    else:
+        row["create_payload"]["agent"]["tools"][-1]["credential_id"] += "_changed"
     with pytest.raises(Refusal, match="agent_search_profile_mismatch|research_mcp_binding_changed"):
         Consumer.check_session(row, session)
     assert not api.executions and len(api.payloads) == 1
