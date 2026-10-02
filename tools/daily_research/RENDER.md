@@ -225,7 +225,7 @@ Never restore an empty ledger or an older snapshot of run state.
 
 The existing research clock can run deterministic business analysis at **06:45
 America/Chicago**, before the unchanged 07:00 research date. The WebApp bundles
-`server/research-learning/research-worker-host.ts` as `dist/research-worker-host.js`
+`server/research-learning/research-worker-host.ts` as `dist/research-learning/research-worker-host.js`
 and passes its local path through the existing private Python/Node bridge.
 This creates no daemon, network endpoint, model-analysis call or ops-scheduler
 dependency. `server/worker.ts` and communications scheduling are unchanged.

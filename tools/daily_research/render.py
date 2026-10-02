@@ -240,21 +240,6 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 cfg = configuration(control_configuration(control))
                 signature = digest({key: value for key, value in control.items() if key != "lease"})
                 learning = control.get("learning", {}).get("enabled") is True
-                if learning:
-                    try:
-                        due = learning_due(clock(), control["learning"]["startDate"])
-                        learning_key = (digest(control["learning"]), due["day"] if due else None)
-                        if due and learning_key != last_learning and (not learning_retry_at or clock() >= learning_retry_at):
-                            with FirestoreLedger(bridge).lock():
-                                bridge.call("learning_reconcile")
-                                learning_result = bridge.call("learning_daily", **due)
-                            emit({"state": "learning_completed", "date": due["day"],
-                                  "overview_id": learning_result["overviewId"]})
-                            last_learning, learning_retry_at = learning_key, None
-                    except Exception as exc:  # noqa: BLE001 - preserve existing-intent recovery
-                        emit({"state": "learning_blocked", "error": str(exc) if isinstance(exc, Refusal)
-                              else "research_learning_unavailable"})
-                        learning_retry_at = clock() + timedelta(minutes=5)
                 day = due_date(clock(), cfg["first_date"])
                 if signature != last_signature or day != last_day or (retry_at and clock() >= retry_at):
                     last_signature, last_day = signature, day
@@ -270,6 +255,24 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 elif workflow(control) and (not retry_at or clock() >= retry_at):
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
                         emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
+                if learning:
+                    try:
+                        due = learning_due(clock(), control["learning"]["startDate"])
+                        learning_key = (digest(control["learning"]), due["day"] if due else None)
+                        if due and learning_key != last_learning and (not learning_retry_at or clock() >= learning_retry_at):
+                            with FirestoreLedger(bridge).lock():
+                                bridge.call("learning_reconcile")
+                                learning_result = bridge.call("learning_daily", **due)
+                            emit({"state": "learning_completed", "date": due["day"],
+                                  "overview_id": learning_result["overviewId"]})
+                            last_learning, learning_retry_at = learning_key, None
+                    except Exception as exc:  # noqa: BLE001 - preserve existing-intent recovery
+                        emit({"state": "learning_blocked", "error": str(exc) if isinstance(exc, Refusal)
+                              else "research_learning_unavailable"})
+                        learning_retry_at = clock() + timedelta(minutes=5)
+                        if getattr(bridge, "broken", False) or getattr(bridge, "closed", False):
+                            bridge.close()
+                            bridge = None
             except Exception as exc:  # noqa: BLE001 - fixed codes, never upstream exception bodies
                 emit({"state": "blocked", "error": str(exc) if isinstance(exc, Refusal) else "research_runtime_unavailable"})
                 retry_at = clock() + timedelta(minutes=5)

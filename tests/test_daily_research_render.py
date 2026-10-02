@@ -321,3 +321,38 @@ def test_learning_projection_failure_preserves_terminal_result(monkeypatch):
     monkeypatch.setattr(render, 'emit', lambda result: None)
     result = {'date': DAY, 'state': 'failed', 'error': 'preserved-root-failure'}
     assert render.learning_terminal(FailedProjection(), result) is result
+
+
+def test_poisoned_learning_bridge_cannot_starve_core_recovery(monkeypatch):
+    control = json.loads((ROOT / 'tools/daily_research/render.control.example.json').read_text())
+    control['learning'] = {'enabled': True, 'startDate': DAY}
+    clock, calls = [NOW], []
+    class PoisonedBridge:
+        broken = False
+        closed = False
+        def call(self, op, **kwargs):
+            if self.broken:
+                raise Refusal('firestore_bridge_unavailable')
+            if op == 'control':
+                return control
+            calls.append(op)
+            if op == 'learning_reconcile':
+                self.broken = self.closed = True
+                raise Refusal('firestore_bridge_deadline')
+        def close(self):
+            self.closed = True
+    class Stopped:
+        ticks = 0
+        def is_set(self):
+            return self.ticks >= 7
+        def wait(self, delay):
+            self.ticks += 1
+            clock[0] += timedelta(seconds=delay)
+    def observe(command, bridge, *args, **kwargs):
+        bridge.call('observer_read')
+        return {'state': 'running'}
+    monkeypatch.setattr(render, 'invoke', observe)
+    monkeypatch.setattr(render, 'emit', lambda result: None)
+    render.scheduler(Stopped(), bridge_factory=PoisonedBridge, clock=lambda: clock[0])
+    assert calls.count('observer_read') == calls.count('learning_reconcile') == 2
+    assert calls.index('observer_read') < calls.index('learning_reconcile')
