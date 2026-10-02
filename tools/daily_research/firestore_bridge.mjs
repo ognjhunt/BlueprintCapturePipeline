@@ -166,6 +166,12 @@ export class Store {
       const prior = await tx.get(ref);
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      const historyBinding=row.history_profile==='agent-history-v1'?valueHash(row.history_binding):null;
+      if(row.history_profile && row.history_profile!=='agent-history-v1') refuse('company_history_profile_invalid');
+      if(prior.exists && ((prior.data().history_profile || null)!==(row.history_profile || null)
+          || (prior.data().history_binding_digest || null)!==historyBinding)) refuse('company_history_intent_conflict');
+      if(!prior.exists && historyBinding && (row.history_binding?.enabled!==true
+          || !control.learning || valueHash(control.learning)!==historyBinding)) refuse('company_history_authority_changed');
       const retryPhase = row.qa_retry_continuation ? sha(Buffer.from(JSON.stringify(row.qa_retry_continuation))) : null;
       const submissionBinding = row.qa?.submission_binding ? sha(Buffer.from(JSON.stringify(row.qa.submission_binding))) : null;
       const terminalCollection = row.qa?.terminal_collection_recovery ? sha(Buffer.from(JSON.stringify(row.qa.terminal_collection_recovery))) : null;
@@ -208,6 +214,7 @@ export class Store {
         qa_request_digest: row.qa?.request_digest || null, qa_state: row.qa?.state || null,
         qa_deadline_ms: row.qa?.deadline_ms || null,
         search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
+        history_profile:row.history_profile || null,history_binding_digest:historyBinding,
         recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
         qa_retry_phase_digest: retryPhase,
@@ -358,7 +365,14 @@ export class Store {
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
       this.budgetGate(control, snap.data());
-      if (control.learning?.enabled === true || metadata.learning_binding_digest) {
+      if(snap.data().history_profile==='agent-history-v1') {
+        if(control.config?.history_profile!=='agent-history-v1' || control.learning?.enabled!==true
+            || snap.data().history_binding_digest!==valueHash(control.learning)
+            || ['binding','businessScope'].some(key=>{
+              const expiry=Date.parse(control.learning[key]?.expiresAt);
+              return !Number.isFinite(expiry) || expiry<=this.clock();
+            })) refuse('company_history_authority_changed_or_expired');
+      } else if (control.learning?.enabled === true || metadata.learning_binding_digest) {
         if (control.learning?.enabled !== true || metadata.learning_binding_digest !== valueHash(control.learning)
             || ['binding','businessScope','learningGrant'].some(key => {
               const expiry = Date.parse(control.learning[key]?.expiresAt);
@@ -858,6 +872,26 @@ export class Store {
           const code=error.message;
           refuse(/^(?:research_learning|business_daily|business_run|learning_consumer)_[a-z_]{1,75}$/.test(code)
             ? code : 'research_learning_unavailable');
+        }
+      }
+      case 'history_search':
+      case 'history_fetch': {
+        await this.assertLease();
+        const control=(await this.control.get()).data(),row=await this.get(request.day);
+        if(control?.enabled!==true || control.learning?.enabled!==true || !this.learning
+            || row?.history_profile!=='agent-history-v1'
+            || control.config?.history_profile!=='agent-history-v1'
+            || valueHash(row.history_binding)!==valueHash(control.learning))
+          refuse('company_history_authority_changed');
+        if(['binding','businessScope'].some(key=>{
+          const expiry=Date.parse(control.learning[key]?.expiresAt);
+          return !Number.isFinite(expiry) || expiry<=this.clock();
+        })) refuse('company_history_scope_expired');
+        try {return await this.learning(request,control.learning);}
+        catch(error) {
+          const code=error.message;
+          return {ok:false,error:{code:/^(?:company_history|research_history)_[a-z_]{1,100}$/.test(code)
+            ?code:'company_history_unavailable',guidance:'Correct the request or report the current company access/coverage gap.'}};
         }
       }
       case 'read_crm': {

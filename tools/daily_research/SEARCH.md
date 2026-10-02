@@ -71,11 +71,24 @@ and receives structured transport errors and exact readback receipts. The worker
 executes these requests and retains original results, decisions, claims and
 receipts. A definitive initial Notion 400 validation rejection permits a revised
 agent choice only after complete readback proves absence; unknown writes retain
-their claims and remain observation-only. Stop and the original absolute
-deadline cancel the bound publication session once, preserving an unknown reply.
+their claims and remain observation-only. The original absolute deadline retains
+its admitted cancellation request once, preserving an unknown reply.
+Stopped or changed-authority observers use GET-only terminal reconciliation;
+unknown attempts stay pending and cannot resume inference, tool calls or uploads.
 This profile grants no additional time, spending, destinations or sends. Deploying
 source alone cannot add tools to an existing session; activation requires this
 explicit profile in a newly admitted session. The example remains disabled.
+
+`history_profile=agent-history-v1` adds `search_company_history` and
+`fetch_company_history_record` to a newly admitted session. The agent chooses
+queries, optional city/industry/task/company/kind filters, pages and exact record
+IDs across research, QA and publication. It receives full record content,
+provenance, coverage, semantic-search availability and correctable field errors
+through the same saved tool-result loop. This profile uses the trusted company
+access binding and omits the legacy preselected history preload. Query arguments
+cannot grant access or choose another company scope. Original requests/results
+remain immutable and exportable; a repeated pending call reuses its saved result.
+The legacy learning-context path and saved tool definitions remain unchanged.
 
 No native web-search fallback is enabled. API errors, missing credentials,
 unsupported sources and evidence size ceilings are visible gaps. This avoids an

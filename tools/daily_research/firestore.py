@@ -89,6 +89,10 @@ class FirestoreLedger:
     def learning_context(self, day, *, allow_create=True):
         return self.bridge.call("learning_context", day=day, allow_create=allow_create)
 
+    def company_history_binding(self):
+        control = self.bridge.call("control")
+        return control.get("learning") if isinstance(control, dict) else None
+
     def put(self, row):
         from tools.daily_research import search
         if row.get("search_provider") == search.PROFILE and len(canonical(row).encode()) > search.MAX_RECORD:
@@ -136,6 +140,8 @@ class FencedProvider(Provider):
             raise Refusal("research_tool_budget_authority_changed")
         if phase == "publication" and control.get("workflow") != row["publication"]["workflow_authority"]:
             raise Refusal("publication_agent_authority_changed")
+        if row.get("history_profile") == "agent-history-v1" and control.get("learning") != row["history_binding"]:
+            raise Refusal("company_history_authority_changed")
 
     def publication_input(self, session_id, event, key, day, request_digest, deadline_ms):
         from tools.daily_research.consumer import Consumer, qa_deadline

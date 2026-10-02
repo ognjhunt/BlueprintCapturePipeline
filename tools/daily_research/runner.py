@@ -130,7 +130,7 @@ def configuration(value):
                "crm_snapshot", "slack_channel_id", "max_runtime_seconds", "soft_target_usd",
                "research_contract_version", "knowledge_snapshot", "knowledge_filters", "knowledge_refresh_policy",
                "expected_agent_instructions_sha256", "discovery_profile", "qa_reserved_seconds", "search_provider",
-               "recurring_budget_authority_reference", "publication_profile"}
+               "recurring_budget_authority_reference", "publication_profile", "history_profile"}
     if set(value) - allowed or type(value.get("enabled")) is not bool:
         raise Refusal("config_invalid")
     date.fromisoformat(value["first_date"])
@@ -142,6 +142,8 @@ def configuration(value):
     selected_search = value.get("search_provider") == search.PROFILE
     if value.get("publication_profile") not in (None, "agent-owned-v1") or value.get("publication_profile") and not selected_search:
         raise Refusal("publication_profile_invalid")
+    if value.get("history_profile") not in (None, "agent-history-v1") or value.get("history_profile") and not selected_search:
+        raise Refusal("history_profile_invalid")
     target = value.get("soft_target_usd")
     if selected_search:
         valid_target = type(target) in {int, float} and 0 < target <= 1_000_000 and math.isfinite(target)
@@ -598,7 +600,7 @@ class Ledger:
         return (self.root / name).read_bytes()
 
 
-def preflight(api, expected_instructions_sha256=None, search_provider=None, publication_profile=None):
+def preflight(api, expected_instructions_sha256=None, search_provider=None, publication_profile=None, history_profile=None):
     agent, template = api.get("agent", AGENT), api.get("template", TEMPLATE)
     check_agent(agent)
     instructions = agent.get("instructions")
@@ -623,7 +625,7 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
             raise Refusal("agent_instructions_unavailable")
         result["search_provider"] = search.PROFILE
         result["session_agent_override"] = {
-            "tools": search.tools(publication_profile), "service_tier": "default",
+            "tools": search.tools(publication_profile, history_profile), "service_tier": "default",
             "instructions": instructions + "\nFor this explicitly selected search profile, the following "
             "application-tool instructions replace prior native-web-search-only restrictions. All other "
             "evidence, authority and safety boundaries remain in force. " + search.instructions()}
@@ -631,16 +633,20 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
         result["session_agent_override"]["instructions"] += (" Publication tools are available only in the subsequent, "
             "QA-validated publication phase. You own format, destination choice, uploads and error correction through "
             "the approved Notion/CRM tool transports. No sends, new access or new spending/runtime authority.")
+    if history_profile == "agent-history-v1":
+        from tools.daily_research.history import instructions as history_instructions
+        result["history_profile"] = history_profile
+        result["session_agent_override"]["instructions"] += history_instructions()
     return result
 
 
-def check_agent(agent, search_provider=None, publication_profile=None):
+def check_agent(agent, search_provider=None, publication_profile=None, history_profile=None):
     if (agent.get("id") != AGENT or agent.get("model") != MODEL
             or agent.get("reasoning", {}).get("effort") != "medium"
             or agent.get("multi_agent", {}).get("enabled") is not False):
         raise Refusal("agent_configuration_mismatch")
     if search_provider == search.PROFILE:
-        if agent.get("tools") != search.tools(publication_profile) or agent.get("service_tier") != "default":
+        if agent.get("tools") != search.tools(publication_profile, history_profile) or agent.get("service_tier") != "default":
             raise Refusal("agent_search_profile_mismatch")
     elif not agent.get("tools") or any(x.get("type") != "web_search" or x.get("mode") == "disabled" for x in agent["tools"]):
         raise Refusal("agent_configuration_mismatch")
@@ -807,10 +813,14 @@ class Runner:
             # The Render host captures scoped overview/history while this same
             # lease is held. Recovery reuses the durable intent and never reads
             # a replacement context or issues another create.
-            learning = self.ledger.learning_context(day) if hasattr(self.ledger, "learning_context") else None
-            if self.required_history and learning is None:
+            agent_history = self.config.get("history_profile") == "agent-history-v1"
+            history_binding = self.ledger.company_history_binding() if agent_history and hasattr(self.ledger, "company_history_binding") else None
+            if agent_history and (not isinstance(history_binding, dict) or history_binding.get("enabled") is not True):
+                raise Refusal("company_history_binding_required")
+            learning = None if agent_history else self.ledger.learning_context(day) if hasattr(self.ledger, "learning_context") else None
+            if self.required_history and learning is None and not agent_history:
                 raise Refusal("research_learning_input_required")
-            checked = preflight(self.api, self.config.get("expected_agent_instructions_sha256"), self.config.get("search_provider"), self.config.get("publication_profile"))
+            checked = preflight(self.api, self.config.get("expected_agent_instructions_sha256"), self.config.get("search_provider"), self.config.get("publication_profile"), self.config.get("history_profile"))
             if self.stop_requested():
                 return {"date": day, "state": "stopped_before_create"}
             body = {"agent_id": AGENT, "environment": {"type": "openai_hosted", "container_size": "small",
@@ -885,6 +895,8 @@ class Runner:
                    "cost_status": "unknown_pending_billing_reconciliation", "delivery": {}}
             if self.config.get("publication_profile"):
                 row["publication_profile"] = self.config["publication_profile"]
+            if agent_history:
+                row.update(history_profile="agent-history-v1", history_binding=history_binding)
             row["research_crm_context"] = crm_context
             if learning is not None:
                 row.update(learning_context=learning, learning_context_digest=learning["inputHash"])
@@ -960,7 +972,7 @@ class Runner:
                 raise Refusal("session_binding_mismatch")
             if session["environment"].get("type") != "openai_hosted":
                 raise Refusal("session_environment_mismatch")
-            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"))
+            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"))
             if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
                 raise Refusal("session_search_instructions_mismatch")
             row["reported_container_size"] = session["environment"].get("container_size")

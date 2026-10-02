@@ -76,10 +76,23 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
         assert fixed["receipt"]["readback_verified"] is True
         sheet = ask("chosen_crm", publication.PUBLISH, {"destination": "sheets", "strategy": "full"})
         assert sheet["receipt"]["readback_verified"] is True
+        # A stopped/rebound worker may collect an already-terminal exact turn
+        # using GETs; it must not send cancellation, inference or another upload.
+        if rejected:
+            with ledger.lock():
+                control = bridge.call("control")
+                control["workflow"]["publication_authority_reference"] = "replacement-authority"
+                bridge.call("configure", value=control)
+        else:
+            consumer = Consumer(ledger, consumer.config, api, clock=consumer.clock, stopped=lambda: True)
+        result_count = len(events)
         state.update(actions=[], status="completed")
         assert consumer.step()["state"] == "completed"
         final = ledger.get(DAY)
         assert len(posts) == 1 and posts[0][0] == "sess_1"
+        assert len(events) == result_count and not api.cancellations
+        assert not final["publication"].get("cancel_attempted")
+        assert bridge.call("active_qa") is None
         assert final["delivery"]["notion"]["payload"] == original_payload
         assert ledger.read_bytes(DAY + "-qa.json") == original_raw
         assert final["publication"]["usage"]["output_tokens"] == 20
@@ -105,7 +118,7 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
         generator.close()
 
 
-@pytest.mark.parametrize("interruption", ["stop", "deadline", "authority"])
+@pytest.mark.parametrize("interruption", ["stop", "deadline", "authority", "disabled", "prior_cancel", "revoked", "malformed"])
 def test_uncertain_publication_is_cancelled_once_on_bound_interruption(tmp_path, interruption):
     generator = consumer_setup(tmp_path, publication=True)
     consumer, api, ledger, bridge, _ = next(generator)
@@ -120,21 +133,39 @@ def test_uncertain_publication_is_cancelled_once_on_bound_interruption(tmp_path,
             raise TimeoutError()
         api.publication_input, api.cancel = lost_input, lost_cancel
         assert consumer.step()["state"] == "publication_input_unresolved"
+        if interruption == "prior_cancel":
+            with ledger.lock():
+                publication.cancel(consumer, ledger.get(DAY), "publication_deadline_reached")
+            consumer = Consumer(ledger, consumer.config, api, clock=consumer.clock, stopped=lambda: True)
         if interruption == "stop":
             consumer = Consumer(ledger, consumer.config, api, clock=consumer.clock, stopped=lambda: True)
         elif interruption == "deadline":
             consumer.clock = lambda: NOW + timedelta(seconds=1801)
-        else:
+        elif interruption != "prior_cancel":
             with ledger.lock():
                 control = bridge.call("control")
-                control["workflow"]["publication_authority_reference"] = "replacement-authority"
+                if interruption == "disabled":
+                    control["enabled"] = False
+                elif interruption == "revoked":
+                    control["workflow"].pop("publication_authority_reference")
+                elif interruption == "malformed":
+                    control["workflow"] = "revoked-workflow"
+                else:
+                    control["workflow"]["publication_authority_reference"] = "replacement-authority"
                 bridge.call("configure", value=control)
+            if interruption in {"disabled", "revoked", "malformed"}:
+                consumer = Consumer(ledger, consumer.config, api, clock=consumer.clock)
         assert consumer.step()["state"] == "publication_cancel_pending"
         assert consumer.step()["state"] == "publication_cancel_pending"
         row = ledger.get(DAY)
-        assert len(submissions) == len(cancellations) == 1
-        assert cancellations[0] == ("sess_1", row["run_key"] + ":publication")
-        assert row["publication"]["cancel_reply_unresolved"] is True
+        expected_cancellations = int(interruption in {"deadline", "prior_cancel"})
+        assert len(submissions) == 1 and len(cancellations) == expected_cancellations
+        if expected_cancellations:
+            assert cancellations[0] == ("sess_1", row["run_key"] + ":publication")
+            assert row["publication"]["cancel_reply_unresolved"] is True
+        else:
+            assert row["publication"]["observation_only_reason"]
+            assert not row["publication"].get("cancel_attempted")
         assert row["state"] == "reviewed" and all(d["state"] == "pending" for d in row["delivery"].values())
         # Re-enabling after a lost cancellation cannot resume publication tools.
         consumer.stopped = lambda: False
@@ -147,6 +178,31 @@ def test_uncertain_publication_is_cancelled_once_on_bound_interruption(tmp_path,
             return values
         api.listing = accepted_turn
         assert consumer.step()["state"] == "publication_cancel_pending"
-        assert len(cancellations) == 1 and not ledger.get(DAY).get("application_tool_calls")
+        assert len(cancellations) == expected_cancellations and not ledger.get(DAY).get("application_tool_calls")
+        consumer.stopped = lambda: interruption in {"stop", "prior_cancel"}
+        def terminal_turn(resource, sid=None):
+            values = listing(resource, sid)
+            if resource == "turns":
+                values.append({"id": "turn_publication", "session_id": "sess_1", "agent_id": AGENT,
+                    "status": "cancelled", "subagent_id": None, "completed_at": int((NOW + timedelta(seconds=40)).timestamp()),
+                    "usage": {"input_tokens": 15}})
+            if resource == "items":
+                values.append({"turn_id": "turn_publication", "type": "message", "content": "Stopped; publication remains incomplete."})
+            return values
+        api.listing = terminal_turn
+        assert consumer.step()["state"] == "publication_agent_incomplete"
+        final = ledger.get(DAY)
+        assert final["publication"]["turn_status"] == "cancelled"
+        assert final["publication"]["usage"] == {"input_tokens": 15}
+        if expected_cancellations:
+            assert final["publication"]["cancel_reply_unresolved"] is True
+        assert final["state"] == "reviewed" and len(submissions) == 1 and len(cancellations) == expected_cancellations
+        assert bridge.call("active_qa") is None
+        assert json.loads(ledger.read_bytes(DAY + "-publication-evidence.json"))[0]["content"]
+        if interruption in {"stop", "disabled", "prior_cancel"}:
+            assert consumer.step()["state"] == "workflow_disabled"
+        elif interruption in {"revoked", "malformed"}:
+            with pytest.raises(Refusal, match="workflow_authority_missing"):
+                consumer.step()
     finally:
         generator.close()

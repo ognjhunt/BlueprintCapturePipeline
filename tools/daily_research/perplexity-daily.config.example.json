@@ -15,5 +15,6 @@
   "discovery_profile": "adaptive-sites-v1",
   "qa_reserved_seconds": 600,
   "search_provider": "perplexity-fast-v1",
-  "publication_profile": "agent-owned-v1"
+  "publication_profile": "agent-owned-v1",
+  "history_profile": "agent-history-v1"
 }

@@ -56,7 +56,7 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools(publication_profile=None):
+def tools(publication_profile=None, history_profile=None):
     declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
@@ -77,6 +77,9 @@ def tools(publication_profile=None):
     if publication_profile == "agent-owned-v1":
         from tools.daily_research.publication import tools as publication_tools
         declared.extend(publication_tools())
+    if history_profile == "agent-history-v1":
+        from tools.daily_research.history import tools as history_tools
+        declared.extend(history_tools())
     return declared
 
 
@@ -325,11 +328,16 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     if phase == "publication":
         from tools.daily_research.consumer import qa_deadline
         deadline = qa_deadline(row, {}).timestamp()
+    from tools.daily_research import history, publication
+    early_publication = ({publication.INSPECT, publication.PUBLISH}
+                         if row.get("publication_profile") == publication.PROFILE and phase != "publication" else set())
+    admitted_names = {SEARCH, READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
+    admitted_names |= early_publication
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":
             continue
-        if (action.get("type") != "function_call" or action.get("name") not in {SEARCH, READ}
+        if (action.get("type") != "function_call" or action.get("name") not in admitted_names
                 or not tid or action.get("turn_id") != tid):
             raise Refusal("research_tool_action_binding_invalid")
         cid = identifier(action.get("call_id"))
@@ -363,11 +371,17 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                     raise Refusal("research_tool_stopped_or_expired")
                 try:
                     with bounded_request(min(15, deadline - clock().timestamp())):
-                        result = api.application_tool(action["name"], action.get("arguments"))
+                        if action["name"] in early_publication:
+                            result = {"ok": False, "error": {"code": "publication_requires_review",
+                                "guidance": "Finish research and QA validation first. Then inspect destinations and choose publication in this same session."}}
+                        elif action["name"] in history.NAMES:
+                            result = history.execute(ledger, row, action["name"], action.get("arguments"))
+                        else:
+                            result = api.application_tool(action["name"], action.get("arguments"))
                         output = canonical(result)
                     if len(output.encode()) > MAX_RESPONSE:
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
-                    outcome = {"success": True, "output": output}
+                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication else True, "output": output}
                 except ToolFailure as exc:
                     outcome = {"success": False, "error": str(exc)}
                 except Exception:  # noqa: BLE001 - stable error, never upstream secrets
