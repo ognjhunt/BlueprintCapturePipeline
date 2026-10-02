@@ -559,20 +559,24 @@ export class Store {
     await this.put(row);
   }
   async publicationAgentTool(day,action,requestDigest) {
-    let destination, row;
+    let destination, row, argumentIssues;
+    const invalidArguments=issues=>{argumentIssues=issues;refuse('publication_agent_tool_arguments_invalid');};
     try {
       row=await this.get(day);
       const control=(await this.control.get()).data();this.publicationAgentGate(control,row,requestDigest,action);
       let args=action?.arguments;
-      if(typeof args==='string') {try {args=JSON.parse(args);}catch {refuse('publication_agent_tool_arguments_invalid');}}
+      if(typeof args==='string') {try {args=JSON.parse(args);}catch {invalidArguments([{path:'/',code:'invalid_json',
+        expectations:{type:'object'},allowed_repair:'Provide one JSON object matching the declared publication tool fields.'}]);}}
       if(action?.name==='blueprint_inspect_publication' && args==null) args={};
       if(!action || !['blueprint_inspect_publication','blueprint_publish_research'].includes(action.name)
           || !args || typeof args!=='object' || Array.isArray(args))
-        refuse('publication_agent_tool_arguments_invalid');
+        invalidArguments([{path:'/',code:'invalid_type',expectations:{type:'object'},
+          allowed_repair:'Use a declared publication tool with one arguments object.'}]);
       const ref=this.db.doc(`${ROOT}/runs/${day}`),run=(await ref.get()).data();
       if(!run.publication_input_claimed) refuse('publication_agent_input_not_claimed');
       if(action.name==='blueprint_inspect_publication') {
-        if(Object.keys(args).length) refuse('publication_agent_tool_arguments_invalid');
+        if(Object.keys(args).length) invalidArguments([{path:'/',code:'unexpected_properties',expectations:{allowed_properties:[]},
+          allowed_repair:'Call blueprint_inspect_publication with an empty object.'}]);
         return {success:true,output:{validated_research:row.qa.decision || null,packet:row.packet,
           destinations:Object.fromEntries(Object.entries(row.delivery || {}).map(([name,d])=>[name,{
             key:d.key,payload:d.payload,payload_digest:d.payload_digest,presentation:d.presentation || null,
@@ -580,15 +584,28 @@ export class Store {
             claimed:!!attemptState(run,row,name).claimed,batches:attemptState(run,row,name).batches || {},
             rejection:attemptState(run,row,name).rejection || null,attempts:run.publication_attempts?.[name] || {}}])),
           transport_limits:{notion:{blocks_per_request:90,utf8_json_bytes_per_request:450000,text_code_units_per_block:1800}},
-          guidance:'Choose the destination and full or concise presentation before a write claim. Complete canonical research is retained. Unknown writes are observation-only; never replace a consumed plan.'}};
+          presentation_rules:{sheets:{strategies:['full'],summary:'must_be_absent',example:{destination:'sheets',strategy:'full'}},
+            notion:{full:{summary:'must_be_absent'},concise:{summary:'required_nonblank',max_utf8_bytes:2000000}}},
+          guidance:'Sheets requires full with summary omitted. Notion permits full with summary omitted or concise with a nonblank summary up to 2,000,000 UTF-8 bytes. Choose before a write claim. Complete canonical research is retained. Unknown writes are observation-only; never replace a consumed plan.'}};
       }
       const a=args;destination=a.destination;
-      if(Object.keys(a).some(key=>!['destination','strategy','summary'].includes(key))
-          || !['notion','sheets'].includes(destination) || !['full','concise'].includes(a.strategy)
-          || a.strategy==='full' && a.summary!==undefined
-          || a.strategy==='concise' && (destination!=='notion' || typeof a.summary!=='string'
-            || !a.summary.trim() || Buffer.byteLength(a.summary)>2000000))
-        refuse('publication_agent_tool_arguments_invalid');
+      const issues=[];
+      if(Object.keys(a).some(key=>!['destination','strategy','summary'].includes(key)))
+        issues.push({path:'/',code:'unexpected_properties',expectations:{allowed_properties:['destination','strategy','summary']},
+          allowed_repair:'Remove undeclared fields; keep the original request retained.'});
+      if(!['notion','sheets'].includes(destination)) issues.push({path:'/destination',code:'invalid_enum',
+        expectations:{allowed_values:['notion','sheets']},allowed_repair:'Select one already approved destination: notion or sheets.'});
+      if(!['full','concise'].includes(a.strategy) || destination==='sheets' && a.strategy!=='full')
+        issues.push({path:'/strategy',code:'invalid_enum',expectations:{allowed_values:destination==='sheets'?['full']:['full','concise']},
+          allowed_repair:destination==='sheets'?'Use {"destination":"sheets","strategy":"full"} with summary omitted.':'Choose full or concise; concise is available only for Notion.'});
+      if((destination==='sheets' || a.strategy==='full') && a.summary!==undefined)
+        issues.push({path:'/summary',code:'field_must_be_absent',expectations:{present:false},
+          allowed_repair:'Omit summary for Sheets and every full presentation; original canonical research remains retained.'});
+      if(destination==='notion' && a.strategy==='concise' && (typeof a.summary!=='string'
+          || !a.summary.trim() || Buffer.byteLength(a.summary)>2000000))
+        issues.push({path:'/summary',code:'invalid_summary',expectations:{type:'string',nonblank:true,max_utf8_bytes:2000000},
+          allowed_repair:'Supply a supported nonblank Notion summary within 2,000,000 UTF-8 bytes, or choose full and omit summary.'});
+      if(issues.length) invalidArguments(issues);
       const d=row.delivery?.[destination];if(!d) refuse('publication_destination_invalid');
       let presentation=null;
       if(a.strategy==='concise') {
@@ -642,8 +659,10 @@ export class Store {
         }
       }
       return {success:false,error:{code,destination:destination || null,
-        recovery_policy:definitive_rejection?'new_agent_presentation_after_verified_absence':'preserve_claims_and_inspect',
-        guidance:definitive_rejection
+        ...(argumentIssues?{status:'recoverable_issue',issues:argumentIssues,
+          allowed_repair:'Correct the indicated arguments in this same turn within current authority. Inspect claims before changing a presentation; existing claims and receipts remain binding.'}:{}),
+        recovery_policy:argumentIssues?'repair_arguments_preserve_claims':definitive_rejection?'new_agent_presentation_after_verified_absence':'preserve_claims_and_inspect',
+        guidance:argumentIssues?'Sheets requires full with summary omitted; Notion permits full without summary or concise with a supported nonblank summary. Original requests remain retained; argument repair grants no new authority.':definitive_rejection
           ?'The provider definitively rejected the initial create request. Choose a revised presentation; a new attempt is admitted only after complete readback proves the report absent. Original plan, claim and error remain retained.'
           :'Inspect retained source and current claims. An uncertain write is GET-only until exact readback; choose a revised presentation before a claim or after a proven initial validation rejection.',
         ...(error.provider_feedback?{provider_feedback:error.provider_feedback}:{}),

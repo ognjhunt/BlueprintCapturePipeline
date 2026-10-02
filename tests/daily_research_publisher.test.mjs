@@ -564,7 +564,39 @@ test('agent-owned publication requires explicit choice; inspect returns full app
   const out=await f.action('blueprint_inspect_publication');assert.equal(out.success,true);
   assert.equal(out.output.destinations.notion.payload.summary,f.r.delivery.notion.payload.summary);
   assert.equal(out.output.transport_limits.notion.blocks_per_request,90);
+  assert.deepEqual(out.output.presentation_rules.sheets.strategies,['full']);
+  assert.equal(out.output.presentation_rules.sheets.summary,'must_be_absent');
   assert.deepEqual(f.writes,[]);assert.equal(out.output.destinations.sheets.claimed,false);
+});
+
+test('invalid Sheets presentation returns actionable fields without claims or writes, then full succeeds',async()=>{
+  const f=await agentFixture(),original=structuredClone(f.r.delivery.sheets);
+  for(const choice of [{destination:'sheets',strategy:'concise',summary:'Retain this original request'},
+    {destination:'sheets',strategy:'concise'},{destination:'sheets',strategy:'full',summary:null}]) {
+    const out=await f.action('blueprint_publish_research',choice);
+    assert.equal(out.success,false);assert.equal(out.error.code,'publication_agent_tool_arguments_invalid');
+    assert.equal(out.error.status,'recoverable_issue');assert.ok(out.error.allowed_repair);
+    const issue=out.error.issues.find(i=>i.path===(choice.strategy==='concise'?'/strategy':'/summary'));
+    assert.ok(issue);assert.ok(issue.allowed_repair);
+    const saved=await f.store.get(f.r.date);
+    assert.deepEqual(saved.delivery.sheets,original);assert.equal(f.writes.length,0);
+    assert.deepEqual(Object.values(saved.application_tool_calls).at(-1).request.arguments,choice);
+    assert.equal(f.db.values.get(`${ROOT}/runs/${f.r.date}`).publication_claimed?.sheets,undefined);
+  }
+  const out=await f.action('blueprint_publish_research',{destination:'sheets',strategy:'full'});
+  assert.equal(out.receipt.readback_verified,true);assert.equal(f.writes.length,1);
+});
+
+test('Notion concise feedback identifies missing blank and oversized summary without changing source',async()=>{
+  const f=await agentFixture(),original=structuredClone(f.r.delivery.notion);
+  for(const summary of [undefined,'  ','😀'.repeat(500001)]) {
+    const out=await f.action('blueprint_publish_research',{destination:'notion',strategy:'concise',...(summary===undefined?{}:{summary})});
+    assert.equal(out.error.code,'publication_agent_tool_arguments_invalid');
+    assert.equal(out.error.issues[0].path,'/summary');
+    assert.equal(out.error.issues[0].expectations.max_utf8_bytes,2000000);
+    assert.deepEqual((await f.store.get(f.r.date)).delivery.notion,original);
+    assert.equal(f.writes.length,0);
+  }
 });
 
 test('agent chooses Sheets first and no outer helper creates a Notion page',async()=>{

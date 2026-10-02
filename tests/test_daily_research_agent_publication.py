@@ -56,6 +56,8 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
         api.tool_admit = provider.tool_admit
         api.tool_result = lambda sid, event, key: events.append((sid, deepcopy(event), key))
         assert consumer.step()["state"] == "publication_running"
+        publication_input = json.loads(ledger.read_bytes(DAY + "-publication-input.json"))
+        assert "Sheets accepts only strategy full with summary omitted" in publication_input["input"][0]["content"][0]["text"]
         def ask(cid, name, arguments):
             state["actions"] = [{"type": "function_call", "turn_id": "turn_publication", "call_id": cid,
                                  "name": name, "arguments": arguments}]
@@ -65,6 +67,7 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
         assert inspected["success"] and "destinations" in inspected["output"]
         failed = ask("bad_format", publication.PUBLISH, {"destination": "notion", "strategy": "concise"})
         assert failed["success"] is False and failed["error"]["code"]
+        assert failed["error"]["issues"][0]["path"] == "/summary"
         fixed = ask("chosen_concise", publication.PUBLISH, {"destination": "notion", "strategy": "concise",
             "summary": "Supported task claim: https://plant.example/tasks — orderability unknown."})
         if rejected:
@@ -74,6 +77,13 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
             fixed = ask("agent_corrected_provider_error", publication.PUBLISH, {"destination": "notion", "strategy": "concise",
                 "summary": "Supported source https://plant.example/tasks; commercial interest remains unknown."})
         assert fixed["receipt"]["readback_verified"] is True
+        for cid, choice in [("sheets_concise_with_summary", {"destination": "sheets", "strategy": "concise", "summary": "A display summary"}),
+                            ("sheets_concise_without_summary", {"destination": "sheets", "strategy": "concise"})]:
+            invalid = ask(cid, publication.PUBLISH, choice)
+            assert invalid["error"]["code"] == "publication_agent_tool_arguments_invalid"
+            assert invalid["error"]["issues"][0]["path"] == "/strategy"
+            assert ledger.get(DAY)["delivery"]["sheets"]["state"] == "pending"
+            assert ledger.get(DAY)["application_tool_calls"][cid]["request"]["arguments"] == choice
         sheet = ask("chosen_crm", publication.PUBLISH, {"destination": "sheets", "strategy": "full"})
         assert sheet["receipt"]["readback_verified"] is True
         # A stopped/rebound worker may collect an already-terminal exact turn
