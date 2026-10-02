@@ -69,7 +69,20 @@ Contract `blueprint.research-snapshot.v1`, root
 | `blobs/SHA256` + `chunks/N` | Exact uncompressed SHA256/length, gzip metadata, immutable chunks at most 256 KiB each; read verifies all bytes |
 | `files/YYYY-MM-DD-{artifact,evidence,output,review,qa,qa-evidence}.json` | Blob pointers; downloaded raw artifact is immutable once bound |
 | `files/{crm,knowledge,refresh-policy}.json` | Private checked input pointers, not public prospects |
-| `workItems/YYYY-MM-DD` | `owner=blueprint-research-qa-publication-agent`, `stage=agent_qa_pending` or `publication_pending`, run key, row blob, packet digest, `observer_receipt_required=false`, no-outreach scope |
+| `workItems/YYYY-MM-DD` | `owner=blueprint-research-qa-publication-agent`, `stage=validation_repair_pending`, `agent_qa_pending` or `publication_pending`, run key, row blob, packet digest, `observer_receipt_required=false`, no-outreach scope; repeated nonprogress becomes `validation_repair_blocked` |
+
+When a completed research artifact fails validation, the same workflow agent
+receives precise field/reason/allowed-semantics feedback, retained source receipt
+bindings, knowledge context and fresh CRM identity projection in its existing
+session. It may revise or honestly quarantine unsupported claims, choosing its
+own configured tools and depth. Complete correction requests and versioned raw
+artifacts are durable before effects; uncertain input replies reconcile through
+GET only. Corrections share the original total runtime and soft budget. The
+original root/report/clock remains immutable. Repeated failures and exhausted
+authority produce actionable status, never invented grades or duplicate roots.
+Validated corrections proceed through the existing agent QA and publication
+readbacks; no Dot or parent review is required in the daily operating workflow.
+Exports include `DATE-repair-N-{input,artifact}.json` with verified hashes.
 
 The communications agent can import `Store` from the pinned
 `tools/daily_research/firestore_bridge.mjs` and use an existing authorized
@@ -102,8 +115,41 @@ terminal results can be collected after restart. Unknown/active QA is observed
 and cancellation attempted on disable, observation failure, search-limit breach
 or the **shared** research+QA 180-second deadline. Cold disabled recovery never
 admits another input or publication. A cancel request is not terminal proof.
-The five-activity search limit and $1 soft TOTAL target include both phases;
-model/search/environment usage and QA turn evidence remain in the dated row.
+New ordinary intents also bind the original QA authority, exact message/key,
+deadline, and complete pre-submission item/artifact inventory. A typed submission
+HTTP503 permits at most two durable same-key attempts after 5/15-second minimum
+backoff, honoring a longer Retry-After within that original deadline. Each attempt
+rechecks the full inventory and fresh lease/control/stop/deadline before POST.
+An accepted turn/message/effect, unknown failure, lost reply, changed authority,
+or legacy intent without that binding permits observation only. A Retry-After
+beyond the deadline suppresses replay while preserving GET/cancel recovery.
+
+A readable but malformed QA artifact returns precise affected-field diagnostics
+to that same saved session, with at most two corrective messages inside the
+original QA deadline and total soft target. Corrections must reconsider actual
+source/CRM evidence; strings are never coerced into boolean acceptances. The
+original artifact, each corrective input and artifact, and the final evidence
+for every attempt keep separate filenames and hashes in portable exports.
+A lost or ambiguous submission reply is observed without another POST. Missing
+terminal artifacts remain explicit collection failures. Disable, cancellation,
+changed authority, expired lease/deadline and exhausted correction attempts
+prevent another corrective message or publication. This behavior also applies
+to the selected search profile and explicitly admitted recovered QA; a read-only
+terminal collector cannot submit corrections.
+
+QA prose is retained losslessly under the existing 2 MB artifact ceiling rather
+than arbitrary summary/reason lengths. Notion uses the existing 1800-character
+blocks, native request limits and exact full-content readback; Sheets never receives
+the QA prose. Accepted evidence remains an unqualified discovery, not proof of
+buying intent or pilot readiness. A first cancellation records its actual reason,
+time, deadline and key before submission. Only an in-time completed result proven
+to precede a later deadline-only cancellation may be collected with that history
+intact; early, disabled, interrupted and unknown-timing cancellations stay blocked.
+Legacy records keep their original five-activity search limit, counted across
+research, QA and corrections. The selected adaptive search profile follows its
+recorded coverage instructions instead of that legacy count stop. The recorded
+soft TOTAL target includes every phase; model/search/environment usage and QA
+turn evidence remain in the dated row.
 An exhausted budget/time envelope blocks publication rather than adding a run.
 
 Those are the legacy scan guards. The disabled
@@ -220,3 +266,88 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
 Rollback: disable the research worker flag and Firestore control, preserve all
 dated state and artifacts, and return to the previous WebApp release if needed.
 Never restore an empty ledger or an older snapshot of run state.
+
+## Same-session agent repair (Oct 2)
+
+Owner request `Sentinel_3b6171ff167c8191b378202c5f0c54c0` authorizes an agent
+repair loop for the already retained baseline. `repair-output --attempt 1
+--date 2026-10-01` uses the same installed/isolated package and archive arguments
+in [preserved baseline recovery](operators/README.md#preserved-baseline-output-recovery-and-corrected-cost-reporting),
+under `timeout --signal=TERM --kill-after=60s 1860s`. It pins one immutable
+30-minute correction-plus-QA window against the exact original session/root/raw
+hash and existing shared $25 soft baseline authority. Invoking it again resumes
+that window; it never resets the root clock or creates another research session.
+No additional `recover-output` or ten-minute QA receipt is required for this path.
+
+The agent receives precise validation failures and retained evidence/context,
+fresh CRM identity keys only, and writes a complete corrected report. It chooses
+its strategy and configured tools, preserving supported work and marking gaps
+honestly. Ordinary operator background requires no robot maturity grade;
+employer-hosted job boards require semantic affiliation checks in agent QA.
+Original bytes, failure and every correction input/artifact remain immutable in
+durable state. Expected pending usage does not block correction or QA. Duplicate
+effect claims, disabled/revoked authority, late cancellation and genuine lack of
+progress remain bounded. An accepted request with a lost reply is observed by GET
+and never resubmitted. A validated correction proceeds through existing QA and
+canonical publication. Restart after QA/publication starts resumes that phase.
+
+For the native fixture owner, `recovery.replay_saved_artifact(row, raw_artifact,
+tool_files, known, observed_at)` is a pure offline full-contract replay. Supply
+the complete retained row, exact raw report bytes, immutable source/tool files
+keyed by filename, original CRM identity set and an aware observation time. It
+verifies raw/context hashes, collects all independent feedback, derives only
+evidence-bound precision and optional proposal quarantine, then revalidates the
+entire report/coverage. The sanitized return includes remaining errors, derived
+hash, counts and exact normalization receipts; it makes no provider/database or
+publication call and cannot claim QA/newness. Keep the private fixture outside
+the repository. After verified live QA/publication use `export-recovered` from
+this overlay; it includes all hash-verified versioned repair inputs/artifacts.
+
+Ordinary daily runs use this same loop automatically within their existing
+workflow authorization, original total deadline and daily soft budget. They do
+not require this one-time baseline command or any Dot/parent runtime step.
+
+**Feedback is the gate itself.** `validation_feedback` reports every failure at
+once from the same ordered rules the strict gate raises (`runner.output_issues`,
+verified against a frozen copy of the previous gate). Each failure is located
+to the exact field, and one defect never cascades into a second report.
+
+**No progress keeps valid work instead of blocking it.** When a correction ends
+in `no_progress` (an identical repeat, a failed or late turn, or no artifact),
+the loop takes the best eligible revision: the original or an in-window
+diagnosed correction. It excludes only items whose every failure is located
+inside them (a candidate, a knowledge proposal or a summary line) and sends the
+rest through the unchanged strict gate to the same QA and publication. Late or
+unread corrections are retained but never used. Excluded items stay in
+`validation_repair_outcome` and the packet's `research_exclusions`, and agent QA
+reports them as rejected. Global failures, and corrections an operator or
+deadline cancelled, stay blocked with the complete feedback.
+
+**Approvals are data, not code.** The core window check binds a correction's
+recorded approval to the row's own admitted baseline (id, soft total, budget
+reference). A new approval needs `repair-output --authority-reference
+EXISTING_APPROVAL`, never a release. The helper's default remains the reference
+recorded above.
+
+If a baseline correction expires without a confirmed turn, preserve its input,
+claim, deadline and cancellation evidence. The existing provider-free
+`recover-output` path may prepare the retained original report only after full
+evidence-bound normalization and validation. Its separately authorized,
+one-use 600-second recovered-QA continuation governs QA and QA tools; it never
+extends the repair or research clock. Repeated arming cannot renew that window.
+Before its first QA message, the same session must be idle without pending
+actions and its complete turn inventory must match the retained completed turns.
+No correction resend, new research session or deletion is required for this path.
+Submission failures retain sanitized error metadata without exception prose or
+request contents, and an uncertain QA input is observed without resubmission.
+
+The isolated reviewed overlay's `recover-original-and-qa` command combines those
+existing recovery, model-observation and QA steps for the explicitly authorized
+baseline. It checks the saved agent, original session and complete completed-turn
+inventory, derives and validates the original packet without inference, then pins
+the separate 600-second QA receipt and runs existing QA/publication. It checks the
+session and turn inventory again after consuming the one-use QA claim, before
+submission. Restart follows that same receipt and claim; it cannot renew the
+window, resend the expired correction, create another session or delete one.
+Use the existing exact `timeout --signal=TERM --kill-after=60s 1860s` process
+watchdog and the installed/overlay archive, source and file-hash arguments.

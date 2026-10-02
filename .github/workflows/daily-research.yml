@@ -8,7 +8,9 @@ on:
       - "tests/test_daily_research_knowledge.py"
       - "tests/test_daily_research_standalone.py"
       - "tests/test_daily_research_render.py"
+      - "tests/test_daily_research_recovery.py"
       - "tests/test_daily_research_consumer.py"
+      - "tests/test_daily_research_qa_retry.py"
       - "tests/test_daily_research_adaptive.py"
       - "tests/test_daily_research_adaptive_runtime.py"
       - "tests/test_daily_research_search*.py"
@@ -24,7 +26,9 @@ on:
       - "tests/test_daily_research_knowledge.py"
       - "tests/test_daily_research_standalone.py"
       - "tests/test_daily_research_render.py"
+      - "tests/test_daily_research_recovery.py"
       - "tests/test_daily_research_consumer.py"
+      - "tests/test_daily_research_qa_retry.py"
       - "tests/test_daily_research_adaptive.py"
       - "tests/test_daily_research_adaptive_runtime.py"
       - "tests/test_daily_research_search*.py"
@@ -44,7 +48,9 @@ jobs:
   research-runner:
     name: Research lifecycle and pinned SDK
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The complete portable suite includes all recovery/collection guards.
+    # Python 3.14 exceeded five minutes at 90%; preserve the full no-skip gate.
+    timeout-minutes: 8
     strategy:
       matrix:
         python: ["3.11", "3.12", "3.14"]
@@ -69,7 +75,9 @@ jobs:
       - name: Verify lifecycle, SDK contracts and changed-file lint
         run: |
           node --test tests/daily_research_store.test.mjs tests/daily_research_worker.test.mjs tests/daily_research_publisher.test.mjs
-          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_consumer.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tests/test_daily_research_search.py tests/test_daily_research_search_adapter.py tests/test_daily_research_operator*.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
+          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_recovery.py tests/test_daily_research_consumer.py tests/test_daily_research_qa_retry.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tests/test_daily_research_search.py tests/test_daily_research_search_adapter.py tests/test_daily_research_operator*.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
+          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/qa_retry.py tests/test_daily_research_qa_retry.py
+          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/recovery.py tests/test_daily_research_recovery.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/operators/*.py tests/test_daily_research_operator*.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/adaptive.py tools/daily_research/adaptive_runtime.py tools/daily_research/discovery.py tools/daily_research/capabilities.py tools/daily_research/consumer.py tools/daily_research/runner.py tools/daily_research/knowledge.py tools/daily_research/contracts.py tools/daily_research/freshness.py tools/daily_research/standalone.py tools/daily_research/firestore.py tools/daily_research/render.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_consumer.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tools/daily_research/search.py tests/test_daily_research_search.py tests/test_daily_research_search_adapter.py
           python3 - "${RUNNER_TEMP}/daily-research-tests.xml" <<'PYTHON'

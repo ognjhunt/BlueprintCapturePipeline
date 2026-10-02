@@ -1,6 +1,7 @@
 import json
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -131,6 +132,59 @@ def test_duplicate_credit_corrections_and_posting_changes():
 
 
 @pytest.mark.parametrize(
+    "field,corrected",
+    [
+        ("end", "2026-10-01T08:30:00Z"),
+        ("start", "2026-10-01T07:30:00Z"),
+        ("project_id", "corrected-project"),
+        ("source", "corrected-resource"),
+    ],
+)
+def test_same_charge_corrections_preserve_identity_and_distinct_revisions(field, corrected):
+    original = _snapshot()
+    inputs = _inputs()
+    inputs[2][0][1]["results"][0][field] = corrected
+    changed = _snapshot(inputs, previous=original)
+    assert _vast(changed)["source_key"] == _vast(original)["source_key"]
+    assert _vast(changed)["revision_id"] != _vast(original)["revision_id"]
+    assert _vast(changed)["amount"] == 4
+    assert len(changed["revision_history"]) == 3
+    assert changed["observed_daily_slices"][0]["amount"] == 4
+
+    # Within one response neither observation is proven to supersede the other.
+    # Quarantine this charge, while an unrelated valid charge remains usable.
+    conflict_inputs = _inputs()
+    rows = conflict_inputs[2][0][1]["results"]
+    correction = deepcopy(rows[0])
+    correction[field] = corrected
+    sibling = deepcopy(rows[0])
+    sibling["id"] = 8
+    rows.extend([correction, sibling, deepcopy(rows[0])])
+    preserved = deepcopy(conflict_inputs)
+    conflict = _snapshot(conflict_inputs)
+    charges = [row for row in conflict["rows"] if row["service"] == "charges"]
+    assert len(charges) == 2
+    ambiguous = next(row for row in charges if row["source_key"] == _vast(original)["source_key"])
+    assert ambiguous["amount"] is None and ambiguous["billed_cost"] is None
+    assert len(ambiguous["conflicting_revisions"]) == 2
+    assert conflict["observed_daily_slices"][0]["amount"] == 4
+    assert "conflicting_source_rows" in conflict["coverage"]["gaps"]
+    assert conflict_inputs == preserved
+
+
+def test_provider_charge_identity_remains_scoped_to_account():
+    inputs = _inputs()
+    rows = inputs[2][0][1]["results"]
+    rows[0]["account_id"] = "account-one"
+    second_account = deepcopy(rows[0])
+    second_account["account_id"] = "account-two"
+    rows.append(second_account)
+    snapshot = _snapshot(inputs)
+    assert len([row for row in snapshot["rows"] if row["service"] == "charges"]) == 2
+    assert "conflicting_source_rows" not in snapshot["coverage"]["gaps"]
+
+
+@pytest.mark.parametrize(
     "start,end,day",
     [
         ("2026-03-08T06:00:00Z", "2026-03-09T05:00:00Z", "2026-03-08"),
@@ -210,6 +264,71 @@ def test_invoice_preview_overlap_on_later_page_and_aws_exclusion():
     assert all(r["provider"] != "aws" for r in snapshot["rows"])
     assert next(r for r in snapshot["rows"] if r["service"] == "invoice_preview")["partial"]
     assert len(snapshot["observed_daily_slices"]) == 1  # Vast only; invoice not added.
+
+
+@pytest.mark.parametrize(
+    "export_time,expected_status",
+    [
+        ("2026-10-01T18:00:00Z", "written"),
+        ("2026-10-01T18:00:00.000000+00:00", "written"),
+        ("2026-10-01T13:00:00-05:00", "written"),
+        ("2026-10-01T18:00:01Z", "unavailable"),
+        ("2026-10-01", "unavailable"),
+        ("2026-10-01T18:00:00", "unavailable"),
+        (None, "unavailable"),
+        ("invalid", "unavailable"),
+    ],
+)
+def test_bound_export_equivalent_timestamp_formats_preserve_original_bytes(
+    tmp_path, export_time, expected_status
+):
+    export = tmp_path / "provider_billing_export.json"
+    result = reconcile_provider_billing(
+        secrets_dir=_secrets(tmp_path), billing_export_path=export,
+        audit_root=tmp_path / "billing-audit", start_at="2026-01-01T00:00:00Z",
+        now=NOW, transport=_Transport(),
+    )
+    source = Path(result["source_receipt_path"])
+    content = json.loads(export.read_bytes())
+    content["generated_at"] = export_time
+    export.write_text(json.dumps(content))
+    original_export, original_source = export.read_bytes(), source.read_bytes()
+    reporting = write_daily_snapshot(export, source, source.parent.parent)
+    assert reporting["status"] == expected_status
+    assert reporting["provider_requests_added"] == 0
+    assert export.read_bytes() == original_export
+    assert source.read_bytes() == original_source
+
+
+@pytest.mark.parametrize(
+    "receipt_time,export_time,expected_status",
+    [
+        ("2026-10-01T18:00:00.0000001Z", "2026-10-01T18:00:00.0000002Z", "unavailable"),
+        ("2026-10-01T18:00:00.0000001Z", "2026-10-01T13:00:00.00000010-05:00", "written"),
+        ("2026-10-01T18:00:00.1234567Z", "2026-10-01T18:00:00.1234567000+00:00", "written"),
+    ],
+)
+def test_bound_observation_preserves_fraction_beyond_microseconds(
+    tmp_path, receipt_time, export_time, expected_status
+):
+    export = tmp_path / "provider_billing_export.json"
+    result = reconcile_provider_billing(
+        secrets_dir=_secrets(tmp_path), billing_export_path=export,
+        audit_root=tmp_path / "billing-audit", start_at="2026-01-01T00:00:00Z",
+        now=NOW, transport=_Transport(),
+    )
+    source = Path(result["source_receipt_path"])
+    receipt = json.loads(source.read_bytes())
+    receipt["generated_at"] = receipt_time
+    receipt["receipt_digest"] = _hash({k: v for k, v in receipt.items() if k != "receipt_digest"})
+    source.write_text(json.dumps(receipt))
+    content = json.loads(export.read_bytes())
+    content["generated_at"] = export_time
+    export.write_text(json.dumps(content))
+    original_export, original_source = export.read_bytes(), source.read_bytes()
+    assert write_daily_snapshot(export, source, source.parent.parent)["status"] == expected_status
+    assert export.read_bytes() == original_export
+    assert source.read_bytes() == original_source
 
 
 def test_bound_offline_export_digest_and_fixture_publication_guard(tmp_path):

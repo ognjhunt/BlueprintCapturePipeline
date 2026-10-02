@@ -903,15 +903,17 @@ def test_configured_controls_timer_is_installed_and_armed_by_default(
     ]
 
 
-def test_deploy_never_rearms_a_held_timer(tmp_path, monkeypatch) -> None:
-    unit = "blueprint-task-evaluation-scene-progression.timer"
+@pytest.mark.parametrize("explicit", [False, True])
+def test_deploy_never_rearms_a_held_timer(tmp_path, monkeypatch, explicit) -> None:
+    unit = "blueprint-agent-run-dispatcher.timer" if explicit else "blueprint-task-evaluation-scene-progression.timer"
     holds = tmp_path / "holds"
     holds.mkdir()
     (holds / f"{unit}.json").write_text(json.dumps({
         "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
         "reason": "inspect capture", "request_id": "20260927T000000Z-hold-0000abcd",
         "status": "active", "expires_at": "2099-01-01T00:00:00+00:00",
-        "expires_at_epoch": 4070908800,
+        "expires_at_epoch": 1 if explicit else 4070908800,
+        **({"require_explicit_release": True} if explicit else {}),
     }), encoding="utf-8")
     active, warning = deploy._active_door_holds(holds)
     assert warning is None and active[unit]["owner"] == "alice"
@@ -933,6 +935,8 @@ def test_deploy_never_rearms_a_held_timer(tmp_path, monkeypatch) -> None:
     )
     assert calls == [("systemctl", "stop", unit)]
     assert restored[0]["held"] is True
+    if explicit:
+        assert restored[0]["require_explicit_release"] is True
     assert {key: restored[0][key] for key in ("owner", "reason", "expires_at")} == {
         "owner": "alice", "reason": "inspect capture", "expires_at": "2099-01-01T00:00:00+00:00"}
     assert restored[0]["after"] == {"enabled": "enabled", "state": "inactive"}

@@ -60,7 +60,7 @@ MAX_CHECKED_HTTP_ERROR_BYTES = 4096
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
-                "legacy_owner_census_observed"}
+                "legacy_owner_census_observed", "repaired"}
 
 
 class DoorError(Exception):
@@ -545,13 +545,17 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     show = commands.add_parser("show")
     show.add_argument("units", nargs="+")
     unit = commands.add_parser("unit")
-    unit.add_argument("action", choices=("start", "reset-failed", "stop", "restart"))
+    unit.add_argument("action", choices=("start", "reset-failed", "stop", "restart", "repair-notifier-binding"))
     unit.add_argument("unit")
+    unit.add_argument("--expected-postcheck-sha256")
+    unit.add_argument("--expected-source-commit")
     hold = commands.add_parser("hold", help="pause a timer or path with an owner and automatic expiry")
     hold.add_argument("unit")
     hold.add_argument("--owner", required=True)
     hold.add_argument("--reason", required=True)
     hold.add_argument("--for", dest="expires_in_seconds", type=_hold_duration, required=True)
+    hold.add_argument("--until-released", action="store_true",
+                      help="dispatcher only: --for is a review deadline; remain stopped until explicit release")
     _add_wait(hold, 120)
     release = commands.add_parser("release-hold", help="release an owned timer or path hold early")
     release.add_argument("unit")
@@ -651,10 +655,19 @@ def run(args: argparse.Namespace) -> int:
     elif command == "show":
         _print(_json("GET", "/units/show", {"unit": ",".join(args.units)}))
     elif command == "unit":
-        return _submit({"kind": "unit", "unit": args.unit, "action": args.action}, args)
+        body = {"kind": "unit", "unit": args.unit, "action": args.action}
+        if args.action == "repair-notifier-binding":
+            if not args.expected_postcheck_sha256 or not args.expected_source_commit:
+                raise DoorError(2, "notifier_repair_expected_identity_required")
+            body.update(expected_postcheck_sha256=args.expected_postcheck_sha256,
+                        expected_source_commit=args.expected_source_commit)
+        elif args.expected_postcheck_sha256 or args.expected_source_commit:
+            raise DoorError(2, "notifier_repair_options_refused")
+        return _submit(body, args)
     elif command == "hold":
         return _submit({"kind": "hold", "unit": args.unit, "owner": args.owner, "reason": args.reason,
-                        "expires_in_seconds": args.expires_in_seconds}, args)
+                        "expires_in_seconds": args.expires_in_seconds,
+                        **({"require_explicit_release": True} if args.until_released else {})}, args)
     elif command == "release-hold":
         return _submit({"kind": "release-hold", "unit": args.unit}, args)
     elif command == "deploy":

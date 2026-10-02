@@ -87,6 +87,29 @@ def test_whoami_prints_identity_json(door: dict[str, Any]) -> None:
     assert code == 0 and json.loads(out) == {"name": "cloud", "scopes": ["deploy", "operate", "read"]}
 
 
+def test_hold_client_explicit_release_remains_an_owned_bounded_request(door: dict[str, Any]) -> None:
+    code, out = _run("hold", "blueprint-agent-run-dispatcher.timer", "--owner", "founder-stop",
+                     "--reason", "Founder stop", "--for", "24h", "--until-released")
+    assert code == 0
+    request_id = json.loads(out)["id"]
+    request = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())["request"]
+    assert request["require_explicit_release"] is True
+    assert request["expires_in_seconds"] == 86400
+
+
+def test_notifier_repair_client_requires_and_preserves_expected_identity(door: dict[str, Any]) -> None:
+    digest = "sha256:" + "a" * 64
+    code, out = _run("unit", "repair-notifier-binding", "blueprint-pipeline-control-plane.service",
+                     "--expected-postcheck-sha256", digest, "--expected-source-commit", SHA)
+    assert code == 0
+    request_id = json.loads(out)["id"]
+    request = json.loads((door["state"] / "requests/pending" / f"{request_id}.json").read_text())["request"]
+    assert request == {"kind": "unit", "unit": "blueprint-pipeline-control-plane.service",
+                       "action": "repair-notifier-binding", "expected_postcheck_sha256": digest,
+                       "expected_source_commit": SHA}
+    assert _run("unit", "repair-notifier-binding", "blueprint-pipeline-control-plane.service")[0] == 2
+
+
 def test_lane_scratch_client_submits_bounded_commands(door: dict[str, Any]) -> None:
     digest = "sha256:" + "a" * 64
     def submitted(out: str) -> dict[str, Any]:
@@ -302,6 +325,18 @@ def test_waiting_on_a_retirement_exits_by_its_outcome(door: dict[str, Any], stat
     code, out = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
 
     assert code == exit_code and json.loads(out)["outcome"] == outcome  # a retained scene says why
+
+
+def test_waiting_on_notifier_repair_accepts_its_success_outcome(door: dict[str, Any]) -> None:
+    code, out = _run("unit", "repair-notifier-binding", "blueprint-pipeline-control-plane.service",
+                     "--expected-postcheck-sha256", "sha256:" + "a" * 64, "--expected-source-commit", SHA)
+    request_id = json.loads(out)["id"]
+    results = door["state"] / "requests" / "results"
+    (results / f"{request_id}.json").write_text(json.dumps({"status": "launched", "unit": "u.service"}))
+    outcome = {"status": "repaired", "exit_code": 0}
+    (results / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+    code, out = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+    assert code == 0 and json.loads(out)["outcome"] == outcome
 
 
 def test_client_submits_a_canonical_scene_restore(door: dict[str, Any]) -> None:

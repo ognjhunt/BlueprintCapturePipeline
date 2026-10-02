@@ -142,3 +142,42 @@ def test_sweep_finishes_failed_hold_without_starting_previously_inactive_unit(tm
     assert not path.exists()
     archived = list((root / "history").glob("*.json"))
     assert len(archived) == 1 and json.loads(archived[0].read_text())["status"] == "failed_released"
+
+
+def test_explicit_dispatch_stop_survives_deadline_and_boot_until_release(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "holds"
+    root.mkdir()
+    unit = "blueprint-agent-run-dispatcher.timer"
+    path = _record(root, unit, expires_at_epoch=1100, enabled_before=True)
+    record = {**json.loads(path.read_text()), "require_explicit_release": True}
+    holds.write(root, unit, record)
+    calls = []
+
+    def systemctl(argv, **_kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(holds.subprocess, "run", systemctl)
+    assert holds.expire(root, unit, record["request_id"], now=1200) == 0
+    assert calls == []
+    assert holds.sweep(root, now=1200) == 0
+    assert calls == [["systemctl", "disable", "--", unit], ["systemctl", "stop", "--", unit]]
+    assert holds.read(root, unit) == record
+    # Only the existing explicit-release operation restores its prior boot policy.
+    with holds.locked(root):
+        holds.begin_release(root, unit, record, released_by="owner", status="released")
+        assert holds.finish_release(root, unit) == 0
+    assert calls[-2:] == [["systemctl", "enable", "--", unit],
+                          ["systemctl", "--no-block", "start", "--", unit]]
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("policy", ["true", 1, None])
+def test_invalid_retained_explicit_release_policy_fails_closed(tmp_path, policy) -> None:
+    root = tmp_path / "holds"
+    root.mkdir()
+    unit = "blueprint-agent-run-dispatcher.timer"
+    path = _record(root, unit, expires_at_epoch=1100, enabled_before=True)
+    path.write_text(json.dumps({**json.loads(path.read_text()), "require_explicit_release": policy}))
+    with pytest.raises(holds.HoldError, match="hold_record_invalid"):
+        holds.expire(root, unit, "20260927T000000Z-hold-0000abcd", now=1200)

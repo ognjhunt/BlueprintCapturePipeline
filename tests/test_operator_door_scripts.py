@@ -7,6 +7,7 @@
 #   deploy/operator-door/door-retire-scene-workspace.sh
 #   deploy/operator-door/door-restore-scene-workspace.sh
 #   deploy/operator-door/door-provider-output-resume.sh
+#   deploy/operator-door/door-repair-notifier-binding.sh
 #   deploy/operator-door/install.sh
 
 from __future__ import annotations
@@ -111,6 +112,27 @@ def _run(script: str, env: dict[str, str], **extra: str) -> tuple[int, dict, lis
 
 def _tool_call(calls: list[str]) -> str:
     return next(call for call in calls if call.startswith("venv-python "))
+
+
+@pytest.mark.parametrize("valid_identity", [False, True])
+def test_notifier_result_files_are_readable_by_the_door(env: dict[str, str], valid_identity: bool) -> None:
+    install_root = Path(env["STUB_DIR"]) / "installed"
+    module = install_root / "operator_door/notifier_repair.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("import json, sys\nfrom pathlib import Path\n"
+                      "path = Path(sys.argv[sys.argv.index('--receipt-out') + 1])\n"
+                      "path.write_text(json.dumps({'status': 'already_correct'}))\n"
+                      "print('safe fixed-target receipt')\n")
+    request_id = "20261002T140000Z-unit-0000abcd"
+    rc, outcome, _calls = _run("door-repair-notifier-binding.sh", env, DOOR_REQUEST_ID=request_id,
+                               DOOR_INSTALL_ROOT=str(install_root),
+                               DOOR_EXPECTED_POSTCHECK_SHA256="sha256:" + "a" * 64 if valid_identity else "invalid",
+                               DOOR_EXPECTED_SOURCE_COMMIT=SHA)
+    assert rc == (0 if valid_identity else 2)
+    assert outcome["status"] == ("repaired" if valid_identity else "refused")
+    for suffix in ("log", "outcome.json"):
+        path = Path(env["DOOR_RESULTS_DIR"]) / f"{request_id}.{suffix}"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
 
 
 def test_main_deploy_runs_the_target_commits_deploy_tool(env: dict[str, str]) -> None:

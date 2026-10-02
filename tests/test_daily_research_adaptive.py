@@ -83,7 +83,10 @@ def test_shortfall_and_resource_ceiling_are_honest_not_padded():
 def test_adaptive_prompt_uses_skill_paths_and_does_not_inherit_scan_caps():
     _, _, _, ctx = policy_bundle()
     text = prompt(DAY, ctx, 3, adaptive=True)
-    assert "at least 10 NEW" in text and "references/prospect-contract.md" in text
+    assert "defined, evidence-based scope" in text and "references/prospect-contract.md" in text
+    assert "at least 10 NEW" not in text and "no minimum or maximum prospect quota" in text
+    assert "credible routing contact" in text and "counterevidence" in text
+    assert "2025-2026" in text and "never count them as site prospects" in text
     assert "at most two searches" not in text and "up to THREE" not in text and "under 800 words" not in text
     assert "Existing robot deployments are separate" in text and "first" in text
     assert "Unknown buyer interest" in text and "never a pretend read" in text

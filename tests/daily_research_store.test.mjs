@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,createHash} from 'node:crypto';
+import {readFileSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {Store, ROOT, LeaseChannel, ADAPTIVE_TEST} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 
@@ -12,6 +16,77 @@ async function fixture() {
 }
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
+
+test('terminal collection alone may publish validated evidence while control stays stopped', async () => {
+  const {db,store}=await fixture(), proof={session_id:'synthetic-session',qa_artifact_sha256:'a'.repeat(64)}, writes=[];
+  const workflow={enabled:true,qa_authority_reference:'owner-qa',publication_authority_reference:'owner-publication'};
+  Object.assign(db.values.get(ROOT),{workflow});
+  store.publisher={prepare:async()=>({request_digest:'b'.repeat(64)}),reconcile:async()=>null,write:async()=>writes.push('one')};
+  const value={...row(),state:'reviewed',session_id:proof.session_id,
+    qa:{state:'validated',artifact_digest:proof.qa_artifact_sha256,
+      terminal_collection_recovery:{native_receipt:proof,workflow_authority:workflow}},
+    delivery:{notion:{state:'acknowledged'},sheets:{state:'pending'}}};
+  await store.put({...value,state:'creating'});
+  db.values.get(ROOT).enabled=false;
+  store.terminalCollectionReceipt=proof;
+  await store.put(value);
+  for(const op of ['create_check','qa_check','qa_retry_check','repair_check','configure','learning_context'])
+    await assert.rejects(store.dispatch({op}),/terminal_qa_operation_forbidden/);
+  await store.publish(value.date);
+  assert.deepEqual(writes,['one']); assert.equal(db.values.get(ROOT).enabled,false);
+  db.values.get(ROOT).workflow.publication_authority_reference='changed';
+  await assert.rejects(store.publish(value.date),/publication_authority_changed/);
+  db.values.get(ROOT).workflow={...workflow,publication_authority_reference:'owner-publication'};
+  store.terminalCollectionReceipt={...proof,qa_artifact_sha256:'c'.repeat(64)};
+  await assert.rejects(store.publish(value.date),/validated_receipt_required/);
+  assert.deepEqual(writes,['one']);
+});
+
+test('only the exact terminal collector command enables the stopped publication pipe', async () => {
+  const temporary=mkdtempSync(join(tmpdir(),'research-terminal-command-'));
+  const baseline={baseline_id:'baseline-20261002',attempt_number:1,
+    root:ROOT+'/baselines/baseline-20261002',authority_reference:'Sentinel_c2046c5f146c81918921eba1ed7f6caa',soft_total_usd:25};
+  const context={test_id:'baseline-20261002-attempt-0001',day:'2026-10-01',baseline,
+    terminal_collection_receipt:{schema_version:'blueprint.qa-terminal-reconciliation.v1',
+      source_blob_sha256:'59327fce14de04a18679932162a4342ddd3513b6e123d43dbc85d2693e957b9b'}};
+  const source=readFileSync(new URL('../tools/daily_research/operators/research-perplexity-canary.mjs',import.meta.url),'utf8')
+    .replace('__RESEARCH_PACKAGE_URL__',new URL('../',import.meta.url).href)
+    .replace('__CANARY_CONTEXT__',JSON.stringify(context));
+  const file=join(temporary,'terminal.mjs');writeFileSync(file,source);
+  try {
+    const {CanaryChannel}=await import(pathToFileURL(file).href);
+    const channel=new CanaryChannel(new MemoryFirestore());
+    for(const op of ['stage','configure','create_check','qa_check','qa_retry_check','repair_check','learning_context'])
+      await assert.rejects(channel.call({op,day:context.day}),/terminal_qa_operation_forbidden/);
+    assert.equal(await channel.call({op:'control'}),null);
+  } finally {rmSync(temporary,{recursive:true,force:true});}
+});
+
+test('learning uses the existing fenced pipe and absent control performs no handler work', async () => {
+  const {db,store,time}=await fixture();
+  let invoked=0; store.learning=async request=>{invoked++;return {op:request.op};};
+  assert.equal(await store.dispatch({op:'learning_context',day:row().date,allow_create:true}),null);
+  assert.equal(invoked,0);
+  db.values.get(ROOT).learning={enabled:true};
+  assert.deepEqual(await store.dispatch({op:'learning_context',day:row().date,allow_create:true}),{op:'learning_context'});
+  time.now+=180001;
+  await assert.rejects(store.dispatch({op:'learning_context',day:row().date,allow_create:true}),/lease_lost/);
+  assert.equal(invoked,1);
+});
+
+test('learning scope drift, disable or expiry cannot claim provider creation', async () => {
+  const {db,store,time}=await fixture(), expiry=new Date(time.now+60000).toISOString();
+  const learning={binding:{expiresAt:expiry},businessScope:{expiresAt:expiry},enabled:true,learningGrant:{expiresAt:expiry}};
+  const bindingHash=createHash('sha256').update(JSON.stringify(learning)).digest('hex');
+  db.values.get(ROOT).learning=learning;
+  const value={...row(),metadata:{...row().metadata,learning_binding_digest:bindingHash}};
+  await store.put(value);
+  learning.enabled=false;
+  await assert.rejects(store.createCheck(value.date,value.metadata),/scope_changed_or_expired/);
+  learning.enabled=true; time.now+=60001; await store.renew();
+  await assert.rejects(store.createCheck(value.date,value.metadata),/scope_changed_or_expired/);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).create_attempt_claimed,false);
+});
 
 test('Perplexity row overflow is refused before a durable run or publication claim', async () => {
   const {db, store} = await fixture();
@@ -48,6 +123,38 @@ test('overlap refuses and late release cannot clear the successor lease', async 
   await second.assertLease(); await assert.rejects(store.createCheck(row().date, row().metadata), /lease_lost/);
 });
 
+test('two retry claims serialize, survive replacement, and cannot renew the phase or original claim', async () => {
+  const {db,store,time}=await fixture();
+  db.values.get(ROOT).workflow={enabled:true,qa_authority_reference:'synthetic-qa',publication_authority_reference:'synthetic-pub'};
+  await store.put(row());
+  const request='a'.repeat(64), deadline=time.now+120000;
+  const value={...row(),state:'awaiting_review',qa:{state:'qa_input_unresolved',request_digest:request,deadline_ms:deadline}};
+  await store.put(value);await store.qaCheck(value.date,request,deadline);
+  const phase={started_at:new Date(time.now).toISOString(),previous_qa:structuredClone(value.qa)};
+  value.qa_retry_continuation=phase;
+  const error={stage:'provider_submission',http_status:503,code:'service_unavailable_error'};
+  value.qa.input_error_receipt=error;
+  value.qa.input_retries=[{number:1,idempotency_key:value.run_key+':qa',not_before:new Date(time.now+5000).toISOString()}];
+  await store.put(value);
+  const next=time.now+600000;
+  await assert.rejects(store.qaRetryCheck(value.date,request,next,1),/not_admitted/);
+  time.now+=5001;
+  const results=await Promise.allSettled([store.qaRetryCheck(value.date,request,next,1),store.qaRetryCheck(value.date,request,next,1)]);
+  assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+  await store.release();const replacement=new Store(db,()=>time.now,'replacement');await replacement.acquire();
+  await replacement.put(value);
+  await assert.rejects(replacement.qaRetryCheck(value.date,request,next,1),/not_admitted/);
+  value.qa.input_retries[0].error_receipt=error;
+  value.qa.input_retries.push({number:2,idempotency_key:value.run_key+':qa',not_before:new Date(time.now+15000).toISOString()});
+  await replacement.put(value);
+  await assert.rejects(replacement.qaRetryCheck(value.date,request,next,2),/not_admitted/);
+  time.now+=15001;await replacement.qaRetryCheck(value.date,request,next,2);await replacement.put(value);
+  const persisted=db.values.get(`${ROOT}/runs/${value.date}`);
+  assert.equal(persisted.qa_request_claimed,true);assert.deepEqual(persisted.qa_retry_claims,{'1':request,'2':request});
+  await assert.rejects(replacement.qaRetryCheck(value.date,request,next,2),/not_admitted/);
+  await assert.rejects(replacement.put({...value,qa_retry_continuation:{...phase,started_at:new Date(time.now).toISOString()}}),/phase_already_bound/);
+});
+
 test('create claim is durable, one per date, and outside any provider call', async () => {
   const {db, store} = await fixture(); db.replay = true;
   await store.put(row()); await store.createCheck(row().date, row().metadata);
@@ -73,6 +180,28 @@ test('large immutable chunked artifacts verify exact bytes and detect corruption
   db.values.get(`${ROOT}/blobs/${hash}/chunks/0`).bytes = Buffer.from('corrupt');
   await assert.rejects(store.fileGet(name));
   await assert.rejects(store.fileGet('2026-10-01-artifact.json'), /file_missing/);
+});
+
+test('immutable blob receipts bind verified bytes and native creation time without writes', async () => {
+  const {db, store} = await fixture(), raw = Buffer.from('{"qa":"completed"}');
+  await store.filePut('2026-09-30-qa.json', raw.toString('base64'));
+  const hash = db.values.get(`${ROOT}/files/2026-09-30-qa.json`).blob;
+  const before = JSON.stringify([...db.values]);
+  const originalDoc = db.doc.bind(db);
+  let time = {seconds:1790933968, nanoseconds:549726000};
+  db.doc = path => {
+    const ref = originalDoc(path), get = ref.get.bind(ref);
+    ref.get = async () => {const snap = await get(); if (path === `${ROOT}/blobs/${hash}`) snap.createTime = time; return snap;};
+    return ref;
+  };
+  assert.deepEqual(await store.dispatch({op:'blob_receipt',hash}), {sha256:hash,bytes:raw.toString('base64'),created_at:time});
+  assert.equal(JSON.stringify([...db.values]), before);
+  for (const invalid of [undefined, {seconds:1790933968,nanoseconds:1000000000}]) {
+    time = invalid;
+    await assert.rejects(store.blobReceipt(hash), /creation_time_unavailable/);
+  }
+  db.values.get(`${ROOT}/blobs/${hash}/chunks/0`).bytes = Buffer.from('corrupt');
+  await assert.rejects(store.blobReceipt(hash));
 });
 
 test('heartbeat release drains renewal and reacquisition starts a clean generation', async () => {

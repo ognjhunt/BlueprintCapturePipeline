@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -212,19 +213,25 @@ def test_status_shows_active_and_overdue_holds_with_remaining_seconds(host_tree:
     root.mkdir()
     now = int(time.time())
     for unit, expiry in (("blueprint-scene-progression.timer", now + 120),
-                         ("blueprint-pubsub-handoff-listener.timer", now - 1)):
+                         ("blueprint-pubsub-handoff-listener.timer", now - 1),
+                         ("blueprint-agent-run-dispatcher.timer", now - 1)):
         (root / f"{unit}.json").write_text(json.dumps({
             "schema": "blueprint_operator_door_hold.v1", "unit": unit, "owner": "alice",
             "reason": "inspect", "requested_by": "cloud", "request_id": "20260926T120000Z-hold-0000abcd",
             "created_at": "2026-09-26T12:00:00+00:00", "expires_at": "2026-09-26T13:00:00+00:00",
-            "expires_at_epoch": expiry, "status": "active"}), encoding="utf-8")
+            "expires_at_epoch": expiry, "status": "active",
+            **({"require_explicit_release": True} if unit == "blueprint-agent-run-dispatcher.timer" else {})}),
+            encoding="utf-8")
     status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
-    assert len(status["holds"]) == 2
+    assert len(status["holds"]) == 3
     hold = next(row for row in status["holds"] if row["unit"] == "blueprint-scene-progression.timer")
     assert hold["unit"] == "blueprint-scene-progression.timer" and hold["owner"] == "alice"
     assert 0 < hold["remaining_seconds"] <= 120
     overdue = next(row for row in status["holds"] if row["unit"] == "blueprint-pubsub-handoff-listener.timer")
     assert overdue["remaining_seconds"] == 0 and overdue["expired"] is True
+    assert overdue["require_explicit_release"] is False
+    stopped = next(row for row in status["holds"] if row["unit"] == "blueprint-agent-run-dispatcher.timer")
+    assert stopped["expired"] is True and stopped["require_explicit_release"] is True
 
 
 def test_status_counts_unreported_break_glass_notes(host_tree: dict[str, Path]) -> None:
@@ -277,3 +284,55 @@ def test_a_capacity_summary_with_credential_shaped_content_is_refused(host_tree:
     host_tree["summary"].write_text(json.dumps({**CAPACITY_SUMMARY, "level": "sk-" + "A" * 30}), encoding="utf-8")
     status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
     assert status["capacity"] == {"error": "capacity_unavailable:SecretContentRefused"}
+
+
+def test_notifier_binding_reports_effective_old_hook_without_command_or_secret(host_tree: dict[str, Path]) -> None:
+    script = "/opt/blueprint/BlueprintCapturePipeline/deploy/systemd/blueprint-control-plane-postchecks.sh"
+    command = f"{{ path=/bin/bash ; argv[]=/bin/bash {script} --token synthetic-private-value ; }}"
+    output = ("FragmentPath=/etc/systemd/system/blueprint-pipeline-control-plane.service\n"
+              "DropInPaths=/etc/systemd/system/blueprint-pipeline-control-plane.service.d/override.conf\n"
+              f"ExecStartPost={command}\n")
+    runner = FakeRunner({"systemctl show": CommandResult(0, output, "")})
+    binding = _host(host_tree, runner).notifier_binding()
+    assert binding["recognized_script_paths"] == [script]
+    assert binding["release_selector_present"] is False
+    assert binding["postcheck_command_sha256"] == "sha256:" + hashlib.sha256(command.encode()).hexdigest()
+    assert binding["drop_in_paths"] == ["/etc/systemd/system/blueprint-pipeline-control-plane.service.d/override.conf"]
+    assert "synthetic-private-value" not in json.dumps(binding)
+    assert "argv[]" not in json.dumps(binding)
+    assert runner.calls == [["systemctl", "show", "--no-pager", "-p",
+                             "FragmentPath,DropInPaths,ExecStartPost", "--",
+                             "blueprint-pipeline-control-plane.service"]]
+
+
+def test_notifier_binding_recognizes_release_selector_as_metadata_only(host_tree: dict[str, Path]) -> None:
+    command = "{ argv[]=/bin/bash -lc cd $BLUEPRINT_LIVE_CONTROL_PLANE_REPO && exec /bin/bash deploy/systemd/blueprint-control-plane-postchecks.sh ; }"
+    runner = FakeRunner({"systemctl show": CommandResult(0, f"ExecStartPost={command}\n", "")})
+    binding = _host(host_tree, runner).notifier_binding()
+    assert binding["release_selector_present"] is True
+    assert binding["postcheck_present"] is True
+    assert binding["claim_ceiling"] == "effective_command_metadata_only"
+    assert "source_commit" not in binding
+
+
+def test_notifier_binding_failure_and_unrecognized_paths_remain_unknown(host_tree: dict[str, Path]) -> None:
+    failed = _host(host_tree, FakeRunner({"systemctl show": CommandResult(1, "", "secret stderr")}))
+    assert failed.notifier_binding()["status"] == "unavailable"
+    output = "FragmentPath=/private/secret/path\nDropInPaths=/private/secret/dropin\nExecStartPost=\n"
+    binding = _host(host_tree, FakeRunner({"systemctl show": CommandResult(0, output, "")})).notifier_binding()
+    assert binding["status"] == "unknown"
+    assert binding["fragment_path"] is None and binding["drop_in_paths"] == []
+    assert binding["metadata_paths_complete"] is False
+    assert "/private/secret" not in json.dumps(binding)
+    secret = "sk-" + "A" * 40
+    output = ("DropInPaths=/etc/systemd/system/blueprint-pipeline-control-plane.service.d/"
+              f"override-{secret}.conf\n")
+    binding = _host(host_tree, FakeRunner({"systemctl show": CommandResult(0, output, "")})).notifier_binding()
+    assert binding["drop_in_paths"] == [] and binding["metadata_paths_complete"] is False
+    assert secret not in json.dumps(binding)
+
+
+def test_status_includes_bounded_notifier_binding(host_tree: dict[str, Path]) -> None:
+    status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
+    assert status["notifier_binding"]["unit"] == "blueprint-pipeline-control-plane.service"
+    assert status["notifier_binding"]["status"] == "unknown"

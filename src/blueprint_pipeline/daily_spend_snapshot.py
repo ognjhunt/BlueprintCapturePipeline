@@ -48,6 +48,23 @@ def _iso(value: Any) -> str | None:
     return parsed.isoformat() if parsed else None
 
 
+def _exact_observation_time(value: Any) -> tuple[datetime, str] | None:
+    # datetime truncates fractions beyond six digits. Retain that remainder for
+    # binding comparisons, without rounding or rewriting the original evidence.
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2})(?:[.,](\d+))?"
+        r"(Z|[+-]\d{2}:?\d{2})", value, re.IGNORECASE,
+    )
+    if not match:
+        return None
+    whole_time = _time(match[1].upper() + match[3].upper())
+    if whole_time is None:
+        return None
+    return whole_time, (match[2] or "").rstrip("0")
+
+
 def _money(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (str, float, int)):
         return None
@@ -149,25 +166,35 @@ def project_daily_snapshot(
         account = _identity(raw.get("account_id"))
         project = _identity(raw.get("project_id"))
         charge_identity = _identity(charge_id)
+        provider_charge_key = (
+            provider == "vast" and service == "charges" and charge_identity is not None
+        )
         identity_unknown = provider == "vast" and service == "charges" and charge_identity is None
         if identity_unknown:
             gaps.add("vast_stable_charge_id_missing_corrections_unknown")
             charge_identity = _hash(
                 raw
             )  # Retain distinct rows; never assume a correction relationship.
-        key = _hash(
-            [
-                provider,
-                service,
-                kind,
-                account,
-                project,
-                resource,
-                lower,
-                None if kind == "cumulative_actual" else upper,
-                charge_identity,
-            ]
-        )
+        # Provider charge IDs are account-scoped. Interval/project/resource fields
+        # can be corrected and belong to the revision, not the event identity.
+        # A missing account retains the existing single-account collector scope;
+        # do not merge records from additional accounts without their namespace.
+        if provider_charge_key:
+            key = _hash([provider, service, kind, account, charge_identity])
+        else:
+            key = _hash(
+                [
+                    provider,
+                    service,
+                    kind,
+                    account,
+                    project,
+                    resource,
+                    lower,
+                    None if kind == "cumulative_actual" else upper,
+                    charge_identity,
+                ]
+            )
         partial = (
             invalid
             or identity_unknown
@@ -235,9 +262,14 @@ def project_daily_snapshot(
             if value is not None
             else "unknown",
         }
-        row["revision_id"] = _hash(
-            {k: row[k] for k in ("source_key", "amount", "currency", "components")}
-        )
+        revision = {k: row[k] for k in ("source_key", "amount", "currency", "components")}
+        if provider_charge_key:
+            revision.update(
+                {k: row[k] for k in (
+                    "account", "project", "resource", "interval_start", "interval_end",
+                )}
+            )
+        row["revision_id"] = _hash(revision)
         rows.append(row)
 
     # This reference is a cumulative cohort amount, even when the file was just refreshed.
@@ -523,9 +555,15 @@ def _load_bound(export_path: Path, receipt_path: Path) -> tuple[dict, dict, list
         unsigned
     ) != receipt.get("receipt_digest"):
         raise ValueError("billing_receipt_digest_or_schema_invalid")
+    # Equivalent timezone/fraction formatting is not a different observation.
+    # Parse for this comparison only; retain the exact source bytes and hashes.
+    export_observed = _exact_observation_time(export.get("generated_at"))
+    receipt_observed = _exact_observation_time(receipt.get("generated_at"))
     if (
         export.get("schema_version") != "blueprint.provider_billing_export.v1"
-        or export.get("generated_at") != receipt.get("generated_at")
+        or export_observed is None
+        or receipt_observed is None
+        or export_observed != receipt_observed
         or export.get("provider_totals_usd") != receipt.get("provider_totals_usd")
     ):
         raise ValueError("billing_export_receipt_binding_invalid")

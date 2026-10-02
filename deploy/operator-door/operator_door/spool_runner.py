@@ -243,6 +243,23 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
     "restore-scene": _LaunchSpec("blueprint-operator-door-scene-restore", "door-scene-lifecycle.sh", "2h",
                                  lambda request: request["consent_id"][:12],
                                  _lifecycle_environment, _lifecycle_properties),
+    "unit": _LaunchSpec(
+        "blueprint-operator-door-notifier-repair", "door-repair-notifier-binding.sh", "60s",
+        lambda _request: "postchecks",
+        lambda config, request: {
+            "DOOR_INSTALL_ROOT": config.install_root,
+            "DOOR_EXPECTED_POSTCHECK_SHA256": request["expected_postcheck_sha256"],
+            "DOOR_EXPECTED_SOURCE_COMMIT": request["expected_source_commit"],
+        },
+        lambda config, _request: (
+            "ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "PrivateNetwork=yes", "RestrictAddressFamilies=AF_UNIX",
+            "CapabilityBoundingSet=", "AmbientCapabilities=",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            "ReadWritePaths=/etc/systemd/system/blueprint-pipeline-control-plane.service.d "
+            + str(Path(config.spool_root) / "results"),
+        ),
+    ),
     "legacy-owner-census": _LaunchSpec("blueprint-operator-door-legacy-owner-census",
                                       "door-legacy-owner-census.sh", "5min",
                                       lambda _request: "current", _legacy_owner_environment,
@@ -351,9 +368,13 @@ def _act_hold(
             return {"status": "refused", "code": "hold_release_in_progress"}
         current = holds.read(root, unit)
         prior_active = (current is not None and current["status"] == "active"
-                        and current["expires_at_epoch"] > time.time())
+                        and (current["expires_at_epoch"] > time.time()
+                             or current.get("require_explicit_release") is True))
         if prior_active and current["owner"] != request["owner"]:
             return {"status": "refused", "code": f"hold_active:{current['owner']}"}
+        if (prior_active and current.get("require_explicit_release") is True
+                and request.get("require_explicit_release") is not True):
+            return {"status": "refused", "code": "hold_explicit_release_required"}
         if not _has_hold_guard(runner, unit, root):
             return {"status": "refused", "code": "hold_unit_guard_missing"}
         if current is not None and current["status"] == "active" and isinstance(current.get("enabled_before"), bool):
@@ -399,7 +420,8 @@ def _act_hold(
                   "reason": request["reason"], "requested_by": requested_by, "request_id": request_id,
                   "created_at": holds.timestamp(now), "expires_at": holds.timestamp(expires_at_epoch),
                   "expires_at_epoch": expires_at_epoch, "enabled_before": enabled_before,
-                  "status": "active"}
+                  "status": "active", **({"require_explicit_release": True}
+                                         if request.get("require_explicit_release") is True else {})}
 
         def rollback() -> int:
             if prior_active:
@@ -474,6 +496,11 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
     if request["kind"] in {"owner-census-decision", "legacy-owner-census"} and config.owner_census_decisions_enabled != 1:
         return {"status": "refused", "code": "owner_consent_disabled"}
     if request["kind"] == "unit":
+        if request["action"] == "repair-notifier-binding":
+            busy = _active_deploy_unit(runner)
+            if busy is not None:
+                return {"status": "refused", "code": "notifier_repair_deploy_in_progress"}
+            return _launch(config, runner, request_id, request)
         result = runner.run(
             ["systemctl", "--no-block", request["action"], "--", request["unit"]], timeout=30
         )

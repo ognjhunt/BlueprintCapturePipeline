@@ -10,18 +10,24 @@ export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
 const TERMINAL = ['awaiting_review', 'reviewed', 'completed', 'failed', 'cancelled'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const canonicalValue = value => Array.isArray(value) ? value.map(canonicalValue) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalValue(value[key])])) : value;
+const valueHash = value => sha(JSON.stringify(canonicalValue(value)));
 const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.stringify(Object.entries(b || {}).sort());
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
-  constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null) {
+  constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
+    terminalCollectionReceipt = null) {
     this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
     this.publisher = publisher;
+    this.learning = learning;
+    this.terminalCollectionReceipt = terminalCollectionReceipt;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -107,6 +113,12 @@ export class Store {
       refuse('firestore_row_binding_invalid');
     return row;
   }
+  async blobReceipt(hash) {
+    const bytes=await this.blobGet(hash),snap=await this.db.doc(`${ROOT}/blobs/${hash}`).get(),time=snap.createTime;
+    if (!Number.isSafeInteger(time?.seconds) || !Number.isSafeInteger(time?.nanoseconds)
+        || time.nanoseconds<0 || time.nanoseconds>=1000000000) refuse('firestore_blob_creation_time_unavailable');
+    return {sha256:hash,bytes,created_at:{seconds:time.seconds,nanoseconds:time.nanoseconds}};
+  }
   async rows() {
     const snaps = await this.db.collection(`${ROOT}/runs`).limit(10001).get();
     if (snaps.docs.length > 10000) refuse('firestore_history_limit');
@@ -115,10 +127,13 @@ export class Store {
     return result.sort((a, b) => a.date.localeCompare(b.date));
   }
   projectWorkItem(tx, row, hash) {
-    if (row.packet) tx.set(this.db.doc(`${ROOT}/workItems/${row.date}`), {
-      date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest,
+    const repair = row.state==='failed' && row.turn_status==='completed' && row.artifact_downloaded===true
+      && !row.qa && !Object.keys(row.delivery || {}).length;
+    if (row.packet || repair) tx.set(this.db.doc(`${ROOT}/workItems/${row.date}`), {
+      date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest || null,
       owner: 'blueprint-research-qa-publication-agent',
-      stage: row.state === 'awaiting_review' ? 'agent_qa_pending' : row.state === 'reviewed' ? 'publication_pending' : row.state,
+      stage: repair ? (row.validation_repairs?.at(-1)?.state==='no_progress' ? 'validation_repair_blocked' : 'validation_repair_pending')
+        : row.state === 'awaiting_review' ? 'agent_qa_pending' : row.state === 'reviewed' ? 'publication_pending' : row.state,
       qa_state: row.qa?.state || null, qa_error: row.qa?.error || null,
       observer_receipt_required: false, scope: 'research_only_no_outreach'
     });
@@ -134,6 +149,22 @@ export class Store {
       const prior = await tx.get(ref);
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      const retryPhase = row.qa_retry_continuation ? sha(Buffer.from(JSON.stringify(row.qa_retry_continuation))) : null;
+      const submissionBinding = row.qa?.submission_binding ? sha(Buffer.from(JSON.stringify(row.qa.submission_binding))) : null;
+      const terminalCollection = row.qa?.terminal_collection_recovery ? sha(Buffer.from(JSON.stringify(row.qa.terminal_collection_recovery))) : null;
+      if (prior.data()?.qa_retry_phase_digest && prior.data().qa_retry_phase_digest !== retryPhase)
+        refuse('qa_retry_phase_already_bound');
+      if (prior.data()?.qa_submission_binding_digest && prior.data().qa_submission_binding_digest !== submissionBinding)
+        refuse('qa_submission_already_bound');
+      if (prior.data()?.qa_terminal_collection_digest && prior.data().qa_terminal_collection_digest !== terminalCollection)
+        refuse('qa_terminal_collection_already_bound');
+      const retry = row.qa?.input_retries?.at(-1);
+      const correction = row.qa?.corrections?.at(-1);
+      const correctionBindings=Object.fromEntries((row.qa?.corrections || []).map(c=>[c.number, {
+        request_digest:c.request_digest,deadline_ms:c.deadline_ms,idempotency_key:c.idempotency_key,
+        authority_reference:c.authority_reference,previous_review:c.previous_review,baseline_turn_ids:c.baseline_turn_ids}]));
+      if (Object.entries(prior.data()?.qa_correction_bindings || {}).some(([n,b])=>!same(b,correctionBindings[n])))
+        refuse('qa_correction_already_bound');
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
@@ -142,6 +173,23 @@ export class Store {
         search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
         recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
+        qa_retry_phase_digest: retryPhase,
+        qa_submission_binding_digest: submissionBinding,
+        qa_terminal_collection_digest: terminalCollection,
+        qa_retry_deadline_ms: row.qa_retry_continuation ? Date.parse(row.qa_retry_continuation.started_at) + 600000 : row.qa?.submission_binding?.deadline_ms || null,
+        qa_retry_workflow_authority: row.qa_retry_continuation ? null : row.qa?.submission_binding?.authority_reference || null,
+        qa_retry_number: retry?.number || null, qa_retry_key: retry?.idempotency_key || null,
+        qa_retry_not_before_ms: retry ? Date.parse(retry.not_before) : null,
+        qa_retry_prior_503: retry ? (row.qa.input_retries.length === 1 ? row.qa.input_error_receipt : row.qa.input_retries.at(-2)?.error_receipt) : null,
+        qa_retry_claims: prior.exists ? prior.data().qa_retry_claims || {} : {},
+        qa_correction_bindings:correctionBindings,
+        qa_correction_number:correction?.number || null, qa_correction_state:correction?.state || null,
+        qa_correction_claims:prior.exists ? prior.data().qa_correction_claims || {} : {},
+        repair_request_digest: row.validation_repairs?.at(-1)?.request_digest || null,
+        repair_deadline_ms: row.validation_repairs?.at(-1)?.deadline_ms || null,
+        repair_number: row.validation_repairs?.at(-1)?.number || null,
+        repair_state: row.validation_repairs?.at(-1)?.state || null,
+        repair_claims: prior.exists ? prior.data().repair_claims || {} : {},
         publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
       this.projectWorkItem(tx, row, hash);
     });
@@ -153,7 +201,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -169,8 +217,17 @@ export class Store {
     if (!row) refuse('run_missing');
     const files = {}, missing = [];
     for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
-      ...(row.qa?.input_file ? ['qa-input'] : []), ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
-      try {files[kind] = await this.fileGet(`${day}-${kind}.json`);}
+      ...(row.qa?.input_file ? ['qa-input'] : []),
+      ...(row.qa?.corrections?.length ? ['qa-original','qa-original-evidence'] : []),
+      ...(row.qa?.corrections || []).flatMap(c=>[`qa-correction-${c.number}-input`,
+        ...(c.artifact_file ? [`qa-correction-${c.number}-artifact`] : []),
+        ...(c.evidence_file ? [`qa-correction-${c.number}-evidence`] : [])]),
+      ...(row.validation_repairs || []).flatMap(r=>[`repair-${r.number}-input`, ...(r.artifact_file ? [`repair-${r.number}-artifact`] : [])]),
+      ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
+      const names={'qa':row.qa?.artifact_file,'qa-evidence':row.qa?.evidence_file,
+        'qa-original':row.qa?.corrections?.[0]?.previous_review?.artifact_file,
+        'qa-original-evidence':row.qa?.corrections?.[0]?.previous_review?.evidence_file};
+      try {files[kind] = await this.fileGet(names[kind] || `${day}-${kind}.json`);}
       catch (error) {
         if (!(error instanceof Refusal) || error.message !== 'firestore_file_missing') throw error;
         if (kind === 'artifact' && row.artifact_downloaded) refuse('artifact_not_downloaded_or_digest_mismatch');
@@ -217,6 +274,13 @@ export class Store {
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
       this.budgetGate(control, snap.data());
+      if (control.learning?.enabled === true || metadata.learning_binding_digest) {
+        if (control.learning?.enabled !== true || metadata.learning_binding_digest !== valueHash(control.learning)
+            || ['binding','businessScope','learningGrant'].some(key => {
+              const expiry = Date.parse(control.learning[key]?.expiresAt);
+              return !Number.isFinite(expiry) || expiry <= this.clock();
+            })) refuse('research_learning_create_scope_changed_or_expired');
+      }
       tx.set(this.db.doc(`${ROOT}/runs/${day}`), {create_attempt_claimed: true}, {merge: true});
       return true;
     });
@@ -231,9 +295,9 @@ export class Store {
     return {latest_date: latest.docs[0]?.id || null, unfinished: unfinished.docs.length > 0,
       cleanup_required: uncleaned.docs.length > 0};
   }
-  workflowGate(control) {
+  workflowGate(control, allowStopped = false) {
     const workflow=control?.workflow;
-    if (control?.enabled !== true || workflow?.enabled !== true
+    if (!(control?.enabled === true || allowStopped && control?.enabled === false) || workflow?.enabled !== true
         || ['qa_authority_reference','publication_authority_reference'].some(k=>typeof workflow[k]!=='string'
           || !workflow[k].trim() || workflow[k].startsWith('PENDING'))) refuse('workflow_authority_missing');
   }
@@ -249,15 +313,18 @@ export class Store {
   }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
-    const [qa,pub]=await Promise.all(['agent_qa_pending','publication_pending'].map(stage=>queue.where('stage','==',stage).limit(21).get()));
-    if (qa.docs.length>20 || pub.docs.length>20) refuse('workflow_queue_limit');
-    const items=[...qa.docs,...pub.docs].map(s=>s.data()).sort((a,b)=>a.date.localeCompare(b.date));
+    const groups=await Promise.all(['validation_repair_pending','agent_qa_pending','publication_pending']
+      .map(stage=>queue.where('stage','==',stage).limit(21).get()));
+    if (groups.some(group=>group.docs.length>20)) refuse('workflow_queue_limit');
+    const items=groups.flatMap(group=>group.docs.map(s=>s.data())).sort((a,b)=>a.date.localeCompare(b.date));
     return items[0] || null;
   }
   async activeQA() {
     const runs=this.db.collection(`${ROOT}/runs`);
-    const groups=await Promise.all(['qa_running','qa_input_unresolved','qa_cancel_pending']
-      .map(state=>runs.where('qa_state','==',state).limit(1).get()));
+    const groups=await Promise.all([
+      ...['qa_running','qa_input_unresolved','qa_correction_input_unresolved','qa_cancel_pending'].map(state=>['qa_state',state]),
+      ...['running','input_unresolved','cancel_pending'].map(state=>['repair_state',state])]
+      .map(([field,state])=>runs.where(field,'==',state).limit(1).get()));
     const days=groups.flatMap(s=>s.docs.map(d=>d.id)).sort();
     return days[0] || null;
   }
@@ -274,10 +341,64 @@ export class Store {
       tx.set(ref,{qa_request_claimed:true},{merge:true});return true;
     });
   }
+  async qaRetryCheck(day, requestDigest, deadlineMS, number) {
+    if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest) || ![1,2].includes(number))
+      refuse('qa_retry_request_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),snap=await tx.get(ref),run=snap.data();
+      const error=run?.qa_retry_prior_503;
+      if (!snap.exists || run.state!=='awaiting_review' || run.qa_state!=='qa_input_unresolved'
+          || run.qa_request_claimed!==true || run.qa_request_digest!==requestDigest
+          || (!run.qa_retry_phase_digest && !run.qa_submission_binding_digest) || run.qa_retry_number!==number
+          || (run.qa_retry_workflow_authority && run.qa_retry_workflow_authority!==control.workflow.qa_authority_reference)
+          || run.qa_retry_key!==`blueprint-researcher:${day}:qa`
+          || !Number.isSafeInteger(deadlineMS) || run.qa_retry_deadline_ms!==deadlineMS
+          || !Number.isSafeInteger(run.qa_retry_not_before_ms) || this.clock()<run.qa_retry_not_before_ms
+          || this.clock()>=deadlineMS || run.qa_retry_claims?.[number]
+          || (number===2 && run.qa_retry_claims?.[1]!==requestDigest)
+          || error?.stage!=='provider_submission' || error.http_status!==503
+          || !['service_unavailable_error','server_is_overloaded'].includes(error.code))
+        refuse('qa_retry_input_not_admitted');
+      this.budgetGate(control,run);
+      tx.set(ref,{qa_retry_claims:{...run.qa_retry_claims,[number]:requestDigest}},{merge:true});return true;
+    });
+  }
+  async qaCorrectionCheck(day, requestDigest, deadlineMS, number) {
+    if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest) || ![1,2].includes(number))
+      refuse('qa_correction_request_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),snap=await tx.get(ref),run=snap.data();
+      const binding=run?.qa_correction_bindings?.[number];
+      if (!snap.exists || run.state!=='awaiting_review' || run.qa_state!=='qa_correction_input_unresolved'
+          || run.qa_request_claimed!==true || run.qa_correction_number!==number
+          || run.qa_correction_state!=='input_unresolved' || binding?.request_digest!==requestDigest
+          || binding.authority_reference!==control.workflow.qa_authority_reference
+          || (run.qa_retry_workflow_authority && binding.authority_reference!==run.qa_retry_workflow_authority)
+          || binding.idempotency_key!==`blueprint-researcher:${day}:qa:correction:${number}`
+          || !/^[a-f0-9]{64}$/.test(binding.previous_review?.artifact_digest || '')
+          || binding.previous_review?.turn_status!=='completed'
+          || !Number.isSafeInteger(deadlineMS) || binding.deadline_ms!==deadlineMS
+          || (run.qa_retry_deadline_ms || run.qa_deadline_ms)!==deadlineMS || this.clock()>=deadlineMS
+          || run.qa_correction_claims?.[number] || (number===2 && !run.qa_correction_claims?.[1]))
+        refuse('qa_correction_input_not_admitted');
+      this.budgetGate(control,run);
+      tx.set(ref,{qa_correction_claims:{...run.qa_correction_claims,[number]:requestDigest}},{merge:true});return true;
+    });
+  }
   async publish(day) {
-    await this.assertLease(); this.workflowGate((await this.control.get()).data());
+    await this.assertLease(); const initialControl=(await this.control.get()).data();
+    this.workflowGate(initialControl,!!this.terminalCollectionReceipt);
     if (!this.publisher) refuse('publication_binding_unavailable');
     const row=await this.get(day);
+    const proof=this.terminalCollectionReceipt;
+    if (proof && (!['reviewed','completed'].includes(row?.state) || row?.qa?.state!=='validated'
+        || valueHash(row.qa.terminal_collection_recovery?.native_receipt||null)!==valueHash(proof)
+        || row.session_id!==proof.session_id || row.qa.artifact_digest!==proof.qa_artifact_sha256))
+      refuse('terminal_qa_collection_validated_receipt_required');
+    const collectionAuthority=row?.qa?.terminal_collection_recovery?.workflow_authority;
+    if (collectionAuthority && !same(collectionAuthority,initialControl.workflow)) refuse('publication_authority_changed');
     const destination=['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
     if (!destination) return null;
     const d=row.delivery[destination];
@@ -288,7 +409,8 @@ export class Store {
       const ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
       if (before.data().publication_claimed?.[destination]) return null; // uncertain: GET reconciliation only
       await this.transaction(async tx=>{
-        const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+        const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control,!!proof);
+        if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || run.publication_claimed?.[destination]) refuse('publication_attempt_not_admitted');
         tx.set(ref,{publication_claimed:{...run.publication_claimed,[destination]:d.plan.request_digest}},{merge:true});
@@ -298,6 +420,22 @@ export class Store {
     } catch(error) {
       refuse(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
     }
+  }
+  async repairCheck(day, requestDigest, deadlineMS) {
+    if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest)) refuse('validation_repair_request_invalid');
+    const ref = this.db.doc(`${ROOT}/runs/${day}`);
+    return this.transaction(async tx => {
+      const control = (await tx.get(this.control)).data(); this.fence(control); this.workflowGate(control);
+      const snap = await tx.get(ref), run = snap.data();
+      if (!snap.exists || run.repair_request_digest!==requestDigest
+          || !Number.isSafeInteger(run.repair_number) || run.repair_number<1
+          || !Number.isSafeInteger(deadlineMS) || run.repair_deadline_ms!==deadlineMS
+          || this.clock()>=deadlineMS || run.repair_claims?.[run.repair_number])
+        refuse('validation_repair_input_not_admitted');
+      this.budgetGate(control,run);
+      tx.set(ref,{repair_claims:{...run.repair_claims,[run.repair_number]:requestDigest}},{merge:true});
+      return true;
+    });
   }
   // One authorized test reuses the Oct 1 session. It never enters daily runs or
   // workItems, and shares the existing lease and immutable blob implementation.
@@ -376,6 +514,9 @@ export class Store {
     return this.blobGet(snap.data().blob);
   }
   async dispatch(request) {
+    if (this.terminalCollectionReceipt && !['acquire','renew','release','assert_lease','control','read_crm',
+      'get','blob_receipt','rows','summary','work_item','active_qa','publish','refresh_crm','put',
+      'file_put','file_get','snapshot'].includes(request.op)) refuse('terminal_qa_operation_forbidden');
     switch (request.op) {
       case 'init': {
         const value = request.value;
@@ -400,6 +541,20 @@ export class Store {
       case 'release': return this.release();
       case 'assert_lease': return this.assertLease();
       case 'control': return (await this.control.get()).data() || null;
+      case 'learning_context':
+      {
+        const control = (await this.control.get()).data();
+        if (control?.learning?.enabled !== true) return null;
+        await this.assertLease();
+        if (typeof request.allow_create !== 'boolean') refuse('research_learning_create_direction_required');
+        if (!this.learning) refuse('research_learning_binding_unavailable');
+        try {return await this.learning(request, control.learning);}
+        catch (error) {
+          const code=error.message;
+          refuse(/^(?:research_learning|business_daily|business_run|learning_consumer)_[a-z_]{1,75}$/.test(code)
+            ? code : 'research_learning_unavailable');
+        }
+      }
       case 'read_crm': {
         if (!this.crmReader) refuse('canonical_crm_read_unavailable');
         return this.crmReader();
@@ -411,11 +566,15 @@ export class Store {
       case 'adaptive_file_put': return this.adaptiveFilePut(request.name,request.bytes);
       case 'adaptive_file_get': return this.adaptiveFileGet(request.name);
       case 'get': return this.get(request.day);
+      case 'blob_receipt': return this.blobReceipt(request.hash);
       case 'rows': return this.rows();
       case 'summary': return this.summary();
       case 'work_item': return this.workItem();
       case 'active_qa': return this.activeQA();
       case 'qa_check': return this.qaCheck(request.day,request.request_digest,request.deadline_ms);
+      case 'qa_retry_check': return this.qaRetryCheck(request.day,request.request_digest,request.deadline_ms,request.number);
+      case 'qa_correction_check': return this.qaCorrectionCheck(request.day,request.request_digest,request.deadline_ms,request.number);
+      case 'repair_check': return this.repairCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
       case 'refresh_crm': {
         await this.assertLease();
@@ -492,7 +651,11 @@ async function main() {
   if (account.project_id !== 'blueprint-8c1ca') refuse('firestore_project_binding_mismatch');
   const crmReader=()=>readCanonicalCRM(account);
   const publisher=await livePublisher(account,crmReader,process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY);
-  const store = new Store(getFirestore(initializeApp({credential: cert(account)})), undefined, undefined,crmReader,publisher);
+  const db = getFirestore(initializeApp({credential: cert(account)}));
+  // The trusted worker supplies a local compiled module, never a model URL.
+  const learningPath = process.env.BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE;
+  const learning = learningPath ? (await import(pathToFileURL(learningPath).href)).researchLearningHost(db) : null;
+  const store = new Store(db, undefined, undefined,crmReader,publisher,learning);
   const channel = new LeaseChannel(store);
   for await (const line of createInterface({input: process.stdin})) {
     try {

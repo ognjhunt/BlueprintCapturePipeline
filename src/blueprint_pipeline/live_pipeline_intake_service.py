@@ -1643,14 +1643,19 @@ def _configured_disk_headroom() -> Dict[str, Any]:
         return disk_headroom(
             target_root=target_root,
             reservation_root=reservation_root,
+            # Diagnostics must not occupy every intake worker waiting for an
+            # admission publisher. Busy headroom remains unknown/fail-closed.
+            lock_nonblocking=True,
             role_targets=parse_role_targets(
                 os.getenv("BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS")
             ),
         )
-    except (ControlPlaneDiskBudgetError, OSError):
+    except (ControlPlaneDiskBudgetError, OSError) as exc:
         return {
             "schema_version": "control_plane_disk_headroom.v1",
             "status": "unknown_fail_closed",
+            "error_code": "control_plane_disk_budget_lock_busy" if isinstance(exc, ControlPlaneDiskBudgetError)
+            and str(exc) == "control_plane_disk_budget_lock_busy" else "control_plane_disk_headroom_unavailable",
             "refused_roles": list(CHAIN_ROLES),
         }
 

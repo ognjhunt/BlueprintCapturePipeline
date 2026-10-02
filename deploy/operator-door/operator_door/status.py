@@ -158,6 +158,7 @@ def _holds(config: DoorConfig) -> list[dict[str, Any]]:
     records = hold_records.active(Path(config.spool_root) / "holds")
     keys = ("unit", "owner", "reason", "requested_by", "request_id", "created_at", "expires_at")
     return [{**{key: record[key] for key in keys},
+             "require_explicit_release": record.get("require_explicit_release", False),
              "remaining_seconds": max(0, int(record["expires_at_epoch"] - now)),
              "expired": record["expires_at_epoch"] <= now} for record in records]
 
@@ -171,6 +172,7 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
                  "request_kinds": sorted(_SCOPES),
                  "hold_target": "blueprint-agent-run-dispatcher.timer" if DISPATCHER_HOLD_ONLY else None},
         "deployed": _deployed(host),
+        "notifier_binding": _section(lambda: host.notifier_binding(), "notifier_binding_unavailable"),
         "active_release": _section(lambda: _active_release(config), "active_release_unavailable"),
         "deploys": {
             "active_units": _section(

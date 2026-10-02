@@ -101,6 +101,22 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `POST /requests` | per kind | `202 {"id": …}` |
 | `GET /requests` · `GET /requests/<id>` | read | queue, or one request with result, outcome, redacted log tail and live unit state |
 
+`status.notifier_binding` is a fixed-target view of the live control-plane
+postcheck binding. It reports safe unit/drop-in paths, an opaque command hash,
+known postcheck script paths and whether the release-selector key occurs.
+It never returns raw commands or `Environment`, and does not grant file access
+to `/etc/systemd`. This metadata alone does not prove the imported notifier:
+the naturally emitted alert audit owns its source identity and full payload.
+
+`unit repair-notifier-binding blueprint-pipeline-control-plane.service` is a
+fixed migration of the legacy `95-blueprint-active-release.conf` postcheck
+invocation. Supply `--expected-postcheck-sha256` from fresh status and
+`--expected-source-commit` from the proven active release. It requires the
+explicit dispatcher stop, preserves all other directives/hooks, retains a
+root-only original backup, and reloads systemd without starting the service.
+Unknown hook shapes, symlinks or identity drift are refused. No general path
+or command setter is exposed; judge recovery from the next natural alert.
+
 Read roots: `/var/lib/blueprint`, `/opt/blueprint`, `/workspace`,
 `/mnt/blueprint-work`, `/etc/blueprint` (names screened as above) and the
 door's own state. Paths resolve to their real location and must stay inside a
@@ -196,6 +212,27 @@ sweep thereafter. Status
 shows `remaining_seconds` and flags an overdue record, so a failed expiry is
 visible for an operator to release. Safety-critical teardown, spend-guard,
 capacity, storage-GC, replay-cache-GC and preflight triggers cannot be held.
+
+### Founder stop of paid agent dispatch
+
+The dispatcher-only `--until-released` option records
+`require_explicit_release: true`. Its bounded `--for` deadline requests review;
+expiry and the boot sweep keep the dispatcher disabled and stopped. Only an
+explicit `release-hold`, after the founder authorizes resumption, removes this
+guard. Ordinary operational holds retain automatic expiry. An overdue explicit
+stop retains its owner and cannot be replaced by an automatic-expiry renewal.
+
+```bash
+python3 scripts/operator_door.py hold blueprint-agent-run-dispatcher.timer \
+  --owner <current-hold-owner> --reason "Founder stop: explicit resumption required" \
+  --for 24h --until-released --wait
+```
+
+Upgrade the door to the reviewed commit first and verify its terminal upgrade
+receipt before requesting this policy. Older installed code does not enforce it.
+Then verify `/status` reports `require_explicit_release: true` and the dispatcher
+timer remains inactive and disabled. This stops agent-run dispatch only; it
+does not claim every host controller or already running provider job is stopped.
 
 Lanes that deploy by hand should keep naming their transient units
 `blueprint-<label>-deploy-<sha>` so the door's in-progress check and `status`

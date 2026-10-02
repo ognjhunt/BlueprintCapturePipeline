@@ -21,6 +21,11 @@ export const CANARY = `${ROOT}/canaries/${TEST}`;
 const SOURCE = '35f5c9ad43f84aa053aa7616a63a9aa4f6e32a61';
 const fail = code => {throw new Error(code);};
 const normalized = control => Object.fromEntries(Object.entries(control || {}).filter(([key])=>key!=='lease'));
+const TERMINAL_COLLECTION_RECEIPT = CONTEXT.terminal_collection_receipt || null;
+if (TERMINAL_COLLECTION_RECEIPT && (TEST!=='baseline-20261002-attempt-0001' || DAY!=='2026-10-01'
+  || BASELINE?.attempt_number!==1 || TERMINAL_COLLECTION_RECEIPT.schema_version!=='blueprint.qa-terminal-reconciliation.v1'
+  || TERMINAL_COLLECTION_RECEIPT.source_blob_sha256!=='59327fce14de04a18679932162a4342ddd3513b6e123d43dbc85d2693e957b9b'))
+  throw new Error('terminal_qa_collection_scope_changed');
 
 export function scopedDatabase(db,root=CANARY) {
   const path = p => {
@@ -39,7 +44,7 @@ export class CanaryChannel {
     const publishRow=row=>({...row,run_key:`blueprint-research-canary:${TEST}`});
     const privatePublisher=BASELINE && publisher?Object.fromEntries(['prepare','write','reconcile'].map(method=>
       [method,(row,...args)=>publisher[method](publishRow(row),...args)])):publisher;
-    this.store=new Store(scopedDatabase(db),clock,undefined,crmReader,privatePublisher);
+    this.store=new Store(scopedDatabase(db),clock,undefined,crmReader,privatePublisher,null,TERMINAL_COLLECTION_RECEIPT);
     this.channel=new LeaseChannel(this.store);
   }
   async origin() {
@@ -170,6 +175,10 @@ export class CanaryChannel {
       prior_scope_included:false,source_refresh_performed:false};
   }
   async call(request) {
+    if (TERMINAL_COLLECTION_RECEIPT && !['origin','origin_file','guard','baseline_status','acquire','renew','release',
+      'assert_lease','control','read_crm','get','blob_receipt','rows','summary','work_item','active_qa',
+      'publish','refresh_crm','put','file_put','file_get','snapshot'].includes(request.op))
+      fail('terminal_qa_operation_forbidden');
     if ((request.day!==undefined && request.day!==DAY)
       || (request.op==='put' && request.row?.date!==DAY)) fail('canary_date_scope_invalid');
     if (request.op==='baseline_check') {await this.baselineCheck();return true;}
@@ -231,7 +240,7 @@ export class CanaryChannel {
     }
     // Read/recovery/lease operations stay available if normal control changes.
     // New paid work and publication require the same fresh disabled-root guard.
-    if (['create_check','qa_check','publish','refresh_crm','configure'].includes(request.op)) {
+    if (['create_check','qa_check','qa_retry_check','qa_correction_check','repair_check','publish','refresh_crm','configure'].includes(request.op)) {
       const control=(await this.store.control.get()).data();
       await this.guard(control?.canary?.origin_control,control?.canary?.origin_row_blob);
       if (BASELINE) {
@@ -265,7 +274,7 @@ async function main() {
         process.stdout.write(JSON.stringify({ok:true,value})+'\n');
       } catch(error) {
         const code=/^canary_[a-z_]+$/.test(error.message)||/^firestore_[a-z_]+$/.test(error.message)
-          || /^(?:research_|agent_|workflow_|publication_)[a-z_]+$/.test(error.message)
+          || /^(?:research_|agent_|workflow_|publication_|terminal_qa_)[a-z_]+$/.test(error.message)
           || error.message==='runner_overlap' ? error.message : 'canary_bridge_unavailable';
         process.stdout.write(JSON.stringify({ok:false,error:code})+'\n');
       }

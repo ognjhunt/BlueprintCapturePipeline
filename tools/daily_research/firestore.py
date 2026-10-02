@@ -28,7 +28,7 @@ class Bridge:
             [node, str(script or Path(__file__).with_name("firestore_bridge.mjs"))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1,
-            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON", "NOTION_API_TOKEN", "NOTION_API_KEY"}},
+            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON", "NOTION_API_TOKEN", "NOTION_API_KEY", "BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE"}},
         )
 
     def call(self, op, **fields):
@@ -86,6 +86,9 @@ class FirestoreLedger:
     def get(self, day):
         return self.bridge.call("get", day=day)
 
+    def learning_context(self, day, *, allow_create=True):
+        return self.bridge.call("learning_context", day=day, allow_create=allow_create)
+
     def put(self, row):
         from tools.daily_research import search
         if row.get("search_provider") == search.PROFILE and len(canonical(row).encode()) > search.MAX_RECORD:
@@ -125,7 +128,7 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("assert_lease")
         control = self.ledger.bridge.call("control")
         if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
-                or phase == "qa" and control.get("workflow", {}).get("enabled") is not True):
+                or phase in {"qa", "repair"} and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
         if (
                 control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
@@ -136,7 +139,155 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         if datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms:
             raise Refusal("agent_qa_total_runtime_exhausted")
+        self.recovered_qa_action_guard(session_id, day, deadline_ms)
+        self.qa_input_phase = "provider_submission"
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def qa_correction_input(self, session_id, event, key, day, request_digest, deadline_ms, number):
+        from tools.daily_research.consumer import qa_deadline
+        from tools.daily_research.runner import digest
+        row = self.ledger.get(day)
+        current = (row.get("qa", {}).get("corrections") or [{}])[-1]
+        if (number not in {1, 2} or row.get("session_id") != session_id or current.get("number") != number
+                or current.get("request_digest") != request_digest or digest(event) != request_digest
+                or current.get("idempotency_key") != key or key != row["run_key"] + f":qa:correction:{number}"
+                or current.get("deadline_ms") != deadline_ms or int(qa_deadline(row, {}).timestamp() * 1000) != deadline_ms
+                or current.get("input_file") != f"{day}-qa-correction-{number}-input.json"
+                or json.loads(self.ledger.read_bytes(current["input_file"])) != event):
+            raise Refusal("qa_correction_input_not_admitted")
+        self.qa_correction_action_guard(day, deadline_ms)
+        self.ledger.bridge.call("qa_correction_check", day=day, request_digest=request_digest,
+                               deadline_ms=deadline_ms, number=number)
+        self.qa_correction_action_guard(day, deadline_ms)
+        self.qa_correction_input_phase = "provider_submission"
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def qa_correction_action_guard(self, day, deadline_ms):
+        import hashlib
+
+        from tools.daily_research.consumer import Consumer
+        row = self.ledger.get(day)
+        current = row["qa"]["corrections"][-1]
+        prior = current["previous_review"]
+        if hashlib.sha256(self.ledger.read_bytes(prior["artifact_file"])).hexdigest() != prior["artifact_digest"]:
+            raise Refusal("qa_correction_source_artifact_changed")
+        session = self.get("session", row["session_id"])
+        Consumer.check_session(row, session)
+        turns = self.listing("turns", row["session_id"])
+        if (session.get("status") != "idle" or session.get("required_actions")
+                or {turn["id"] for turn in turns} != set(current["baseline_turn_ids"])
+                or any(turn.get("subagent_id") or turn["status"] not in (
+                       {"completed", "failed", "cancelled"} if row.get("validation_repair_outcome")
+                       and turn["id"] in row["qa"]["baseline_turn_ids"] and turn["id"] != row["turn_id"] else {"completed"})
+                       or turn.get("agent_id") not in (None, AGENT) or turn.get("session_id") not in (None, row["session_id"]) for turn in turns)):
+            raise Refusal("qa_correction_session_scope_changed")
+        self.qa_correction_final_guard(row, deadline_ms)
+
+    def qa_correction_final_guard(self, row, deadline_ms):
+        from tools.daily_research.runner import digest
+        current = row["qa"]["corrections"][-1]
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True
+                or control.get("workflow", {}).get("enabled") is not True
+                or current["authority_reference"] != control["workflow"].get("qa_authority_reference")
+                or (not row.get("qa_retry_continuation") and current["authority_reference"] != row["qa"].get("submission_binding", {}).get("authority_reference"))
+                or row["qa"].get("cancel_attempted") or current["state"] != "input_unresolved"
+                or row["qa"]["state"] != "qa_correction_input_unresolved"
+                or digest(row["packet"]) != row["packet_digest"]
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("qa_correction_stopped_disabled_expired_or_authority_changed")
+        if (row.get("search_provider") == "perplexity-fast-v1" and (control.get("config", {}).get("search_provider") != row.get("search_provider")
+                or control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
+                or control.get("config", {}).get("soft_target_usd") != row["soft_target_usd"])):
+            raise Refusal("research_tool_budget_authority_changed")
+
+    def recovered_qa_action_guard(self, session_id, day, deadline_ms, *, origin_guard=None):
+        row = self.ledger.get(day)
+        if not row.get("qa_continuation"):
+            return
+        from tools.daily_research.consumer import Consumer
+        session = self.get("session", session_id)
+        Consumer.check_session(row, session)
+        turns = self.listing("turns", session_id)
+        if (session.get("status") != "idle" or session.get("required_actions")
+                or {t["id"] for t in turns} != set(row["qa"]["baseline_turn_ids"])
+                or any(t.get("subagent_id") or t["status"] != "completed" for t in turns)):
+            raise Refusal("recovered_qa_session_or_turn_changed")
+        if origin_guard:
+            origin_guard()
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True
+                or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("recovered_qa_stopped_disabled_or_expired")
+
+    def qa_retry_input(self, session_id, event, key, day, request_digest, deadline_ms, number):
+        from tools.daily_research import qa_retry
+        from tools.daily_research.consumer import qa_deadline
+        from tools.daily_research.runner import digest
+        row = self.ledger.get(day)
+        if (not (row.get("qa_retry_continuation") or row.get("qa", {}).get("submission_binding")) or row.get("session_id") != session_id
+                or key != row["run_key"] + ":qa" or digest(event) != request_digest
+                or qa_retry.original_event(self.ledger, row) != event
+                or int(qa_deadline(row, {}).timestamp() * 1000) != deadline_ms):
+            raise Refusal("qa_retry_input_not_admitted")
+        if not row.get("qa_retry_continuation"):
+            qa_retry.check_submission_binding(row, deadline_ms)
+        self.qa_retry_action_guard(row, deadline_ms)
+        self.ledger.bridge.call("qa_retry_check", day=day, request_digest=request_digest,
+                                deadline_ms=deadline_ms, number=number)
+        self.qa_retry_action_guard(self.ledger.get(day), deadline_ms)
+        self.qa_input_phase = "provider_submission"
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def qa_retry_action_guard(self, row, deadline_ms):
+        from tools.daily_research import qa_retry
+        if not qa_retry.reconcile(self, self.ledger, row)["clear"]:
+            raise Refusal("qa_retry_saved_work_changed")
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if not row.get("qa_retry_continuation"):
+            binding = qa_retry.check_submission_binding(row, deadline_ms)
+            if binding["authority_reference"] != control.get("workflow", {}).get("qa_authority_reference"):
+                raise Refusal("qa_retry_workflow_authority_changed")
+        if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True
+                or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("qa_retry_stopped_disabled_or_expired")
+
+    def repair_input(self, session_id, event, key, day, request_digest, deadline_ms):
+        # RepairLoop holds the existing fenced lease and has durably consumed
+        # this revision's input claim. A restarted observer never sends it again.
+        from tools.daily_research.runner import digest
+        self.ledger.bridge.call("assert_lease")
+        row = self.ledger.get(day)
+        current = row.get("validation_repairs", [{}])[-1]
+        control = self.ledger.bridge.call("control")
+        if (row.get("session_id") != session_id or current.get("input_attempted") is not True
+                or current.get("state") != "input_unresolved" or current.get("request_digest") != request_digest
+                or key != row.get("run_key", "") + ":repair:" + str(current.get("number"))
+                or digest(event) != request_digest or current.get("deadline_ms") != deadline_ms
+                or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("validation_repair_input_not_admitted")
+        self.ledger.bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+        self.repair_action_guard(day, deadline_ms)
+        self.repair_input_phase = "provider_submission"
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def repair_action_guard(self, day, deadline_ms):
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        row = self.ledger.get(day)
+        request = row.get("validation_repair_authority", {}).get("request", {})
+        if (getattr(self, "stopped", lambda: False)()
+                or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms
+                or (row.get("validation_repair_authority", {}).get("kind") == "workflow"
+                    and request.get("authority_reference") != control["workflow"].get("qa_authority_reference"))):
+            raise Refusal("validation_repair_stopped_disabled_expired_or_authority_changed")
 
 
 def control_configuration(value):
