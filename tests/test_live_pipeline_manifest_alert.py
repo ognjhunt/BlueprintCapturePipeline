@@ -43,19 +43,30 @@ def test_live_run_projects_setup_blockers_instead_of_generic_status(tmp_path: Pa
     assert "status contains blocked" not in audit["message_text"]
 
 
-def test_blocked_alert_counts_the_blockers_it_does_not_list(tmp_path: Path) -> None:
+def test_blocked_alert_preserves_every_blocker_and_correlation_identity(tmp_path: Path, monkeypatch) -> None:
     """2026-09-30: a pass with 13 setup blockers reached Slack as a bare status."""
     manifest = tmp_path / "manifest.json"
     setup = [f"setup_blocker_{index:02d}" for index in range(13)]
     _write_json(manifest, {"status": "blocked", "blockers": [], "setup_blockers": setup})
 
+    sent = []
+    monkeypatch.setattr(alert, "_post_webhook", lambda url, payload, **kwargs: sent.append(payload))
+    monkeypatch.setattr(alert, "running_release_commit", lambda module_path: "a" * 40)
     audit = alert.build_live_pipeline_manifest_alert(
-        manifest_path=manifest, output_path=tmp_path / "alert.json", dry_run=True,
+        manifest_path=manifest, output_path=tmp_path / "alert.json", webhook_url="https://hooks.example/blueprint",
     )
 
     assert audit["blocker_count"] == 13
-    assert audit["blockers"] == setup[:12]
-    assert audit["message_text"].endswith("blockers=" + ", ".join(setup[:5]) + " (+8 more)")
+    assert audit["blockers"] == setup
+    assert all(blocker in audit["message_text"] for blocker in setup)
+    assert f"fingerprint={audit['alert_fingerprint']}" in audit["message_text"]
+    assert "source_version=" + "a" * 40 in audit["message_text"]
+    assert sent[0]["metadata"] == {"event_type": "blueprint_ops_report", "event_payload": {
+        "workflow": "live_pipeline_control_plane", "run_id": str(manifest.resolve()),
+        "fingerprint": audit["alert_fingerprint"], "source_version": "a" * 40,
+        "severity": "warning", "error": "blocked", "blockers": setup,
+        "evidence_ref": str(manifest.resolve()),
+    }}
 
 
 def _sending_run(tmp_path: Path, monkeypatch, sent: list[str], *, fail: bool = False):
@@ -186,19 +197,15 @@ def test_live_pipeline_manifest_alert_sends_bounded_webhook(
 
     assert audit["notification_status"] == "sent"
     assert alert._exit_code(audit) == 0
-    assert sent == [
-        (
-            "https://hooks.example/blueprint",
-            {
-                "text": (
-                    "Blueprint live pipeline control plane is blocked: status=blocked. "
-                    f"manifest={manifest.resolve()} job_id=job-1 "
-                    "capture_root=/captures/capture-1 blockers=missing_capture_root"
-                )
-            },
-            3,
-        )
-    ]
+    assert len(sent) == 1
+    url, payload, timeout = sent[0]
+    assert url == "https://hooks.example/blueprint" and timeout == 3
+    assert payload == audit["webhook_payload"]
+    assert "job_id=job-1" in payload["text"]
+    assert "capture_root=/captures/capture-1" in payload["text"]
+    assert "blockers=missing_capture_root" in payload["text"]
+    assert payload["metadata"]["event_payload"]["run_id"] == "job-1"
+    assert audit["source_version"].startswith("sha256:")
     assert "hooks.example" not in json.dumps(audit)
 
 

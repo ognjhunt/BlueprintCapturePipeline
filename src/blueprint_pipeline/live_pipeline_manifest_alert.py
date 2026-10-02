@@ -22,6 +22,7 @@ from typing import Any, Dict, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .task_evaluation_release_identity import running_release_commit
 
 
 LIVE_PIPELINE_MANIFEST_ALERT_SCHEMA_VERSION = "blueprint_live_pipeline_manifest_alert.v1"
@@ -101,13 +102,15 @@ def _message_text(
     manifest: Mapping[str, Any],
     blockers: Sequence[str],
     blocker_count: int,
+    fingerprint: str,
+    source_version: str,
 ) -> str:
     status = _string(manifest.get("status")) or "unknown"
     job_id = _string(manifest.get("job_id"))
     capture_root = _string(manifest.get("capture_root"))
     page_event = _mapping(manifest.get("page_event"))
     blocker_text = (
-        ", ".join(blockers[:5])
+        ", ".join(blockers)
         if blockers
         else (
             "threshold crossing requires operator notification"
@@ -115,8 +118,6 @@ def _message_text(
             else "status contains blocked"
         )
     )
-    if blocker_count > len(blockers[:5]):
-        blocker_text += f" (+{blocker_count - len(blockers[:5])} more)"
     if manifest.get("schema_version") == SPEND_ADMISSION_LOCK_SCHEMA_VERSION:
         effective_spend = manifest.get("effective_spend_usd")
         hard_stop = manifest.get("hard_stop_usd")
@@ -134,13 +135,16 @@ def _message_text(
             )
     else:
         headline = f"Blueprint live pipeline control plane is blocked: status={status}."
-    parts = [headline, f"manifest={manifest_path}"]
+    parts = [headline, f"manifest={manifest_path}", f"source_version={source_version}",
+             f"fingerprint={fingerprint}", f"blocker_count={blocker_count}"]
     if job_id:
         parts.append(f"job_id={job_id}")
     if capture_root:
         parts.append(f"capture_root={capture_root}")
     parts.append(f"blockers={blocker_text}")
-    return " ".join(parts)[:3000]
+    # Slack's readable message may be bounded; structured metadata and the
+    # retained audit below keep the complete blocker list and evidence identity.
+    return " ".join(parts)[:40000]
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -184,13 +188,14 @@ def _post_webhook(url: str, payload: Mapping[str, Any], *, timeout_seconds: floa
             raise RuntimeError(f"webhook returned HTTP {status}")
 
 
-def _alert_fingerprint(manifest: Mapping[str, Any], blockers: Sequence[str]) -> str:
+def _alert_fingerprint(manifest: Mapping[str, Any], blockers: Sequence[str], source_version: str) -> str:
     identity = {
         "schema_version": _string(manifest.get("schema_version")),
         "status": _string(manifest.get("status")),
         "job_id": _string(manifest.get("job_id")),
         "capture_root": _string(manifest.get("capture_root")),
         "blockers": list(blockers),
+        "source_version": source_version,
     }
     return "sha256:" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -227,9 +232,15 @@ def build_live_pipeline_manifest_alert(
     )
     manifest = _read_manifest(resolved_manifest_path)
     all_blockers = _all_manifest_blockers(manifest)
-    blockers = all_blockers[:12]
+    blockers = all_blockers
     alert_required = _alert_required(manifest)
-    fingerprint = _alert_fingerprint(manifest, all_blockers)
+    module_path = Path(__file__).resolve()
+    try:
+        source_hash = "sha256:" + hashlib.sha256(module_path.read_bytes()).hexdigest()
+    except OSError:
+        source_hash = "unknown"
+    source_version = running_release_commit(module_path) or source_hash
+    fingerprint = _alert_fingerprint(manifest, all_blockers, source_version)
     # Spend-lock and threshold-crossing pages keep paging on every pass.
     repeat_suppressible = (
         manifest.get("schema_version") != SPEND_ADMISSION_LOCK_SCHEMA_VERSION
@@ -247,7 +258,21 @@ def build_live_pipeline_manifest_alert(
         manifest=manifest,
         blockers=blockers,
         blocker_count=len(all_blockers),
+        fingerprint=fingerprint,
+        source_version=source_version,
     )
+    report = {
+        "workflow": "paid_spend_admission" if manifest.get("schema_version") == SPEND_ADMISSION_LOCK_SCHEMA_VERSION
+        else "live_pipeline_control_plane",
+        "run_id": _string(manifest.get("job_id")) or str(resolved_manifest_path),
+        "fingerprint": fingerprint, "source_version": source_version,
+        "severity": "critical" if manifest.get("schema_version") == SPEND_ADMISSION_LOCK_SCHEMA_VERSION else "warning",
+        "error": _string(manifest.get("status")) or "unknown", "blockers": all_blockers,
+        "evidence_ref": str(resolved_manifest_path),
+    }
+    webhook_payload = {"text": message_text, "metadata": {
+        "event_type": "blueprint_ops_report", "event_payload": report,
+    }}
 
     notification_status = "not_required"
     notification_error = ""
@@ -260,7 +285,7 @@ def build_live_pipeline_manifest_alert(
         try:
             _post_webhook(
                 resolved_webhook_url,
-                {"text": message_text},
+                webhook_payload,
                 timeout_seconds=timeout_seconds,
             )
             notification_status = "sent"
@@ -286,6 +311,10 @@ def build_live_pipeline_manifest_alert(
         "blockers": blockers,
         "blocker_count": len(all_blockers),
         "alert_fingerprint": fingerprint,
+        "source_version": source_version,
+        "imported_notifier_path": str(module_path),
+        "notifier_source_sha256": source_hash,
+        "webhook_payload": webhook_payload,
         "last_sent_at_epoch": last_sent,
         "webhook_configured": bool(resolved_webhook_url),
         "webhook_required": webhook_required,
