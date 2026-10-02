@@ -574,7 +574,7 @@ class TerminalCollectionProvider(Provider):
     def mutation_forbidden(self, *args, **kwargs):
         raise Refusal("terminal_qa_provider_mutation_forbidden")
 
-    create = cancel = qa_input = qa_retry_input = repair_input = tool_result = application_tool = tool_admit = mutation_forbidden
+    create = cancel = qa_input = qa_retry_input = qa_correction_input = repair_input = tool_result = application_tool = tool_admit = mutation_forbidden
 
 
 def inspect(bridge, approval, receipt, api, cache, now=None):
@@ -751,6 +751,13 @@ class CanaryProvider(FencedProvider):
         if (self.stopped() or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
                 or self.clock().timestamp() * 1000 >= deadline_ms):
             raise Refusal("qa_retry_stopped_disabled_or_expired")
+
+    def qa_correction_action_guard(self, day, deadline_ms):
+        self.safe(self.ledger.get(day))
+        super().qa_correction_action_guard(day, deadline_ms)
+        # Inventory reads can be slow; revalidate the origin admission last.
+        self.ledger.bridge.call("guard")
+        self.qa_correction_final_guard(self.ledger.get(day), deadline_ms)
 
     def repair_action_guard(self, day, deadline_ms):
         self.ledger.bridge.call("guard")

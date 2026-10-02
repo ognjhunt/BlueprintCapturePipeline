@@ -164,7 +164,7 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
                     time.sleep(3)
                     continue
             result = consumer.step()
-            if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_cancel_pending", "reviewed"}:
+            if result["state"] not in {"qa_running", "qa_input_unresolved", "qa_correction_input_unresolved", "qa_cancel_pending", "reviewed"}:
                 return result
             if time.monotonic() >= until:
                 raise Refusal("workflow_observation_deadline")
@@ -227,13 +227,35 @@ def export_snapshot(bridge, day, destination):
     if (row.get("qa", {}).get("input_file") and (row["qa"]["input_file"] != day + "-qa-input.json" or "qa-input" not in files
             or digest(json.loads(files["qa-input"])) != row["qa"].get("request_digest"))):
         raise Refusal("agent_qa_export_digest_mismatch")
+    for correction in row.get("qa", {}).get("corrections", []):
+        prefix = f"qa-correction-{correction['number']}"
+        raw = files.get(prefix + "-input")
+        if (correction["input_file"] != f"{day}-{prefix}-input.json" or raw is None
+                or digest(json.loads(raw)) != correction["request_digest"]):
+            raise Refusal("agent_qa_correction_export_digest_mismatch")
+        for kind, field in (("artifact", "artifact_digest"), ("evidence", "evidence_digest")):
+            if not correction.get(kind + "_file"):
+                continue
+            raw = files.get(prefix + "-" + kind)
+            if raw is None or correction[kind + "_file"] != f"{day}-{prefix}-{kind}.json":
+                raise Refusal("agent_qa_correction_export_digest_mismatch")
+            actual = hashlib.sha256(raw).hexdigest() if kind == "artifact" else digest(json.loads(raw))
+            if actual != correction.get(field):
+                raise Refusal("agent_qa_correction_export_digest_mismatch")
+    if row.get("qa", {}).get("corrections"):
+        original = row["qa"]["corrections"][0]["previous_review"]
+        if (hashlib.sha256(files.get("qa-original", b"")).hexdigest() != original["artifact_digest"]
+                or digest(json.loads(files.get("qa-original-evidence", b"null"))) != original["evidence_digest"]):
+            raise Refusal("agent_qa_correction_export_digest_mismatch")
     for cid, call in row.get("application_tool_calls", {}).items():
         if not call.get("result_file"):
             continue
         raw = files.get("tool-" + cid)
         expected_turns = ({row.get("turn_id")} if call.get("phase") == "research" else
                           {r.get("turn_id") for r in row.get("validation_repairs", [])} if call.get("phase") == "repair"
-                          else {row.get("qa", {}).get("turn_id")})
+                          else {row.get("qa", {}).get("turn_id"),
+                                *(c.get("turn_id") for c in row.get("qa", {}).get("corrections", [])),
+                                *(c["previous_review"].get("turn_id") for c in row.get("qa", {}).get("corrections", []))})
         if (call["result_file"] != day + "-tool-" + cid + ".json" or raw is None
                 or hashlib.sha256(raw).hexdigest() != call.get("result_sha256")
                 or len(raw) != call.get("result_bytes") or digest(call.get("request")) != call.get("request_digest")):

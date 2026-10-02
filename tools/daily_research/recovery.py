@@ -25,14 +25,16 @@ def parse_artifact_json(raw):
     if text.startswith("\ufeff"):
         text = text[1:]
         transformations.append("utf8_bom")
+    def reject_nonfinite(value):
+        raise ValueError("nonfinite_json_constant:" + value)
     try:
-        output = json.loads(text)
+        output = json.loads(text, parse_constant=reject_nonfinite)
     except json.JSONDecodeError:
         fence = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*)\r?\n```", text.strip(), re.DOTALL | re.IGNORECASE)
         if fence is None:
             raise
         text = fence[1]
-        output = json.loads(text)
+        output = json.loads(text, parse_constant=reject_nonfinite)
         transformations.append("single_json_fence")
     if not transformations:
         return output, None
@@ -58,6 +60,8 @@ def repair_error_receipt(error, stage):
         "research_tool_record_resource_ceiling", "recovered_qa_session_not_idle",
         "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired",
         "canary_stopped_disabled_or_expired_before_qa"}
+    local_codes.update({"qa_correction_input_not_admitted", "qa_correction_source_artifact_changed",
+                        "qa_correction_session_scope_changed", "qa_correction_stopped_disabled_expired_or_authority_changed"})
     local_codes.update({"qa_retry_input_not_admitted", "qa_retry_saved_work_changed",
                         "qa_retry_stopped_disabled_or_expired", "qa_retry_immutable_input_changed"})
     if isinstance(error, Refusal):

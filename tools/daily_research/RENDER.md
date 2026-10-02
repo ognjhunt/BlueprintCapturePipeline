@@ -124,6 +124,19 @@ An accepted turn/message/effect, unknown failure, lost reply, changed authority,
 or legacy intent without that binding permits observation only. A Retry-After
 beyond the deadline suppresses replay while preserving GET/cancel recovery.
 
+A readable but malformed QA artifact returns precise affected-field diagnostics
+to that same saved session, with at most two corrective messages inside the
+original QA deadline and total soft target. Corrections must reconsider actual
+source/CRM evidence; strings are never coerced into boolean acceptances. The
+original artifact, each corrective input and artifact, and the final evidence
+for every attempt keep separate filenames and hashes in portable exports.
+A lost or ambiguous submission reply is observed without another POST. Missing
+terminal artifacts remain explicit collection failures. Disable, cancellation,
+changed authority, expired lease/deadline and exhausted correction attempts
+prevent another corrective message or publication. This behavior also applies
+to the selected search profile and explicitly admitted recovered QA; a read-only
+terminal collector cannot submit corrections.
+
 QA prose is retained losslessly under the existing 2 MB artifact ceiling rather
 than arbitrary summary/reason lengths. Notion uses the existing 1800-character
 blocks, native request limits and exact full-content readback; Sheets never receives
@@ -132,8 +145,11 @@ buying intent or pilot readiness. A first cancellation records its actual reason
 time, deadline and key before submission. Only an in-time completed result proven
 to precede a later deadline-only cancellation may be collected with that history
 intact; early, disabled, interrupted and unknown-timing cancellations stay blocked.
-The five-activity search limit and $1 soft TOTAL target include both phases;
-model/search/environment usage and QA turn evidence remain in the dated row.
+Legacy records keep their original five-activity search limit, counted across
+research, QA and corrections. The selected adaptive search profile follows its
+recorded coverage instructions instead of that legacy count stop. The recorded
+soft TOTAL target includes every phase; model/search/environment usage and QA
+turn evidence remain in the dated row.
 An exhausted budget/time envelope blocks publication rather than adding a run.
 
 Those are the legacy scan guards. The disabled
