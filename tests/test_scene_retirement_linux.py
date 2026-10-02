@@ -34,21 +34,6 @@ _SYSTEMD_PATH = Path('/etc/systemd/system')
 _CONTINUOUS_UNIT_NAMES = ('blueprint-pipeline-intake.service', 'blueprint-agent-execution.service')
 
 
-def _locked_sdk_command(installer, source, commit, contracts):
-    command = ['/usr/bin/python3', '-I', '-S', str(installer), '--source', str(source),
-               '--source-commit', commit, '--locked-sdk', '--contracts-checkout', str(contracts)]
-    # A guest carries original lock-selected wheels, never an installed SDK.
-    # The real installer retains its ownership, exact hash/size and wheel checks.
-    selected = os.environ.get('BLUEPRINT_NATIVE_WHEELHOUSE')
-    if selected is not None:
-        wheelhouse = Path(selected)
-        assert wheelhouse.is_absolute() and wheelhouse.is_dir() \
-            and not any(path.is_symlink() for path in (wheelhouse, *wheelhouse.parents)), \
-            'declared offline wheelhouse is invalid'
-        command.extend(['--wheelhouse', str(wheelhouse)])
-    return command
-
-
 def _install_continuous_units(runtime, *, installed=None):
     # Both consumers must be genuinely loaded for the fixed native query. Keep
     # the second consumer inactive; never manufacture a successful show row.
@@ -290,7 +275,8 @@ def _enabled_sdk_native_phase():
         assert hashlib.sha1(b'blob '+str(len(blob)).encode()+b'\0'+blob).hexdigest() == oid
         installer.write_bytes(blob)
         installer.chmod(0o644)
-        command = _locked_sdk_command(installer, source, commit, contracts)
+        command = ['/usr/bin/python3','-I','-S',str(installer),'--source',str(source),
+            '--source-commit',commit,'--locked-sdk','--contracts-checkout',str(contracts)]
         prepared = json.loads(_native(command,timeout=310))
         assert prepared['status'] == 'prepared' and prepared['source_commit'] == commit
         assert prepared['authority_issued'] is False and prepared['cleanup_enabled'] is False
@@ -547,40 +533,3 @@ def test_enabled_native_fixture_installs_entire_fixed_continuous_cohort(tmp_path
         assert path.read_bytes() == (source / 'deploy/systemd' / path.name).read_bytes()
         assert path.stat().st_mode & 0o777 == 0o644
         assert (path.stat().st_dev, path.stat().st_ino) == identity
-
-
-@pytest.mark.parametrize('offline', [False, True])
-def test_native_sdk_command_retains_real_installer_and_exact_offline_inputs(tmp_path, monkeypatch, offline):
-    import tests.test_scene_retirement_linux as fixture
-    wheelhouse = tmp_path / 'authenticated-wheels'
-    wheelhouse.mkdir()
-    monkeypatch.delenv('BLUEPRINT_NATIVE_WHEELHOUSE', raising=False)
-    if offline:
-        monkeypatch.setenv('BLUEPRINT_NATIVE_WHEELHOUSE', str(wheelhouse))
-    command = fixture._locked_sdk_command('/owned/installer.py', '/exact/source', 'a' * 40, '/owned/contracts')
-    assert command[:4] == ['/usr/bin/python3', '-I', '-S', '/owned/installer.py']
-    assert command[4:10] == ['--source', '/exact/source', '--source-commit', 'a' * 40,
-                            '--locked-sdk', '--contracts-checkout']
-    assert command[10] == '/owned/contracts'
-    assert command[11:] == (['--wheelhouse', str(wheelhouse)] if offline else [])
-    # The second original installer invocation forwards the same exact inputs.
-    refreshed = ['/usr/bin/python3', '-I', '-S', str(fixture._BOOT / 'runtime_installer.py'), *command[4:]]
-    assert refreshed[4:] == command[4:]
-
-
-@pytest.mark.parametrize('kind', ['relative', 'alias', 'missing'])
-def test_declared_invalid_offline_wheels_never_fall_back_to_network(tmp_path, monkeypatch, kind):
-    import tests.test_scene_retirement_linux as fixture
-    wheelhouse = tmp_path / 'wheels'
-    if kind == 'relative':
-        value = 'relative-wheelhouse'
-    elif kind == 'alias':
-        actual = tmp_path / 'actual'
-        actual.mkdir()
-        wheelhouse.symlink_to(actual, target_is_directory=True)
-        value = str(wheelhouse)
-    else:
-        value = str(wheelhouse)
-    monkeypatch.setenv('BLUEPRINT_NATIVE_WHEELHOUSE', value)
-    with pytest.raises(AssertionError, match='offline wheelhouse'):
-        fixture._locked_sdk_command('/owned/installer.py', '/exact/source', 'a' * 40, '/owned/contracts')
