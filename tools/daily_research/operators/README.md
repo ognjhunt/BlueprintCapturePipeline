@@ -475,3 +475,11 @@ blocks new QA and still observes/cancels an existing QA. Verified publication,
 canonical export, cleanup approval and dated-ledger reconciliation remain
 required before enabling the normal schedule. No permanent deletion is authorized
 by recovery or the renewed baseline allowance.
+
+After terminal QA/publication, use `export-recovered --output NEW_PRIVATE_DIRECTORY`
+with the same repair arguments. This provider-free overlay export verifies and
+includes `DATE-recovery.json` alongside original artifact/output, QA, evidence and
+tool receipts. The old installed export omits the new receipt and is insufficient
+for this repaired run's canonical backup. The read-only diagnosis also returns
+actual declared coverage, stopping reason and bounded root query/source trace;
+those observations, rather than search counts, support the scope audit.
