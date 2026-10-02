@@ -23,7 +23,9 @@ def repair_error_receipt(error, stage):
         "canary_admission_binding_invalid", "canary_guard_failed", "workflow_authority_missing",
         "firestore_lease_lost", "firestore_bridge_deadline", "firestore_bridge_unavailable",
         "research_tool_budget_authority_not_pinned", "research_tool_budget_authority_changed",
-        "research_tool_record_resource_ceiling"}
+        "research_tool_record_resource_ceiling", "recovered_qa_session_not_idle",
+        "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired",
+        "canary_stopped_disabled_or_expired_before_qa"}
     if isinstance(error, Refusal):
         receipt["class"] = "Refusal"
         code = error.args[0] if len(error.args) == 1 else None

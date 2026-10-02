@@ -384,3 +384,23 @@ def test_error_receipt_persists_and_restart_never_resubmits(tmp_path, monkeypatc
         assert "private" not in canonical(final["input_error_receipt"])
     finally:
         generator.close()
+
+
+def test_qa_lost_reply_has_sanitized_receipt_and_is_observed_without_resend(tmp_path):
+    generator = consumer_setup(tmp_path)
+    consumer, api, ledger, _bridge, _ = next(generator)
+    try:
+        qa_input = api.qa_input
+        def lost_reply(*args):
+            api.qa_input_phase = "provider_submission"
+            qa_input(*args)
+            raise TimeoutError("private provider request was accepted but reply lost")
+        api.qa_input = lost_reply
+        assert consumer.step()["state"] == "qa_input_unresolved"
+        receipt = ledger.get(DAY)["qa"]["input_error_receipt"]
+        assert receipt == {"stage": "provider_submission", "class": "TimeoutError",
+                           "code": None, "http_status": None, "request_id": None}
+        assert consumer.step()["state"] == "reviewed"
+        assert len(api.inputs) == len(api.payloads) == 1
+    finally:
+        generator.close()

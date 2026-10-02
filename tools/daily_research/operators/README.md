@@ -434,6 +434,16 @@ per-request context/cache writes are ranges, regional premium/hosting/tool fees
 stay separate, and billed dollars remain null. The old $33.5454009 estimate is
 excluded from current baseline totals; neither amount is an invoice.
 
+`recover-original-and-qa` is the explicitly paid, combined recovery path for the
+existing approved baseline. It derives the retained original report, records fresh
+model usage, and starts the already authorized one-use 600-second QA continuation
+in the same session before existing publication. The expired correction and its
+claim/cancellation evidence remain unchanged. The command requires the isolated
+reviewed overlay arguments and exact existing process watchdog; it cannot create
+or delete a session or resend a correction. Restart observes its existing QA
+receipt and input claim without renewing either. Fresh session/complete-turn
+checks run both before packet recovery and after claiming the QA input.
+
 `recover-output --receipt PRIVATE_JSON` is provider-free but writes the private
 run and immutable `DATE-recovery.json`. Its exact receipt shape is:
 

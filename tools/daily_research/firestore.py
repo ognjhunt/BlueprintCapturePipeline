@@ -136,7 +136,28 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         if datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms:
             raise Refusal("agent_qa_total_runtime_exhausted")
+        self.recovered_qa_action_guard(session_id, day, deadline_ms)
+        self.qa_input_phase = "provider_submission"
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
+    def recovered_qa_action_guard(self, session_id, day, deadline_ms):
+        row = self.ledger.get(day)
+        if not row.get("qa_continuation"):
+            return
+        from tools.daily_research.consumer import Consumer
+        session = self.get("session", session_id)
+        Consumer.check_session(row, session)
+        turns = self.listing("turns", session_id)
+        if (session.get("status") != "idle" or session.get("required_actions")
+                or {t["id"] for t in turns} != set(row["qa"]["baseline_turn_ids"])
+                or any(t.get("subagent_id") or t["status"] != "completed" for t in turns)):
+            raise Refusal("recovered_qa_session_or_turn_changed")
+        self.ledger.bridge.call("assert_lease")
+        control = self.ledger.bridge.call("control")
+        if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True
+                or control.get("workflow", {}).get("enabled") is not True
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+            raise Refusal("recovered_qa_stopped_disabled_or_expired")
 
     def repair_input(self, session_id, event, key, day, request_digest, deadline_ms):
         # RepairLoop holds the existing fenced lease and has durably consumed

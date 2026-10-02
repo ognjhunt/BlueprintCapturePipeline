@@ -29,11 +29,11 @@ QA_PATH = "/workspace/outputs/daily-research-qa.json"
 
 
 def qa_deadline(row, config):
-    if row.get("validation_repair_authority"):
-        from tools.daily_research.recovery import repair_deadline
-        return repair_deadline(row)
     value = row.get("qa_continuation")
     if not value:
+        if row.get("validation_repair_authority"):
+            from tools.daily_research.recovery import repair_deadline
+            return repair_deadline(row)
         return instant(row["started_at"]) + timedelta(seconds=phase_runtime_seconds(row, config, "qa"))
     request = value.get("request", {})
     if (value.get("schema_version") != "blueprint.recovered-research-qa.v1"
@@ -200,6 +200,8 @@ class Consumer:
             snapshot, _ = self.refresh_crm()
             session = self.api.get("session", row["session_id"])
             self.check_session(row, session)
+            if row.get("qa_continuation") and (session.get("status") != "idle" or session.get("required_actions")):
+                raise Refusal("recovered_qa_session_not_idle")
             turns = self.api.listing("turns", row["session_id"])
             expected_turns = {row["turn_id"], *(r["turn_id"] for r in row.get("validation_repairs", [])
                                                if r.get("turn_id") and r.get("state") in {"invalid", "validated"})}
@@ -222,11 +224,21 @@ class Consumer:
                 row["qa"].update(state="qa_blocked", error="stopped_before_qa_input")
                 self.ledger.put(row)
                 return None
+            stage = "dispatch"
+            self.api.qa_input_phase = "preconditions"
             try:
                 self.api.qa_input(row["session_id"], event, row["run_key"] + ":qa", row["date"], digest(event), row["qa"]["deadline_ms"])
+                stage = "reply_persistence"
                 row["qa"]["state"] = "qa_running"
                 self.ledger.put(row)
-            except Exception:  # noqa: BLE001 - accepted input may have lost its reply; never resubmit
+            except Exception as error:  # noqa: BLE001 - accepted input may have lost its reply; never resubmit
+                from tools.daily_research.recovery import repair_error_receipt
+                phase = stage if stage == "reply_persistence" else getattr(self.api, "qa_input_phase", stage)
+                row["qa"]["input_error_receipt"] = repair_error_receipt(error, phase)
+                try:
+                    self.ledger.put(row)
+                except Exception:  # noqa: BLE001 - broken persistence never grants retry authority
+                    row["qa"]["input_error_persistence_failed"] = True
                 return None  # Never resubmit an uncertain event, including after restart.
         qa = row["qa"]
         if qa["state"] == "qa_blocked":
