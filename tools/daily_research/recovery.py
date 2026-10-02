@@ -54,12 +54,23 @@ def replay_saved_artifact(row, raw_artifact, tool_files, known, observed_at):
 def validation_feedback(output, row, known, observed_at):
     """Collect independent failures; feedback is data, never agent authority."""
     from tools.daily_research import contracts, discovery
-    from tools.daily_research.runner import Refusal, validate_output
+    from tools.daily_research.runner import Refusal, public_url, validate_output
 
     issues = []
     def issue(path, reason, semantics, evidence=None):
+        affected = output
+        for part in path.split("/")[1:] if path != "/" else []:
+            if isinstance(affected, dict) and part in affected:
+                affected = affected[part]
+            elif isinstance(affected, list) and part.isdigit() and int(part) < len(affected):
+                affected = affected[int(part)]
+            else:
+                affected = {"missing_field": part}
+                break
         value = {"path": path, "reason": reason, "allowed_semantics": semantics,
-                 "evidence_reference": evidence}
+                 "evidence_reference": evidence,
+                 "offending_value_digest": hashlib.sha256(json.dumps(affected, sort_keys=True,
+                     separators=(",", ":")).encode()).hexdigest()}
         if value not in issues:
             issues.append(value)
     if isinstance(output, dict):
@@ -84,8 +95,38 @@ def validation_feedback(output, row, known, observed_at):
             if not isinstance(candidate, dict):
                 issue(f"/candidates/{ci}", "candidate_schema_invalid", "Return a supported candidate object or quarantine the unsupported candidate.")
                 continue
+            for field in ("organization", "organization_url", "site", "location", "task",
+                          "potential_robot_match", "qualification_status", "confidence", "proposed_next_action"):
+                value = candidate.get(field)
+                if not isinstance(value, str) or not value.strip() or len(value) > 2000:
+                    issue(f"/candidates/{ci}/{field}", "candidate_field_invalid",
+                          "Use a supported nonempty string of at most 2000 characters, or quarantine the unsupported candidate.")
+            try:
+                public_url(candidate.get("organization_url"))
+            except (Refusal, ValueError, TypeError) as error:
+                issue(f"/candidates/{ci}/organization_url", str(error) if isinstance(error, Refusal) else "source_url_invalid",
+                      "Use the actual public organization URL; do not invent an affiliation.")
             sources = candidate.get("evidence")
             for ei, evidence in enumerate(sources if isinstance(sources, list) else []):
+                if isinstance(evidence, dict):
+                    fields = ("claim", "publisher") if evidence.get("origin") == "snapshot" else ("claim", "publisher", "quote")
+                    for field in fields:
+                        value = evidence.get(field)
+                        if not isinstance(value, str) or not value.strip() or len(value) > 2000:
+                            issue(f"/candidates/{ci}/evidence/{ei}/{field}", "evidence_field_invalid",
+                                  "Preserve the actual supported claim, publisher and source quote; unsupported evidence may be quarantined.")
+                    for field, allowed in (("classification", {"operator", "vendor", "independent"}),
+                                           ("claim_kind", {"fact", "vendor_claim", "hypothesis"}),
+                                           ("role", {"task", "capability", "geography", "background"})):
+                        value = evidence.get(field)
+                        if not isinstance(value, str) or value not in allowed:
+                            issue(f"/candidates/{ci}/evidence/{ei}/{field}", "evidence_field_invalid",
+                                  "Use the evidence semantics from the original contract; never promote a vendor assertion to fact.")
+                    try:
+                        public_url(evidence.get("url"))
+                    except (Refusal, ValueError, TypeError) as error:
+                        issue(f"/candidates/{ci}/evidence/{ei}/url", str(error) if isinstance(error, Refusal) else "source_url_invalid",
+                              "Use the actual public source URL from the retained evidence.")
                 try:
                     contracts.evidence(evidence, row["date"], row["knowledge_context"], observed_at,
                                        policy=row.get("refresh_policy"))
@@ -122,8 +163,8 @@ def validation_feedback(output, row, known, observed_at):
 
 
 def feedback_signature(issues):
-    """Compare actionable failures, ignoring changing descriptive metadata."""
-    return sorted({(issue["path"], issue["reason"]) for issue in issues})
+    """Compare actual invalid values; partial correction is not repeated failure."""
+    return sorted({(issue["path"], issue["reason"], issue.get("offending_value_digest", "")) for issue in issues})
 
 
 def repair_deadline(row):

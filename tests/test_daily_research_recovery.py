@@ -100,6 +100,64 @@ def test_feedback_checks_coverage_after_independent_delta_and_date_errors():
     assert recovery.validation_feedback(output, row, set(), NOW)
 
 
+@pytest.mark.parametrize("fields", [("organization", "task"), ("claim", "publisher")])
+def test_partial_field_repairs_are_located_and_not_false_no_progress(fields):
+    _, _, policy, context = policy_bundle()
+    output = v3(context)
+    row = {"date": DAY, "research_contract_version": 3, "knowledge_context": context, "refresh_policy": policy}
+    item = output["candidates"][0]
+    prefix = "/candidates/0"
+    if fields[0] == "claim":
+        item = item["evidence"][0]
+        prefix += "/evidence/0"
+    original = deepcopy(item)
+    for field in fields:
+        item[field] = ""
+    first = recovery.validation_feedback(output, row, set(), NOW)
+    assert {prefix + "/" + field for field in fields} <= {issue["path"] for issue in first}
+    item[fields[0]] = original[fields[0]]
+    partial = recovery.validation_feedback(output, row, set(), NOW)
+    assert recovery.feedback_signature(first) != recovery.feedback_signature(partial)
+    assert prefix + "/" + fields[0] not in {issue["path"] for issue in partial}
+    assert prefix + "/" + fields[1] in {issue["path"] for issue in partial}
+    with pytest.raises(Refusal):
+        validate_output(output, DAY, set(), contract_version=3, knowledge_context=context,
+                        refresh_policy=policy, observed_at=NOW)
+    item[fields[1]] = original[fields[1]]
+    assert recovery.validation_feedback(output, row, set(), NOW) == []
+
+
+def test_failure_signature_tracks_invalid_value_but_ignores_unrelated_metadata():
+    _, _, policy, context = policy_bundle()
+    output = v3(context)
+    row = {"date": DAY, "research_contract_version": 3, "knowledge_context": context, "refresh_policy": policy}
+    source = output["candidates"][0]["evidence"][0]
+    source["classification"] = "invalid-a"
+    first = recovery.validation_feedback(output, row, set(), NOW)
+    source["quote"] += " unrelated valid wording"
+    assert recovery.feedback_signature(first) == recovery.feedback_signature(recovery.validation_feedback(output, row, set(), NOW))
+    source["classification"] = "invalid-b"
+    changed = recovery.validation_feedback(output, row, set(), NOW)
+    assert recovery.feedback_signature(first) != recovery.feedback_signature(changed)
+    assert recovery.feedback_signature(changed) == recovery.feedback_signature(recovery.validation_feedback(output, row, set(), NOW))
+
+
+@pytest.mark.parametrize("target", ["organization", "evidence"])
+def test_malformed_urls_produce_corrective_feedback_instead_of_parser_exception(target):
+    _, _, policy, context = policy_bundle()
+    output = v3(context)
+    row = {"date": DAY, "research_contract_version": 3, "knowledge_context": context, "refresh_policy": policy}
+    candidate = output["candidates"][0]
+    if target == "organization":
+        candidate["organization_url"] = "https://["
+        pointer = "/candidates/0/organization_url"
+    else:
+        candidate["evidence"][0]["url"] = "https://["
+        pointer = "/candidates/0/evidence/0/url"
+    feedback = recovery.validation_feedback(output, row, set(), NOW)
+    assert any(issue["path"] == pointer and issue["reason"] == "source_url_invalid" for issue in feedback)
+
+
 def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tmp_path, monkeypatch):
     generator = consumer_setup(tmp_path, failed=True)
     consumer, api, ledger, bridge, _ = next(generator)
