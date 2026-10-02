@@ -39,7 +39,8 @@ def test_native_scheduling_executes_the_real_impact_plan_decision(
         assert plan["requires_full_suite"] is True
         assert not any("_linux.py" in row for row in plan["selected_tests"])
         full = _jobs("ci.yml")["cross-cutting-full-suite"]
-        assert full["if"] == "needs.impact.outputs.requires_full_suite == 'true'"
+        assert set(full["needs"]) == {"impact", "native-feature-linux", "native-scene-linux"}
+        assert "needs.impact.outputs.requires_full_suite == 'true'" in full["if"]
         assert full["uses"] == "./.github/workflows/full-test-lane.yml"
     impact = _jobs("ci.yml")["impact"]
     script = next(step["run"] for step in impact["steps"] if step.get("id") == "native-plan")
