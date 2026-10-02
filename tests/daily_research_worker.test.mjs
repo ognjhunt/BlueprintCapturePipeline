@@ -19,6 +19,13 @@ test('disabled startup never spawns', async () => {
   await startDailyResearchWorker({enabled: false, spawnImpl: () => {spawned = true;}}).stop();
   assert.equal(spawned, false);
 });
+test('learning host travels only in the existing child environment and not status output', async () => {
+  let captured; const child=new EventEmitter();child.stdout=new EventEmitter();child.pid=100;
+  const handle=startDailyResearchWorker({bundleRoot:'/isolated',python:'/venv/python',enabled:true,
+    learningModule:'/reviewed/research-worker-host.js',killGroup:()=>{},spawnImpl:(_python,_args,options)=>{captured=options;return child;}});
+  assert.equal(captured.env.BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE,'/reviewed/research-worker-host.js');
+  const stop=handle.stop();child.emit('exit');await stop;
+});
 test('Perplexity secret passes only to the application worker, never logs', async () => {
   const previous = process.env.PERPLEXITY_API_KEY;
   process.env.PERPLEXITY_API_KEY = 'offline-placeholder';

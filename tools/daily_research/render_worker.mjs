@@ -2,6 +2,7 @@
 import {spawn} from 'node:child_process';
 
 export function startDailyResearchWorker({bundleRoot, python,
+  learningModule,
   enabled = process.env.BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED === 'true',
   spawnImpl = spawn, killGroup = (pid, signal) => process.kill(-pid, signal),
   log = console.log, shutdownMs = 25000, retryMs = 30000} = {}) {
@@ -19,7 +20,8 @@ export function startDailyResearchWorker({bundleRoot, python,
         OPENAI_API_KEY: process.env.OPENAI_API_KEY,
         PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
         FIREBASE_SERVICE_ACCOUNT_JSON: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
-        NOTION_API_TOKEN: process.env.NOTION_API_TOKEN, NOTION_API_KEY: process.env.NOTION_API_KEY
+        NOTION_API_TOKEN: process.env.NOTION_API_TOKEN, NOTION_API_KEY: process.env.NOTION_API_KEY,
+        BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE: learningModule
       }, stdio: ['ignore', 'pipe', 'ignore']
     });
     child = target;

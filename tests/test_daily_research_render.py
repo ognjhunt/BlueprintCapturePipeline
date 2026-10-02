@@ -10,7 +10,7 @@ import pytest
 from tests.test_daily_research_runner import DAY, NOW, SHEET, FakeAPI
 from tools.daily_research import render
 from tools.daily_research.firestore import Bridge, FirestoreLedger
-from tools.daily_research.runner import Refusal, Runner, preflight, save_json
+from tools.daily_research.runner import Refusal, Runner, digest, preflight, save_json
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -187,3 +187,88 @@ def test_selected_instruction_hash_drift_refuses_before_create():
     api.agent["instructions"] = "changed"
     with pytest.raises(Refusal, match="pin_mismatch"):
         preflight(api, sha)
+
+
+@pytest.mark.parametrize(("now", "expected"), [
+    ("2026-11-01T12:44:00+00:00", "2026-11-01T12:45:00+00:00"),
+    ("2027-03-14T11:44:00+00:00", "2027-03-14T11:45:00+00:00"),
+    ("2026-10-02T11:46:00+00:00", "2026-10-02T12:00:00+00:00"),
+])
+def test_learning_wake_is_six_forty_five_before_seven_with_dst(now, expected):
+    from datetime import datetime
+    assert render.next_wake(datetime.fromisoformat(now), learning=True).isoformat() == expected
+
+
+def test_learning_aggregation_runs_once_before_research_and_replays_after_restart(monkeypatch):
+    from datetime import datetime
+    control = json.loads((ROOT / "tools/daily_research/render.control.example.json").read_text())
+    control["enabled"] = True
+    control["config"]["scheduler_authority_reference"] = "synthetic-reviewed-cutover"
+    control["learning"] = {"enabled": True, "startDate": "2026-09-30"}
+    calls, daily = [], []
+    clock = [datetime.fromisoformat("2026-09-30T11:44:00+00:00")]
+
+    class ClockBridge:
+        def call(self, op, **kwargs):
+            calls.append(op)
+            if op == "control":
+                return control
+            if op == "learning_daily":
+                daily.append(kwargs)
+                return {"overviewId": "verified-fake-overview"}
+            assert op in {"acquire", "release", "learning_reconcile"}
+        def close(self):
+            pass
+
+    class Stopped:
+        ticks = 0
+        def is_set(self):
+            return self.ticks >= 18
+        def wait(self, delay):
+            self.ticks += 1
+            clock[0] += timedelta(seconds=delay)
+
+    monkeypatch.setattr(render, "invoke", lambda *args, **kwargs: calls.append("research") or {"state": "not_due"})
+    render.scheduler(Stopped(), bridge_factory=ClockBridge, clock=lambda: clock[0])
+    assert daily == [{"day": "2026-09-30", "as_of": "2026-09-30T11:45:00Z"}]
+    assert calls.count("learning_reconcile") == 1
+    assert calls.index("learning_daily") < len(calls) - calls[::-1].index("research") - 1
+    render.scheduler(Stopped(), bridge_factory=ClockBridge, clock=lambda: clock[0])
+    assert daily[0] == daily[1]  # Same immutable daily request/job identity.
+    assert len(daily) == 2
+
+
+def test_scoped_learning_is_durable_before_create_and_recovery_keeps_exact_bytes(fixture):
+    run, api, ledger, bridge, _ = fixture
+    scope = {"enabled": True, **{key: {"expiresAt": "2099-01-01T00:00:00.000Z"}
+                                for key in ("binding", "businessScope", "learningGrant")}}
+    with ledger.lock():
+        bridge.call("configure", value={**bridge.call("control"), "learning": scope})
+    content = json.dumps({"date": DAY, "paidAnalysisCalls": 0, "sendsAuthorized": False,
+                          "evidence": "Original café observation; interest unknown", "confidence": 0.9}, ensure_ascii=False)
+    learning = {"version": "blueprint.research-learning-input.v1", "date": DAY,
+                "paidAnalysisCalls": 0, "sendsAuthorized": False, "content_json": content,
+                "bindingHash": digest(scope),
+                "inputHash": hashlib.sha256(content.encode()).hexdigest()}
+    contexts = []
+    ledger.learning_context = lambda day: contexts.append(day) or learning
+    api.lost_create_reply = True
+    assert run.start_or_resume()["state"] == "creation_unresolved"
+    persisted = ledger.get(DAY)
+    assert persisted["learning_context"] == learning
+    assert persisted["learning_context_digest"] == learning["inputHash"]
+    assert json.dumps(content) in persisted["create_payload"]["input"]
+    learning["content_json"] = "changed after claim"
+    assert run.start_or_resume(allow_create=False)["state"] == "awaiting_review"
+    assert contexts == [DAY] and len(api.payloads) == 1
+    assert ledger.get(DAY)["learning_context"]["content_json"] == content
+
+
+def test_invalid_learning_cannot_claim_a_date_or_call_provider(fixture):
+    run, api, ledger, _, _ = fixture
+    ledger.learning_context = lambda day: {"version": "blueprint.research-learning-input.v1", "date": day,
+                                           "paidAnalysisCalls": 0, "sendsAuthorized": False,
+                                           "content_json": "{}", "inputHash": "a" * 64}
+    with pytest.raises(Refusal, match="learning_input_invalid"):
+        run.start_or_resume()
+    assert ledger.get(DAY) is None and api.payloads == []
