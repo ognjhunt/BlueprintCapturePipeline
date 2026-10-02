@@ -32,7 +32,8 @@ async function fixture(suppliedRow=row()) {
   const snapshot=()=>({sheet_id:SHEET,complete:true,values:structuredClone(values)});
   const google=async(method,path,body)=>{
     if(method==='GET') return {sheets:[]};
-    assert.equal(method,'POST');assert.ok(path.startsWith('/values/Prospects!A%3AS:append?'));
+    assert.equal(method,'PUT');
+    assert.equal(decodeURIComponent(path),`/values/Prospects!A${values.length+1}:S${values.length+body.values.length}?valueInputOption=RAW`);
     assert.ok(path.includes('valueInputOption=RAW'));assert.equal(body.values[0].length,19);
     assert.ok(db.values.get(`${ROOT}/runs/2026-09-30`).publication_claimed.sheets);
     assert.ok((await store.get('2026-09-30')).delivery.sheets.plan);
@@ -314,6 +315,40 @@ test('automatic publication persists each plan/claim before one write and reads 
   assert.equal(f.values[5][10],'Research');assert.equal(f.values[5][16],'Unverified');
   assert.deepEqual(f.writes.map(x=>x.destination),['notion','sheets']);
 });
+
+test('Sheets writes the exact A107:S107 range even when append would infer an O-column table',async()=>{
+  const f=await fixture();f.values.push(...Array.from({length:101},()=>[]));
+  const before=structuredClone(f.values),plan=planSheets(f.r,f.snapshot()),google=f.publisher.google;
+  f.publisher.google=async(method,path,body)=>{
+    if(method==='GET') return google(method,path,body);
+    f.writes.push({destination:'sheets',method,path,body});
+    if(method==='POST') f.values.push(...body.values.map(cells=>[...Array(14).fill(''),...cells]));
+    else {
+      assert.equal(method,'PUT');assert.equal(decodeURIComponent(path),'/values/Prospects!A107:S107?valueInputOption=RAW');
+      f.values.splice(106,body.values.length,...structuredClone(body.values));
+    }
+    return {};
+  };
+  const result=await f.store.publish(f.r.date,'sheets');
+  assert.equal(result.readback_verified,true);assert.deepEqual(f.values[106],plan.sheet_rows[0]);
+  assert.deepEqual(f.values.slice(0,106),before);
+  assert.deepEqual((await f.store.get(f.r.date)).delivery.sheets.plan,plan);
+  assert.equal(JSON.stringify(f.writes[0].body),plan.body_json);
+  assert.equal(f.db.values.get(`${ROOT}/runs/${f.r.date}`).publication_claimed.sheets,plan.request_digest);
+  assert.equal((await f.store.publish(f.r.date,'sheets')).readback_verified,true);assert.equal(f.writes.length,1);
+});
+
+for(const cell of [{userEnteredValue:{formulaValue:'=""'}},{dataValidation:{condition:{type:'TEXT_EQ',values:[{userEnteredValue:'allowed'}]}}}])
+  test('Sheets refuses target structure changed after planning while displayed CRM stays unchanged: '+Object.keys(cell)[0],async()=>{
+    const f=await fixture(),google=f.publisher.google,before=structuredClone(f.values);let reads=0;
+    f.publisher.google=async(method,path,body)=>{
+      if(method==='GET' && ++reads===2) return {sheets:[{data:[{rowData:[{values:[cell]}]}]}]};
+      return google(method,path,body);
+    };
+    await assert.rejects(f.store.publish(f.r.date,'sheets'),/publication_target_cells_not_plain_empty/);
+    assert.deepEqual(f.values,before);assert.equal(f.writes.length,0);
+    assert.ok(f.db.values.get(`${ROOT}/runs/${f.r.date}`).publication_claimed.sheets);
+  });
 
 test('ten agent-approved discoveries publish under the same durable claims with no three-row truncation',async()=>{
   const f=await fixture();

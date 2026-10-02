@@ -125,6 +125,14 @@ export function planNotion(row,{legacy=false}={}) {
 
 export class Publisher {
   constructor({crmReader,google,notion,clock=Date.now}) {Object.assign(this,{crmReader,google,notion,clock});}
+  async sheetsTargetEmpty(range) {
+    // Empty display values can conceal formulas or validation-backed cells.
+    const meta = await this.google('GET',`?ranges=${encodeURIComponent(range)}`+
+      '&includeGridData=true&fields=sheets(data(rowData(values(userEnteredValue,dataValidation))))');
+    for (const sheet of meta.sheets || []) for (const grid of sheet.data || []) for (const row of grid.rowData || [])
+      for (const cell of row.values || []) if (cell.userEnteredValue || cell.dataValidation)
+        fail('publication_target_cells_not_plain_empty');
+  }
   async prepare(row,destination) {
     if (destination === 'notion') {
       const parent = await this.notion('GET',`/pages/${NOTION}`);
@@ -133,14 +141,7 @@ export class Publisher {
     }
     const snapshot = await this.crmReader(), plan = planSheets(row,snapshot);
     const first = snapshot.values.length+1, last = first+Math.max(0,plan.sheet_rows.length-1);
-    if (plan.sheet_rows.length) {
-      // Refuse formulas/validation-backed destination cells rather than rewriting native structure.
-      const meta = await this.google('GET',`?ranges=${encodeURIComponent(`Prospects!A${first}:S${last}`)}`+
-        '&includeGridData=true&fields=sheets(data(rowData(values(userEnteredValue,dataValidation))))');
-      for (const sheet of meta.sheets || []) for (const grid of sheet.data || []) for (const row of grid.rowData || [])
-        for (const cell of row.values || []) if (cell.userEnteredValue || cell.dataValidation)
-          fail('publication_target_cells_not_plain_empty');
-    }
+    if (plan.sheet_rows.length) await this.sheetsTargetEmpty(`Prospects!A${first}:S${last}`);
     return plan;
   }
   validate(row,destination,plan) {
@@ -160,8 +161,10 @@ export class Publisher {
     } else if (plan.sheet_rows.length) {
       const current = await this.crmReader();
       if (!isDeepStrictEqual(current.values,plan.crm_values)) fail('publication_crm_changed_before_write');
+      const first=plan.crm_values.length+1, last=first+plan.sheet_rows.length-1, range=`Prospects!A${first}:S${last}`;
+      await this.sheetsTargetEmpty(range);
       if(beforeWrite) await beforeWrite();
-      await this.google('POST',`/values/${encodeURIComponent('Prospects!A:S')}:append?valueInputOption=RAW&insertDataOption=OVERWRITE`,JSON.parse(plan.body_json));
+      await this.google('PUT',`/values/${encodeURIComponent(range)}?valueInputOption=RAW`,JSON.parse(plan.body_json));
     }
   }
   async reconcile(row,destination,plan) {
