@@ -554,6 +554,39 @@ def _sdk_wire_probe():
     p.client.close()
 
 
+def _terminal_provider_probe():
+    import importlib.util
+
+    import httpx2 as httpx
+    import openai
+    assert openai.__version__ == "3.22.1", "wire proof requires the deployed SDK pin"
+    path = Path(__file__).resolve().parents[1] / "tools/daily_research/operators/research-perplexity-canary.py"
+    spec = importlib.util.spec_from_file_location("terminal_canary_probe", path)
+    canary = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(canary)
+    monkeypatch = pytest.MonkeyPatch()
+    requests = []
+    def send(request):
+        requests.append(request.method)
+        return httpx.Response(200, json={})
+    monkeypatch.setattr(openai, "DefaultHttpxClient", lambda **options:
+        httpx.Client(transport=httpx.MockTransport(send), **options))
+    api = canary.TerminalCollectionProvider(None, "offline-fake-key")
+    try:
+        api.client._client.get("https://api.openai.com/v1/agents")
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            with pytest.raises(Refusal, match="terminal_qa_provider_mutation_forbidden"):
+                api.client._client.request(method, "https://api.openai.com/v1/agents")
+        for method in ("create", "cancel", "qa_input", "qa_retry_input", "repair_input",
+                       "tool_result", "application_tool", "tool_admit"):
+            with pytest.raises(Refusal, match="terminal_qa_provider_mutation_forbidden"):
+                getattr(api, method)({})
+        assert requests == ["GET"]
+    finally:
+        api.client.close()
+        monkeypatch.undo()
+
+
 def test_sdk_wire_contract_no_retries_redirects_or_paid_calls():
     # The repository and this standalone runner intentionally use different
     # SDKs. Verify the actual runner pin in its isolated CPU interpreter.

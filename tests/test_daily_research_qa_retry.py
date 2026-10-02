@@ -603,33 +603,6 @@ def test_stopped_terminal_collection_keeps_both_controls_disabled_and_rejects_pa
         bridge.close()
 
 
-def _terminal_provider_probe():
-    import httpx2 as httpx
-    import openai
-    assert openai.__version__ == "3.22.1", "wire proof requires the deployed SDK pin"
-    monkeypatch = pytest.MonkeyPatch()
-    requests = []
-    def send(request):
-        requests.append(request.method)
-        return httpx.Response(200, json={})
-    monkeypatch.setattr(openai, "DefaultHttpxClient", lambda **options:
-        httpx.Client(transport=httpx.MockTransport(send), **options))
-    api = canary.TerminalCollectionProvider(None, "offline-fake-key")
-    try:
-        api.client._client.get("https://api.openai.com/v1/agents")
-        for method in ("POST", "PUT", "PATCH", "DELETE"):
-            with pytest.raises(Refusal, match="terminal_qa_provider_mutation_forbidden"):
-                api.client._client.request(method, "https://api.openai.com/v1/agents")
-        for method in ("create", "cancel", "qa_input", "qa_retry_input", "repair_input",
-                       "tool_result", "application_tool", "tool_admit"):
-            with pytest.raises(Refusal, match="terminal_qa_provider_mutation_forbidden"):
-                getattr(api, method)({})
-        assert requests == ["GET"]
-    finally:
-        api.client.close()
-        monkeypatch.undo()
-
-
 def test_terminal_provider_refuses_mutations_and_search_before_transport():
     # The repository's provider SDK differs from the standalone research pin.
     # Exercise the real transport hook in the existing isolated research runtime.
@@ -638,7 +611,10 @@ def test_terminal_provider_refuses_mutations_and_search_before_transport():
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     probe = ("import runpy,sys; runpy.run_path(sys.argv[1])['_terminal_provider_probe'](); "
              "print('terminal_provider_get_only_verified')")
-    result = subprocess.run([runtime, "-c", probe, str(Path(__file__).resolve())],
+    # The lifecycle probe module depends only on this minimal SDK environment,
+    # whereas QA fixtures also load jsonschema for the broader research suite.
+    result = subprocess.run([runtime, "-c", probe,
+                             str(Path(__file__).with_name("test_daily_research_runner.py"))],
                             cwd=Path(__file__).resolve().parents[1], env=env,
                             capture_output=True, text=True, timeout=30, check=True)
     assert result.stdout.strip() == "terminal_provider_get_only_verified"
