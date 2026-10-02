@@ -69,6 +69,9 @@ for unit in "${units[@]}"; do [ -f "$units_dir/$unit" ] || { echo "missing $unit
 # 1. Stage and check the code before touching the running door.
 # Preserve prior staging and backups: they can contain untracked recovery data.
 # A normal upgrade does not grant authority to delete an earlier generation.
+for prior in "$install_root.new" "$install_root.previous" "$units_backup" "$install_root.failed"; do
+  [ ! -L "$prior" ] || { echo "refused symlink backup path" >&2; exit 1; }
+done
 preserve_existing() {
   local original="$1"
   if [ -e "$original" ] || [ -L "$original" ]; then
@@ -81,6 +84,9 @@ preserve_existing() {
 }
 stage="$install_root.new"
 preserve_existing "$stage"
+preserve_existing "$install_root.previous"
+preserve_existing "$units_backup"
+preserve_existing "$install_root.failed"
 mkdir -p "$stage"
 cp -R "$source_dir/operator_door" "$stage/"
 if [ "$dispatcher_hold_only" -eq 1 ]; then
@@ -113,7 +119,6 @@ rollback() {
   trap - ERR TERM INT
   echo "operator door install failed; rolling back" >&2
   if [ "$swapped" -eq 1 ]; then
-    preserve_existing "$install_root.failed"
     mv "$install_root" "$install_root.failed" 2>/dev/null || true
   fi
   if [ "$moved_previous" -eq 1 ] && [ -d "$install_root.previous" ]; then
@@ -139,13 +144,11 @@ trap 'rollback; exit 143' TERM
 trap 'rollback; exit 130' INT
 
 # 2. Back up the current units, then swap code, keeping the previous version.
-preserve_existing "$units_backup"
 mkdir -p "$units_backup"
 for unit in "${units[@]}"; do
   if [ -f "$systemd_dir/$unit" ]; then cp -p "$systemd_dir/$unit" "$units_backup/$unit"; fi
 done
 if [ "$had_previous" -eq 1 ]; then
-  preserve_existing "$install_root.previous"
   moved_previous=1
   mv "$install_root" "$install_root.previous"
 fi

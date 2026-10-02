@@ -26,7 +26,8 @@ def _credentials(paths: list[Path]) -> dict:
     }
 
 
-@pytest.mark.parametrize("case", ["success", "self-test-failure", "swap-failure"])
+@pytest.mark.parametrize("case", ["success", "self-test-failure", "swap-failure",
+                                 "unsafe-new", "unsafe-previous", "unsafe-previous-units", "unsafe-failed"])
 @pytest.mark.parametrize("existing_fence", [False, True])
 def test_restricted_installer_preserves_credentials_and_recovers_old_door(
     tmp_path: Path, case: str, existing_fence: bool,
@@ -61,6 +62,11 @@ def test_restricted_installer_preserves_credentials_and_recovers_old_door(
         marker = old / ("retained-" + suffix[1:] + ".bin")
         marker.write_bytes(b"untracked recovery bytes: " + suffix.encode())
         recovery_bytes[marker.name] = marker.read_bytes()
+    if case.startswith("unsafe-"):
+        unsafe = Path(str(door) + "." + case.removeprefix("unsafe-"))
+        target = tmp_path / "unsafe-backup-target"
+        unsafe.rename(target)
+        unsafe.symlink_to(target, target_is_directory=True)
     caddy = tmp_path / "Caddyfile"
     caddy.write_text("development-only Caddy fixture\n")
     binary = tmp_path / "bin"
@@ -119,8 +125,20 @@ else:
     for name in ('historical-generation-actions', 'historical-generation-journals'):
         assert not (tmp_path / 'state' / 'requests' / name).exists()
     # Stubbing ownership tools must not conceal any attempted credential ownership change.
-    assert all(str(path) not in calls.read_text() for path in credentials)
+    mutation_log = calls.read_text() if calls.exists() else ""
+    assert all(str(path) not in mutation_log for path in credentials)
     assert door.is_dir(), result.stderr
+    if case.startswith("unsafe-"):
+        assert result.returncode != 0
+        assert "refused symlink backup path" in result.stderr
+        assert mutation_log == ""
+        assert (door / "INSTALLED_COMMIT").read_text() == original_commit + "\n"
+        assert {path.name: path.read_bytes() for path in units.iterdir()} == original_units
+        for name, content in recovery_bytes.items():
+            suffix = name.removeprefix("retained-").removesuffix(".bin")
+            assert (Path(str(door) + "." + suffix) / name).read_bytes() == content
+        assert not list(tmp_path.glob("door.preserved.*"))
+        return
     for name, content in recovery_bytes.items():
         retained = list(tmp_path.glob("door*/**/" + name))
         assert len(retained) == 1 and retained[0].read_bytes() == content, name
