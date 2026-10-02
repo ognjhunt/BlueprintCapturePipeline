@@ -123,7 +123,10 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         result = runner.start_or_resume(allow_create=False)
     if result["state"] in {"running", "collecting"}:
         result = runner.cancel_current(result["date"], "observation_deadline")
-    if result["state"] in {"awaiting_review", "reviewed"} and workflow(bridge.call("control")):
+    repair = (result["state"] == "failed" and result.get("turn_status") == "completed"
+              and result.get("artifact_downloaded") is True and not result.get("canary")
+              and not result.get("qa") and not result.get("delivery") and not stopped())
+    if (result["state"] in {"awaiting_review", "reviewed"} or repair) and workflow(bridge.call("control")):
         return consume_workflow(bridge, cache, stopped=stopped, day=result["date"], api_factory=api_factory)
     return status_summary(result)
 
