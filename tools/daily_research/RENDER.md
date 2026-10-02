@@ -115,6 +115,23 @@ terminal results can be collected after restart. Unknown/active QA is observed
 and cancellation attempted on disable, observation failure, search-limit breach
 or the **shared** research+QA 180-second deadline. Cold disabled recovery never
 admits another input or publication. A cancel request is not terminal proof.
+New ordinary intents also bind the original QA authority, exact message/key,
+deadline, and complete pre-submission item/artifact inventory. A typed submission
+HTTP503 permits at most two durable same-key attempts after 5/15-second minimum
+backoff, honoring a longer Retry-After within that original deadline. Each attempt
+rechecks the full inventory and fresh lease/control/stop/deadline before POST.
+An accepted turn/message/effect, unknown failure, lost reply, changed authority,
+or legacy intent without that binding permits observation only. A Retry-After
+beyond the deadline suppresses replay while preserving GET/cancel recovery.
+
+QA prose is retained losslessly under the existing 2 MB artifact ceiling rather
+than arbitrary summary/reason lengths. Notion uses the existing 1800-character
+blocks, native request limits and exact full-content readback; Sheets never receives
+the QA prose. Accepted evidence remains an unqualified discovery, not proof of
+buying intent or pilot readiness. A first cancellation records its actual reason,
+time, deadline and key before submission. Only an in-time completed result proven
+to precede a later deadline-only cancellation may be collected with that history
+intact; early, disabled, interrupted and unknown-timing cancellations stay blocked.
 The five-activity search limit and $1 soft TOTAL target include both phases;
 model/search/environment usage and QA turn evidence remain in the dated row.
 An exhausted budget/time envelope blocks publication rather than adding a run.

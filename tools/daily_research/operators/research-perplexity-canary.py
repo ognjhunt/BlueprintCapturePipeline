@@ -29,6 +29,8 @@ from tools.daily_research.firestore import (
     control_configuration,
 )
 from tools.daily_research.runner import (
+    AGENT,
+    LIMIT_BYTES,
     TERMINAL,
     Provider,
     Refusal,
@@ -38,6 +40,7 @@ from tools.daily_research.runner import (
     crm_snapshot,
     digest,
     due_date,
+    identifier,
     instant,
     load_knowledge_bundle,
     preflight,
@@ -327,6 +330,189 @@ def retry_qa_submission(bridge, cache, *, api_factory=None, stopped=lambda: Fals
                stopped=stopped, clock=clock, sleep=sleep)
 
 
+TERMINAL_QA_RECEIPT = {
+    "schema_version": "blueprint.qa-terminal-reconciliation.v1",
+    "authority_reference": "Sentinel_c2046c5f146c81918921eba1ed7f6caa",
+    "delegation_reference": "01a0ef70-d046-74f6-9434-a19e5456b0ef",
+    "scope": "existing-terminal-qa-collection-and-canonical-publication-no-provider-mutations",
+    "native_qa_ledger_file_sha256": "fa9bed98db3d81646b360185267d32a5776040487f3683782ccfed487a34ef0a",
+    "source_blob_sha256": "59327fce14de04a18679932162a4342ddd3513b6e123d43dbc85d2693e957b9b",
+    "session_id": "sess_06ea8f997fa27202006abf0b37b9f4819aacfaa2cb1414eb14",
+    "qa_turn_id": "turn_06ea8f997fa27202006abf79b571b4819abe9ca8872a73cbaa",
+    "qa_artifact_sha256": "e58c22f954dc9e70c6a8982b7bc6189473bc4a19a01737606724df97f90338b3",
+    "completed_at": int(instant("2026-10-02T09:38:27Z").timestamp()),
+    "phase_started_at": "2026-10-02T09:29:14.788518Z",
+    "phase_deadline": "2026-10-02T09:39:14.788518Z",
+    "cancellation_reason": "canary_total_observation_deadline",
+    "cancellation_not_before": "2026-10-02T09:39:28.549726Z",
+    "cancellation_requested_at": None,
+    "inventory": {"turns": 2, "items": 190, "artifacts": 6},
+    "native_metadata_sha256": "c0059f9be8d307648f951fd79903e8c1056ba104804bc69e0f50bf99e089295c",
+    "native_ordering_evidence_sha256": "4eaa0246140f0191bc06245abb28800bde86fef127acbbc0ca1575dde961be60",
+    "ordering_blobs": [
+        {"stage": "before_cancel", "sha256": "810a291fa405c58d1c891c9cd7771a98ed4ae0873b0953796a7246e42ecbe9c9",
+         "created_at": {"seconds": 1790933963, "nanoseconds": 342442000}},
+        {"stage": "cancel_intent", "sha256": "a2302b4408e575d21049cb09a6366d8ad867bf7f21a1f8402f66e60cc141e876",
+         "created_at": {"seconds": 1790933968, "nanoseconds": 549726000}},
+        {"stage": "cancel_reply", "sha256": "6a0e9e8054df2c90240fbaa9d10a0bcf47e6c28c7e550ebcab291735061f00b6",
+         "created_at": {"seconds": 1790933969, "nanoseconds": 639687000}}],
+    "native_export": {
+        "bucket": "blueprint-8c1ca.appspot.com",
+        "object": "research-backups/retained-sessions/sess_06ea8f997fa27202006abf0b37b9f4819aacfaa2cb1414eb14/2026-10-02/qa-diagnostics/d43dd996521940543e5324dbc0173eb9118cc24fc4081834da391519168998a5.json.gz",
+        "generation": "1790935283944135",
+        "gzip_sha256": "d43dd996521940543e5324dbc0173eb9118cc24fc4081834da391519168998a5",
+        "json_sha256": "ae56a4ee7c45157c7940403599ef9eeb41209588d959a0c143ffca22cc005842"}}
+
+
+def collect_completed_qa(bridge, cache, *, api_factory=None, stopped=lambda: False,
+                         clock=lambda: datetime.now(timezone.utc)):
+    """One exact native-witnessed late timeout; GET/validation/publication only.
+
+    The authenticated native receipt proves a lower bound after completion,
+    not an exact cancellation time. Ordinary unknown-timing rules are unchanged.
+    """
+    from tools.daily_research.consumer import QA_PATH, qa_decision, workflow
+    from tools.daily_research.qa_retry import original_event
+    ledger = FirestoreLedger(bridge)
+    cfg = render.configured(bridge, cache, allow_create=False)
+    proof = copy.deepcopy(TERMINAL_QA_RECEIPT)
+    api = (api_factory or CanaryProvider)(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    api.clock, api.stopped = clock, stopped
+    consumer = Consumer(ledger, cfg, api, clock=clock, stopped=stopped)
+    consumer.active_day = DAY
+
+    def guard(row, expected_authority=None):
+        bridge.call("guard")
+        bridge.call("assert_lease")
+        control = bridge.call("control")
+        authority = workflow(control)
+        if (stopped() or not authority or row.get("canary") != control.get("canary")
+                or (expected_authority is not None and authority != expected_authority)):
+            raise Refusal("terminal_qa_collection_stopped_disabled_or_changed")
+        return copy.deepcopy(authority)
+
+    try:
+        with ledger.lock():
+            row = ledger.get(DAY)
+            if (not BASELINE or BASELINE["attempt_number"] != 1 or DAY != "2026-10-01" or not row
+                    or row.get("state") not in {"awaiting_review", "reviewed", "completed"}
+                    or row.get("session_id") != proof["session_id"]):
+                raise Refusal("terminal_qa_collection_scope_changed")
+            authority = guard(row)
+            prior = row.get("qa", {}).get("terminal_collection_recovery")
+            if prior:
+                if (prior.get("native_receipt") != proof or prior.get("workflow_authority") != authority
+                        or row["qa"].get("state") != "validated"
+                        or row["qa"].get("artifact_digest") != proof["qa_artifact_sha256"]):
+                    raise Refusal("terminal_qa_collection_already_bound")
+            else:
+                qa = row.get("qa", {})
+                deadline = qa_deadline(row, cfg)
+                source = bridge.call("blob_receipt", hash=proof["source_blob_sha256"])
+                source_raw = base64.b64decode(source["bytes"], validate=True)
+                if (hashlib.sha256(source_raw).hexdigest() != proof["source_blob_sha256"]
+                        or digest(json.loads(source_raw)) != digest(row)):
+                    raise Refusal("terminal_qa_collection_source_or_timing_changed")
+                ordering = []
+                for binding in proof["ordering_blobs"]:
+                    observed = bridge.call("blob_receipt", hash=binding["sha256"])
+                    raw = base64.b64decode(observed["bytes"], validate=True)
+                    value = json.loads(raw)
+                    previous = value.get("qa", {})
+                    if (observed.get("created_at") != binding["created_at"]
+                            or hashlib.sha256(raw).hexdigest() != binding["sha256"]
+                            or any(value.get(k) != row.get(k) for k in ("session_id", "turn_id", "packet_digest", "raw_output_digest", "qa_retry_continuation"))
+                            or previous.get("turn_id") != proof["qa_turn_id"] or previous.get("turn_status") != "completed"
+                            or previous.get("artifact_digest") != proof["qa_artifact_sha256"]
+                            or previous.get("request_digest") != qa.get("request_digest")
+                            or previous.get("baseline_turn_ids") != qa.get("baseline_turn_ids")
+                            or previous.get("cancel_reply_unresolved") is True):
+                        raise Refusal("terminal_qa_collection_ordering_changed")
+                    stage = binding["stage"]
+                    if ((stage == "before_cancel" and (previous.get("cancel_attempted") is not False
+                                                      or previous.get("error") != "agent_qa_terminal_collection_unavailable"))
+                            or (stage != "before_cancel" and (previous.get("cancel_attempted") is not True
+                                or previous.get("error") != proof["cancellation_reason"]
+                                or (stage == "cancel_intent" and previous.get("cancel_idempotency_key") is not None)
+                                or (stage == "cancel_reply" and previous.get("cancel_idempotency_key") != row["run_key"] + ":qa:retry-phase:cancel")
+                                or previous.get("cancel_reply_received") is not (stage == "cancel_reply")))):
+                        raise Refusal("terminal_qa_collection_ordering_changed")
+                    ordering.append(binding["created_at"]["seconds"] + binding["created_at"]["nanoseconds"] / 1e9)
+                if (proof["completed_at"] + 1 > ordering[0] or not ordering[0] < ordering[1] < ordering[2]
+                        or ordering[1] != instant(proof["cancellation_not_before"]).timestamp()):
+                    raise Refusal("terminal_qa_collection_ordering_changed")
+                if (row["state"] != "awaiting_review"
+                        or qa.get("turn_id") != proof["qa_turn_id"] or qa.get("turn_status") != "completed"
+                        or qa.get("artifact_digest") != proof["qa_artifact_sha256"]
+                        or digest(row["packet"]) != row.get("packet_digest")
+                        or qa.get("cancel_attempted") is not True or qa.get("cancel_reply_received") is not True
+                        or qa.get("cancel_reply_unresolved") is True or qa.get("cancel_record")
+                        or qa.get("cancel_idempotency_key") != row["run_key"] + ":qa:retry-phase:cancel"
+                        or qa.get("error") not in {proof["cancellation_reason"], "agent_qa_terminal_guard_failed"}
+                        or instant(row["qa_retry_continuation"]["started_at"]) != instant(proof["phase_started_at"])
+                        or deadline != instant(proof["phase_deadline"])
+                        or instant(proof["cancellation_not_before"]) < deadline
+                        or proof["completed_at"] + 1 > deadline.timestamp()
+                        or proof["cancellation_requested_at"] is not None):
+                    raise Refusal("terminal_qa_collection_source_or_timing_changed")
+                original_event(ledger, row)
+                if hashlib.sha256(ledger.read_bytes(DAY + "-artifact.json")).hexdigest() != row["raw_output_digest"]:
+                    raise Refusal("terminal_qa_collection_original_artifact_changed")
+                preflight(api, cfg.get("expected_agent_instructions_sha256"), row.get("search_provider"))
+                session = api.get("session", row["session_id"])
+                Consumer.check_session(row, session)
+                turns = api.listing("turns", row["session_id"])
+                items = api.listing("items", row["session_id"])
+                artifacts = api.listing("artifacts", row["session_id"])
+                inventory = {"turns": len(turns), "items": len(items), "artifacts": len(artifacts)}
+                selected = [t for t in turns if t["id"] == proof["qa_turn_id"]]
+                if (session.get("status") != "idle" or session.get("required_actions") or session.get("error")
+                        or inventory != proof["inventory"] or len(selected) != 1
+                        or {t["id"] for t in turns} != {*qa["baseline_turn_ids"], proof["qa_turn_id"]}
+                        or any(t.get("status") != "completed" or t.get("subagent_id") for t in turns)
+                        or selected[0].get("completed_at") != proof["completed_at"]
+                        or selected[0].get("session_id") != row["session_id"]
+                        or selected[0].get("agent_id") != AGENT
+                        or any(i.get("turn_id") not in {t["id"] for t in turns} for i in items)):
+                    raise Refusal("terminal_qa_collection_provider_scope_changed")
+                if (digest([i for i in items if i.get("turn_id") == proof["qa_turn_id"]]) != qa.get("evidence_digest")
+                        or digest([i for i in items if i.get("turn_id") == row["turn_id"]]) != row.get("evidence_digest")):
+                    raise Refusal("terminal_qa_collection_evidence_changed")
+                output = [a for a in artifacts if a.get("turn_id") == proof["qa_turn_id"] and a.get("path") == QA_PATH]
+                if len(output) != 1:
+                    raise Refusal("terminal_qa_collection_artifact_ambiguous")
+                raw = api.artifact(row["session_id"], identifier(output[0]["id"]))
+                if len(raw) > LIMIT_BYTES or hashlib.sha256(raw).hexdigest() != proof["qa_artifact_sha256"]:
+                    raise Refusal("terminal_qa_collection_artifact_changed")
+                if ledger.read_bytes(DAY + "-qa.json") != raw:
+                    raise Refusal("terminal_qa_collection_retained_artifact_changed")
+                guard(row, authority)
+                _, known = consumer.refresh_crm()
+                decision = qa_decision(row, json.loads(raw), known)
+                guard(row, authority)
+                receipt = {"native_receipt": proof, "source_row_digest": digest(row),
+                           "previous_qa": copy.deepcopy(qa), "workflow_authority": authority,
+                           "root_turn_id": row["turn_id"], "packet_digest": row["packet_digest"],
+                           "raw_output_sha256": row["raw_output_digest"], "request_digest": qa["request_digest"],
+                           "idempotency_key": row["run_key"] + ":qa", "turns_digest": digest(turns),
+                           "items_digest": digest(items), "artifacts_digest": digest(artifacts)}
+                qa.update(state="validated", decision=decision, terminal_collection_recovery=receipt)
+                ledger.put(row)
+        for _ in range(3):
+            row = ledger.get(DAY)
+            if row["state"] == "completed":
+                break
+            with ledger.lock():
+                guard(row, authority)
+            result = consumer.step()
+            if result["state"] in {"publication_pending", "workflow_disabled"}:
+                break
+        return {**summary(ledger.get(DAY)), "provider_mutations": 0,
+                "terminal_collection_receipt_digest": digest(proof), "canonical_publication_only": True}
+    finally:
+        api.client.close()
+
+
 class CanaryBridge(Bridge):
     def call(self, op, **fields):
         if op == "put":
@@ -609,7 +795,7 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider, recovery_on
                 return {**summary(row), **({"observer_error": reason} if reason else {})}
             total_exhausted = (clock() >= qa_deadline(row, cfg)) if recovery_only else (
                 (clock() - instant(row["started_at"])).total_seconds() >= row["total_runtime_seconds"])
-            if total_exhausted:
+            if total_exhausted and not reason:
                 reason = "canary_total_observation_deadline"
             if row["state"] in {"running", "collecting", "cancel_pending", "creating"}:
                 if reason:
@@ -726,7 +912,7 @@ def record_cleanup(bridge, cache, receipt, *, api_factory=FencedProvider):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa", "retry-qa-submission"])
+    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa", "retry-qa-submission", "collect-completed-qa"])
     parser.add_argument("--package", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--approval")
@@ -744,7 +930,7 @@ def main():
         select_attempt(args.attempt, args.date)
     elif args.date is not None:
         raise Refusal("baseline_attempt_identity_invalid")
-    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa", "retry-qa-submission"}
+    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered", "repair-output", "recover-original-and-qa", "retry-qa-submission", "collect-completed-qa"}
     repair_arguments = (args.repair_package, args.repair_archive, args.repair_source, args.repair_sha256)
     if repair_command != all(repair_arguments) or not repair_command and any(repair_arguments):
         raise Refusal("repair_package_required_or_command_not_admitted")
@@ -754,7 +940,7 @@ def main():
         if Path(args.repair_package).resolve() == Path(args.package).resolve():
             raise Refusal("repair_must_preserve_installed_package")
         repair_receipt = repair_package_receipt(args.repair_package, args.repair_archive, args.repair_sha256, args.repair_source)
-    if args.command in {"execute", "reconcile", "resume-qa", "repair-output", "recover-original-and-qa", "retry-qa-submission"}:
+    if args.command in {"execute", "reconcile", "resume-qa", "repair-output", "recover-original-and-qa", "retry-qa-submission", "collect-completed-qa"}:
         verify_process_watchdog()
     stop = {"requested": False}
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -819,6 +1005,8 @@ def main():
                 result = recover_original_and_qa(bridge, cache, stopped=lambda: stop["requested"])
             elif args.command == "retry-qa-submission":
                 result = retry_qa_submission(bridge, cache, stopped=lambda: stop["requested"])
+            elif args.command == "collect-completed-qa":
+                result = collect_completed_qa(bridge, cache, stopped=lambda: stop["requested"])
             elif args.command == "repair-output":
                 result = repair_report(bridge, cache, stopped=lambda: stop["requested"])
             elif args.command == "export-recovered":

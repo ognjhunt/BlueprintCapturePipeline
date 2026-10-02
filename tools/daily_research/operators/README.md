@@ -520,3 +520,35 @@ successful command exit alone never establishes QA or publication completion.
 Official contracts: [retry transient failures](https://developers.openai.com/api/docs/guides/agents-api/errors#retry-transient-failures)
 and [same-key session input recovery](https://developers.openai.com/api/docs/guides/agents-api/sessions).
 No new session, model change, grants, keys, outreach or deletion is included.
+
+## Collect the retained in-time QA result without inference
+
+`collect-completed-qa` is scoped to baseline attempt 1 and its exact native
+source-blob, QA-turn and raw-artifact hashes. It GETs the three exact immutable
+Firestore snapshots and verifies their raw bytes, native creation times and
+pre-cancel/intent/reply flags. The authenticated native receipt records completion
+at 09:38:27 UTC, before the 09:39:14.788518 deadline and the cancellation dispatch
+interval 09:39:28.549726–09:39:29.639687 UTC. The exact request time remains unknown.
+The receipt references the existing private GCS export and native metadata;
+it does not invent a `cancel_record`, erase cancellation flags, resend the QA
+input, create another phase, extend a clock, or admit ordinary unknown-timing
+cancellations.
+
+Under the existing baseline QA/publication authority, the command performs full
+GETs, checks the same completed turn, idle/no-action session, retained raw bytes,
+immutable input, exact evidence and complete inventory. It runs the existing
+source/claim/identity attestation and fresh CRM check, preserving full QA prose.
+The original QA/cancellation history is retained inside an immutable recovery
+receipt. Fresh normal-origin, private control, workflow-authority and lease
+checks precede validation and the existing canonical publication. Readback must
+match the full Notion report and exact Sheets rows; accepted discoveries remain
+unqualified. Restart may finish those same claimed publications and never
+starts provider work. A changed source or receipt refuses instead of rebinding.
+
+Use the verified isolated portable archive and existing SDK/dependencies,
+with `collect-completed-qa` in the standard watchdog invocation above. This is
+a Firestore-writing validation and canonical-publication action, not a read-only
+probe. Keep the production scheduler disabled until actual QA validation,
+both publication receipts, and `export-recovered` are verified. No worker
+deployment, Pipeline host deployment, paid GPU job, outreach or deletion is
+part of this command.

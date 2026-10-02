@@ -107,6 +107,28 @@ test('large immutable chunked artifacts verify exact bytes and detect corruption
   await assert.rejects(store.fileGet('2026-10-01-artifact.json'), /file_missing/);
 });
 
+test('immutable blob receipts bind verified bytes and native creation time without writes', async () => {
+  const {db, store} = await fixture(), raw = Buffer.from('{"qa":"completed"}');
+  await store.filePut('2026-09-30-qa.json', raw.toString('base64'));
+  const hash = db.values.get(`${ROOT}/files/2026-09-30-qa.json`).blob;
+  const before = JSON.stringify([...db.values]);
+  const originalDoc = db.doc.bind(db);
+  let time = {seconds:1790933968, nanoseconds:549726000};
+  db.doc = path => {
+    const ref = originalDoc(path), get = ref.get.bind(ref);
+    ref.get = async () => {const snap = await get(); if (path === `${ROOT}/blobs/${hash}`) snap.createTime = time; return snap;};
+    return ref;
+  };
+  assert.deepEqual(await store.dispatch({op:'blob_receipt',hash}), {sha256:hash,bytes:raw.toString('base64'),created_at:time});
+  assert.equal(JSON.stringify([...db.values]), before);
+  for (const invalid of [undefined, {seconds:1790933968,nanoseconds:1000000000}]) {
+    time = invalid;
+    await assert.rejects(store.blobReceipt(hash), /creation_time_unavailable/);
+  }
+  db.values.get(`${ROOT}/blobs/${hash}/chunks/0`).bytes = Buffer.from('corrupt');
+  await assert.rejects(store.blobReceipt(hash));
+});
+
 test('heartbeat release drains renewal and reacquisition starts a clean generation', async () => {
   const {db, store} = await fixture(); await store.release();
   let beat, unblock; const events = [];

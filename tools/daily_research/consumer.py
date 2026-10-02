@@ -120,7 +120,7 @@ def qa_decision(row, result, known):
             or result["packet_digest"] != row["packet_digest"] or result["crm_digest"] != qa["crm_digest"]
             or result["source_support_verified"] is not True or not isinstance(result["accepted_keys"], list)
             or not isinstance(result["checks"], list) or not isinstance(result["summary"], str)
-            or not 1 <= len(result["summary"]) <= 2000):
+            or not result["summary"] or len(result["summary"].encode()) > LIMIT_BYTES):
         raise Refusal("agent_qa_evidence_or_binding_missing")
     candidates = {c["candidate_key"]: c for c in row["packet"]["candidates"]}
     checks = {}
@@ -128,7 +128,7 @@ def qa_decision(row, result, known):
         if (not isinstance(c, dict) or set(c) != {"candidate_key", "source_support_verified", "duplicate", "reason"}
                 or c["candidate_key"] not in candidates or c["candidate_key"] in checks
                 or type(c["source_support_verified"]) is not bool or type(c["duplicate"]) is not bool
-                or not isinstance(c["reason"], str) or not 1 <= len(c["reason"]) <= 1000):
+                or not isinstance(c["reason"], str) or not c["reason"] or len(c["reason"].encode()) > LIMIT_BYTES):
             raise Refusal("agent_qa_candidate_checks_invalid")
         checks[c["candidate_key"]] = c
     accepted = result["accepted_keys"]
@@ -141,6 +141,32 @@ def qa_decision(row, result, known):
     return {"packet_digest": row["packet_digest"], "reviewer_reference": "agent-turn:" + row["session_id"] + ":" + qa["turn_id"],
             "source_support_verified": True, "crm_rechecked": True, "accepted_keys": selected,
             "summary": result["summary"], "qa_artifact_digest": qa["artifact_digest"]}
+
+
+def completed_before_deadline_cancel(row, turn, session, deadline):
+    """An in-time result may outlive a later deadline-only cancellation.
+
+    Unknown or early cancellations remain blocked. Keep the original request
+    and receipt; integer provider timestamps cannot prove same-second order.
+    """
+    qa, record = row["qa"], row["qa"].get("cancel_record", {})
+    try:
+        requested = instant(record["requested_at"]).timestamp()
+        key = row["run_key"] + (":qa:retry-phase" if row.get("qa_retry_continuation") else ":qa") + ":cancel"
+        return (qa.get("cancel_attempted") is True
+                and set(record) == {"schema_version", "reason", "requested_at", "deadline_ms", "idempotency_key"}
+                and record["schema_version"] == "blueprint.qa-cancellation.v1"
+                and record["reason"] in {"agent_qa_deadline", "canary_total_observation_deadline"}
+                and record["deadline_ms"] == int(deadline.timestamp() * 1000)
+                and record["idempotency_key"] == qa.get("cancel_idempotency_key") == key
+                and qa.get("cancel_reply_received") is True and qa.get("cancel_reply_unresolved") is not True
+                and isinstance(turn.get("completed_at"), int)
+                and turn["completed_at"] <= deadline.timestamp() <= requested
+                and requested >= turn["completed_at"] + 1
+                and session.get("status") == "idle" and not session.get("error")
+                and not session.get("required_actions"))
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 class Consumer:
@@ -215,6 +241,20 @@ class Consumer:
             row["qa"] = {"state": "qa_input_unresolved", "event": event, "request_digest": digest(event),
                          "deadline_ms": int(deadline.timestamp() * 1000),
                          "crm_digest": crm_digest, "baseline_turn_ids": [t["id"] for t in turns], "cancel_attempted": False}
+            # Immutable ordinary submission scope supports autonomous transient
+            # replay inside this same deadline, including completed corrections.
+            items = self.api.listing("items", row["session_id"])
+            artifacts = self.api.listing("artifacts", row["session_id"])
+            if any(i.get("turn_id") not in row["qa"]["baseline_turn_ids"] for i in items):
+                raise Refusal("agent_qa_initial_item_scope_mismatch")
+            row["qa"]["submission_binding"] = {
+                "schema_version": "blueprint.qa-submission.v1", "session_id": row["session_id"],
+                "root_turn_id": row["turn_id"], "packet_digest": row["packet_digest"],
+                "raw_output_sha256": row["raw_output_digest"], "request_digest": digest(event),
+                "idempotency_key": row["run_key"] + ":qa", "deadline_ms": row["qa"]["deadline_ms"],
+                "baseline_turn_ids": row["qa"]["baseline_turn_ids"], "items_digest": digest(items),
+                "artifacts_digest": digest(artifacts),
+                "authority_reference": self.ledger.bridge.call("control")["workflow"]["qa_authority_reference"]}
             if row.get("search_provider") == search.PROFILE:
                 filename = row["date"] + "-qa-input.json"
                 self.ledger.write_json(filename, event)
@@ -236,6 +276,7 @@ class Consumer:
                 from tools.daily_research.recovery import repair_error_receipt
                 phase = stage if stage == "reply_persistence" else getattr(self.api, "qa_input_phase", stage)
                 row["qa"]["input_error_receipt"] = repair_error_receipt(error, phase)
+                row["qa"]["input_error_at"] = self.clock().isoformat()
                 try:
                     self.ledger.put(row)
                 except Exception:  # noqa: BLE001 - broken persistence never grants retry authority
@@ -245,7 +286,7 @@ class Consumer:
         if qa["state"] == "qa_blocked":
             return None
         try:
-            if row.get("qa_retry_continuation"):
+            if row.get("qa_retry_continuation") or qa.get("submission_binding"):
                 from tools.daily_research.qa_retry import submit
                 if submit(self, row, deadline) == "reply_persistence_unresolved":
                     return None
@@ -264,14 +305,27 @@ class Consumer:
 
     def cancel(self, row, reason):
         qa = row["qa"]
+        if not qa["cancel_attempted"]:
+            # Classify the actual action time, rather than trusting a reason
+            # selected before a slow read or concurrent disable/stop.
+            try:
+                if not workflow(self.ledger.bridge.call("control")):
+                    reason = "agent_qa_disabled"
+            except Exception:  # noqa: BLE001 - still cancel, never admit deadline-only collection
+                reason = "agent_qa_cancel_authority_unavailable"
+            if self.stopped():
+                reason = "agent_qa_stopped"
         qa.update(state="qa_cancel_pending", error=reason)
         if not qa["cancel_attempted"]:
             qa["cancel_attempted"] = True
+            key = row["run_key"] + (":qa:retry-phase" if row.get("qa_retry_continuation") else ":qa")
+            qa["cancel_idempotency_key"] = key + ":cancel"
+            qa["cancel_record"] = {"schema_version": "blueprint.qa-cancellation.v1", "reason": reason,
+                                   "requested_at": self.clock().isoformat(),
+                                   "deadline_ms": int(qa_deadline(row, self.config).timestamp() * 1000),
+                                   "idempotency_key": qa["cancel_idempotency_key"]}
             self.ledger.put(row)
             try:
-                key = row["run_key"] + (":qa:retry-phase" if row.get("qa_retry_continuation") else ":qa")
-                qa["cancel_idempotency_key"] = key + ":cancel"
-                self.ledger.put(row)
                 self.api.cancel(row["session_id"], key)
                 qa["cancel_reply_received"] = True
             except Exception:  # noqa: BLE001 - uncertain cancellation is never claimed terminal or resubmitted
@@ -302,7 +356,8 @@ class Consumer:
             qa["evidence_digest"] = digest(items)
             self.ledger.put(row)
             if turn["status"] in {"completed", "failed", "cancelled"}:
-                if (turn["status"] != "completed" or qa["cancel_attempted"] or not isinstance(turn.get("completed_at"), int)
+                late_deadline_cancel = completed_before_deadline_cancel(row, turn, session, deadline)
+                if (turn["status"] != "completed" or (qa["cancel_attempted"] and not late_deadline_cancel) or not isinstance(turn.get("completed_at"), int)
                         or turn["completed_at"] > deadline.timestamp()
                         or (row.get("qa_retry_continuation") and turn["completed_at"] < instant(row["qa_retry_continuation"]["started_at"]).timestamp())
                         or (row.get("discovery_profile") != "adaptive-sites-v1" and qa["web_tool_activities"] + row.get("web_tool_activities", 0) >= 6)):
@@ -326,13 +381,23 @@ class Consumer:
                 qa["artifact_digest"] = hashlib.sha256(raw).hexdigest()
                 _, known = self.refresh_crm()
                 decision = qa_decision(row, json.loads(raw), known)
+                if late_deadline_cancel:
+                    qa["terminal_collection_receipt"] = {"turn_id": tid, "completed_at": turn["completed_at"],
+                                                         "deadline_ms": int(deadline.timestamp() * 1000),
+                                                         "cancel_record_digest": digest(qa["cancel_record"]),
+                                                         "artifact_digest": qa["artifact_digest"]}
                 qa.update(state="validated", decision=decision)
                 self.ledger.put(row)
                 return decision
-        if (self.clock() >= deadline or self.stopped()
-                or not workflow(self.ledger.bridge.call("control"))
-                or (row.get("discovery_profile") != "adaptive-sites-v1" and qa.get("web_tool_activities", 0) + row.get("web_tool_activities", 0) >= 6)):
-            self.cancel(row, "agent_qa_deadline_or_disabled")
+        reason = "agent_qa_stopped" if self.stopped() else None
+        if not workflow(self.ledger.bridge.call("control")):
+            reason = reason or "agent_qa_disabled"
+        if row.get("discovery_profile") != "adaptive-sites-v1" and qa.get("web_tool_activities", 0) + row.get("web_tool_activities", 0) >= 6:
+            reason = reason or "agent_qa_web_activity_limit"
+        if self.clock() >= deadline:
+            reason = reason or "agent_qa_deadline"
+        if reason:
+            self.cancel(row, reason)
         elif row.get("search_provider") == search.PROFILE:
             search.respond(row, session, self.ledger, self.api, phase="qa", clock=self.clock, stopped=self.stopped)
         self.ledger.put(row)

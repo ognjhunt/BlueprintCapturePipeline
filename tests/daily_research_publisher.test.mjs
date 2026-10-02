@@ -14,12 +14,12 @@ const candidate=()=>({organization:'Example Plant',site:'North',task:'Depositing
   qualification_status:'unqualified',unknowns:['Interest unknown'],potential_robot_match:'Hypothesis',
   proposed_next_action:'Review exact operator evidence',evidence:['task','capability'].map(role=>({role,
     url:'https://plant.example/tasks',classification:'operator',claim_kind:'fact',claim:'Task described',checked_date:'2026-09-30'}))});
-function row(candidates=[candidate()]) {
+function row(candidates=[candidate()],summary='Supported brief with explicit gaps') {
   const r={date:'2026-09-30',run_key:'blueprint-researcher:2026-09-30',metadata:{run_key:'date'},
     state:'reviewed',cleanup_required:true,packet:{candidates},packet_digest:'a'.repeat(64),qa:{state:'validated'},
     review:{packet_digest:'a'.repeat(64),source_support_verified:true,crm_rechecked:true},delivery:{}};
   for (const [name,payload] of Object.entries({sheets:{sheet_id:SHEET,tab:'Prospects',candidates},
-    notion:{parent_id:NOTION,summary:'Supported brief with explicit gaps',candidates}})) {
+    notion:{parent_id:NOTION,summary,candidates}})) {
     const raw=JSON.stringify(payload);
     r.delivery[name]={key:r.run_key+':'+name,payload,payload_json:raw,payload_digest:sha(raw),state:'pending'};
   }
@@ -92,6 +92,38 @@ test('ten agent-approved discoveries publish under the same durable claims with 
   assert.ok(f.pages[0].body.children.some(b=>b.paragraph.rich_text[0].text.content.includes('Synthetic operator 9')));
   assert.ok(f.values.slice(5).every(r=>r[10]==='Research'&&r[16]==='Unverified'));
   assert.throws(()=>planSheets(row(Array.from({length:101},candidate)),f.snapshot()),/publication_candidates_invalid/);
+});
+
+test('long QA brief is published losslessly in bounded Notion blocks and exact readback rejects truncation',async()=>{
+  const f=await fixture(),summary='Supported evidence https://plant.example/tasks; interest remains unknown. '.repeat(120).slice(0,7301);
+  const r=row([candidate()],summary);await f.store.put(r);
+  const plan=planNotion(r);
+  assert.ok(summary.length===7301 && plan.paragraphs.length<90);
+  assert.ok(plan.paragraphs.every(text=>text.length<=1800));
+  assert.ok(plan.paragraphs.slice(1).join('').includes(summary));
+  assert.equal((await f.store.publish(r.date)).readback_verified,true);
+  const written=f.pages[0].body.children.map(b=>b.paragraph.rich_text[0].text.content);
+  assert.deepEqual(written,plan.paragraphs);
+  assert.ok(written.slice(1).join('').includes(summary));
+  f.pages[0].body.children[2].paragraph.rich_text[0].text.content+='truncated';
+  await assert.rejects(f.publisher.reconcile(r,'notion',plan),/publication_readback_conflict/);
+  assert.equal(f.writes.filter(x=>x.destination==='notion').length,1);
+});
+
+test('terminal collection receipt is immutable and publication authority is checked again before claim',async()=>{
+  const f=await fixture(),r=await f.store.get(f.r.date);
+  r.qa.terminal_collection_recovery={native_receipt:{synthetic:true},previous_qa:{cancel_attempted:true},
+    workflow_authority:structuredClone(f.db.values.get(ROOT).workflow)};
+  await f.store.put(r);
+  f.publisher.reconcile=async()=>{
+    f.db.values.get(ROOT).workflow.publication_authority_reference='different-approved-scope';
+    return null;
+  };
+  await assert.rejects(f.store.publish(r.date),/publication_authority_changed/);
+  assert.equal(f.writes.length,0);
+  assert.equal(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_claimed?.notion,undefined);
+  const changed=structuredClone(r);changed.qa.terminal_collection_recovery.previous_qa.cancel_attempted=false;
+  await assert.rejects(f.store.put(changed),/qa_terminal_collection_already_bound/);
 });
 
 for(const destination of ['notion','sheets']) test(`lost ${destination} reply restarts with GET-only reconciliation`,async()=>{
