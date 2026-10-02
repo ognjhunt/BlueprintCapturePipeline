@@ -552,6 +552,8 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     hold.add_argument("--owner", required=True)
     hold.add_argument("--reason", required=True)
     hold.add_argument("--for", dest="expires_in_seconds", type=_hold_duration, required=True)
+    hold.add_argument("--until-released", action="store_true",
+                      help="dispatcher only: --for is a review deadline; remain stopped until explicit release")
     _add_wait(hold, 120)
     release = commands.add_parser("release-hold", help="release an owned timer or path hold early")
     release.add_argument("unit")
@@ -645,7 +647,8 @@ def run(args: argparse.Namespace) -> int:
         return _submit({"kind": "unit", "unit": args.unit, "action": args.action}, args)
     elif command == "hold":
         return _submit({"kind": "hold", "unit": args.unit, "owner": args.owner, "reason": args.reason,
-                        "expires_in_seconds": args.expires_in_seconds}, args)
+                        "expires_in_seconds": args.expires_in_seconds,
+                        **({"require_explicit_release": True} if args.until_released else {})}, args)
     elif command == "release-hold":
         return _submit({"kind": "release-hold", "unit": args.unit}, args)
     elif command == "deploy":

@@ -29,6 +29,17 @@ from operator_door.requests import (  # noqa: E402
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
+def test_explicit_release_policy_is_dispatcher_only_and_typed() -> None:
+    body = {"kind": "hold", "unit": "blueprint-agent-run-dispatcher.timer", "owner": "founder-stop",
+            "reason": "Founder stop", "expires_in_seconds": 60, "require_explicit_release": True}
+    assert validate_request(body) == body
+    for change, code in [({"require_explicit_release": "yes"}, "hold_release_policy_invalid"),
+                         ({"unit": "blueprint-scene-progression.timer"}, "hold_explicit_release_unit_refused")]:
+        with pytest.raises(RequestRefused) as error:
+            validate_request({**body, **change})
+        assert error.value.code == code
+
+
 @pytest.fixture()
 def config(tmp_path: Path) -> DoorConfig:
     for state in ("pending", "processing", "completed", "results"):

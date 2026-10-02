@@ -182,7 +182,7 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                 raise RequestRefused("unit_stop_requires_hold")
         return {"kind": kind, "unit": unit, "action": action}
     if kind == "hold":
-        _only(body, ("kind", "unit", "owner", "reason", "expires_in_seconds"))
+        _only(body, ("kind", "unit", "owner", "reason", "expires_in_seconds", "require_explicit_release"))
         unit = _hold_unit(body.get("unit"))
         owner, reason, duration = body.get("owner"), body.get("reason"), body.get("expires_in_seconds")
         if not isinstance(owner, str) or not _HOLD_OWNER.fullmatch(owner):
@@ -191,8 +191,13 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("hold_reason_invalid")
         if type(duration) is not int or not 60 <= duration <= 86400:
             raise RequestRefused("hold_expiry_invalid")
+        explicit = body.get("require_explicit_release", False)
+        if type(explicit) is not bool:
+            raise RequestRefused("hold_release_policy_invalid")
+        if explicit and unit != "blueprint-agent-run-dispatcher.timer":
+            raise RequestRefused("hold_explicit_release_unit_refused")
         return {"kind": kind, "unit": unit, "owner": owner, "reason": reason,
-                "expires_in_seconds": duration}
+                "expires_in_seconds": duration, **({"require_explicit_release": True} if explicit else {})}
     if kind == "release-hold":
         _only(body, ("kind", "unit"))
         return {"kind": kind, "unit": _hold_unit(body.get("unit"))}

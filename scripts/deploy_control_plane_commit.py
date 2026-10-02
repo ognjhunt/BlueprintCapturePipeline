@@ -2433,9 +2433,13 @@ def _active_door_holds(root: str | Path, *, now: float | None = None) -> tuple[d
                     or record.get("unit") != unit or not re.fullmatch(r"blueprint-[A-Za-z0-9_.@-]+\.(timer|path)", unit)
                     or not isinstance(record.get("owner"), str) or not isinstance(record.get("reason"), str)
                     or not isinstance(record.get("expires_at"), str)
-                    or type(record.get("expires_at_epoch")) is not int):
+                    or type(record.get("expires_at_epoch")) is not int
+                    or type(record.get("require_explicit_release", False)) is not bool
+                    or (record.get("require_explicit_release") is True
+                        and unit != "blueprint-agent-run-dispatcher.timer")):
                 raise ValueError("hold_record_invalid")
-            if record.get("status") == "active" and record["expires_at_epoch"] > moment:
+            if record.get("status") == "active" and (record["expires_at_epoch"] > moment
+                                                    or record.get("require_explicit_release") is True):
                 found[unit] = record
     except (OSError, ValueError, UnicodeDecodeError):
         return {}, "door_holds_unreadable"
@@ -2526,7 +2530,9 @@ def _restore_installed_path_units(
             receipts.append({"unit": unit, "before": prior, "requested_intent": "hold", "after": after,
                              "operator_freeze_preserved": True, "held": True,
                              "owner": hold["owner"], "reason": hold["reason"],
-                             "expires_at": hold["expires_at"]})
+                             "expires_at": hold["expires_at"],
+                             **({"require_explicit_release": True}
+                                if hold.get("require_explicit_release") is True else {})})
             continue
         arm_no_spend = unit in always_arm_units
         arm_authority_gated = unit in always_arm_authority_gated_units
