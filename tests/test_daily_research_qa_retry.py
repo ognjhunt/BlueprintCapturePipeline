@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.test_daily_research_consumer import consumer_setup
 from tests.test_daily_research_operator_canary import (
     NOW,
     canary,
@@ -12,8 +13,10 @@ from tests.test_daily_research_operator_canary import (
     fixture,
     recovered_baseline,
 )
+from tests.test_daily_research_runner import DAY
 from tools.daily_research import qa_retry, recovery
 from tools.daily_research.consumer import Consumer
+from tools.daily_research.firestore import Bridge, FencedProvider, FirestoreLedger
 from tools.daily_research.runner import Refusal, digest
 
 _fixture = fixture  # Imported pytest fixture, retained without a second setup implementation.
@@ -235,7 +238,8 @@ def test_retry_after_beyond_phase_stops_and_phase_cannot_be_rearmed(fixture, mon
             old["qa"]["input_error_receipt"]["retry_after_seconds"] = 86400
             ledger.put(old)
         first = arm(ledger, api, clock)
-        assert consumer.step()["state"] == "qa_blocked" and not posts
+        assert consumer.step()["state"] == "qa_input_unresolved" and not posts
+        assert ledger.get(canary.DAY)["qa"]["retry_suppressed_reason"] == "qa_retry_after_exceeds_deadline"
         with ledger.lock():
             row = ledger.get(canary.DAY)
             assert qa_retry.authorize(row, {"clear": True}, clock["now"] + timedelta(hours=1)) == row
@@ -298,3 +302,152 @@ def test_two_transient_slots_are_the_complete_retry_limit(fixture, monkeypatch):
         assert not ledger.get(canary.DAY)["qa"].get("turn_id")
     finally:
         bridge.close()
+
+
+@pytest.fixture
+def ordinary(tmp_path, monkeypatch):
+    generator = consumer_setup(tmp_path)
+    consumer, api, ledger, bridge, script = next(generator)
+    clock = {"now": consumer.clock()}
+    consumer.clock = lambda: clock["now"]
+    def tick(seconds):
+        clock["now"] += timedelta(seconds=seconds)
+        bridge.call("test_clock", now=int(clock["now"].timestamp() * 1000))
+    tick(0)
+    posts = []
+    def original_input(sid, event, key, day, request_digest, deadline_ms):
+        bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+        posts.append((sid, deepcopy(event), key))
+        api.qa_input_phase = "provider_submission"
+        raise Transient503()
+    api.qa_input = original_input
+    provider = object.__new__(FencedProvider)
+    provider.ledger, provider.clock, provider.stopped = ledger, consumer.clock, lambda: False
+    provider.get, provider.listing = api.get, api.listing
+    provider.api = SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=lambda sid, *, events, idempotency_key:
+                                  posts.append((sid, deepcopy(events[0]), idempotency_key)))))
+    def submit(*args):
+        try:
+            return provider.qa_retry_input(*args)
+        finally:
+            api.qa_input_phase = getattr(provider, "qa_input_phase", "preconditions")
+    api.qa_retry_input = submit
+    original_receipt = recovery.repair_error_receipt
+    monkeypatch.setattr(recovery, "repair_error_receipt", lambda error, stage:
+                        {**ERROR, "stage": stage} if isinstance(error, Transient503) else original_receipt(error, stage))
+    yield consumer, api, ledger, bridge, script, provider, clock, tick, posts
+    generator.close()
+
+
+@pytest.mark.parametrize("reply", ["accepted", "503_then_accepted", "accepted_lost_reply", "unknown"])
+def test_normal_daily_qa_503_retries_automatically_inside_original_deadline(ordinary, reply):
+    consumer, api, ledger, _bridge, _script, provider, _clock, tick, posts = ordinary
+    original = ledger.get(DAY)
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    initial = ledger.get(DAY)
+    assert not initial.get("qa_retry_continuation") and not initial.get("qa_continuation")
+    binding = deepcopy(initial["qa"]["submission_binding"])
+    def post(sid, *, events, idempotency_key):
+        posts.append((sid, deepcopy(events[0]), idempotency_key))
+        if reply == "503_then_accepted" and len(posts) == 2:
+            raise Transient503()
+        if reply == "unknown":
+            raise TimeoutError()
+        api.qa_exists = True
+        row = ledger.get(DAY)
+        api.qa_result = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"],
+            "crm_digest": row["qa"]["crm_digest"], "source_support_verified": True,
+            "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
+            "summary": "Synthetic daily verified evidence https://plant.example/tasks; interest unknown.",
+            "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": True,
+                        "duplicate": False, "reason": "Synthetic exact task"} for c in row["packet"]["candidates"]]}
+        if reply == "accepted_lost_reply":
+            raise TimeoutError()
+    provider.api.sessions.events.create = post
+    tick(4)
+    consumer.step()
+    assert len(posts) == 1
+    tick(2)
+    consumer.step()
+    tick(16)
+    consumer.step()
+    if reply != "unknown":
+        assert ledger.get(DAY)["qa"]["state"] == "validated"
+        for _ in range(3):
+            if ledger.get(DAY)["state"] == "completed":
+                break
+            consumer.step()
+        assert ledger.get(DAY)["state"] == "completed"
+    else:
+        for _ in range(3):
+            tick(10)
+            consumer.step()
+        assert ledger.get(DAY)["state"] == "awaiting_review"
+    assert len(posts) == (3 if reply == "503_then_accepted" else 2)
+    assert all(value == posts[0] for value in posts)
+    final = ledger.get(DAY)
+    assert not final.get("qa_retry_continuation") and not final.get("qa_continuation")
+    assert final["qa"]["submission_binding"] == binding
+    assert final["qa"]["deadline_ms"] == initial["qa"]["deadline_ms"]
+    assert final["started_at"] == original["started_at"] and len(api.payloads) == 1
+    assert not api.cancellations
+
+
+@pytest.mark.parametrize("change", ["deadline", "authority", "disable", "accepted_message", "immutable_binding"])
+def test_ordinary_retry_cannot_extend_time_or_expand_authority(ordinary, change):
+    consumer, api, ledger, bridge, _script, provider, _clock, tick, posts = ordinary
+    consumer.step()
+    row = ledger.get(DAY)
+    if change == "deadline":
+        tick(151)
+    else:
+        tick(6)
+        if change in {"authority", "disable"}:
+            with ledger.lock():
+                control = bridge.call("control")
+                if change == "disable":
+                    control["enabled"] = False
+                else:
+                    control["workflow"]["qa_authority_reference"] = "different-authority"
+                bridge.call("configure", value=control)
+        elif change == "accepted_message":
+            listing = api.listing
+            api.listing = provider.listing = lambda resource, sid=None: listing(resource, sid) + ([{"id": "accepted_input"}] if resource == "items" else [])
+        else:
+            with ledger.lock():
+                row["qa"]["submission_binding"]["deadline_ms"] += 600000
+                with pytest.raises(Refusal, match="qa_submission_already_bound"):
+                    ledger.put(row)
+            assert ledger.get(DAY)["qa"]["submission_binding"]["deadline_ms"] == row["qa"]["deadline_ms"]
+            return
+    consumer.step()
+    assert len(posts) == 1
+    assert ledger.get(DAY)["qa"]["deadline_ms"] == row["qa"]["deadline_ms"]
+    assert not ledger.get(DAY).get("qa_retry_continuation")
+
+
+def test_long_retry_after_keeps_accepted_daily_work_observed_and_cancelled_on_restart(ordinary):
+    consumer, api, ledger, bridge, script, provider, clock, tick, posts = ordinary
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    with ledger.lock():
+        row = ledger.get(DAY)
+        row["qa"]["input_error_receipt"]["retry_after_seconds"] = 86400
+        ledger.put(row)
+    api.qa_exists, api.qa_status = True, "in_progress"
+    tick(6)
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    assert bridge.call("active_qa") == DAY
+    assert ledger.get(DAY)["qa"]["turn_id"] == "turn_qa" and len(posts) == 1
+    bridge.close()
+    restarted = Bridge(script=script)
+    try:
+        durable = FirestoreLedger(restarted)
+        api.ledger = provider.ledger = durable
+        clock["now"] = NOW + timedelta(seconds=181)
+        restarted.call("test_clock", now=int(clock["now"].timestamp()*1000))
+        observer = Consumer(durable, consumer.config, api, clock=lambda: clock["now"])
+        assert observer.step()["state"] == "qa_cancel_pending"
+        assert len(api.cancellations) == 1 and len(posts) == len(api.payloads) == 1
+        assert durable.get(DAY)["qa"]["deadline_ms"] == row["qa"]["deadline_ms"]
+    finally:
+        restarted.close()

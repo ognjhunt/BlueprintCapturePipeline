@@ -609,7 +609,7 @@ def run(bridge, cache, *, execute=False, api_factory=CanaryProvider, recovery_on
                 return {**summary(row), **({"observer_error": reason} if reason else {})}
             total_exhausted = (clock() >= qa_deadline(row, cfg)) if recovery_only else (
                 (clock() - instant(row["started_at"])).total_seconds() >= row["total_runtime_seconds"])
-            if total_exhausted:
+            if total_exhausted and not reason:
                 reason = "canary_total_observation_deadline"
             if row["state"] in {"running", "collecting", "cancel_pending", "creating"}:
                 if reason:

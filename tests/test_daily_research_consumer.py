@@ -86,8 +86,8 @@ def consumer_setup(tmp_path, *, failed=False):
         "const pages=[]; const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]}; const crm=await crmReader();crm.values.push(...body.values);await import('node:fs').then(fs=>fs.writeFileSync(" + json.dumps(str(crm)) + ",JSON.stringify(crm)));return {};};",
         "const notion=async(method,path,body)=>{if(method==='POST'){pages.push(body);return {id:'page-result'};}if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:pages.map(p=>({id:'page-result',type:'child_page',child_page:{title:p.properties.title.title[0].text.content}}))};if(path==='/pages/page-result')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};return {has_more:false,results:pages[0].children};};",
         "const publisher=new Publisher({crmReader,google,notion});",
-        "const channel=new LeaseChannel(new Store(db,()=>" + str(int(NOW.timestamp()*1000)) + ",undefined,crmReader,publisher));",
-        "for await (const line of createInterface({input:process.stdin})) {try {const value=await channel.call(JSON.parse(line));process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
+        "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher));",
+        "for await (const line of createInterface({input:process.stdin})) {try {const r=JSON.parse(line);if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}const value=await channel.call(r);process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
         "catch(error){process.stdout.write(JSON.stringify({ok:false,error:error.message})+'\\n');}} await channel.close();",
     ]))
     bridge = Bridge(script=script)
@@ -158,6 +158,28 @@ def test_adaptive_qa_uses_reserved_total_time_and_checks_quota_without_legacy_ac
     text = saved["qa"]["event"]["input"][0]["content"][0]["text"]
     assert "target of 10 new" in text and "Existing deployments" in text
     assert "At most" not in text and "shortfall" in text
+
+
+def test_long_qa_reasoning_is_retained_and_published_without_another_paid_turn(fixture, tmp_path):
+    consumer, api, ledger, bridge, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    summary = ("Evidence https://plant.example/tasks; unknown interest remains explicit. " * 120)[:7301]
+    reason = ("Exact employer/task source verified; buying intent remains unknown. " * 20)[:1103]
+    assert len(summary) == 7301 and len(reason) == 1103
+    api.qa_result["summary"] = summary
+    api.qa_result["checks"][0]["reason"] = reason
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["summary"] == row["delivery"]["notion"]["payload"]["summary"] == summary
+    assert json.loads(ledger.read_bytes(DAY + "-qa.json"))["checks"][0]["reason"] == reason
+    while row["state"] != "completed":
+        consumer.step()
+        row = ledger.get(DAY)
+    assert all(d["receipt"]["readback_verified"] for d in row["delivery"].values())
+    assert all(c["qualification_status"] == "unqualified" for c in row["delivery"]["sheets"]["payload"]["candidates"])
+    assert len(api.inputs) == len(api.payloads) == 1 and api.cancellations == []
+    assert render.export_snapshot(bridge, DAY, tmp_path / "export")["missing_files"] == []
 
 
 def test_run_entrypoint_automatically_finishes_qa_and_both_publication_receipts(fixture, monkeypatch, tmp_path):
@@ -247,6 +269,61 @@ def test_observation_failure_persists_one_cancel_and_never_claims_success(fixtur
     assert consumer.step()["state"] == "qa_cancel_pending"
     assert len(api.cancellations) == 1 and ledger.get(DAY)["qa"]["cancel_attempted"] is True
     assert ledger.get(DAY)["state"] == "awaiting_review"
+
+
+def test_deadline_cancel_preserves_history_and_collects_an_earlier_terminal_result(fixture):
+    consumer, api, ledger, _, _ = fixture
+    api.lost_reply, api.qa_status = True, "in_progress"
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    consumer.clock = lambda: NOW + timedelta(seconds=190)
+    assert consumer.step()["state"] == "qa_cancel_pending"
+    cancelled = deepcopy(ledger.get(DAY)["qa"])
+    assert cancelled["cancel_record"]["reason"] == "agent_qa_deadline"
+    assert cancelled["cancel_record"]["requested_at"] == consumer.clock().isoformat()
+    api.qa_status = "completed"
+    assert consumer.step()["state"] == "reviewed"
+    qa = ledger.get(DAY)["qa"]
+    for key in ("cancel_attempted", "cancel_record", "cancel_idempotency_key", "cancel_reply_received"):
+        assert qa[key] == cancelled[key]
+    assert qa["terminal_collection_receipt"]["cancel_record_digest"] == digest(cancelled["cancel_record"])
+    assert len(api.inputs) == len(api.cancellations) == 1
+
+
+@pytest.mark.parametrize("change", ["early", "stopped", "disabled", "unknown", "late_completion", "same_second",
+                                    "disabled_race", "stopped_race"])
+def test_terminal_collection_never_waives_early_unknown_or_nondeadline_cancellation(fixture, change):
+    consumer, api, ledger, _, _ = fixture
+    api.lost_reply, api.qa_status = True, "in_progress"
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    consumer.clock = lambda: NOW + timedelta(seconds=190 if change != "early" else 30)
+    with ledger.lock():
+        row = ledger.get(DAY)
+        if change == "disabled_race":
+            control = ledger.bridge.call("control")
+            control["enabled"] = False
+            ledger.bridge.call("configure", value=control)
+        if change == "stopped_race":
+            consumer.stopped = lambda: True
+        consumer.cancel(row, "agent_qa_" + change if change in {"stopped", "disabled"} else "agent_qa_deadline")
+        if change in {"disabled_race", "stopped_race"}:
+            assert row["qa"]["cancel_record"]["reason"] == "agent_qa_" + change.split("_")[0]
+        if change == "unknown":
+            row["qa"].pop("cancel_record")
+        if change == "same_second":
+            row["qa"]["cancel_record"]["requested_at"] = (NOW + timedelta(seconds=180.5)).isoformat()
+        ledger.put(row)
+    original_listing = api.listing
+    def listing(resource, session_id=None):
+        values = original_listing(resource, session_id)
+        if resource == "turns" and change in {"late_completion", "same_second"}:
+            for turn in values:
+                if turn["id"] == "turn_qa":
+                    turn["completed_at"] = int((NOW + timedelta(seconds=181 if change == "late_completion" else 180)).timestamp())
+        return values
+    api.listing, api.qa_status = listing, "completed"
+    assert consumer.step()["state"] == "qa_blocked"
+    assert ledger.get(DAY)["state"] == "awaiting_review"
+    assert len(api.inputs) == len(api.cancellations) == 1
 
 
 def test_fresh_crm_dedupe_and_source_attestation_required(fixture):

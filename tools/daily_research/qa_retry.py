@@ -53,6 +53,10 @@ def retry_deadline(row, original_deadline):
 
 def original_event(ledger, row):
     qa = row["qa"]
+    if not qa.get("input_file") and isinstance(qa.get("event"), dict):
+        if digest(qa["event"]) != qa["request_digest"]:
+            raise Refusal("qa_retry_immutable_input_changed")
+        return copy.deepcopy(qa["event"])
     if qa.get("input_file") != row["date"] + "-qa-input.json":
         raise Refusal("qa_retry_immutable_input_missing")
     raw = ledger.read_bytes(qa["input_file"])
@@ -79,21 +83,41 @@ def reconcile(api, ledger, row):
     saved = json.loads(ledger.read_bytes(row["date"] + "-evidence.json"))
     if digest(saved) != row.get("evidence_digest"):
         raise Refusal("qa_retry_original_evidence_changed")
-    # The current retained baseline has one completed root and no completed
-    # correction turn. Broader histories need their own exact evidence binding.
-    if baseline != {row["turn_id"]}:
+    binding = row["qa"].get("submission_binding")
+    if not binding and baseline != {row["turn_id"]}:
         raise Refusal("qa_retry_baseline_scope_unsupported")
     idle = (session.get("status") == "idle" and not session.get("required_actions")
             and not session.get("error"))
     unchanged = ({t["id"] for t in turns} == baseline
                  and all(t.get("status") == "completed" and not t.get("subagent_id") for t in turns)
-                 and digest(items) == digest(saved)
+                 and digest(items) == (binding["items_digest"] if binding else digest(saved))
+                 and digest([i for i in items if i.get("turn_id") == row["turn_id"]]) == digest(saved)
+                 and all(i.get("turn_id") in baseline for i in items)
+                 and (not binding or digest(artifacts) == binding["artifacts_digest"])
                  and not any(a.get("path") == QA_PATH or a.get("turn_id") not in baseline for a in artifacts))
     return {"clear": bool(idle and unchanged), "session_status": session.get("status"),
             "required_action_count": len(session.get("required_actions") or []),
             "turn_count": len(turns), "item_count": len(items), "artifact_count": len(artifacts),
             "turns_digest": digest(turns), "items_digest": digest(items), "artifacts_digest": digest(artifacts),
             "previous_cancel_outcome": "not_inferred"}
+
+
+def check_submission_binding(row, deadline_ms):
+    """Ordinary QA replays use the original workflow authority and deadline."""
+    qa, binding = row["qa"], row["qa"].get("submission_binding", {})
+    expected = {"schema_version": "blueprint.qa-submission.v1", "session_id": row["session_id"],
+                "root_turn_id": row["turn_id"], "packet_digest": row["packet_digest"],
+                "raw_output_sha256": row["raw_output_digest"], "request_digest": qa["request_digest"],
+                "idempotency_key": row["run_key"] + ":qa", "deadline_ms": qa["deadline_ms"],
+                "baseline_turn_ids": qa["baseline_turn_ids"]}
+    if (any(binding.get(key) != value for key, value in expected.items())
+            or binding.get("deadline_ms") != deadline_ms
+            or not isinstance(binding.get("authority_reference"), str) or not binding["authority_reference"].strip()
+            or binding["authority_reference"].startswith("PENDING")
+            or any(not isinstance(binding.get(key), str) or len(binding[key]) != 64
+                   for key in ("items_digest", "artifacts_digest"))):
+        raise Refusal("qa_retry_authority_or_binding_invalid")
+    return binding
 
 
 def authorize(row, reconciliation, now):
@@ -131,14 +155,19 @@ def submit(consumer, row, deadline):
     if (qa.get("state") != "qa_input_unresolved" or qa.get("turn_id") or len(attempts) >= 2
             or consumer.stopped() or consumer.clock() >= deadline):
         return
+    initial_error_at = (row.get("qa_retry_continuation", {}).get("started_at") or qa.get("input_error_at"))
     previous = attempts[-1] if attempts else {"error_receipt": qa.get("input_error_receipt"),
-            "finished_at": row["qa_retry_continuation"]["started_at"]}
+                                            "finished_at": initial_error_at}
     if not transient(previous.get("error_receipt")):
         return  # A crash/lost reply/change of error never consumes another slot.
+    if not initial_error_at or (not row.get("qa_retry_continuation") and not qa.get("submission_binding")):
+        return  # Legacy uncertain intents cannot be upgraded to replay authority.
+    if not row.get("qa_retry_continuation"):
+        check_submission_binding(row, int(deadline.timestamp() * 1000))
     delay = max(5 if not attempts else 15, previous["error_receipt"].get("retry_after_seconds") or 0)
     not_before = instant(previous["finished_at"]) + timedelta(seconds=delay)
     if not_before >= deadline:
-        qa.update(state="qa_blocked", error="qa_retry_after_exceeds_deadline")
+        qa["retry_suppressed_reason"] = "qa_retry_after_exceeds_deadline"
         consumer.ledger.put(row)
         return
     if consumer.clock() < not_before:

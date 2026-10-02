@@ -89,6 +89,14 @@ class API(SearchAPI):
 
 @pytest.fixture
 def fixture(tmp_path, monkeypatch):
+    class FixtureClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is not None else NOW.replace(tzinfo=None)
+
+    # The historic one-time admission keeps its real expiry in production;
+    # staging tests use their synthetic date even when CI runs after that day.
+    monkeypatch.setattr(canary, "datetime", FixtureClock)
     _knowledge, raw, policy, context = policy_bundle(now=NOW)
     original_raw = b'{"fixture":"synthetic original failed run","candidates":[]}\n'
     monkeypatch.setattr(canary.migration, "RAW", hashlib.sha256(original_raw).hexdigest())

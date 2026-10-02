@@ -983,7 +983,7 @@ class Runner:
             if len(selected) != len(set(decision["accepted_keys"])):
                 raise Refusal("review_candidate_key_invalid")
             summary = decision.get("summary")
-            if not isinstance(summary, str) or not 1 <= len(summary) <= 2000:
+            if not isinstance(summary, str) or not summary or len(summary.encode()) > LIMIT_BYTES:
                 raise Refusal("bounded_review_summary_required")
             row["review"], row["state"] = decision, "reviewed"
             # An agent owns QA/publication; observers need no receipt to unblock it.
