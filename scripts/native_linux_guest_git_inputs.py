@@ -1,0 +1,205 @@
+"""Credential-free committed Git object inputs for the private Plan11 guest.
+
+Dirty working files and Git configuration/hooks/credential metadata are never
+transported. This records an immutable input, not native execution acceptance.
+"""
+from __future__ import annotations
+
+import hashlib
+import math
+import os
+from pathlib import Path
+import re
+import selectors
+import subprocess
+import time
+
+from scripts.native_linux_guest_execution import GuestExecutionError, _bounded_command
+
+MAX_PACK_BYTES = 2 * 1024**3
+MAX_TREE_BYTES = 2 * 1024**3
+MAX_TREE_FILES = 100000
+MAX_METADATA_BYTES = 16 * 1024**2
+
+
+class GitInputError(ValueError):
+    """Exact input selection or transport could not be established."""
+
+
+def _require(value, code):
+    if not value:
+        raise GitInputError('native_guest_git_' + code)
+
+
+def _remaining(deadline):
+    _require(type(deadline) in {int, float} and math.isfinite(deadline), 'deadline')
+    remaining = deadline - time.monotonic()
+    _require(remaining > 0, 'deadline')
+    return remaining
+
+
+def _environment():
+    return {'PATH': '/usr/bin:/bin', 'LC_ALL': 'C', 'GIT_CONFIG_NOSYSTEM': '1',
+            'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_NO_LAZY_FETCH': '1',
+            'GIT_ALLOW_PROTOCOL': '', 'GIT_TERMINAL_PROMPT': '0', 'GIT_NO_REPLACE_OBJECTS': '1'}
+
+
+def _command(root, arguments):
+    return ['git', '--no-optional-locks', '-c', 'core.hooksPath=/dev/null',
+            '-c', 'core.fsmonitor=false', '-C', str(root), *arguments]
+
+
+def _git(root, arguments, deadline, *, stdin=None):
+    try:
+        _remaining(deadline)
+        result = _bounded_command(_command(root, arguments), stdin=stdin,
+                                  deadline=deadline, max_output_bytes=MAX_METADATA_BYTES,
+                                  env=_environment())
+        _require(result.returncode == 0 and len(result.stdout) <= MAX_METADATA_BYTES
+                 and len(result.stderr) <= 65536, 'command_failed')
+        return result.stdout
+    except (OSError, subprocess.TimeoutExpired, GuestExecutionError):
+        raise GitInputError('native_guest_git_command_failed') from None
+
+
+def _oid(value):
+    _require(type(value) is str and re.fullmatch('[0-9a-f]{40}', value), 'identity')
+    return value
+
+
+def _path(path):
+    path = Path(path)
+    _require(path.is_absolute() and not any(p.is_symlink() for p in (path, *path.parents)), 'path')
+    return path
+
+
+def _pack_hash(path, deadline):
+    digest, size = hashlib.sha256(), 0
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        before = os.fstat(fd)
+        _require(before.st_nlink == 1 and 0 < before.st_size <= MAX_PACK_BYTES, 'pack')
+        while True:
+            _remaining(deadline)
+            raw = os.read(fd, 1024**2)
+            if not raw:
+                break
+            size += len(raw)
+            _require(size <= MAX_PACK_BYTES, 'pack')
+            digest.update(raw)
+        def identity(info):
+            return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                    info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        _require(identity(os.fstat(fd)) == identity(before)
+                 and identity(path.lstat()) == identity(before) and size == before.st_size, 'pack')
+        return size, digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def _tree_footprint(root, commit, deadline):
+    rows = _git(root, ['ls-tree', '-rlz', commit], deadline).split(b'\0')
+    count = size = 0
+    for row in rows:
+        if not row:
+            continue
+        fields, separator, name = row.partition(b'\t')
+        fields = fields.split()
+        _require(separator and len(fields) == 4 and fields[1] == b'blob'
+                 and fields[3].isdigit() and name and not name.startswith(b'/')
+                 and not any(p in {b'..', b'.git'} for p in name.split(b'/')), 'tree')
+        size += int(fields[3])
+        count += 1
+        _require(size <= MAX_TREE_BYTES and count <= MAX_TREE_FILES, 'tree')
+    _require(count > 0, 'tree')
+    return size, count
+
+
+def write_git_input(checkout, expected_commit, output, *, deadline_monotonic):
+    checkout, output = _path(checkout), _path(output)
+    commit = _oid(expected_commit)
+    _require(_git(checkout, ['rev-parse', 'HEAD'], deadline_monotonic).decode().strip() == commit,
+             'selection')
+    tree = _oid(_git(checkout, ['rev-parse', commit + '^{tree}'], deadline_monotonic).decode().strip())
+    shallow = []
+    if _git(checkout, ['rev-parse', '--is-shallow-repository'], deadline_monotonic).strip() == b'true':
+        name = _git(checkout, ['rev-parse', '--git-path', 'shallow'], deadline_monotonic).decode().strip()
+        path = Path(name)
+        path = path if path.is_absolute() else checkout / path
+        with _path(path).open('rb') as stream:
+            raw = stream.read(1024**2 + 1)
+        _require(0 < len(raw) <= 1024**2, 'shallow')
+        shallow = [_oid(row) for row in raw.decode('ascii').splitlines()]
+        _require(len(shallow) == len(set(shallow)), 'shallow')
+    size, count = _tree_footprint(checkout, commit, deadline_monotonic)
+    process = None
+    try:
+        with output.open('xb') as stream, selectors.DefaultSelector() as selector:
+            os.fchmod(stream.fileno(), 0o600)
+            process = subprocess.Popen(_command(checkout, ['pack-objects', '--stdout', '--revs']),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_environment(), close_fds=True)
+            process.stdin.write((commit + '\n').encode())
+            process.stdin.close()
+            selector.register(process.stdout, selectors.EVENT_READ, 'pack')
+            selector.register(process.stderr, selectors.EVENT_READ, 'errors')
+            transferred = errors = 0
+            while selector.get_map():
+                for key, _ in selector.select(timeout=min(1, _remaining(deadline_monotonic))):
+                    raw = os.read(key.fileobj.fileno(), 65536)
+                    if not raw:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if key.data == 'errors':
+                        errors += len(raw)
+                        _require(errors <= 65536, 'pack')
+                        continue
+                    transferred += len(raw)
+                    _require(transferred <= MAX_PACK_BYTES, 'pack')
+                    stream.write(raw)
+            process.wait(timeout=_remaining(deadline_monotonic))
+            _require(process.returncode == 0, 'pack')
+    except (OSError, subprocess.TimeoutExpired):
+        raise GitInputError('native_guest_git_pack') from None
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
+            if not process.stdin.closed:
+                process.stdin.close()
+    pack_size, digest = _pack_hash(output, deadline_monotonic)
+    _require(_git(checkout, ['rev-parse', 'HEAD'], deadline_monotonic).decode().strip() == commit, 'selection')
+    return dict(schema='native-guest-git-input.v1', commit=commit, tree=tree,
+                shallow=shallow, pack_size_bytes=pack_size, pack_sha256=digest,
+                working_tree_bytes=size, working_tree_files=count)
+
+
+def restore_git_input(pack, manifest, destination, *, deadline_monotonic):
+    """Reconstruct a fresh private view, never an existing checkout."""
+    pack, destination = _path(pack), _path(destination)
+    _require(type(manifest) is dict and manifest.get('schema') == 'native-guest-git-input.v1', 'manifest')
+    commit, tree = _oid(manifest.get('commit')), _oid(manifest.get('tree'))
+    shallow = manifest.get('shallow')
+    _require(type(shallow) is list and len(shallow) <= 25000
+             and len(set(_oid(row) for row in shallow)) == len(shallow), 'shallow')
+    size, digest = _pack_hash(pack, deadline_monotonic)
+    _require((size, digest) == (manifest.get('pack_size_bytes'), manifest.get('pack_sha256')), 'pack')
+    _require(not destination.exists(), 'destination_exists')
+    destination.mkdir(mode=0o755)
+    _git(destination, ['init', '-q'], deadline_monotonic)
+    with pack.open('rb') as stream:
+        _git(destination, ['index-pack', '--stdin'], deadline_monotonic, stdin=stream)
+    if shallow:
+        (destination / '.git/shallow').write_text('\n'.join(shallow) + '\n')
+    actual_tree = _git(destination, ['rev-parse', commit + '^{tree}'], deadline_monotonic).decode().strip()
+    _require(actual_tree == tree, 'tree')
+    _require(type(manifest.get('working_tree_bytes')) is int
+             and type(manifest.get('working_tree_files')) is int
+             and _tree_footprint(destination, commit, deadline_monotonic)
+             == (manifest['working_tree_bytes'], manifest['working_tree_files']), 'tree_footprint')
+    _git(destination, ['checkout', '--detach', commit], deadline_monotonic)
+    _require(_git(destination, ['rev-parse', 'HEAD'], deadline_monotonic).decode().strip() == commit, 'selection')
+    return dict(commit=commit, tree=tree, credentials_transferred=False,
+                guest_acceptance_proven=False)
