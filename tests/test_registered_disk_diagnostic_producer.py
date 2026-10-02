@@ -35,6 +35,46 @@ def current(public):
     return json.loads((public / head["record_name"]).read_bytes())["enrollments"][0]
 
 
+def test_diagnostic_request_binds_exact_compatible_transport_source(installation):  # noqa: F811
+    import hashlib
+    from blueprint_pipeline import control_plane_lane_disk_diagnostic as diagnostic
+    prepare(installation)
+    request = diagnostic.build_request(installed_config_path=installation[0], run_ref="run1")
+    raw = (Path(diagnostic.__file__).parent / "s3_compatible_transport.py").read_bytes()
+    assert request["installed_sources"]["s3_compatible_transport"] == (
+        "sha256:" + hashlib.sha256(raw).hexdigest())
+
+
+def test_changed_compatible_transport_after_producer_close_cannot_mint_completion(
+        installation, monkeypatch, tmp_path):  # noqa: F811
+    from blueprint_pipeline import control_plane_lane_disk_diagnostic as diagnostic
+    from blueprint_pipeline.control_plane_lane_experiment_publication import _BirthFiles
+    # Mirror only the bounded source closure; preserve every real checkout byte.
+    source = Path(diagnostic.__file__).parent
+    mirror = tmp_path / "source-mirror"
+    mirror.mkdir()
+    for name in diagnostic.SOURCE_MODULES | {"s3_compatible_transport"}:
+        (mirror / (name + ".py")).write_bytes((source / (name + ".py")).read_bytes())
+    monkeypatch.setattr(diagnostic, "__file__", str(mirror / Path(diagnostic.__file__).name))
+    public, request, grant, born = enrolled(installation, monkeypatch)
+    actual_finish = _BirthFiles.finish
+    closed = []
+    def changed_after_close(files):
+        actual_finish(files)
+        closed.append(files)
+        if len(closed) == 1:
+            transport = mirror / "s3_compatible_transport.py"
+            transport.write_bytes(transport.read_bytes() + b"\n# compatible-byte source drift\n")
+    monkeypatch.setattr(_BirthFiles, "finish", changed_after_close)
+    with pytest.raises(ValueError):
+        diagnostic.run_registered_disk_diagnostic(grant["intent_id"], expected_intent=grant["intent"],
+            request_path=request, installed_config_path=installation[0], now=lambda: 1200)
+    assert current(public)["completion"] is None
+    assert not (installation[2] / (grant["intent_id"] + ".producer-completion.json")).exists()
+    assert (Path(born["path"]) / diagnostic.REPORT_NAME).exists()
+    assert closed and all(not files.owned and not files.unresolved for files in closed)
+
+
 @pytest.mark.parametrize("profile", ["root_disk_diagnostic_disposable.v1", "root_disk_diagnostic_evidence.v1"])
 def test_fixed_producer_observes_real_root_fds_then_closes_before_completion(installation, monkeypatch, profile):  # noqa: F811
     from blueprint_pipeline import control_plane_lane_disk_diagnostic as diagnostic
