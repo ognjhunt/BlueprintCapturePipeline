@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import read_private_credential, require_compatible_endpoint, s3_compatible_client
+
 import argparse
 import base64
 import hashlib
@@ -350,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--bundle-manifest", type=Path, required=True)
     parser.add_argument("--archive-uri", required=True)
+    parser.add_argument("--endpoint-url", required=True)
+    parser.add_argument("--access-key-file", type=Path, required=True)
+    parser.add_argument("--secret-key-file", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--envelope-output", type=Path)
     parser.add_argument(
@@ -363,8 +368,15 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, json.JSONDecodeError, ImportError) as exc:
         print(f"[release-evidence-archive] ERROR unavailable_input_or_runtime:{exc}", file=sys.stderr)
         return 1
+    try:
+        client = s3_compatible_client(boto3, endpoint_url=require_compatible_endpoint(args.endpoint_url),
+                                    aws_access_key_id=read_private_credential(args.access_key_file),
+                                    aws_secret_access_key=read_private_credential(args.secret_key_file))
+    except (OSError, ValueError):
+        print("[release-evidence-archive] ERROR s3_compatible_archive_configuration_unavailable", file=sys.stderr)
+        return 1
     result = archive_bundle(
-        client=boto3.client("s3"),
+        client=client,
         bundle_path=args.bundle.resolve(),
         bundle_manifest=dict(manifest) if isinstance(manifest, Mapping) else {},
         archive_uri=args.archive_uri,

@@ -1,6 +1,8 @@
 """Bounded registered checkpoint transfer kept separate from the generic object store."""
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import hashlib
 from pathlib import Path
 
@@ -117,7 +119,7 @@ def _stage_registered_runtime_dependency(*, job_dir, dependency_path, expected_s
             if credentials["endpoint_url"][0]:
                 options["endpoint_url"] = credentials["endpoint_url"][0]
             use.check()
-            client = boto3.client("s3", **options)
+            client = s3_compatible_client(boto3, **options)
             use.check()
             bucket = credentials["bucket"][0]
             try:

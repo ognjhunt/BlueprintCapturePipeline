@@ -11940,11 +11940,10 @@ def test_provider_input_setup_prepares_capture_bundle_and_worker_manifest(
     assert "s3://blueprint-artifacts/jobs/job-provider-input-setup/worker_manifest.json" in (
         publish_text
     )
-    assert "--endpoint-url \"$BLUEPRINT_R2_ENDPOINT_URL\"" in publish_text
-    assert "missing AWS_ACCESS_KEY_ID" in publish_text
-    assert "missing BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL or R2_ENDPOINT_URL" in (
-        publish_text
-    )
+    assert "--endpoint-url \"$BLUEPRINT_S3_ENDPOINT\"" in publish_text
+    assert "missing explicit object-store access key" in publish_text
+    assert "missing explicit object-store secret key" in publish_text
+    assert "require_compatible_endpoint" in publish_text
     assert "RUNPOD_API_KEY" not in publish_text
 
 
@@ -13020,6 +13019,8 @@ def test_robot_eval_worker_uses_s3_manifest_and_r2_artifact_upload(
 
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=fake_client_factory))
     monkeypatch.setenv("R2_ENDPOINT_URL", "https://example-r2.invalid")
+    monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_ACCESS_KEY_ID", "fixture-access")
+    monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_SECRET_ACCESS_KEY", "fixture-secret")
 
     runtime = run_robot_eval_worker(
         manifest_uri="s3://blueprint-manifests/worker/job.json",

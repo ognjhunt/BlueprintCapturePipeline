@@ -329,7 +329,9 @@ def collect_reconstruction_vast_preflight(
     governed AWS adapter instead of pretending Vast can execute it.
     """
 
-    if provider_name not in {"vast", "aws"}:
+    if provider_name == "aws":
+        raise ValueError("aws_provider_integration_removed")
+    if provider_name != "vast":
         raise ValueError("reconstruction_gpu_preflight_provider_unsupported")
 
     capacity_request = {
@@ -461,6 +463,8 @@ def build_reconstruction_gpu_canary_admission(
     source = json.loads(json.dumps(dict(request)))
     provider_snapshot = json.loads(json.dumps(dict(preflight)))
     blockers: list[str] = []
+    if provider == "aws" or source.get("requested_execution_adapter_id") in WINDOWS_TRAINER_ADAPTER_IDS or execution_adapter_id in WINDOWS_TRAINER_ADAPTER_IDS:
+        blockers.append("aws_provider_integration_removed")
 
     supplied_digest = source.pop("request_digest", None)
     expected_request_digest = canonical_digest(source, digest_field="request_digest")

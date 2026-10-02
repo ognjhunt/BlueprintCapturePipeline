@@ -7,6 +7,8 @@ builder.  It never creates GPU compute and never records credential values.
 
 from __future__ import annotations
 
+from blueprint_pipeline.s3_compatible_transport import s3_compatible_client
+
 import argparse
 from functools import partial
 import hashlib
@@ -21,7 +23,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .common import ensure_dir, write_json
-from .groot_oscar_infrastructure_admission import (
+from .runpod_storage_regions import (
     RUNPOD_S3_VOLUME_DATA_CENTER_IDS,
 )
 from .groot_oscar_model_cache import MANIFEST_NAME, verify_model_cache
@@ -201,8 +203,7 @@ def _client(
         from botocore.config import Config
     except ImportError as exc:  # pragma: no cover - operational dependency
         raise RuntimeError("boto3_required_for_runpod_s3") from exc
-    client = boto3.client(
-        "s3",
+    client = s3_compatible_client(boto3,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name=data_center_id,

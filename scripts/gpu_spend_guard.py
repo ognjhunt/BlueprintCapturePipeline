@@ -66,7 +66,7 @@ VAST_API = "https://console.vast.ai/api/v0"
 DEFAULT_MAX_BOOT_SECONDS = 480
 DEFAULT_MAX_BOOTED_ORPHAN_SECONDS = 4 * 60 * 60
 DEFAULT_WARM_LEASE_SECONDS = 15 * 60
-PROVIDERS = ("runpod", "vast", "digitalocean", "gcp", "aws")
+PROVIDERS = ("runpod", "vast", "digitalocean", "gcp", "aws")  # AWS retained only for explicit historical/required scopes.
 MAX_BILLING_EXPORT_BYTES = 1024 * 1024
 # The official billing reconciler is intentionally sandboxed as the Blueprint
 # service account (see ``blueprint-provider-billing-reconciler.service``).  Its
@@ -1927,6 +1927,8 @@ def build_json_report(
         "provider_zero_verified": provider_zero_verified,
         "provider_zero": {
             "status": "verified" if provider_zero_verified else "unverified",
+            "scope": "required_active_provider_inventory",
+            "excluded_retired_provider_ids": [str(row.get("provider")) for row in inventory_results if row.get("status") == "unavailable" and row.get("required") is not True],
             "required_provider_ids": sorted(
                 str(result.get("provider") or "unknown")
                 for result in required_inventory_rows
@@ -1937,7 +1939,8 @@ def build_json_report(
             "claim_boundary": (
                 "Provider-zero is verified only when every required provider "
                 "inventory query succeeds with zero returned resources and the "
-                "global reported live inventory and burn are zero."
+                "global reported live inventory and burn are zero. Retired/excluded "
+                "providers remain unverified; this is not proof of their absence."
             ),
         },
         "max_boot_seconds": int(max_boot_seconds),
@@ -2129,11 +2132,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "vast": vast_key,
         "digitalocean": do_token,
         "gcp": "configured" if cloud_provider_configured("gcp") else None,
-        "aws": "configured" if cloud_provider_configured("aws") else None,
+        "aws": None,  # Retired; never discover credentials or query the account.
     }
     configured = {provider for provider, value in credentials.items() if value}
     required_providers = (
-        configured
+        configured | set(args.require_provider)
         if args.admission_lock_report
         else (set(args.require_provider) or configured)
     )
@@ -2167,13 +2170,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout=args.timeout,
         required="gcp" in required_providers,
     )
-    aws_instances, aws_inventory = _inventory_query(
-        provider="aws",
-        credential=credentials["aws"],
-        fetch=lambda _credential, *, timeout: fetch_cloud_vm_instances("aws", timeout=timeout),
-        timeout=args.timeout,
-        required="aws" in required_providers,
-    )
+    aws_instances = []
+    aws_inventory = {
+        "provider": "aws", "required": "aws" in required_providers,
+        "credential_present": False, "status": "unavailable", "row_count": None,
+        "api_confirmed": False, "reason": "aws_provider_integration_removed",
+        "blockers": ["aws_provider_integration_removed"] if "aws" in required_providers else [],
+    }
     inventory_results = [
         runpod_inventory,
         vast_inventory,

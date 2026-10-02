@@ -102,8 +102,8 @@ that result-store admission. No video/frame bytes were retrieved, no HMAC secret
 was read or configured, and no access change was attempted. The recorded object
 store readback is historical evidence, not a fresh byte verification here.
 
-Original task replay inputs in setup reference a `/Users/nijelhunt_1/workspace/`
-native packet/scene plan/runtime source; no complete episode import or real
+Original task replay inputs in setup reference an operator-local native packet,
+scene plan and runtime source; no complete episode import or real
 current-grader replay has occurred. No confirmed independent outcome review or
 exact provider-disclosure attestation was found in the inspected metadata.
 Successful, independently ambiguous, subtle-failure, occlusion and undo category

@@ -3493,21 +3493,19 @@ def get_render_provider(name: str | None, *, warm_candidates: Sequence[str] = ()
         from .cloud_vm_render_providers import GCPRenderProvider
         return GCPRenderProvider()
     if key == "aws":
-        from .cloud_vm_render_providers import AWSRenderProvider
-        return AWSRenderProvider()
+        raise ValueError("aws_provider_integration_removed")
     raise ValueError(
         f"unknown_render_provider:{name!r} "
-        "(known: runpod, vast, digitalocean, gcp, aws)"
+        "(known: runpod, vast, digitalocean, gcp)"
     )
 
 
 def list_render_providers() -> list[dict]:
     """Report each provider and whether its credentials are present in this env."""
-    from .cloud_vm_render_providers import AWSRenderProvider, GCPRenderProvider
+    from .cloud_vm_render_providers import GCPRenderProvider
     return [
         RunPodRenderProvider().available(),
         VastRenderProvider().available(),
         DigitalOceanRenderProvider().available(),
         GCPRenderProvider().available(),
-        AWSRenderProvider().available(),
     ]

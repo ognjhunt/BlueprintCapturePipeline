@@ -357,3 +357,18 @@ def test_parent_preallocation_rejects_manifest_not_derived_from_embedded_lock(
     result = verify_packet_tarball(packet)
     assert result["status"] == "blocked"
     assert "digitalocean_model_cache_dependency_wheels_not_locked" in result["blockers"]
+
+
+def test_closed_packet_modules_import_in_isolated_interpreter(tmp_path):
+    from blueprint_pipeline import groot_oscar_model_cache_s3_remote_packet as packet
+    package = tmp_path / "blueprint_pipeline"
+    package.mkdir()
+    source = Path(packet.__file__).parent
+    for module in packet._CONTEXT_MODULES:
+        (package / module).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / module, package / module)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, {str(tmp_path)!r}); import blueprint_pipeline.groot_oscar_model_cache_s3_remote_executor"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr

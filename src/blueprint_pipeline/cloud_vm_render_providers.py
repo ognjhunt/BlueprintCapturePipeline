@@ -1,4 +1,4 @@
-"""First-class GCP Compute Engine and AWS EC2 GPU render providers.
+"""GCP Compute Engine GPU render provider and retired AWS compatibility marker.
 
 Unlike marketplace providers, these adapters never invent account infrastructure.
 Every account/project, location, VM shape, image, network, identity, registry mode,
@@ -42,11 +42,8 @@ _GCP_COMPUTE_POLICY = safe_outbound_http.pinned_api_policy(GCP_COMPUTE_API)
 GCP_SERVICE_USAGE_API = "https://serviceusage.googleapis.com/v1beta1"
 _GCP_SERVICE_USAGE_POLICY = safe_outbound_http.pinned_api_policy(GCP_SERVICE_USAGE_API)
 GCP_CREDENTIALS_FILE_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
-AWS_CREDENTIALS_FILE_ENV = "AWS_SHARED_CREDENTIALS_FILE"
-AWS_USER_DATA_MAX_BYTES = 16 * 1024
 
 _NAME_RE = re.compile(r"^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$")
-_AWS_ID_RE = re.compile(r"^i-[0-9a-f]{8,32}$")
 
 
 class _AccessTokenCredentials:
@@ -85,7 +82,6 @@ def _worker_cloud_init(
     provider: str,
     registry_auth: str,
     registry_host: str | None,
-    aws_region: str | None = None,
 ) -> str:
     """Build a provider-neutral startup script for a pre-baked GPU host.
 
@@ -97,7 +93,7 @@ def _worker_cloud_init(
     digest and an identity marker written by the host-image build.  This keeps
     a 40+ GB transfer out of both the customer path and asynchronous cold boot.
     """
-    del provider, registry_auth, registry_host, aws_region
+    del provider, registry_auth, registry_host
     env_b64 = base64.b64encode(
         "\n".join(f"{key}={value}" for key, value in spec.env.items()).encode()
     ).decode()
@@ -769,304 +765,26 @@ class GCPRenderProvider(GpuRenderProvider):
         return {"status": "terminate_failed", "http": status}
 
 
-def _aws_required_config_keys(config: Mapping[str, Any]) -> tuple[str, ...]:
-    """Required AWS settings, minus privilege the workload cannot use.
+class AWSRenderProvider(GpuRenderProvider):
+    """Retained import compatibility; AWS account access has been removed.
 
-    A Linux worker pulls from a registry and may read AWS resources, so it needs
-    an instance profile.  The Windows trainer talks only to signed URLs and
-    makes no AWS API call, so attaching a role would hand a paid instance
-    standing credentials it never exercises.  Least privilege says omit it, and
-    an operator who wants one can still set the ARN.
+    No credential discovery, inventory, launch, or teardown is performed.
+    Historical resources remain unverified rather than being reported absent.
     """
 
-    base = ("account_id", "region", "instance_type", "ami_id", "subnet_id")
-    if str(config.get("worker_platform") or "") == WINDOWS_WORKER_PLATFORM:
-        return base
-    return (*base, "iam_instance_profile_arn")
-
-
-class AWSRenderProvider(GpuRenderProvider):
-    """EC2 GPU VM adapter using the standard boto3 credential chain."""
-
     name = "aws"
-    _G_QUOTA_CODE = "L-DB2E81BA"
-    _P_QUOTA_CODE = "L-417A185B"
 
-    def _config(self) -> dict[str, Any]:
-        return {
-            "region": _env("BLUEPRINT_AWS_REGION") or _env("AWS_REGION") or _env("AWS_DEFAULT_REGION"),
-            "account_id": _env("BLUEPRINT_AWS_ACCOUNT_ID"),
-            "instance_type": _env("BLUEPRINT_AWS_INSTANCE_TYPE"),
-            "ami_id": _env("BLUEPRINT_AWS_AMI_ID"),
-            "subnet_id": _env("BLUEPRINT_AWS_SUBNET_ID"),
-            "security_group_ids": _csv("BLUEPRINT_AWS_SECURITY_GROUP_IDS"),
-            "iam_instance_profile_arn": _env("BLUEPRINT_AWS_IAM_INSTANCE_PROFILE_ARN"),
-            "key_name": _env("BLUEPRINT_AWS_KEY_NAME"),
-            "boot_disk_gb": _positive_int(_env("BLUEPRINT_AWS_BOOT_DISK_GB")) or 200,
-            "max_hourly_rate_usd": _positive_float(_env("BLUEPRINT_AWS_MAX_HOURLY_RATE_USD")),
-            "configured_hourly_rate_usd": _positive_float(_env("BLUEPRINT_AWS_HOURLY_RATE_USD")),
-            "registry_auth": _env("BLUEPRINT_AWS_REGISTRY_AUTH") or "public",
-            "registry_host": _env("BLUEPRINT_AWS_REGISTRY_HOST"),
-            "worker_platform": (_env("BLUEPRINT_AWS_WORKER_PLATFORM") or "linux").lower(),
-        }
+    def available(self) -> dict[str, Any]:
+        return {"provider": self.name, "available": False,
+                "reason": "aws_provider_integration_removed",
+                "blockers": ["aws_provider_integration_removed"]}
 
-    def _session(self) -> Any:
-        import boto3
+    def billable_inventory(self, **kwargs: Any) -> dict[str, Any]:
+        return {"provider": self.name, "status": "unavailable",
+                "live_resource_count": None, "api_confirmed": False,
+                "blockers": ["aws_provider_integration_removed"]}
 
-        return boto3.Session(profile_name=_env("AWS_PROFILE") or None, region_name=self._config()["region"] or None)
+    def _refuse(self, *args: Any, **kwargs: Any) -> Any:
+        raise ValueError("aws_provider_integration_removed")
 
-    def _ec2(self) -> Any:
-        return self._session().client("ec2")
-
-    def _service_quotas(self) -> Any:
-        return self._session().client("service-quotas")
-
-    def _iam(self) -> Any:
-        return self._session().client("iam")
-
-    def _sts(self) -> Any:
-        return self._session().client("sts")
-
-    def available(self) -> dict:
-        config = self._config()
-        missing = _required_config(config, _aws_required_config_keys(config), "aws")
-        if not config["security_group_ids"]:
-            missing.append("aws_security_group_ids_missing")
-        credential_error = None
-        try:
-            credentials = self._session().get_credentials()
-            if credentials is None:
-                missing.append("aws_credentials_missing")
-        except Exception as exc:  # noqa: BLE001
-            credential_error = type(exc).__name__
-            missing.append("aws_credentials_missing")
-        return {"provider": self.name, "available": not missing, "reason": missing[0] if missing else None, "blockers": missing, "region": config["region"] or None, "credential_chain": "boto3_standard", "credential_error_type": credential_error, "raw_secret_values_recorded": False}
-
-    def build_request(self, spec: RenderLaunchSpec, job_dir: Path) -> dict:
-        config = self._config()
-        blockers = _required_config(config, _aws_required_config_keys(config), "aws")
-        if not config["security_group_ids"]:
-            blockers.append("aws_security_group_ids_missing")
-        windows_worker = config["worker_platform"] == WINDOWS_WORKER_PLATFORM
-        if config["worker_platform"] not in {"linux", WINDOWS_WORKER_PLATFORM}:
-            blockers.append("aws_worker_platform_invalid")
-        if windows_worker:
-            # There is no container runtime on the Windows trainer host, so a
-            # registry mode would be a claim this lane cannot honour.
-            if config["registry_auth"] != "public":
-                blockers.append("aws_windows_worker_registry_auth_unsupported")
-        elif config["registry_auth"] not in {"public", "aws_ecr"}:
-            blockers.append("aws_registry_auth_invalid")
-        elif config["registry_auth"] == "aws_ecr" and not config["registry_host"]:
-            blockers.append("aws_registry_host_missing")
-        if config["configured_hourly_rate_usd"] is None:
-            blockers.append("aws_hourly_rate_unconfigured")
-        if config["max_hourly_rate_usd"] is None:
-            blockers.append("aws_max_hourly_rate_unconfigured")
-        elif config["configured_hourly_rate_usd"] is not None and config["configured_hourly_rate_usd"] > config["max_hourly_rate_usd"]:
-            blockers.append("aws_hourly_rate_exceeds_cap")
-        name = spec.name[:255]
-        user_data = (
-            _windows_worker_bootstrap(spec)
-            if windows_worker
-            else _worker_cloud_init(spec, provider="aws", registry_auth=config["registry_auth"], registry_host=config["registry_host"], aws_region=config["region"])
-        )
-        if len(user_data.encode("utf-8")) > AWS_USER_DATA_MAX_BYTES:
-            blockers.append("aws_user_data_exceeds_provider_limit")
-        body: dict[str, Any] = {
-            "ImageId": config["ami_id"],
-            "InstanceType": config["instance_type"],
-            "MinCount": 1,
-            "MaxCount": 1,
-            "SubnetId": config["subnet_id"],
-            "SecurityGroupIds": config["security_group_ids"],
-            "UserData": user_data,
-            # Windows AMIs expose the root volume as /dev/sda1 too, but the
-            # device name must match the AMI's own block device mapping.
-            "BlockDeviceMappings": [{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": max(spec.container_disk_gb, int(config["boot_disk_gb"])), "VolumeType": "gp3", "DeleteOnTermination": True, "Encrypted": True}}],
-            "TagSpecifications": [{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": name}, {"Key": "blueprint-managed", "Value": "true"}, {"Key": "blueprint-name-prefix", "Value": name[:128]}]}],
-            "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled", "HttpPutResponseHopLimit": 1},
-            "InstanceInitiatedShutdownBehavior": "terminate",
-            "ClientToken": str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"aws://{config['account_id']}/{config['region']}/{name}",
-                )
-            ),
-        }
-        if config["iam_instance_profile_arn"]:
-            body["IamInstanceProfile"] = {"Arn": config["iam_instance_profile_arn"]}
-        if config["key_name"]:
-            body["KeyName"] = config["key_name"]
-        return {"provider": self.name, "account_id": config["account_id"], "region": config["region"], "instance_name": name, "run_instances": body, "configured_hourly_rate_usd": config["configured_hourly_rate_usd"], "max_hourly_rate_usd": config["max_hourly_rate_usd"], "registry_auth": config["registry_auth"], "worker_platform": config["worker_platform"], "configuration_blockers": blockers}
-
-    def capacity_preflight(self, request: Mapping[str, Any] | None = None) -> dict:
-        req = _mapping(request)
-        blockers = list(_string_list(req.get("configuration_blockers")))
-        body = _mapping(req.get("run_instances"))
-        instance_type = str(body.get("InstanceType") or self._config()["instance_type"])
-        if blockers:
-            return {"status": "blocked", "provider": self.name, "blockers": blockers, "api_confirmed": False}
-        checks: dict[str, Any] = {}
-        try:
-            ec2 = self._ec2()
-            caller_account = str(self._sts().get_caller_identity().get("Account") or "")
-            checks["account"] = caller_account == str(req.get("account_id") or "")
-            if not checks["account"]:
-                blockers.append("aws_account_id_mismatch")
-            types = ec2.describe_instance_types(InstanceTypes=[instance_type]).get("InstanceTypes", [])
-            offerings = ec2.describe_instance_type_offerings(LocationType="region", Filters=[{"Name": "instance-type", "Values": [instance_type]}]).get("InstanceTypeOfferings", [])
-            image = ec2.describe_images(ImageIds=[body["ImageId"]]).get("Images", [])
-            subnets = ec2.describe_subnets(SubnetIds=[body["SubnetId"]]).get("Subnets", [])
-            groups = ec2.describe_security_groups(GroupIds=list(body["SecurityGroupIds"])).get("SecurityGroups", [])
-            profile_arn = str(_mapping(body.get("IamInstanceProfile")).get("Arn") or "")
-            profile_verified = True
-            if profile_arn:
-                profile_name = profile_arn.rsplit("/", 1)[-1]
-                profile = self._iam().get_instance_profile(
-                    InstanceProfileName=profile_name
-                ).get("InstanceProfile", {})
-                profile_verified = bool(profile) and profile.get("Arn") == profile_arn
-            checks.update(
-                {
-                    "instance_type": bool(types),
-                    "regional_offering": bool(offerings),
-                    "ami": bool(image),
-                    "subnet": bool(subnets),
-                    "security_groups": len(groups) == len(body["SecurityGroupIds"]),
-                    # A Windows signed-URL worker deliberately has no instance
-                    # role.  Only verify a profile when the launch request
-                    # actually carries one.
-                    "iam_instance_profile": profile_verified,
-                }
-            )
-            for key, passed in list(checks.items()):
-                if key == "account":
-                    continue
-                if not passed:
-                    blockers.append(f"aws_{key}_preflight_failed")
-            family = instance_type.split(".", 1)[0].lower()
-            quota_code = self._G_QUOTA_CODE if family.startswith("g") else self._P_QUOTA_CODE if family.startswith("p") else None
-            quota_value: float | None = None
-            required_vcpus = 0
-            if quota_code is None:
-                blockers.append("aws_gpu_instance_family_quota_mapping_missing")
-                quota = None
-            else:
-                quota = self._service_quotas().get_service_quota(ServiceCode="ec2", QuotaCode=quota_code).get("Quota", {})
-                required_vcpus = int(_mapping(types[0].get("VCpuInfo")).get("DefaultVCpus") or 0) if types else 0
-                quota_value = _positive_float(quota.get("Value"))
-                if quota_value is None or required_vcpus <= 0 or quota_value < required_vcpus:
-                    blockers.append("aws_gpu_quota_unverified")
-            checks["quota"] = {
-                "quota_code": quota_code,
-                "value": quota.get("Value") if quota else None,
-                "required_vcpus": required_vcpus if quota_code else None,
-                "verified": bool(quota is not None and quota_value is not None and required_vcpus > 0 and quota_value >= required_vcpus),
-            }
-        except Exception as exc:  # noqa: BLE001
-            blockers.append("aws_capacity_preflight_api_failed")
-            checks["error_type"] = type(exc).__name__
-        instance_metadata = _mapping(types[0]) if types else {}
-        gpu_rows = _mapping(instance_metadata.get("GpuInfo")).get("Gpus")
-        gpu_rows = gpu_rows if isinstance(gpu_rows, list) else []
-        gpu_memory_mb = sum(
-            int(_mapping(_mapping(row).get("MemoryInfo")).get("SizeInMiB") or 0)
-            * int(_mapping(row).get("Count") or 0)
-            for row in gpu_rows
-        )
-        configured_rate = self._config()["configured_hourly_rate_usd"]
-        selected_offer = (
-            {
-                "gpu_name": ",".join(
-                    str(_mapping(row).get("Name") or "") for row in gpu_rows
-                ),
-                "gpu_ram_mb": gpu_memory_mb,
-                "on_demand_price_usd_per_hour": configured_rate,
-                "instance_type": instance_type,
-            }
-            if gpu_rows
-            else None
-        )
-        return {
-            "status": "available" if not blockers else "blocked",
-            "provider": self.name,
-            "region": req.get("region") or self._config()["region"],
-            "checks": checks,
-            "quota_verified": bool(_mapping(checks.get("quota")).get("verified")),
-            "selected_offer": selected_offer,
-            "capacity_reservation_proven": False,
-            "blockers": list(dict.fromkeys(blockers)),
-            "api_confirmed": not blockers,
-            "raw_provider_response_recorded": False,
-        }
-
-    def launch(self, job_dir: Path, request: dict, *, cold: bool = False, allow_cold_fallback: bool = True, paid_resource_admission_grant: PaidResourceAdmissionGrant | None = None) -> dict:
-        try:
-            require_paid_resource_admission_grant(paid_resource_admission_grant, resource_class="gpu_render")
-        except PaidResourceAdmissionBlocked as exc:
-            return {"status": "blocked", "blockers": ["legacy_gpu_render_provider_launch_disabled", *exc.blockers], "allocation_created": False}
-        blockers = [*_string_list(request.get("configuration_blockers")), *_render_prelaunch_guard_blockers(request, provider_name="aws")]
-        if blockers:
-            return {"status": "blocked", "blockers": list(dict.fromkeys(blockers)), "allocation_created": False}
-        preflight = self.capacity_preflight(request)
-        if preflight.get("status") != "available":
-            return {"status": "blocked", "blockers": preflight.get("blockers") or ["aws_preflight_failed"], "allocation_created": False, "preflight": preflight}
-        try:
-            response = self._ec2().run_instances(**_mapping(request.get("run_instances")))
-            instances = response.get("Instances", [])
-            instance_id = instances[0].get("InstanceId") if instances and isinstance(instances[0], Mapping) else None
-            if isinstance(instance_id, str) and _AWS_ID_RE.fullmatch(instance_id):
-                record = _record_started_id(Path(job_dir) / "started_aws_instance_id.txt", instance_id)
-                return {"status": "launched", "instance_id": instance_id, "mode": "aws_ec2", "started_id_record": record}
-            return {"status": "blocked", "blockers": ["aws_create_outcome_ambiguous"], "allocation_outcome_ambiguous": True}
-        except Exception as exc:  # noqa: BLE001
-            code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
-            definitive = code in {"InsufficientInstanceCapacity", "InstanceLimitExceeded", "VcpuLimitExceeded", "InvalidAMIID.NotFound", "InvalidParameterValue", "UnauthorizedOperation"}
-            return {"status": "blocked", "blockers": [f"aws_instance_create_{code or 'outcome_ambiguous'}"], "allocation_created": False if definitive else None, "allocation_outcome_ambiguous": not definitive, "error_type": type(exc).__name__}
-
-    def _describe(self, **kwargs: Any) -> list[dict[str, Any]]:
-        response = self._ec2().describe_instances(**kwargs)
-        return [dict(instance) for reservation in response.get("Reservations", []) if isinstance(reservation, Mapping) for instance in reservation.get("Instances", []) if isinstance(instance, Mapping)]
-
-    def inspect(self, instance_id: str) -> dict:
-        if not _AWS_ID_RE.fullmatch(str(instance_id)):
-            return {"status": "unavailable", "instance_id": instance_id, "reason": "aws_instance_id_invalid"}
-        try:
-            rows = self._describe(InstanceIds=[instance_id])
-            row = rows[0] if rows else {}
-            return {"status": "observed" if row else "unavailable", "instance_id": instance_id, "instance_status": _mapping(row.get("State")).get("Name"), "instance_type": row.get("InstanceType"), "raw_provider_response_recorded": False}
-        except Exception as exc:  # noqa: BLE001
-            return {"status": "unavailable", "instance_id": instance_id, "error_type": type(exc).__name__}
-
-    def billable_inventory(self, *, name_prefix: str) -> dict:
-        try:
-            rows = self._describe(Filters=[{"Name": "tag:blueprint-managed", "Values": ["true"]}, {"Name": "instance-state-name", "Values": ["pending", "running", "stopping", "stopped"]}])
-        except Exception as exc:  # noqa: BLE001
-            return {"status": "blocked", "provider": self.name, "name_prefix": name_prefix, "live_resource_count": None, "resources": [], "api_confirmed": False, "blockers": ["aws_billable_inventory_failed"], "error_type": type(exc).__name__}
-        resources = []
-        for row in rows:
-            tags = {str(tag.get("Key")): str(tag.get("Value")) for tag in row.get("Tags", []) if isinstance(tag, Mapping)}
-            name = tags.get("Name", "")
-            if name.startswith(name_prefix):
-                launch_time = row.get("LaunchTime")
-                isoformat = getattr(launch_time, "isoformat", None)
-                created_at = isoformat() if callable(isoformat) else launch_time
-                resources.append({"instance_id": row.get("InstanceId"), "name": name, "status": _mapping(row.get("State")).get("Name"), "instance_type": row.get("InstanceType"), "region": self._config()["region"], "created_at": created_at, "cost_per_hour": self._config()["configured_hourly_rate_usd"]})
-        return {"status": "observed", "provider": self.name, "name_prefix": name_prefix, "live_resource_count": len(resources), "resources": resources, "api_confirmed": True, "raw_provider_response_recorded": False}
-
-    def stop(self, instance_id: str) -> dict:
-        try:
-            self._ec2().stop_instances(InstanceIds=[instance_id])
-            return {"status": "stopped", "warning": "stopped EC2 EBS volumes continue billing; use terminate()"}
-        except Exception as exc:  # noqa: BLE001
-            return {"status": "stop_failed", "error_type": type(exc).__name__}
-
-    def terminate(self, instance_id: str) -> dict:
-        if not _AWS_ID_RE.fullmatch(str(instance_id)):
-            return {"status": "terminate_failed", "reason": "aws_instance_id_invalid"}
-        try:
-            self._ec2().terminate_instances(InstanceIds=[instance_id])
-            return {"status": "terminated", "provider_absence_verified": False, "verification_required": "billable_inventory"}
-        except Exception as exc:  # noqa: BLE001
-            return {"status": "terminate_failed", "error_type": type(exc).__name__}
+    build_request = capacity_preflight = launch = poll = stop = terminate = _refuse

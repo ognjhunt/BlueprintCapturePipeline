@@ -116,7 +116,7 @@ warm-pool capacity, latency, or teardown.
 
 ### Bounded RunPod active-worker qualification fallback
 
-When credentials or quota for an EBS-backed AWS AMI or equivalent provider
+When credentials or quota for an equivalent provider
 host image are unavailable, qualification may use one RunPod queue endpoint
 with one active FlashBoot worker. This is a provider-supported persistent
 worker route, not an ordinary cold Pod retry and not the customer scale-to-zero

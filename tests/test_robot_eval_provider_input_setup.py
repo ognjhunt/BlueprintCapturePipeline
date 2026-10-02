@@ -224,14 +224,20 @@ def test_upload_helpers_cover_supported_schemes_and_error_classification(
     monkeypatch.setitem(sys.modules, "boto3", FakeBoto3())
     monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL", "https://r2.example")
     monkeypatch.setenv("AWS_REGION", "auto")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fixture-access")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fixture-secret")
     r2_upload = setup._upload_file_to_s3_compatible(source, "r2://bucket/path/source.txt")
     assert r2_upload["storage_scheme"] == "r2"
     assert uploaded["s3_kwargs"] == {
         "endpoint_url": "https://r2.example",
         "region_name": "auto",
+        "aws_access_key_id": "fixture-access",
+        "aws_secret_access_key": "fixture-secret",
     }
     monkeypatch.delenv("BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
     access_file = tmp_path / "access-key-id"
     secret_file = tmp_path / "secret-access-key"
     endpoint_file = tmp_path / "spaces-endpoint"
@@ -327,6 +333,9 @@ def test_manifest_scripts_rewrite_and_annotation_helpers(
 def test_s3_validation_streams_full_bytes_with_bare_internal_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL", "https://nyc3.digitaloceanspaces.com")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fixture-access")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fixture-secret")
     source = tmp_path / "source.bin"
     payload = b"a" * (1024 * 1024 + 17)
     source.write_bytes(payload)
@@ -360,6 +369,9 @@ def test_s3_validation_streams_full_bytes_with_bare_internal_digest(
 def test_s3_content_addressed_publication_is_exclusive_and_fully_read_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL", "https://nyc3.digitaloceanspaces.com")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "fixture-access")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fixture-secret")
     source = tmp_path / "request.json"
     source.write_text('{"schema_version":"request.v1"}\n', encoding="utf-8")
     objects: dict[tuple[str, str], bytes] = {}
@@ -601,16 +613,12 @@ def test_content_addressed_publication_requires_full_digest_readback(
         'gcloud storage cp "/tmp/a" "gs://bucket/a"',
         'gcloud storage ls "gs://bucket/a" >/dev/null',
     ]
-    assert setup._storage_upload_commands(source="/tmp/a", destination_uri="s3://bucket/a") == [
-        'test -n "${AWS_ACCESS_KEY_ID:-}" || { echo "missing AWS_ACCESS_KEY_ID" >&2; exit 2; }',
-        'test -n "${AWS_SECRET_ACCESS_KEY:-}" || { echo "missing AWS_SECRET_ACCESS_KEY" >&2; exit 2; }',
-        'aws s3 cp "/tmp/a" "s3://bucket/a"',
-        'aws s3 ls "s3://bucket/a" >/dev/null',
-    ]
-    r2_commands = setup._storage_upload_commands(source="/tmp/a", destination_uri="r2://bucket/a")
-    assert 'BLUEPRINT_R2_ENDPOINT_URL="${BLUEPRINT_OBJECT_STORAGE_ENDPOINT_URL:-${R2_ENDPOINT_URL:-${AWS_ENDPOINT_URL:-}}}"' in r2_commands
-    assert 'aws s3 cp "/tmp/a" "s3://bucket/a" --endpoint-url "$BLUEPRINT_R2_ENDPOINT_URL"' in r2_commands
-    assert 'aws s3 ls "s3://bucket/a" --endpoint-url "$BLUEPRINT_R2_ENDPOINT_URL" >/dev/null' in r2_commands
+    for scheme in ("s3", "r2"):
+        commands = setup._storage_upload_commands(source="/tmp/a", destination_uri=f"{scheme}://bucket/a")
+        assert any("require_compatible_endpoint" in command for command in commands)
+        transfers = [command for command in commands if command.startswith("aws s3")]
+        assert len(transfers) == 2
+        assert all('--endpoint-url "$BLUEPRINT_S3_ENDPOINT"' in command for command in transfers)
     assert setup._storage_upload_commands(source="/tmp/a", destination_uri="file:///tmp/b") == [
         'cp "/tmp/a" "file:///tmp/b"'
     ]

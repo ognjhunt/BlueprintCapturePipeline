@@ -341,7 +341,7 @@ def test_reconstruction_canary_fails_closed_on_authority_provider_and_evidence_d
     assert admission["provider_mutations_performed"] == 0
 
 
-def test_postshot_canary_requires_exact_aws_windows_adapter() -> None:
+def test_postshot_canary_is_retired_even_with_previous_valid_admission_inputs() -> None:
     request = _request(
         operation="trainer_canary",
         requested_execution_adapter_id="canonical_postshot_aws_windows_v1",
@@ -357,11 +357,12 @@ def test_postshot_canary_requires_exact_aws_windows_adapter() -> None:
         retry_cap=0,
         execution_adapter_id="canonical_postshot_aws_windows_v1",
     )
-    assert admission["status"] == "execute_ready"
+    assert admission["status"] == "blocked"
+    assert "aws_provider_integration_removed" in admission["blockers"]
     assert admission["provider"] == "aws"
     assert admission["worker_platform"] == "windows"
     assert admission["execution_adapter_id"] == "canonical_postshot_aws_windows_v1"
-    assert bound["provider_mutation_authorized"] is True
+    assert bound["provider_mutation_authorized"] is False
 
     wrong_provider, _ = _build(
         request=request,
