@@ -172,6 +172,7 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
                  "request_kinds": sorted(_SCOPES),
                  "hold_target": "blueprint-agent-run-dispatcher.timer" if DISPATCHER_HOLD_ONLY else None},
         "deployed": _deployed(host),
+        "notifier_binding": _section(lambda: host.notifier_binding(), "notifier_binding_unavailable"),
         "active_release": _section(lambda: _active_release(config), "active_release_unavailable"),
         "deploys": {
             "active_units": _section(

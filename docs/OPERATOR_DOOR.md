@@ -101,6 +101,13 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `POST /requests` | per kind | `202 {"id": …}` |
 | `GET /requests` · `GET /requests/<id>` | read | queue, or one request with result, outcome, redacted log tail and live unit state |
 
+`status.notifier_binding` is a fixed-target view of the live control-plane
+postcheck binding. It reports safe unit/drop-in paths, an opaque command hash,
+known postcheck script paths and whether the release-selector key occurs.
+It never returns raw commands or `Environment`, and does not grant file access
+to `/etc/systemd`. This metadata alone does not prove the imported notifier:
+the naturally emitted alert audit owns its source identity and full payload.
+
 Read roots: `/var/lib/blueprint`, `/opt/blueprint`, `/workspace`,
 `/mnt/blueprint-work`, `/etc/blueprint` (names screened as above) and the
 door's own state. Paths resolve to their real location and must stay inside a

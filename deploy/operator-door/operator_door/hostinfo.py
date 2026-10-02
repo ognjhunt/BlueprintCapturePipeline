@@ -8,6 +8,7 @@ requested, and journal lines pass the secret guard.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -91,6 +92,46 @@ class HostInfo:
         self._fetch_json = fetch_json or _fetch_json
 
     # -- systemd ------------------------------------------------------------
+
+    def notifier_binding(self) -> dict[str, Any]:
+        """A fixed-target binding projection; never return raw commands or env."""
+        unit = "blueprint-pipeline-control-plane.service"
+        result = self.runner.run(
+            ["systemctl", "show", "--no-pager", "-p",
+             "FragmentPath,DropInPaths,ExecStartPost", "--", unit], timeout=5,
+        )
+        identity = {"schema": "blueprint.systemd_postcheck_binding.v1", "unit": unit,
+                    "claim_ceiling": "effective_command_metadata_only"}
+        if result.returncode != 0 or len(result.stdout) > 65536:
+            return {**identity, "status": "unavailable"}
+        values = dict(line.partition("=")[::2] for line in result.stdout.splitlines()
+                      if line.partition("=")[0] in {"FragmentPath", "DropInPaths", "ExecStartPost"})
+        command = values.get("ExecStartPost", "")
+        path_pattern = re.compile(
+            r"/(?:etc|run|usr/lib|lib)/systemd/system/"
+            r"blueprint-pipeline-control-plane\.service(?:\.d/[A-Za-z0-9_.:-]+\.conf)?"
+        )
+        fragment = values.get("FragmentPath", "")
+        drops = values.get("DropInPaths", "").split()
+        fragment_safe = bool(path_pattern.fullmatch(fragment)) and redact_lines(fragment) == fragment
+        recognized_drops = [path for path in drops if path_pattern.fullmatch(path)
+                            and redact_lines(path) == path]
+        script_pattern = re.compile(
+            r"/opt/blueprint/(?:BlueprintCapturePipeline|task-evaluation-control-plane"
+            r"(?:-releases/[a-f0-9]{40})?)/deploy/systemd/blueprint-control-plane-postchecks\.sh"
+        )
+        return {
+            **identity, "status": "observed" if command else "unknown",
+            "fragment_path": fragment if fragment_safe else None,
+            "drop_in_paths": recognized_drops,
+            "metadata_paths_complete": (not fragment or fragment_safe)
+                and len(drops) == len(recognized_drops),
+            "postcheck_command_sha256": "sha256:" + hashlib.sha256(command.encode()).hexdigest()
+                if command else None,
+            "postcheck_present": "blueprint-control-plane-postchecks.sh" in command,
+            "release_selector_present": "BLUEPRINT_LIVE_CONTROL_PLANE_REPO" in command,
+            "recognized_script_paths": sorted(set(script_pattern.findall(command))),
+        }
 
     def unit_properties(self, units: Sequence[str]) -> list[dict[str, str]]:
         names = [validate_unit(unit) for unit in units]
