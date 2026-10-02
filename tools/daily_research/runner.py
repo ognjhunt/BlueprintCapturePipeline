@@ -31,6 +31,7 @@ from tools.daily_research import (
     freshness,
     knowledge,
     recovery,
+    repair,
     search,
 )
 
@@ -44,6 +45,7 @@ CENTRAL = ZoneInfo("America/Chicago")
 REMOTE_OUTPUT = "/workspace/outputs/daily-research.json"
 LIMIT_BYTES = 2_000_000
 TERMINAL = {"awaiting_review", "reviewed", "completed", "failed", "cancelled"}
+ACTIVE = {"running", "cancel_pending", "collecting", "repairing"}
 
 
 class Refusal(RuntimeError):
@@ -116,6 +118,13 @@ def phase_runtime_seconds(row, cfg, phase):
 
 def observation_seconds(row, cfg, phase, now=None):
     """Outer observation allowance; an admitted row keeps its absolute deadline."""
+    now = now or datetime.now(timezone.utc)
+    if phase == "repair" or (phase == "research" and row and row.get("state") == "repairing"):
+        deadline = row["repair"]["attempts"][-1]["deadline_ms"]
+        remaining = repair.ATTEMPT_SECONDS if deadline is None else deadline / 1000 - now.timestamp()
+        return max(30, remaining + repair.GRACE_SECONDS + 30)
+    if phase == "qa" and row and repair.qa_deadline(row):
+        return max(30, (repair.qa_deadline(row) - now).total_seconds() + 30)
     legacy = 300 if phase == "research" else 200
     if not row or row.get("discovery_profile") != "adaptive-sites-v1":
         return legacy
@@ -254,99 +263,217 @@ def load_knowledge_context(config, now):
     return load_knowledge_bundle(config, now)[0]
 
 
-def validate_output(output, run_date, known, *, contract_version=1, knowledge_context=None, observed_at=None, refresh_policy=None):
-    if not isinstance(output, dict):
-        raise Refusal("output_schema_invalid")
-    required_output = {"checked_date", "findings", "blockers", "proposed_next_actions", "candidates"}
+CANDIDATE_FIELDS = frozenset({"organization", "organization_url", "site", "location", "task", "potential_robot_match",
+                              "qualification_status", "confidence", "unknowns", "proposed_next_action", "evidence"})
+SUMMARY_FIELDS = ("findings", "blockers", "proposed_next_actions")
+REQUIRED_ROLES = frozenset({"task", "capability", "geography"})
+
+
+def evidence_fields(contract_version):
+    fields = {"claim", "url", "publisher", "source_date", "checked_date", "classification", "claim_kind", "role", "quote"}
     if contract_version in {2, 3}:
-        required_output |= {"schema_version", "snapshot_content_hash", "proposed_knowledge_deltas"}
-        if (output.get("schema_version") != f"blueprint.daily-research.v{contract_version}" or not knowledge_context
-                or output.get("snapshot_content_hash") != knowledge_context["content_hash"]):
-            raise Refusal("output_version_or_snapshot_binding_invalid")
+        fields |= contracts.EVIDENCE_V2
         if contract_version == 3:
-            required_output.add("refresh_policy_hash")
-            try:
+            fields.add("assertion_scope")
+    return fields
+
+
+def required_output_fields(output, contract_version):
+    fields = {"checked_date", "findings", "blockers", "proposed_next_actions", "candidates"}
+    if contract_version in {2, 3}:
+        fields |= {"schema_version", "snapshot_content_hash", "proposed_knowledge_deltas"}
+    if contract_version == 3:
+        fields.add("refresh_policy_hash")
+        if isinstance(output, dict) and "coverage" in output:
+            fields.add("coverage")
+    return fields
+
+
+def _probe(check, collect):
+    """One strict check: its stable code or None. Strict mode re-raises malformed values."""
+    try:
+        check()
+    except (Refusal, knowledge.SnapshotError) as exc:
+        return str(exc)
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        if not collect:
+            raise
+        return "output_schema_invalid"
+    return None
+
+
+def _issue(pointer, code, *, system=False):
+    return {"pointer": pointer, "code": code, **({"system": True} if system else {})}
+
+
+def output_issues(output, run_date, *, contract_version=1, knowledge_context=None, observed_at=None,
+                  refresh_policy=None, collect=False):
+    """Every strict output rule, in the exact fail-fast order, as located issues.
+
+    validate_output raises the first issue, so the acceptance gate and any repair
+    feedback cannot disagree about a rule. Strict mode lets malformed values raise
+    exactly as before; collect=True reports them and keeps checking siblings.
+    System issues describe Blueprint's own bindings, never the agent's output.
+    """
+    if not isinstance(output, dict):
+        yield _issue("", "output_schema_invalid")
+        return
+    v23 = contract_version in {2, 3}
+    if v23:
+        if not knowledge_context:
+            yield _issue("", "output_version_or_snapshot_binding_invalid", system=True)
+            return
+        if output.get("schema_version") != f"blueprint.daily-research.v{contract_version}":
+            yield _issue("/schema_version", "output_version_or_snapshot_binding_invalid")
+        if output.get("snapshot_content_hash") != knowledge_context["content_hash"]:
+            yield _issue("/snapshot_content_hash", "output_version_or_snapshot_binding_invalid")
+        if contract_version == 3:
+            def policy_context():
                 knowledge.require(isinstance(refresh_policy, dict), "refresh_policy_context_missing")
                 freshness.validate_context(knowledge_context, refresh_policy)
-                knowledge.require(output.get("refresh_policy_hash") == refresh_policy["policy_hash"], "output_refresh_policy_binding_invalid")
-            except knowledge.SnapshotError as exc:
-                raise Refusal(str(exc)) from None
-        try:
-            contracts.deltas(output.get("proposed_knowledge_deltas"), run_date, knowledge_context, observed_at, contract_version)
-        except knowledge.SnapshotError as exc:
-            raise Refusal(str(exc)) from None
+            code = _probe(policy_context, collect)
+            if code:
+                yield _issue("", code, system=True)
+            else:
+                code = _probe(lambda: knowledge.require(output.get("refresh_policy_hash") == refresh_policy["policy_hash"],
+                                                        "output_refresh_policy_binding_invalid"), collect)
+                if code:
+                    yield _issue("/refresh_policy_hash", code)
+        for pointer, code in contracts.delta_issues(output.get("proposed_knowledge_deltas"), run_date, knowledge_context,
+                                                    observed_at, contract_version, collect=collect):
+            yield _issue("/proposed_knowledge_deltas" + pointer, code)
     elif contract_version != 1:
-        raise Refusal("research_contract_version_unsupported")
+        yield _issue("", "research_contract_version_unsupported", system=True)
+        return
     if contract_version == 3 and "coverage" in output:
-        required_output.add("coverage")
         try:
             discovery.validate_coverage(output["coverage"], len(output.get("candidates", [])))
         except (ValueError, TypeError) as exc:
-            raise Refusal(str(exc) if isinstance(exc, ValueError) else "discovery_coverage_invalid") from None
-    if set(output) != required_output:
-        raise Refusal("output_schema_invalid")
+            yield _issue("/coverage", str(exc) if isinstance(exc, ValueError) else "discovery_coverage_invalid")
+    required = required_output_fields(output, contract_version)
+    if set(output) != required:
+        yield _issue("", "output_schema_invalid")
     limit = discovery.MAX_CANDIDATES if contract_version == 3 else 3
-    if output["checked_date"] != run_date or not isinstance(output["candidates"], list) or len(output["candidates"]) > limit:
-        raise Refusal("output_date_or_count_invalid")
-    for field in ("findings", "blockers", "proposed_next_actions"):
-        if (not isinstance(output[field], list)
-                or (contract_version in {2, 3} and len(output[field]) > 20)
-                or any(not isinstance(x, str) or len(x) > 2000 or (contract_version in {2, 3} and not x.strip()) for x in output[field])):
-            raise Refusal("output_summary_invalid")
-    accepted, duplicates = [], []
-    required = {"organization", "organization_url", "site", "location", "task",
-                "potential_robot_match", "qualification_status", "confidence", "unknowns",
-                "proposed_next_action", "evidence"}
-    for c in output["candidates"]:
-        if not isinstance(c, dict) or set(c) != required:
-            raise Refusal("candidate_schema_invalid")
-        for field in required - {"unknowns", "evidence"}:
-            if not isinstance(c[field], str) or not c[field].strip() or len(c[field]) > 2000:
-                raise Refusal("candidate_field_invalid")
-        if c["confidence"] not in {"low", "medium", "high"} or c["qualification_status"] not in {"unqualified", "needs_review"}:
-            raise Refusal("candidate_claim_ceiling_invalid")
-        if not isinstance(c["unknowns"], list) or not c["unknowns"] or any(not isinstance(x, str) for x in c["unknowns"]):
-            raise Refusal("candidate_unknowns_required")
-        if contract_version in {2, 3} and (len(c["unknowns"]) > 20 or any(not x.strip() or len(x) > 2000 for x in c["unknowns"])):
-            raise Refusal("candidate_unknowns_required")
-        if not isinstance(c["evidence"], list) or not 3 <= len(c["evidence"]) <= 12:
-            raise Refusal("candidate_evidence_required")
-        roles = set()
-        for e in c["evidence"]:
-            evidence_fields = {"claim", "url", "publisher", "source_date", "checked_date", "classification", "claim_kind", "role", "quote"}
-            if contract_version in {2, 3}:
-                evidence_fields |= contracts.EVIDENCE_V2
-                if contract_version == 3:
-                    evidence_fields.add("assertion_scope")
-            if not isinstance(e, dict) or set(e) != evidence_fields:
-                raise Refusal("evidence_schema_invalid")
-            public_url(e["url"])
-            text_fields = ("claim", "publisher") if contract_version in {2, 3} and e["origin"] == "snapshot" else ("claim", "publisher", "quote")
-            if ((contract_version == 1 and e["checked_date"] != run_date) or e["classification"] not in {"operator", "vendor", "independent"}
-                    or e["claim_kind"] not in {"fact", "vendor_claim", "hypothesis"}
-                    or e["role"] not in ({"task", "capability", "geography", "background"} if contract_version == 3 else {"task", "capability", "geography"})
-                    or any(not isinstance(e[x], str) or not e[x].strip() or len(e[x]) > 2000 for x in text_fields)):
+    if "checked_date" in output and output["checked_date"] != run_date:
+        yield _issue("/checked_date", "output_date_or_count_invalid")
+    candidates = output.get("candidates")
+    if "candidates" in output and (not isinstance(candidates, list) or len(candidates) > limit):
+        yield _issue("/candidates", "output_date_or_count_invalid")
+        candidates = None
+    for field in SUMMARY_FIELDS:
+        if field not in output:
+            continue
+        values = output[field]
+        if not isinstance(values, list) or (v23 and len(values) > 20):
+            yield _issue("/" + field, "output_summary_invalid")
+            continue
+        for index, value in enumerate(values):
+            if not isinstance(value, str) or len(value) > 2000 or (v23 and not value.strip()):
+                yield _issue(f"/{field}/{index}", "output_summary_invalid")
+    for index, candidate in enumerate(candidates or []):
+        for pointer, code in _candidate_issues(candidate, run_date, contract_version, knowledge_context,
+                                               observed_at, refresh_policy, collect):
+            yield _issue(f"/candidates/{index}{pointer}", code)
+
+
+def _candidate_issues(c, run_date, contract_version, knowledge_context, observed_at, refresh_policy, collect):
+    if not isinstance(c, dict) or set(c) != CANDIDATE_FIELDS:
+        yield "", "candidate_schema_invalid"
+        return
+    invalid = set()
+    for field in sorted(CANDIDATE_FIELDS - {"unknowns", "evidence"}):
+        if not isinstance(c[field], str) or not c[field].strip() or len(c[field]) > 2000:
+            invalid.add(field)
+            yield "/" + field, "candidate_field_invalid"
+    if "confidence" not in invalid and c["confidence"] not in {"low", "medium", "high"}:
+        yield "/confidence", "candidate_claim_ceiling_invalid"
+    if "qualification_status" not in invalid and c["qualification_status"] not in {"unqualified", "needs_review"}:
+        yield "/qualification_status", "candidate_claim_ceiling_invalid"
+    unknowns = c["unknowns"]
+    if not isinstance(unknowns, list) or not unknowns or any(not isinstance(x, str) for x in unknowns):
+        yield "/unknowns", "candidate_unknowns_required"
+    elif contract_version in {2, 3} and (len(unknowns) > 20 or any(not x.strip() or len(x) > 2000 for x in unknowns)):
+        yield "/unknowns", "candidate_unknowns_required"
+    evidence = c["evidence"]
+    if not isinstance(evidence, list) or not 3 <= len(evidence) <= 12:
+        yield "/evidence", "candidate_evidence_required"
+        if not isinstance(evidence, list):
+            return
+    # Cross-entry rules read every structurally valid entry, even one with an
+    # unrelated defect, so one bad field never cascades into a false second issue.
+    # Strict mode only reaches them when every entry already passed.
+    roles, operator_task_hosts = set(), []
+    allowed_roles = REQUIRED_ROLES | ({"background"} if contract_version == 3 else set())
+    for position, entry in enumerate(evidence):
+        yield from ((f"/evidence/{position}{pointer}", code) for pointer, code in _evidence_issues(
+            entry, run_date, contract_version, knowledge_context, observed_at, refresh_policy, collect))
+        if not isinstance(entry, dict) or set(entry) != evidence_fields(contract_version):
+            continue
+        if isinstance(entry["role"], str) and entry["role"] in allowed_roles:
+            roles.add(entry["role"])
+        if entry["role"] == "task" and entry["classification"] == "operator":
+            try:
+                operator_task_hosts.append(public_url(entry["url"]))
+            except Refusal:
+                pass  # Already reported at this entry's /url.
+    if not REQUIRED_ROLES <= roles if contract_version == 3 else roles != REQUIRED_ROLES:
+        yield "/evidence", "task_capability_geography_evidence_required"
+    if not operator_task_hosts:
+        yield "/evidence", "operator_task_source_domain_mismatch"
+        return
+    host = []
+    code = _probe(lambda: host.append(public_url(c["organization_url"])), collect)
+    if code:
+        yield "/organization_url", code
+    elif host[0] not in operator_task_hosts:
+        yield "/organization_url", "operator_task_source_domain_mismatch"
+
+
+def _evidence_issues(e, run_date, contract_version, knowledge_context, observed_at, refresh_policy, collect):
+    if not isinstance(e, dict) or set(e) != evidence_fields(contract_version):
+        yield "", "evidence_schema_invalid"
+        return
+    code = _probe(lambda: public_url(e["url"]), collect)
+    if code:
+        yield "/url", code
+    v23 = contract_version in {2, 3}
+    roles = REQUIRED_ROLES | ({"background"} if contract_version == 3 else set())
+    text_fields = ("claim", "publisher") if v23 and e["origin"] == "snapshot" else ("claim", "publisher", "quote")
+    checks = [("/checked_date", lambda: contract_version == 1 and e["checked_date"] != run_date),
+              ("/classification", lambda: e["classification"] not in contracts.CLASSIFICATIONS),
+              ("/claim_kind", lambda: e["claim_kind"] not in {"fact", "vendor_claim", "hypothesis"}),
+              ("/role", lambda: e["role"] not in roles)]
+    checks += [("/" + name, lambda name=name: not isinstance(e[name], str) or not e[name].strip() or len(e[name]) > 2000)
+               for name in text_fields]
+    for pointer, invalid in checks:
+        def check(invalid=invalid):
+            if invalid():
                 raise Refusal("evidence_field_invalid")
-            if e["classification"] == "vendor" and e["claim_kind"] == "fact":
-                raise Refusal("vendor_claim_presented_as_fact")
-            if e["source_date"] is not None:
-                try:
-                    published = knowledge.calendar_date(e["source_date"]) if contract_version in {2, 3} else date.fromisoformat(e["source_date"])
-                except knowledge.SnapshotError as exc:
-                    raise Refusal(str(exc)) from None
-                if published > date.fromisoformat(run_date):
-                    raise Refusal("source_date_in_future")
-            if contract_version in {2, 3}:
-                try:
-                    contracts.evidence(e, run_date, knowledge_context, observed_at, policy=refresh_policy if contract_version == 3 else None)
-                except knowledge.SnapshotError as exc:
-                    raise Refusal(str(exc)) from None
-            roles.add(e["role"])
-        if (not {"task", "capability", "geography"} <= roles if contract_version == 3 else roles != {"task", "capability", "geography"}):
-            raise Refusal("task_capability_geography_evidence_required")
-        if not any(e["role"] == "task" and e["classification"] == "operator"
-                   and public_url(e["url"]) == public_url(c["organization_url"]) for e in c["evidence"]):
-            raise Refusal("operator_task_source_domain_mismatch")
+        code = _probe(check, collect)
+        if code:
+            yield pointer, code
+    if e["classification"] == "vendor" and e["claim_kind"] == "fact":
+        yield "/claim_kind", "vendor_claim_presented_as_fact"
+
+    def source_date():
+        if e["source_date"] is not None:
+            published = knowledge.calendar_date(e["source_date"]) if v23 else date.fromisoformat(e["source_date"])
+            if published > date.fromisoformat(run_date):
+                raise Refusal("source_date_in_future")
+    code = _probe(source_date, collect)
+    if code:
+        yield "/source_date", code
+    if v23:
+        yield from contracts.evidence_issues(e, run_date, knowledge_context, observed_at,
+                                             policy=refresh_policy if contract_version == 3 else None, collect=collect)
+
+
+def validate_output(output, run_date, known, *, contract_version=1, knowledge_context=None, observed_at=None, refresh_policy=None):
+    for found in output_issues(output, run_date, contract_version=contract_version, knowledge_context=knowledge_context,
+                               observed_at=observed_at, refresh_policy=refresh_policy):
+        raise Refusal(found["code"])
+    accepted, duplicates = [], []
+    for c in output["candidates"]:
         identities = keys(c)
         if identities & known:
             duplicates.append({"organization": c["organization"], "site": c["site"], "reason": "matching_site_task"})
@@ -358,6 +485,8 @@ def validate_output(output, run_date, known, *, contract_version=1, knowledge_co
 
 class Provider:
     """Documented SDK, with automatic retries and redirects disabled."""
+    supports_output_repair = True
+
     def __init__(self, api_key):
         from openai import DefaultHttpxClient, OpenAI
         self.client = OpenAI(api_key=api_key, project=PROJECT, max_retries=0, timeout=20,
@@ -413,6 +542,12 @@ class Provider:
     def cancel(self, session_id, run_key):
         self.api.sessions.events.create(session_id, events=[{"type": "agent.session.input.cancel"}],
                                         idempotency_key=run_key + ":cancel")
+
+    def repair_input(self, session_id, event, key, day, request_digest, deadline_ms, attempt):
+        # The disk runner owns its process lock; fenced stores add a durable one-use claim.
+        if datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms:
+            raise Refusal("research_repair_window_expired")
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
     def artifact(self, session_id, artifact_id):
         data = bytearray()
@@ -633,6 +768,7 @@ class Runner:
     def __init__(self, ledger, config, api, clock=lambda: datetime.now(timezone.utc)):
         self.ledger, self.config, self.api, self.clock = ledger, configuration(config), api, clock
         self.stop_requested = lambda: False
+        self.repairer = repair.Repairer(self)
 
     def start_or_resume(self, *, allow_create=True):
         with self.ledger.lock():
@@ -723,14 +859,32 @@ class Runner:
         self.ledger.put(row)
 
     def cancel_current(self, day, reason):
-        """Cancel fresh durable state, never an observer's stale in-memory row."""
+        """Cancel fresh durable state, never an observer's stale in-memory row.
+
+        A repair attempt keeps its own absolute deadline; an observer stop or
+        restart leaves it durable for the next observer instead of discarding it.
+        """
         with self.ledger.lock():
             row = self.ledger.get(day)
-            if row and row["state"] not in TERMINAL:
+            if row and row["state"] not in TERMINAL and row["state"] != "repairing":
                 self.cancel(row, reason)
             return row
 
+    def check_session(self, row, session):
+        if session.get("metadata") != row["metadata"] or session.get("environment", {}).get("id") != row["environment_id"]:
+            raise Refusal("session_binding_mismatch")
+        if session["environment"].get("type") != "openai_hosted":
+            raise Refusal("session_environment_mismatch")
+        check_agent(session["agent"], row.get("search_provider"))
+        if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
+            raise Refusal("session_search_instructions_mismatch")
+
+    def reopen_repair(self, day, receipt):
+        return self.repairer.reopen(day, receipt)
+
     def observe(self, row):
+        if row["state"] == "repairing":
+            return self.repairer.observe(row)
         try:
             if row["state"] in {"creating", "creation_unresolved"}:
                 matches = [s for s in self.api.listing("sessions") if s.get("metadata") == row["metadata"]]
@@ -743,13 +897,7 @@ class Runner:
                 row["state"] = "running"
                 self.ledger.put(row)
             session = self.api.get("session", row["session_id"])
-            if session.get("metadata") != row["metadata"] or session.get("environment", {}).get("id") != row["environment_id"]:
-                raise Refusal("session_binding_mismatch")
-            if session["environment"].get("type") != "openai_hosted":
-                raise Refusal("session_environment_mismatch")
-            check_agent(session["agent"], row.get("search_provider"))
-            if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
-                raise Refusal("session_search_instructions_mismatch")
+            self.check_session(row, session)
             row["reported_container_size"] = session["environment"].get("container_size")
             row["usage"] = session.get("usage")
             turns = [t for t in self.api.listing("turns", row["session_id"]) if t.get("subagent_id") is None]
@@ -805,6 +953,8 @@ class Runner:
             else:
                 self.ledger.put(row)
         except Refusal as exc:
+            if row.get("state") == "repairing":
+                raise  # The durable repair attempt, not this observer, decides its outcome.
             if row.get("turn_status") in {"completed", "failed", "cancelled"}:
                 row["state"], row["error"] = "failed", str(exc)
                 self.ledger.put(row)
@@ -814,6 +964,8 @@ class Runner:
                 row["error"] = str(exc)
                 self.ledger.put(row)
         except Exception:  # noqa: BLE001 - provider/JSON failures are persisted without secret-bearing exception text
+            if row.get("state") == "repairing":
+                raise
             row["error"] = "provider_observation_unavailable"
             # A read failure must not prevent deadline cancellation.
             if row.get("session_id") and (self.clock() - instant(row["started_at"])).total_seconds() >= phase_runtime_seconds(row, self.config, "research"):
@@ -847,18 +999,30 @@ class Runner:
         try:
             output = json.loads(raw)
         except (ValueError, UnicodeError):
+            if self.repairer.begin(row, None, "artifact_json_invalid"):
+                return True
             raise Refusal("artifact_json_invalid") from None
         self.ledger.write_json(row["date"] + "-output.json", output)
-        return self.prepare_output(row, output)
+        try:
+            return self.prepare_output(row, output)
+        except Refusal as exc:
+            # An output defect is repaired by the same agent in the same session,
+            # not by a code release. System failures keep the legacy outcome.
+            if self.repairer.begin(row, output, str(exc)):
+                return True
+            raise
 
-    def prepare_output(self, row, output, *, output_recovery=None):
-        """The same strict output/CRM validation for collection and offline replay."""
+    def known_identities(self, row):
         _, known = crm_snapshot(self.config["crm_snapshot"], self.clock())
         for previous in self.ledger.rows():
             if previous["date"] != row["date"]:
                 for candidate in previous.get("packet", {}).get("candidates", []):
                     if not previous.get("review") or candidate["candidate_key"] in previous["review"]["accepted_keys"]:
                         known.update(candidate["identity_keys"])
+        return known
+
+    def check_output(self, row, output, known):
+        """The strict acceptance gate shared by collection, repair and offline replay."""
         try:
             context = row.get("knowledge_context")
             if row.get("research_contract_version", 1) in {2, 3} and digest(context) != row.get("knowledge_context_digest"):
@@ -875,6 +1039,45 @@ class Runner:
                     raise Refusal("research_scope_coverage_required")
         except (KeyError, TypeError, ValueError):
             raise Refusal("output_schema_invalid") from None
+        return candidates, duplicates
+
+    def output_diagnosis(self, row, output):
+        """Every located strict-contract issue in one parsed revision, at once.
+
+        Empty means the strict gate accepts it. System issues are Blueprint's own
+        bindings (context, policy, CRM, limits), which no agent output can repair.
+        """
+        version = row.get("research_contract_version", 1)
+        context, policy = row.get("knowledge_context"), row.get("refresh_policy")
+        if version in {2, 3} and digest(context) != row.get("knowledge_context_digest"):
+            return [_issue("", "knowledge_ledger_binding_invalid", system=True)]
+        if version == 3 and digest(policy) != row.get("refresh_policy_digest"):
+            return [_issue("", "refresh_policy_ledger_binding_invalid", system=True)]
+        issues = list(output_issues(output, row["date"], contract_version=version, knowledge_context=context,
+                                    observed_at=self.clock(), refresh_policy=policy, collect=True))
+        if row.get("discovery_profile") == "adaptive-sites-v1" and isinstance(output, dict):
+            if "coverage" not in output:
+                issues.append(_issue("/coverage", "discovery_coverage_invalid"))
+            elif (row.get("search_provider") == search.PROFILE and isinstance(output["coverage"], dict)
+                  and "defined_run_scope" not in output["coverage"]):
+                issues.append(_issue("/coverage", "research_scope_coverage_required"))
+        unique, seen = [], set()
+        for found in issues:
+            if (found["pointer"], found["code"]) not in seen:
+                seen.add((found["pointer"], found["code"]))
+                unique.append(found)
+        if not unique:
+            try:
+                self.check_output(row, output, set())
+            except Refusal as exc:  # The strict gate stays the authority; a diagnosis gap never passes silently.
+                unique.append(_issue("", str(exc), system=repair.is_system(str(exc))))
+        return unique
+
+    def prepare_output(self, row, output, *, output_recovery=None, output_repair=None):
+        """The same strict output/CRM validation for collection and offline replay."""
+        known = self.known_identities(row)
+        candidates, duplicates = self.check_output(row, output, known)
+        context, policy = row.get("knowledge_context"), row.get("refresh_policy")
         packet = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
                   "findings": output["findings"], "blockers": output["blockers"],
                   "proposed_next_actions": output["proposed_next_actions"], "candidates": candidates,
@@ -899,6 +1102,8 @@ class Runner:
                 packet["discovery_counts"].update(target_new=None, shortfall=None, candidate_count_is_stopping_rule=False)
         if output_recovery is not None:
             packet["output_recovery"] = output_recovery
+        if output_repair is not None:
+            packet["output_repair"] = output_repair
         packet["remote_completion_timestamp_verified"] = row.get("remote_completed_at") is not None
         if row.get("search_provider") == search.PROFILE and len(canonical(packet).encode()) > search.MAX_PACKET:
             raise Refusal("research_profile_packet_resource_ceiling_raw_retained")
@@ -1029,6 +1234,11 @@ class Runner:
                 if (hashlib.sha256(self.ledger.read_bytes(day + "-qa.json")).hexdigest() != qa["artifact_digest"]
                         or digest(json.loads(self.ledger.read_bytes(day + "-qa-evidence.json"))) != qa["evidence_digest"]):
                     raise Refusal("agent_qa_cleanup_digest_mismatch")
+            for attempt in [a for r in [*row.get("repair_history", []), *([row["repair"]] if row.get("repair") else [])]
+                            for a in r["attempts"] if a.get("artifact_file")]:
+                # Every repaired revision is retained evidence before any session deletion.
+                if hashlib.sha256(self.ledger.read_bytes(attempt["artifact_file"])).hexdigest() != attempt["artifact_digest"]:
+                    raise Refusal("output_repair_cleanup_digest_mismatch")
             for resource in ("session", "environment"):
                 try:
                     self.api.get(resource, row[resource + "_id"])
@@ -1048,9 +1258,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--state-dir", required=True)
-    parser.add_argument("command", choices=["preflight", "run", "reconcile", "status", "review", "receipt", "record-cleanup"])
+    parser.add_argument("command", choices=["preflight", "run", "reconcile", "status", "review", "receipt", "record-cleanup",
+                                            "reopen-repair"])
     parser.add_argument("--date")
-    parser.add_argument("--input", help="Nonsecret review/receipt JSON path")
+    parser.add_argument("--input", help="Nonsecret review/receipt/reopen JSON path")
     args = parser.parse_args(argv)
     previous_umask = os.umask(0o077)
     ledger = None
@@ -1066,7 +1277,7 @@ def main(argv=None):
             preflight_now = datetime.now(timezone.utc)
             snapshot, _ = crm_snapshot(cfg["crm_snapshot"], preflight_now)
             context = load_knowledge_context(cfg, preflight_now)
-        local = args.command in {"review", "receipt"}
+        local = args.command in {"review", "receipt", "reopen-repair"}
         api = None if local else Provider(os.environ.get("OPENAI_API_KEY", ""))
         runner = Runner(ledger, cfg, api)
         if args.command == "preflight":
@@ -1074,7 +1285,7 @@ def main(argv=None):
                       "unresolved_runs": [r["run_key"] for r in ledger.rows() if r.get("cleanup_required")]}
             if context is not None:
                 result.update(snapshot_content_hash=context["content_hash"], knowledge_context_digest=digest(context))
-        elif args.command in {"review", "receipt", "record-cleanup"}:
+        elif args.command in {"review", "receipt", "record-cleanup", "reopen-repair"}:
             if not args.date or not args.input:
                 raise Refusal("date_and_input_required")
             result = getattr(runner, args.command.replace("-", "_"))(args.date, read_json(args.input))
@@ -1090,11 +1301,15 @@ def main(argv=None):
             runner.stop_requested = lambda: stopped
             result = runner.start_or_resume(allow_create=args.command == "run")
             deadline = time.monotonic() + observation_seconds(result, cfg, "research")
-            while result["state"] in {"running", "cancel_pending", "collecting"} and time.monotonic() < deadline:
+            while result["state"] in ACTIVE and time.monotonic() < deadline:
                 if stopped:
+                    if result["state"] == "repairing":
+                        break  # The durable attempt keeps its absolute deadline for the next observer.
                     result = runner.cancel_current(result["date"], "observer_interrupted")
                 time.sleep(3)
                 result = runner.start_or_resume(allow_create=False)
+                if result["state"] == "repairing":
+                    deadline = max(deadline, time.monotonic() + observation_seconds(result, cfg, "repair"))
             if result["state"] in {"running", "collecting"}:
                 result = runner.cancel_current(result["date"], "observation_deadline")
         # Report status and artifact paths for the owner's independent reviewer.
@@ -1116,6 +1331,13 @@ def status_summary(row):
     result = {key: row.get(key) for key in ("date", "state", "error", "session_id", "turn_id", "cleanup_required", "cost_status")}
     if row.get("search_provider") == search.PROFILE:
         result.update(search_provider=search.PROFILE, application_tool_usage=row.get("application_tool_usage"))
+    if row.get("repair"):
+        value = row["repair"]
+        result["output_repair"] = {"attempts": [{"number": a["number"], "state": a["state"], "turn_id": a.get("turn_id"),
+                                                 "error": a.get("error")} for a in value["attempts"]],
+                                   "revisions": [{"number": r["number"], "issue_count": r["issue_count"], "codes": r["codes"]}
+                                                 for r in value["revisions"]],
+                                   "outcome": value.get("outcome")}
     return result
 
 

@@ -19,6 +19,7 @@ from tools.daily_research.firestore import (
     control_configuration,
 )
 from tools.daily_research.runner import (
+    ACTIVE,
     CENTRAL,
     Ledger,
     Refusal,
@@ -107,11 +108,15 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
         return getattr(runner, command.replace("-", "_"))(day, decision)
     result = runner.start_or_resume(allow_create=command == "run")
     deadline = time.monotonic() + observation_seconds(result, cfg, "research")
-    while result["state"] in {"running", "cancel_pending", "collecting"} and time.monotonic() < deadline:
+    while result["state"] in ACTIVE and time.monotonic() < deadline:
         if stopped() or bridge.call("control").get("enabled") is not True:
+            if result["state"] == "repairing":
+                break  # The durable attempt keeps its absolute deadline; reconcile resumes it.
             result = runner.cancel_current(result["date"], "observer_interrupted_or_disabled")
         time.sleep(3)
         result = runner.start_or_resume(allow_create=False)
+        if result["state"] == "repairing":
+            deadline = max(deadline, time.monotonic() + observation_seconds(result, cfg, "repair"))
     if result["state"] in {"running", "collecting"}:
         result = runner.cancel_current(result["date"], "observation_deadline")
     if result["state"] in {"awaiting_review", "reviewed"} and workflow(bridge.call("control")):
@@ -173,6 +178,21 @@ def export_snapshot(bridge, day, destination):
         pinned = packet.pop("packet_digest", None)
         if pinned != row.get("packet_digest") or digest(packet) != pinned:
             raise Refusal("review_packet_digest_mismatch")
+    # Every repair input sent, revision received and diagnosis stays bound to its exact bytes.
+    rounds = [*row.get("repair_history", []), *([row["repair"]] if row.get("repair") else [])]
+    for attempt in [a for r in rounds for a in r["attempts"]]:
+        number = attempt["number"]
+        bindings = [(digest(json.loads(files.get(f"repair-{number}-input", b"null"))), attempt["request_digest"])]
+        if attempt.get("artifact_file"):
+            bindings.append((hashlib.sha256(files.get(f"repair-{number}-artifact", b"")).hexdigest(), attempt["artifact_digest"]))
+        if attempt.get("evidence_file"):
+            bindings.append((digest(json.loads(files.get(f"repair-{number}-evidence", b"null"))), attempt["evidence_digest"]))
+        if any(actual != expected for actual, expected in bindings):
+            raise Refusal("output_repair_export_digest_mismatch")
+    for revision in [v for r in rounds for v in r["revisions"]]:
+        kind = revision["validation_file"][len(day) + 1:-len(".json")]
+        if digest(json.loads(files.get(kind, b"null"))) != revision["validation_digest"]:
+            raise Refusal("output_repair_export_digest_mismatch")
     for kind, field in (("qa", "artifact_digest"), ("qa-evidence", "evidence_digest")):
         if kind in files:
             actual = hashlib.sha256(files[kind]).hexdigest() if kind == "qa" else digest(json.loads(files[kind]))
@@ -186,6 +206,9 @@ def export_snapshot(bridge, day, destination):
             continue
         raw = files.get("tool-" + cid)
         expected_turn = row.get("turn_id") if call.get("phase") == "research" else row.get("qa", {}).get("turn_id")
+        if call.get("phase") == "repair":
+            expected_turn = next((a.get("turn_id") for r in rounds for a in r["attempts"]
+                                  if a["number"] == call.get("repair_attempt")), None)
         if (call["result_file"] != day + "-tool-" + cid + ".json" or raw is None
                 or hashlib.sha256(raw).hexdigest() != call.get("result_sha256")
                 or len(raw) != call.get("result_bytes") or digest(call.get("request")) != call.get("request_digest")):
@@ -226,7 +249,7 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                             emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
                     emit(result)
                     retry_at = clock() + timedelta(minutes=5) if result.get("state") in {
-                        "creation_unresolved", "running", "cancel_pending", "collecting"} else None
+                        "creation_unresolved", "running", "cancel_pending", "collecting", "repairing"} else None
                 elif workflow(control) and (not retry_at or clock() >= retry_at):
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
                         emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))

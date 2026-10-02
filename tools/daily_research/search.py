@@ -306,12 +306,19 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
         return False
     if len(canonical(row).encode()) > MAX_RECORD:
         raise Refusal("research_tool_record_resource_ceiling")
-    tid = row.get("turn_id") if phase == "research" else row.get("qa", {}).get("turn_id")
-    deadline = instant(row["started_at"]).timestamp() + phase_runtime_seconds(row, {}, phase)
-    if phase == "qa" and row.get("qa_continuation"):
+    attempt = row["repair"]["attempts"][-1] if phase == "repair" else None
+    if phase == "research":
+        tid = row.get("turn_id")
+        deadline = instant(row["started_at"]).timestamp() + phase_runtime_seconds(row, {}, phase)
+    elif phase == "repair":
+        # A repair turn may re-read cited sources only inside its own pinned window.
+        tid = attempt.get("turn_id")
+        deadline = attempt["deadline_ms"] / 1000 if attempt.get("deadline_ms") else 0
+    else:
         # Local import avoids the module initialization cycle. The consumer's
-        # validated receipt governs QA tools too; research keeps its old bound.
+        # validated receipt or accepted repair governs QA tools too.
         from tools.daily_research.consumer import qa_deadline
+        tid = row.get("qa", {}).get("turn_id")
         deadline = qa_deadline(row, {}).timestamp()
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
@@ -330,6 +337,8 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             if len(calls) >= MAX_CALLS or used >= MAX_EVIDENCE - MAX_RESPONSE - 20000:
                 raise Refusal("research_tool_evidence_resource_ceiling")
             prior = {"request_digest": digest(binding), "request": binding, "phase": phase, "attempted": False}
+            if attempt:
+                prior["repair_attempt"] = attempt["number"]
             calls[cid] = prior
             if (len(canonical(binding).encode()) > 10000 or len(canonical(calls).encode()) > MAX_CALL_RECORDS
                     or len(canonical(row).encode()) > MAX_RECORD):

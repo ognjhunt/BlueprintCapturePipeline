@@ -15,6 +15,12 @@ rules and separate one-time test preparation. Legacy native rows keep their hist
 profile stays disabled until an explicit recurring budget is chosen. Existing
 legacy rows retain their admitted guards.
 
+**Output defects are repaired in-session, not by releases.** When a completed
+research output fails the strict contract, the same agent receives every located
+problem at once and writes a revision; the strict gate decides again. See
+[RENDER.md](RENDER.md#same-session-output-repair). Already-failed runs can be
+reopened into the same loop with `reopen-repair`; see the operator README.
+
 **2026-09-30 Render route:** the selected deployment is the existing Render
 worker plus existing Firestore, using the recovered adapter. See
 [RENDER.md](RENDER.md) for the current deployment and agent-owned QA/publication

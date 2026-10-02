@@ -33,6 +33,9 @@ from tools.daily_research.runner import (
 TEST_ID = "adaptive-discovery-20261001"
 INSTRUCTIONS = "84aeea7cec9eb6e20d0d2fba10dcb269a615174e48ed91a60ff7a6a83ca37938"
 FINAL = {"failed", "cancelled", "test_qa_validated", "test_qa_blocked"}
+# 1860s: research 1200 + QA 600 + 60. 2580s adds two same-session repair windows
+# (2 x (300 + 60)) so a run that needs output repair still reaches QA unkilled.
+WATCHDOG_BOUNDS = (b"1860s", b"2580s")
 
 
 def verify_process_watchdog():
@@ -42,7 +45,7 @@ def verify_process_watchdog():
             command = parent.read(8193)
         parts = command.split(b"\0")
         valid = (len(command) <= 8192 and len(parts) >= 5 and Path(os.fsdecode(parts[0])).name == "timeout"
-                 and parts[1:4] == [b"--signal=TERM", b"--kill-after=60s", b"1860s"])
+                 and parts[1:3] == [b"--signal=TERM", b"--kill-after=60s"] and parts[3] in WATCHDOG_BOUNDS)
     except (OSError, ValueError):
         valid = False
     if not valid:

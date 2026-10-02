@@ -14,7 +14,9 @@ const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.s
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|repair-\d{1,2}-(?:input|artifact|evidence|validation|original)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const immutableFile = x => /-(?:artifact|qa|qa-input|recovery|repair-\d{1,2}-(?:input|artifact))\.json$/.test(x) || /-tool-/.test(x);
+const repairRounds = row => [...(row?.repair_history || []), ...(row?.repair ? [row.repair] : [])];
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null) {
@@ -129,6 +131,7 @@ export class Store {
       refuse('research_tool_record_resource_ceiling');
     const hash = await this.blobPut(Buffer.from(JSON.stringify(row)).toString('base64'));
     const ref = this.db.doc(`${ROOT}/runs/${row.date}`);
+    const attempt = row.repair?.attempts?.at(-1);
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
@@ -139,9 +142,12 @@ export class Store {
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
         qa_request_digest: row.qa?.request_digest || null, qa_state: row.qa?.state || null,
         qa_deadline_ms: row.qa?.deadline_ms || null,
+        repair_attempt: attempt?.number ?? null, repair_request_digest: attempt?.request_digest || null,
+        repair_deadline_ms: attempt?.deadline_ms || null,
         search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
         recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
+        repair_claims: prior.exists ? prior.data().repair_claims || {} : {},
         publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
       this.projectWorkItem(tx, row, hash);
     });
@@ -153,7 +159,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if (immutableFile(name) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -168,8 +174,14 @@ export class Store {
     const row = await this.get(day);
     if (!row) refuse('run_missing');
     const files = {}, missing = [];
+    // Every repair round keeps the original diagnosis, each input sent, and each revision with its diagnosis.
+    const repairKinds = repairRounds(row).flatMap(round => [
+      `repair-${round.first_attempt}-original`,
+      ...round.attempts.flatMap(a => [`repair-${a.number}-input`, ...(a.evidence_file ? [`repair-${a.number}-evidence`] : []),
+        ...(a.artifact_file ? [`repair-${a.number}-artifact`, `repair-${a.number}-validation`] : [])])]);
     for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
-      ...(row.qa?.input_file ? ['qa-input'] : []), ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
+      ...(row.qa?.input_file ? ['qa-input'] : []), ...repairKinds,
+      ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
       try {files[kind] = await this.fileGet(`${day}-${kind}.json`);}
       catch (error) {
         if (!(error instanceof Refusal) || error.message !== 'firestore_file_missing') throw error;
@@ -189,6 +201,11 @@ export class Store {
       if (call.result_file && (call.result_file !== `${day}-tool-${call.request.call_id}.json`
         || !files[`tool-${call.request.call_id}`] || call.result_sha256 !== sha(Buffer.from(files[`tool-${call.request.call_id}`], 'base64'))))
         refuse('research_tool_result_digest_mismatch');
+    }
+    for (const attempt of repairRounds(row).flatMap(round => round.attempts)) {
+      const revision = files[`repair-${attempt.number}-artifact`];
+      if (attempt.artifact_file && (attempt.artifact_file !== `${day}-repair-${attempt.number}-artifact.json` || !revision
+        || attempt.artifact_digest !== sha(Buffer.from(revision, 'base64')))) refuse('output_repair_export_digest_mismatch');
     }
     return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing};
   }
@@ -272,6 +289,22 @@ export class Store {
           || this.clock()>=deadlineMS) refuse('agent_qa_input_not_admitted');
       this.budgetGate(control, run);
       tx.set(ref,{qa_request_claimed:true},{merge:true});return true;
+    });
+  }
+  // One claim per same-session repair input: the exact prepared request, its
+  // pinned window and the unchanged budget binding, under an enabled control.
+  async repairCheck(day,attempt,requestDigest,deadlineMS) {
+    if (!dateOK(day) || !Number.isSafeInteger(attempt) || attempt<1 || attempt>99 || !/^[a-f0-9]{64}$/.test(requestDigest))
+      refuse('research_repair_request_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),snap=await tx.get(ref),run=snap.data();
+      if (control?.enabled!==true || !snap.exists || run.state!=='repairing' || run.repair_attempt!==attempt
+          || run.repair_request_digest!==requestDigest || run.repair_claims?.[String(attempt)]
+          || !Number.isSafeInteger(deadlineMS) || run.repair_deadline_ms!==deadlineMS
+          || this.clock()>=deadlineMS) refuse('research_repair_input_not_admitted');
+      this.budgetGate(control, run);
+      tx.set(ref,{repair_claims:{...(run.repair_claims||{}),[String(attempt)]:requestDigest}},{merge:true});return true;
     });
   }
   async publish(day) {
@@ -416,6 +449,7 @@ export class Store {
       case 'work_item': return this.workItem();
       case 'active_qa': return this.activeQA();
       case 'qa_check': return this.qaCheck(request.day,request.request_digest,request.deadline_ms);
+      case 'repair_check': return this.repairCheck(request.day,request.attempt,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
       case 'refresh_crm': {
         await this.assertLease();

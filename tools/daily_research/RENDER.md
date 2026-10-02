@@ -68,6 +68,7 @@ Contract `blueprint.research-snapshot.v1`, root
 | `runs/YYYY-MM-DD` | Immutable row blob pointer, date/state, metadata binding, cleanup guard, actual session/turn/environment IDs, one-use create claim |
 | `blobs/SHA256` + `chunks/N` | Exact uncompressed SHA256/length, gzip metadata, immutable chunks at most 256 KiB each; read verifies all bytes |
 | `files/YYYY-MM-DD-{artifact,evidence,output,review,qa,qa-evidence}.json` | Blob pointers; downloaded raw artifact is immutable once bound |
+| `files/YYYY-MM-DD-repair-N-{original,input,evidence,artifact,validation}.json` | Same-session output repair: original diagnosis per round, each exact feedback input sent, repair-turn evidence, each revision (immutable) and its diagnosis |
 | `files/{crm,knowledge,refresh-policy}.json` | Private checked input pointers, not public prospects |
 | `workItems/YYYY-MM-DD` | `owner=blueprint-research-qa-publication-agent`, `stage=agent_qa_pending` or `publication_pending`, run key, row blob, packet digest, `observer_receipt_required=false`, no-outreach scope |
 
@@ -105,6 +106,26 @@ admits another input or publication. A cancel request is not terminal proof.
 The five-activity search limit and $1 soft TOTAL target include both phases;
 model/search/environment usage and QA turn evidence remain in the dated row.
 An exhausted budget/time envelope blocks publication rather than adding a run.
+
+## Same-session output repair
+
+A completed research turn whose output breaks the strict contract is not a dead
+run and needs no code release. The runner reports **every** problem at once (JSON
+pointer, rule, offending value) to the same saved agent in the same session,
+which writes `/workspace/outputs/daily-research.repair-N.json` beside the
+untouched original; the unchanged strict validator then decides again. One input
+per attempt, durable before its single POST, with a one-use Firestore claim
+(`repair_check`) bound to the exact request digest, pinned 300-second window and
+budget binding. It is never resent, including after a restart or a lost reply.
+At most two attempts; an identical repeated failure stops early. Item-scoped
+leftovers (a candidate, knowledge proposal or summary line) are then excluded
+and retained for audit so unrelated valid findings continue to agent QA, which
+is told about them. Global or Blueprint-side problems (CRM, context, policy,
+resource limits) escalate as `output_repair_exhausted` or keep their legacy
+error, with the complete issue list saved. An accepted repair pins a full QA
+window from acceptance. An observer stop or restart leaves a repair attempt to
+its own deadline instead of cancelling it. Code changes remain for validator or
+runtime defects, not ordinary output variation.
 
 Those are the legacy scan guards. The disabled
 `adaptive-daily.config.example.json` opts newly admitted v3 rows into ten or more

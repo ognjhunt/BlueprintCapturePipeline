@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools.daily_research import discovery, search
+from tools.daily_research import discovery, repair, search
 from tools.daily_research.runner import (
     AGENT,
     LIMIT_BYTES,
@@ -31,7 +31,8 @@ QA_PATH = "/workspace/outputs/daily-research-qa.json"
 def qa_deadline(row, config):
     value = row.get("qa_continuation")
     if not value:
-        return instant(row["started_at"]) + timedelta(seconds=phase_runtime_seconds(row, config, "qa"))
+        # An accepted same-session repair pins its own full QA window.
+        return repair.qa_deadline(row) or instant(row["started_at"]) + timedelta(seconds=phase_runtime_seconds(row, config, "qa"))
     request = value.get("request", {})
     if (value.get("schema_version") != "blueprint.recovered-research-qa.v1"
             or request.get("authority_reference") != "Sentinel_dac3e21091cc819196cb4e5799b7229d"
@@ -80,9 +81,11 @@ def qa_text(row, snapshot, crm_digest):
     trusted = ("Blueprint QA phase for the preceding research only. Read the reviewed evidence skill. "
                "Check every material finding, claim scope, quoted passage and candidate source against the actual sources; "
                "check semantic site/task duplicates against the supplied complete CRM identities. Reject unsupported "
+               "candidates; unknown interest/availability stays unknown. "
                "Any output_recovery quarantined_proposals are excluded from approved knowledge; do not invent "
-               "their evidence levels or silently restore them. Newness and coverage remain unverified until QA. "
-               "candidates; unknown interest/availability stays unknown. No outreach, drafting, credentials, installs, "
+               "their evidence levels or silently restore them. Any output_repair excluded items still failed the strict "
+               "contract after same-session repair: report them as rejected, never as accepted candidates or approved "
+               "knowledge. Newness and coverage remain unverified until QA. No outreach, drafting, credentials, installs, "
                "sandbox networking, providers, models, subagents or external writes. Native web search only. "
                + allowance + assessment + "The $1 TOTAL research+QA+"
                "search+hosted-environment target is soft. If the remaining budget/time/source access cannot support QA, "
@@ -192,7 +195,11 @@ class Consumer:
             session = self.api.get("session", row["session_id"])
             self.check_session(row, session)
             turns = self.api.listing("turns", row["session_id"])
-            if len(turns) != 1 or turns[0]["id"] != row["turn_id"] or turns[0]["status"] != "completed":
+            # The completed research turn plus exactly the bound, terminal repair turns.
+            repairs = [a["turn_id"] for r in [*row.get("repair_history", []), *([row["repair"]] if row.get("repair") else [])]
+                       for a in r["attempts"] if a.get("turn_id")]
+            if ([t["id"] for t in turns] != [row["turn_id"], *repairs] or turns[0]["status"] != "completed"
+                    or any(t["status"] not in {"completed", "failed", "cancelled"} for t in turns[1:])):
                 raise Refusal("agent_qa_initial_turn_scope_mismatch")
             crm_digest = digest(snapshot["values"])
             event = {"type": "agent.session.input.message", "input": [{"role": "user", "content": [

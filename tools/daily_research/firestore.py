@@ -138,6 +138,13 @@ class FencedProvider(Provider):
             raise Refusal("agent_qa_total_runtime_exhausted")
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
+    def repair_input(self, session_id, event, key, day, request_digest, deadline_ms, attempt):
+        # One durable claim per attempt, under the enabled control and pinned budget.
+        self.ledger.bridge.call("repair_check", day=day, attempt=attempt, request_digest=request_digest, deadline_ms=deadline_ms)
+        if datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms:
+            raise Refusal("research_repair_window_expired")
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
+
 
 def control_configuration(value):
     if (not isinstance(value, dict) or value.get("schema_version") != "blueprint.research-control.v1"

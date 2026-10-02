@@ -483,3 +483,51 @@ tool receipts. The old installed export omits the new receipt and is insufficien
 for this repaired run's canonical backup. The read-only diagnosis also returns
 actual declared coverage, stopping reason and bounded root query/source trace;
 those observations, rather than search counts, support the scope audit.
+
+## Same-session repair of a failed attempt (general; no per-failure scripts)
+
+A validation failure on a completed research turn is an output defect, not a
+software release. The general loop in `tools/daily_research/repair.py` replaces
+one-off derivations such as the null-evidence quarantine above. With this
+package installed, new attempts repair automatically: the same agent receives
+every located problem at once, writes a revision beside the original, and the
+unchanged strict validator decides again (at most two attempts, early stop on a
+repeated identical failure, item-scoped leftovers excluded and retained, global
+problems escalated as `output_repair_exhausted`). Because repair can add two
+360-second windows before QA, run `execute`/`reconcile` for such packages under
+`timeout --signal=TERM --kill-after=60s 2580s`; the old `1860s` bound remains
+accepted.
+
+For an attempt that already failed under an older package, use the same
+isolated repair-package arguments as `diagnose-output` (exact reviewed commit,
+archive SHA256, verified overlay; the installed package is unchanged):
+
+1. `diagnose-all` is read-only. It lists every problem in the saved output with its
+   JSON pointer, rule and offending value, the code histogram, any Blueprint-side
+   (system) issue, and whether the row can be reopened. No provider call or write.
+2. `reopen-repair --receipt PRIVATE_JSON` is provider-free. It binds the exact
+   failed artifact back into same-session repair and durably prepares attempt 1's
+   feedback input without sending it. Receipt shape:
+
+   ```json
+   {
+     "session_id": "EXACT_SESSION_ID",
+     "turn_id": "EXACT_ROOT_TURN_ID",
+     "raw_output_sha256": "EXACT_SAVED_ARTIFACT_SHA256",
+     "authority_reference": "EXISTING_APPROVAL_COVERING_THIS_ATTEMPT",
+     "scope": "same-session-output-repair-then-existing-agent-qa-and-publication"
+   }
+   ```
+
+   It requires a `failed` row with a completed root turn, downloaded artifact, no
+   QA, delivery or prior `output_recovery`, and an uncleaned session. A receipt
+   authorizes one reopen; a second round needs a new reference.
+3. `resume-repair` is explicitly paid and runs under the existing
+   `timeout --signal=TERM --kill-after=60s 1860s` watchdog. It refreshes the
+   canonical CRM, sends the prepared input once (a one-use claim, never resent),
+   observes the repair turn, then continues through the existing agent QA and
+   canonical publication gates. It never creates a session. An interrupted run
+   leaves the attempt durable; rerun `resume-repair` before its pinned window ends.
+
+`status` and the export include the repair inputs, revisions and diagnoses.
+Cleanup still needs its own action-time approval.
