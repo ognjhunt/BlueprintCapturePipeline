@@ -1,0 +1,22 @@
+{
+  "checkpoint": "executor-and-source-route-verified",
+  "date": "2026-09-30",
+  "executor": "healthy; Python 3.12.14; repository tools available",
+  "branch": "codex/private-provider-eval-recovery-20260930",
+  "base_commit": "1f771e61",
+  "controller_model": "gpt-6.1-sol",
+  "source_library_id": "libfile_01ae219642688191a6063e9d3fba9c0b",
+  "source_version": 0,
+  "expected_bytes": 26019,
+  "expected_sha256": "294f778b32670ee6ae07412a53c1627923f1004afeea501f32d3202e8b9cf736",
+  "materialization": "blocked: supported prepare_materialize resolved a transfer; current bundled helper returned library file transfer failed: download failed",
+  "local_bytes_readable": false,
+  "hash_verified": false,
+  "fallback": "synthetic fixtures only; no real source-case integration claim",
+  "repository_visibility": "public",
+  "publication": "private user request requires local draft only; no push or remote PR",
+  "duplicates": "GitHub all-state searches for Parallel Perplexity and perplexity returned no comparison PR",
+  "protected_work": "runner2486 and snapshot2487 not modified",
+  "live_provider_calls": 0,
+  "provider_spend_usd": "0.00"
+}

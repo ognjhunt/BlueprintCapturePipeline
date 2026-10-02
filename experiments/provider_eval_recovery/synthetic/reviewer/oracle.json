@@ -1,0 +1,422 @@
+{
+  "S01": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 01 advertises rigid object pick and place.",
+            "url": "https://robotics01.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics01.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S02": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 02 advertises rigid object pick and place.",
+            "url": "https://robotics02.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics02.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S03": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 03 advertises rigid object pick and place.",
+            "url": "https://robotics03.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics03.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S04": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 04 advertises rigid object pick and place.",
+            "url": "https://robotics04.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics04.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S05": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 05 advertises rigid object pick and place.",
+            "url": "https://robotics05.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics05.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S06": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 06 advertises rigid object pick and place.",
+            "url": "https://robotics06.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics06.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S07": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 07 advertises rigid object pick and place.",
+            "url": "https://robotics07.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics07.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S08": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 08 advertises rigid object pick and place.",
+            "url": "https://robotics08.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics08.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S09": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 09 advertises rigid object pick and place.",
+            "url": "https://robotics09.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics09.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S10": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 10 advertises rigid object pick and place.",
+            "url": "https://robotics10.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics10.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S11": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 11 advertises rigid object pick and place.",
+            "url": "https://robotics11.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics11.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S12": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 12 advertises rigid object pick and place.",
+            "url": "https://robotics12.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics12.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S13": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 13 advertises rigid object pick and place.",
+            "url": "https://robotics13.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics13.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S14": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 14 advertises rigid object pick and place.",
+            "url": "https://robotics14.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics14.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S15": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 15 advertises rigid object pick and place.",
+            "url": "https://robotics15.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics15.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S16": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 16 advertises rigid object pick and place.",
+            "url": "https://robotics16.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics16.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S17": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 17 advertises rigid object pick and place.",
+            "url": "https://robotics17.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics17.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S18": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 18 advertises rigid object pick and place.",
+            "url": "https://robotics18.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics18.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S19": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 19 advertises rigid object pick and place.",
+            "url": "https://robotics19.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics19.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  },
+  "S20": {
+    "claims": {
+      "advertised_pick_place": {
+        "evidence": [
+          {
+            "text": "Synthetic Robotics 20 advertises rigid object pick and place.",
+            "url": "https://robotics20.example/capabilities"
+          }
+        ],
+        "primary_domains": [
+          "robotics20.example"
+        ],
+        "state": "supported"
+      },
+      "site_ready": {
+        "evidence": [],
+        "primary_domains": [],
+        "state": "unknown"
+      }
+    }
+  }
+}
