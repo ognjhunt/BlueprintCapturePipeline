@@ -140,7 +140,9 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
         while True:
             if row and row["state"] == "failed" and row.get("artifact_downloaded"):
                 from tools.daily_research.recovery import RepairLoop
-                if not workflow(bridge.call("control")) or stopped():
+                latest = row.get("validation_repairs", [])
+                active = latest and latest[-1]["state"] in {"running", "input_unresolved", "cancel_pending"}
+                if not active and (not workflow(bridge.call("control")) or stopped()):
                     return {"state": "workflow_disabled", "date": row["date"]}
                 row = RepairLoop(ledger, cfg, api, clock=lambda: datetime.now(timezone.utc), stopped=stopped).step(row["date"])
                 if row["state"] == "awaiting_review":
@@ -149,6 +151,8 @@ def consume_workflow(bridge, cache, *, stopped=lambda: False, day=None, api_fact
                     return {"state": "validation_repair_blocked", "date": row["date"],
                             "error": row["validation_repairs"][-1].get("error"),
                             "feedback": row["validation_repairs"][-1].get("feedback")}
+                elif stopped():
+                    return {"state": "validation_repair_cancel_pending", "date": row["date"]}
                 elif time.monotonic() >= until:
                     raise Refusal("workflow_observation_deadline")
                 else:

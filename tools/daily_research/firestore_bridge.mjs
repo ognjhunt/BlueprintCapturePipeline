@@ -148,6 +148,7 @@ export class Store {
         repair_request_digest: row.validation_repairs?.at(-1)?.request_digest || null,
         repair_deadline_ms: row.validation_repairs?.at(-1)?.deadline_ms || null,
         repair_number: row.validation_repairs?.at(-1)?.number || null,
+        repair_state: row.validation_repairs?.at(-1)?.state || null,
         repair_claims: prior.exists ? prior.data().repair_claims || {} : {},
         publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
       this.projectWorkItem(tx, row, hash);
@@ -266,8 +267,10 @@ export class Store {
   }
   async activeQA() {
     const runs=this.db.collection(`${ROOT}/runs`);
-    const groups=await Promise.all(['qa_running','qa_input_unresolved','qa_cancel_pending']
-      .map(state=>runs.where('qa_state','==',state).limit(1).get()));
+    const groups=await Promise.all([
+      ...['qa_running','qa_input_unresolved','qa_cancel_pending'].map(state=>['qa_state',state]),
+      ...['running','input_unresolved','cancel_pending'].map(state=>['repair_state',state])]
+      .map(([field,state])=>runs.where(field,'==',state).limit(1).get()));
     const days=groups.flatMap(s=>s.docs.map(d=>d.id)).sort();
     return days[0] || null;
   }

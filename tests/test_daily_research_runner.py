@@ -611,11 +611,12 @@ def test_review_cannot_approve_different_packet_or_repeat_decision(fixture):
         runner.review(DAY, {**review, "summary": "changed"})
 
 
-def test_domain_mismatch_does_not_count_as_operator_evidence():
+def test_delegated_operator_domain_requires_semantic_agent_qa():
     o = output()
     o["candidates"][0]["organization_url"] = "https://different.example/"
-    with pytest.raises(Refusal, match="domain_mismatch"):
-        validate_output(o, DAY, set())
+    accepted, _ = validate_output(o, DAY, set())
+    assert accepted[0]["operator_affiliation_qa_required"] is True
+    assert accepted[0]["qualification_status"] == "unqualified"
 
 
 def test_terminal_guard_and_crash_recovery_use_provider_timestamps(fixture):

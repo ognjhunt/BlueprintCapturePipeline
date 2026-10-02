@@ -148,3 +148,50 @@ def test_ordinary_daily_worker_repairs_then_qa_and_publishes_without_new_root(tm
             bridge.call("repair_check", day=DAY, request_digest=revision["request_digest"], deadline_ms=revision["deadline_ms"])
     finally:
         generator.close()
+
+
+def test_cold_disabled_recovery_discovers_and_cancels_active_correction(tmp_path, monkeypatch):
+    generator = consumer_setup(tmp_path, failed=True)
+    consumer, api, ledger, bridge, _ = next(generator)
+    try:
+        turns, calls = [], []
+        listing = api.listing
+        def repair_input(sid, _event, key, day, request_digest, deadline_ms):
+            bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+            calls.append(key)
+            turns.append({"id": "turn_repair", "agent_id": AGENT, "session_id": sid,
+                          "subagent_id": None, "status": "in_progress"})
+        def values(resource, sid=None):
+            result = listing(resource, sid)
+            if resource == "turns":
+                result.extend(deepcopy(turns))
+            return result
+        cancel = api.cancel
+        def cancelled(sid, key):
+            cancel(sid, key)
+            turns[0]["status"] = "cancelled"
+        api.repair_input, api.listing, api.cancel = repair_input, values, cancelled
+        running = recovery.RepairLoop(ledger, consumer.config, api, clock=consumer.clock).step(DAY)
+        assert running["validation_repairs"][-1]["state"] == "running"
+        with ledger.lock():
+            control = bridge.call("control")
+            bridge.call("configure", value={**control, "enabled": False})
+        assert bridge.call("active_qa") == DAY
+        class FixedDatetime:
+            @staticmethod
+            def now(_zone):
+                return consumer.clock()
+        monkeypatch.setattr(render, "datetime", FixedDatetime)
+        monkeypatch.setattr(render, "configured", lambda *_: {**consumer.config, "enabled": False})
+        monkeypatch.setattr(render.time, "sleep", lambda _: None)
+        # New controller follows the active-intent lookup despite disabled QA
+        # and terminal original root state; it never creates or publishes.
+        result = render.invoke("reconcile", bridge, tmp_path, api_factory=lambda *_: api)
+        assert result["state"] == "validation_repair_blocked"
+        final = ledger.get(DAY)
+        assert final["validation_repairs"][-1]["turn_status"] == "cancelled"
+        assert final["validation_repairs"][-1]["cancel_attempted"] is True
+        assert len(api.cancellations) == len(api.payloads) == len(calls) == 1
+        assert not api.inputs and not bridge.call("active_qa")
+    finally:
+        generator.close()

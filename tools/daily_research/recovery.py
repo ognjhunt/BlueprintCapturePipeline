@@ -160,7 +160,7 @@ class RepairLoop:
         self.ledger, self.config, self.api, self.clock, self.stopped = ledger, config, api, clock, stopped
 
     def step(self, day):
-        from tools.daily_research.consumer import Consumer
+        from tools.daily_research.consumer import Consumer, workflow
         from tools.daily_research.runner import (
             AGENT,
             LIMIT_BYTES,
@@ -181,7 +181,6 @@ class RepairLoop:
             if revisions and revisions[-1]["state"] == "validated":
                 return row
             if not row.get("validation_repair_authority"):
-                from tools.daily_research.consumer import workflow
                 permission = workflow(self.ledger.bridge.call("control"))
                 if not permission or row.get("canary"):
                     raise Refusal("validation_repair_authority_or_binding_invalid")
@@ -200,7 +199,7 @@ class RepairLoop:
             if current and current["state"] == "no_progress":
                 return row
             if current is None or current["state"] == "invalid":
-                if self.stopped() or self.clock() >= deadline:
+                if self.stopped() or self.clock() >= deadline or not workflow(self.ledger.bridge.call("control")):
                     raise Refusal("validation_repair_window_exhausted")
                 snapshot, known = Consumer(self.ledger, self.config, self.api, clock=self.clock).refresh_crm()
                 filename = current["artifact_file"] if current else day + "-artifact.json"
@@ -336,15 +335,27 @@ class RepairLoop:
                     current["state"] = "validated"
                     self.ledger.put(row)
                     return row
-            if self.stopped() or self.clock() >= deadline:
-                if not current.get("cancel_attempted"):
-                    current["cancel_attempted"] = True
-                    self.ledger.put(row)
-                    self.api.cancel(row["session_id"], row["run_key"] + f":repair:{current['number']}")
+            if self.stopped() or self.clock() >= deadline or not workflow(self.ledger.bridge.call("control")):
+                self.cancel(row, current, "validation_repair_stopped_disabled_or_expired")
                 return row
-            search.respond(row, session, self.ledger, self.api, phase="repair", clock=self.clock, stopped=self.stopped)
+            try:
+                search.respond(row, session, self.ledger, self.api, phase="repair", clock=self.clock, stopped=self.stopped)
+            except Refusal:
+                self.cancel(row, current, "validation_repair_tool_admission_revoked")
+                return row
             self.ledger.put(row)
             return row
+
+    def cancel(self, row, current, reason):
+        current.update(state="cancel_pending", error=reason)
+        if not current.get("cancel_attempted"):
+            current["cancel_attempted"] = True
+            self.ledger.put(row)
+            try:
+                self.api.cancel(row["session_id"], row["run_key"] + f":repair:{current['number']}")
+            except Exception:  # noqa: BLE001 - uncertain cancellation is never resent or claimed terminal
+                current["cancel_reply_unresolved"] = True
+        self.ledger.put(row)
 
 
 def normalize_live_date_precision(output, row, ledger, observed_at):
