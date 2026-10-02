@@ -20,7 +20,7 @@ def repair_error_receipt(error, stage):
                "code": None, "http_status": None, "request_id": None}
     local_codes = {"validation_repair_input_not_admitted",
         "validation_repair_stopped_disabled_expired_or_authority_changed",
-        "canary_admission_binding_invalid", "canary_guard_failed", "workflow_authority_missing",
+        "canary_admission_binding_invalid", "canary_guard_failed", "canary_daily_guard_unreconciled_or_changed", "workflow_authority_missing",
         "firestore_lease_lost", "firestore_bridge_deadline", "firestore_bridge_unavailable",
         "research_tool_budget_authority_not_pinned", "research_tool_budget_authority_changed",
         "research_tool_record_resource_ceiling", "recovered_qa_session_not_idle",

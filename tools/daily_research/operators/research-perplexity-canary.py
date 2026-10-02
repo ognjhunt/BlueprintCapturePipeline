@@ -484,7 +484,8 @@ class CanaryProvider(FencedProvider):
         if (self.stopped() or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
                 or self.clock().timestamp() * 1000 >= deadline_ms):
             raise Refusal("canary_stopped_disabled_or_expired_before_qa")
-        self.recovered_qa_action_guard(session_id, day, deadline_ms)
+        self.recovered_qa_action_guard(session_id, day, deadline_ms,
+                                       origin_guard=lambda: self.ledger.bridge.call("guard"))
         self.qa_input_phase = "provider_submission"
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 

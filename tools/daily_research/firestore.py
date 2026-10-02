@@ -140,7 +140,7 @@ class FencedProvider(Provider):
         self.qa_input_phase = "provider_submission"
         self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
-    def recovered_qa_action_guard(self, session_id, day, deadline_ms):
+    def recovered_qa_action_guard(self, session_id, day, deadline_ms, *, origin_guard=None):
         row = self.ledger.get(day)
         if not row.get("qa_continuation"):
             return
@@ -152,6 +152,8 @@ class FencedProvider(Provider):
                 or {t["id"] for t in turns} != set(row["qa"]["baseline_turn_ids"])
                 or any(t.get("subagent_id") or t["status"] != "completed" for t in turns)):
             raise Refusal("recovered_qa_session_or_turn_changed")
+        if origin_guard:
+            origin_guard()
         self.ledger.bridge.call("assert_lease")
         control = self.ledger.bridge.call("control")
         if (getattr(self, "stopped", lambda: False)() or control.get("enabled") is not True

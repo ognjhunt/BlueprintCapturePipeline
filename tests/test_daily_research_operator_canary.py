@@ -1280,7 +1280,7 @@ def test_recovered_qa_cannot_renew_expired_window_or_use_wrong_authority(fixture
         bridge.close()
 
 
-@pytest.mark.parametrize("after_claim", ["session", "connection", "turn", "stop", "deadline"])
+@pytest.mark.parametrize("after_claim", ["session", "connection", "turn", "stop", "deadline", "origin"])
 def test_recovered_qa_rechecks_session_after_its_durable_claim(fixture, monkeypatch, after_claim):
     from tools.daily_research.consumer import Consumer
     bridge, ledger, api, cache, row = recovered_baseline(fixture, monkeypatch)
@@ -1313,6 +1313,8 @@ def test_recovered_qa_rechecks_session_after_its_durable_claim(fixture, monkeypa
                         if resource == "turns":
                             if after_claim == "stop":
                                 provider.stopped = lambda: True
+                            elif after_claim == "origin":
+                                original_call("test_origin_change")
                             else:
                                 provider.clock = lambda: later + timedelta(seconds=601)
                         return values
@@ -1327,9 +1329,10 @@ def test_recovered_qa_rechecks_session_after_its_durable_claim(fixture, monkeypa
         assert result["state"] == "qa_input_unresolved" and not posts
         assert final["qa"]["input_error_receipt"]["class"] == "Refusal"
         assert final["qa"]["input_error_receipt"]["code"] in {
-            "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired"}
+            "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired",
+            "canary_daily_guard_unreconciled_or_changed"}
         assert final["qa"]["input_error_receipt"]["stage"] == "preconditions"
-        with ledger.lock(), pytest.raises(Refusal, match="agent_qa_input_not_admitted"):
+        with ledger.lock(), pytest.raises(Refusal, match="agent_qa_input_not_admitted|canary_daily_guard_unreconciled_or_changed"):
             original_call("qa_check", day=canary.DAY, request_digest=final["qa"]["request_digest"],
                           deadline_ms=final["qa"]["deadline_ms"])
         assert final["raw_output_digest"] == row["raw_output_digest"] and len(api.payloads) == 1
