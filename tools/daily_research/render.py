@@ -108,7 +108,7 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
                         raise Refusal("company_history_binding_required")
                 elif not day or ledger.learning_context(day, allow_create=False) is None:
                     raise Refusal("research_learning_input_required")
-        return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider"), cfg.get("publication_profile"), cfg.get("history_profile")), "enabled": cfg["enabled"],
+        return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider"), cfg.get("publication_profile"), cfg.get("history_profile"), cfg.get("mcp_profile")), "enabled": cfg["enabled"],
                 "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
     if command in {"review", "receipt", "record-cleanup"}:
         if not day or decision is None:

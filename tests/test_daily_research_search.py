@@ -20,6 +20,7 @@ from tools.daily_research.runner import (
     canonical,
     check_agent,
     configuration,
+    digest,
     preflight,
 )
 
@@ -98,6 +99,137 @@ def test_new_session_replaces_tools_without_saved_agent_or_sandbox_changes(fixtu
     assert "Native web_search only." not in payload["input"]
     assert "PERPLEXITY_API_KEY" not in canonical(payload)
     assert ledger.get(DAY)["create_payload"] == payload
+
+
+def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
+    runner, api, ledger = fixture
+    connections = [{"type": "mcp", "server_label": label,
+        "transport": {"type": "http", "server_url": url, "headers": {}},
+        "credential_id": "credential_synthetic_owner_" + label, "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+        for label, (url, _) in search.MCP_READ_TOOLS.items()]
+    api.agent["tools"].extend(deepcopy(connections))
+    original = deepcopy(api.agent)
+    with pytest.raises(Refusal, match="agent_configuration_mismatch"):
+        runner.start_or_resume()
+    assert not api.payloads and ledger.rows() == []
+    runner.config.update(mcp_profile=search.MCP_PROFILE, publication_profile="agent-owned-v1")
+    checked = preflight(api, search_provider=search.PROFILE, publication_profile="agent-owned-v1", mcp_profile=search.MCP_PROFILE)
+    assert checked["inference_started"] is False and not api.payloads and not api.executions
+    with_history = preflight(api, search_provider=search.PROFILE, publication_profile="agent-owned-v1",
+                             history_profile="agent-history-v1", mcp_profile=search.MCP_PROFILE)
+    assert with_history["session_agent_override"]["tools"] == search.tools("agent-owned-v1", "agent-history-v1") + search.mcp_tools(connections)
+    row = runner.start_or_resume()
+    payload = api.payloads[0]
+    assert payload["agent"]["tools"] == search.tools("agent-owned-v1") + search.mcp_tools(connections)
+    assert api.agent == original and payload["environment"]["network"] == {"access": "disabled"}
+    assert "vault_ids" not in payload and "headers" not in payload["environment"]
+    assert row["mcp_binding"] == connections == row["preflight"]["mcp_binding"]
+    assert payload["metadata"]["mcp_binding_digest"] == digest(connections)
+    assert ledger.get(DAY)["create_payload"] == payload
+    assert all(tool["required"] is False and tool["credential_id"] == source["credential_id"]
+        for tool, source in zip(payload["agent"]["tools"][-2:], connections, strict=True))
+    assert not any(name.startswith(("update", "slack_send", "slack_schedule"))
+        for tool in payload["agent"]["tools"][-2:] for name in tool["allowed_tools"])
+    assert [tool["name"] for tool in search.tools("agent-owned-v1", "agent-history-v1")][-2:] == [
+        "search_company_history", "fetch_company_history_record"]
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    for tool in session["agent"]["tools"][-2:]:
+        tool["transport"].pop("headers")
+    Consumer.check_session(row, session)
+    changed = deepcopy(connections)
+    changed[0]["credential_id"] += "_changed"
+    api.agent["tools"][-2:] = changed
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+    fresh = preflight(api, search_provider=search.PROFILE, mcp_profile=search.MCP_PROFILE)
+    assert fresh["mcp_binding"] == changed and row["mcp_binding"] == connections
+    assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == payload
+
+
+@pytest.mark.parametrize("change", ["headers", "metadata", "endpoint", "origin", "unknown_server", "malformed_label"])
+def test_owner_mcp_rejects_unsafe_configuration_before_intent_or_create(fixture, change):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "googlesheets",
+        "transport": {"type": "http", "server_url": search.MCP_READ_TOOLS["googlesheets"][0], "headers": {}},
+        "credential_id": "credential_synthetic_owner", "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    if change == "headers":
+        tool["transport"]["headers"] = {"Authorization": "synthetic-secret-must-not-be-retained"}
+    elif change == "metadata":
+        tool["request_metadata"] = {"token": "synthetic-secret-must-not-be-retained"}
+    elif change == "endpoint":
+        tool["transport"]["server_url"] += "/unreviewed"
+    elif change == "origin":
+        tool["connection_origin"] = "environment"
+    elif change == "unknown_server":
+        tool["server_label"] = "unreviewed"
+    else:
+        tool["server_label"] = ["googlesheets"]
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    with pytest.raises(Refusal, match="research_mcp_configuration_invalid"):
+        runner.start_or_resume()
+    assert not api.payloads and ledger.rows() == []
+
+
+@pytest.mark.parametrize("change", ["credential", "write_tool", "required", "binding", "headers", "payload"])
+def test_owner_mcp_session_uses_only_original_read_only_binding(fixture, change):
+    runner, api, _ = fixture
+    tool = {"type": "mcp", "server_label": "slack",
+        "transport": {"type": "http", "server_url": search.MCP_READ_TOOLS["slack"][0]},
+        "credential_id": "credential_synthetic_owner", "allowed_tools": ["slack_read_thread", "slack_send_message"],
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    session = api.get("session", row["session_id"])
+    assert session["agent"]["tools"][-1]["allowed_tools"] == ["slack_read_thread"]
+    if change == "credential":
+        session["agent"]["tools"][-1]["credential_id"] += "_changed"
+    elif change == "write_tool":
+        session["agent"]["tools"][-1]["allowed_tools"].append("slack_send_message")
+    elif change == "required":
+        session["agent"]["tools"][-1]["required"] = True
+    elif change == "binding":
+        row["mcp_binding"][0]["credential_id"] += "_changed"
+    elif change == "headers":
+        session["agent"]["tools"][-1]["transport"]["headers"] = {"Authorization": "synthetic-unsafe-header"}
+    else:
+        row["create_payload"]["agent"]["tools"][-1]["credential_id"] += "_changed"
+    with pytest.raises(Refusal, match="agent_search_profile_mismatch|research_mcp_binding_changed"):
+        Consumer.check_session(row, session)
+    assert not api.executions and len(api.payloads) == 1
+
+
+def test_mcp_does_not_retrofit_an_existing_legacy_session(fixture):
+    runner, api, ledger = fixture
+    row = runner.start_or_resume()
+    original = deepcopy(row["create_payload"])
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    resumed = runner.start_or_resume(allow_create=False)
+    assert resumed["create_payload"] == original and "mcp_profile" not in resumed
+    assert "mcp_binding_digest" not in resumed["metadata"] and len(api.payloads) == 1
+    assert ledger.get(DAY)["create_payload"] == original
+
+
+def test_fenced_provider_refuses_changed_mcp_profile_with_original_budget(fixture):
+    runner, api, _ = fixture
+    row = runner.start_or_resume()
+    row["mcp_profile"] = search.MCP_PROFILE
+    control = {"enabled": True, "config": {"search_provider": search.PROFILE,
+        "recurring_budget_authority_reference": row["recurring_budget_authority_reference"],
+        "soft_target_usd": row["soft_target_usd"]}}
+    calls = []
+    class Bridge:
+        def call(self, op):
+            calls.append(op)
+            return control if op == "control" else True
+    provider = FencedProvider.__new__(FencedProvider)
+    provider.ledger = type("Ledger", (), {"bridge": Bridge()})()
+    with pytest.raises(Refusal, match="disabled_or_profile_changed"):
+        provider.tool_admit(row, "research")
+    assert calls == ["assert_lease", "control"] and not api.executions
 
 
 def test_exact_pending_root_call_is_served_and_retained_then_ten_collected(fixture):

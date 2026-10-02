@@ -19,6 +19,11 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
 PROFILE = "perplexity-fast-v1"
+MCP_PROFILE = "owner-readonly-mcp-v1"
+MCP_READ_TOOLS = {
+    "googlesheets": ("https://sheetsmcp.googleapis.com/mcp/v1", ("get_values", "get_spreadsheet")),
+    "slack": ("https://mcp.slack.com/mcp", ("slack_search_public", "slack_search_channels", "slack_read_channel", "slack_read_thread")),
+}
 SEARCH = "blueprint_search"
 READ = "blueprint_read_source"
 MAX_RESPONSE = 500_000
@@ -32,6 +37,42 @@ MAX_CALLS = 500  # Resource ceiling, never a quality quota; shared research+QA.
 
 class ToolFailure(ValueError):
     """Only stable, secret-free codes may leave the application boundary."""
+
+
+def mcp_connections(declared):
+    """Retain only the existing owner connections' non-secret configuration."""
+    if not isinstance(declared, list) or any(not isinstance(tool, dict) for tool in declared):
+        raise ToolFailure("research_mcp_configuration_invalid")
+    connections, labels = [], set()
+    for tool in declared:
+        if tool.get("type") != "mcp":
+            continue
+        label, transport = tool.get("server_label"), tool.get("transport")
+        allowed = tool.get("allowed_tools")
+        if (set(tool) != {"type", "server_label", "transport", "allowed_tools", "connection_origin",
+                         "credential_id", "request_metadata", "required"}
+                or not isinstance(label, str) or label not in MCP_READ_TOOLS or label in labels
+                or not isinstance(transport, dict) or set(transport) - {"type", "server_url", "headers"}
+                or transport.get("type") != "http" or transport.get("server_url") != MCP_READ_TOOLS[label][0]
+                or transport.get("headers", {}) != {} or tool["request_metadata"] != {}
+                or tool["connection_origin"] != "service" or type(tool["required"]) is not bool
+                or not isinstance(tool["credential_id"], str)
+                or not re.fullmatch(r"credential_[A-Za-z0-9_-]{1,150}", tool["credential_id"])
+                or allowed is not None and (not isinstance(allowed, list) or any(not isinstance(x, str) for x in allowed)
+                                            or len(allowed) != len(set(allowed)))):
+            raise ToolFailure("research_mcp_configuration_invalid")
+        labels.add(label)
+        connections.append(json.loads(json.dumps(tool, allow_nan=False)))
+    if not connections:
+        raise ToolFailure("research_mcp_connection_missing")
+    return connections
+
+
+def mcp_tools(connections):
+    """Narrow session calls without altering the owner's saved connections."""
+    return [{**tool, "allowed_tools": [name for name in MCP_READ_TOOLS[tool["server_label"]][1]
+             if tool["allowed_tools"] is None or name in tool["allowed_tools"]]}
+            for tool in mcp_connections(connections)]
 
 
 @contextmanager

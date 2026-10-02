@@ -72,7 +72,7 @@ class QAAPI(FakeAPI):
         return canonical(self.qa_result).encode() if aid == "artifact_qa" else super().artifact(sid, aid)
 
 
-def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False):
+def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False, mcp=False):
     crm = tmp_path / "crm.json"
     save_json(crm, {"sheet_id": SHEET, "complete": True, "captured_at": NOW.isoformat(),
                     "values": [["CRM"], [], [], [], HEADERS]})
@@ -114,7 +114,7 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         proposal = delta()
         proposal["evidence"][0].update(classification="operator", evidence_level=None)
         output["proposed_knowledge_deltas"] = [proposal]
-    if publication or history:
+    if publication or history or mcp:
         from tools.daily_research import search
         cfg.update(search_provider=search.PROFILE,
             discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800, qa_reserved_seconds=600,
@@ -129,6 +129,13 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
             "completion_state": "coverage_complete"}
         api.search_binding_present = lambda: True
         api.agent["instructions"] = "Reviewed research; no outreach or sends."
+        if mcp:
+            cfg["mcp_profile"] = search.MCP_PROFILE
+            api.agent["tools"].extend({"type": "mcp", "server_label": label,
+                "transport": {"type": "http", "server_url": url, "headers": {}},
+                "credential_id": "credential_synthetic_owner_" + label, "allowed_tools": None,
+                "connection_origin": "service", "required": False, "request_metadata": {}}
+                for label, (url, _) in search.MCP_READ_TOOLS.items())
         original_get = api.get
         def selected_get(resource, rid):
             value = original_get(resource, rid)
@@ -156,6 +163,27 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
 @pytest.fixture
 def fixture(tmp_path):
     yield from consumer_setup(tmp_path)
+
+
+def test_charged_mcp_session_completes_qa_under_original_scope_after_owner_connections_change(tmp_path):
+    generator = consumer_setup(tmp_path, publication=True, mcp=True)
+    consumer, api, ledger, _, _ = next(generator)
+    try:
+        original = ledger.get(DAY)
+        agent_reads = len([call for call in api.calls if call[:2] == ("GET", "agent")])
+        api.agent["tools"][-1]["credential_id"] += "_owner_changed"
+        api.agent["tools"].append({"type": "mcp", "server_label": "future_owner_connection"})
+        assert consumer.step()["state"] == "reviewed"
+        recovered = ledger.get(DAY)
+        assert recovered["mcp_binding"] == original["mcp_binding"]
+        assert recovered["create_payload"] == original["create_payload"] and recovered["metadata"] == original["metadata"]
+        assert len(api.payloads) == 1 and api.inputs == [("sess_1", "blueprint-researcher:" + DAY + ":qa")]
+        assert len([call for call in api.calls if call[:2] == ("GET", "agent")]) == agent_reads
+    finally:
+        try:
+            next(generator)
+        except StopIteration:
+            pass
 
 
 def test_automatic_qa_exact_artifact_review_and_private_export(fixture, tmp_path):

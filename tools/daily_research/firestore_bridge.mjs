@@ -173,6 +173,8 @@ export class Store {
       }
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      if(row.mcp_profile && (row.mcp_profile!=='owner-readonly-mcp-v1'
+          || valueHash(row.mcp_binding)!==row.metadata?.mcp_binding_digest)) refuse('research_mcp_binding_changed');
       const historyBinding=row.history_profile==='agent-history-v1'?valueHash(row.history_binding):null;
       if(row.history_profile && row.history_profile!=='agent-history-v1') refuse('company_history_profile_invalid');
       if(prior.exists && ((prior.data().history_profile || null)!==(row.history_profile || null)
@@ -392,6 +394,8 @@ export class Store {
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
       this.budgetGate(control, snap.data());
+      if(metadata.mcp_binding_digest && control.config?.mcp_profile!=='owner-readonly-mcp-v1')
+        refuse('research_mcp_profile_changed');
       if(snap.data().history_profile==='agent-history-v1') {
         if(control.config?.history_profile!=='agent-history-v1' || control.learning?.enabled!==true
             || snap.data().history_binding_digest!==valueHash(control.learning)
