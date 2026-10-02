@@ -433,7 +433,8 @@ def collect_completed_qa(bridge, cache, *, api_factory=None, stopped=lambda: Fal
                                                       or previous.get("error") != "agent_qa_terminal_collection_unavailable"))
                             or (stage != "before_cancel" and (previous.get("cancel_attempted") is not True
                                 or previous.get("error") != proof["cancellation_reason"]
-                                or previous.get("cancel_idempotency_key") != row["run_key"] + ":qa:retry-phase:cancel"
+                                or (stage == "cancel_intent" and previous.get("cancel_idempotency_key") is not None)
+                                or (stage == "cancel_reply" and previous.get("cancel_idempotency_key") != row["run_key"] + ":qa:retry-phase:cancel")
                                 or previous.get("cancel_reply_received") is not (stage == "cancel_reply")))):
                         raise Refusal("terminal_qa_collection_ordering_changed")
                     ordering.append(binding["created_at"]["seconds"] + binding["created_at"]["nanoseconds"] / 1e9)

@@ -1,6 +1,7 @@
 """503 replay lifecycle against the real fenced bridge; no network/credentials."""
 import base64
 import hashlib
+import json
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
@@ -505,6 +506,9 @@ def terminal_native_fixture(fixture, monkeypatch):
         previous["qa"]["cancel_reply_received"] = stage == "cancel_reply"
         if stage == "before_cancel":
             previous["qa"]["error"] = "agent_qa_terminal_collection_unavailable"
+        if stage == "cancel_intent":
+            # Native a2302b44: 210d wrote intent before assigning the operation key.
+            previous["qa"]["cancel_idempotency_key"] = None
         sha = blob(previous, deadline + timedelta(seconds=number))
         proof["ordering_blobs"].append({"stage": stage, "sha256": sha, "created_at": blobs[sha]["created_at"]})
     original_call = bridge.call
@@ -554,7 +558,7 @@ def render_export(bridge, destination):
     return export_snapshot(bridge, canary.DAY, destination)
 
 
-@pytest.mark.parametrize("change", ["row", "artifact", "provider", "early", "stopped", "disabled", "evidence", "authority_race", "creation_time", "ordering_bytes"])
+@pytest.mark.parametrize("change", ["row", "artifact", "provider", "early", "stopped", "disabled", "evidence", "authority_race", "creation_time", "ordering_bytes", "intent_key", "reply_key"])
 def test_native_terminal_collection_refuses_drift_and_never_resets_cancellation(fixture, monkeypatch, change):
     bridge, ledger, api, cache, clock, source, proof, posts = terminal_native_fixture(fixture, monkeypatch)
     stopped = lambda: False
@@ -599,6 +603,20 @@ def test_native_terminal_collection_refuses_drift_and_never_resets_cancellation(
                     else:
                         result["bytes"] = base64.b64encode(canonical(source).encode()).decode()
                 return result
+            monkeypatch.setattr(bridge, "call", call)
+        elif change in {"intent_key", "reply_key"}:
+            original_call = bridge.call
+            binding = proof["ordering_blobs"][1 if change == "intent_key" else 2]
+            modified = original_call("blob_receipt", hash=binding["sha256"])
+            value = json.loads(base64.b64decode(modified["bytes"]))
+            value["qa"]["cancel_idempotency_key"] = source["run_key"] + ":qa:retry-phase:cancel" if change == "intent_key" else None
+            raw = canonical(value).encode()
+            binding["sha256"] = modified["sha256"] = hashlib.sha256(raw).hexdigest()
+            modified["bytes"] = base64.b64encode(raw).decode()
+            def call(op, **fields):
+                if op == "blob_receipt" and fields["hash"] == modified["sha256"]:
+                    return deepcopy(modified)
+                return original_call(op, **fields)
             monkeypatch.setattr(bridge, "call", call)
         else:
             with ledger.lock():
