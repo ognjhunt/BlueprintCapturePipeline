@@ -110,6 +110,22 @@ test('long QA brief is published losslessly in bounded Notion blocks and exact r
   assert.equal(f.writes.filter(x=>x.destination==='notion').length,1);
 });
 
+test('terminal collection receipt is immutable and publication authority is checked again before claim',async()=>{
+  const f=await fixture(),r=await f.store.get(f.r.date);
+  r.qa.terminal_collection_recovery={native_receipt:{synthetic:true},previous_qa:{cancel_attempted:true},
+    workflow_authority:structuredClone(f.db.values.get(ROOT).workflow)};
+  await f.store.put(r);
+  f.publisher.reconcile=async()=>{
+    f.db.values.get(ROOT).workflow.publication_authority_reference='different-approved-scope';
+    return null;
+  };
+  await assert.rejects(f.store.publish(r.date),/publication_authority_changed/);
+  assert.equal(f.writes.length,0);
+  assert.equal(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_claimed?.notion,undefined);
+  const changed=structuredClone(r);changed.qa.terminal_collection_recovery.previous_qa.cancel_attempted=false;
+  await assert.rejects(f.store.put(changed),/qa_terminal_collection_already_bound/);
+});
+
 for(const destination of ['notion','sheets']) test(`lost ${destination} reply restarts with GET-only reconciliation`,async()=>{
   const f=await fixture();
   if(destination==='sheets') {

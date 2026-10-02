@@ -1,4 +1,5 @@
 """503 replay lifecycle against the real fenced bridge; no network/credentials."""
+import hashlib
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
@@ -17,7 +18,7 @@ from tests.test_daily_research_runner import DAY
 from tools.daily_research import qa_retry, recovery
 from tools.daily_research.consumer import Consumer
 from tools.daily_research.firestore import Bridge, FencedProvider, FirestoreLedger
-from tools.daily_research.runner import Refusal, digest
+from tools.daily_research.runner import Refusal, canonical, digest, instant
 
 _fixture = fixture  # Imported pytest fixture, retained without a second setup implementation.
 ERROR = {"stage": "provider_submission", "class": "InternalServerError", "http_status": 503,
@@ -451,3 +452,124 @@ def test_long_retry_after_keeps_accepted_daily_work_observed_and_cancelled_on_re
         assert durable.get(DAY)["qa"]["deadline_ms"] == row["qa"]["deadline_ms"]
     finally:
         restarted.close()
+
+
+def terminal_native_fixture(fixture, monkeypatch):
+    bridge, ledger, api, cache, _consumer, _provider, clock, tick, _old, posts = retained_503(fixture, monkeypatch)
+    arm(ledger, api, clock)
+    accept(api, ledger, clock)
+    original_listing = api.listing
+    def listing(resource, sid=None):
+        values = original_listing(resource, sid)
+        if resource == "items":
+            values.append({"id": "synthetic_qa_item", "turn_id": "turn_qa", "type": "application_tool_result"})
+        return values
+    api.listing = listing
+    api.qa_result["summary"] = ("Synthetic supported source https://plant.example/tasks; intent unknown. " * 120)[:7301]
+    api.qa_result["checks"][0]["reason"] = ("Synthetic employer/task affiliation checked; buying interest unproven. " * 20)[:1103]
+    raw = canonical(api.qa_result).encode()
+    turns, items, artifacts = [api.listing(k, "sess_1") for k in ("turns", "items", "artifacts")]
+    completed = next(t["completed_at"] for t in turns if t["id"] == "turn_qa")
+    with ledger.lock():
+        row = ledger.get(canary.DAY)
+        qa = row["qa"]
+        qa.update(state="qa_cancel_pending", turn_id="turn_qa", turn_status="completed",
+                  artifact_digest=hashlib.sha256(raw).hexdigest(), cancel_attempted=True,
+                  cancel_reply_received=True, cancel_idempotency_key=row["run_key"] + ":qa:retry-phase:cancel",
+                  error="canary_total_observation_deadline", observation_failures=3,
+                  evidence_digest=digest([i for i in items if i.get("turn_id") == "turn_qa"]))
+        qa.pop("cancel_record", None)  # Faithful legacy receipt: exact request time was never recorded.
+        ledger.write_bytes(canary.DAY + "-qa.json", raw)
+        ledger.write_json(canary.DAY + "-qa-evidence.json", [i for i in items if i.get("turn_id") == "turn_qa"])
+        ledger.put(row)
+    deadline = canary.qa_deadline(row, {})
+    proof = deepcopy(canary.TERMINAL_QA_RECEIPT)
+    proof.update(source_row_digest=digest(row), session_id="sess_1", qa_turn_id="turn_qa",
+                 qa_artifact_sha256=hashlib.sha256(raw).hexdigest(), completed_at=completed,
+                 phase_started_at=row["qa_retry_continuation"]["started_at"], phase_deadline=deadline.isoformat(),
+                 cancellation_not_before=deadline.isoformat(),
+                 inventory={"turns": len(turns), "items": len(items), "artifacts": len(artifacts)})
+    monkeypatch.setattr(canary, "TERMINAL_QA_RECEIPT", proof)
+    tick(deadline + timedelta(seconds=5))
+    for method in ("create", "qa_input", "qa_retry_input", "cancel", "repair_input"):
+        monkeypatch.setattr(api, method, lambda *a, **k: pytest.fail("terminal collection must not mutate provider"), raising=False)
+    return bridge, ledger, api, cache, clock, row, proof, posts
+
+
+def test_native_terminal_collection_retains_late_cancel_long_prose_and_publishes_without_inference(fixture, monkeypatch, tmp_path):
+    bridge, ledger, api, cache, clock, source, proof, posts = terminal_native_fixture(fixture, monkeypatch)
+    origin = bridge.call("origin")
+    try:
+        result = canary.collect_completed_qa(bridge, cache, api_factory=lambda *_: api, clock=lambda: clock["now"])
+        assert result["state"] == "completed" and result["provider_mutations"] == 0
+        row = ledger.get(canary.DAY)
+        receipt = row["qa"]["terminal_collection_recovery"]
+        assert receipt["native_receipt"] == proof and receipt["previous_qa"] == source["qa"]
+        for key in ("cancel_attempted", "cancel_idempotency_key", "cancel_reply_received", "error", "observation_failures"):
+            assert row["qa"][key] == source["qa"][key]
+        assert row["qa"].get("cancel_record") is None and proof["cancellation_requested_at"] is None
+        assert len(row["review"]["summary"]) == 7301
+        assert api.qa_result["checks"][0]["reason"] in ledger.read_bytes(canary.DAY + "-qa.json").decode()
+        assert row["delivery"]["notion"]["payload"]["summary"].endswith(row["review"]["summary"])
+        assert all(d["receipt"]["readback_verified"] for d in row["delivery"].values())
+        assert all(c["qualification_status"] == "unqualified" for c in row["delivery"]["sheets"]["payload"]["candidates"])
+        assert bridge.call("origin") == origin and posts == []
+        assert render_export(bridge, tmp_path / "collection-export")["missing_files"] == []
+        replay = canary.collect_completed_qa(bridge, cache, api_factory=lambda *_: api, clock=lambda: clock["now"])
+        assert replay["state"] == "completed" and ledger.get(canary.DAY) == row and posts == []
+        with ledger.lock(), pytest.raises(Refusal, match="terminal_collection_already_bound"):
+            changed = deepcopy(row)
+            changed["qa"]["terminal_collection_recovery"]["native_receipt"]["completed_at"] += 1
+            ledger.put(changed)
+    finally:
+        bridge.close()
+
+
+def render_export(bridge, destination):
+    from tools.daily_research.render import export_snapshot
+    return export_snapshot(bridge, canary.DAY, destination)
+
+
+@pytest.mark.parametrize("change", ["row", "artifact", "provider", "early", "stopped", "disabled", "evidence", "authority_race"])
+def test_native_terminal_collection_refuses_drift_and_never_resets_cancellation(fixture, monkeypatch, change):
+    bridge, ledger, api, cache, clock, source, proof, posts = terminal_native_fixture(fixture, monkeypatch)
+    stopped = lambda: False
+    try:
+        if change == "row":
+            proof["source_row_digest"] = "0" * 64
+        elif change == "early":
+            proof["cancellation_not_before"] = (instant(proof["phase_deadline"]) - timedelta(seconds=1000)).isoformat()
+        elif change == "artifact":
+            api.qa_result["summary"] += "different"
+        elif change == "provider":
+            api.session_status = "in_progress"
+        elif change == "evidence":
+            original = api.listing
+            def listing(resource, sid=None):
+                values = original(resource, sid)
+                if resource == "items":
+                    values[0]["altered"] = True
+                return values
+            api.listing = listing
+        elif change == "stopped":
+            stopped = lambda: True
+        elif change == "authority_race":
+            original_call = bridge.call
+            def call(op, **fields):
+                result = original_call(op, **fields)
+                if op == "refresh_crm":
+                    control = original_call("control")
+                    control["workflow"]["qa_authority_reference"] = "different-approved-scope"
+                    original_call("configure", value=control)
+                return result
+            monkeypatch.setattr(bridge, "call", call)
+        else:
+            with ledger.lock():
+                control = bridge.call("control")
+                control["workflow"]["enabled"] = False
+                bridge.call("configure", value=control)
+        with pytest.raises(Refusal, match="terminal_qa_collection_|workflow_authority_missing"):
+            canary.collect_completed_qa(bridge, cache, api_factory=lambda *_: api, stopped=stopped, clock=lambda: clock["now"])
+        assert ledger.get(canary.DAY) == source and posts == []
+    finally:
+        bridge.close()

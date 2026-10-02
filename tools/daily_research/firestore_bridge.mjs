@@ -139,10 +139,13 @@ export class Store {
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
       const retryPhase = row.qa_retry_continuation ? sha(Buffer.from(JSON.stringify(row.qa_retry_continuation))) : null;
       const submissionBinding = row.qa?.submission_binding ? sha(Buffer.from(JSON.stringify(row.qa.submission_binding))) : null;
+      const terminalCollection = row.qa?.terminal_collection_recovery ? sha(Buffer.from(JSON.stringify(row.qa.terminal_collection_recovery))) : null;
       if (prior.data()?.qa_retry_phase_digest && prior.data().qa_retry_phase_digest !== retryPhase)
         refuse('qa_retry_phase_already_bound');
       if (prior.data()?.qa_submission_binding_digest && prior.data().qa_submission_binding_digest !== submissionBinding)
         refuse('qa_submission_already_bound');
+      if (prior.data()?.qa_terminal_collection_digest && prior.data().qa_terminal_collection_digest !== terminalCollection)
+        refuse('qa_terminal_collection_already_bound');
       const retry = row.qa?.input_retries?.at(-1);
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
@@ -154,6 +157,7 @@ export class Store {
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
         qa_retry_phase_digest: retryPhase,
         qa_submission_binding_digest: submissionBinding,
+        qa_terminal_collection_digest: terminalCollection,
         qa_retry_deadline_ms: row.qa_retry_continuation ? Date.parse(row.qa_retry_continuation.started_at) + 600000 : row.qa?.submission_binding?.deadline_ms || null,
         qa_retry_workflow_authority: row.qa_retry_continuation ? null : row.qa?.submission_binding?.authority_reference || null,
         qa_retry_number: retry?.number || null, qa_retry_key: retry?.idempotency_key || null,
@@ -326,9 +330,11 @@ export class Store {
     });
   }
   async publish(day) {
-    await this.assertLease(); this.workflowGate((await this.control.get()).data());
+    await this.assertLease(); const initialControl=(await this.control.get()).data();this.workflowGate(initialControl);
     if (!this.publisher) refuse('publication_binding_unavailable');
     const row=await this.get(day);
+    const collectionAuthority=row?.qa?.terminal_collection_recovery?.workflow_authority;
+    if (collectionAuthority && !same(collectionAuthority,initialControl.workflow)) refuse('publication_authority_changed');
     const destination=['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
     if (!destination) return null;
     const d=row.delivery[destination];
@@ -340,6 +346,7 @@ export class Store {
       if (before.data().publication_claimed?.[destination]) return null; // uncertain: GET reconciliation only
       await this.transaction(async tx=>{
         const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control);
+        if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || run.publication_claimed?.[destination]) refuse('publication_attempt_not_admitted');
         tx.set(ref,{publication_claimed:{...run.publication_claimed,[destination]:d.plan.request_digest}},{merge:true});
