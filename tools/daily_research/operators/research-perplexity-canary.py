@@ -166,6 +166,19 @@ def diagnose_saved_output(ledger, cfg, *, now=None):
             "candidate_count": len(output.get("candidates", [])), "finding_count": len(output.get("findings", [])),
             "knowledge_delta_count": len(output.get("proposed_knowledge_deltas", [])),
             "blocker_count": len(output.get("blockers", [])), "coverage_digest": digest(output.get("coverage")),
+            "coverage": output.get("coverage"),
+            "root_tool_trace": [{"call_id": key, "name": call.get("request", {}).get("name"),
+                                 "query": call.get("request", {}).get("arguments", {}).get("query"),
+                                 "url": call.get("request", {}).get("arguments", {}).get("url"),
+                                 "state": call.get("state"), "result_digest": call.get("result_digest")}
+                                for key, call in list(row.get("application_tool_calls", {}).items())[:100]
+                                if call.get("phase") == "research"],
+            "root_tool_trace_complete": len(row.get("application_tool_calls", {})) <= 100,
+            "prompt_constraints": {"legacy_three_candidate_limit": "Find up to THREE" in payload_input,
+                                   "legacy_two_search_limit": "at most two searches and two page opens" in payload_input,
+                                   "ten_opportunity_target": "Target at least 10 NEW" in payload_input,
+                                   "no_count_stopping_rule": "no prospect-count stopping rule" in payload_input,
+                                   "defined_scope_required": "Define this run's concrete task/industry/region hypotheses" in payload_input},
             "application_tool_usage": row.get("application_tool_usage"),
             "input_sha256": hashlib.sha256(payload_input.encode()).hexdigest(),
             "knowledge_context_attached": canonical(canonical(context)) in payload_input,
@@ -531,7 +544,7 @@ def record_cleanup(bridge, cache, receipt, *, api_factory=FencedProvider):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa"])
+    parser.add_argument("command", choices=["inspect", "stage", "execute", "reconcile", "status", "export", "record-cleanup", "abandon-unstarted", "recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered"])
     parser.add_argument("--package", required=True)
     parser.add_argument("--archive", required=True)
     parser.add_argument("--approval")
@@ -549,7 +562,7 @@ def main():
         select_attempt(args.attempt, args.date)
     elif args.date is not None:
         raise Refusal("baseline_attempt_identity_invalid")
-    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa"}
+    repair_command = args.command in {"recover-output", "diagnose-output", "reprice", "authorize-recovered-qa", "resume-qa", "export-recovered"}
     repair_arguments = (args.repair_package, args.repair_archive, args.repair_source, args.repair_sha256)
     if repair_command != all(repair_arguments) or not repair_command and any(repair_arguments):
         raise Refusal("repair_package_required_or_command_not_admitted")
@@ -620,6 +633,10 @@ def main():
                 # This explicitly paid command is distinct from diagnosis,
                 # repricing and packet recovery, and has no root-create path.
                 result = run(bridge, cache, recovery_only=True, stopped=lambda: stop["requested"])
+            elif args.command == "export-recovered":
+                if not args.output or not FirestoreLedger(bridge).get(DAY).get("output_recovery"):
+                    raise Refusal("recovered_export_requires_output_and_receipt")
+                result = render.export_snapshot(bridge, DAY, args.output)
             elif args.command == "abandon-unstarted":
                 if not BASELINE:
                     raise Refusal("canary_baseline_not_selected")

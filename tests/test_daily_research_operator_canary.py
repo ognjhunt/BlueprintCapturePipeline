@@ -929,15 +929,26 @@ def test_recovered_qa_has_its_own_bounded_window_without_resetting_research(fixt
         armed = canary.authorize_recovered_qa(bridge, receipt, clock=lambda: later)
         assert canary.qa_deadline(armed, {}) == later + timedelta(seconds=600)
         assert canary.authorize_recovered_qa(bridge, receipt, clock=lambda: later + timedelta(minutes=5)) == armed
-        original_listing = api.listing
+        original_listing, original_input = api.listing, api.qa_input
+        state = {'qa': 'in_progress'}
         def listing(resource, sid=None):
             values = original_listing(resource, sid)
             for turn in values if resource == 'turns' else []:
                 if turn['id'] == 'turn_qa':
+                    turn['status'] = state['qa']
                     turn['completed_at'] = int(later.timestamp()) + 20
             return values
-        api.listing = listing
-        result = canary.run(bridge, cache, recovery_only=True, api_factory=lambda *_: api, clock=lambda: later)
+        def qa_input(*args):
+            original_input(*args)
+            api.actions = [{'type': 'function_call', 'turn_id': 'turn_qa', 'call_id': 'recovered_qa_search',
+                            'name': canary.search.SEARCH, 'arguments': {'query': 'Synthetic recovered QA source'}}]
+        def tick(_):
+            assert not api.cancellations
+            if api.result_events:
+                state['qa'], api.actions = 'completed', []
+        api.listing, api.qa_input = listing, qa_input
+        result = canary.run(bridge, cache, recovery_only=True, api_factory=lambda *_: api, clock=lambda: later, sleep=tick)
+        assert len(api.executions) == len(api.result_events) == 1 and not api.cancellations
         assert result['state'] == 'completed' and len(api.payloads) == len(api.inputs) == 1
         final = ledger.get(canary.DAY)
         assert {key: final.get(key) for key in before} == before
@@ -980,3 +991,25 @@ def test_saved_artifact_diagnosis_checks_actual_bindings_without_store_writes(fi
     assert result['store_writes'] == result['provider_mutations'] == 0
     assert canary.digest(ledger.get(canary.DAY)) == before
     assert 'candidate_count' in result and not result['newness_verified']
+
+
+def test_recovery_receipt_is_immutable_even_when_crash_precedes_row_pointer(fixture, monkeypatch):
+    bridge, ledger, api, receipt, plan, cache, _, _, _ = fixture
+    canary.stage(bridge, plan, receipt)
+    api.raw = canonical(null_operator_output(api)).encode()
+    cfg = canary.render.configured(bridge, cache)
+    row = Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()
+    original_put = ledger.put
+    def crash(_):
+        raise RuntimeError('synthetic crash after derivation file commit')
+    monkeypatch.setattr(ledger, 'put', crash)
+    runner = Runner(ledger, cfg, None, clock=lambda: NOW)
+    with pytest.raises(RuntimeError, match='synthetic crash'):
+        runner.recover_output(canary.DAY, recovery_receipt(row))
+    raw = ledger.read_bytes(canary.DAY + '-recovery.json')
+    assert not ledger.get(canary.DAY).get('output_recovery')
+    with ledger.lock(), pytest.raises(Refusal, match='artifact_identity_conflict'):
+        ledger.write_bytes(canary.DAY + '-recovery.json', b'{}')
+    assert ledger.read_bytes(canary.DAY + '-recovery.json') == raw
+    monkeypatch.setattr(ledger, 'put', original_put)
+    assert runner.recover_output(canary.DAY, recovery_receipt(row))['state'] == 'awaiting_review'

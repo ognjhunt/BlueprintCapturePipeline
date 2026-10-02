@@ -153,7 +153,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
