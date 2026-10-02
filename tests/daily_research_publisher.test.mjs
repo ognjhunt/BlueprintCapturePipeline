@@ -558,13 +558,167 @@ async function agentFixture(summary='Full canonical supported research; interest
   return f;
 }
 
+async function stoppedTerminalSheetsFixture() {
+  const f=await agentFixture(),choice={destination:'sheets',strategy:'concise',summary:'Original display request'};
+  const outcome=await f.action('blueprint_publish_research',choice),r=await f.store.get(f.r.date);
+  const call=Object.values(r.application_tool_calls).at(-1),id=call.request.call_id;
+  const event={type:'agent.session.input.tool_result',turn_id:r.publication.turn_id,call_id:id,success:false,output:JSON.stringify(outcome)};
+  const raw=JSON.stringify(event)+'\n',filename=r.date+'-tool-'+id+'.json';
+  await f.store.filePut(filename,Buffer.from(raw).toString('base64'));
+  Object.assign(call,{result_file:filename,result_sha256:sha(raw),result_digest:valueDigest(event),success:false,result_acknowledged:true});
+  r.turn_id='research-turn';r.packet.candidates[0].candidate_key='candidate-one';r.packet_digest=valueDigest(r.packet);
+  const qa={packet_digest:r.packet_digest,source_support_verified:true,accepted_keys:['candidate-one']},qaRaw=JSON.stringify(qa)+'\n';
+  r.qa={state:'validated',turn_id:'qa-turn',artifact_file:r.date+'-qa.json',artifact_digest:sha(qaRaw)};
+  await f.store.filePut(r.qa.artifact_file,Buffer.from(qaRaw).toString('base64'));
+  Object.assign(r.review,{packet_digest:r.packet_digest,accepted_keys:['candidate-one'],qa_artifact_digest:r.qa.artifact_digest,
+    reviewer_reference:`agent-turn:${r.session_id}:qa-turn`});r.qa.decision=structuredClone(r.review);
+  r.delivery.sheets.payload.candidates=structuredClone(r.packet.candidates);
+  r.delivery.sheets.payload_json=JSON.stringify(r.delivery.sheets.payload);r.delivery.sheets.payload_digest=sha(r.delivery.sheets.payload_json);
+  r.delivery.notion.state='acknowledged';r.delivery.notion.receipt={destination:'notion',key:r.run_key+':notion',
+    payload_digest:r.delivery.notion.payload_digest,readback_verified:true,reference:'notion:verified-fixture-page'};
+  Object.assign(r.publication,{turn_status:'completed',state:'agent_finished_without_complete_receipts',
+    completed_at:Math.floor(f.time.now/1000),evidence_file:r.date+'-publication-evidence.json',evidence_digest:valueDigest([])});
+  await f.store.filePut(r.publication.evidence_file,Buffer.from('[]\n').toString('base64'));
+  await f.store.put(r);
+  const control=f.db.values.get(ROOT);control.enabled=false;control.config={enabled:false};f.store.schedulerStopped=true;
+  f.time.now+=120000;
+  f.request={op:'recover_terminal_sheets',day:r.date,source_row_blob:f.db.values.get(`${ROOT}/runs/${r.date}`).blob,
+    payload_digest:r.delivery.sheets.payload_digest,rejected_call_id:id,publication_authority_reference:r.publication.authority_reference};
+  f.original=structuredClone(r);return f;
+}
+
+test('stopped terminal Sheets recovery appends once and retains exact agent terminal and rejection history',async()=>{
+  const f=await stoppedTerminalSheetsFixture();
+  const result=await f.store.dispatch(f.request);assert.equal(result.state,'acknowledged');assert.equal(f.writes.length,1);
+  assert.equal(f.pages.length,0);assert.deepEqual((await f.store.get(f.r.date)).publication,f.original.publication);
+  assert.deepEqual((await f.store.get(f.r.date)).application_tool_calls,f.original.application_tool_calls);
+  assert.equal((await f.store.get(f.r.date)).state,'reviewed');
+  assert.equal(f.db.values.get(ROOT).enabled,false);assert.equal(f.db.values.get(ROOT).config.enabled,false);
+  const recovery=f.db.values.get(result.recovery_ref);assert.equal(recovery.schema_version,'blueprint.terminal-sheets-recovery.v1');
+  assert.ok(Date.parse(recovery.readback_at)>f.original.publication.deadline_ms);
+  assert.equal((await f.store.dispatch(f.request)).state,'acknowledged');assert.equal(f.writes.length,1);
+});
+
+for(const change of ['root','config','scheduler','authority','source','payload','late','running','canary','qa','rejection','lease','destination'])
+  test('stopped terminal recovery refuses '+change+' without any append',async()=>{
+    const f=await stoppedTerminalSheetsFixture();
+    if(change==='root') f.db.values.get(ROOT).enabled=true;
+    if(change==='config') f.db.values.get(ROOT).config.enabled=true;
+    if(change==='scheduler') f.store.schedulerStopped=false;
+    if(change==='authority') f.db.values.get(ROOT).workflow.publication_authority_reference='different';
+    if(change==='payload') f.request.payload_digest='a'.repeat(64);
+    if(change==='lease') f.time.now+=180000;
+    if(change==='destination') f.request.destination='notion';
+    if(['source','late','running','canary','qa','rejection'].includes(change)) {
+      const r=await f.store.get(f.r.date);
+      if(change==='source') r.review.summary='changed';
+      if(change==='late') r.publication.completed_at=Math.ceil(r.publication.deadline_ms/1000)+1;
+      if(change==='running') r.publication.turn_status='in_progress';
+      if(change==='canary') r.canary={baseline:{}};
+      if(change==='qa') r.review.accepted_keys=['not-accepted'];
+      if(change==='rejection') r.application_tool_calls[f.request.rejected_call_id].request.arguments.strategy='full';
+      await f.store.put(r);
+      if(change!=='source') f.request.source_row_blob=f.db.values.get(`${ROOT}/runs/${r.date}`).blob;
+    }
+    await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_|firestore_lease_lost/);
+    assert.equal(f.writes.length,0);
+  });
+
+test('an unknown terminal Sheets append is reconciled only; absent readback never licenses another append',async()=>{
+  const f=await stoppedTerminalSheetsFixture();f.faults.lost=true;
+  await assert.rejects(f.store.dispatch(f.request),/publication_attempt_unresolved/);
+  assert.equal(f.writes.length,1);
+  assert.equal((await f.store.dispatch(f.request)).state,'acknowledged');assert.equal(f.writes.length,1);
+  const g=await stoppedTerminalSheetsFixture();
+  g.publisher.write=async()=>{g.writes.push({destination:'sheets'});throw new Error('unknown acceptance');};
+  await assert.rejects(g.store.dispatch(g.request),/publication_attempt_unresolved/);
+  assert.equal((await g.store.dispatch(g.request)).state,'readback_pending');assert.equal(g.writes.length,1);
+});
+
+for(const change of ['root','lease','source']) test('terminal recovery rechecks '+change+' after claim and before append',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),original=f.publisher.reconcile.bind(f.publisher);
+  f.publisher.reconcile=async(...args)=>{
+    const result=await original(...args);
+    if(change==='root') f.db.values.get(ROOT).enabled=true;
+    if(change==='lease') f.time.now+=180000;
+    if(change==='source') f.db.values.get(`${ROOT}/runs/${f.r.date}`).blob='f'.repeat(64);
+    return result;
+  };
+  await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_|firestore_lease_lost|publication_(?:attempt_not_admitted|authority_or_plan_changed)/);
+  assert.equal(f.writes.length,0);
+});
+
+test('terminal recovery rechecks the stopped flag after the final CRM read before append',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),read=f.publisher.crmReader;let reads=0;
+  f.publisher.crmReader=async()=>{const result=await read();if(++reads===3) f.db.values.get(ROOT).enabled=true;return result;};
+  await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_not_admitted/);
+  assert.equal(f.writes.length,0);assert.ok(f.db.values.get(`${ROOT}/runs/${f.r.date}`).publication_claimed.sheets);
+});
+
+test('terminal recovery refuses a source change during plan preparation without overwriting it',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),prepare=f.publisher.prepare.bind(f.publisher);
+  f.publisher.prepare=async(...args)=>{
+    const plan=await prepare(...args),changed=await f.store.get(f.r.date);
+    changed.review.summary='Concurrent source owner change';await f.store.put(changed);return plan;
+  };
+  await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_source_changed/);
+  assert.equal(f.writes.length,0);assert.equal((await f.store.get(f.r.date)).review.summary,'Concurrent source owner change');
+  assert.equal((await f.store.get(f.r.date)).delivery.sheets.plan,undefined);
+});
+
+test('terminal recovery refuses a source change before receipt commit without overwriting or appending twice',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),put=f.store.blobPut.bind(f.store);let changed=false;
+  f.store.blobPut=async encoded=>{
+    const hash=await put(encoded),value=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+    if(!changed && value.delivery?.sheets?.state==='acknowledged') {
+      changed=true;const latest=await f.store.get(f.r.date);latest.review.summary='Concurrent receipt source change';await f.store.put(latest);
+    }
+    return hash;
+  };
+  await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_source_changed/);
+  assert.equal(f.writes.length,1);assert.equal((await f.store.get(f.r.date)).review.summary,'Concurrent receipt source change');
+  assert.equal((await f.store.get(f.r.date)).delivery.sheets.state,'pending');
+});
+
 test('agent-owned publication requires explicit choice; inspect returns full approved source without provider writes',async()=>{
   const f=await agentFixture('Retained complete supported finding '.repeat(5000));
   await assert.rejects(f.store.publish(f.r.date),/publication_agent_choice_required/);
   const out=await f.action('blueprint_inspect_publication');assert.equal(out.success,true);
   assert.equal(out.output.destinations.notion.payload.summary,f.r.delivery.notion.payload.summary);
   assert.equal(out.output.transport_limits.notion.blocks_per_request,90);
+  assert.deepEqual(out.output.presentation_rules.sheets.strategies,['full']);
+  assert.equal(out.output.presentation_rules.sheets.summary,'must_be_absent');
   assert.deepEqual(f.writes,[]);assert.equal(out.output.destinations.sheets.claimed,false);
+});
+
+test('invalid Sheets presentation returns actionable fields without claims or writes, then full succeeds',async()=>{
+  const f=await agentFixture(),original=structuredClone(f.r.delivery.sheets);
+  for(const choice of [{destination:'sheets',strategy:'concise',summary:'Retain this original request'},
+    {destination:'sheets',strategy:'concise'},{destination:'sheets',strategy:'full',summary:null}]) {
+    const out=await f.action('blueprint_publish_research',choice);
+    assert.equal(out.success,false);assert.equal(out.error.code,'publication_agent_tool_arguments_invalid');
+    assert.equal(out.error.status,'recoverable_issue');assert.ok(out.error.allowed_repair);
+    const issue=out.error.issues.find(i=>i.path===(choice.strategy==='concise'?'/strategy':'/summary'));
+    assert.ok(issue);assert.ok(issue.allowed_repair);
+    const saved=await f.store.get(f.r.date);
+    assert.deepEqual(saved.delivery.sheets,original);assert.equal(f.writes.length,0);
+    assert.deepEqual(Object.values(saved.application_tool_calls).at(-1).request.arguments,choice);
+    assert.equal(f.db.values.get(`${ROOT}/runs/${f.r.date}`).publication_claimed?.sheets,undefined);
+  }
+  const out=await f.action('blueprint_publish_research',{destination:'sheets',strategy:'full'});
+  assert.equal(out.receipt.readback_verified,true);assert.equal(f.writes.length,1);
+});
+
+test('Notion concise feedback identifies missing blank and oversized summary without changing source',async()=>{
+  const f=await agentFixture(),original=structuredClone(f.r.delivery.notion);
+  for(const summary of [undefined,'  ','😀'.repeat(500001)]) {
+    const out=await f.action('blueprint_publish_research',{destination:'notion',strategy:'concise',...(summary===undefined?{}:{summary})});
+    assert.equal(out.error.code,'publication_agent_tool_arguments_invalid');
+    assert.equal(out.error.issues[0].path,'/summary');
+    assert.equal(out.error.issues[0].expectations.max_utf8_bytes,2000000);
+    assert.deepEqual((await f.store.get(f.r.date)).delivery.notion,original);
+    assert.equal(f.writes.length,0);
+  }
 });
 
 test('agent chooses Sheets first and no outer helper creates a Notion page',async()=>{

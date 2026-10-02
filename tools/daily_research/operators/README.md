@@ -6,6 +6,28 @@ must use an exact reviewed Git commit and the exact installed standalone package
 They have no ChatGPT Library dependency and require no Pipeline application,
 GPU installation, new key, service, OAuth connection or security setting.
 
+## Stopped terminal Sheets recovery
+
+The existing private `firestore_bridge.mjs` JSON-line CLI accepts
+`recover_terminal_sheets` under its ordinary acquired lease. Use the existing
+worker credentials in place and literal `BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED=false`;
+root and config `enabled` must both remain false. The request has exactly these
+fields: `op`, `day`, `source_row_blob`, `payload_digest`, `rejected_call_id`, and
+`publication_authority_reference`. Obtain the hashes and call ID from the retained
+normal run and its exact failed Sheets/concise tool result. The authority must
+match the original publication authority still stored in current control.
+
+This operation uses no model/session calls. It verifies the original QA artifact,
+accepted candidates, publication evidence and completed-before-deadline turn,
+then publishes only the unchanged canonical Sheets payload. Existing claims are
+readback-only; absent readback never authorizes another append. No Notion write,
+presentation change, deadline extension, scheduling or control enable is allowed.
+The original agent publication state and tool results remain unchanged.
+Actual recovery time, bindings, plan digest and readback receipt are retained at
+`blueprintDailyResearch/sites-first/terminalSheetsRecoveries/{source_row_blob}`.
+Repeat the exact request to observe an uncertain receipt. Export that company
+record with the original source blob and normal run snapshot for handoff.
+
 ## Disabled October 2 migration
 
 `research-oct2-control.py plan` performs Firestore GETs and writes a new private
