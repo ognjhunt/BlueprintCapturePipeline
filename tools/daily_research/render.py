@@ -57,8 +57,12 @@ def learning_due(now, first_date):
 
 def learning_terminal(bridge, result):
     if result.get("date") and result.get("state") in {"awaiting_review", "reviewed", "completed", "failed", "cancelled"}:
-        with FirestoreLedger(bridge).lock():
-            bridge.call("learning_terminal", day=result["date"])
+        try:
+            with FirestoreLedger(bridge).lock():
+                bridge.call("learning_terminal", day=result["date"])
+        except Exception as exc:  # noqa: BLE001 - optional projection cannot block recovery
+            emit({"state": "learning_blocked", "error": str(exc) if isinstance(exc, Refusal)
+                  else "research_learning_unavailable"})
     return result
 
 
@@ -226,7 +230,7 @@ def export_snapshot(bridge, day, destination):
 def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(timezone.utc)):
     # One child bridge, with no lease held during idle ticks.
     last_signature, last_day, retry_at, bridge = None, None, None, None
-    last_learning = None
+    last_learning, learning_retry_at = None, None
     try:
         while not stopped.is_set():
             try:
@@ -237,15 +241,20 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 signature = digest({key: value for key, value in control.items() if key != "lease"})
                 learning = control.get("learning", {}).get("enabled") is True
                 if learning:
-                    due = learning_due(clock(), control["learning"]["startDate"])
-                    learning_key = (digest(control["learning"]), due["day"] if due else None)
-                    if due and (learning_key != last_learning or retry_at and clock() >= retry_at):
-                        with FirestoreLedger(bridge).lock():
-                            bridge.call("learning_reconcile")
-                            learning_result = bridge.call("learning_daily", **due)
-                        emit({"state": "learning_completed", "date": due["day"],
-                              "overview_id": learning_result["overviewId"]})
-                        last_learning = learning_key
+                    try:
+                        due = learning_due(clock(), control["learning"]["startDate"])
+                        learning_key = (digest(control["learning"]), due["day"] if due else None)
+                        if due and learning_key != last_learning and (not learning_retry_at or clock() >= learning_retry_at):
+                            with FirestoreLedger(bridge).lock():
+                                bridge.call("learning_reconcile")
+                                learning_result = bridge.call("learning_daily", **due)
+                            emit({"state": "learning_completed", "date": due["day"],
+                                  "overview_id": learning_result["overviewId"]})
+                            last_learning, learning_retry_at = learning_key, None
+                    except Exception as exc:  # noqa: BLE001 - preserve existing-intent recovery
+                        emit({"state": "learning_blocked", "error": str(exc) if isinstance(exc, Refusal)
+                              else "research_learning_unavailable"})
+                        learning_retry_at = clock() + timedelta(minutes=5)
                 day = due_date(clock(), cfg["first_date"])
                 if signature != last_signature or day != last_day or (retry_at and clock() >= retry_at):
                     last_signature, last_day = signature, day

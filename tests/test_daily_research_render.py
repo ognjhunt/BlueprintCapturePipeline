@@ -272,3 +272,52 @@ def test_invalid_learning_cannot_claim_a_date_or_call_provider(fixture):
     with pytest.raises(Refusal, match="learning_input_invalid"):
         run.start_or_resume()
     assert ledger.get(DAY) is None and api.payloads == []
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_learning_failure_never_blocks_existing_intent_observation(monkeypatch, enabled):
+    control = json.loads((ROOT / 'tools/daily_research/render.control.example.json').read_text())
+    control['enabled'] = enabled
+    control['config']['scheduler_authority_reference'] = 'synthetic-cutover'
+    control['learning'] = {'enabled': True, 'startDate': DAY}
+    clock, calls = [NOW], []
+
+    class FailingLearning:
+        def call(self, op, **kwargs):
+            calls.append(op)
+            if op == 'control':
+                return control
+            if op == 'learning_reconcile':
+                raise Refusal('research_learning_scope_expired')
+            assert op in {'acquire', 'release'}
+        def close(self):
+            calls.append('close')
+
+    class Stopped:
+        ticks = 0
+        def is_set(self):
+            return self.ticks >= 7
+        def wait(self, delay):
+            self.ticks += 1
+            clock[0] += timedelta(seconds=delay)
+
+    def observe(command, *args, **kwargs):
+        calls.append(command)
+        return {'state': 'running'}  # Recovery remains due after five minutes.
+
+    monkeypatch.setattr(render, 'invoke', observe)
+    monkeypatch.setattr(render, 'emit', lambda result: None)
+    render.scheduler(Stopped(), bridge_factory=FailingLearning, clock=lambda: clock[0])
+    command = 'run' if enabled else 'reconcile'
+    assert calls.count(command) == 2
+    assert calls.count('learning_reconcile') == 2  # Separate bounded retry, not every minute.
+
+
+def test_learning_projection_failure_preserves_terminal_result(monkeypatch):
+    class FailedProjection:
+        def call(self, op, **kwargs):
+            if op == 'learning_terminal':
+                raise Refusal('research_learning_scope_expired')
+    monkeypatch.setattr(render, 'emit', lambda result: None)
+    result = {'date': DAY, 'state': 'failed', 'error': 'preserved-root-failure'}
+    assert render.learning_terminal(FailedProjection(), result) is result
