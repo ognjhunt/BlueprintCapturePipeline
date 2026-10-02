@@ -132,6 +132,7 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("assert_lease")
         control = self.ledger.bridge.call("control")
         if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
+                or row.get("mcp_profile") and control.get("config", {}).get("mcp_profile") != row["mcp_profile"]
                 or phase in {"qa", "repair", "publication"} and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
         if (
