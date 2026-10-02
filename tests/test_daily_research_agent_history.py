@@ -117,8 +117,11 @@ def test_agent_selects_history_queries_pages_records_and_corrects_errors_in_all_
         assert consumer.step()["state"] == "publication_running"
         inspected = ask("publication", "publication_history", history.SEARCH, {"query": "", "filters": {"kind": "research"}})
         assert inspected["ok"]
-        requests = json.loads((tmp_path / "history-requests.json").read_bytes())
-        assert len(requests) == 5 and all(v["request"]["op"] in {"history_search", "history_fetch"} for v in requests)
+        observed = json.loads((tmp_path / "history-requests.json").read_bytes())
+        assert all(v["request"]["op"] in {"history_search", "history_fetch", "learning_after_run"} for v in observed)
+        assert any(v["request"]["op"] == "learning_after_run" for v in observed)
+        requests = [v for v in observed if v["request"]["op"] in {"history_search", "history_fetch"}]
+        assert len(requests) == 5
         assert requests[0]["request"] == {"op": "history_search", "day": DAY, "query": "unexpected repetitive work", "filters": {"city": "Seattle"}, "page_size": 3}
         assert all(v["binding"] == ledger.get(DAY)["history_binding"] for v in requests)
         assert len(posts) == 1
@@ -129,6 +132,7 @@ def test_agent_selects_history_queries_pages_records_and_corrects_errors_in_all_
             bridge.call("configure", value=control)
             with pytest.raises(Refusal, match="company_history_authority_changed"):
                 provider.tool_admit(ledger.get(DAY), "publication")
-        assert len(json.loads((tmp_path / "history-requests.json").read_bytes())) == 5
+        after_rebind = json.loads((tmp_path / "history-requests.json").read_bytes())
+        assert [v for v in after_rebind if v["request"]["op"] in {"history_search", "history_fetch"}] == requests
     finally:
         generator.close()
