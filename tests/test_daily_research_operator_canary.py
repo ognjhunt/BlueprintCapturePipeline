@@ -1016,6 +1016,143 @@ def test_repair_loop_stops_repeated_failure_without_new_session(fixture, monkeyp
         bridge.close()
 
 
+def test_repair_output_restart_observes_lost_qa_reply_without_repair_or_qa_resend(fixture, monkeypatch):
+    bridge, ledger, api, cfg, _failed = failed_repair_baseline(fixture, monkeypatch)
+    try:
+        later = NOW + timedelta(hours=1)
+        original_run, original_input = canary.run, api.qa_input
+        def accepted_unacknowledged(*args):
+            original_input(*args)
+            raise TimeoutError("synthetic accepted QA reply lost")
+        api.qa_input = accepted_unacknowledged
+        def begin_only(*_args, **_kwargs):
+            from tools.daily_research.consumer import Consumer
+            return Consumer(ledger, cfg, api, clock=lambda: later).step()
+        monkeypatch.setattr(canary, "run", begin_only)
+        partial = canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api, clock=lambda: later, sleep=lambda _: None)
+        assert partial["state"] == "qa_input_unresolved"
+        assert ledger.get(canary.DAY)["validation_repairs"][-1]["state"] == "validated"
+        monkeypatch.setattr(canary, "run", original_run)
+        api.qa_input = original_input
+        final = canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api, clock=lambda: later, sleep=lambda _: None)
+        assert final["state"] == "completed"
+        assert len(api.repair_calls) == len(api.inputs) == len(api.payloads) == 1
+    finally:
+        bridge.close()
+
+
+def test_repair_output_restart_reconciles_publication_after_lost_receipt(fixture, monkeypatch):
+    bridge, _ledger, api, _cfg, _failed = failed_repair_baseline(fixture, monkeypatch)
+    try:
+        later = NOW + timedelta(hours=1)
+        original_call, lost = bridge.call, [False]
+        def lose_receipt(op, **fields):
+            value = original_call(op, **fields)
+            if op == "publish" and not lost[0]:
+                lost[0] = True
+                raise TimeoutError("synthetic publication accepted; receipt lost")
+            return value
+        monkeypatch.setattr(bridge, "call", lose_receipt)
+        with pytest.raises(TimeoutError):
+            canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api, clock=lambda: later, sleep=lambda _: None)
+        final = canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api, clock=lambda: later, sleep=lambda _: None)
+        assert final["state"] == "completed"
+        assert len(api.repair_calls) == len(api.inputs) == len(api.payloads) == 1
+        assert len(json.loads(fixture[8].read_text())) == 1
+        assert len(json.loads(fixture[7].read_text())["values"]) == 6
+    finally:
+        bridge.close()
+
+
+def test_changed_feedback_gets_another_same_session_correction_and_exports_every_revision(fixture, monkeypatch):
+    bridge, ledger, api, _cfg, _failed = failed_repair_baseline(fixture, monkeypatch)
+    try:
+        later = NOW + timedelta(hours=1)
+        good = api.repaired_raw
+        incomplete = json.loads(good)
+        incomplete["coverage"].pop("defined_run_scope")
+        artifact = api.artifact
+        api.artifact = lambda sid, aid: canonical(incomplete).encode() if aid == "artifact_turn_repair_1" else artifact(sid, aid)
+        result = canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api, clock=lambda: later, sleep=lambda _: None)
+        assert result["state"] == "completed"
+        final = ledger.get(canary.DAY)
+        assert [r["state"] for r in final["validation_repairs"]] == ["invalid", "validated"]
+        assert len(api.payloads) == len(api.inputs) == 1 and len(api.repair_calls) == 2
+        assert any(i["path"] == "/coverage" for i in final["validation_repairs"][0]["feedback"])
+        exported = fixture[5] / "two-revision-export"
+        assert not canary.render.export_snapshot(bridge, canary.DAY, exported)["missing_files"]
+        assert (exported / (canary.DAY + "-repair-1-artifact.json")).read_bytes() == canonical(incomplete).encode()
+        assert (exported / (canary.DAY + "-repair-2-artifact.json")).read_bytes() == good
+        snapshot = bridge.call("snapshot", day=canary.DAY)
+        snapshot["files"]["repair-1-artifact"] = base64.b64encode(b"corrupt old revision").decode()
+        class Changed:
+            def call(self, *_args, **_kwargs):
+                return snapshot
+        with pytest.raises(Refusal, match="validation_repair_export_binding_mismatch"):
+            canary.render.export_snapshot(Changed(), canary.DAY, fixture[5] / "corrupt-old-revision-export")
+    finally:
+        bridge.close()
+
+
+def test_late_completed_repair_is_retained_but_never_qualified(fixture, monkeypatch):
+    bridge, ledger, api, _cfg, _failed = failed_repair_baseline(fixture, monkeypatch)
+    try:
+        later = NOW + timedelta(hours=1)
+        listing = api.listing
+        def late(resource, sid=None):
+            values = listing(resource, sid)
+            if resource == "turns":
+                for value in values:
+                    if value["id"].startswith("turn_repair_"):
+                        value["completed_at"] = int((later + timedelta(seconds=1801)).timestamp())
+            return values
+        api.listing = late
+        result = canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api, clock=lambda: later, sleep=lambda _: None)
+        revision = ledger.get(canary.DAY)["validation_repairs"][-1]
+        assert revision["state"] == "no_progress" and result["state"] == "failed"
+        assert revision["error"] == "validation_repair_terminal_guard_failed"
+        assert ledger.read_bytes(revision["artifact_file"]) == api.repaired_raw
+        assert not api.inputs
+    finally:
+        bridge.close()
+
+
+@pytest.mark.parametrize("after_claim", ["stop", "deadline", "origin"])
+def test_repair_input_rechecks_action_time_after_durable_claim(fixture, monkeypatch, after_claim):
+    from tools.daily_research.runner import digest
+    bridge, ledger, _api, _cfg, failed = failed_repair_baseline(fixture, monkeypatch)
+    provider = object.__new__(canary.CanaryProvider)
+    later, posts = NOW + timedelta(hours=1), []
+    provider.ledger, provider.clock, provider.stopped = ledger, lambda: later, lambda: False
+    provider.safe = lambda _row: None  # Cost GET was separately exercised; no credentials.
+    provider.api = SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=lambda *a, **kw: posts.append(a))))
+    event = {"type": "agent.session.input.message", "input": [{"role": "user", "content": [{"type": "input_text", "text": "Repair the retained report"}]}]}
+    deadline = int((later + timedelta(seconds=1800)).timestamp() * 1000)
+    try:
+        original_call = bridge.call
+        with ledger.lock():
+            row = ledger.get(canary.DAY)
+            row["validation_repairs"] = [{"number": 1, "state": "input_unresolved", "input_attempted": True,
+                "request_digest": digest(event), "deadline_ms": deadline}]
+            ledger.put(row)
+            def delayed_claim(op, **fields):
+                result = original_call(op, **fields)
+                if op == "repair_check":
+                    if after_claim == "stop":
+                        provider.stopped = lambda: True
+                    elif after_claim == "deadline":
+                        provider.clock = lambda: later + timedelta(seconds=1801)
+                    else:
+                        original_call("test_origin_change")
+                return result
+            monkeypatch.setattr(bridge, "call", delayed_claim)
+            with pytest.raises(Refusal, match="stopped_disabled_expired|guard_unreconciled_or_changed"):
+                provider.repair_input(failed["session_id"], event, failed["run_key"] + ":repair:1", canary.DAY, digest(event), deadline)
+        assert not posts
+    finally:
+        bridge.close()
+
+
 def recovered_baseline(fixture, monkeypatch):
     closed_original(fixture)
     bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 1)

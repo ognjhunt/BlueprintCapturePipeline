@@ -121,6 +121,11 @@ def validation_feedback(output, row, known, observed_at):
     return issues
 
 
+def feedback_signature(issues):
+    """Compare actionable failures, ignoring changing descriptive metadata."""
+    return sorted({(issue["path"], issue["reason"]) for issue in issues})
+
+
 def repair_deadline(row):
     from tools.daily_research.runner import Refusal, instant
     authority = row.get("validation_repair_authority", {})
@@ -169,6 +174,9 @@ class RepairLoop:
             row = self.ledger.get(day)
             if not row or not row.get("artifact_downloaded") or row.get("turn_status") != "completed":
                 raise Refusal("validation_repair_completed_artifact_required")
+            if (digest(row.get("knowledge_context")) != row.get("knowledge_context_digest")
+                    or digest(row.get("refresh_policy")) != row.get("refresh_policy_digest")):
+                raise Refusal("validation_repair_context_binding_invalid")
             revisions = row.setdefault("validation_repairs", [])
             if revisions and revisions[-1]["state"] == "validated":
                 return row
@@ -202,8 +210,8 @@ class RepairLoop:
                     raise Refusal("validation_repair_artifact_binding_invalid")
                 try:
                     output = json.loads(raw)
-                except ValueError:
-                    output = raw.decode("utf-8")
+                except (ValueError, UnicodeError):
+                    output = raw.decode("utf-8", errors="replace")
                 feedback = validation_feedback(output, row, known, self.clock())
                 row.setdefault("original_validation_failure", {
                     "state": row["state"], "error": row.get("error"),
@@ -255,7 +263,7 @@ class RepairLoop:
                 event = {"type": "agent.session.input.message", "input": [{"role": "user", "content": [{"type": "input_text", "text": text}]}]}
                 number = len(revisions) + 1
                 current = {"number": number, "state": "input_unresolved", "input_file": f"{day}-repair-{number}-input.json",
-                           "request_digest": digest(event), "feedback": feedback,
+                           "request_digest": digest(event), "feedback": feedback, "input_feedback": deepcopy(feedback),
                            "baseline_turn_ids": sorted(expected_turns), "input_attempted": True,
                            "deadline_ms": int(deadline.timestamp() * 1000)}
                 self.ledger.write_json(current["input_file"], event)
@@ -313,7 +321,11 @@ class RepairLoop:
                     _, known = Consumer(self.ledger, self.config, self.api, clock=self.clock).refresh_crm()
                     feedback = validation_feedback(output, row, known, self.clock())
                     if feedback:
-                        current.update(state="no_progress" if feedback == current["feedback"] else "invalid", feedback=feedback)
+                        repeated = any(feedback_signature(feedback) == feedback_signature(r.get("input_feedback", r["feedback"]))
+                                       for r in revisions)
+                        current.update(state="no_progress" if repeated else "invalid", feedback=feedback)
+                        if repeated:
+                            current["error"] = "validation_repair_no_progress"
                         self.ledger.put(row)
                         return row
                     Runner(self.ledger, self.config, None, clock=self.clock).prepare_output(row, output)

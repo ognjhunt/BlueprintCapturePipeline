@@ -192,6 +192,13 @@ def export_snapshot(bridge, day, destination):
                 or artifact_kind not in files
                 or hashlib.sha256(files[artifact_kind]).hexdigest() != revision.get("artifact_digest")):
             raise Refusal("validation_repair_export_binding_mismatch")
+    revisions = row.get("validation_repairs", [])
+    if revisions and revisions[-1].get("state") == "validated":
+        current = revisions[-1]
+        if row.get("packet", {}).get("research_revision") != {
+                "number": current["number"], "turn_id": current["turn_id"],
+                "artifact_sha256": current["artifact_digest"], "original_artifact_sha256": row["raw_output_digest"]}:
+            raise Refusal("validation_repair_export_packet_binding_mismatch")
     if "evidence" in files and digest(json.loads(files["evidence"])) != row.get("evidence_digest"):
         raise Refusal("evidence_digest_mismatch")
     if "review" in files:

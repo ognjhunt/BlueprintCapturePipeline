@@ -69,7 +69,20 @@ Contract `blueprint.research-snapshot.v1`, root
 | `blobs/SHA256` + `chunks/N` | Exact uncompressed SHA256/length, gzip metadata, immutable chunks at most 256 KiB each; read verifies all bytes |
 | `files/YYYY-MM-DD-{artifact,evidence,output,review,qa,qa-evidence}.json` | Blob pointers; downloaded raw artifact is immutable once bound |
 | `files/{crm,knowledge,refresh-policy}.json` | Private checked input pointers, not public prospects |
-| `workItems/YYYY-MM-DD` | `owner=blueprint-research-qa-publication-agent`, `stage=agent_qa_pending` or `publication_pending`, run key, row blob, packet digest, `observer_receipt_required=false`, no-outreach scope |
+| `workItems/YYYY-MM-DD` | `owner=blueprint-research-qa-publication-agent`, `stage=validation_repair_pending`, `agent_qa_pending` or `publication_pending`, run key, row blob, packet digest, `observer_receipt_required=false`, no-outreach scope; repeated nonprogress becomes `validation_repair_blocked` |
+
+When a completed research artifact fails validation, the same workflow agent
+receives precise field/reason/allowed-semantics feedback, retained source receipt
+bindings, knowledge context and fresh CRM identity projection in its existing
+session. It may revise or honestly quarantine unsupported claims, choosing its
+own configured tools and depth. Complete correction requests and versioned raw
+artifacts are durable before effects; uncertain input replies reconcile through
+GET only. Corrections share the original total runtime and soft budget. The
+original root/report/clock remains immutable. Repeated failures and exhausted
+authority produce actionable status, never invented grades or duplicate roots.
+Validated corrections proceed through the existing agent QA and publication
+readbacks; no Dot or parent review is required in the daily operating workflow.
+Exports include `DATE-repair-N-{input,artifact}.json` with verified hashes.
 
 The communications agent can import `Store` from the pinned
 `tools/daily_research/firestore_bridge.mjs` and use an existing authorized

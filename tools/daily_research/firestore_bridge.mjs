@@ -116,7 +116,7 @@ export class Store {
   }
   projectWorkItem(tx, row, hash) {
     const repair = row.state==='failed' && row.turn_status==='completed' && row.artifact_downloaded===true
-      && !row.qa && !row.delivery;
+      && !row.qa && !Object.keys(row.delivery || {}).length;
     if (row.packet || repair) tx.set(this.db.doc(`${ROOT}/workItems/${row.date}`), {
       date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest || null,
       owner: 'blueprint-research-qa-publication-agent',

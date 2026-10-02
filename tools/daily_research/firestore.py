@@ -151,7 +151,7 @@ class FencedProvider(Provider):
                 or key != row.get("run_key", "") + ":repair:" + str(current.get("number"))
                 or digest(event) != request_digest or current.get("deadline_ms") != deadline_ms
                 or control.get("enabled") is not True or control.get("workflow", {}).get("enabled") is not True
-                or datetime.now(timezone.utc).timestamp() * 1000 >= deadline_ms):
+                or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
             raise Refusal("validation_repair_input_not_admitted")
         self.ledger.bridge.call("repair_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         self.repair_action_guard(day, deadline_ms)
