@@ -231,7 +231,7 @@ export class CanaryChannel {
     }
     // Read/recovery/lease operations stay available if normal control changes.
     // New paid work and publication require the same fresh disabled-root guard.
-    if (['create_check','qa_check','publish','refresh_crm','configure'].includes(request.op)) {
+    if (['create_check','qa_check','repair_check','publish','refresh_crm','configure'].includes(request.op)) {
       const control=(await this.store.control.get()).data();
       await this.guard(control?.canary?.origin_control,control?.canary?.origin_row_blob);
       if (BASELINE) {

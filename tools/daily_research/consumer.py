@@ -29,6 +29,9 @@ QA_PATH = "/workspace/outputs/daily-research-qa.json"
 
 
 def qa_deadline(row, config):
+    if row.get("validation_repair_authority"):
+        from tools.daily_research.recovery import repair_deadline
+        return repair_deadline(row)
     value = row.get("qa_continuation")
     if not value:
         return instant(row["started_at"]) + timedelta(seconds=phase_runtime_seconds(row, config, "qa"))
@@ -80,6 +83,12 @@ def qa_text(row, snapshot, crm_digest):
     trusted = ("Blueprint QA phase for the preceding research only. Read the reviewed evidence skill. "
                "Check every material finding, claim scope, quoted passage and candidate source against the actual sources; "
                "check semantic site/task duplicates against the supplied complete CRM identities. Reject unsupported "
+               "Verify that every operator task source belongs to the named employer/site. An employer-hosted "
+               "job board or other delegated source may be valid: verify its employer identity and affiliation "
+               "from actual page evidence or company links; domain equality alone proves neither support nor failure. "
+               "If affiliation or exact task support remains unverified, reject that candidate with the precise gap. "
+               "Ordinary live background facts do not require a robot-capability maturity grade and never supply "
+               "positive capability coverage. "
                "Any output_recovery quarantined_proposals are excluded from approved knowledge; do not invent "
                "their evidence levels or silently restore them. Newness and coverage remain unverified until QA. "
                "candidates; unknown interest/availability stays unknown. No outreach, drafting, credentials, installs, "
@@ -192,7 +201,10 @@ class Consumer:
             session = self.api.get("session", row["session_id"])
             self.check_session(row, session)
             turns = self.api.listing("turns", row["session_id"])
-            if len(turns) != 1 or turns[0]["id"] != row["turn_id"] or turns[0]["status"] != "completed":
+            expected_turns = {row["turn_id"], *(r["turn_id"] for r in row.get("validation_repairs", [])
+                                               if r.get("turn_id") and r.get("state") in {"invalid", "validated"})}
+            if ({t["id"] for t in turns} != expected_turns
+                    or any(t["status"] != "completed" or t.get("subagent_id") for t in turns)):
                 raise Refusal("agent_qa_initial_turn_scope_mismatch")
             crm_digest = digest(snapshot["values"])
             event = {"type": "agent.session.input.message", "input": [{"role": "user", "content": [

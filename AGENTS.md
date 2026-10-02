@@ -115,6 +115,14 @@ dependent step as blocked instead of guessing.
 
 ## Working Rules
 
+- **Agent autonomy (user direction `Sentinel_ee0f838338808191b9e431227a652f65`):**
+  agents choose research strategy, configured tools and depth. Harmless formatting,
+  extra metadata, date precision, expected pending usage and arbitrary result quotas
+  must not prematurely stop useful work. Prefer lossless evidence-backed normalization,
+  actionable same-session repair and quarantine of only unsupported claims; preserve
+  original evidence and never fabricate support. Keep spending authority, access/security
+  and deletion approvals, idempotency/duplicate effects, opt-outs and the current
+  draft-only/no-send direction. Do not respond by adding another gate framework.
 - Keep research workflow code and instructions in Blueprint-controlled GitHub,
   structured state in the existing company database with portable exports, and
   private business artifacts in authorized company object storage using standard

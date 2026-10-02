@@ -14,7 +14,7 @@ const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.s
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null) {
@@ -115,10 +115,13 @@ export class Store {
     return result.sort((a, b) => a.date.localeCompare(b.date));
   }
   projectWorkItem(tx, row, hash) {
-    if (row.packet) tx.set(this.db.doc(`${ROOT}/workItems/${row.date}`), {
-      date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest,
+    const repair = row.state==='failed' && row.turn_status==='completed' && row.artifact_downloaded===true
+      && !row.qa && !row.delivery;
+    if (row.packet || repair) tx.set(this.db.doc(`${ROOT}/workItems/${row.date}`), {
+      date: row.date, run_key: row.run_key, row_blob: hash, packet_digest: row.packet_digest || null,
       owner: 'blueprint-research-qa-publication-agent',
-      stage: row.state === 'awaiting_review' ? 'agent_qa_pending' : row.state === 'reviewed' ? 'publication_pending' : row.state,
+      stage: repair ? (row.validation_repairs?.at(-1)?.state==='no_progress' ? 'validation_repair_blocked' : 'validation_repair_pending')
+        : row.state === 'awaiting_review' ? 'agent_qa_pending' : row.state === 'reviewed' ? 'publication_pending' : row.state,
       qa_state: row.qa?.state || null, qa_error: row.qa?.error || null,
       observer_receipt_required: false, scope: 'research_only_no_outreach'
     });
@@ -142,6 +145,10 @@ export class Store {
         search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
         recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
+        repair_request_digest: row.validation_repairs?.at(-1)?.request_digest || null,
+        repair_deadline_ms: row.validation_repairs?.at(-1)?.deadline_ms || null,
+        repair_number: row.validation_repairs?.at(-1)?.number || null,
+        repair_claims: prior.exists ? prior.data().repair_claims || {} : {},
         publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
       this.projectWorkItem(tx, row, hash);
     });
@@ -153,7 +160,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-|-repair-/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -169,7 +176,9 @@ export class Store {
     if (!row) refuse('run_missing');
     const files = {}, missing = [];
     for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
-      ...(row.qa?.input_file ? ['qa-input'] : []), ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
+      ...(row.qa?.input_file ? ['qa-input'] : []),
+      ...(row.validation_repairs || []).flatMap(r=>[`repair-${r.number}-input`, ...(r.artifact_file ? [`repair-${r.number}-artifact`] : [])]),
+      ...Object.values(row.application_tool_calls || {}).filter(call=>call.result_file).map(call=>`tool-${call.request.call_id}`)]) {
       try {files[kind] = await this.fileGet(`${day}-${kind}.json`);}
       catch (error) {
         if (!(error instanceof Refusal) || error.message !== 'firestore_file_missing') throw error;
@@ -249,9 +258,10 @@ export class Store {
   }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
-    const [qa,pub]=await Promise.all(['agent_qa_pending','publication_pending'].map(stage=>queue.where('stage','==',stage).limit(21).get()));
-    if (qa.docs.length>20 || pub.docs.length>20) refuse('workflow_queue_limit');
-    const items=[...qa.docs,...pub.docs].map(s=>s.data()).sort((a,b)=>a.date.localeCompare(b.date));
+    const groups=await Promise.all(['validation_repair_pending','agent_qa_pending','publication_pending']
+      .map(stage=>queue.where('stage','==',stage).limit(21).get()));
+    if (groups.some(group=>group.docs.length>20)) refuse('workflow_queue_limit');
+    const items=groups.flatMap(group=>group.docs.map(s=>s.data())).sort((a,b)=>a.date.localeCompare(b.date));
     return items[0] || null;
   }
   async activeQA() {
@@ -298,6 +308,22 @@ export class Store {
     } catch(error) {
       refuse(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
     }
+  }
+  async repairCheck(day, requestDigest, deadlineMS) {
+    if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest)) refuse('validation_repair_request_invalid');
+    const ref = this.db.doc(`${ROOT}/runs/${day}`);
+    return this.transaction(async tx => {
+      const control = (await tx.get(this.control)).data(); this.fence(control); this.workflowGate(control);
+      const snap = await tx.get(ref), run = snap.data();
+      if (!snap.exists || run.repair_request_digest!==requestDigest
+          || !Number.isSafeInteger(run.repair_number) || run.repair_number<1
+          || !Number.isSafeInteger(deadlineMS) || run.repair_deadline_ms!==deadlineMS
+          || this.clock()>=deadlineMS || run.repair_claims?.[run.repair_number])
+        refuse('validation_repair_input_not_admitted');
+      this.budgetGate(control,run);
+      tx.set(ref,{repair_claims:{...run.repair_claims,[run.repair_number]:requestDigest}},{merge:true});
+      return true;
+    });
   }
   // One authorized test reuses the Oct 1 session. It never enters daily runs or
   // workItems, and shares the existing lease and immutable blob implementation.
@@ -416,6 +442,7 @@ export class Store {
       case 'work_item': return this.workItem();
       case 'active_qa': return this.activeQA();
       case 'qa_check': return this.qaCheck(request.day,request.request_digest,request.deadline_ms);
+      case 'repair_check': return this.repairCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
       case 'refresh_crm': {
         await this.assertLease();
