@@ -18,6 +18,8 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setattr(guest.platform, 'machine', lambda: 'x86_64')
     monkeypatch.setattr(guest.os, 'geteuid', lambda: 0)
     monkeypatch.setattr(guest.os, 'cpu_count', lambda: 2)
+    monkeypatch.setattr(guest.os, 'sched_getaffinity', lambda pid: {0, 1}, raising=False)
+    monkeypatch.setattr(guest, '_cgroup_limits', lambda: (2, 8 * 1024**3), raising=False)
     monkeypatch.setattr(guest, '_available_memory', lambda: 8 * 1024**3)
     monkeypatch.setattr(guest, '_available_disk', lambda path: 12 * 1024**3)
     calls = []
@@ -111,3 +113,83 @@ def test_missing_ambiguous_or_unbounded_memory_never_supplies_admission(raw):
 
 def test_memory_uses_available_bytes_and_does_not_treat_total_as_free():
     assert guest._parse_memory(b'MemTotal: 8192 kB\nMemFree: 1024 kB\nMemAvailable: 2048 kB\n') == 2048 * 1024
+
+
+@pytest.mark.parametrize('constraint', ['affinity', 'quota', 'cgroup_memory'])
+def test_effective_launch_process_constraints_cannot_use_machine_resources(host, monkeypatch, constraint):
+    root, calls = host
+    if constraint == 'affinity':
+        monkeypatch.setattr(guest.os, 'sched_getaffinity', lambda pid: {0})
+    else:
+        monkeypatch.setattr(guest, '_cgroup_limits', lambda: (1, 8 * 1024**3) if constraint == 'quota' else (2, 1024**3))
+    code = 'host_memory_insufficient' if constraint == 'cgroup_memory' else 'host_cpu_insufficient'
+    with pytest.raises(guest.GuestFeasibilityError, match=code):
+        guest.host_preflight(root, required_disk_bytes=2 * 1024**3)
+    assert calls == []
+
+
+def test_vm_close_failure_still_attempts_kvm_close_and_never_admits(host, monkeypatch):
+    root, calls = host
+    def close(fd):
+        calls.append(('close', fd))
+        if fd == 42:
+            raise OSError(errno.EIO, 'close failed')
+    monkeypatch.setattr(guest.os, 'close', close)
+    with pytest.raises(OSError):
+        guest.host_preflight(root, required_disk_bytes=2 * 1024**3)
+    assert calls[-2:] == [('close', 42), ('close', 41)]
+
+
+@pytest.fixture
+def cgroup_tree(tmp_path, monkeypatch):
+    root = tmp_path / 'cgroup'
+    leaf = root / 'parent' / 'worker'
+    leaf.mkdir(parents=True)
+    monkeypatch.setattr(guest, '_cgroup_path', lambda: (root, ['parent', 'worker']))
+    for directory in (leaf.parent, leaf):
+        (directory / 'cpu.max').write_text('max 100000\n')
+        (directory / 'memory.max').write_text('max\n')
+    return root, leaf
+
+
+def test_parent_cgroup_limits_apply_even_when_leaf_is_unlimited(cgroup_tree):
+    root, leaf = cgroup_tree
+    (leaf.parent / 'cpu.max').write_text('150000 100000\n')
+    (leaf.parent / 'memory.max').write_text('5000000000\n')
+    (leaf.parent / 'memory.current').write_text('2000000000\n')
+    assert guest._cgroup_limits() == (1, 3000000000)
+    (root / 'cpu.max').write_text('100000 100000\n')
+    (root / 'memory.max').write_text('2000000000\n')
+    (root / 'memory.current').write_text('1900000000\n')
+    assert guest._cgroup_limits() == (1, 100000000)
+
+
+@pytest.mark.parametrize('bad', ['missing', 'invalid', 'oversize', 'alias'])
+def test_unknown_cgroup_limits_never_become_unlimited(cgroup_tree, bad):
+    _, leaf = cgroup_tree
+    path = leaf / 'cpu.max'
+    if bad == 'invalid':
+        path.write_text('max 0\n')
+    elif bad == 'oversize':
+        path.write_text('9' * 4097)
+    else:
+        path.unlink()
+        if bad == 'alias':
+            path.symlink_to(leaf.parent / 'cpu.max')
+    with pytest.raises(guest.GuestFeasibilityError, match='host_cgroup_unknown'):
+        guest._cgroup_limits()
+
+
+@pytest.mark.parametrize('row', ['0::/../worker', '0::/worker\n1:cpu:/other', '0::/a//b'])
+def test_ambiguous_cgroup_membership_refuses(row, monkeypatch):
+    monkeypatch.setattr(guest, '_bounded_text', lambda path, limit=4096: row)
+    with pytest.raises(guest.GuestFeasibilityError, match='host_cgroup_unknown'):
+        guest._cgroup_path()
+
+
+def test_cgroup_subtree_mount_does_not_hide_parent_limits(monkeypatch):
+    monkeypatch.setattr(guest, '_bounded_text', lambda path, limit=4096:
+                        '0::/worker' if str(path) == '/proc/self/cgroup' else
+                        '1 0 0:1 /hidden-parent /sys/fs/cgroup rw - cgroup2 cgroup rw\n')
+    with pytest.raises(guest.GuestFeasibilityError, match='host_cgroup_unknown'):
+        guest._cgroup_path()

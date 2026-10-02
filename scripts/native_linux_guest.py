@@ -62,6 +62,74 @@ def _available_disk(path):
     return value.f_bavail * value.f_frsize
 
 
+def _bounded_text(path, limit=4096):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        raw = os.read(fd, limit + 1)
+        _require(0 < len(raw) <= limit, 'host_cgroup_unknown')
+        return raw.decode('ascii').strip()
+    finally:
+        os.close(fd)
+
+
+def _cgroup_path():
+    rows = _bounded_text('/proc/self/cgroup').splitlines()
+    _require(len(rows) == 1 and rows[0].startswith('0::/'), 'host_cgroup_unknown')
+    relative = rows[0][3:]
+    parts = relative.split('/')[1:]
+    _require(len(parts) <= 128 and all(p not in {'.', '..'} for p in parts)
+             and (relative == '/' or all(parts)), 'host_cgroup_unknown')
+    mounts = []
+    for row in _bounded_text('/proc/self/mountinfo', 65536).splitlines():
+        before, separator, after = row.partition(' - ')
+        fields = before.split()
+        if separator and after.split()[0] == 'cgroup2':
+            mounts.append(fields)
+    _require(len(mounts) == 1 and len(mounts[0]) >= 6
+             and mounts[0][3:5] == ['/', '/sys/fs/cgroup'], 'host_cgroup_unknown')
+    return Path('/sys/fs/cgroup'), parts if relative != '/' else []
+
+
+def _cgroup_limits():
+    """Minimum CPU quota and memory headroom across the unified ancestry.
+
+    The kernel root cgroup is unlimited and may omit limit files. Every other
+    ancestor must expose both controllers; unavailable constraints refuse.
+    """
+    try:
+        root, parts = _cgroup_path()
+        cpu = memory = None
+        for depth in range(len(parts) + 1):
+            directory = root.joinpath(*parts[:depth])
+            _require(not any(p.is_symlink() for p in (directory, *directory.parents)),
+                     'host_cgroup_unknown')
+            for name in ('cpu.max', 'memory.max'):
+                try:
+                    value = _bounded_text(directory / name)
+                except FileNotFoundError:
+                    _require(depth == 0, 'host_cgroup_unknown')
+                    continue
+                if name == 'cpu.max':
+                    fields = value.split()
+                    _require(len(fields) == 2 and fields[1].isdigit()
+                             and int(fields[1]) > 0, 'host_cgroup_unknown')
+                    if fields[0] != 'max':
+                        _require(fields[0].isdigit() and int(fields[0]) > 0,
+                                 'host_cgroup_unknown')
+                        quota = int(fields[0]) // int(fields[1])
+                        cpu = quota if cpu is None else min(cpu, quota)
+                else:
+                    _require(value == 'max' or value.isdigit(), 'host_cgroup_unknown')
+                    if value != 'max':
+                        current = _bounded_text(directory / 'memory.current')
+                        _require(current.isdigit(), 'host_cgroup_unknown')
+                        headroom = max(0, int(value) - int(current))
+                        memory = headroom if memory is None else min(memory, headroom)
+        return cpu, memory
+    except (OSError, UnicodeError, IndexError) as error:
+        raise GuestFeasibilityError('native_guest_host_cgroup_unknown') from error
+
+
 def _scratch(path):
     try:
         root = Path(os.environ.get('RUNNER_TEMP', ''))
@@ -90,7 +158,14 @@ No guest is started and both kernel descriptors are closed before returning.
     cpus = os.cpu_count()
     _require(type(cpus) is int and cpus >= 2, 'host_cpu_insufficient')
     try:
+        affinity = os.sched_getaffinity(0)
+        _require(isinstance(affinity, set) and all(type(c) is int and c >= 0 for c in affinity)
+                 and len(affinity) >= 2, 'host_cpu_insufficient')
+        cpu_limit, memory_limit = _cgroup_limits()
+        _require(cpu_limit is None or cpu_limit >= 2, 'host_cpu_insufficient')
         memory = _available_memory()
+        if memory_limit is not None:
+            memory = min(memory, memory_limit)
         disk = _available_disk(scratch)
     except OSError:
         raise GuestFeasibilityError('native_guest_host_resources_unknown') from None
@@ -109,10 +184,12 @@ No guest is started and both kernel descriptors are closed before returning.
     except OSError:
         raise GuestFeasibilityError('native_guest_kvm_initialization_unknown') from None
     finally:
-        if vm is not None:
-            os.close(vm)
-        if fd is not None:
-            os.close(fd)
+        try:
+            if type(vm) is int and vm >= 0:
+                os.close(vm)
+        finally:
+            if fd is not None:
+                os.close(fd)
     return dict(status='host_capabilities_observed', kvm_api_version=version,
                 kvm_vm_created=True, available_memory_bytes=memory, available_disk_bytes=disk,
                 guest_memory_mib=GUEST_MEMORY_MIB, guest_acceptance_proven=False,
