@@ -349,3 +349,13 @@ test('no accepted candidates yields no Sheets write and a verified empty receipt
   assert.equal((await f.publisher.reconcile(r,'sheets',plan)).readback_verified,true);
   assert.equal(f.writes.length,0);
 });
+
+
+test('same-city distinct named facilities remain separate in CRM publication',()=>{
+  const north=candidate(),south={...candidate(),site:'South, 2 Test Street'};
+  north.site='North, 1 Test Street';
+  const snapshot={sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers,
+    ['BP-000001',north.organization,'Facility / site',north.site,'','','','','',north.evidence[0].url,'','','','',north.task,'','Unverified',north.location,'2026-09-30']]};
+  assert.equal(planSheets(row([south]),snapshot).sheet_rows.length,1);
+  assert.throws(()=>planSheets(row([north]),snapshot),/publication_crm_duplicate_changed/);
+});

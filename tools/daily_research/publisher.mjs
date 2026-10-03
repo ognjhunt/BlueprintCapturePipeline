@@ -12,7 +12,7 @@ const sha = raw => createHash('sha256').update(raw).digest('hex');
 const fail = code => {throw new Error(code);};
 const rich = text => [{type:'text', text:{content:text}}];
 const normalized = x => String(x).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-const identity = x => [x.organization,x.location||x.site,x.task].map(normalized).join('\n');
+const identity = x => [x.organization,x.site||x.location,x.location||x.site,x.task].map(normalized).join('\n');
 const NOTION_PARENT_PAGE_LIMIT = 100, NOTION_READ_BUDGET_MS = 25000;
 
 function crmRows(snapshot) {
