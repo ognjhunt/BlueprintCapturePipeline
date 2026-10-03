@@ -12,7 +12,7 @@ ROOT = "/workspace/capabilities/blueprint"
 # Actual mounted-file checks in the preserved validation receipt:
 # https://app.notion.com/p/3eb80154161d81b4a0ddff9bdcfe5af6
 # deep-research source commit: 42dd24080fce6d731d00e2a1134f398c3da4171b
-FILES = {
+TEMPLATE_FILES = {
     "blueprint-evidence-qualification/SKILL.md":
         (3965, "5fdc5f3c6dde9cc252cd43bd4165d09b4b2d5686835b70961d00e0d7e91f0756"),
     "blueprint-evidence-qualification/references/prospect-contract.md":
@@ -22,6 +22,13 @@ FILES = {
     "deep-research/SKILL.md":
         (5386, "2646cdf3942d918e84febf020b289fbfb7b5cf601e43ee7e7349e6c5105941c5"),
 }
+
+# User-requested verification capability revision. Session inline overrides use
+# these reviewed release bytes while preflight still checks the unchanged saved
+# template's original discovery inventory. No live template mutation is needed.
+FILES = dict(TEMPLATE_FILES)
+FILES['blueprint-evidence-qualification/SKILL.md'] = (7585, '708d1ef90a6df642c1d54863e777b2fbeb154b06447df1c9ee8188a98f4f1f3f')
+FILES['blueprint-evidence-qualification/references/prospect-contract.md'] = (2226, '39571718234ce2f7536a56f6e8440183536c259bf9b4e9a0d54944cc9aaaf6b3')
 
 
 def inline_files():
@@ -47,9 +54,9 @@ def check_template(template):
             or template.get("plugins") != []):
         raise ValueError("template_skill_discovery_mismatch")
     files = template.get("files")
-    if not isinstance(files, list) or len(files) != len(FILES):
+    if not isinstance(files, list) or len(files) != len(TEMPLATE_FILES):
         raise ValueError("template_skill_files_mismatch")
-    expected = {ROOT + "/" + name: size for name, (size, _) in FILES.items()}
+    expected = {ROOT + "/" + name: size for name, (size, _) in TEMPLATE_FILES.items()}
     observed = {}
     for item in files:
         if (not isinstance(item, dict) or item.get("type") != "inline"

@@ -11,6 +11,7 @@ For each proposed record, preserve the existing stable ID when supplied; otherwi
 - Public business contact name/details only when retrieved, contact source URL, and verification status; never guess an email pattern
 - Current stage, owner, and next action/date only when supplied or expressly proposed
 - Evidence checked date, exact source URLs, conflicts, uncertainty, and unresolved qualification gates
+- Required lead-verification assessment and retained outcome: verified factual operator/site/human task, bounded inferred fit, or unresolved/contradicted/stale/unreachable evidence with reasons. Provider discovery flags are never qualification. Public evidence cannot establish current buying intent, consent/rights, commercial qualification, robot compatibility or deployment readiness.
 
 For duplicate review, compare normalized organization/domain, site location, task, and supplied stable IDs; distinguish a second site from a duplicate company record. Report possible matches with reasons. Do not merge/delete rows or assert a complete deduplication pass when canonical records were unavailable.
 

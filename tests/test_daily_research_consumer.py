@@ -10,9 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.daily_research_verification_fixture import assessment
+
 from tests.test_daily_research_knowledge import policy_bundle, v3
 from tests.test_daily_research_runner import AGENT, DAY, NOW, SHEET, FakeAPI
-from tools.daily_research import render
+from tools.daily_research import render, verification
 from tools.daily_research.consumer import QA_PATH, Consumer, qa_decision, qa_text
 from tools.daily_research.firestore import Bridge, FencedProvider, FirestoreLedger
 from tools.daily_research.runner import Refusal, Runner, canonical, digest, save_json
@@ -43,8 +45,9 @@ class QAAPI(FakeAPI):
                           "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
                           "summary": "Supported task claim: https://plant.example/tasks; orderability unknown.",
                           "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": True,
-                                      "duplicate": False, "reason": "Operator task evidence checked"}
-                                     for c in row["packet"]["candidates"]]}
+                                      "duplicate": False, "reason": "Operator task evidence checked",
+                                      "lead_verification": assessment(c, NOW)}
+                                     for c in verification.packet_candidates(row["packet"])]}
         if self.lost_reply:
             raise TimeoutError()
 
@@ -85,7 +88,7 @@ def consumer_setup(tmp_path, *, failed=False):
         "const crmReader=async()=>JSON.parse(readFileSync(" + json.dumps(str(crm)) + ",'utf8'));",
         "const pages=[]; const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]}; const crm=await crmReader();crm.values.push(...body.values);await import('node:fs').then(fs=>fs.writeFileSync(" + json.dumps(str(crm)) + ",JSON.stringify(crm)));return {};};",
         "const notion=async(method,path,body)=>{if(method==='POST'){pages.push(body);return {id:'page-result'};}if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:pages.map(p=>({id:'page-result',type:'child_page',child_page:{title:p.properties.title.title[0].text.content}}))};if(path==='/pages/page-result')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};return {has_more:false,results:pages[0].children};};",
-        "const publisher=new Publisher({crmReader,google,notion});",
+        "const publisher=new Publisher({crmReader,google,notion,clock:()=>testNow});",
         "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher));",
         "for await (const line of createInterface({input:process.stdin})) {try {const r=JSON.parse(line);if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}const value=await channel.call(r);process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
         "catch(error){process.stdout.write(JSON.stringify({ok:false,error:error.message})+'\\n');}} await channel.close();",
@@ -133,6 +136,43 @@ def test_automatic_qa_exact_artifact_review_and_private_export(fixture, tmp_path
     assert row["review"]["reviewer_reference"] == "agent-turn:sess_1:turn_qa"
     assert row["delivery"]["sheets"]["payload_digest"] == digest(row["delivery"]["sheets"]["payload"])
     assert render.export_snapshot(bridge, DAY, tmp_path / "export")["missing_files"] == []
+
+
+def test_missing_assessment_retained_unresolved_without_qa_retry_or_promotion(fixture):
+    consumer, api, ledger, _, _ = fixture
+    original = api.artifact
+    def missing(sid, aid):
+        if aid == "artifact_qa":
+            for check in api.qa_result["checks"]:
+                check.pop("lead_verification", None)
+        return original(sid, aid)
+    api.artifact = missing
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["accepted_keys"] == []
+    assert row["review"]["lead_verification"]["unresolved_count"] == 1
+    assert row["qa"]["state"] == "validated" and not row["qa"].get("corrections")
+    assert len(api.inputs) == 1
+    assert row["packet"]["candidates"] and row["raw_output_digest"]
+
+
+def test_all_unresolved_qa_can_truthfully_report_false_source_support(fixture):
+    consumer, api, ledger, _, _ = fixture
+    original = api.artifact
+    def missing(sid, aid):
+        if aid == "artifact_qa":
+            api.qa_result.update(source_support_verified=False, accepted_keys=[])
+            for check in api.qa_result["checks"]:
+                check.update(source_support_verified=False, lead_verification=None)
+        return original(sid, aid)
+    api.artifact = missing
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["source_support_verified"] is False
+    assert row["review"]["lead_verification"]["unresolved_count"] == 1
+    assert consumer.step()["state"] == "reviewed"
+    assert consumer.step()["state"] == "completed"
+    assert ledger.get(DAY)["delivery"]["sheets"]["payload"]["candidates"] == []
 
 
 def test_adaptive_qa_uses_reserved_total_time_and_checks_coverage_without_quota_or_legacy_activity_cap(fixture):

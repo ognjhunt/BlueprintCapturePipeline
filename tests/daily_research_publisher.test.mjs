@@ -1,6 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {verificationDigest} from '../tools/daily_research/verification-digest.mjs';
 import {Publisher,planSheets,planNotion} from '../tools/daily_research/publisher.mjs';
 import {Store,ROOT} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
@@ -15,9 +17,18 @@ const candidate=()=>({organization:'Example Plant',site:'North',task:'Depositing
   proposed_next_action:'Review exact operator evidence',evidence:['task','capability'].map(role=>({role,
     url:'https://plant.example/tasks',classification:'operator',claim_kind:'fact',claim:'Task described',checked_date:'2026-09-30'}))});
 function row(candidates=[candidate()],summary='Supported brief with explicit gaps') {
+  candidates.forEach((c,i)=>{c.candidate_key??=`synthetic-${i}`;});
   const r={date:'2026-09-30',run_key:'blueprint-researcher:2026-09-30',metadata:{run_key:'date'},
     state:'reviewed',cleanup_required:true,packet:{candidates},packet_digest:'a'.repeat(64),qa:{state:'validated'},
     review:{packet_digest:'a'.repeat(64),source_support_verified:true,crm_rechecked:true},delivery:{}};
+  // Synthetic protected transition receipts for publisher binding tests only.
+  r.review.lead_verification={results:candidates.map(c=>{
+    const a={version:'blueprint.lead-verification.v1',candidate_digest:verificationDigest(c),
+      assessed_at:'2026-09-30T00:00:00Z',valid_until:'2099-01-01T00:00:00Z'};
+    return {candidate_key:c.candidate_key,status:'verified',eligible_for_qualified_promotion:true,
+      evaluated_at:'2026-09-30T00:00:00Z',
+      candidate_digest:verificationDigest(c),assessment:a,assessment_digest:verificationDigest(a)};
+  })};
   for (const [name,payload] of Object.entries({sheets:{sheet_id:SHEET,tab:'Prospects',candidates},
     notion:{parent_id:NOTION,summary,candidates}})) {
     const raw=JSON.stringify(payload);
@@ -25,6 +36,30 @@ function row(candidates=[candidate()],summary='Supported brief with explicit gap
   }
   return r;
 }
+
+test('verification digest matches retained Python/JavaScript fixture including inert floats',()=>{
+  const f=JSON.parse(readFileSync(new URL('./fixtures/daily_research/lead-verification.json',import.meta.url)));
+  assert.equal(verificationDigest(f.candidate),f.expected.candidate_digest);
+  assert.equal(verificationDigest(f.assessment),f.expected.assessment_digest);
+});
+
+test('old QA boolean cannot publish a promoted candidate; unresolved summary stays useful',()=>{
+  const r=row();delete r.review.lead_verification;
+  assert.throws(()=>planNotion(r),/lead_verification_required/);
+  const empty=row([]);empty.review.source_support_verified=false;
+  assert.ok(planNotion(empty).body_json);
+});
+
+test('publication rechecks candidate binding and evidence validity',()=>{
+  const altered=row();altered.delivery.notion.payload.candidates[0].task='Changed task';
+  // Rebind outer transport only; this cannot rebind protected lead verification.
+  altered.delivery.notion.payload_json=JSON.stringify(altered.delivery.notion.payload);
+  altered.delivery.notion.payload_digest=sha(altered.delivery.notion.payload_json);
+  assert.throws(()=>planNotion(altered),/lead_verification_required/);
+  const stale=row();stale.review.lead_verification.results[0].assessment.valid_until='2026-09-30T01:00:00Z';
+  stale.review.lead_verification.results[0].assessment_digest=verificationDigest(stale.review.lead_verification.results[0].assessment);
+  assert.throws(()=>planNotion(stale,Date.parse('2026-10-01T00:00:00Z')),/lead_verification_required/);
+});
 
 async function fixture() {
   const db=new MemoryFirestore(),values=[['CRM'],[],[],[],headers], pages=[],writes=[];
@@ -56,7 +91,7 @@ async function fixture() {
     if(path.startsWith('/blocks/page-new/children')) return {has_more:false,results:pages[0].body.children};
     throw new Error('unexpected request '+path);
   };
-  const publisher=new Publisher({crmReader:async()=>snapshot(),google,notion});
+  const publisher=new Publisher({crmReader:async()=>snapshot(),google,notion,clock:()=>time.now});
   db.values.set(ROOT,{schema_version:'blueprint.research-control.v1',enabled:true,workflow:{enabled:true,
     qa_authority_reference:'approved-QA',publication_authority_reference:'approved-fixed-targets'}});
   const store=new Store(db,()=>time.now,'one',async()=>snapshot(),publisher);
@@ -140,6 +175,27 @@ for(const destination of ['notion','sheets']) test(`lost ${destination} reply re
   assert.equal(f.writes.filter(x=>x.destination===destination).length,1);
 });
 
+for(const destination of ['notion','sheets']) test(`lost ${destination} reply reconciles after evidence expiry without another write`,async()=>{
+  const f=await fixture(),r=await f.store.get(f.r.date);
+  const expiry=f.time.now+60000;
+  const result=r.review.lead_verification.results[0];
+  result.assessment.valid_until=new Date(expiry).toISOString();
+  result.assessment_digest=verificationDigest(result.assessment);
+  await f.store.put(r);
+  if(destination==='sheets') {
+    await f.store.publish(r.date);const saved=await f.store.get(r.date);
+    saved.delivery.notion.state='acknowledged';await f.store.put(saved);
+  }
+  f.faults.lost=true;
+  await assert.rejects(f.store.publish(r.date),/publication_attempt_unresolved/);
+  f.time.now=expiry+1;
+  const saved=await f.store.get(r.date),plan=saved.delivery[destination].plan;
+  await assert.rejects(f.publisher.write(saved,destination,plan),/lead_verification_required/);
+  const receipt=await f.store.publish(r.date);
+  assert.equal(receipt.readback_verified,true);
+  assert.equal(f.writes.filter(x=>x.destination===destination).length,1);
+});
+
 test('uncertain unobserved write is never repeated; lease replay performs no service mutations',async()=>{
   const f=await fixture();f.db.replay=true;
   f.publisher.write=async()=>{throw new Error('private timeout');};
@@ -190,7 +246,7 @@ test('payload, plan, QA and destination drift refuse before external writes',asy
 
 test('CRM duplicates, occupied/formula targets and changed snapshots block append',async()=>{
   const f=await fixture();
-  const existing=['BP-000012','Example Plant','Facility / site','North','','','','','','https://plant.example/tasks','','','','','Depositing'];
+  const existing=['BP-000012','Example Plant','Facility / site','North','','','','','','https://plant.example/tasks','','','','','Depositing','','','Chicago'];
   f.values.push(existing);assert.throws(()=>planSheets(f.r,f.snapshot()),/duplicate_changed/);f.values.pop();
   f.publisher.google=async()=>({sheets:[{data:[{rowData:[{values:[{dataValidation:{condition:{type:'ONE_OF_LIST'}}}]}]}]}]});
   await assert.rejects(f.publisher.prepare(f.r,'sheets'),/not_plain_empty/);
