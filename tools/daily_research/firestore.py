@@ -37,7 +37,8 @@ class Bridge:
         try:
             self.process.stdin.write(canonical({"op": op, **fields}) + "\n")
             self.process.stdin.flush()
-            if not select.select([self.process.stdout], [], [], 35)[0]:
+            timeout = 120 if op in {"cleanup_archive", "cleanup_archive_verify"} else 35
+            if not select.select([self.process.stdout], [], [], timeout)[0]:
                 self.broken = True
                 self.close()
                 raise Refusal("firestore_bridge_deadline")
@@ -126,6 +127,24 @@ class FencedProvider(Provider):
     def cancel(self, session_id, run_key):
         self.ledger.bridge.call("assert_lease")
         return super().cancel(session_id, run_key)
+
+    def delete_session(self, session_id, day, binding_digest):
+        self.cleanup_delete_phase = "preconditions"
+        row = self.ledger.get(day)
+        if not row or row.get("session_id") != session_id:
+            raise Refusal("cleanup_session_binding_changed")
+        from tools.daily_research.render import cleanup_inventory
+        inventory = cleanup_inventory(self, row, contents=False)
+        import hashlib
+        for name in ("provider-items.json", "provider-artifacts.json"):
+            expected = next((o for o in row["cleanup"]["archive"]["objects"] if o["name"].endswith("/" + name)), None)
+            if not expected or expected["sha256"] != hashlib.sha256(inventory[name]).hexdigest():
+                raise Refusal("cleanup_archived_inventory_changed")
+        self.ledger.bridge.call("cleanup_delete_check", day=day, binding_digest=binding_digest)
+        if getattr(self, "stopped", lambda: False)():
+            raise Refusal("cleanup_stopped_before_delete")
+        self.cleanup_delete_phase = "provider_submission"
+        return super().delete_session(session_id, day, binding_digest)
 
     def tool_admit(self, row, phase):
         super().tool_admit(row, phase)

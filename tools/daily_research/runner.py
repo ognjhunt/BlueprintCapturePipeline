@@ -593,6 +593,11 @@ class Provider:
         self.api.sessions.events.create(session_id, events=[{"type": "agent.session.input.cancel"}],
                                         idempotency_key=run_key + ":cancel")
 
+    def delete_session(self, session_id, day, binding_digest):
+        # No automatic SDK retries. A durable claim precedes this call; an
+        # uncertain result is reconciled by GET, never another DELETE.
+        return self.api.sessions.delete(session_id).model_dump(mode="json")
+
     def artifact(self, session_id, artifact_id):
         data = bytearray()
         with self.api.sessions.artifacts.with_streaming_response.content(artifact_id, session_id=session_id) as response:
@@ -1373,6 +1378,13 @@ class Runner:
     def record_cleanup(self, day, receipt):
         with self.ledger.lock():
             row = self.ledger.get(day)
+            if receipt.get("authority_type") == "standing_owner_policy":
+                cleanup = row.get("cleanup", {}) if row else {}
+                if (cleanup.get("delete_claimed") is not True
+                        or receipt.get("cleanup_binding_digest") != digest(cleanup.get("binding"))
+                        or receipt.get("archive") != cleanup.get("archive")
+                        or receipt.get("action_time_approval_reference") != cleanup.get("binding", {}).get("policy", {}).get("approval_reference")):
+                    raise Refusal("cleanup_standing_receipt_binding_changed")
             if row and row.get("qa") and row["qa"].get("state") not in {"validated", "qa_blocked"}:
                 raise Refusal("agent_qa_cleanup_not_terminal")
             if (not row or row["state"] not in TERMINAL or not row.get("evidence_digest")
