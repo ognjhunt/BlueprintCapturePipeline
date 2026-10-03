@@ -1,0 +1,2 @@
+prepared link has scene_configuration_attempt: False
+same retained link after activation authorized: KeyError 'scene_configuration_attempt'

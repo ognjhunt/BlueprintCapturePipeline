@@ -1,0 +1,2 @@
+activation_enabled True preparation_worker_present True
+production_main_error ValueError scene_progression_preparation_service_scope_invalid
