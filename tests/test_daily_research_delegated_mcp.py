@@ -122,3 +122,14 @@ def test_exa_query_rejects_secrets_duplicates_and_endpoint_injection(url):
     tool["transport"]["server_url"] = url
     with pytest.raises(search.ToolFailure, match="research_mcp_configuration_invalid"):
         search.mcp_connections([tool], search.MCP_RESEARCH_PROFILE)
+
+
+def test_blueprint_mcp_matches_actual_advertised_resource_without_origin_alias():
+    # Retained owner GET of /.well-known/oauth-protected-resource/api/blueprint-work/mcp.
+    advertised_resource = "https://tryblueprint.io/api/blueprint-work/mcp"
+    tool = connection("blueprint", search.MCP_RESEARCH_TOOLS)
+    assert tool["transport"]["server_url"] == advertised_resource
+    assert search.mcp_connections([tool], search.MCP_RESEARCH_PROFILE) == [tool]
+    tool["transport"]["server_url"] = "https://www.tryblueprint.io/api/blueprint-work/mcp"
+    with pytest.raises(search.ToolFailure, match="research_mcp_configuration_invalid"):
+        search.mcp_connections([tool], search.MCP_RESEARCH_PROFILE)

@@ -188,7 +188,7 @@ chooses queries, delegation, comparison, source verification and publication.
 | Saved server label | Frozen endpoint | Session tools |
 | --- | --- | --- |
 | `exa` | `https://mcp.exa.ai/mcp` | `agent_run` |
-| `blueprint` | `https://www.tryblueprint.io/api/blueprint-work/mcp` | `start_gemini_deep_research`, `get_gemini_deep_research` |
+| `blueprint` | `https://tryblueprint.io/api/blueprint-work/mcp` | `start_gemini_deep_research`, `get_gemini_deep_research` |
 | `parallel_task` | `https://task-mcp.parallel.ai/mcp` | `createDeepResearch`, `getStatus`, `getResultMarkdown` |
 
 The new profile also admits Exa's documented `?login` (blank value) and

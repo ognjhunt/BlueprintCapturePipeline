@@ -32,7 +32,7 @@ MCP_READ_TOOLS = {
 MCP_RESEARCH_PROFILE = "owner-delegated-research-mcp-v1"
 MCP_RESEARCH_TOOLS = {
     "exa": ("https://mcp.exa.ai/mcp", ("agent_run",)),
-    "blueprint": ("https://www.tryblueprint.io/api/blueprint-work/mcp",
+    "blueprint": ("https://tryblueprint.io/api/blueprint-work/mcp",
                   ("start_gemini_deep_research", "get_gemini_deep_research")),
     "parallel_task": ("https://task-mcp.parallel.ai/mcp",
                       ("createDeepResearch", "getStatus", "getResultMarkdown")),
