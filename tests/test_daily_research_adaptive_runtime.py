@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_daily_research_adaptive import result
+from tests.daily_research_verification_fixture import checks
 from tests.test_daily_research_consumer import fixture as consumer_fixture
 from tests.test_daily_research_runner import AGENT, NOW
 from tools.daily_research import adaptive, adaptive_runtime
@@ -94,8 +95,7 @@ def setup(fixture, monkeypatch):
             qa_result.update(schema_version="blueprint.research-qa.v1",packet_digest=row["packet_digest"],
                 crm_digest=row["qa"]["crm_digest"],source_support_verified=True,
                 accepted_keys=[c["candidate_key"] for c in row["packet"]["candidates"]],summary="Synthetic source-supported QA",
-                checks=[{"candidate_key":c["candidate_key"],"source_support_verified":True,"duplicate":False,
-                         "reason":"Synthetic checked operator, incumbent and geography sources"} for c in row["packet"]["candidates"]])
+                checks=checks(row["packet"], clock["now"]))
         if options["lost_reply"]:
             raise TimeoutError()
     api.api=SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=create)))

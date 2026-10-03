@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.daily_research_verification_fixture import checks
 from tests.test_daily_research_consumer import consumer_setup
 from tests.test_daily_research_operator_canary import (
     NOW,
@@ -92,8 +93,7 @@ def accept(api, ledger, clock):
         "crm_digest": row["qa"]["crm_digest"], "source_support_verified": True,
         "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
         "summary": "Synthetic supported QA https://plant.example/tasks; interest unknown.",
-        "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": True,
-                    "duplicate": False, "reason": "Synthetic exact task"} for c in row["packet"]["candidates"]]}
+        "checks": checks(row["packet"], clock["now"])}
     original = api.listing
     completed = int(clock["now"].timestamp()) + 1
     def listing(resource, sid=None):
@@ -366,8 +366,7 @@ def test_normal_daily_qa_503_retries_automatically_inside_original_deadline(ordi
             "crm_digest": row["qa"]["crm_digest"], "source_support_verified": True,
             "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
             "summary": "Synthetic daily verified evidence https://plant.example/tasks; interest unknown.",
-            "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": True,
-                        "duplicate": False, "reason": "Synthetic exact task"} for c in row["packet"]["candidates"]]}
+            "checks": checks(row["packet"], consumer.clock())}
         if reply == "accepted_lost_reply":
             raise TimeoutError()
     provider.api.sessions.events.create = post

@@ -17,3 +17,10 @@ def assessment(candidate, now):
                          "freshness": "current", "freshness_reason": "Synthetic current-state fixture, not live proof"}],
             "counterevidence": {"status": "checked", "reason": "Synthetic bounded automation check; no physical/robot proof",
                                 "source_refs": [], "searches": ["Synthetic task automation and incumbent-system search"]}}
+
+
+def checks(packet, now):
+    """Success fixtures supply evidence for all raw rows, including duplicates."""
+    return [{"candidate_key": c["candidate_key"], "source_support_verified": True,
+             "duplicate": False, "reason": "Synthetic exact operator/site/task assessment",
+             "lead_verification": assessment(c, now)} for c in verification.packet_candidates(packet)]
