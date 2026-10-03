@@ -60,7 +60,7 @@ def identity_key(candidate):
 
 def moment(value):
     if not isinstance(value, str):
-        raise ValueError("timestamp missing")
+        raise TypeError("timestamp missing")
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError("timestamp needs offset")
@@ -121,7 +121,7 @@ def evaluate(candidate, assessment, now):
             counter = assessment.get("counterevidence")
             if (not isinstance(claims, dict) or not isinstance(sources, list)
                     or not isinstance(counter, dict)):
-                raise ValueError("structure")
+                raise TypeError("structure")
             indexed = {s["id"]: s for s in sources if isinstance(s, dict) and text(s.get("id"))}
             if len(indexed) != len(sources):
                 raise ValueError("source identity")
