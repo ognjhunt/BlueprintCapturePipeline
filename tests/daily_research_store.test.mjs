@@ -17,15 +17,22 @@ async function fixture() {
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
 
-test('owner MCP creation requires its frozen binding and explicit current profile',async()=>{
+for (const profile of ['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'])
+test(`owner MCP creation requires frozen binding and exact current ${profile}`,async()=>{
   const {db,store}=await fixture(),binding=[{server_label:'synthetic-owner-connection'}];
   const hash=createHash('sha256').update(JSON.stringify(binding)).digest('hex');
-  const value={...row(),mcp_profile:'owner-readonly-mcp-v1',mcp_binding:binding,
+  const value={...row(),mcp_profile:profile,mcp_binding:binding,
     metadata:{...row().metadata,mcp_binding_digest:hash}};
   await store.put(value);
   await assert.rejects(store.put({...value,mcp_binding:[]}),/research_mcp_binding_changed/);
+  if(profile==='owner-delegated-research-mcp-v1') {
+    assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).mcp_profile,profile);
+    await assert.rejects(store.put({...value,mcp_profile:'owner-readonly-mcp-v1'}),/research_mcp_profile_changed/);
+  } else assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).mcp_profile,undefined);
   await assert.rejects(store.createCheck(value.date,value.metadata),/research_mcp_profile_changed/);
-  db.values.get(ROOT).config={mcp_profile:'owner-readonly-mcp-v1'};
+  db.values.get(ROOT).config={mcp_profile:profile==='owner-readonly-mcp-v1'?'owner-delegated-research-mcp-v1':'owner-readonly-mcp-v1'};
+  await assert.rejects(store.createCheck(value.date,value.metadata),/research_mcp_profile_changed/);
+  db.values.get(ROOT).config={mcp_profile:profile};
   await store.createCheck(value.date,value.metadata);
   await assert.rejects(store.createCheck(value.date,value.metadata),/not_admitted/);
   assert.deepEqual((await store.get(value.date)).mcp_binding,binding);
