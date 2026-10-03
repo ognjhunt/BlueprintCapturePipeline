@@ -62,6 +62,38 @@ def test_s3_write_or_delete_is_discovered_and_unclassified() -> None:
     ) == {"src/blueprint_pipeline/new_s3_bypass.py"}
 
 
+def test_findall_executable_mutations_are_discovered_but_offline_preparation_is_not():
+    sources = [
+        'client.beta.findall.create(objective="fixture")',
+        'client.beta.findall.create (objective="fixture")',
+        'client.beta.findall.ingest(objective="fixture")',
+        'client.beta.findall.extend("findall_fixture", match_limit=10)',
+        'from .parallel_findall import RUNS_URL\nself._post(RUNS_URL, body)',
+        'urllib.request.Request("https://api.parallel.ai/v1beta/findall/runs", method="POST")',
+        'from .parallel_findall import RUNS_URL\nrequests.post(RUNS_URL, json=spec)',
+        'from .parallel_findall import RUNS_URL as target\nRequest(target, method="POST")',
+        'from . import parallel_findall as findall\nrequests.post(url=findall.RUNS_URL, json=spec)',
+        'import blueprint_pipeline.parallel_findall\nrequests.post(blueprint_pipeline.parallel_findall.RUNS_URL, json=spec)',
+    ]
+    for source in sources:
+        assert "parallel_findall_paid_mutation" in verifier._direct_paid_mutation_signals(source)
+        assert verifier._unclassified_direct_mutators({"scripts/bypass.py": source}, set()) == {"scripts/bypass.py"}
+    reader = SCRIPT.parent.parent / "src/blueprint_pipeline/parallel_findall.py"
+    assert verifier._direct_paid_mutation_signals(reader.read_text()) == set()
+
+
+def test_findall_adapter_cannot_issue_its_own_grant():
+    path = "src/blueprint_pipeline/parallel_findall_execution.py"
+    source = (SCRIPT.parent.parent / path).read_text()
+    calls = verifier._all_calls(SCRIPT.parent.parent / path)
+    assert "require_paid_resource_admission_grant" in verifier._reachable_calls(source, "create")
+    assert "claim_submission" in verifier._reachable_calls(source, "create")
+    assert not calls & {"require_paid_resource_admission", "build_paid_lane_admission"}
+    manifest = json.loads(verifier.MUTATION_SURFACE_MANIFEST.read_text())
+    rows = {row["path"]: row for row in manifest["surfaces"]}
+    assert rows[path]["classification"] == "grant_gated_legacy_adapter"
+
+
 def test_provider_hostname_signals_use_exact_regex_matching() -> None:
     source = """
 request = {"url": "https://api.runpod.io/v2/pods", "method": "POST"}

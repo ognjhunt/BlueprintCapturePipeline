@@ -15,6 +15,7 @@ PAID_RESOURCE_CLASSES = frozenset(
         "gpu_canary",
         "model_volume",
         "openai_api_candidate",
+        "parallel_findall",
         "provider_reconstruction_api",
         "gpu_render",
         "lambda_provider_adapter",
