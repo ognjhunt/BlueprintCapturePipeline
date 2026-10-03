@@ -26,11 +26,11 @@ from tools.daily_research.runner import (
     canonical,
     configuration,
     digest,
-    record_delivery_receipt,
     due_date,
     observation_seconds,
     preflight,
     read_json,
+    record_delivery_receipt,
     save_bytes,
     status_summary,
 )
@@ -547,7 +547,7 @@ def _cleanup_completed(bridge, cache, *, stopped, api_factory):
                         confirmation = api.delete_session(row["session_id"], row["date"], binding)
                         row["cleanup"]["delete_confirmation"] = confirmation
                         ledger.put(row)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - retain uncertain SDK/ledger outcomes without retry
                         # The claim survives lost acknowledgement/persistence;
                         # no subsequent pass is allowed to submit another DELETE.
                         code = str(exc) if isinstance(exc, Refusal) else "cleanup_delete_outcome_unknown"
@@ -562,7 +562,7 @@ def _cleanup_completed(bridge, cache, *, stopped, api_factory):
             for resource in ("session", "environment"):
                 try:
                     api.get(resource, row[resource + "_id"])
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - only authenticated 404 establishes absence
                     if getattr(exc, "status_code", None) != 404:
                         return {"date": row["date"], "state": "cleanup_pending", "error": "cleanup_absence_unverified"}
                 else:

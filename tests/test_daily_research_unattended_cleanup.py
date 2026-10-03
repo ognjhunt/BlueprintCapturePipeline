@@ -12,7 +12,17 @@ import pytest
 from tests.test_daily_research_runner import FakeAPI, NotFound, output
 from tools.daily_research import render
 from tools.daily_research.firestore import Bridge, FencedProvider, FirestoreLedger
-from tools.daily_research.runner import AGENT, PROJECT, SHEET, TEMPLATE, Runner, Refusal, canonical, digest, save_json
+from tools.daily_research.runner import (
+    AGENT,
+    PROJECT,
+    SHEET,
+    TEMPLATE,
+    Refusal,
+    Runner,
+    canonical,
+    digest,
+    save_json,
+)
 
 DAY = "2026-10-03"
 NOW = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
