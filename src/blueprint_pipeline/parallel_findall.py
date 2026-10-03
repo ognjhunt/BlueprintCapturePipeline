@@ -10,6 +10,7 @@ import argparse
 import getpass
 import http.client
 import json
+import math
 import os
 import re
 import sys
@@ -41,8 +42,19 @@ def prepare_run(spec: Mapping[str, Any]) -> dict[str, Any]:
     a separately admitted official SDK/API call, never execution authorization.
     """
     fields = {"objective", "entity_type", "match_conditions", "generator", "match_limit"}
-    if not isinstance(spec, Mapping) or set(spec) != fields:
+    if not isinstance(spec, Mapping) or not fields <= set(spec) or set(spec) - fields - {"metadata"}:
         raise FindAllError("findall_spec_requires_exact_minimal_fields")
+    metadata = spec.get("metadata")
+    if metadata is not None and (
+        not isinstance(metadata, dict)
+        or any(
+            not isinstance(key, str)
+            or type(value) not in (str, int, float, bool)
+            or (type(value) is float and not math.isfinite(value))
+            for key, value in metadata.items()
+        )
+    ):
+        raise FindAllError("findall_spec_metadata_invalid")
     for name in ("objective", "entity_type"):
         if not isinstance(spec[name], str) or not spec[name].strip():
             raise FindAllError(f"findall_spec_invalid_{name}")
@@ -182,7 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     prepare = commands.add_parser("prepare", help="Validate a JSON spec entirely offline")
     prepare.add_argument("spec", type=Path)
     for command in ("auth-check", "status", "result"):
-        read = commands.add_parser(command, help="Read an existing, explicitly selected run")
+        help_text = (
+            "Check monitor-list authentication privately; FindAll scope remains unverified"
+            if command == "auth-check" else "Read an existing, explicitly selected run"
+        )
+        read = commands.add_parser(command, help=help_text)
         if command != "auth-check":
             read.add_argument("findall_id")
         auth = read.add_mutually_exclusive_group(required=True)

@@ -2,8 +2,10 @@
 
 This optional utility prepares the official FindAll request offline, checks
 authentication with a read-only list endpoint, and reads an existing run's status
-or result. It adds no dependency, server, scheduled task,
-deployment, paid operation, or pipeline hook. It uses Blueprint's existing
+or result. A separate Python adapter supports future grant-dependent creation
+and explicitly selected cancellation. It adds no dependency, server, scheduled
+task, deployment, issued grant, or pipeline hook; no provider operation was run
+during setup. It uses Blueprint's existing
 `safe_outbound_http` boundary with the Parallel HTTPS host pinned, redirects
 refused, a timeout, and a response-size cap.
 
@@ -38,7 +40,8 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m blueprin
 ```
 
 `check` tests environment membership only; it does not validate authentication.
-`prepare` validates a minimal five-field JSON spec and returns a request envelope
+`prepare` validates the five required JSON fields plus optional official scalar
+`metadata`, preserves that metadata, and returns a request envelope
 with `body_json`, `POST https://api.parallel.ai/v1beta/findall/runs`, required
 `x-api-key` header name, and `execution_authorized: false`. It makes zero calls
 and does not read credentials. The example is reviewable input, not a launched
@@ -86,31 +89,90 @@ The client never discovers or loads a credential automatically. Results preserve
 the provider run, pending and non-matching candidates, reasoning, and citations;
 they are snapshots, not proof of a completed search or admitted partner.
 
-## Paid creation is a separate action
+## Guarded future creation (Python controller seam)
 
-This utility deliberately has **no create/ingest/extend/enrich/cancel method**.
-No new API keys, spending, infrastructure, permissions, or config grants were
-created. No live authentication or paid proof was performed.
+`parallel_findall_execution.AdmittedFindAllClient.create()` supplies the missing
+POST transport. It accepts an explicit key, reviewed spec, stable Blueprint
+`operation_id`, decimal USD ceiling, opaque `PaidResourceAdmissionGrant` for
+`parallel_findall`, and the owning controller's durable submission journal.
+There is no paid CLI, grant issuer, or production caller in this change. Adding
+the resource-class name to the canonical admission vocabulary does not issue a
+grant or authorize a run. The existing issuer allowlists stay unchanged.
 
-For a later approved run, review the prepared `body_json`, exact objective,
-generator, match limit, permitted disclosures, organization/billing context,
-spend ceiling, and cancellation responsibility with the sole local owner. Use
-the existing canonical paid-resource admission rather than turning this reader
-into a spend-gate bypass. This setup grants no permission to start another
-benchmark or reproduce the existing console job. Production integration or
-deployment must be coordinated with that owner first.
+Offline review is usable without credentials:
 
-Creation is intentionally prepare-only because the inspected canonical allocator
-and `paid_resource_admission` have no Parallel FindAll resource/grant binding,
-pricing envelope, or cancellation lifecycle. A boolean such as `allow_paid=True`
-would not supply those contracts. Adding a runnable POST here would create a new
-paid path outside the existing admission boundary. The minimum future execution
-change is an owner-approved Parallel grant-gated adapter that accepts the exact
-prepared `body_json`, budget/disclosure authority and runtime key capability,
-performs a single create attempt without automatic retries, reconciles ambiguous
-creation, records the returned `findall_id`, and owns cancellation/terminal
-reconciliation. Writing that guarded adapter is possible once its grant contract
-is agreed; this setup neither invents nor grants the missing authority.
+```python
+from blueprint_pipeline.parallel_findall_execution import prepare_submission
+
+prepared = prepare_submission(
+    reviewed_spec,
+    operation_id="BLUEPRINT_OPERATION_REPLACE_WITH_APPROVED_ID",
+    maximum_cost_usd="1.00",
+)
+```
+
+This returns the exact request body, versioned pricing facts, maximum-cost
+estimate and `allocation_binding_digest`, with `execution_authorized: false`.
+The digest binds objective, conditions, generator, match limit, metadata,
+operation ID, ceiling and pricing snapshot. The client requires that same digest
+on an opaque grant from the **existing** admission chokepoint. Missing, forged,
+wrong-class, unbound or mismatched grants fail before claiming or calling HTTP.
+The controller must check current user authority, organization, disclosure,
+expiry and remaining shared allowance, and reverify pricing before issuing that
+exact grant; a key or an `allow_paid` boolean never supplies authority.
+
+The checked 2026-10-03 pricing snapshot is fixed + per-match: preview
+$0.10 + $0; base $0.25 + $0.03; core $2 + $0.15; pro $10 + $1.
+The estimate uses the requested match limit, with no enrichment/extension/ingest
+calls. It is an estimate under that pricing snapshot, **not observed billing or
+a provider-enforced dollar cap**. A ceiling below it is refused. This creates no
+budget authority and does not borrow the active console comparison's allocation.
+
+`FindAllSubmissionJournal` is an interface to the owner's existing one-start
+control, not a new database or approval framework:
+
+1. `claim_submission(prepared)` must atomically check current authority and
+   durably record `submission_unresolved` under the operation ID before returning
+   literal `True`. Reject every already-claimed operation ID, including changed
+   bodies, restarts and prior failures. Store no credential.
+2. The adapter makes **one** POST to `/v1beta/findall/runs`; it never retries.
+3. `record_created(operation_id, allocation_binding_digest, run)` must durably
+   retain the raw returned run receipt and provider ID. The adapter records a
+   syntactically valid provider ID even if later status/generator validation fails.
+   On receipt-write failure, `FindAllSubmissionUnresolved.findall_id` retains that
+   ID so the owner can recover it. No uncertain claim is released automatically.
+
+No create idempotency key or FindAll run-list endpoint appears in the inspected
+standard API contract. A timeout, HTTP failure or malformed receipt therefore
+leaves an unresolved claim requiring owner/provider reconciliation. Do not retry
+based on a guessed absence or treat a Monitor read as FindAll reconciliation.
+
+The Python call after **separate action-time authorization and controller wiring**
+is `client.create(reviewed_spec, operation_id=..., maximum_cost_usd=...,
+paid_resource_admission_grant=exact_grant, journal=owner_journal)`. This setup did
+not wire or execute it. Production integration/deployment and any later run remain
+with the sole release owner, distinct from the owner-managed console comparison.
+
+`AdmittedFindAllClient.cancel(findall_id)` sends one empty-body POST to
+`/v1beta/findall/runs/{findall_id}/cancel`, requiring the documented 204 response.
+Use the explicit status read afterward to reconcile `status.is_active` and
+terminal state. A 409 means already terminated and is not a cancellation receipt;
+read status. Cancellation does not refund completed work. The owner retains
+responsibility for monitoring the admitted operation and cancellation when its
+approved deadline or allowance closes. No background watchdog, implicit
+cancellation, extension, or enrichment is installed by setup.
+
+## Remaining runtime handoff
+
+The code and synthetic checks do not establish a production binding, key
+validity, FindAll entitlement, budget grant, deployed caller or paid success.
+The authorized user first performs the private authentication check described
+above. A Monitor success remains only Monitor-read scope. A later authorized
+read of the user's existing FindAll run can verify that run's read scope; it
+still does not prove create authority. No live or paid proof was performed here.
+The owner then wires the existing authority/one-start controller to this journal
+interface and binds the runtime credential through the supported private flow.
+No new API key, storage grant, spending or infrastructure was created.
 
 ## Verification/scoring consumer boundary
 
@@ -134,14 +196,16 @@ verification command and was not run here.
 ## Verification
 
 ```bash
-env -u PARALLEL_API_KEY PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m pytest -q tests/test_parallel_findall.py
+env -u PARALLEL_API_KEY PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m pytest -q tests/test_parallel_findall.py tests/test_parallel_findall_execution.py
 ```
 
 Tests block networking, replace credential input with synthetic fixtures, verify
 name/presence-only checks, offline validation, exact GET paths and headers,
 transport policy, response identity/shape, preservation of candidates/citations,
 secret-free failures, explicit credential-source selection, and no-run-ID
-authentication that does not expose monitor data. No scientific,
+authentication that does not expose monitor data. Execution fixtures check exact
+grant binding, claim-before-POST ordering, restart/changed-body duplicate refusal,
+ambiguous outcomes, persisted IDs and cancellation responses. No scientific,
 production-authentication, or paid-execution claim follows from these tests.
 
 Official documentation checked on 2026-10-03:
@@ -151,3 +215,6 @@ Official documentation checked on 2026-10-03:
 - [Parallel CLI, authentication and dry-run semantics](https://docs.parallel.ai/integrations/cli)
 - [Monitor list read and API-key contract](https://docs.parallel.ai/api-reference/monitor/list-monitors)
 - [Account API token boundary](https://docs.parallel.ai/integrations/account-api)
+- [Versioned price reference](https://docs.parallel.ai/getting-started/pricing)
+- [Cancel request and 204 response](https://docs.parallel.ai/api-reference/findall/cancel-findall-run)
+- [Run lifecycle and cancellation accounting](https://docs.parallel.ai/findall-api/core-concepts/findall-lifecycle)

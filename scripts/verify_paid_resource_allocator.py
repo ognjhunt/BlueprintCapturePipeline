@@ -184,6 +184,51 @@ def _all_calls(path: Path) -> set[str]:
     return calls
 
 
+def _findall_constant_post_call(source: str) -> bool:
+    """Catch executable uses of the exported FindAll URL, including aliases."""
+    if "parallel_findall" not in source:
+        return False
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    urls: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (node.module or "").endswith("parallel_findall") and alias.name == "RUNS_URL":
+                    urls.add(alias.asname or alias.name)
+                elif alias.name == "parallel_findall":
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith("parallel_findall"):
+                    modules.add(alias.asname or alias.name)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        url = node.args[0] if node.args else next(
+            (item.value for item in node.keywords if item.arg in {"url", "full_url"}), None
+        )
+        known_url = (
+            isinstance(url, ast.Name) and url.id in urls
+        ) or (
+            isinstance(url, ast.Attribute) and url.attr == "RUNS_URL"
+            and ast.unparse(url.value) in modules
+        )
+        name = node.func.attr if isinstance(node.func, ast.Attribute) else (
+            node.func.id if isinstance(node.func, ast.Name) else ""
+        )
+        post = name.lower() == "post" or any(
+            item.arg == "method" and isinstance(item.value, ast.Constant)
+            and item.value.value == "POST" for item in node.keywords
+        )
+        if known_url and post:
+            return True
+    return False
+
+
 def _direct_paid_mutation_signals(source: str) -> set[str]:
     signals: set[str] = set()
     runpod_api_named = "RUNPOD_REST_API_BASE" in source or bool(
@@ -256,6 +301,17 @@ def _direct_paid_mutation_signals(source: str) -> set[str]:
         and any(method in source for method in ('"POST"', '"PUT"', '"DELETE"'))
     ):
         signals.add("teleport_capture_create_upload_or_delete")
+    # Keep offline FindAll preparation/readers distinct from executable POSTs.
+    if (
+        re.search(r"\.findall\.(?:create|ingest|extend|enrich)\s*\(", source)
+        or ("parallel_findall" in source and "self._post(RUNS_URL" in source)
+        or _findall_constant_post_call(source)
+        or (
+            "api.parallel.ai/v1beta/findall/runs" in source
+            and re.search(r"(?:method\s*=\s*['\"]POST['\"]|\.post\s*\()", source)
+        )
+    ):
+        signals.add("parallel_findall_paid_mutation")
     return signals
 
 

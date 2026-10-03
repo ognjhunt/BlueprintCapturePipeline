@@ -98,6 +98,20 @@ def test_unknown_fields_refused_without_reflecting_values(spec):
     assert FAKE_KEY not in str(error.value)
 
 
+def test_supported_metadata_preserved_losslessly(spec):
+    spec["metadata"] = {"blueprint_operation": "fixture", "revision": 2, "score": 0.5, "new": True}
+    assert findall.prepare_run(spec)["body_json"] == spec
+    spec["metadata"] = None
+    assert findall.prepare_run(spec)["body_json"] == spec
+
+
+@pytest.mark.parametrize("metadata", [["invalid"], {"nested": {}}, {"invalid": float("nan")}])
+def test_invalid_metadata_refused(spec, metadata):
+    spec["metadata"] = metadata
+    with pytest.raises(findall.FindAllError, match="metadata_invalid"):
+        findall.prepare_run(spec)
+
+
 def test_check_only_tests_binding_membership(monkeypatch, capsys):
     class PresenceOnly(dict):
         def get(self, key, default=None):
