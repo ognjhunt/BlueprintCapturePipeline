@@ -175,7 +175,9 @@ export class Store {
       }
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
-      if(row.mcp_profile && (row.mcp_profile!=='owner-readonly-mcp-v1'
+      if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
+        refuse('research_mcp_profile_changed');
+      if(row.mcp_profile && (!['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'].includes(row.mcp_profile)
           || valueHash(row.mcp_binding)!==row.metadata?.mcp_binding_digest)) refuse('research_mcp_binding_changed');
       if(row.metadata?.mcp_vault_binding_digest && (!row.mcp_profile
           || valueHash(row.mcp_vault_binding)!==row.metadata.mcp_vault_binding_digest)) refuse('research_mcp_vault_binding_changed');
@@ -232,6 +234,7 @@ export class Store {
         if(expected && expected!==deliveryBinding(d)) refuse('publication_delivery_already_bound');
       }
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
+        ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
         cleanup_binding_digest: cleanupBinding,
         cleanup_archive: prior.data()?.cleanup_archive || null,
         cleanup_delete_claimed: prior.data()?.cleanup_delete_claimed === true,
@@ -415,7 +418,7 @@ export class Store {
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
       this.budgetGate(control, snap.data());
-      if(metadata.mcp_binding_digest && control.config?.mcp_profile!=='owner-readonly-mcp-v1')
+      if(metadata.mcp_binding_digest && control.config?.mcp_profile!==(snap.data().mcp_profile || 'owner-readonly-mcp-v1'))
         refuse('research_mcp_profile_changed');
       if(snap.data().history_profile==='agent-history-v1') {
         if(control.config?.history_profile!=='agent-history-v1' || control.learning?.enabled!==true

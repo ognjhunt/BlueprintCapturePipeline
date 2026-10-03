@@ -623,7 +623,8 @@ class Consumer:
             raise Refusal("research_mcp_binding_changed")
         check_mcp_vault_binding(row, session)
         if row.get("mcp_profile") and row["create_payload"]["agent"]["tools"] != (
-                search.tools(row.get("publication_profile"), row.get("history_profile")) + search.mcp_tools(row["mcp_binding"])):
+                search.tools(row.get("publication_profile"), row.get("history_profile"))
+                + search.mcp_tools(row["mcp_binding"], row["mcp_profile"])):
             raise Refusal("research_mcp_binding_changed")
         check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"))
         if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:

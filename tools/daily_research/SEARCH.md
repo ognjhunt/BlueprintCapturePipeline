@@ -175,3 +175,51 @@ Sources: [Perplexity Fast Search](https://docs.perplexity.ai/docs/search/fast-se
 [Search request/response schema](https://docs.perplexity.ai/api-reference/search-post),
 [Agents functions](https://developers.openai.com/api/docs/guides/agents-api/tools/functions),
 [session overrides](https://developers.openai.com/api/docs/guides/agents-api/configuration#override-settings-for-one-session)
+
+### Prospective delegated research over MCP
+
+`mcp_profile=owner-delegated-research-mcp-v1` is a new, explicitly selected
+profile. It preserves the old read-only context allowlists and adds optional
+owner-authenticated research connections without altering saved agents or any
+charged `owner-readonly-mcp-v1` intent. The lead model remains `gpt-6.1-sol`;
+Perplexity fast and scoped history functions remain available. The lead agent
+chooses queries, delegation, comparison, source verification and publication.
+
+| Saved server label | Frozen endpoint | Session tools |
+| --- | --- | --- |
+| `exa` | `https://mcp.exa.ai/mcp` | `agent_run` |
+| `blueprint` | `https://www.tryblueprint.io/api/blueprint-work/mcp` | `start_gemini_deep_research`, `get_gemini_deep_research` |
+| `parallel_task` | `https://task-mcp.parallel.ai/mcp` | `createDeepResearch`, `getStatus`, `getResultMarkdown` |
+
+These are paid research tools, not read-only context. An actual authenticated
+`tools/list`, existing singleton credential/vault metadata and retained spending
+allocation are needed before live use. Inline keys, credential copying, extra
+vault attachments and inferred catalog fields are not introduced. The existing
+Work MCP path is defined by WebApp's `WORK_MCP_PATH`; Blueprint provides the
+Gemini research adapter. Google's own Deep Research MCP support is not an
+official hosted server exposing research start/get tools.
+
+Exa reports a running `id`; `agent_run(runId=...)` observes that same run.
+`previousRunId` creates a new follow-up. Use `effort=ultra` only when advertised
+by the current authenticated tool schema. Gemini and Parallel starts similarly
+retain their returned identifiers for observation; missing acknowledgment is
+never permission to create a duplicate. Parallel `ultra8x` is documented for its
+API, but must be present in the MCP schema before use; its long runtime does not
+extend the existing research deadline. No Find All MCP tool was found in the
+verified Parallel catalog, so no guessed tool or API fallback is added.
+
+The original non-secret connection and singleton vault binding are frozen in the
+create payload and metadata. QA/recovery use the frozen profile, never the
+owner's later saved connection changes. Profile changes are refused at durable
+create admission. Provider MCP items are retained in the existing exact-turn
+evidence export. Native external charges are **not measured** by Perplexity or
+OpenAI usage; prospective preflight explicitly retains
+`native_research_cost_status=unknown_not_metered_by_host`. Missing provider cost
+receipts remain unknown, never zero or an all-provider total. An advertised cost
+limit may be set within a retained allocation, but this source does not pretend
+an optional limit or the existing soft target is a measured hard spending cap.
+It does not activate tools, amend grants, lengthen deadlines or run a comparison.
+
+Catalog sources: [Exa MCP](https://exa.ai/docs/get-started/exa-mcp),
+[Parallel Task MCP](https://docs.parallel.ai/integrations/mcp/task-mcp).
+Find All and native authentication/results require separate actual evidence.
