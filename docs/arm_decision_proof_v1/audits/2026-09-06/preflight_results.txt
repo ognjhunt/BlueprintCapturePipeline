@@ -1,0 +1,2 @@
+preflight_blockers []
+real_consumer_refusal controls_autoprovision_digest_invalid
