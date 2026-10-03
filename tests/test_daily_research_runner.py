@@ -517,7 +517,7 @@ def test_unresolved_review_replay_is_idempotent_and_retains_raw_discovery(fixtur
 def test_exact_dedupe_retains_every_candidate_and_distinct_physical_sites():
     from tools.daily_research import verification
     first = output()["candidates"][0]
-    same_site_alias = {**deepcopy(first), "site": "Alternate name for the same site"}
+    same_site_alias = {**deepcopy(first), "site": first["site"].upper() + "!"}
     second_site = {**deepcopy(first), "location": "Another physical location"}
     other_operator = {**deepcopy(first), "organization": "Another named operator at the same site"}
     o = output()
@@ -957,3 +957,14 @@ def test_units_do_not_install_or_arm_existing_deployment():
 if __name__ == "__main__":
     _sdk_wire_probe()
     print("sdk_wire_contract_verified")
+
+
+def test_exact_dedupe_preserves_same_city_distinct_named_facilities():
+    first = output()["candidates"][0]
+    first = {**first, "site": "North plant, 1 Test Street", "location": "Chicago, Illinois, US"}
+    second = {**deepcopy(first), "site": "South plant, 2 Test Street"}
+    o = output()
+    o["candidates"] = [first, second]
+    accepted, duplicates = validate_output(o, DAY, set())
+    assert len(accepted) == 2 and not duplicates
+    assert len({c["candidate_key"] for c in accepted}) == 2

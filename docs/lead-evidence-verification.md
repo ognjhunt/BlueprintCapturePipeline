@@ -59,11 +59,11 @@ reconciliation validates at the retained review time so an expired assessment
 does not prevent recovery of an already completed write or cause a duplicate
 effect. Historical readback does not refresh evidence or grant another write.
 
-Uniqueness is normalized operator + physical location + task. Site-label aliases
-cannot create another qualified candidate; different locations or tasks remain
-distinct. Conflicting duplicate assessments remain unresolved before promotion.
-Existing semantic QA/CRM duplicate checks remain necessary for aliases beyond
-normalization.
+Raw uniqueness is normalized operator + named site/address + geographic location + task.
+Different named facilities in the same city remain distinct. The agent resolves semantic
+site-label aliases with a referenced original and an evidence-based equivalence reason;
+conflicting duplicate assessments remain unresolved before promotion. Existing semantic
+QA/CRM duplicate checks remain necessary for aliases beyond normalization.
 
 `cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=None)` evaluates every
 candidate, including conditional entries. It reports verified unique site/task

@@ -46,8 +46,13 @@ def normalized(value):
 
 
 def identity_key(candidate):
-    """Site labels alone and organization alone are not physical-site identity."""
-    parts = [candidate.get(field, "") for field in ("organization", "location", "task")]
+    """Conservative raw identity; the agent resolves semantic site aliases.
+
+    Geographic location may be just a city. Include the named site/address so
+    separate facilities in that city survive for independent assessment.
+    """
+    parts = [candidate.get("organization", ""), candidate.get("site") or candidate.get("location", ""),
+             candidate.get("location") or candidate.get("site", ""), candidate.get("task", "")]
     if any(not isinstance(x, str) or not normalized(x) for x in parts):
         return None
     return digest([normalized(x) for x in parts])

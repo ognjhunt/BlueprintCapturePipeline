@@ -1,7 +1,7 @@
 """Evidence gate and complete-cohort scoring without network or paid jobs."""
+import json
 from copy import deepcopy
 from datetime import timedelta
-import json
 from pathlib import Path
 
 import pytest
@@ -68,7 +68,7 @@ def test_contradiction_requires_support_and_retains_all_sources():
 
 def test_full_cohort_dedupe_coverage_counts_and_unknown_actual_cost():
     first = candidate()
-    duplicate = {**first, "candidate_key": "duplicate", "site": "Alternate site label"}
+    duplicate = {**first, "candidate_key": "duplicate", "site": first["site"].upper() + "!"}
     other_site = {**first, "candidate_key": "second-site", "location": "Different physical site"}
     other_task = {**first, "candidate_key": "second-task", "task": "Different physical workflow"}
     candidates = [first, duplicate, other_site, other_task]
@@ -158,3 +158,12 @@ def test_unresolved_semantic_duplicate_cannot_inflate_verified_yield(checks):
     result = verification.cohort(candidates, {c["candidate_key"]: assessment(c, NOW) for c in candidates}, NOW, duplicate_checks=checks)
     assert not result["results"][0]["eligible_for_qualified_promotion"]
     assert result["results"][0]["status"] == "unresolved"
+
+
+def test_same_city_named_facilities_survive_without_semantic_alias_decision():
+    first = {**candidate(), "site": "North plant, 1 Test Street", "location": "Chicago, Illinois, US"}
+    second = {**first, "candidate_key": "south", "site": "South plant, 2 Test Street"}
+    result = verification.cohort([first, second], {c["candidate_key"]: assessment(c, NOW) for c in [first, second]}, NOW)
+    assert result["candidate_count"] == result["unique_site_task_candidates"] == 2
+    assert result["duplicates"] == 0 and result["verified_unique_site_task_candidates"] == 2
+    assert all(r["eligible_for_qualified_promotion"] for r in result["results"])

@@ -207,7 +207,8 @@ def public_url(value):
 
 
 def keys(candidate):
-    suffix = [verification.normalized(candidate.get("location") or candidate["site"]), verification.normalized(candidate["task"])]
+    suffix = [verification.normalized(candidate.get("site") or candidate["location"]),
+              verification.normalized(candidate.get("location") or candidate["site"]), verification.normalized(candidate["task"])]
     return {digest([verification.normalized(candidate["organization"]), *suffix])}
 
 
