@@ -85,3 +85,40 @@ def test_new_profile_intersects_owner_allowlist_without_exposing_mutation_tools(
         "start_gemini_deep_research", "get_gemini_deep_research"]
     readonly = [connection(label, search.MCP_READ_TOOLS) for label in search.MCP_READ_TOOLS]
     assert search.mcp_tools(readonly) == search.mcp_tools(readonly, search.MCP_RESEARCH_PROFILE)
+
+
+@pytest.mark.parametrize("suffix", ["?login", "?login=", "?tools=agent_run", "?tools=web_search_exa,web_fetch_exa,web_search_advanced_exa,agent_run", "?login&tools=agent_run"])
+def test_exa_documented_oauth_query_retains_full_url_and_vault_identity(delegated_fixture, suffix):
+    runner, api, _ = delegated_fixture
+    tool = connection("exa", search.MCP_RESEARCH_TOOLS)
+    tool["transport"]["server_url"] += suffix
+    original = deepcopy(tool)
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_RESEARCH_PROFILE
+    row = runner.start_or_resume()
+    assert row["mcp_binding"] == [original]
+    assert row["mcp_vault_binding"][0]["mcp_server_url"] == original["transport"]["server_url"]
+    assert row["mcp_vault_binding"][0]["credential_auth"]["mcp_server_url"] == original["transport"]["server_url"]
+    assert row["create_payload"]["agent"]["tools"][-1]["transport"]["server_url"] == original["transport"]["server_url"]
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+    # A credential for the bare endpoint cannot silently attach to its OAuth URL.
+    api.vault_credentials = {"vault_synthetic_exa": [{"id": tool["credential_id"], "vault_id": "vault_synthetic_exa",
+        "auth": {"type": "mcp_oauth", "mcp_server_url": search.MCP_RESEARCH_TOOLS["exa"][0]}}]}
+    with pytest.raises(Refusal, match="research_mcp_vault_binding_invalid"):
+        preflight(api, search_provider=search.PROFILE, mcp_profile=search.MCP_RESEARCH_PROFILE)
+
+
+@pytest.mark.parametrize("url", [
+    "https://mcp.exa.ai/mcp?exaApiKey=inline_secret", "https://mcp.exa.ai/mcp?login&token=secret",
+    "https://mcp.exa.ai/mcp?login&login", "https://mcp.exa.ai/mcp?tools=agent_run&tools=web_fetch_exa",
+    "https://mcp.exa.ai/mcp?login=yes", "https://mcp.exa.ai/mcp?tools=agent_run%26exaApiKey%3Dsecret",
+    "https://mcp.exa.ai/mcp?tools=agent_run,unknown_tool", "https://mcp.exa.ai/mcp?tools=",
+    "https://mcp.exa.ai/mcp?login#", "https://user@mcp.exa.ai/mcp?login",
+    "https://mcp.exa.ai.evil.example/mcp?login", "http://mcp.exa.ai/mcp?login",
+    "https://mcp.exa.ai/other?login", "https://mcp.exa.ai/mcp?login\n",
+])
+def test_exa_query_rejects_secrets_duplicates_and_endpoint_injection(url):
+    tool = connection("exa", search.MCP_RESEARCH_TOOLS)
+    tool["transport"]["server_url"] = url
+    with pytest.raises(search.ToolFailure, match="research_mcp_configuration_invalid"):
+        search.mcp_connections([tool], search.MCP_RESEARCH_PROFILE)

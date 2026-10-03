@@ -191,6 +191,12 @@ chooses queries, delegation, comparison, source verification and publication.
 | `blueprint` | `https://www.tryblueprint.io/api/blueprint-work/mcp` | `start_gemini_deep_research`, `get_gemini_deep_research` |
 | `parallel_task` | `https://task-mcp.parallel.ai/mcp` | `createDeepResearch`, `getStatus`, `getResultMarkdown` |
 
+The new profile also admits Exa's documented `?login` (blank value) and
+`?tools=...` selectors for its four documented catalog names, alone or together.
+The complete original URL is frozen unchanged in connection, credential/vault
+identity and digests. Secret/unknown query keys, duplicate keys, other origins or
+paths, userinfo and fragments are refused; old profiles do not gain URL aliases.
+
 These are paid research tools, not read-only context. An actual authenticated
 `tools/list`, existing singleton credential/vault metadata and retained spending
 allocation are needed before live use. Inline keys, credential copying, extra

@@ -16,7 +16,7 @@ import ssl
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 PROFILE = "perplexity-fast-v1"
 MCP_PROFILE = "owner-readonly-mcp-v1"
@@ -56,6 +56,39 @@ class ToolFailure(ValueError):
     """Only stable, secret-free codes may leave the application boundary."""
 
 
+def mcp_endpoint_admitted(label, value, profile, catalog):
+    """Allow Exa's documented non-secret URL options only in the new profile.
+
+    Validate without normalizing: credentials, vaults and payload digests bind
+    the full original endpoint, including its query.
+    """
+    if value == catalog[label][0]:
+        return True
+    if profile != MCP_RESEARCH_PROFILE or label != "exa" or not isinstance(value, str):
+        return False
+    try:
+        url = urlsplit(value)
+        if (url.scheme != "https" or url.netloc != "mcp.exa.ai" or url.path != "/mcp"
+                or "#" in value or not url.query or len(url.query) > 1024
+                or any(ord(char) < 33 or ord(char) > 126 for char in value)):
+            return False
+        pairs = parse_qsl(url.query, keep_blank_values=True)
+        if not pairs or len(pairs) != len({name for name, _ in pairs}):
+            return False
+        documented = {"web_search_exa", "web_fetch_exa", "web_search_advanced_exa", "agent_run"}
+        for name, parameter in pairs:
+            if name == "login" and parameter == "":
+                continue
+            if name == "tools":
+                selected = parameter.split(",")
+                if len(selected) == len(set(selected)) and all(tool in documented for tool in selected):
+                    continue
+            return False
+        return True
+    except ValueError:
+        return False
+
+
 def mcp_connections(declared, profile=MCP_PROFILE):
     """Retain only the existing owner connections' non-secret configuration."""
     catalog = MCP_PROFILES.get(profile)
@@ -71,7 +104,8 @@ def mcp_connections(declared, profile=MCP_PROFILE):
                          "credential_id", "request_metadata", "required"}
                 or not isinstance(label, str) or label not in catalog or label in labels
                 or not isinstance(transport, dict) or set(transport) - {"type", "server_url", "headers"}
-                or transport.get("type") != "http" or transport.get("server_url") != catalog[label][0]
+                or transport.get("type") != "http"
+                or not mcp_endpoint_admitted(label, transport.get("server_url"), profile, catalog)
                 or transport.get("headers", {}) != {} or tool["request_metadata"] != {}
                 or tool["connection_origin"] != "service" or type(tool["required"]) is not bool
                 or not isinstance(tool["credential_id"], str)
