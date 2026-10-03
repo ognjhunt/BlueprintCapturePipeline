@@ -1196,9 +1196,12 @@ class Runner:
                     if evaluated_at > self.clock():
                         raise ValueError("future assessment")
                     expected = verification.cohort(all_candidates, assessments, evaluated_at, duplicate_checks=duplicate_checks)
-                    if digest(expected) != digest(decision["lead_verification"]):
+                    # The fenced Node bridge preserves numeric values, not JSON
+                    # float lexemes (coverage 1.0 becomes 1). Use the dedicated
+                    # portable binding for new verification receipts only.
+                    if verification.digest(expected) != verification.digest(decision["lead_verification"]):
                         raise ValueError("derived verification changed")
-                except (KeyError, IndexError, TypeError, ValueError):
+                except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                     raise Refusal("lead_verification_result_binding_invalid") from None
             eligible = {r["candidate_key"] for r in cohort["results"] if r["eligible_for_qualified_promotion"]}
             if any(c["candidate_key"] not in eligible for c in selected) or (selected and not decision["source_support_verified"]):

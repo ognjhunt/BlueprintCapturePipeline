@@ -491,6 +491,17 @@ def test_review_rejects_forged_derived_verification_metrics(fixture):
         runner.review(DAY, value)
 
 
+def test_review_accepts_portable_whole_number_metrics_after_bridge_roundtrip(fixture):
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    value = decision(row)
+    # JSON.parse/stringify in the real Node bridge changes 1.0 to 1.
+    assert value["lead_verification"]["verification_coverage"] == 1.0
+    value["lead_verification"]["verification_coverage"] = 1
+    reviewed = runner.review(DAY, value)
+    assert reviewed["review"] == value
+
+
 def test_unresolved_review_replay_is_idempotent_and_retains_raw_discovery(fixture):
     runner, _, _ = fixture
     row = runner.start_or_resume()

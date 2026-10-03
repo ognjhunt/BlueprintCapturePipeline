@@ -538,6 +538,8 @@ def test_native_terminal_collection_retains_late_cancel_long_prose_and_publishes
         assert result["state"] == "completed" and result["provider_mutations"] == 0
         row = ledger.get(canary.DAY)
         receipt = row["qa"]["terminal_collection_recovery"]
+        assert all(r["evaluated_at"] == clock["now"].isoformat()
+                   for r in row["review"]["lead_verification"]["results"])
         assert receipt["native_receipt"] == proof and receipt["previous_qa"] == source["qa"]
         for key in ("cancel_attempted", "cancel_idempotency_key", "cancel_reply_received", "error", "observation_failures"):
             assert row["qa"][key] == source["qa"][key]
@@ -758,7 +760,10 @@ def test_exact_retained_native_terminal_collection_when_evidence_is_supplied(mon
     assert working["qa"]["terminal_collection_recovery"]["previous_qa"] == original["qa"]
     assert working["qa"]["decision"]["summary"] == json.loads(files["2026-10-01-qa.json"])["summary"]
     assert len(working["qa"]["decision"]["summary"]) == 7301
-    assert len(working["qa"]["decision"]["accepted_keys"]) == 1
+    # Preserve the real historical artifact; its old blanket QA cannot supply
+    # a new evidence assessment or silently qualify its selected candidate.
+    assert working["qa"]["decision"]["accepted_keys"] == []
+    assert working["qa"]["decision"]["lead_verification"]["verification_coverage"] == 0
     assert working["packet"] == original["packet"]
     assert all(candidate["qualification_status"] == "unqualified" for candidate in working["packet"]["candidates"])
 
