@@ -3,7 +3,8 @@ import {createHash, randomUUID} from 'node:crypto';
 import {gzipSync, gunzipSync} from 'node:zlib';
 import {createInterface} from 'node:readline';
 import {pathToFileURL} from 'node:url';
-import {livePublisher} from './publisher.mjs';
+import {livePublisher,publicationVerification,requirePublicationVerification} from './publisher.mjs';
+import {verificationDigest} from './verification-digest.mjs';
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
 export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
@@ -728,6 +729,7 @@ export class Store {
       refuse('publication_attempt_not_admitted');
     await this.transaction(async tx=>{
       const control=(await tx.get(this.control)).data();this.publicationAgentGate(control,row,context.request_digest,context.action);
+      requirePublicationVerification(row,name,this.clock());
       const run=(await tx.get(ref)).data();
       if(run.blob!==before.blob || valueHash(attemptState(run,row,name))!==valueHash(state)
           || valueHash(run.publication_attempts?.[name]?.[number] || null)!==valueHash(pending || null))
@@ -762,6 +764,8 @@ export class Store {
         if(Object.keys(args).length) invalidArguments([{path:'/',code:'unexpected_properties',expectations:{allowed_properties:[]},
           allowed_repair:'Call blueprint_inspect_publication with an empty object.'}]);
         return {success:true,output:{validated_research:row.qa.decision || null,packet:row.packet,
+          lead_verification:row.review?.lead_verification || null,
+          verification_eligibility:Object.fromEntries(Object.keys(row.delivery || {}).map(name=>[name,publicationVerification(row,name,this.clock())])),
           destinations:Object.fromEntries(Object.entries(row.delivery || {}).map(([name,d])=>[name,{
             key:d.key,payload:d.payload,payload_digest:d.payload_digest,presentation:d.presentation || null,
             state:d.state,receipt:d.receipt || null,plan:d.plan || null,
@@ -770,7 +774,7 @@ export class Store {
           transport_limits:{notion:{blocks_per_request:90,utf8_json_bytes_per_request:450000,text_code_units_per_block:1800}},
           presentation_rules:{sheets:{strategies:['full'],summary:'must_be_absent',example:{destination:'sheets',strategy:'full'}},
             notion:{full:{summary:'must_be_absent'},concise:{summary:'required_nonblank',max_utf8_bytes:2000000}}},
-          guidance:'Sheets requires full with summary omitted. Notion permits full with summary omitted or concise with a nonblank summary up to 2,000,000 UTF-8 bytes. Choose before a write claim. Complete canonical research is retained. Unknown writes are observation-only; never replace a consumed plan.'}};
+          guidance:'Sheets requires full with summary omitted. Notion permits full with summary omitted or concise with a nonblank summary up to 2,000,000 UTF-8 bytes. Choose before a write claim. A current protected evidence assessment is required before every new candidate publication claim or batch. Missing or expired evidence stays unresolved; inspect its reasons and retain raw research. Buying intent, rights, commercial qualification, robot compatibility and deployment readiness require separate gates. Unknown writes are observation-only; never replace a consumed plan.'}};
       }
       const a=args;destination=a.destination;
       const issues=[];
@@ -845,8 +849,11 @@ export class Store {
       return {success:false,error:{code,destination:destination || null,
         ...(argumentIssues?{status:'recoverable_issue',issues:argumentIssues,
           allowed_repair:'Correct the indicated arguments in this same turn within current authority. Inspect claims before changing a presentation; existing claims and receipts remain binding.'}:{}),
+        ...(code==='publication_lead_verification_required'?{status:'recoverable_issue',
+          evidence_issues:publicationVerification(row,destination,this.clock()).reasons,
+          allowed_repair:'Inspect the retained evidence and reasons. Supply a supported current assessment through the existing protected research review within original authority; preserve raw findings and consumed claims. Do not invent qualification or repeat uncertain writes.'}:{}),
         recovery_policy:argumentIssues?'repair_arguments_preserve_claims':definitive_rejection?'new_agent_presentation_after_verified_absence':'preserve_claims_and_inspect',
-        guidance:argumentIssues?'Sheets requires full with summary omitted; Notion permits full without summary or concise with a supported nonblank summary. Original requests remain retained; argument repair grants no new authority.':definitive_rejection
+        guidance:code==='publication_lead_verification_required'?'Current evidence verification is required for a new qualified candidate claim or batch. Raw source and existing readback remain available; missing evidence is unresolved, with all commercial and rights gates still separate.':argumentIssues?'Sheets requires full with summary omitted; Notion permits full without summary or concise with a supported nonblank summary. Original requests remain retained; argument repair grants no new authority.':definitive_rejection
           ?'The provider definitively rejected the initial create request. Choose a revised presentation; a new attempt is admitted only after complete readback proves the report absent. Original plan, claim and error remain retained.'
           :'Inspect retained source and current claims. An uncertain write is GET-only until exact readback; choose a revised presentation before a claim or after a proven initial validation rejection.',
         ...(error.provider_feedback?{provider_feedback:error.provider_feedback}:{}),
@@ -890,7 +897,7 @@ export class Store {
         || p.workflow_authority.publication_authority_reference!==p.authority_reference
         || review?.source_support_verified!==true || review.crm_rechecked!==true
         || review.packet_digest!==source.packet_digest || pythonHash(source.packet)!==source.packet_digest
-        || review.qa_artifact_digest!==qa.artifact_digest || valueHash(qa.decision)!==valueHash(review)
+        || review.qa_artifact_digest!==qa.artifact_digest || verificationDigest(qa.decision)!==verificationDigest(review)
         || ![`${source.date}-qa.json`,`${source.date}-qa-correction-1-artifact.json`,`${source.date}-qa-correction-2-artifact.json`].includes(qa.artifact_file)
         || review.reviewer_reference!==`agent-turn:${source.session_id}:${qa.turn_id}`
         || !Array.isArray(review.accepted_keys) || !review.accepted_keys.length
@@ -914,6 +921,12 @@ export class Store {
     if(sha(rawQA)!==qa.artifact_digest || qaResult.packet_digest!==source.packet_digest
         || qaResult.source_support_verified!==true || !Array.isArray(qaResult.accepted_keys)
         || !review.accepted_keys.every(key=>qaResult.accepted_keys.includes(key))) refuse('terminal_sheets_recovery_qa_invalid');
+    if(review.lead_verification) for(const result of review.lead_verification.results || []) {
+      const check=qaResult.checks?.find(check=>check.candidate_key===result.candidate_key);
+      if(!check || verificationDigest(check.lead_verification ?? null)!==verificationDigest(result.assessment ?? null)
+          || result.assessment_digest!==verificationDigest(result.assessment ?? null))
+        refuse('terminal_sheets_recovery_qa_invalid');
+    }
     const evidence=JSON.parse(Buffer.from(await this.fileGet(p.evidence_file),'base64').toString('utf8'));
     if(p.evidence_file!==`${source.date}-publication-evidence.json` || !Array.isArray(evidence)
         || evidence.some(item=>item.turn_id!==p.turn_id) || pythonHash(evidence)!==p.evidence_digest)
@@ -984,6 +997,7 @@ export class Store {
       if(terminalRecovery && attemptState((await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row,destination).claimed && !d.plan)
         refuse('terminal_sheets_recovery_claim_plan_missing');
       if (!d.plan) {
+        requirePublicationVerification(row,destination,this.clock());
         const expected_blob=terminalRecovery?sha(JSON.stringify(row)):null;
         d.plan=await this.publisher.prepare(row,destination);
         await this.put(row,terminalRecovery?{expected_blob,context:terminalRecovery}:null);
@@ -1011,6 +1025,7 @@ export class Store {
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || attemptState(run,row,destination).claimed) refuse('publication_attempt_not_admitted');
         if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+        requirePublicationVerification(row,destination,this.clock());
         tx.set(ref,claimUpdate(run,row,destination,d.plan.request_digest),{merge:true});
       });
       if(agentContext) {
@@ -1026,12 +1041,15 @@ export class Store {
         if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
           refuse('publication_authority_or_plan_changed');
       }
-      await this.publisher.write(row,destination,d.plan,terminalRecovery?{beforeWrite:async()=>{
+      requirePublicationVerification(row,destination,this.clock());
+      await this.publisher.write(row,destination,d.plan,{beforeWrite:async()=>{
+        requirePublicationVerification(row,destination,this.clock());
+        if(!terminalRecovery) return;
         const latest=(await ref.get()).data(),control=(await this.control.get()).data();
         this.terminalSheetsGate(control,row,terminalRecovery);
         if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
           refuse('publication_authority_or_plan_changed');
-      }}:undefined);
+      }});
       return await this.publisher.reconcile(row,destination,d.plan);
     } catch(error) {
       if(error instanceof Refusal && /^(?:publication|workflow|firestore|research_tool|terminal_sheets_recovery)_[a-z_]+$/.test(error.message)) throw error;
@@ -1061,6 +1079,7 @@ export class Store {
       if(!same(authority,control.workflow) || collectionAuthority && !same(collectionAuthority,control.workflow))
         refuse('publication_authority_changed');
       if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+      requirePublicationVerification(row,'notion',this.clock());
       const snap=await tx.get(ref),run=snap.data();
       if(run.blob!==before.data().blob || attemptState(run,row,'notion').batches?.[step.number])
         refuse('publication_attempt_not_admitted');
@@ -1074,6 +1093,7 @@ export class Store {
     if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
     if(!same(authority,control.workflow) || latest.blob!==before.data().blob
         || !same(attemptState(latest,row,'notion').batches?.[step.number],claim)) refuse('publication_authority_or_plan_changed');
+    requirePublicationVerification(row,'notion',this.clock());
     await this.publisher.writeNotionStep(row,plan,step);
     return await this.publisher.reconcile(row,'notion',plan);
   }

@@ -58,6 +58,8 @@ def test_saved_agent_inspects_repairs_its_format_and_uploads_with_feedback(tmp_p
         assert consumer.step()["state"] == "publication_running"
         publication_input = json.loads(ledger.read_bytes(DAY + "-publication-input.json"))
         assert "Sheets accepts only strategy full with summary omitted" in publication_input["input"][0]["content"][0]["text"]
+        assert "Every new candidate claim or batch" in publication_input["input"][0]["content"][0]["text"]
+        assert "Do not invent these gates or refresh evidence dates" in publication_input["input"][0]["content"][0]["text"]
         def ask(cid, name, arguments):
             state["actions"] = [{"type": "function_call", "turn_id": "turn_publication", "call_id": cid,
                                  "name": name, "arguments": arguments}]
