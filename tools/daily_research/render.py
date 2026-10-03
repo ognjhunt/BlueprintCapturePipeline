@@ -26,6 +26,7 @@ from tools.daily_research.runner import (
     canonical,
     configuration,
     digest,
+    record_delivery_receipt,
     due_date,
     observation_seconds,
     preflight,
@@ -301,6 +302,14 @@ def publication_manifest(row, manifest):
 def export_snapshot(bridge, day, destination):
     snapshot = bridge.call("snapshot", day=day)
     row = snapshot["row"]
+    cleanup_manifest = snapshot.get("cleanup_manifest")
+    if cleanup_manifest is not None:
+        cleanup = row.get("cleanup", {})
+        if (cleanup_manifest.get("binding_digest") != digest(cleanup.get("binding"))
+                or cleanup_manifest.get("archive") != cleanup.get("archive")
+                or cleanup_manifest.get("delete_confirmation") != cleanup.get("delete_confirmation")
+                or cleanup.get("delete_claimed") and cleanup_manifest.get("delete_claimed") is not True):
+            raise Refusal("cleanup_export_binding_mismatch")
     publication = publication_manifest(row, snapshot.get("publication_manifest"))
     files = {kind: base64.b64decode(raw, validate=True) for kind, raw in snapshot["files"].items()}
     if "artifact" in files and hashlib.sha256(files["artifact"]).hexdigest() != row.get("raw_output_digest"):
@@ -407,11 +416,168 @@ def export_snapshot(bridge, day, destination):
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     save_bytes(destination / "status.json", canonical(row).encode())
+    if cleanup_manifest is not None:
+        save_bytes(destination / "cleanup-manifest.json", canonical(cleanup_manifest).encode())
     if publication is not None:
         save_bytes(destination / "publication-manifest.json", canonical(publication).encode())
     for kind, raw in files.items():
         save_bytes(destination / (day + "-" + kind + ".json"), raw)
     return {"state": "exported", "directory": str(destination), "missing_files": snapshot["missing_files"]}
+
+
+def cleanup_inventory(api, row, *, contents=True):
+    """Complete, exact terminal inventory; no cancellation or phase admission."""
+    if (row.get("state") != "completed" or row.get("turn_status") != "completed"
+            or row.get("qa", {}).get("state") != "validated"
+            or row.get("publication", {}).get("state") not in {"completed", "agent_finished_without_complete_receipts"}
+            or row.get("publication", {}).get("turn_status") not in {"completed", "failed", "cancelled"}):
+        raise Refusal("cleanup_work_not_completed")
+    for name in ("notion", "sheets"):
+        delivery = row.get("delivery", {}).get(name, {})
+        if delivery.get("state") != "acknowledged":
+            raise Refusal("cleanup_publication_not_acknowledged")
+        record_delivery_receipt(row, delivery.get("receipt", {}), complete=False)
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    if session.get("status") != "idle" or session.get("required_actions"):
+        raise Refusal("cleanup_execution_not_terminal")
+    expected = {row["turn_id"], row["qa"]["turn_id"], row["publication"]["turn_id"]}
+    expected.update(r["turn_id"] for r in row.get("validation_repairs", []) if r.get("turn_id"))
+    expected.update(r["turn_id"] for r in row["qa"].get("corrections", []) if r.get("turn_id"))
+    expected.update(r["previous_review"]["turn_id"] for r in row["qa"].get("corrections", [])
+                    if r.get("previous_review", {}).get("turn_id"))
+    turns = api.listing("turns", row["session_id"])
+    if (len(turns) != len(expected) or {t.get("id") for t in turns} != expected
+            or any(t.get("status") not in {"completed", "failed", "cancelled"} or t.get("subagent_id") for t in turns)):
+        raise Refusal("cleanup_turn_inventory_changed")
+    statuses = {t["id"]: t["status"] for t in turns}
+    if (statuses[row["turn_id"]] != "completed" or statuses[row["qa"]["turn_id"]] != "completed"
+            or statuses[row["publication"]["turn_id"]] != row["publication"]["turn_status"]):
+        raise Refusal("cleanup_turn_inventory_changed")
+    items = api.listing("items", row["session_id"])
+    if any(item.get("turn_id") not in expected for item in items):
+        raise Refusal("cleanup_item_inventory_changed")
+    environment = api.get("environment", row["environment_id"])
+    if environment.get("id") != row["environment_id"]:
+        raise Refusal("cleanup_environment_binding_changed")
+    result = {"provider-session.json": canonical(session).encode(), "provider-turns.json": canonical(turns).encode(),
+              "provider-items.json": canonical(items).encode(), "provider-environment.json": canonical(environment).encode()}
+    artifacts = api.listing("artifacts", row["session_id"])
+    ids = [a.get("id") for a in artifacts]
+    if not ids or len(ids) != len(set(ids)) or any(not isinstance(i, str) or not i for i in ids):
+        raise Refusal("cleanup_artifact_inventory_invalid")
+    for artifact in artifacts:
+        if artifact.get("turn_id") not in expected:
+            raise Refusal("cleanup_artifact_inventory_invalid")
+        if contents:
+            result["provider-artifact-" + hashlib.sha256(artifact["id"].encode()).hexdigest() + ".bin"] = api.artifact(row["session_id"], artifact["id"])
+    result["provider-artifacts.json"] = canonical(artifacts).encode()
+    return result
+
+
+def cleanup_completed(bridge, cache, *, stopped=lambda: False, api_factory=FencedProvider):
+    providers = []
+    def tracked_factory(*args):
+        provider = api_factory(*args)
+        providers.append(provider)
+        return provider
+    try:
+        return _cleanup_completed(bridge, cache, stopped=stopped, api_factory=tracked_factory)
+    finally:
+        for provider in providers:
+            if getattr(provider, "client", None) is not None:
+                provider.client.close()
+
+
+def _cleanup_completed(bridge, cache, *, stopped, api_factory):
+    """Prospective owner-authorized cleanup, off unless explicitly configured."""
+    control = bridge.call("control")
+    policy = control.get("cleanup_policy") or {}
+    if not policy and not control.get("cleanup_observation_required"):
+        return {"state": "cleanup_disabled"}
+    ledger = FirestoreLedger(bridge)
+    rows = ledger.rows() if policy.get("enabled") is True else []
+    # Claimed deletion needs only observation on restart, including revocation.
+    if not rows:
+        if policy.get("enabled") is not True:
+            rows = [r for r in ledger.rows() if r.get("cleanup")]
+        if not rows:
+            return {"state": "cleanup_disabled" if policy.get("enabled") is not True else "cleanup_not_due"}
+    for candidate in rows:
+        if not candidate.get("cleanup_required") or (not candidate.get("cleanup") and (
+                candidate.get("state") != "completed" or candidate["date"] < str(policy.get("first_date", "9999")))):
+            continue
+        with ledger.lock():
+            row = ledger.get(candidate["date"])
+            status = bridge.call("cleanup_status", day=row["date"])
+            api = api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
+            api.stopped = stopped
+            claimed = status.get("delete_claimed") is True or row.get("cleanup", {}).get("delete_claimed") is True
+            if claimed and row["cleanup"].get("delete_claimed") is not True:
+                row["cleanup"]["delete_claimed"] = True
+                ledger.put(row)
+            if not claimed:
+                if stopped():
+                    return {"date": row["date"], "state": "cleanup_stopped"}
+                bridge.call("cleanup_admit", day=row["date"], policy=policy)
+                if not row.get("cleanup"):
+                    provider_files = cleanup_inventory(api, row)
+                    destination = Path(cache) / (row["date"] + "-cleanup-export")
+                    export = export_snapshot(bridge, row["date"], destination)
+                    if export["missing_files"]:
+                        raise Refusal("cleanup_archive_incomplete")
+                    files = {p.name: p.read_bytes() for p in destination.iterdir()}
+                    files.update(provider_files)
+                    archive = bridge.call("cleanup_archive", day=row["date"], policy=policy,
+                                          files={name: base64.b64encode(raw).decode() for name, raw in files.items()})
+                    row["cleanup"] = {"binding": {"date": row["date"], "run_key": row["run_key"],
+                        "session_id": row["session_id"], "environment_id": row["environment_id"], "policy": policy,
+                        "source_row_blob": archive["source_row_blob"]}, "archive": archive, "delete_claimed": False}
+                    ledger.put(row)
+                binding = digest(row["cleanup"]["binding"])
+                bridge.call("cleanup_archive_verify", day=row["date"], binding_digest=binding)
+                cleanup_inventory(api, row, contents=False)
+                if stopped():
+                    return {"date": row["date"], "state": "cleanup_stopped"}
+                claim = bridge.call("cleanup_claim", day=row["date"], binding_digest=binding)
+                row["cleanup"]["delete_claimed"] = True
+                ledger.put(row)
+                if claim["submit"] is True:
+                    try:
+                        confirmation = api.delete_session(row["session_id"], row["date"], binding)
+                        row["cleanup"]["delete_confirmation"] = confirmation
+                        ledger.put(row)
+                    except Exception as exc:
+                        # The claim survives lost acknowledgement/persistence;
+                        # no subsequent pass is allowed to submit another DELETE.
+                        code = str(exc) if isinstance(exc, Refusal) else "cleanup_delete_outcome_unknown"
+                        row = ledger.get(row["date"])
+                        row["cleanup"]["delete_error"] = {"code": code,
+                            "stage": getattr(api, "cleanup_delete_phase", "provider_submission")}
+                        ledger.put(row)
+                        return {"date": row["date"], "state": "cleanup_pending", "error": code}
+            row = ledger.get(row["date"])
+            binding = digest(row["cleanup"]["binding"])
+            bridge.call("cleanup_archive_verify", day=row["date"], binding_digest=binding)
+            for resource in ("session", "environment"):
+                try:
+                    api.get(resource, row[resource + "_id"])
+                except Exception as exc:
+                    if getattr(exc, "status_code", None) != 404:
+                        return {"date": row["date"], "state": "cleanup_pending", "error": "cleanup_absence_unverified"}
+                else:
+                    return {"date": row["date"], "state": "cleanup_pending", "error": "cleanup_resource_still_present"}
+        # record_cleanup acquires its own existing lease and rechecks both GETs.
+        receipt = {"session_id": row["session_id"], "environment_id": row["environment_id"],
+                   "action_time_approval_reference": row["cleanup"]["binding"]["policy"]["approval_reference"],
+                   "authority_type": "standing_owner_policy", "cleanup_binding_digest": binding,
+                   "archive": row["cleanup"]["archive"]}
+        cfg = control_configuration(bridge.call("control"))
+        cfg["enabled"] = False
+        runner = Runner(ledger, cfg, api)
+        runner.record_cleanup(row["date"], receipt)
+        return {"date": row["date"], "state": "cleanup_completed", "billing_stop_verified": False}
+    return {"state": "cleanup_not_due"}
 
 
 def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(timezone.utc)):
@@ -429,17 +595,30 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                 if signature != last_signature or day != last_day or (retry_at and clock() >= retry_at):
                     last_signature, last_day = signature, day
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
+                        cleanup = cleanup_completed(bridge, Path(root), stopped=stopped.is_set) if (
+                            control.get("cleanup_policy") or control.get("cleanup_observation_required")) else {"state": "cleanup_disabled"}
+                        if cleanup["state"] in {"cleanup_completed", "cleanup_pending"}:
+                            emit(cleanup)
                         if workflow(control):
                             emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
                         result = invoke("run" if cfg["enabled"] else "reconcile", bridge, Path(root), stopped=stopped.is_set)
                         if workflow(control):
                             emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
+                        if cleanup["state"] != "cleanup_pending" and (control.get("cleanup_policy") or control.get("cleanup_observation_required")):
+                            cleanup = cleanup_completed(bridge, Path(root), stopped=stopped.is_set)
+                            if cleanup["state"] in {"cleanup_completed", "cleanup_pending"}:
+                                emit(cleanup)
                     emit(result)
-                    retry_at = clock() + timedelta(minutes=5) if result.get("state") in {
+                    retry_at = clock() + timedelta(minutes=5) if cleanup["state"] == "cleanup_pending" or result.get("state") in {
                         "creation_unresolved", "running", "cancel_pending", "collecting"} else None
-                elif workflow(control) and (not retry_at or clock() >= retry_at):
+                elif (workflow(control) or control.get("cleanup_policy", {}).get("enabled") is True) and (not retry_at or clock() >= retry_at):
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
-                        emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
+                        if workflow(control):
+                            emit(consume_workflow(bridge, Path(root), stopped=stopped.is_set))
+                        cleanup = cleanup_completed(bridge, Path(root), stopped=stopped.is_set)
+                        if cleanup["state"] in {"cleanup_completed", "cleanup_pending"}:
+                            emit(cleanup)
+                        retry_at = clock() + timedelta(minutes=5) if cleanup["state"] == "cleanup_pending" else None
             except Exception as exc:  # noqa: BLE001 - fixed codes, never upstream exception bodies
                 emit({"state": "blocked", "error": str(exc) if isinstance(exc, Refusal) else "research_runtime_unavailable"})
                 retry_at = clock() + timedelta(minutes=5)

@@ -9,6 +9,7 @@ export const ROOT = 'blueprintDailyResearch/sites-first';
 export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
 const TERMINAL = ['awaiting_review', 'reviewed', 'completed', 'failed', 'cancelled'];
+const CLEANUP_BUCKET = 'blueprint-8c1ca.appspot.com';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const canonicalValue = value => Array.isArray(value) ? value.map(canonicalValue) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalValue(value[key])])) : value;
@@ -40,7 +41,7 @@ const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
-    terminalCollectionReceipt = null, schedulerStopped = false) {
+    terminalCollectionReceipt = null, schedulerStopped = false, archiveBucket = null) {
     this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
@@ -48,6 +49,7 @@ export class Store {
     this.learning = learning;
     this.terminalCollectionReceipt = terminalCollectionReceipt;
     this.schedulerStopped = schedulerStopped;
+    this.archiveBucket = archiveBucket;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -209,6 +211,16 @@ export class Store {
         refuse('publication_input_already_bound');
       if(prior.data()?.publication_turn_id && prior.data().publication_turn_id!==publication?.turn_id)
         refuse('publication_turn_already_bound');
+      const cleanupBinding = row.cleanup ? pythonHash(row.cleanup.binding) : null;
+      if (prior.data()?.cleanup_binding_digest && prior.data().cleanup_binding_digest !== cleanupBinding)
+        refuse('cleanup_binding_already_bound');
+      if (row.cleanup && (!prior.data()?.cleanup_archive || valueHash(prior.data().cleanup_archive)!==valueHash(row.cleanup.archive)))
+        refuse('cleanup_archive_not_verified');
+      if (prior.data()?.cleanup_delete_claimed && row.cleanup?.delete_claimed !== true)
+        refuse('cleanup_claim_already_consumed');
+      if (prior.data()?.cleanup_delete_confirmation
+          && valueHash(prior.data().cleanup_delete_confirmation)!==valueHash(row.cleanup?.delete_confirmation))
+        refuse('cleanup_confirmation_already_bound');
       for(const [name,binding] of Object.entries(prior.data()?.publication_delivery_bindings || {})) {
         // Receipts/state may advance; immutable request/plan/presentation evidence may not.
         const d=row.delivery?.[name];
@@ -220,6 +232,10 @@ export class Store {
         if(expected && expected!==deliveryBinding(d)) refuse('publication_delivery_already_bound');
       }
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
+        cleanup_binding_digest: cleanupBinding,
+        cleanup_archive: prior.data()?.cleanup_archive || null,
+        cleanup_delete_claimed: prior.data()?.cleanup_delete_claimed === true,
+        cleanup_delete_confirmation:row.cleanup?.delete_confirmation || null,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
         qa_request_digest: row.qa?.request_digest || null, qa_state: row.qa?.state || null,
@@ -362,7 +378,10 @@ export class Store {
     const publication=Object.keys(plans).length || Object.keys(metadata.publication_claimed || {}).length
       || Object.keys(metadata.publication_batches || {}).length ? {publication_manifest:{
         manifest_json,manifest_digest:sha(manifest_json)}} : {};
-    return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing,...publication};
+    const cleanup=metadata.cleanup_binding_digest ? {cleanup_manifest:{binding_digest:metadata.cleanup_binding_digest,
+      archive:metadata.cleanup_archive,delete_claimed:metadata.cleanup_delete_claimed===true,
+      delete_confirmation:metadata.cleanup_delete_confirmation || null}} : {};
+    return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing,...publication,...cleanup};
   }
   async importRun(row) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}` || !row.metadata)
@@ -425,6 +444,135 @@ export class Store {
     ]);
     return {latest_date: latest.docs[0]?.id || null, unfinished: unfinished.docs.length > 0,
       cleanup_required: uncleaned.docs.length > 0};
+  }
+  cleanupGate(control,row,policy) {
+    this.fence(control);
+    if (this.schedulerStopped || control?.enabled!==true || control.config?.enabled!==true
+        || policy?.enabled!==true || valueHash(control.cleanup_policy)!==valueHash(policy)
+        || typeof policy.approval_reference!=='string' || !policy.approval_reference.trim()
+        || policy.approval_reference.startsWith('PENDING') || !dateOK(policy.first_date)
+        || policy.first_date<'2026-10-03' || row.date<policy.first_date
+        || !Number.isFinite(Date.parse(policy.expires_at)) || Date.parse(policy.expires_at)<=this.clock()
+        || policy.bucket!==CLEANUP_BUCKET || policy.project_id!==control.project_id
+        || policy.project_id!==row.preflight?.project_id
+        || policy.agent_id!==control.agent_id || policy.template_id!==control.template_id
+        || row.create_payload?.agent_id!==policy.agent_id
+        || row.create_payload?.environment?.environment_template_id!==policy.template_id
+        || row.state!=='completed' || row.cleanup_required!==true || row.qa?.state!=='validated'
+        || !['completed','agent_finished_without_complete_receipts'].includes(row.publication?.state)
+        || !['completed','failed','cancelled'].includes(row.publication?.turn_status)
+        || !['notion','sheets'].every(n=>row.delivery?.[n]?.state==='acknowledged'
+          && row.delivery[n].receipt?.readback_verified===true
+          && row.delivery[n].receipt.key===row.delivery[n].key
+          && row.delivery[n].receipt.payload_digest===row.delivery[n].payload_digest))
+      refuse('cleanup_standing_authority_not_admitted');
+  }
+  async cleanupAdmit(day,policy) {
+    const control=(await this.control.get()).data(),row=await this.get(day);
+    if (!row) refuse('run_missing');
+    this.cleanupGate(control,row,policy);
+    return true;
+  }
+  async cleanupStatus(day) {
+    await this.assertLease();
+    if (!dateOK(day)) refuse('firestore_date_invalid');
+    const snap=await this.db.doc(`${ROOT}/runs/${day}`).get();
+    return {delete_claimed:snap.data()?.cleanup_delete_claimed===true};
+  }
+  async archiveReadback(receipt) {
+    if (!this.archiveBucket || receipt?.bucket!==CLEANUP_BUCKET || this.archiveBucket.name!==CLEANUP_BUCKET
+        || !receipt.objects?.length) refuse('cleanup_archive_transport_unavailable');
+    if (!receipt.objects.some(o=>o.name===receipt.prefix+'/source-row.json' && o.sha256===receipt.source_row_blob))
+      refuse('cleanup_archive_readback_mismatch');
+    for(let start=0;start<receipt.objects.length;start+=4) await Promise.all(receipt.objects.slice(start,start+4).map(async object=>{
+      if (!object.name.startsWith(receipt.prefix+'/') || !/^[1-9][0-9]*$/.test(String(object.generation)))
+        refuse('cleanup_archive_readback_mismatch');
+      const file=this.archiveBucket.file(object.name,{generation:String(object.generation)});
+      const [meta]=await file.getMetadata(),[raw]=await file.download();
+      if(String(meta.generation)!==String(object.generation) || Number(meta.size)!==object.bytes
+          || raw.length!==object.bytes || sha(raw)!==object.sha256) refuse('cleanup_archive_readback_mismatch');
+    }));
+    return true;
+  }
+  async cleanupArchive(request) {
+    await this.cleanupAdmit(request.day,request.policy);
+    const ref=this.db.doc(`${ROOT}/runs/${request.day}`),before=(await ref.get()).data();
+    if(before.cleanup_archive) {
+      await this.archiveReadback(before.cleanup_archive);
+      return before.cleanup_archive;
+    }
+    if (!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('cleanup_archive_transport_unavailable');
+    const row=await this.get(request.day),files=request.files;
+    const required=['status.json',...(Object.values(row.delivery || {}).some(d=>d.plan)?['publication-manifest.json']:[]),
+      'provider-session.json','provider-environment.json',
+      'provider-turns.json','provider-items.json','provider-artifacts.json',`${request.day}-artifact.json`,
+      `${request.day}-publication-evidence.json`];
+    if (!files || !required.every(n=>typeof files[n]==='string')
+        || valueHash(JSON.parse(Buffer.from(files['status.json'],'base64')))!==valueHash(row))
+      refuse('cleanup_archive_incomplete');
+    const names=[...Object.keys(files),'source-row.json'].sort(),objects=[];
+    if(Object.hasOwn(files,'source-row.json')) refuse('cleanup_archive_source_changed');
+    if(names.some(n=>!/^[-A-Za-z0-9_.]{1,200}$/.test(n))) refuse('cleanup_archive_name_invalid');
+    const rawFiles=Object.fromEntries(Object.keys(files).map(n=>[n,Buffer.from(files[n],'base64')]));
+    rawFiles['source-row.json']=Buffer.from(await this.blobGet(before.blob),'base64');
+    const artifacts=JSON.parse(rawFiles['provider-artifacts.json']),session=JSON.parse(rawFiles['provider-session.json']);
+    if(session.id!==row.session_id || session.environment?.id!==row.environment_id
+        || valueHash(session.metadata)!==valueHash(row.metadata) || session.status!=='idle'
+        || session.required_actions?.length || !Array.isArray(artifacts) || !artifacts.length
+        || !artifacts.every(a=>typeof a.id==='string' && files[`provider-artifact-${sha(a.id)}.bin`]))
+      refuse('cleanup_archive_incomplete');
+    const secrets=value=>value && typeof value==='object' && Object.entries(value).some(([k,v])=>
+      /^(?:access_token|refresh_token|api_key|private_key|client_secret|bearer_token)$/.test(k) && v
+        || typeof v==='string' && /^Bearer\s/i.test(v) || secrets(v));
+    if(secrets(session) || secrets(JSON.parse(rawFiles['provider-environment.json']))) refuse('cleanup_archive_credential_material');
+    const manifest=Object.fromEntries(names.map(n=>[n,{sha256:sha(rawFiles[n]),bytes:rawFiles[n].length}]));
+    const prefix=`operations/research/cleanup/${request.day}/${valueHash(manifest)}`;
+    for(let start=0;start<names.length;start+=4) await Promise.all(names.slice(start,start+4).map(async n=>{
+      const file=this.archiveBucket.file(`${prefix}/${n}`),raw=rawFiles[n];
+      try {await file.save(raw,{resumable:false,preconditionOpts:{ifGenerationMatch:0},
+        metadata:{contentType:'application/octet-stream',metadata:{sha256:sha(raw)}}});}
+      catch(error) {if(Number(error.code)!==412) throw error;}
+      const [meta]=await file.getMetadata();
+      objects.push({name:file.name,sha256:sha(raw),bytes:raw.length,generation:String(meta.generation)});
+    }));
+    objects.sort((a,b)=>a.name.localeCompare(b.name));
+    const receipt={bucket:CLEANUP_BUCKET,prefix,source_row_blob:before.blob,objects};
+    await this.archiveReadback(receipt);
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(),current=await tx.get(ref);
+      this.cleanupGate(control,row,request.policy);
+      if(current.data()?.blob!==before.blob || current.data()?.cleanup_archive) refuse('cleanup_archive_source_changed');
+      tx.set(ref,{cleanup_archive:receipt},{merge:true});
+    });
+    return receipt;
+  }
+  async cleanupArchiveVerify(day,binding) {
+    await this.assertLease();
+    const run=(await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row=await this.get(day);
+    if (!run || run.cleanup_binding_digest!==binding || pythonHash(row?.cleanup?.binding)!==binding
+        || valueHash(row.cleanup.archive)!==valueHash(run.cleanup_archive)) refuse('cleanup_binding_changed');
+    await this.archiveReadback(run.cleanup_archive);
+    await this.assertLease();
+    return true;
+  }
+  async cleanupClaim(day,binding,checkOnly=false) {
+    const row=await this.get(day),ref=this.db.doc(`${ROOT}/runs/${day}`);
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(),run=(await tx.get(ref)).data();
+      this.cleanupGate(control,row,row?.cleanup?.binding?.policy);
+      if(run?.cleanup_binding_digest!==binding || pythonHash(row?.cleanup?.binding)!==binding
+          || valueHash(row.cleanup.archive)!==valueHash(run.cleanup_archive)
+          || row.cleanup.binding.session_id!==run.session_id || row.cleanup.binding.environment_id!==run.environment_id)
+        refuse('cleanup_binding_changed');
+      if(checkOnly) {
+        if(run.cleanup_delete_claimed!==true) refuse('cleanup_delete_not_claimed');
+        return true;
+      }
+      if(run.cleanup_delete_claimed) return {submit:false};
+      tx.set(ref,{cleanup_delete_claimed:true},{merge:true});
+      tx.set(this.control,{cleanup_observation_required:true},{merge:true});
+      return {submit:true};
+    });
   }
   workflowGate(control, allowStopped = false) {
     const workflow=control?.workflow;
@@ -1038,7 +1186,8 @@ export class Store {
           refuse('firestore_control_binding_invalid');
         return this.transaction(async tx => {
           const control = (await tx.get(this.control)).data(); this.fence(control);
-          tx.set(this.control, {...value, lease: control.lease}); return true;
+          tx.set(this.control, {...value, cleanup_observation_required:control.cleanup_observation_required===true,
+            lease: control.lease}); return true;
         });
       }
       case 'acquire': return this.acquire();
@@ -1116,6 +1265,12 @@ export class Store {
       case 'file_put': return this.filePut(request.name, request.bytes);
       case 'file_get': return this.fileGet(request.name);
       case 'snapshot': return this.snapshot(request.day);
+      case 'cleanup_admit': return this.cleanupAdmit(request.day,request.policy);
+      case 'cleanup_status': return this.cleanupStatus(request.day);
+      case 'cleanup_archive': return this.cleanupArchive(request);
+      case 'cleanup_archive_verify': return this.cleanupArchiveVerify(request.day,request.binding_digest);
+      case 'cleanup_claim': return this.cleanupClaim(request.day,request.binding_digest);
+      case 'cleanup_delete_check': return this.cleanupClaim(request.day,request.binding_digest,true);
       case 'create_check': return this.createCheck(request.day, request.metadata);
       default: refuse('firestore_operation_invalid');
     }
@@ -1179,12 +1334,14 @@ async function main() {
   if (account.project_id !== 'blueprint-8c1ca') refuse('firestore_project_binding_mismatch');
   const crmReader=()=>readCanonicalCRM(account);
   const publisher=await livePublisher(account,crmReader,process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY);
-  const db = getFirestore(initializeApp({credential: cert(account)}));
+  const app = initializeApp({credential: cert(account)});
+  const db = getFirestore(app);
+  const {getStorage}=await import('firebase-admin/storage');
   // The trusted worker supplies a local compiled module, never a model URL.
   const learningPath = process.env.BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE;
   const learning = learningPath ? (await import(pathToFileURL(learningPath).href)).researchLearningHost(db) : null;
   const store = new Store(db, undefined, undefined,crmReader,publisher,learning,null,
-    process.env.BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED==='false');
+    process.env.BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED==='false',getStorage(app).bucket(CLEANUP_BUCKET));
   const channel = new LeaseChannel(store);
   for await (const line of createInterface({input: process.stdin})) {
     try {
