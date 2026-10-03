@@ -90,8 +90,9 @@ def mcp_endpoint_admitted(label, value, profile, catalog):
 
 
 def mcp_connections(declared, profile=MCP_PROFILE):
-    """Retain only the existing owner connections' non-secret configuration."""
+    """Validate known owner connections, retaining only the selected profile."""
     catalog = MCP_PROFILES.get(profile)
+    known_catalog = MCP_PROFILES[MCP_RESEARCH_PROFILE]
     if catalog is None or not isinstance(declared, list) or any(not isinstance(tool, dict) for tool in declared):
         raise ToolFailure("research_mcp_configuration_invalid")
     connections, labels = [], set()
@@ -102,10 +103,10 @@ def mcp_connections(declared, profile=MCP_PROFILE):
         allowed = tool.get("allowed_tools")
         if (set(tool) != {"type", "server_label", "transport", "allowed_tools", "connection_origin",
                          "credential_id", "request_metadata", "required"}
-                or not isinstance(label, str) or label not in catalog or label in labels
+                or not isinstance(label, str) or label not in known_catalog or label in labels
                 or not isinstance(transport, dict) or set(transport) - {"type", "server_url", "headers"}
                 or transport.get("type") != "http"
-                or not mcp_endpoint_admitted(label, transport.get("server_url"), profile, catalog)
+                or not mcp_endpoint_admitted(label, transport.get("server_url"), MCP_RESEARCH_PROFILE, known_catalog)
                 or transport.get("headers", {}) != {} or tool["request_metadata"] != {}
                 or tool["connection_origin"] != "service" or type(tool["required"]) is not bool
                 or not isinstance(tool["credential_id"], str)
@@ -114,7 +115,8 @@ def mcp_connections(declared, profile=MCP_PROFILE):
                                             or len(allowed) != len(set(allowed)))):
             raise ToolFailure("research_mcp_configuration_invalid")
         labels.add(label)
-        connections.append(json.loads(json.dumps(tool, allow_nan=False)))
+        if label in catalog:
+            connections.append(json.loads(json.dumps(tool, allow_nan=False)))
     if not connections:
         raise ToolFailure("research_mcp_connection_missing")
     return connections

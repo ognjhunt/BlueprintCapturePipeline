@@ -51,11 +51,64 @@ def test_new_profile_adds_paid_mcp_and_existing_reads_without_mutating_saved_age
 
 
 @pytest.mark.parametrize("label", list(search.MCP_RESEARCH_TOOLS))
-def test_old_readonly_profile_cannot_admit_new_paid_connections(label):
+def test_old_readonly_profile_validates_but_excludes_known_paid_connections(label):
+    readonly = connection("googlesheets", search.MCP_READ_TOOLS)
     tool = connection(label, search.MCP_RESEARCH_TOOLS)
-    with pytest.raises(search.ToolFailure, match="research_mcp_configuration_invalid"):
+    assert search.mcp_connections([readonly, tool]) == [readonly]
+    assert search.mcp_tools([readonly, tool]) == search.mcp_tools([readonly])
+    with pytest.raises(search.ToolFailure, match="research_mcp_connection_missing"):
         search.mcp_connections([tool])
     assert search.mcp_tools([tool], search.MCP_RESEARCH_PROFILE)[0]["allowed_tools"] == list(search.MCP_RESEARCH_TOOLS[label][1])
+
+
+def test_mixed_saved_agent_default_freezes_only_reads_and_preserves_charged_session(delegated_fixture):
+    runner, api, ledger = delegated_fixture
+    readonly = [connection(label, search.MCP_READ_TOOLS) for label in search.MCP_READ_TOOLS]
+    native = [connection(label, search.MCP_RESEARCH_TOOLS) for label in ("exa", "parallel_task")]
+    native[0]["transport"]["server_url"] += "?login&tools=agent_run"
+    api.agent["tools"].extend(deepcopy(readonly + native))
+    saved = deepcopy(api.agent)
+    runner.config.update(mcp_profile=search.MCP_PROFILE, publication_profile="agent-owned-v1")
+    checked = preflight(api, search_provider=search.PROFILE,
+                        publication_profile="agent-owned-v1", mcp_profile=search.MCP_PROFILE)
+    assert checked["mcp_binding"] == readonly
+    assert checked["vault_ids"] == sorted("vault_synthetic_" + label for label in search.MCP_READ_TOOLS)
+    assert "native_research_cost_status" not in checked
+    assert api.payloads == [] and api.executions == []
+    row = runner.start_or_resume()
+    assert api.agent == saved
+    assert row["create_payload"]["agent"]["tools"] == search.tools("agent-owned-v1") + search.mcp_tools(readonly)
+    assert row["mcp_binding"] == readonly and row["metadata"]["mcp_binding_digest"] == digest(readonly)
+    assert row["create_payload"]["vault_ids"] == checked["vault_ids"]
+    frozen = deepcopy(row["create_payload"])
+    # Later owner additions do not rebind the already charged session.
+    api.agent["tools"].append(connection("blueprint", search.MCP_RESEARCH_TOOLS))
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+    assert ledger.get(row["date"])["create_payload"] == frozen
+
+
+@pytest.mark.parametrize("change", ["unknown", "endpoint", "credential", "headers", "duplicate", "metadata"])
+def test_default_profile_refuses_invalid_excluded_native_before_intent(delegated_fixture, change):
+    runner, api, ledger = delegated_fixture
+    native = connection("exa", search.MCP_RESEARCH_TOOLS)
+    if change == "unknown":
+        native["server_label"] = "unknown"
+    elif change == "endpoint":
+        native["transport"]["server_url"] += "?exaApiKey=not_allowed"
+    elif change == "credential":
+        native["credential_id"] = "inline-secret"
+    elif change == "headers":
+        native["transport"]["headers"] = {"Authorization": "inline-secret"}
+    elif change == "metadata":
+        native["request_metadata"] = {"unreviewed": True}
+    tools = [connection(label, search.MCP_READ_TOOLS) for label in search.MCP_READ_TOOLS] + [native]
+    if change == "duplicate":
+        tools.append(deepcopy(native))
+    api.agent["tools"].extend(tools)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    with pytest.raises(Refusal, match="research_mcp_configuration_invalid"):
+        runner.start_or_resume()
+    assert ledger.rows() == [] and api.payloads == [] and api.executions == []
 
 
 @pytest.mark.parametrize("change", ["endpoint", "credential", "headers", "duplicate"])
