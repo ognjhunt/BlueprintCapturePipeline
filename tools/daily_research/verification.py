@@ -30,7 +30,7 @@ def digest(value):
     # their IEEE754 bytes so inert float metadata is portable across runtimes.
     def encode(item):
         if type(item) in {int, float}:
-            if not math.isfinite(item) or type(item) is int and abs(item) > 2**53 - 1:
+            if not math.isfinite(item) or float(item).is_integer() and abs(item) > 2**53 - 1:
                 raise ValueError("number must be finite and exactly portable; retain large IDs as strings")
             return "n:" + struct.pack(">d", float(item)).hex()
         if isinstance(item, list):

@@ -121,6 +121,14 @@ def test_inert_float_metadata_preserved_and_portable_numeric_hash():
     assert verification.digest(.5) != verification.digest("n:3fe0000000000000")
 
 
+@pytest.mark.parametrize("value", [2**53, float(2**53), 1e20])
+def test_nonportable_whole_numbers_need_string_ids(value):
+    c = {**candidate(), "metadata": value}
+    result = verification.evaluate(c, None, NOW)
+    assert result["status"] == "unresolved" and result["candidate_digest"] is None
+    assert "large IDs as strings" in result["reasons"][0]
+
+
 def test_retained_cross_repo_verification_fixture():
     value = json.loads((Path(__file__).parent / "fixtures/daily_research/lead-verification.json").read_text())
     result = verification.evaluate(value["candidate"], value["assessment"], verification.moment(value["now"]))
