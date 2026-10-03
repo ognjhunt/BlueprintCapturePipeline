@@ -169,6 +169,7 @@ RULES = {
     "output_date_or_count_invalid": "checked_date is the run date {day}; candidates is a list of at most {limit} entries.",
     "output_summary_invalid": "findings, blockers and proposed_next_actions are lists of at most 20 nonempty strings of at most 2000 characters.",
     "discovery_coverage_invalid": "Report coverage with its exact fields: query/page counts, branches, rejections, stop and shortfall reasons, scope, unresolved branches and completion state.",
+    "discovery_shortlist_invalid": "Correct the located opportunity_shortlist entry using the supplied shape. Keep sourced leads separate from candidates: exact quotes/URLs and actual checked_date; source_date null when unknown; explicit fit/interest unknowns. Omit unsupported entries rather than inventing evidence.",
     "discovery_scope_or_completion_invalid": "defined_run_scope is nonempty; completion_state is coverage_complete, budget_interrupted, time_interrupted or access_blocked.",
     "discovery_completion_has_unresolved_branches": "coverage_complete cannot have unresolved promising branches; resolve them or report the honest interrupted state.",
     "research_scope_coverage_required": "coverage includes defined_run_scope, unresolved_promising_branches and completion_state.",

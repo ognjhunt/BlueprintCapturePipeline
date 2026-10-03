@@ -157,6 +157,13 @@ def qa_text(row, snapshot, crm_digest):
                   "establishes completion. Check contact relevance and public professional provenance, prior "
                   "contact/history, counterevidence and explicit interest/owner/budget unknowns. Count distinct "
                   "site/task opportunities separately from findings and robotics-team knowledge. ") if adaptive else ""
+    if adaptive and "opportunity_shortlist" in row["packet"]:
+        assessment += ("Inspect opportunity_shortlist as a research backlog, not accepted CRM rows. Verify material "
+                       "source claims, separate site/task confidence and robot fit from actual buying-interest evidence, "
+                       "and keep unverified leads explicitly unverified. Include the source-backed shortlist and its "
+                       "remaining checks in the published summary, marking unsupported/rejected entries and gaps. "
+                       "Do not promote a shortlist status or directory entry to accepted_keys without full candidate QA. "
+                       "Explain breadth across capability/task families and whether premature concentration left gaps. ")
     trusted = ("Blueprint QA phase for the preceding research only. Read the reviewed evidence skill. "
                "Check every material finding, claim scope, quoted passage and candidate source against the actual sources; "
                "check semantic site/task duplicates against the supplied complete CRM identities. Reject unsupported findings and candidates. "

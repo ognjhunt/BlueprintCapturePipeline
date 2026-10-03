@@ -93,6 +93,27 @@ live evidence. The adaptive profile records why fewer than ten new candidates
 withstood research instead of padding the result. Legacy configurations below
 retain their original narrow scan envelope until explicitly replaced.
 
+New adaptive requests use breadth-first discovery: read the broader Notion
+[Team Directory](https://app.notion.com/p/3eb80154161d817aa3e6d9b9d7eba938)
+through the owner's existing read connection and relevant authorized history,
+map supported task families, collect a source-backed shortlist, then deepen the
+strongest leads. The four-record supplied capability register is not the whole
+directory. Failed directory reads stay visible; public research can continue.
+The agent chooses searches, allocation and when marginal returns justify
+stopping within its admitted envelope. Broad queries may request 20 results;
+neither 17 searches nor one candidate is a configured goal.
+
+`opportunity_shortlist` is optional in v3 for retained-run compatibility. New
+adaptive instructions request it, and the packet preserves it with original
+sources, unresolved checks, status, site/task confidence, robot-fit confidence
+and separate buying-interest evidence. QA reviews it and includes supported
+leads/gaps in the Notion brief. Only fully reviewed `candidates` reach the
+Prospects sheet and communications intake; a shortlisted lead grants neither
+contact nor publication authority. The 20–40 lead planning aim is soft, never
+padding or a run-failure condition. Existing saved agents, grants, budgets,
+schedules, paid claims and charged request bodies are unchanged by this source
+repair. A matched worker package and local-owner deployment are still required.
+
 CRM authority: [existing Sheet](https://docs.google.com/spreadsheets/d/1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY/edit).
 Reviewed knowledge is private input, not bundled evidence. The reviewed Library
 bundle is `libfile_a9fff47b9b908191b69316ae1a438310`, **version 1**; expected
