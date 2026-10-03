@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/0xpili/simplified-technical-english",
+  "commit": "1e148d670cba46685ad2b4c3f2354a637a7fdbbe",
+  "reviewed_source_archive_sha256": "308318e70613c111f7811287dd93dbc8da8f25337451fb93b7b67808a7878087",
+  "upstream_files_sha256": {
+    ".gitignore": "32b2dd7912ea54e02bcb2d85d94ee2a1fe0e74675f20bbbabeb7823055acb249",
+    "LICENSE": "6b139a9f272b079977795b1be7953cdec13a821098783cb58945c8887a49012b",
+    "NOTICE.md": "960c069d1ae596784e8edf195dbac94df3f95bc1bf7a5c97dc34dbae66abf09f",
+    "README.md": "4ec916f6144457aa913db4da4328c5930f341619a49e989dd6a25042204ffc13",
+    "SKILL.md": "3528425ca52df5836a5a7ba92321f2dc61e7f42bd3203fd282888987759bfb17",
+    "examples/before-after.md": "b8ad7ffc15228e8e3dd9a8f17f21309caddff19628be13a03cf77319eafeeafd",
+    "references/substitutions.md": "0c5a1d0a92466422adf0731805f4731eccc96c75ff6d029287bf679cebb274d1",
+    "references/word-list.md": "28bc1c52d2d1a1b1f564ed9e8e36f22a39ec0fb128ed973f7ba3212849a53afd",
+    "references/writing-rules.md": "3e42a14e35abdea6959cdfcf390e05bb1dcae1dc7120c02c3a588ae924455ab5",
+    "scripts/ste_check.py": "71850aa6f0aebaf980b176c59a18d13c713640ecd30d773e2fd04cf09a2244a2"
+  },
+  "notes": [
+    "Upstream source files are unmodified.",
+    "LICENSE and NOTICE.md are retained.",
+    "Writing support only; does not certify ASD-STE100 compliance.",
+    "Existing user and repository instructions take precedence."
+  ]
+}
