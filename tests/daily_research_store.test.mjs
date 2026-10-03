@@ -82,7 +82,7 @@ test('terminal collection alone may publish validated evidence while control sta
   const value={...row(),state:'reviewed',session_id:proof.session_id,
     qa:{state:'validated',artifact_digest:proof.qa_artifact_sha256,
       terminal_collection_recovery:{native_receipt:proof,workflow_authority:workflow}},
-    delivery:{notion:{state:'acknowledged'},sheets:{state:'pending'}}};
+    delivery:{notion:{state:'acknowledged'},sheets:{state:'pending',payload:{candidates:[]}}}};
   await store.put({...value,state:'creating'});
   db.values.get(ROOT).enabled=false;
   store.terminalCollectionReceipt=proof;

@@ -1,6 +1,7 @@
 // Fixed canonical destinations only. No credentials enter plans, prompts or logs.
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
+import {verificationDigest} from './verification-digest.mjs';
 
 export const SHEET = '1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY';
 export const NOTION = '3eb80154161d8116858ed5f376b4b7a9';
@@ -10,8 +11,8 @@ const HEADERS = ['Prospect ID','Organization','Prospect type','Site / team','Con
 const sha = raw => createHash('sha256').update(raw).digest('hex');
 const fail = code => {throw new Error(code);};
 const rich = text => [{type:'text', text:{content:text}}];
-const normalized = x => String(x).toLowerCase().replace(/[^\p{L}\p{N}_]+/gu,' ').trim();
-const identity = x => [x.organization,x.site,x.task].map(normalized).join('\n');
+const normalized = x => String(x || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+const identity = x => [x.organization,x.site||x.location,x.location||x.site,x.task].map(normalized).join('\n');
 const NOTION_PARENT_PAGE_LIMIT = 100, NOTION_READ_BUDGET_MS = 25000;
 const NOTION_BATCH_BLOCKS = 90, NOTION_REQUEST_BYTES = 450000;
 const paragraph = content=>({object:'block',type:'paragraph',paragraph:{rich_text:rich(content)}});
@@ -41,9 +42,38 @@ function crmRows(snapshot) {
   return used;
 }
 
-function bind(row, destination) {
+// Protected Runner.review writes these derived receipts. Rebind exact raw
+// candidates and assessments at every fresh sink claim and mutation. This is
+// evidence eligibility only; the separate commercial/rights/readiness gates stay open.
+export function publicationVerification(row,destination,now=Date.now()) {
+  const candidates=row.delivery?.[destination]?.payload?.candidates;
+  if(!Array.isArray(candidates)) return {eligible:false,reasons:['Retain an exact canonical publication candidate payload.']};
+  const reasons=[];
+  for(const candidate of candidates) {
+    const results=row.review?.lead_verification?.results?.filter(r=>r.candidate_key===candidate.candidate_key) || [];
+    const result=results.length===1 ? results[0] : null;
+    let bound=false;
+    try {bound=!!result?.assessment && result.candidate_digest===verificationDigest(candidate)
+      && result.assessment_digest===verificationDigest(result.assessment)
+      && result.assessment.candidate_digest===result.candidate_digest;}catch {}
+    if(row.review?.source_support_verified!==true || result?.status!=='verified'
+        || result.eligible_for_qualified_promotion!==true || result.duplicate_of || !bound
+        || result.assessment.version!=='blueprint.lead-verification.v1'
+        || !(Date.parse(result.assessment.assessed_at)<=now && now<Date.parse(result.assessment.valid_until))) {
+      reasons.push(`${candidate.candidate_key || candidate.organization || 'candidate'}: retain a current, exact evidence assessment and protected verified review before promotion; missing, expired, duplicate or contradicted evidence remains ineligible.`);
+      if(Array.isArray(result?.reasons)) reasons.push(...result.reasons);
+    }
+  }
+  return {eligible:reasons.length===0,reasons,separate_gates:['buying_intent','consent_rights','commercial_qualification','robot_compatibility','deployment_readiness']};
+}
+
+export function requirePublicationVerification(row,destination,now=Date.now()) {
+  if(!publicationVerification(row,destination,now).eligible) fail('publication_lead_verification_required');
+}
+
+function bind(row, destination, now=Date.now()) {
   const delivery = row.delivery?.[destination];
-  if (!delivery || row.qa?.state !== 'validated' || row.review?.source_support_verified !== true
+  if (!delivery || row.qa?.state !== 'validated' || typeof row.review?.source_support_verified !== 'boolean'
       || row.review?.crm_rechecked !== true || row.review.packet_digest !== row.packet_digest
       || delivery.key !== `${row.run_key}:${destination}` || !/^[a-f0-9]{64}$/.test(delivery.payload_digest)
       || typeof delivery.payload_json!=='string' || sha(delivery.payload_json)!==delivery.payload_digest
@@ -54,6 +84,9 @@ function bind(row, destination) {
   if (destination === 'notion' && delivery.payload.parent_id !== NOTION) fail('publication_destination_invalid');
   if (!Array.isArray(delivery.payload.candidates) || delivery.payload.candidates.length > 100)
     fail('publication_candidates_invalid');
+  // GET-only reconciliation proves an existing exact effect. Legacy or expired
+  // assessments cannot authorize a new claim, but cannot erase its readback.
+  if(now!==null) requirePublicationVerification(row,destination,now);
   if(delivery.presentation) {
     const p=delivery.presentation;
     if(destination!=='notion' || p.schema_version!=='blueprint.research-presentation.v1' || p.strategy!=='concise'
@@ -67,12 +100,14 @@ function bind(row, destination) {
   return delivery;
 }
 
-export function planSheets(row, snapshot) {
-  const d = bind(row, 'sheets'), values = snapshot.values;
+export function planSheets(row, snapshot, now=Date.now()) {
+  const d = bind(row, 'sheets',now), values = snapshot.values;
   const used = crmRows(snapshot);
   const ids = used.map(r => r[0]);
-  const existing = new Set(used.map(r => identity({organization:r[1],site:r[3],task:r[14]})));
-  if (d.payload.candidates.some(c => existing.has(identity(c)))) fail('publication_crm_duplicate_changed');
+  const existing = new Set(used.map(r => identity({organization:r[1],site:r[3],location:r[17],task:r[14]})));
+  if (d.payload.candidates.some(c => existing.has(identity(c)) || used.some(r=>!normalized(r[17])
+      && normalized(r[1])===normalized(c.organization) && normalized(r[3])===normalized(c.site)
+      && normalized(r[14])===normalized(c.task)))) fail('publication_crm_duplicate_changed');
   let sequence = Math.max(0, ...ids.map(id => Number(id.slice(3))));
   const marker = `[${d.key};${d.payload_digest}]`;
   const rows = d.payload.candidates.map(c => {
@@ -89,8 +124,8 @@ export function planSheets(row, snapshot) {
     marker,crm_values:values,sheet_rows:rows};
 }
 
-export function planNotion(row,{legacy=false}={}) {
-  const d = bind(row,'notion'), marker = `${d.key};${d.payload_digest}`;
+export function planNotion(row,{legacy=false,now=Date.now()}={}) {
+  const d = bind(row,'notion',now), marker = `${d.key};${d.payload_digest}`;
   const text = `Blueprint research ${row.date}\n${d.payload.summary}\n\n`+
     d.payload.candidates.map(c => `${c.organization} — ${c.site}\nTask: ${c.task}\nStatus: ${c.qualification_status}\n`+
       `Unknowns: ${c.unknowns.join('; ')}\nNext proposed action: ${c.proposed_next_action}\n`+
@@ -137,18 +172,18 @@ export class Publisher {
     if (destination === 'notion') {
       const parent = await this.notion('GET',`/pages/${NOTION}`);
       if (parent.id?.replaceAll('-','') !== NOTION || parent.object !== 'page') fail('publication_notion_parent_mismatch');
-      return planNotion(row);
+      return planNotion(row,{now:this.clock()});
     }
-    const snapshot = await this.crmReader(), plan = planSheets(row,snapshot);
+    const snapshot = await this.crmReader(), plan = planSheets(row,snapshot,this.clock());
     const first = snapshot.values.length+1, last = first+Math.max(0,plan.sheet_rows.length-1);
     if (plan.sheet_rows.length) await this.sheetsTargetEmpty(`Prospects!A${first}:S${last}`);
     return plan;
   }
-  validate(row,destination,plan) {
-    const d = bind(row,destination);
+  validate(row,destination,plan,{reconcile=false}={}) {
+    const now=reconcile ? null : this.clock(),d = bind(row,destination,now);
     if (plan.destination !== destination || plan.key !== d.key || plan.payload_digest !== d.payload_digest
         || plan.request_digest !== sha(plan.body_json)) fail('publication_plan_binding_invalid');
-    const expected = destination === 'notion' ? planNotion(row,{legacy:!plan.protocol}) : planSheets(row,{sheet_id:SHEET,complete:true,values:plan.crm_values});
+    const expected = destination === 'notion' ? planNotion(row,{legacy:!plan.protocol,now}) : planSheets(row,{sheet_id:SHEET,complete:true,values:plan.crm_values},now);
     if (!isDeepStrictEqual(expected,plan)) fail('publication_plan_binding_invalid');
   }
   async write(row,destination,plan,{beforeWrite}={}) {
@@ -157,6 +192,8 @@ export class Publisher {
       if(plan.protocol) fail('publication_paginated_batch_required');
       const body=JSON.parse(plan.body_json);
       if(body.children.length>100 || Buffer.byteLength(plan.body_json)>500000) fail('publication_notion_request_too_large');
+      if(beforeWrite) await beforeWrite();
+      requirePublicationVerification(row,destination,this.clock());
       await this.notion('POST','/pages',body);
     } else if (plan.sheet_rows.length) {
       const current = await this.crmReader();
@@ -164,11 +201,12 @@ export class Publisher {
       const first=plan.crm_values.length+1, last=first+plan.sheet_rows.length-1, range=`Prospects!A${first}:S${last}`;
       await this.sheetsTargetEmpty(range);
       if(beforeWrite) await beforeWrite();
+      requirePublicationVerification(row,destination,this.clock());
       await this.google('PUT',`/values/${encodeURIComponent(range)}?valueInputOption=RAW`,JSON.parse(plan.body_json));
     }
   }
   async reconcile(row,destination,plan) {
-    this.validate(row,destination,plan);
+    this.validate(row,destination,plan,{reconcile:true});
     if (destination === 'sheets') {
       const snapshot = await this.crmReader();
       const used = crmRows(snapshot);
@@ -184,7 +222,7 @@ export class Publisher {
     return progress.receipt;
   }
   async notionProgress(row,plan) {
-    this.validate(row,'notion',plan);
+    this.validate(row,'notion',plan,{reconcile:true});
     const receipt=pageId=>({destination:'notion',key:plan.key,payload_digest:plan.payload_digest,
       readback_verified:true,reference:`notion:${pageId}`});
     const step=(number,pageId=null)=>({...plan.batches[number],page_id:pageId});
@@ -247,6 +285,7 @@ export class Publisher {
         || step.number===0 && step.page_id!==null
         || step.number>0 && (typeof step.page_id!=='string' || !/^[A-Za-z0-9-]{1,200}$/.test(step.page_id)))
       fail('publication_plan_binding_invalid');
+    requirePublicationVerification(row,'notion',this.clock());
     await this.notion(step.number===0?'POST':'PATCH',step.number===0?'/pages':`/blocks/${step.page_id}/children`,JSON.parse(step.body_json));
   }
 }

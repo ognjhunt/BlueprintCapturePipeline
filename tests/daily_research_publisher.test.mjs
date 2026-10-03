@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {Publisher,planSheets,planNotion} from '../tools/daily_research/publisher.mjs';
 import {Store,ROOT} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
+import {verificationDigest} from '../tools/daily_research/verification-digest.mjs';
 
 const SHEET='1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY', NOTION='3eb80154161d8116858ed5f376b4b7a9';
 const sha=x=>createHash('sha256').update(x).digest('hex');
@@ -14,14 +15,39 @@ const candidate=()=>({organization:'Example Plant',site:'North',task:'Depositing
   qualification_status:'unqualified',unknowns:['Interest unknown'],potential_robot_match:'Hypothesis',
   proposed_next_action:'Review exact operator evidence',evidence:['task','capability'].map(role=>({role,
     url:'https://plant.example/tasks',classification:'operator',claim_kind:'fact',claim:'Task described',checked_date:'2026-09-30'}))});
+// Invented evidence for hermetic boundary tests, never a real verified lead.
+function verification(candidates) {
+  const results=candidates.map(c=>{
+    const assessment={version:'blueprint.lead-verification.v1',candidate_digest:verificationDigest(c),
+      assessed_at:'2026-09-30T00:00:00Z',valid_until:'2030-01-01T00:00:00Z',
+      claims:Object.fromEntries(['operator','physical_site','site_task','human_workflow','plausible_fit'].map(name=>[name,{
+        status:name==='plausible_fit'?'inference':'verified_fact',reason:'Synthetic exact site/task assessment for boundary tests.',source_refs:['synthetic']} ])),
+      sources:[{id:'synthetic',url:'https://plant.example/tasks',publisher:'Invented Example Plant',source_date:'2026-09-30',
+        event_date:'2026-09-30',checked_at:'2026-09-30T00:00:00Z',retrieval:'rendered',classification:'operator',
+        quote:'Synthetic operator, North physical site and manual depositing workflow.',freshness:'current',freshness_reason:'Invented current test source.'}],
+      counterevidence:{status:'checked',reason:'Invented source check; no synthetic conflict.',source_refs:['synthetic'],searches:['Synthetic automation check']}};
+    return {version:'blueprint.lead-verification-result.v1',candidate_key:c.candidate_key,candidate_digest:verificationDigest(c),
+      assessment,assessment_digest:verificationDigest(assessment),evaluated_at:'2026-09-30T00:00:00Z',status:'verified',
+      reasons:[],eligible_for_qualified_promotion:true};
+  });
+  return {version:'blueprint.lead-verification.v1',results};
+}
 function row(candidates=[candidate()],summary='Supported brief with explicit gaps') {
+  candidates=candidates.map((c,index)=>({...c,candidate_key:c.candidate_key || 'synthetic-'+index}));
   const r={date:'2026-09-30',run_key:'blueprint-researcher:2026-09-30',metadata:{run_key:'date'},
     state:'reviewed',cleanup_required:true,packet:{candidates},packet_digest:'a'.repeat(64),qa:{state:'validated'},
-    review:{packet_digest:'a'.repeat(64),source_support_verified:true,crm_rechecked:true},delivery:{}};
+    review:{packet_digest:'a'.repeat(64),source_support_verified:true,crm_rechecked:true,lead_verification:verification(candidates)},delivery:{}};
   for (const [name,payload] of Object.entries({sheets:{sheet_id:SHEET,tab:'Prospects',candidates},
     notion:{parent_id:NOTION,summary,candidates}})) {
     const raw=JSON.stringify(payload);
     r.delivery[name]={key:r.run_key+':'+name,payload,payload_json:raw,payload_digest:sha(raw),state:'pending'};
+  }
+  return r;
+}
+function expiresAt(r,now) {
+  for(const result of r.review.lead_verification.results) {
+    result.assessment.valid_until=new Date(now).toISOString();
+    result.assessment_digest=verificationDigest(result.assessment);
   }
   return r;
 }
@@ -73,7 +99,7 @@ async function fixture(suppliedRow=row()) {
     }
     throw new Error('unexpected request '+path);
   };
-  const publisher=new Publisher({crmReader:async()=>snapshot(),google,notion});
+  const publisher=new Publisher({crmReader:async()=>snapshot(),google,notion,clock:()=>time.now});
   db.values.set(ROOT,{schema_version:'blueprint.research-control.v1',enabled:true,workflow:{enabled:true,
     qa_authority_reference:'approved-QA',publication_authority_reference:'approved-fixed-targets'}});
   const store=new Store(db,()=>time.now,'one',async()=>snapshot(),publisher);
@@ -89,6 +115,66 @@ async function finishNotion(f) {
   }
   assert.fail('publication did not complete');
 }
+
+for(const issue of ['missing','unresolved','rejected','candidate_drift','assessment_drift','duplicate','expired'])
+  test(`fresh protected publication refuses ${issue} evidence before any claim or write`,async()=>{
+    const r=row(),result=r.review.lead_verification.results[0];
+    if(issue==='missing') delete r.review.lead_verification;
+    if(['unresolved','rejected'].includes(issue)) result.status=issue;
+    if(issue==='candidate_drift') result.candidate_digest='b'.repeat(64);
+    if(issue==='assessment_drift') result.assessment.claims.human_workflow.reason='Changed original evidence';
+    if(issue==='duplicate') result.duplicate_of='another-candidate';
+    if(issue==='expired') expiresAt(r,Date.now()-1000);
+    const f=await fixture(r);
+    await assert.rejects(f.store.publish(r.date),/publication_lead_verification_required/);
+    assert.equal(f.writes.length,0);assert.deepEqual(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_claimed,{});
+    assert.equal((await f.store.get(r.date)).delivery.notion.plan,undefined);
+  });
+
+test('each fresh Notion continuation requires current verification before its claim',async()=>{
+  const r=expiresAt(row([candidate()],'Invented complete report. '.repeat(12000)),Date.now()+10000),f=await fixture(r);
+  assert.equal(await f.store.publish(r.date),null);assert.equal(f.writes.length,1);
+  f.time.now+=10001;
+  await assert.rejects(f.store.publish(r.date),/publication_lead_verification_required/);
+  assert.equal(f.writes.length,1);
+  assert.deepEqual(Object.keys(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_batches.notion),['0']);
+});
+
+test('expiry after a durable Notion batch claim never executes or retries that write',async()=>{
+  const r=expiresAt(row([candidate()],'Invented complete report. '.repeat(12000)),Date.now()+10000),f=await fixture(r);
+  f.publisher.beforeNotionStep=async()=>{f.time.now+=10001;};
+  await assert.rejects(f.store.publish(r.date),/publication_lead_verification_required/);
+  assert.equal(f.writes.length,0);assert.ok(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_batches.notion[0]);
+  assert.equal(await f.store.publish(r.date),null);assert.equal(f.writes.length,0);
+});
+
+test('final Sheets target reads cannot use evidence that expires during the read',async()=>{
+  const r=expiresAt(row(),Date.now()+10000),f=await fixture(r),plan=planSheets(r,f.snapshot(),f.time.now);
+  f.publisher.sheetsTargetEmpty=async()=>{f.time.now+=10001;};
+  await assert.rejects(f.publisher.write(r,'sheets',plan),/publication_lead_verification_required/);
+  assert.equal(f.writes.length,0);
+});
+
+for(const legacy of [false,true]) test(`${legacy?'legacy missing':'expired'} assessment preserves exact claimed GET readback`,async()=>{
+  const r=expiresAt(row(),Date.now()+10000),f=await fixture(r);f.faults.lost=true;
+  await assert.rejects(f.store.publish(r.date),/publication_attempt_unresolved/);
+  assert.equal(f.writes.length,1);
+  if(legacy) {const saved=await f.store.get(r.date);delete saved.review.lead_verification;await f.store.put(saved);}
+  else f.time.now+=10001;
+  assert.equal((await f.store.publish(r.date)).readback_verified,true);assert.equal(f.writes.length,1);
+  await assert.rejects(f.store.publish(r.date,'sheets'),/publication_lead_verification_required/);
+  assert.equal(f.writes.length,1);
+});
+
+test('CRM physical identity keeps distinct named sites in one city and tasks or operators separate',async()=>{
+  const r=row(),f=await fixture(r),base=Array(19).fill('');
+  Object.assign(base,{0:'BP-000009',1:r.packet.candidates[0].organization,3:'South',9:'https://plant.example/tasks',
+    14:r.packet.candidates[0].task,17:r.packet.candidates[0].location});f.values.push(base);
+  assert.equal(planSheets(r,f.snapshot()).sheet_rows.length,1);
+  base[3]='NORTH';assert.throws(()=>planSheets(r,f.snapshot()),/publication_crm_duplicate_changed/);
+  base[1]='Distinct co-located operator';assert.equal(planSheets(r,f.snapshot()).sheet_rows.length,1);
+  base[1]=r.packet.candidates[0].organization;base[14]='Other task';assert.equal(planSheets(r,f.snapshot()).sheet_rows.length,1);
+});
 
 test('234 KB QA report publishes every paragraph through bounded requests and paginated exact readback',async()=>{
   const summary='Full retained report; actual interest unknown. '.repeat(5200);
@@ -602,7 +688,9 @@ async function stoppedTerminalSheetsFixture() {
   await f.store.filePut(filename,Buffer.from(raw).toString('base64'));
   Object.assign(call,{result_file:filename,result_sha256:sha(raw),result_digest:valueDigest(event),success:false,result_acknowledged:true});
   r.turn_id='research-turn';r.packet.candidates[0].candidate_key='candidate-one';r.packet_digest=valueDigest(r.packet);
-  const qa={packet_digest:r.packet_digest,source_support_verified:true,accepted_keys:['candidate-one']},qaRaw=JSON.stringify(qa)+'\n';
+  r.review.lead_verification=verification(r.packet.candidates);
+  const qa={packet_digest:r.packet_digest,source_support_verified:true,accepted_keys:['candidate-one'],
+    checks:r.review.lead_verification.results.map(result=>({candidate_key:result.candidate_key,lead_verification:result.assessment}))},qaRaw=JSON.stringify(qa)+'\n';
   r.qa={state:'validated',turn_id:'qa-turn',artifact_file:r.date+'-qa.json',artifact_digest:sha(qaRaw)};
   await f.store.filePut(r.qa.artifact_file,Buffer.from(qaRaw).toString('base64'));
   Object.assign(r.review,{packet_digest:r.packet_digest,accepted_keys:['candidate-one'],qa_artifact_digest:r.qa.artifact_digest,
@@ -724,6 +812,27 @@ test('agent-owned publication requires explicit choice; inspect returns full app
   assert.deepEqual(out.output.presentation_rules.sheets.strategies,['full']);
   assert.equal(out.output.presentation_rules.sheets.summary,'must_be_absent');
   assert.deepEqual(f.writes,[]);assert.equal(out.output.destinations.sheets.claimed,false);
+});
+
+test('agent inspects unresolved raw discovery and receives actionable evidence repair without a publication claim',async()=>{
+  const f=await agentFixture(),r=await f.store.get(f.r.date);delete r.review.lead_verification;await f.store.put(r);
+  const inspected=await f.action('blueprint_inspect_publication');
+  assert.equal(inspected.success,true);assert.deepEqual(inspected.output.packet,r.packet);
+  assert.equal(inspected.output.verification_eligibility.sheets.eligible,false);
+  assert.equal(inspected.output.lead_verification,null);
+  const result=await f.action('blueprint_publish_research',{destination:'sheets',strategy:'full'});
+  assert.equal(result.success,false);assert.equal(result.error.code,'publication_lead_verification_required');
+  assert.equal(result.error.status,'recoverable_issue');assert.ok(result.error.allowed_repair);
+  assert.ok(result.error.evidence_issues.length);assert.equal(f.writes.length,0);
+  assert.deepEqual(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_claimed,{});
+});
+
+test('stopped terminal Sheets recovery refuses a missing current assessment before fresh admission',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),r=await f.store.get(f.r.date);
+  delete r.review.lead_verification;delete r.qa.decision.lead_verification;
+  await f.store.put(r);f.request.source_row_blob=f.db.values.get(`${ROOT}/runs/${r.date}`).blob;
+  await assert.rejects(f.store.dispatch(f.request),/publication_lead_verification_required/);
+  assert.equal(f.writes.length,0);assert.deepEqual(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_claimed,{});
 });
 
 test('invalid Sheets presentation returns actionable fields without claims or writes, then full succeeds',async()=>{
