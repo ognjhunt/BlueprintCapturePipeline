@@ -132,6 +132,7 @@ export class Publisher {
     } else if (plan.sheet_rows.length) {
       const current = await this.crmReader();
       if (!isDeepStrictEqual(current.values,plan.crm_values)) fail('publication_crm_changed_before_write');
+      this.validate(row,destination,plan);
       await this.google('POST',`/values/${encodeURIComponent('Prospects!A:S')}:append?valueInputOption=RAW&insertDataOption=OVERWRITE`,JSON.parse(plan.body_json));
     }
   }

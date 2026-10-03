@@ -61,6 +61,20 @@ test('publication rechecks candidate binding and evidence validity',()=>{
   assert.throws(()=>planNotion(stale,Date.parse('2026-10-01T00:00:00Z')),/lead_verification_required/);
 });
 
+test('Sheets write refuses evidence that expires during the final CRM read',async()=>{
+  const r=row(),snapshot={sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers]};
+  let now=Date.parse('2026-09-30T00:00:00Z'),appends=0;
+  const expiry=now+1000,result=r.review.lead_verification.results[0];
+  result.assessment.valid_until=new Date(expiry).toISOString();
+  result.assessment_digest=verificationDigest(result.assessment);
+  const plan=planSheets(r,snapshot,now);
+  const publisher=new Publisher({clock:()=>now,
+    crmReader:async()=>{now=expiry+1;return structuredClone(snapshot);},
+    google:async()=>{appends++;return {};}});
+  await assert.rejects(publisher.write(r,'sheets',plan),/lead_verification_required/);
+  assert.equal(appends,0);
+});
+
 async function fixture() {
   const db=new MemoryFirestore(),values=[['CRM'],[],[],[],headers], pages=[],writes=[];
   const time={now:Date.now()}, faults={lost:false,changed:false};
