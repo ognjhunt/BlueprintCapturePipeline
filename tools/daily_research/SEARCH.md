@@ -185,6 +185,12 @@ charged `owner-readonly-mcp-v1` intent. The lead model remains `gpt-6.1-sol`;
 Perplexity fast and scoped history functions remain available. The lead agent
 chooses queries, delegation, comparison, source verification and publication.
 
+The default read-only profile validates known owner research connections but
+excludes them from its frozen connection/vault bindings and session tools. Adding
+Exa, Parallel or Blueprint to the saved agent therefore does not block ordinary
+read-only research or activate paid delegation. Unknown or malformed connections
+still refuse before a new intent; charged sessions retain their original scope.
+
 | Saved server label | Frozen endpoint | Session tools |
 | --- | --- | --- |
 | `exa` | `https://mcp.exa.ai/mcp` | `agent_run` |
