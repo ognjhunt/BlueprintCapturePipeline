@@ -2,7 +2,9 @@
 
 Hermetic: fake provider and in-memory Firestore only. The frozen copy below is
 main's strict gate at 73d3be8d6, byte-for-byte except names; the refactored
-gate must agree with it on every corruption so feedback never loosens QA input.
+gate must agree on admission/refusal for every corruption so feedback never
+loosens QA input. New discovery audit fields are compared through the frozen
+payload projection; full raw retention is covered by the verification tests.
 """
 import json
 import random
@@ -294,6 +296,8 @@ def mutate(document, pointer, replacement):
 def outcome(function):
     try:
         accepted, duplicates = function()
+        accepted = [{k: v for k, v in c.items() if k != "discovery_index"} for c in accepted]
+        duplicates = [{k: c[k] for k in ("organization", "site", "reason")} for c in duplicates]
         return "ok", canonical([accepted, duplicates])
     except Refusal as exc:
         return "refusal", str(exc)

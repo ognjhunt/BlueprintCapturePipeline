@@ -5,18 +5,19 @@ The saved template uses the documented Agents API file-discovery path:
 files. Its empty `skills` and `plugins` lists are expected, not evidence of lost
 skills. Do not register new versions or mutate the template to fix preflight.
 
-The four files packaged under `capabilities/` are the exact instruction-only
-files approved September 30, 2026. All recovered bytes match the mounted-file
-hashes in the [preserved validation receipt](https://app.notion.com/p/3eb80154161d81b4a0ddff9bdcfe5af6).
-The Blueprint files and license were recovered from preserved inline review
+The saved template inventory retains the four instruction-only files approved
+September 30, 2026. Their historical mounted hashes remain in the [preserved validation receipt](https://app.notion.com/p/3eb80154161d81b4a0ddff9bdcfe5af6).
+The October 3 user-requested verification revision updates only the two Blueprint
+instruction files via hash-bound session overrides; the saved template is unchanged.
+The original Blueprint files and license were recovered from preserved inline review
 text; deep-research was fetched from its original immutable source commit
 `42dd24080fce6d731d00e2a1134f398c3da4171b`. Its MIT notice is preserved.
 No executables, hooks, packages or credentials are included.
 
 | Path relative to the capability directory | Bytes | SHA-256 |
 | --- | ---: | --- |
-| blueprint-evidence-qualification/SKILL.md | 3965 | 5fdc5f3c6dde9cc252cd43bd4165d09b4b2d5686835b70961d00e0d7e91f0756 |
-| blueprint-evidence-qualification/references/prospect-contract.md | 1838 | 34cf345832dea8226d14ed31b3197a44c293ac91dc903fb596a9b89d05299258 |
+| blueprint-evidence-qualification/SKILL.md | 7585 | 708d1ef90a6df642c1d54863e777b2fbeb154b06447df1c9ee8188a98f4f1f3f |
+| blueprint-evidence-qualification/references/prospect-contract.md | 2226 | 39571718234ce2f7536a56f6e8440183536c259bf9b4e9a0d54944cc9aaaf6b3 |
 | deep-research/LICENSE | 1072 | 3a9cf254e155282014880e9569b9039bc17ce6a43919df23741cf14d24481244 |
 | deep-research/SKILL.md | 5386 | 2646cdf3942d918e84febf020b289fbfb7b5cf601e43ee7e7349e6c5105941c5 |
 
@@ -32,7 +33,7 @@ Each future authorized create request includes the four hash-verified inline
 files as documented session overrides, with the same directory and disabled
 network. The existing durable intent includes the entire request before its one
 provider-create attempt. This prevents reliance on opaque template file contents
-and preserves exact reviewed versions without a provider template mutation.
+and preserves exact reviewed release versions without a provider template mutation.
 Actual hosted mounting/skill loading still needs evidence from the authorized
 canary's exact root turn. No canary has run for this correction.
 
