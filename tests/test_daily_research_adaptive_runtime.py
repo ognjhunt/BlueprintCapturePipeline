@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_daily_research_adaptive import result
 from tests.daily_research_verification_fixture import checks
+from tests.test_daily_research_adaptive import result
 from tests.test_daily_research_consumer import fixture as consumer_fixture
 from tests.test_daily_research_runner import AGENT, NOW
 from tools.daily_research import adaptive, adaptive_runtime

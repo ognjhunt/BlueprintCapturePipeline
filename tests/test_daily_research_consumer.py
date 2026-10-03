@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from tests.daily_research_verification_fixture import assessment
-
 from tests.test_daily_research_knowledge import policy_bundle, v3
 from tests.test_daily_research_runner import AGENT, DAY, NOW, SHEET, FakeAPI
 from tools.daily_research import render, verification
