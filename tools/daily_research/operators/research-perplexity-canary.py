@@ -496,7 +496,7 @@ def collect_completed_qa(bridge, cache, *, api_factory=None, stopped=lambda: Fal
                     raise Refusal("terminal_qa_collection_retained_artifact_changed")
                 guard(row, authority)
                 _, known = consumer.refresh_crm()
-                decision = qa_decision(row, json.loads(raw), known)
+                decision = qa_decision(row, json.loads(raw), known, observed_at=clock())
                 guard(row, authority)
                 receipt = {"native_receipt": proof, "source_row_digest": digest(row),
                            "previous_qa": copy.deepcopy(qa), "workflow_authority": authority,

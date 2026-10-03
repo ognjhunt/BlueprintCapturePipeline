@@ -9,6 +9,7 @@ import sys
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -81,7 +82,7 @@ class FakeAPI:
                          "capability_directories": ["/workspace/capabilities/blueprint"],
                          "skills": [], "plugins": [], "files": [
                              {"type": "inline", "path": capabilities.ROOT + "/" + name,
-                              "size_bytes": size} for name, (size, _) in capabilities.FILES.items()]}
+                              "size_bytes": size} for name, (size, _) in capabilities.TEMPLATE_FILES.items()]}
         self.sessions, self.payloads, self.cancellations = [], [], []
         self.turn_status, self.session_status = "completed", "idle"
         self.raw = (json.dumps(output(), indent=2) + "\n").encode()
@@ -92,6 +93,7 @@ class FakeAPI:
         self.environment_status = "connected"
         self.environment_missing = False
         self.calls = []
+        self.vault_credentials = None
 
     def get(self, resource, resource_id):
         self.calls.append(("GET", resource, resource_id))
@@ -116,9 +118,31 @@ class FakeAPI:
         self.payloads.append(deepcopy(payload))
         self.sessions.append({"id": "sess_1", "environment": {"id": "env_1", "type": "openai_hosted", "container_size": None},
                               "metadata": payload["metadata"]})
+        if "vault_ids" in payload:
+            self.sessions[-1]["vault_ids"] = deepcopy(payload["vault_ids"])
         if self.lost_create_reply:
             raise TimeoutError()
         return self.sessions[0]
+
+    def resolve_mcp_vaults(self, connections):
+        credentials = self.vault_credentials
+        if credentials is None:
+            credentials = {"vault_synthetic_" + tool["server_label"]: [{"id": tool["credential_id"],
+                "vault_id": "vault_synthetic_" + tool["server_label"], "auth": {"type": "mcp_oauth",
+                "mcp_server_url": tool["transport"]["server_url"]}}] for tool in connections}
+        def page(values):
+            return SimpleNamespace(data=[SimpleNamespace(model_dump=lambda mode, exclude_unset, value=value: deepcopy(value))
+                for value in values], has_more=False)
+        def vault_list(**query):
+            self.calls.append(("GET", "vaults", query))
+            return page([{"id": key} for key in credentials])
+        def credential_list(vault_id, **query):
+            self.calls.append(("GET", "vault_credentials", vault_id))
+            return page(credentials[vault_id])
+        provider = Provider.__new__(Provider)
+        provider.api = SimpleNamespace(vaults=SimpleNamespace(list=vault_list,
+            credentials=SimpleNamespace(list=credential_list)))
+        return provider.resolve_mcp_vaults(connections)
 
     def listing(self, resource, session_id=None):
         if resource == "sessions":
@@ -136,6 +160,19 @@ class FakeAPI:
 
     def cancel(self, session_id, run_key):
         self.cancellations.append((session_id, run_key))
+
+
+@pytest.mark.parametrize("repeating", [True, False])
+def test_vault_metadata_inventory_must_finish_before_attachment(repeating):
+    calls = []
+    def listing(**query):
+        calls.append(query)
+        return SimpleNamespace(data=[], has_more=True,
+            last_id="vault_repeat" if repeating else "vault_page_" + str(len(calls)))
+    with pytest.raises(Refusal, match="provider_pagination_invalid" if repeating else "provider_pagination_limit"):
+        Provider._metadata_pages(SimpleNamespace(list=listing), status="active")
+    assert len(calls) == (2 if repeating else 10)
+    assert all(call["limit"] == 100 and call["status"] == "active" for call in calls)
 
 
 @pytest.fixture
@@ -441,12 +478,13 @@ def test_crm_and_batch_duplicate_detection_preserves_second_site(fixture):
     runner, _, _ = fixture
     snapshot = json.loads(Path(runner.config["crm_snapshot"]).read_text())
     c = output()["candidates"][0]
-    snapshot["values"].append(["BP-000001", c["organization"], "Facility / site", c["site"], "", "", "", "", "", c["organization_url"], "", "", "", "", c["task"]])
+    snapshot["values"].append(["BP-000001", c["organization"], "Facility / site", c["site"], "", "", "", "", "", c["organization_url"], "", "", "", "", c["task"], "", "", c["location"]])
     save_json(runner.config["crm_snapshot"], snapshot)
     _, known = crm_snapshot(runner.config["crm_snapshot"], NOW)
     o = output()
     second_site = deepcopy(c)
     second_site["site"] = "South plant"
+    second_site["location"] = "South plant physical location"
     o["candidates"] = [c, second_site, deepcopy(second_site)]
     accepted, duplicates = validate_output(o, DAY, known)
     assert len(accepted) == 1 and accepted[0]["site"] == "South plant"
@@ -462,10 +500,75 @@ def test_stale_snapshot_prevents_paid_start(fixture):
 
 
 def decision(row):
+    from tests.daily_research_verification_fixture import assessment
+    from tools.daily_research import verification
     return {"packet_digest": row["packet_digest"], "reviewer_reference": "dot-review-1",
             "source_support_verified": True, "crm_rechecked": True,
             "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
-            "summary": "One unqualified candidate for source review; no owner escalation needed."}
+            "summary": "One unqualified candidate for source review; no owner escalation needed.",
+            "lead_verification": verification.cohort(row["packet"]["candidates"],
+                {c["candidate_key"]: assessment(c, NOW) for c in row["packet"]["candidates"]}, NOW)}
+
+
+def test_review_boolean_cannot_promote_without_lead_verification(fixture):
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    value = decision(row)
+    value.pop("lead_verification")
+    with pytest.raises(Refusal, match="lead_verification_required_before_promotion"):
+        runner.review(DAY, value)
+
+
+def test_review_rejects_forged_derived_verification_metrics(fixture):
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    value = decision(row)
+    value["lead_verification"]["verified_unique_site_task_candidates"] = 999
+    with pytest.raises(Refusal, match="lead_verification_result_binding_invalid"):
+        runner.review(DAY, value)
+
+
+def test_review_accepts_portable_whole_number_metrics_after_bridge_roundtrip(fixture):
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    value = decision(row)
+    # JSON.parse/stringify in the real Node bridge changes 1.0 to 1.
+    assert value["lead_verification"]["verification_coverage"] == 1.0
+    value["lead_verification"]["verification_coverage"] = 1
+    reviewed = runner.review(DAY, value)
+    assert reviewed["review"] == value
+
+
+def test_unresolved_review_replay_is_idempotent_and_retains_raw_discovery(fixture):
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    value = decision(row)
+    value.pop("lead_verification")
+    value.update(accepted_keys=[], source_support_verified=False)
+    reviewed = runner.review(DAY, value)
+    assert reviewed["review"]["lead_verification"]["unresolved_count"] == len(row["packet"]["candidates"])
+    assert runner.review(DAY, value) == reviewed
+    assert reviewed["packet"]["candidates"]
+
+
+def test_exact_dedupe_retains_every_candidate_and_distinct_physical_sites():
+    from tools.daily_research import verification
+    first = output()["candidates"][0]
+    same_site_alias = {**deepcopy(first), "site": first["site"].upper() + "!"}
+    second_site = {**deepcopy(first), "location": "Another physical location"}
+    other_operator = {**deepcopy(first), "organization": "Another named operator at the same site"}
+    o = output()
+    o["candidates"] = [first, same_site_alias, second_site]
+    accepted, duplicates = validate_output(o, DAY, set())
+    assert len(accepted) == 2 and len(duplicates) == 1
+    assert duplicates[0]["evidence"] == same_site_alias["evidence"]
+    all_candidates = verification.packet_candidates({"candidates": accepted, "duplicates": duplicates,
+                                                    "verification_cohort_version": verification.VERSION})
+    assert len(all_candidates) == 3
+    assert len({c["candidate_key"] for c in all_candidates}) == 3
+    o["candidates"] = [first, other_operator]
+    accepted, duplicates = validate_output(o, DAY, set())
+    assert len(accepted) == 2 and not duplicates
 
 
 def test_review_binding_source_support_and_partial_delivery(fixture):
@@ -473,7 +576,7 @@ def test_review_binding_source_support_and_partial_delivery(fixture):
     row = runner.start_or_resume()
     review = decision(row)
     review["source_support_verified"] = False
-    with pytest.raises(Refusal, match="review_evidence"):
+    with pytest.raises(Refusal, match="lead_verification_required"):
         runner.review(DAY, review)
     review["source_support_verified"] = True
     row = runner.review(DAY, review)
@@ -891,3 +994,14 @@ def test_units_do_not_install_or_arm_existing_deployment():
 if __name__ == "__main__":
     _sdk_wire_probe()
     print("sdk_wire_contract_verified")
+
+
+def test_exact_dedupe_preserves_same_city_distinct_named_facilities():
+    first = output()["candidates"][0]
+    first = {**first, "site": "North plant, 1 Test Street", "location": "Chicago, Illinois, US"}
+    second = {**deepcopy(first), "site": "South plant, 2 Test Street"}
+    o = output()
+    o["candidates"] = [first, second]
+    accepted, duplicates = validate_output(o, DAY, set())
+    assert len(accepted) == 2 and not duplicates
+    assert len({c["candidate_key"] for c in accepted}) == 2

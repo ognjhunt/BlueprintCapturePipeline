@@ -42,8 +42,11 @@ export class CanaryChannel {
     this.db=db; this.clock=clock;
     this.normal=new Store(db,clock);
     const publishRow=row=>({...row,run_key:`blueprint-research-canary:${TEST}`});
-    const privatePublisher=BASELINE && publisher?Object.fromEntries(['prepare','write','reconcile'].map(method=>
-      [method,(row,...args)=>publisher[method](publishRow(row),...args)])):publisher;
+    const privatePublisher=publisher?{...Object.fromEntries(['prepare','write','reconcile','notionProgress','writeNotionStep'].map(method=>
+      [method,(row,...args)=>publisher[method](BASELINE?publishRow(row):row,...args)])),beforeNotionStep:async()=>{
+        try {await this.call({op:'guard'});}
+        catch {fail('publication_canary_authority_unavailable_or_changed');}
+      }}:publisher;
     this.store=new Store(scopedDatabase(db),clock,undefined,crmReader,privatePublisher,null,TERMINAL_COLLECTION_RECEIPT);
     this.channel=new LeaseChannel(this.store);
   }

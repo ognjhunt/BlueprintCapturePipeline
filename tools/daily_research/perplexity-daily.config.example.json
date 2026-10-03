@@ -14,5 +14,7 @@
   "knowledge_refresh_policy": "/var/lib/blueprint/researcher/refresh-policy.approved.v1.json",
   "discovery_profile": "adaptive-sites-v1",
   "qa_reserved_seconds": 600,
-  "search_provider": "perplexity-fast-v1"
+  "search_provider": "perplexity-fast-v1",
+  "publication_profile": "agent-owned-v1",
+  "history_profile": "agent-history-v1"
 }
