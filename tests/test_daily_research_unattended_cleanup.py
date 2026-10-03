@@ -9,8 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.daily_research_verification_fixture import assessment
 from tests.test_daily_research_runner import FakeAPI, NotFound, output
-from tools.daily_research import render
+from tools.daily_research import render, verification
 from tools.daily_research.firestore import Bridge, FencedProvider, FirestoreLedger
 from tools.daily_research.runner import (
     AGENT,
@@ -69,7 +70,9 @@ def setup(tmp_path):
     assert row["state"] == "awaiting_review"
     runner.review(DAY, {"packet_digest": row["packet_digest"], "reviewer_reference": "synthetic-same-agent",
         "source_support_verified": True, "crm_rechecked": True,
-        "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]], "summary": "Retained source checked"})
+        "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]], "summary": "Retained source checked",
+        "lead_verification": verification.cohort(verification.packet_candidates(row["packet"]),
+            {c["candidate_key"]: assessment(c, NOW) for c in verification.packet_candidates(row["packet"])}, NOW)})
     with ledger.lock():
         row = ledger.get(DAY)
         for name in ("notion", "sheets"):
