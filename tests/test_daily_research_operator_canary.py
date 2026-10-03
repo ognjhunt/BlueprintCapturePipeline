@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.daily_research_verification_fixture import checks
 from tests.test_daily_research_consumer import HEADERS
 from tests.test_daily_research_knowledge import policy_bundle, v3
 from tests.test_daily_research_runner import AGENT, SHEET
@@ -79,9 +80,7 @@ class API(SearchAPI):
                           "crm_digest": row["qa"]["crm_digest"], "source_support_verified": True,
                           "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
                           "summary": "One-time synthetic canary: supported task https://plant.example/tasks; interest unknown.",
-                          "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": True,
-                                      "duplicate": False, "reason": "Synthetic exact operator task evidence"}
-                                     for c in row["packet"]["candidates"]]}
+                          "checks": checks(row["packet"], NOW)}
 
     def artifact(self, sid, aid):
         return canonical(self.qa_result).encode() if aid == "artifact_qa" else super().artifact(sid, aid)

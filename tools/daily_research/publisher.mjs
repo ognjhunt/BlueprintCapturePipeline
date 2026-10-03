@@ -1,6 +1,7 @@
 // Fixed canonical destinations only. No credentials enter plans, prompts or logs.
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
+import {verificationDigest} from './verification-digest.mjs';
 
 export const SHEET = '1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY';
 export const NOTION = '3eb80154161d8116858ed5f376b4b7a9';
@@ -10,8 +11,8 @@ const HEADERS = ['Prospect ID','Organization','Prospect type','Site / team','Con
 const sha = raw => createHash('sha256').update(raw).digest('hex');
 const fail = code => {throw new Error(code);};
 const rich = text => [{type:'text', text:{content:text}}];
-const normalized = x => String(x).toLowerCase().replace(/[^\p{L}\p{N}_]+/gu,' ').trim();
-const identity = x => [x.organization,x.site,x.task].map(normalized).join('\n');
+const normalized = x => String(x).normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+const identity = x => [x.organization,x.site||x.location,x.location||x.site,x.task].map(normalized).join('\n');
 const NOTION_PARENT_PAGE_LIMIT = 100, NOTION_READ_BUDGET_MS = 25000;
 
 function crmRows(snapshot) {
@@ -27,9 +28,9 @@ function crmRows(snapshot) {
   return used;
 }
 
-function bind(row, destination) {
+function bind(row, destination, now=Date.now()) {
   const delivery = row.delivery?.[destination];
-  if (!delivery || row.qa?.state !== 'validated' || row.review?.source_support_verified !== true
+  if (!delivery || row.qa?.state !== 'validated' || typeof row.review?.source_support_verified !== 'boolean'
       || row.review?.crm_rechecked !== true || row.review.packet_digest !== row.packet_digest
       || delivery.key !== `${row.run_key}:${destination}` || !/^[a-f0-9]{64}$/.test(delivery.payload_digest)
       || typeof delivery.payload_json!=='string' || sha(delivery.payload_json)!==delivery.payload_digest
@@ -40,14 +41,30 @@ function bind(row, destination) {
   if (destination === 'notion' && delivery.payload.parent_id !== NOTION) fail('publication_destination_invalid');
   if (!Array.isArray(delivery.payload.candidates) || delivery.payload.candidates.length > 100)
     fail('publication_candidates_invalid');
+  for(const candidate of delivery.payload.candidates) {
+    // Only the protected Runner.review transition writes these derived receipts;
+    // rebind the exact candidate/assessment and current expiry at sink mutation.
+    const result=row.review.lead_verification?.results?.find(r=>r.candidate_key===candidate.candidate_key);
+    // GET-only recovery validates the retained review time. A later expiry
+    // cannot erase an already completed, exactly bound external effect.
+    const validityTime=now===null ? Date.parse(result?.evaluated_at) : now;
+    if(row.review.source_support_verified!==true || result?.status!=='verified'
+      || result.eligible_for_qualified_promotion!==true || result.duplicate_of
+      || !result.assessment || result.assessment.version!=='blueprint.lead-verification.v1'
+      || result.candidate_digest!==verificationDigest(candidate)
+      || result.assessment_digest!==verificationDigest(result.assessment)
+      || result.assessment?.candidate_digest!==result.candidate_digest
+      || !(Date.parse(result.assessment.assessed_at)<=validityTime && validityTime<Date.parse(result.assessment.valid_until)))
+      fail('publication_lead_verification_required');
+  }
   return delivery;
 }
 
-export function planSheets(row, snapshot) {
-  const d = bind(row, 'sheets'), values = snapshot.values;
+export function planSheets(row, snapshot, now=Date.now()) {
+  const d = bind(row, 'sheets',now), values = snapshot.values;
   const used = crmRows(snapshot);
   const ids = used.map(r => r[0]);
-  const existing = new Set(used.map(r => identity({organization:r[1],site:r[3],task:r[14]})));
+  const existing = new Set(used.map(r => identity({organization:r[1],site:r[3],location:r[17],task:r[14]})));
   if (d.payload.candidates.some(c => existing.has(identity(c)))) fail('publication_crm_duplicate_changed');
   let sequence = Math.max(0, ...ids.map(id => Number(id.slice(3))));
   const marker = `[${d.key};${d.payload_digest}]`;
@@ -65,8 +82,8 @@ export function planSheets(row, snapshot) {
     marker,crm_values:values,sheet_rows:rows};
 }
 
-export function planNotion(row) {
-  const d = bind(row,'notion'), marker = `${d.key};${d.payload_digest}`;
+export function planNotion(row, now=Date.now()) {
+  const d = bind(row,'notion',now), marker = `${d.key};${d.payload_digest}`;
   const text = `Blueprint research ${row.date}\n${d.payload.summary}\n\n`+
     d.payload.candidates.map(c => `${c.organization} — ${c.site}\nTask: ${c.task}\nStatus: ${c.qualification_status}\n`+
       `Unknowns: ${c.unknowns.join('; ')}\nNext proposed action: ${c.proposed_next_action}\n`+
@@ -86,9 +103,9 @@ export class Publisher {
     if (destination === 'notion') {
       const parent = await this.notion('GET',`/pages/${NOTION}`);
       if (parent.id?.replaceAll('-','') !== NOTION || parent.object !== 'page') fail('publication_notion_parent_mismatch');
-      return planNotion(row);
+      return planNotion(row,this.clock());
     }
-    const snapshot = await this.crmReader(), plan = planSheets(row,snapshot);
+    const snapshot = await this.crmReader(), plan = planSheets(row,snapshot,this.clock());
     const first = snapshot.values.length+1, last = first+Math.max(0,plan.sheet_rows.length-1);
     if (plan.sheet_rows.length) {
       // Refuse formulas/validation-backed destination cells rather than rewriting native structure.
@@ -100,11 +117,12 @@ export class Publisher {
     }
     return plan;
   }
-  validate(row,destination,plan) {
-    const d = bind(row,destination);
+  validate(row,destination,plan,{reconcile=false}={}) {
+    const now=reconcile ? null : this.clock();
+    const d = bind(row,destination,now);
     if (plan.destination !== destination || plan.key !== d.key || plan.payload_digest !== d.payload_digest
         || plan.request_digest !== sha(plan.body_json)) fail('publication_plan_binding_invalid');
-    const expected = destination === 'notion' ? planNotion(row) : planSheets(row,{sheet_id:SHEET,complete:true,values:plan.crm_values});
+    const expected = destination === 'notion' ? planNotion(row,now) : planSheets(row,{sheet_id:SHEET,complete:true,values:plan.crm_values},now);
     if (!isDeepStrictEqual(expected,plan)) fail('publication_plan_binding_invalid');
   }
   async write(row,destination,plan) {
@@ -114,11 +132,12 @@ export class Publisher {
     } else if (plan.sheet_rows.length) {
       const current = await this.crmReader();
       if (!isDeepStrictEqual(current.values,plan.crm_values)) fail('publication_crm_changed_before_write');
+      this.validate(row,destination,plan);
       await this.google('POST',`/values/${encodeURIComponent('Prospects!A:S')}:append?valueInputOption=RAW&insertDataOption=OVERWRITE`,JSON.parse(plan.body_json));
     }
   }
   async reconcile(row,destination,plan) {
-    this.validate(row,destination,plan);
+    this.validate(row,destination,plan,{reconcile:true});
     if (destination === 'sheets') {
       const snapshot = await this.crmReader();
       const used = crmRows(snapshot);

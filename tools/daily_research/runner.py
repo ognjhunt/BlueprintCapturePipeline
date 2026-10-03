@@ -33,6 +33,7 @@ from tools.daily_research import (
     knowledge,
     recovery,
     search,
+    verification,
 )
 
 PROJECT = "proj_F2tFJuxLaovJru8RrtXRaqNj"
@@ -206,9 +207,9 @@ def public_url(value):
 
 
 def keys(candidate):
-    suffix = [normalized(candidate["site"]), normalized(candidate["task"])]
-    return {digest([public_url(candidate["organization_url"]), *suffix]),
-            digest([normalized(candidate["organization"]), *suffix])}
+    suffix = [verification.normalized(candidate.get("site") or candidate["location"]),
+              verification.normalized(candidate.get("location") or candidate["site"]), verification.normalized(candidate["task"])]
+    return {digest([verification.normalized(candidate["organization"]), *suffix])}
 
 
 def crm_snapshot(path, now):
@@ -231,7 +232,7 @@ def crm_snapshot(path, now):
         if len(row) < 15 or not all(isinstance(row[i], str) and row[i].strip() for i in (1, 3, 9, 14)):
             raise Refusal("crm_identity_incomplete")
         c = {"organization": row[1], "site": row[3], "task": row[14],
-             "organization_url": row[9].splitlines()[0]}
+             "organization_url": row[9].splitlines()[0], "location": row[17] if len(row) > 17 else None}
         known.update(keys(c))
     return snapshot, known
 
@@ -462,16 +463,20 @@ def validate_output(output, run_date, known, *, contract_version=1, knowledge_co
                                observed_at=observed_at, refresh_policy=refresh_policy):
         raise Refusal(found["code"])
     accepted, duplicates = [], []
-    for c in output["candidates"]:
+    for index, c in enumerate(output["candidates"]):
         operator_task_sources = [e for e in c["evidence"] if e["role"] == "task" and e["classification"] == "operator"]
         affiliation_review = not any(public_url(e["url"]) == public_url(c["organization_url"])
                                      for e in operator_task_sources)
         identities = keys(c)
+        retained = {**c, "candidate_key": min(identities), "identity_keys": sorted(identities),
+                    "operator_affiliation_qa_required": affiliation_review, "discovery_index": index}
         if identities & known:
-            duplicates.append({"organization": c["organization"], "site": c["site"], "reason": "matching_site_task"})
+            # Preserve complete source evidence and a distinct key for every
+            # occurrence so duplicates and conflicts remain in verification.
+            duplicates.append({**retained, "candidate_key": digest([min(identities), "duplicate", index]),
+                               "reason": "matching_site_task", "duplicate": True})
         else:
-            accepted.append({**c, "candidate_key": min(identities), "identity_keys": sorted(identities),
-                             "operator_affiliation_qa_required": affiliation_review})
+            accepted.append(retained)
             known.update(identities)
     return accepted, duplicates
 
@@ -1070,6 +1075,7 @@ class Runner:
         packet = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
                   "findings": output["findings"], "blockers": output["blockers"],
                   "proposed_next_actions": output["proposed_next_actions"], "candidates": candidates,
+                  "verification_cohort_version": verification.VERSION,
                   "duplicates": duplicates, "source_verification": "blueprint_agent_qa_required_before_writes",
                   "cost_status": row["cost_status"], "usage": row["usage"], "cleanup_required": True,
                   "destinations": {"sheet_id": SHEET, "sheet_tab": "Prospects", "notion_parent": NOTION},
@@ -1160,17 +1166,51 @@ class Runner:
             row = self.ledger.get(day)
             if not row or row["state"] not in {"awaiting_review", "reviewed", "completed"}:
                 raise Refusal("review_not_ready")
+            if "lead_verification" not in decision and not decision.get("accepted_keys"):
+                # Bind the same normalized unresolved receipt on repeat calls.
+                evaluated_at = self.clock()
+                if row.get("review", {}).get("lead_verification", {}).get("results"):
+                    evaluated_at = verification.moment(row["review"]["lead_verification"]["results"][0]["evaluated_at"])
+                decision = {**decision, "lead_verification": verification.cohort(
+                    verification.packet_candidates(row["packet"]), {}, evaluated_at)}
             if row.get("review"):
                 if row["review"] != decision:
                     raise Refusal("review_already_bound")
                 return row
             if (decision.get("packet_digest") != row["packet_digest"] or not decision.get("reviewer_reference")
-                    or decision.get("source_support_verified") is not True or decision.get("crm_rechecked") is not True
+                    or type(decision.get("source_support_verified")) is not bool or decision.get("crm_rechecked") is not True
                     or not isinstance(decision.get("accepted_keys"), list)):
                 raise Refusal("review_evidence_or_binding_missing")
             selected = [c for c in row["packet"]["candidates"] if c["candidate_key"] in decision["accepted_keys"]]
             if len(selected) != len(set(decision["accepted_keys"])):
                 raise Refusal("review_candidate_key_invalid")
+            # A blanket QA boolean cannot advance a candidate. Recompute every
+            # outcome from the retained raw assessment at this transition time.
+            retained = decision.get("lead_verification", {}).get("results", [])
+            assessments = {r.get("candidate_key"): r.get("assessment") for r in retained if isinstance(r, dict)}
+            all_candidates = verification.packet_candidates(row["packet"])
+            duplicate_checks = decision.get("lead_verification", {}).get("duplicate_checks", {})
+            cohort = verification.cohort(all_candidates, assessments, self.clock(), duplicate_checks=duplicate_checks)
+            if "lead_verification" in decision:
+                try:
+                    evaluated_at = verification.moment(retained[0]["evaluated_at"]) if retained else self.clock()
+                    if evaluated_at > self.clock():
+                        raise ValueError("future assessment")
+                    expected = verification.cohort(all_candidates, assessments, evaluated_at, duplicate_checks=duplicate_checks)
+                    # The fenced Node bridge preserves numeric values, not JSON
+                    # float lexemes (coverage 1.0 becomes 1). Use the dedicated
+                    # portable binding for new verification receipts only.
+                    if verification.digest(expected) != verification.digest(decision["lead_verification"]):
+                        raise ValueError("derived verification changed")
+                except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+                    raise Refusal("lead_verification_result_binding_invalid") from None
+            eligible = {r["candidate_key"] for r in cohort["results"] if r["eligible_for_qualified_promotion"]}
+            if any(c["candidate_key"] not in eligible for c in selected) or (selected and not decision["source_support_verified"]):
+                raise Refusal("lead_verification_required_before_promotion")
+            # Preserve the submitted assessment and full-cohort results; old
+            # completed reviews above remain immutable and are never rewritten.
+            if "lead_verification" not in decision:
+                decision = {**decision, "lead_verification": cohort}
             summary = decision.get("summary")
             if not isinstance(summary, str) or not summary or len(summary.encode()) > LIMIT_BYTES:
                 raise Refusal("bounded_review_summary_required")
