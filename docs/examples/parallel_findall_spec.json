@@ -1,0 +1,16 @@
+{
+  "objective": "Find organizations with publicly documented fixed-arm rigid-object pick-and-place workcells and an existing robot-policy testing process.",
+  "entity_type": "organizations",
+  "match_conditions": [
+    {
+      "name": "fixed_arm_workcell",
+      "description": "Public sources describe a fixed robot arm performing rigid-object pick-and-place in a workcell. Retain source citations; inferred suitability requires human review."
+    },
+    {
+      "name": "policy_testing_process",
+      "description": "Public sources describe an existing process for evaluating runnable robot policies or configurations on physical hardware. Missing evidence does not establish eligibility."
+    }
+  ],
+  "generator": "base",
+  "match_limit": 5
+}

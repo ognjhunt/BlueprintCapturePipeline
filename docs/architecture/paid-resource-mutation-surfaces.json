@@ -538,6 +538,29 @@
         "upload_file",
         "delete_object"
       ]
+    },
+    {
+      "path": "src/blueprint_pipeline/parallel_findall_owner.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "require_allocation_binding=True",
+        "with ledger.lock():",
+        "client.create(",
+        "claim_submission",
+        "record_created"
+      ]
+    },
+    {
+      "path": "src/blueprint_pipeline/parallel_findall_execution.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "require_allocation_binding=True",
+        "claim_submission",
+        "record_created",
+        "PAID_RESOURCE_CLASS = \"parallel_findall\""
+      ]
     }
   ]
 }

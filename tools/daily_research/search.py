@@ -186,7 +186,7 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools(publication_profile=None, history_profile=None, expansion_profile=None):
+def tools(publication_profile=None, history_profile=None, expansion_profile=None, findall_profile=None):
     declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
@@ -213,6 +213,11 @@ def tools(publication_profile=None, history_profile=None, expansion_profile=None
     if expansion_profile == "exa-guarded-v1":
         from tools.daily_research.expansion import tools as expansion_tools
         declared.extend(expansion_tools())
+    if findall_profile is not None:
+        from tools.daily_research import findall
+        if findall_profile != findall.PROFILE:
+            raise ToolFailure("findall_tool_registry_binding_changed")
+        declared.extend(findall.tools())
     return declared
 
 
@@ -455,6 +460,23 @@ class ApplicationTools:
                 "search_cost_estimate_usd": "0.001", "billing_receipt_verified": False}
 
 
+def assert_findall_caller(row, ledger, api):
+    """Run before outer lifecycle writes, outside their persistence handlers."""
+    handler = getattr(api, "findall_application_tools", None)
+    if handler is None and row.get("findall_profile") is None:
+        return
+    from tools.daily_research import findall
+    from tools.daily_research.runner import Refusal
+    if handler is None:
+        raise Refusal("findall_tool_handler_missing")
+    findall.installed_profile(api)
+    if handler.ledger is not ledger:
+        raise Refusal("findall_tool_ledger_binding_changed")
+    handler.assert_fresh_caller(row)
+    if row.get("findall_profile") is not None:
+        findall.check_binding(row)
+
+
 def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     """Serve only pending exact-turn actions, saving intent/result before mutations."""
     from tools.daily_research.runner import (
@@ -468,6 +490,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
 
     if row.get("search_provider") != PROFILE:
         return False
+    assert_findall_caller(row, ledger, api)
     if len(canonical(row).encode()) > MAX_RECORD:
         raise Refusal("research_tool_record_resource_ceiling")
     tid = row.get("publication", {}).get("turn_id") if phase == "publication" else row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
@@ -491,6 +514,12 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     admitted_names |= early_publication
     expansion_names = {expansion.START, expansion.READ} if row.get("expansion_profile") == expansion.PROFILE else set()
     admitted_names |= expansion_names
+    findall_handler = getattr(api, "findall_application_tools", None)
+    findall_names = set()
+    if row.get("findall_profile") is not None:
+        from tools.daily_research import findall
+        findall_names = findall.NAMES
+        admitted_names |= findall_names
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":
@@ -547,6 +576,8 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                                     or action["name"] == expansion.START)) else {})
                             result = expansion.execute(action["name"], action.get("arguments"), row, ledger,
                                 phase=phase, now=clock(), admit=lambda current: api.expansion_admit(current, phase), **context)
+                        elif action["name"] in findall_names:
+                            result = findall_handler.execute(action, row=row, phase=phase)
                         else:
                             result = api.application_tool(action["name"], action.get("arguments"))
                         output = canonical(result)
@@ -557,8 +588,12 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                         outcome["error"] = canonical(result.get("error") or {"code": "research_tool_unavailable_no_replay"})
                 except ToolFailure as exc:
                     outcome = {"success": False, "error": str(exc)}
-                except Exception:  # noqa: BLE001 - stable error, never upstream secrets
+                except Exception as exc:  # noqa: BLE001 - stable error, never upstream secrets
                     outcome = {"success": False, "error": "research_tool_unavailable_no_replay"}
+                    if action["name"] in findall_names:
+                        from blueprint_pipeline.parallel_findall_execution import FindAllSubmissionUnresolved
+                        if isinstance(exc, FindAllSubmissionUnresolved) and exc.findall_id:
+                            outcome["findall_id"] = exc.findall_id
             event = {"type": "agent.session.input.tool_result", "turn_id": tid, "call_id": cid, **outcome}
             raw = (canonical(event) + "\n").encode()
             if sum(c.get("result_bytes", 0) for c in calls.values()) + len(raw) > MAX_EVIDENCE:
