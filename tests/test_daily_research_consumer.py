@@ -578,7 +578,8 @@ def test_qa_decision_defers_assessment_defects_only_when_the_caller_exhausted_co
             qa_decision(row, placeholders, set(), NOW, defer_assessment_issues=defer)
 
 
-@pytest.mark.parametrize("variant", ["Supporting excerpt.", "  supporting   EXCERPT ", "supporting-excerpt!", "Supporting_excerpt"])
+@pytest.mark.parametrize("variant", ["Supporting excerpt.", "  supporting   EXCERPT ", "supporting-excerpt!", "Supporting_excerpt",
+                                     "supportingexcerpt", "supporting.excerpt", "SUPPORTINGEXCERPT"])
 def test_copied_placeholder_is_detected_despite_case_spacing_or_punctuation(fixture, variant):
     """Re-review of #2585: exact-string matching let a near-copy of the example (a trailing period)
     pass both QA and the gate as verified."""
@@ -595,6 +596,8 @@ def test_copied_placeholder_is_detected_despite_case_spacing_or_punctuation(fixt
                       "reason": "Synthetic", "lead_verification": value}]}
     found = [i for i in qa_validation_feedback(row, qa) if i["reason"] == PLACEHOLDER_COPIED]
     assert [i["path"] for i in found] == ["/checks/0/lead_verification/sources/0/quote"]
+    with pytest.raises(Refusal, match="agent_qa_assessment_placeholder_copied"):
+        qa_decision(row, qa, set(), NOW, defer_assessment_issues=True)
 
 
 def test_real_values_never_match_a_placeholder_form(fixture):

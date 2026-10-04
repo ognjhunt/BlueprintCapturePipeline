@@ -210,7 +210,7 @@ def _example_strings(value):
 
 def _placeholder_form(text):
     """Case, whitespace and punctuation never make a copied placeholder an actual value."""
-    return " ".join(re.sub(r"[\W_]+", " ", text.casefold()).split())
+    return re.sub(r"[\W_]+", "", text.casefold())
 
 
 # Free-text placeholders shown in LEAD_VERIFICATION_EXAMPLE, compared in normalized form.
