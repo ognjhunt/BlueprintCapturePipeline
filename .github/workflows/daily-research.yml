@@ -63,8 +63,10 @@ jobs:
     name: Research lifecycle and pinned SDK
     runs-on: ubuntu-latest
     # The complete portable suite includes all recovery/collection guards.
-    # Python 3.14 exceeded five minutes at 90%; preserve the full no-skip gate.
-    timeout-minutes: 8
+    # The 862-case suite passed in 7m35s before the eight-minute job ceiling
+    # cancelled lint/receipt checks. Keep the complete no-skip gate and allow
+    # room for CI runtime variance; this does not change business run limits.
+    timeout-minutes: 12
     strategy:
       matrix:
         python: ["3.11", "3.12", "3.14"]
