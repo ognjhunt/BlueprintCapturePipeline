@@ -83,6 +83,18 @@ def test_unverified_room_is_a_durable_optional_skip_and_ordinary_search_continue
     assert len(api.executions) == 1
 
 
+def test_stable_expansion_error_code_reaches_the_agent(fixture):
+    """ExpansionError codes are stable and secret-free; they must not collapse into a generic error."""
+    _, api, ledger, row = setup(fixture)
+    api.actions = [action(row, args={**ARGS, "unexpected": True})]
+    respond(api, ledger, row)
+    event = api.result_events[-1][1]
+    assert event["success"] is False
+    assert json.loads(event["error"])["code"] == "expansion_start_arguments_invalid"
+    assert json.loads(event["output"])["error"]["code"] == "expansion_start_arguments_invalid"
+    assert "exa_expansion" not in ledger.get(DAY) and not api.executions
+
+
 def test_different_function_call_ids_cannot_repeat_paid_start_and_original_read_is_retained(fixture):
     _, api, ledger, row = setup(fixture)
     transport = Transport(ledger, row)

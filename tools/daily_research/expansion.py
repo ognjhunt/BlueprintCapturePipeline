@@ -18,6 +18,8 @@ READ = "blueprint_read_exa_expansion"
 PROFILE = "exa-guarded-v1"
 ALLOCATION = "blueprint.research-expansion-allocation.v1"
 LIMIT_MICROS = 5_000_000
+# Exa documents a $1 minimum for Ultra; advertise exactly the range the host enforces.
+ULTRA_MIN_MICROS = 1_000_000
 TERMINAL = {"completed", "failed", "cancelled"}
 MAX_BYTES = 5_000_000
 
@@ -32,7 +34,7 @@ def tools():
          "description": "Optionally expand a useful discovery family once within this daily run. Host verifies existing authentication, native cap and remaining all-in allocation; unverified admission skips without a provider start.",
          "parameters": {"type": "object", "additionalProperties": False,
                         "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 24000},
-                                       "max_cost_micros": {"type": "integer", "minimum": 1, "maximum": LIMIT_MICROS}},
+                                       "max_cost_micros": {"type": "integer", "minimum": ULTRA_MIN_MICROS, "maximum": LIMIT_MICROS}},
                         "required": ["query", "max_cost_micros"]}},
         {"type": "function", "name": READ, "defer_loading": False,
          "description": "Read only this daily run's acknowledged original Exa expansion, retaining full results and sources. Never starts a replacement or extends the original deadline.",
@@ -47,7 +49,8 @@ def instructions():
         "before final output and source QA. US sites only; consider manufacturing, laundry, food production, "
         "packing, machine tending, material handling, warehouses and other relevant physical tasks. "
         "Use one exact query grounded in retained findings, without enrichments or outreach. "
-        "The requested max_cost_micros shares the existing all-in $5 research allocation; it is not extra authority. "
+        "The requested max_cost_micros is an integer from 1000000 ($1, Exa Ultra's documented minimum) to 5000000 ($5); "
+        "it shares the existing all-in $5 research allocation and is not extra authority. "
         "Host admission requires verified authentication, actual native cap support and remaining all-in headroom. "
         "If any is unavailable or unknown, retain the actionable skip and continue ordinary research. "
         "Once attempted, never repeat a native start, change the query, use previousRunId or create another job. "
@@ -111,6 +114,12 @@ def _cap_supported(schema, request):
 
 
 def _allocation(snapshot, row, cap, now, deadline):
+    return _allocation_problem(snapshot, row, cap, now, deadline) is None
+
+
+def _allocation_problem(snapshot, row, cap, now, deadline):
+    """None when admitted; "cap_exceeds_remaining" when only the requested cap is too
+    large for a verified snapshot; "unverified" for every other gap."""
     try:
         fields = ("limit_micros", "committed_micros", "reserved_micros", "remaining_micros")
         if (not isinstance(snapshot, dict) or snapshot.get("schema_version") != ALLOCATION
@@ -121,12 +130,11 @@ def _allocation(snapshot, row, cap, now, deadline):
                 or any(type(snapshot.get(key)) is not int or snapshot[key] < 0 for key in fields)
                 or snapshot["limit_micros"] != LIMIT_MICROS or row.get("soft_target_usd") != 5
                 or snapshot["remaining_micros"] != LIMIT_MICROS - snapshot["committed_micros"] - snapshot["reserved_micros"]
-                or not _time(snapshot["checked_at"]) <= now < _time(snapshot["valid_until"]) <= deadline
-                or cap > snapshot["remaining_micros"]):
-            return False
+                or not _time(snapshot["checked_at"]) <= now < _time(snapshot["valid_until"]) <= deadline):
+            return "unverified"
     except (KeyError, TypeError, ValueError):
-        return False
-    return True
+        return "unverified"
+    return "cap_exceeds_remaining" if cap > snapshot["remaining_micros"] else None
 
 
 def allocation_diagnostic(row, snapshot=None, *, now=None):
@@ -312,6 +320,12 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
     deadline = _deadline(row)
     if now >= deadline:
         return _skip("expansion_original_deadline_exhausted") if not claim else _project(claim)
+    if name == START and args["max_cost_micros"] < ULTRA_MIN_MICROS:
+        # Pure argument check: needs no credential or allocation and consumes no claim.
+        return {**_skip("expansion_cap_below_ultra_minimum"),
+                "action": "No Exa start was made and no claim was consumed. If the expansion still serves a useful gap, call once "
+                          f"more with max_cost_micros from {ULTRA_MIN_MICROS} to {LIMIT_MICROS} within the shared "
+                          "$5 research allocation; otherwise continue ordinary research."}
     if transport is None or not callable(getattr(transport, "start", None)) or not callable(getattr(transport, "read", None)):
         outcome = _skip(unavailable_reason) if not claim else _project(claim)
         if allocation_status is not None:
@@ -324,7 +338,16 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
                    "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}
         if not _cap_supported(tool_schema, request):
             return _skip("expansion_supported_native_cap_unverified")
-        if not _allocation(allocation, row, args["max_cost_micros"], now, deadline):
+        problem = _allocation_problem(allocation, row, args["max_cost_micros"], now, deadline)
+        if problem == "cap_exceeds_remaining":
+            remaining = allocation["remaining_micros"]
+            fits = remaining >= ULTRA_MIN_MICROS
+            return {**_skip("expansion_cap_exceeds_remaining_allocation"), "remaining_micros": remaining,
+                    "action": "No Exa start was made and no claim was consumed. " + (
+                        f"Call once more with max_cost_micros from {ULTRA_MIN_MICROS} to {min(remaining, LIMIT_MICROS)} "
+                        "if that still serves the gap; otherwise continue ordinary research." if fits else
+                        "No Ultra cap fits the remaining verified allocation; continue ordinary research.")}
+        if problem:
             return _skip("expansion_remaining_all_in_allocation_unverified")
         intent = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
                   "deadline": deadline.isoformat(), "authority_reference": row["recurring_budget_authority_reference"],
