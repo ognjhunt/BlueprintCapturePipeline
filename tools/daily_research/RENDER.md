@@ -58,6 +58,69 @@ with SIGKILL. A host with a shorter termination grace may kill it earlier;
 the durable intent remains for recovery. A local process exit does not prove
 provider cancellation, success or cleanup.
 
+## Runtime envelope
+
+Owner decision 2026-10-04: one daily research run can use 60 minutes in total.
+
+- `runner.MAX_ADAPTIVE_RUNTIME_SECONDS = 3600` is the only runtime bound for an
+  `adaptive-sites-v1` row. Config admission, the pinned phase windows, the
+  validation-repair authority, the paid expansion grant and the Exa expansion
+  deadline all use it. The non-adaptive cap stays 180 seconds.
+- The approved production setting is `config.max_runtime_seconds=3600` with
+  `config.qa_reserved_seconds=900`. After the operator applies it (below), a new
+  row pins `total_runtime_seconds=3600` and `research_runtime_seconds=2700`
+  (45 minutes).
+- Research ends at `started_at + research_runtime_seconds`. The paid expansion
+  grant and Exa reads end no later than that. Repair, QA and publication share
+  the total deadline `started_at + total_runtime_seconds`. A repair authority
+  must last exactly the row's `total_runtime_seconds`.
+- Each row keeps the envelope it was admitted with. A row admitted at 1800
+  seconds keeps 1800 seconds. A later config change cannot extend or shorten it.
+- The soft target stays $5; `expansion_profile` requires that value. A longer
+  run can use more model, search and hosted-environment cost. The soft target
+  is not a hard cap.
+- One-time paths keep their own pinned windows: the 600-second recovered-QA and
+  QA-retry continuations, the Oct 1 adaptive test, and the baseline canary. The
+  canary admission still requires the Oct 2 profile (1800/600) and its
+  `timeout ... 1860s` watchdog, so it refuses a 3600 profile until it has its
+  own authority.
+
+Apply the change in this order. A package without this change refuses a 3600
+config on every scheduler tick (`approved_envelope_mismatch`).
+
+1. Run `status` and make sure that no row is unfinished (every row is
+   `completed`, `failed` or `cancelled`). Then vendor and deploy a release that
+   contains this change. A worker deploy sends SIGTERM, and a stopped observer
+   cancels the active session. A normal run starts at 07:00 America/Chicago and
+   can last until about 08:01; a catch-up run lasts 60 minutes from its start.
+2. Export the complete current control document with the read-only command in
+   [operators/README.md](operators/README.md#daily-research-runtime-envelope).
+   Change only `config.max_runtime_seconds` to 3600 and
+   `config.qa_reserved_seconds` to 900. `source_commit` must name the installed
+   release; if it does not, set it in the same input.
+3. From `/opt/render/project/src` in the worker shell, run:
+
+   ```bash
+   PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python \
+     -m tools.daily_research.render configure --input /PRIVATE/control.json
+   ```
+
+   `configure` checks the root bindings and `config` with the installed release.
+   It does not check the other sections. It replaces the whole document except
+   the lease, `cleanup_observation_required` and `paid_expansion`, so a partial
+   file silently removes sections. For example, a missing `workflow` stops QA
+   and publication. A held lease refuses with `runner_overlap`; try again after
+   the worker releases it.
+4. Read back the control, compare it with the export, and run `preflight`. The
+   next row admitted after the change pins the new envelope. A control change
+   wakes the scheduler: if the due day has no row yet, its run starts at once.
+
+To roll back, first wait until no 3600-second row is unfinished. Then configure
+1800/600 while this release is still installed, and only then install an older
+release. An older release refuses a 3600 control on every tick. It also refuses
+a 3600-second row with `pinned_phase_envelope_invalid`, and it cancels such a
+row that is still in its research phase.
+
 ## Stable private consumer contract
 
 Contract `blueprint.research-snapshot.v1`, root
@@ -113,7 +176,9 @@ fields are excluded from the QA input. This is an agent attestation backed by
 saved artifacts, not a claim that schema validation proves truth. In-time
 terminal results can be collected after restart. Unknown/active QA is observed
 and cancellation attempted on disable, observation failure, search-limit breach
-or the **shared** research+QA 180-second deadline. Cold disabled recovery never
+or the **shared** research+QA deadline: 180 seconds for a legacy row, and the
+row's own pinned total for an adaptive row (see [Runtime envelope](#runtime-envelope)).
+Cold disabled recovery never
 admits another input or publication. A cancel request is not terminal proof.
 New ordinary intents also bind the original QA authority, exact message/key,
 deadline, and complete pre-submission item/artifact inventory. A typed submission
@@ -176,8 +241,11 @@ An exhausted budget/time envelope blocks publication rather than adding a run.
 
 Those are the legacy scan guards. The disabled
 `adaptive-daily.config.example.json` opts newly admitted v3 rows into ten or more
-new site/task opportunities, honest coverage/shortfall and a pinned 20-minute
-research phase within a 30-minute research+QA watchdog. Agent QA excludes CRM
+new site/task opportunities, honest coverage/shortfall and a pinned research
+phase within a shared research+QA total. That example keeps the original
+20-minute research phase within a 30-minute total for the Oct 1 test; the
+current production envelope is 60 minutes (see [Runtime envelope](#runtime-envelope)).
+Agent QA excludes CRM
 matches and existing deployments from that quota. The daily $1 soft TOTAL
 target stays unchanged; old rows retain their original guards. See
 [ADAPTIVE.md](ADAPTIVE.md) for the separate disabled $25 test preparation and
@@ -301,7 +369,8 @@ repair loop for the already retained baseline. `repair-output --attempt 1
 --date 2026-10-01` uses the same installed/isolated package and archive arguments
 in [preserved baseline recovery](operators/README.md#preserved-baseline-output-recovery-and-corrected-cost-reporting),
 under `timeout --signal=TERM --kill-after=60s 1860s`. It pins one immutable
-30-minute correction-plus-QA window against the exact original session/root/raw
+correction-plus-QA window equal to the row's own `total_runtime_seconds` (30
+minutes for that baseline row) against the exact original session/root/raw
 hash and existing shared $25 soft baseline authority. Invoking it again resumes
 that window; it never resets the root clock or creates another research session.
 No additional `recover-output` or ten-minute QA receipt is required for this path.

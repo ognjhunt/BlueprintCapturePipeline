@@ -177,6 +177,29 @@ def test_no_binding_phase_or_original_deadline_extension(context):
     assert not context[2].starts
 
 
+def test_sixty_minute_row_admits_expansion_until_its_own_forty_five_minute_deadline(tmp_path):
+    row = {"date": "2026-10-04", "run_key": "blueprint-researcher:2026-10-04", "session_id": "sess_synthetic",
+           "turn_id": "turn_synthetic", "state": "running", "started_at": (NOW - timedelta(seconds=60)).isoformat(),
+           "research_runtime_seconds": 2700, "recurring_budget_authority_reference": "synthetic_owner_authority",
+           "soft_target_usd": 5}
+    ledger = Ledger(tmp_path)
+    control = freeze(row, ledger)
+    transport = Transport(ledger, row)
+    started = datetime.fromisoformat(row["started_at"])
+    assert e._deadline(row) == started + timedelta(seconds=2700)
+    assert row["paid_expansion_grant"]["valid_until"] == (started + timedelta(seconds=2700)).isoformat()
+    context = (row, ledger, transport, control)
+    # The old 1200-second research window has closed; this row's own window has not.
+    first = call(context, now=started + timedelta(seconds=1201))
+    assert first["run_id"] == "agent_run_synthetic" and len(transport.starts) == 1
+    # At this row's deadline an original-ID read is not extended or sent.
+    assert call(context, name=e.READ, args={}, now=started + timedelta(seconds=2700))["run_id"] == first["run_id"]
+    assert not transport.reads and len(transport.starts) == 1
+    with pytest.raises(e.ExpansionError, match="^expansion_original_deadline_invalid$"):
+        e._deadline({**row, "research_runtime_seconds": 3601})
+    assert e._deadline({**row, "research_runtime_seconds": 3600}) == started + timedelta(seconds=3600)
+
+
 def test_host_unavailable_reason_is_actionable_without_claim(context):
     result = call(context, transport=None, unavailable_reason="expansion_existing_auth_missing")
     assert result["reason"] == "expansion_existing_auth_missing"

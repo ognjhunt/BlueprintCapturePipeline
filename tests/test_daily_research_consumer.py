@@ -74,7 +74,9 @@ class QAAPI(FakeAPI):
         return canonical(self.qa_result).encode() if aid == "artifact_qa" else super().artifact(sid, aid)
 
 
-def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False, mcp=False):
+def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False, mcp=False,
+                   envelope=None):
+    """``envelope=(total, qa_reserved)`` admits an adaptive row with that pinned runtime."""
     crm = tmp_path / "crm.json"
     save_json(crm, {"sheet_id": SHEET, "complete": True, "captured_at": NOW.isoformat(),
                     "values": [["CRM"], [], [], [], HEADERS]})
@@ -116,19 +118,24 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         proposal = delta()
         proposal["evidence"][0].update(classification="operator", evidence_level=None)
         output["proposed_knowledge_deltas"] = [proposal]
+    adaptive_coverage = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
+        "stop_reason": "Synthetic bounded corpus checked", "shortfall_reason": None,
+        "defined_run_scope": ["Synthetic bounded site task corpus"], "unresolved_promising_branches": [],
+        "completion_state": "coverage_complete"}
+    if envelope:
+        cfg.update(discovery_profile="adaptive-sites-v1", max_runtime_seconds=envelope[0], qa_reserved_seconds=envelope[1])
+        output["coverage"] = deepcopy(adaptive_coverage)
     if publication or history or mcp:
         from tools.daily_research import search
+        runtime, reserved = envelope or (1800, 600)
         cfg.update(search_provider=search.PROFILE,
-            discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800, qa_reserved_seconds=600,
+            discovery_profile="adaptive-sites-v1", max_runtime_seconds=runtime, qa_reserved_seconds=reserved,
             recurring_budget_authority_reference="approved-shared-research-total")
         if publication:
             cfg["publication_profile"] = "agent-owned-v1"
         if history:
             cfg["history_profile"] = "agent-history-v1"
-        output["coverage"] = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
-            "stop_reason": "Synthetic bounded corpus checked", "shortfall_reason": None,
-            "defined_run_scope": ["Synthetic bounded site task corpus"], "unresolved_promising_branches": [],
-            "completion_state": "coverage_complete"}
+        output["coverage"] = deepcopy(adaptive_coverage)
         api.search_binding_present = lambda: True
         api.agent["instructions"] = "Reviewed research; no outreach or sends."
         if mcp:

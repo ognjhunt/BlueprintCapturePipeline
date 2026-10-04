@@ -11,6 +11,8 @@ TARGET_NEW = 10
 MAX_CANDIDATES = 100  # Legacy batch size; v3 retention is bounded by bytes.
 INVENTORY_PAGE_BYTES = 100_000
 INVENTORY_VERSION = "blueprint.discovery-inventory.v1"
+# Broader Notion Team Directory (#2561). Its entries are research leads, never qualified partners.
+TEAM_DIRECTORY = "https://app.notion.com/p/3eb80154161d817aa3e6d9b9d7eba938"
 
 
 def inventory_issues(entries):
@@ -131,6 +133,23 @@ def instructions(target_usd=1):
         "moving bins/totes, line feeding, machine tending, portioning/packing and finishing; these are "
         "search hypotheses, not a requirement to cover every "
         "family or expand beyond the admitted geography, time or spend. "
+        "Before external searches, read the broader Team Directory through the existing Notion read "
+        f"connection when available: {TEAM_DIRECTORY}. Read its index, role groups and relevant full "
+        "records, not just the small capability register in the supplied snapshot. Record actual directory "
+        "coverage and original evidence dates; directory entries are research leads, not qualified partners. "
+        "Read prior run summaries, tested hypotheses, rejections and actual outcomes through authorized "
+        "company history. Missing or expired access is a gap, never permission to widen scope. If Notion "
+        "reads fail, use the reviewed context and public primary sources to broaden discovery; do not treat "
+        "the small snapshot as the whole directory or stop all research. Build a capability/task/industry "
+        "opportunity map from that evidence and survey several distinct supported task families before "
+        "spending most of the run on one. Choose queries and how to divide effort across families yourself, "
+        "from evidence and prior outcomes. An early easy hit, a prior success such as laundry or the "
+        "first CRM-ready row is not a reason to end exploration. Do not search only for recent "
+        "announcements: established operating sites, operator service/process pages and employer-affiliated "
+        "job descriptions can show recurring work without new funding or an expansion announcement. Keep "
+        "confidence in site/task evidence and robot fit separate from buying interest: strong public task "
+        "evidence can coexist with unknown interest; never lower task confidence only because nobody has "
+        "replied, and never infer demand from a task. "
         "Use exact operator-sourced site/location and evidence of real recurring physical work. "
         "Use employer job postings alongside operator pages, case studies and other discovery sources, "
         "including an employer's own applicant-tracking page. Extract the quoted physical duties linked "
@@ -190,7 +209,9 @@ def instructions(target_usd=1):
         "open primary operator and product sources, follow gaps and contradictions, and reuse reviewed "
         "knowledge. There is no two-search/two-open or three-candidate quality cap. Stop when material "
         "questions are answered at a stated evidence scope, next sources add little value, access is "
-        "blocked, or the admitted time/spend envelope closes. Retain every defensible prospect within the "
+        "blocked, or the admitted time/spend envelope closes. Before stopping, revisit underexplored "
+        "supported task families and unresolved strong leads; judge marginal returns across the stated "
+        "breadth, not one family's query sequence. Retain every defensible prospect within the "
         "resource envelope; explain unresolved coverage and interruptions. There is no minimum or maximum "
         "prospect quota. A source failure is a visible gap, "
         "never a pretend read or evidence of market absence. No dot or parent runtime review step: "

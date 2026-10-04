@@ -542,6 +542,22 @@ def test_exact_absolute_deadline_prevents_execution_and_tool_result_submission(p
     assert value["application_tool_calls"]["call_1"]["attempted"] is False
 
 
+@pytest.mark.parametrize("phase,expired", [("research", 2700), ("qa", 3600)])
+def test_sixty_minute_row_tools_run_past_the_old_envelope_until_its_own_deadline(phase, expired):
+    value, ledger = {**row(), "research_runtime_seconds": 2700, "total_runtime_seconds": 3600}, MemoryLedger()
+    api = ToolAPI(ledger)
+    turn = "turn_qa" if phase == "qa" else "turn_research"
+    # 1801 seconds is past the old 1800-second total and the old 1200-second research window.
+    assert respond(value, [action(tid=turn)], ledger, api, phase=phase,
+                   clock=lambda: NOW + timedelta(seconds=1801)) is True
+    assert len(api.executions) == len(api.replies) == 1
+    with pytest.raises(Refusal, match="^research_tool_stopped_or_expired$"):
+        respond(value, [action(cid="call_2", tid=turn)], ledger, api, phase=phase,
+                clock=lambda: NOW + timedelta(seconds=expired))
+    assert len(api.executions) == len(api.replies) == 1
+    assert value["application_tool_calls"]["call_2"]["attempted"] is False
+
+
 def test_stopped_before_execution_and_stopped_after_result_both_fail_closed():
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)

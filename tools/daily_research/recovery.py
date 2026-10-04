@@ -352,17 +352,21 @@ def approved(reference):
 
 def repair_deadline(row):
     """The row's own pinned window. Approvals are data bound to the row's admitted
-    baseline, never constants in code, so a new approval needs no release."""
-    from tools.daily_research.runner import Refusal, instant
+    baseline, never constants in code, so a new approval needs no release.
+
+    Both authority kinds last exactly the row's admitted total runtime, at most the
+    owner-approved adaptive envelope. A row admitted at 1800 seconds keeps 1800."""
+    from tools.daily_research.runner import MAX_ADAPTIVE_RUNTIME_SECONDS, Refusal, instant
     authority = row.get("validation_repair_authority", {})
     request = authority.get("request", {})
     baseline = row.get("canary", {}).get("baseline", {})
+    seconds = row.get("total_runtime_seconds")
+    if (type(seconds) is not int or not 0 < seconds <= MAX_ADAPTIVE_RUNTIME_SECONDS
+            or authority.get("duration_seconds") != seconds):
+        raise Refusal("validation_repair_authority_or_binding_invalid")
     if authority.get("kind") == "workflow":
         reference = request.get("authority_reference")
-        seconds = row.get("total_runtime_seconds")
-        if (type(seconds) is not int or not 0 < seconds <= 1800
-                or authority.get("duration_seconds") != seconds
-                or authority.get("started_at") != row.get("started_at")
+        if (authority.get("started_at") != row.get("started_at")
                 or request.get("scope") != "same-session-validation-repair-and-qa-no-outreach"
                 or request.get("session_id") != row.get("session_id")
                 or request.get("root_turn_id") != row.get("turn_id")
@@ -370,8 +374,7 @@ def repair_deadline(row):
                 or not isinstance(reference, str) or not reference.strip() or reference.startswith("PENDING")):
             raise Refusal("validation_repair_authority_or_binding_invalid")
         return instant(row["started_at"]) + timedelta(seconds=seconds)
-    if (authority.get("duration_seconds") != 1800
-            or request.get("scope") != "same-session-validation-repair-and-qa-no-outreach"
+    if (request.get("scope") != "same-session-validation-repair-and-qa-no-outreach"
             or request.get("session_id") != row.get("session_id") or request.get("root_turn_id") != row.get("turn_id")
             or request.get("raw_output_sha256") != row.get("raw_output_digest")
             or not approved(request.get("authority_reference")) or not baseline.get("baseline_id")
@@ -379,7 +382,7 @@ def repair_deadline(row):
             or request.get("soft_total_usd") != baseline.get("soft_total_usd")
             or request.get("budget_authority_reference") != baseline.get("authority_reference")):
         raise Refusal("validation_repair_authority_or_binding_invalid")
-    return instant(authority["started_at"]) + timedelta(seconds=1800)
+    return instant(authority["started_at"]) + timedelta(seconds=seconds)
 
 
 class RepairLoop:

@@ -45,6 +45,13 @@ NOTION = "3ea80154161d81c7810cc42e9e7df9c5"
 CENTRAL = ZoneInfo("America/Chicago")
 REMOTE_OUTPUT = "/workspace/outputs/daily-research.json"
 LIMIT_BYTES = 2_000_000
+# Owner-approved maximum total runtime for one adaptive-sites-v1 row (owner decision
+# 2026-10-04: 60 minutes, research plus reserved QA). This is the only adaptive bound:
+# config admission, pinned phase windows, repair authority, paid expansion grant and
+# expansion deadline all use it. Each row keeps its own admitted total, so rows
+# admitted under the earlier 1800-second envelope keep 1800. The non-adaptive cap
+# stays 180 seconds.
+MAX_ADAPTIVE_RUNTIME_SECONDS = 3600
 # The review packet carries everything in the output except the paged discovery
 # inventory. Flag an oversized display at validation, where the agent gets repair
 # feedback, instead of after it, where the packet ceiling would block the whole run.
@@ -124,7 +131,7 @@ def due_date(now, first_date):
 def phase_runtime_seconds(row, cfg, phase):
     field = "research_runtime_seconds" if phase == "research" else "total_runtime_seconds"
     seconds = row.get(field, min(cfg.get("max_runtime_seconds", 180), 180))
-    if type(seconds) is not int or not 0 < seconds <= 1800:
+    if type(seconds) is not int or not 0 < seconds <= MAX_ADAPTIVE_RUNTIME_SECONDS:
         raise Refusal("pinned_phase_envelope_invalid")
     return seconds
 
@@ -177,7 +184,7 @@ def configuration(value):
         raise Refusal("recurring_budget_requires_selected_search_profile")
     runtime = value.get("max_runtime_seconds", 180)
     if (not selected_search and (type(target) not in {int, float} or target != 1)
-            or type(runtime) is not int or not 30 <= runtime <= (1800 if adaptive else 180)):
+            or type(runtime) is not int or not 30 <= runtime <= (MAX_ADAPTIVE_RUNTIME_SECONDS if adaptive else 180)):
         raise Refusal("approved_envelope_mismatch")
     if adaptive and (value.get("research_contract_version") != 3 or type(value.get("qa_reserved_seconds")) is not int
                      or not 60 <= value["qa_reserved_seconds"] < runtime):

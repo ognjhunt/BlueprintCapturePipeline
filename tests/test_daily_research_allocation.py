@@ -60,6 +60,19 @@ def test_grant_freezes_exact_direction_limit_release_and_deadline():
     assert early["valid_until"] == "2026-10-05T12:05:00+00:00"
 
 
+def test_grant_for_a_sixty_minute_row_lasts_its_forty_five_minute_research_window():
+    owner = control()
+    grant = a.grant(owner, row(research_runtime_seconds=2700), NOW)
+    assert grant["state"] == "granted" and grant["valid_until"] == (NOW + timedelta(seconds=2700)).isoformat()
+    # After the old 1200-second research window the grant still admits a start.
+    assert a.problem(grant, [], 5_000_000, NOW + timedelta(seconds=1201), control=owner) is None
+    assert a.problem(grant, [], 5_000_000, NOW + timedelta(seconds=2700), control=owner) == "paid_expansion_expired"
+    # The owner-approved 3600-second envelope bounds every research window.
+    assert a.grant(owner, row(research_runtime_seconds=3600), NOW)["state"] == "granted"
+    refused = a.grant(owner, row(research_runtime_seconds=3601), NOW)
+    assert refused["state"] == "refused" and refused["code"] == "paid_expansion_run_context_invalid"
+
+
 @pytest.mark.parametrize(("owner", "context", "code"), [
     (None, {}, "paid_expansion_disabled"),
     ({"source_commit": COMMIT}, {}, "paid_expansion_disabled"),

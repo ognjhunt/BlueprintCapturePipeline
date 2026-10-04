@@ -21,7 +21,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 
-from tools.daily_research.runner import AGENT, PROJECT, canonical
+from tools.daily_research.runner import AGENT, MAX_ADAPTIVE_RUNTIME_SECONDS, PROJECT, canonical
 
 DIRECTION = "blueprint.research-paid-expansion-direction.v1"
 GRANT = "blueprint.research-paid-expansion-grant.v1"
@@ -150,7 +150,7 @@ def grant(control, row, now):
         direction, commit, seconds = entry["direction"], control.get("source_commit"), row.get("research_runtime_seconds")
         try:
             started = datetime.fromisoformat(row["started_at"])
-            if started.tzinfo is None or type(seconds) is not int or not 0 < seconds <= 1800:
+            if started.tzinfo is None or type(seconds) is not int or not 0 < seconds <= MAX_ADAPTIVE_RUNTIME_SECONDS:
                 raise ValueError("paid_expansion_run_context_invalid")
             valid_until = min(stamp(direction["expires_at"]), started + timedelta(seconds=seconds))
         except (KeyError, TypeError, ValueError):

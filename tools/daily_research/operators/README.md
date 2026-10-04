@@ -73,6 +73,9 @@ Pipeline source, contract v3, search `perplexity-fast-v1`, discovery
 soft total target $5 and recurring budget reference exactly
 `Sentinel_c30352f247c88191bbd695cc2bd99de1`. That receipt approves model, search
 and hosted environment total as a soft target; it is not a hard API billing cap.
+This pinned helper still writes 1800/600. The 2026-10-04 owner decision later
+raised the daily envelope to 3600 seconds total with 900 reserved for QA; see
+[Daily research runtime envelope](#daily-research-runtime-envelope).
 
 Preserve first_date, existing workflow settings/authorities, approval/scheduler
 references, unrelated control fields, history, failed intent, raw bytes and
@@ -131,7 +134,11 @@ legacy `ceiling_usd` admission field records that allowance, not a hard provider
 billing cap. It never replaces recurring authority or creates a timer.
 
 Research deadline is 1200 seconds and total research+QA 1800 seconds, with 600
-seconds reserved for QA. Existing independent Linux watchdog convention is
+seconds reserved for QA. These are the canary's own pinned values, not the daily
+envelope: `inspect` still requires the 1800/600 production profile, so after the
+daily envelope changes to 3600/900 a new canary attempt refuses with
+`canary_production_profile_not_migrated` until the canary has its own authority.
+Existing independent Linux watchdog convention is
 `timeout --signal=TERM --kill-after=60s 1860s`. Process stop/cancellation does not
 guarantee provider teardown or a total-dollar cap. Model usage is observed for
 baseline measurement; an arbitrary $8 stop and cancellation for absent usage
@@ -626,3 +633,31 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
 All I/O goes through injectable adapters; the hermetic tests use the real bridge
 with in-memory Firestore and a fake object store. No provider, model, session,
 CRM write or send.
+
+## Daily research runtime envelope
+
+The 2026-10-04 owner decision gives each daily research run 60 minutes in total:
+`config.max_runtime_seconds=3600` with `config.qa_reserved_seconds=900`, so
+research has 2700 seconds and QA keeps 900. The $5 soft target is unchanged.
+`runner.MAX_ADAPTIVE_RUNTIME_SECONDS` (3600) is the only adaptive bound; see
+[RENDER.md](../RENDER.md#runtime-envelope) for every value that derives from it.
+Each row keeps the envelope it was admitted with, so a row admitted at 1800
+seconds is never extended.
+
+The installed release must contain this bound before the control changes. An
+older release refuses a 3600 config on every scheduler tick with
+`approved_envelope_mismatch`. Deploy the worker while research is idle, outside
+07:00–08:05 America/Chicago. Then read the complete current control document
+and change only the two config fields. `source_commit` must name the installed
+release; if it does not, set it in the same input. Apply the document with the
+existing fenced `configure` command from `/opt/render/project/src`:
+
+```bash
+PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python \
+  -m tools.daily_research.render configure --input /PRIVATE/control.json
+```
+
+`configure` validates the input with the installed release and replaces the
+whole control document except the lease, `cleanup_observation_required` and
+`paid_expansion`. Never apply a partial document. Read the control back and run
+`preflight` with the same prefix before the next 07:00 run.

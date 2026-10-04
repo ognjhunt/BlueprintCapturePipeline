@@ -11,6 +11,8 @@ from tests.test_daily_research_knowledge import enable_v3, policy_bundle, v3
 from tests.test_daily_research_runner import DAY, NOW, FakeAPI
 from tests.test_daily_research_runner import fixture as runner_fixture
 from tools.daily_research import adaptive, discovery, render
+from tools.daily_research import consumer as consumer_module
+from tools.daily_research import runner as runner_module
 from tools.daily_research.runner import (
     Refusal,
     canonical,
@@ -105,6 +107,69 @@ def test_new_daily_example_is_disabled_and_cannot_adopt_test_budget():
             configuration({**cfg, "max_runtime_seconds": bad})
     with pytest.raises(Refusal, match="phase_envelope"):
         configuration({**cfg, "qa_reserved_seconds": 1800})
+
+
+def test_owner_approved_adaptive_envelope_is_the_single_runtime_bound():
+    cfg = json.loads((ROOT / "tools/daily_research/adaptive-daily.config.example.json").read_text())
+    assert runner_module.MAX_ADAPTIVE_RUNTIME_SECONDS == 3600
+    approved = configuration({**cfg, "max_runtime_seconds": 3600, "qa_reserved_seconds": 900})
+    assert approved["max_runtime_seconds"] - approved["qa_reserved_seconds"] == 2700
+    # Rows and configs admitted under the earlier 30-minute envelope stay valid.
+    assert configuration({**cfg, "max_runtime_seconds": 1800, "qa_reserved_seconds": 600})["max_runtime_seconds"] == 1800
+    with pytest.raises(Refusal, match="^approved_envelope_mismatch$"):
+        configuration({**cfg, "max_runtime_seconds": 3601, "qa_reserved_seconds": 900})
+    with pytest.raises(Refusal, match="^adaptive_phase_envelope_invalid$"):
+        configuration({**cfg, "max_runtime_seconds": 3600, "qa_reserved_seconds": 3600})
+    # The non-adaptive cap is unchanged.
+    legacy = {key: value for key, value in cfg.items() if key not in {"discovery_profile", "qa_reserved_seconds"}}
+    assert configuration({**legacy, "max_runtime_seconds": 180})["max_runtime_seconds"] == 180
+    for runtime in (181, 1800, 3600):
+        with pytest.raises(Refusal, match="^approved_envelope_mismatch$"):
+            configuration({**legacy, "max_runtime_seconds": runtime})
+    for field, phase in (("research_runtime_seconds", "research"), ("total_runtime_seconds", "qa")):
+        assert phase_runtime_seconds({field: 3600}, {}, phase) == 3600
+        with pytest.raises(Refusal, match="^pinned_phase_envelope_invalid$"):
+            phase_runtime_seconds({field: 3601}, {}, phase)
+
+
+def test_sixty_minute_row_pins_forty_five_minute_research_and_shared_total(fixture, tmp_path):
+    runner, api, ledger = fixture
+    enable_v3(runner, tmp_path)
+    runner.config.update(discovery_profile="adaptive-sites-v1", max_runtime_seconds=3600, qa_reserved_seconds=900)
+    out, _, _ = result()
+    api.raw, api.tool_count = canonical(out).encode(), 17
+    api.turn_status = "in_progress"
+    row = runner.start_or_resume()
+    assert row["state"] == "running" and len(api.payloads) == 1
+    assert row["total_runtime_seconds"] == 3600 and row["research_runtime_seconds"] == 2700
+    assert consumer_module.qa_deadline(row, runner.config) == NOW + timedelta(seconds=3600)
+    assert render.observation_seconds(row, {}, "research", NOW) == 2730
+    assert render.observation_seconds(row, {}, "qa", NOW + timedelta(seconds=2700)) == 930
+    # The old 1800-second envelope no longer cancels a 60-minute row.
+    runner.clock = lambda: NOW + timedelta(seconds=2699)
+    assert runner.start_or_resume()["state"] == "running" and not api.cancellations
+    runner.clock = lambda: NOW + timedelta(seconds=2700)
+    assert runner.start_or_resume()["state"] == "cancel_pending"
+    assert len(api.cancellations) == 1 and len(api.payloads) == 1
+    assert ledger.get(DAY)["research_runtime_seconds"] == 2700
+
+
+def test_raising_the_envelope_never_extends_an_already_admitted_row(fixture, tmp_path):
+    runner, api, ledger = fixture
+    enable_v3(runner, tmp_path)
+    runner.config.update(discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800, qa_reserved_seconds=600)
+    out, _, _ = result()
+    api.raw, api.tool_count = canonical(out).encode(), 17
+    api.turn_status = "in_progress"
+    row = runner.start_or_resume()
+    assert (row["total_runtime_seconds"], row["research_runtime_seconds"]) == (1800, 1200)
+    # The 3600-second config applies only to rows admitted after the change.
+    runner.config.update(max_runtime_seconds=3600, qa_reserved_seconds=900)
+    assert consumer_module.qa_deadline(ledger.get(DAY), runner.config) == NOW + timedelta(seconds=1800)
+    runner.clock = lambda: NOW + timedelta(seconds=1200)
+    assert runner.start_or_resume()["state"] == "cancel_pending"
+    assert len(api.cancellations) == 1 and len(api.payloads) == 1
+    assert (ledger.get(DAY)["total_runtime_seconds"], ledger.get(DAY)["research_runtime_seconds"]) == (1800, 1200)
 
 
 def test_adaptive_activity_and_deadline_are_pinned_not_old_scan_caps(fixture, tmp_path):

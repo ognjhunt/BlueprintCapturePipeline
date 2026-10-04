@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from tools.daily_research import allocation
+from tools.daily_research.runner import MAX_ADAPTIVE_RUNTIME_SECONDS
 
 START = "blueprint_start_exa_expansion"
 READ = "blueprint_read_exa_expansion"
@@ -101,7 +102,7 @@ def below_ultra_minimum(name, args):
 
 def _deadline(row):
     seconds = row.get("research_runtime_seconds")
-    if type(seconds) is not int or not 0 < seconds <= 1800:
+    if type(seconds) is not int or not 0 < seconds <= MAX_ADAPTIVE_RUNTIME_SECONDS:
         raise ExpansionError("expansion_original_deadline_invalid")
     return _time(row["started_at"]) + timedelta(seconds=seconds)
 

@@ -39,7 +39,11 @@ until actual downstream outcomes are recorded.
 - Existing hosted template and four digest-checked instruction files; sandbox
   network remains disabled
 - Existing canonical Firestore control and durable lease; config adds only the
-  selected search provider and already reviewed adaptive envelope
+  selected search provider and the owner-approved adaptive envelope: at most
+  3600 seconds total (`runner.MAX_ADAPTIVE_RUNTIME_SECONDS`, owner decision
+  2026-10-04). Production uses 3600 seconds with 900 reserved for QA, so
+  research has 2700 seconds. Each row keeps the envelope it was admitted with;
+  see [RENDER.md](RENDER.md#runtime-envelope)
 
 Preflight checks secret presence without exposing its value and refuses before
 session creation if it is absent. Presence does not prove provider access.
@@ -72,7 +76,9 @@ A lost search POST reply is not retried. After restart, submit the saved result
 with the original tool-result idempotency key while that action is still pending.
 Unknown execution becomes a visible no-replay error. Render rechecks the lease,
 enabled flag and pinned search profile before execution and result submission.
-Stop/deadline checks preserve the pinned shared research/QA watchdog.
+Stop/deadline checks preserve the pinned shared research/QA watchdog: research
+tools stop at the row's research deadline. For an ordinary daily row, QA, repair
+and publication tools stop at its total deadline.
 
 Known public-source tool failures expose JSON output `{ok:false,error:{code}}`
 and a JSON error with the unchanged stable code, so a caller can inspect the
