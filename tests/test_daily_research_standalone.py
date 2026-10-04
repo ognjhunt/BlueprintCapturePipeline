@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from tools.daily_research.runner import Refusal, configuration
-from tools.daily_research.standalone import BLUEPRINT_RUNTIME_FILES, FILES, PREFIX, RUNTIME_PREFIX, build
+from tools.daily_research.standalone import (
+    BLUEPRINT_RUNTIME_FILES,
+    FILES,
+    PREFIX,
+    RUNTIME_PREFIX,
+    build,
+)
 
 SOURCE = Path(__file__).resolve().parents[1]
 
