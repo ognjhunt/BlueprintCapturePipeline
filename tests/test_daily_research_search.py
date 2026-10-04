@@ -628,7 +628,8 @@ def test_posting_with_unknown_site_or_capability_stays_a_finding_not_invented_su
     row = runner.start_or_resume()
     assert ledger.read_bytes(DAY + "-artifact.json") == api.raw
     if formal_candidate:
-        assert row["state"] == "failed" and row["error"] == "candidate_evidence_required"
+        # Without capability evidence a v3 candidate cannot keep a claimed robot match.
+        assert row["state"] == "failed" and row["error"] == "unsupported_robot_match_must_remain_unknown"
         assert "packet" not in row and not row.get("qa") and not row.get("delivery")
     else:
         assert row["state"] == "awaiting_review" and row["packet"]["candidates"] == []
