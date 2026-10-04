@@ -273,11 +273,13 @@ class ExaTransport(_EvidenceParser):
         deadline = time.monotonic() + self.timeout
         if self._start_attempted:
             self._fail("exa_mcp_start_already_attempted")
-        if (not isinstance(request, dict) or set(request) != {"query", "budget"}
+        if (not isinstance(request, dict) or set(request) != {"query", "effort", "budget"}
+                or request.get("effort") != "ultra"
                 or not isinstance(request.get("query"), str) or not request["query"].strip()
                 or not isinstance(request.get("budget"), dict) or set(request["budget"]) != {"maxCostDollars"}
                 or type(request["budget"]["maxCostDollars"]) not in (int, float)
-                or not math.isfinite(request["budget"]["maxCostDollars"]) or request["budget"]["maxCostDollars"] <= 0):
+                or not math.isfinite(request["budget"]["maxCostDollars"])
+                or not 1 <= request["budget"]["maxCostDollars"] <= 5):
             self._fail("exa_mcp_start_arguments_invalid")
         if not _cap_supported(self._discover(deadline), request):
             self._fail("exa_mcp_supported_cost_cap_missing")
@@ -332,7 +334,8 @@ def reconcile_start_ack(receipt, expected_request):
         request = _json(request_raw)
     except (ValueError, UnicodeError, RecursionError):
         parser._fail("exa_mcp_retained_ack_request_invalid")
-    if (not isinstance(expected_request, dict) or set(expected_request) != {"query", "budget"}
+    if (not isinstance(expected_request, dict) or set(expected_request) not in ({"query", "budget"}, {"query", "effort", "budget"})
+            or "effort" in expected_request and expected_request["effort"] != "ultra"
             or not isinstance(expected_request.get("query"), str) or not expected_request["query"].strip()
             or not isinstance(expected_request.get("budget"), dict)
             or set(expected_request["budget"]) != {"maxCostDollars"}

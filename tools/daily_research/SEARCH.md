@@ -258,8 +258,12 @@ initial discovery and before the original final artifact/QA; returned findings
 remain unqualified, use the same source checks and exact site/task deduplication,
 and enter the existing company publication and learning path.
 
-A start requires the existing worker's `EXA_API_KEY`, an authenticated current
-Exa `agent_run` schema supporting numeric `budget.maxCostDollars`, and a trusted
+A new start explicitly selects `effort: "ultra"`; the hosted tool defaults to
+low effort, where the budget is not an applicable metered cap. Admission requires
+an advertised string effort enum containing `ultra`, a numeric
+`budget.maxCostDollars` within both the live schema's bounds and $1–$5 (Exa's
+[documented Ultra minimum](https://exa.ai/docs/agent/agent-ultra) is $1),
+the existing worker's `EXA_API_KEY`, and a trusted
 company control `exa_expansion_allocation` snapshot with schema
 `blueprint.research-expansion-allocation.v1`. That snapshot binds the run key,
 existing authority, evidence reference, checked/expiry times, verified all-in
@@ -274,8 +278,10 @@ The worker consumes one durable whole-run claim before the native POST, retains
 complete private MCP receipts and provider records in the existing company
 ledger, and permits subsequent reads of only the acknowledged original ID.
 Unknown submissions retain their claim/reservation and prevent another optional
-Exa start; they do not discard evidence or stop ordinary research. The original
-research deadline is preserved; no extension, enrichment, alternate provider,
+Exa start; they do not discard evidence or stop ordinary research.
+Claims made before explicit Ultra selection keep their original request bytes;
+only their retained ACK or original-ID reads may recover them, never a new start.
+The original research deadline is preserved; no extension, enrichment, alternate provider,
 `previousRunId`, automatic POST retry, outreach or provider deletion is allowed.
 Saved OpenAI OAuth credentials remain in their URL-bound vault and are never
 extracted into the worker. The MCP transport uses the documented `x-api-key`
