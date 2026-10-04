@@ -677,6 +677,12 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
         raise Refusal("research_mcp_profile_invalid")
     agent, template = api.get("agent", AGENT), api.get("template", TEMPLATE)
     check_agent(agent, mcp_profile=mcp_profile)
+    findall_profile = None
+    if getattr(api, "findall_application_tools", None) is not None:
+        from tools.daily_research import findall
+        findall_profile = findall.installed_profile(api)
+        if search_provider != search.PROFILE:
+            raise Refusal("findall_requires_application_search_profile")
     connections = None
     if mcp_profile:
         try:
@@ -705,10 +711,13 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
             raise Refusal("agent_instructions_unavailable")
         result["search_provider"] = search.PROFILE
         result["session_agent_override"] = {
-            "tools": search.tools(publication_profile, history_profile, expansion_profile), "service_tier": "default",
+            "tools": search.tools(publication_profile, history_profile, expansion_profile, findall_profile), "service_tier": "default",
             "instructions": instructions + "\nFor this explicitly selected search profile, the following "
             "application-tool instructions replace prior native-web-search-only restrictions. All other "
             "evidence, authority and safety boundaries remain in force. " + search.instructions()}
+        if findall_profile:
+            result.update(findall_profile=findall_profile, findall_tools_digest=digest(findall.tools()))
+            result["session_agent_override"]["instructions"] += findall.instructions()
     if publication_profile == "agent-owned-v1":
         result["session_agent_override"]["instructions"] += (" Publication tools are available only in the subsequent, "
             "QA-validated publication phase. You own format, destination choice, uploads and error correction through "
@@ -785,7 +794,8 @@ def check_mcp_vault_binding(row, session):
         raise Refusal("research_mcp_vault_binding_changed")
 
 
-def check_agent(agent, search_provider=None, publication_profile=None, history_profile=None, mcp_profile=None, mcp_binding=None, expansion_profile=None):
+def check_agent(agent, search_provider=None, publication_profile=None, history_profile=None, mcp_profile=None, mcp_binding=None, expansion_profile=None,
+                findall_profile=None):
     if (expansion_profile not in (None, "exa-guarded-v1") or expansion_profile
             and (search_provider != search.PROFILE or mcp_profile == search.MCP_RESEARCH_PROFILE)):
         raise Refusal("research_expansion_profile_invalid")
@@ -802,7 +812,7 @@ def check_agent(agent, search_provider=None, publication_profile=None, history_p
         except (search.ToolFailure, TypeError):
             raise Refusal("research_mcp_configuration_invalid") from None
     if search_provider == search.PROFILE:
-        expected_tools = search.tools(publication_profile, history_profile, expansion_profile) + mcp_tools
+        expected_tools = search.tools(publication_profile, history_profile, expansion_profile, findall_profile) + mcp_tools
         actual_tools = agent.get("tools")
         if mcp_profile:
             # Optional empty request headers are absent from SDK HTTP responses.
@@ -1068,6 +1078,8 @@ class Runner:
                 body["vault_ids"] = checked["vault_ids"]
             if checked.get("expansion_profile"):
                 body["metadata"]["expansion_profile"] = checked["expansion_profile"]
+            if checked.get("findall_profile"):
+                body["metadata"]["findall_tools_digest"] = checked["findall_tools_digest"]
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),
                    "run_key": body["metadata"]["run_key"], "metadata": body["metadata"],
@@ -1082,6 +1094,8 @@ class Runner:
             if checked.get("mcp_profile"):
                 row.update(mcp_profile=checked["mcp_profile"], mcp_binding=checked["mcp_binding"],
                            mcp_vault_binding=checked["mcp_vault_binding"])
+            if checked.get("findall_profile"):
+                row["findall_profile"] = checked["findall_profile"]
             if agent_history:
                 row.update(history_profile="agent-history-v1", history_binding=history_binding)
             row["research_crm_context"] = crm_context
@@ -1120,6 +1134,7 @@ class Runner:
             return self.observe(row)
 
     def cancel(self, row, reason):
+        search.assert_findall_caller(row, self.ledger, self.api)
         row["state"], row["error"] = "cancel_pending", reason
         # A replay of this same cancellation is protected by the provider's
         # events idempotency key. Never replay create or research input.
@@ -1143,6 +1158,9 @@ class Runner:
             return row
 
     def observe(self, row):
+        # A stale row must not reach either the first lifecycle write or an
+        # error handler that persists/cancels that same stale row.
+        search.assert_findall_caller(row, self.ledger, self.api)
         try:
             if row["state"] in {"creating", "creation_unresolved"}:
                 matches = [s for s in self.api.listing("sessions") if s.get("metadata") == row["metadata"]]
@@ -1162,7 +1180,10 @@ class Runner:
             if row.get("mcp_profile") and digest(row.get("mcp_binding")) != row["metadata"].get("mcp_binding_digest"):
                 raise Refusal("research_mcp_binding_changed")
             check_mcp_vault_binding(row, session)
-            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"))
+            if row.get("findall_profile") is not None:
+                from tools.daily_research import findall
+                findall.check_binding(row)
+            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"), row.get("findall_profile"))
             if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
                 raise Refusal("session_search_instructions_mismatch")
             row["reported_container_size"] = session["environment"].get("container_size")
@@ -1238,6 +1259,7 @@ class Runner:
         return row
 
     def collect(self, row, *, validate=True):
+        search.assert_findall_caller(row, self.ledger, self.api)
         row["state"] = "collecting"
         self.ledger.put(row)
         artifacts = [a for a in self.api.listing("artifacts", row["session_id"])

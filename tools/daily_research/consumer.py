@@ -326,6 +326,7 @@ class Consumer:
         return {"date": row["date"], "state": result["state"]}
 
     def qa(self, row):
+        search.assert_findall_caller(row, self.ledger, self.api)
         deadline = qa_deadline(row, self.config)
         if not row.get("qa"):
             if self.clock() >= deadline:
@@ -419,6 +420,7 @@ class Consumer:
             return None
 
     def cancel(self, row, reason):
+        search.assert_findall_caller(row, self.ledger, self.api)
         qa = row["qa"]
         if not qa["cancel_attempted"]:
             # Classify the actual action time, rather than trusting a reason
@@ -448,6 +450,7 @@ class Consumer:
         self.ledger.put(row)
 
     def correct_qa(self, row, feedback, session, deadline):
+        search.assert_findall_caller(row, self.ledger, self.api)
         """One durable corrective message in the saved session and existing envelope."""
         qa = row["qa"]
         qa["validation_feedback"] = feedback
@@ -528,6 +531,7 @@ class Consumer:
             self.ledger.put(row)
 
     def observe(self, row, deadline):
+        search.assert_findall_caller(row, self.ledger, self.api)
         qa = row["qa"]
         session = self.api.get("session", row["session_id"])
         self.check_session(row, session)
@@ -640,10 +644,13 @@ class Consumer:
         if row.get("mcp_profile") and digest(row.get("mcp_binding")) != row["metadata"].get("mcp_binding_digest"):
             raise Refusal("research_mcp_binding_changed")
         check_mcp_vault_binding(row, session)
+        if row.get("findall_profile") is not None:
+            from tools.daily_research import findall
+            findall.check_binding(row)
         if row.get("mcp_profile") and row["create_payload"]["agent"]["tools"] != (
-                search.tools(row.get("publication_profile"), row.get("history_profile"), row.get("expansion_profile"))
+                search.tools(row.get("publication_profile"), row.get("history_profile"), row.get("expansion_profile"), row.get("findall_profile"))
                 + search.mcp_tools(row["mcp_binding"], row["mcp_profile"])):
             raise Refusal("research_mcp_binding_changed")
-        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"))
+        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"), row.get("findall_profile"))
         if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
             raise Refusal("session_search_instructions_mismatch")

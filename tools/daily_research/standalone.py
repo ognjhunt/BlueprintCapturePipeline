@@ -12,7 +12,7 @@ from pathlib import Path
 FILES = (
     "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "ADAPTIVE.md", "standalone.py", "runner.py", "knowledge.py",
     "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "verification.py", "recovery.py", "qa_retry.py", "adaptive.py", "adaptive_runtime.py", "search.py", "expansion.py", "exa_transport.py", "SEARCH.md",
-    "history.py", "adaptive-test.config.example.json", "adaptive-daily.config.example.json", "perplexity-daily.config.example.json",
+    "history.py", "findall.py", "adaptive-test.config.example.json", "adaptive-daily.config.example.json", "perplexity-daily.config.example.json",
     "consumer.py", "publication.py", "publisher.mjs", "verification-digest.mjs", "requirements.txt", "standalone.config.example.json",
     "capabilities/blueprint-evidence-qualification/SKILL.md",
     "capabilities/blueprint-evidence-qualification/references/prospect-contract.md",
@@ -26,6 +26,10 @@ FILES = (
     "operators/research-perplexity-canary.mjs", "operators/README.md",
 )
 PREFIX = "tools/daily_research/"
+BLUEPRINT_RUNTIME_FILES = (
+    "__init__.py", "safe_outbound_http.py", "paid_resource_admission.py",
+    "parallel_findall.py", "parallel_findall_execution.py", "parallel_findall_owner.py",
+)
 
 
 def git(repository, *args):
@@ -50,6 +54,14 @@ def build(revision, destination, repository="."):
         if not entry.startswith("100644 blob ") and not entry.startswith("100755 blob "):
             raise ValueError("Missing regular source file: " + path)
         payload[path] = git(repository, "show", revision + ":" + path)
+    # Project the canonical import closure into the portable runtime root.
+    # This performs no installation, credential lookup or security change.
+    for name in BLUEPRINT_RUNTIME_FILES:
+        source = "src/blueprint_pipeline/" + name
+        entry = git(repository, "ls-tree", revision, "--", source).decode().strip()
+        if not entry.startswith("100644 blob ") and not entry.startswith("100755 blob "):
+            raise ValueError("Missing regular source file: " + source)
+        payload["blueprint_pipeline/" + name] = git(repository, "show", revision + ":" + source)
     config = json.loads(payload[PREFIX + "standalone.config.example.json"])
     if config.get("enabled") is not False:
         raise ValueError("Standalone example must be disabled")
