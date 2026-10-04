@@ -89,14 +89,19 @@ def _cap_supported(schema, request):
         return False
     try:
         properties = schema.get("properties", {})
+        effort = properties.get("effort", {})
         budget = properties.get("budget", {})
         cap = budget.get("properties", {}).get("maxCostDollars", {})
         dollars, query = request["budget"]["maxCostDollars"], request["query"]
         compatible = (cap.get("type") == "number" and budget.get("type") == "object"
+                and request.get("effort") == "ultra" and effort.get("type") == "string"
+                and isinstance(effort.get("enum"), list) and "ultra" in effort["enum"]
                 and properties.get("query", {}).get("type") == "string"
-                and not set(schema.get("required", [])) - {"query", "budget"}
+                and not set(schema.get("required", [])) - {"query", "effort", "budget"}
                 and not set(budget.get("required", [])) - {"maxCostDollars"})
-        return (compatible and dollars >= cap.get("minimum", 0) and dollars <= cap.get("maximum", 5)
+        # Ultra's documented minimum applies even when tools/list omits it.
+        return (compatible and 1 <= dollars <= LIMIT_MICROS / 1_000_000
+                and dollars >= cap.get("minimum", 1) and dollars <= cap.get("maximum", 5)
                 and ("exclusiveMinimum" not in cap or dollars > cap["exclusiveMinimum"])
                 and ("exclusiveMaximum" not in cap or dollars < cap["exclusiveMaximum"])
                 and ("enum" not in cap or dollars in cap["enum"])
@@ -190,8 +195,15 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
                 or not args["query"].strip() or len(args["query"].encode()) > 24000
                 or type(args.get("max_cost_micros")) is not int or not 0 < args["max_cost_micros"] <= LIMIT_MICROS):
             raise ExpansionError("expansion_start_arguments_invalid")
-        if claim and claim["intent"]["request"] != {"query": args["query"], "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}:
-            raise ExpansionError("expansion_already_claimed_different_request")
+        if claim:
+            original = claim["intent"]["request"]
+            expected = {"query": args["query"], "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}
+            # Old immutable starts omitted effort. They remain observation-only;
+            # never retrofit Ultra or replay their already consumed claim.
+            if "effort" in original:
+                expected["effort"] = "ultra"
+            if original != expected:
+                raise ExpansionError("expansion_already_claimed_different_request")
     if claim and claim.get("terminal_receipt"):
         record = _read_receipt(ledger, claim["terminal_receipt"])
         if (record.get("intent_sha256") != claim["intent_sha256"]
@@ -250,7 +262,8 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
     if name == START:
         if phase != "research" or row.get("state") != "running" or row.get("qa") or row.get("raw_output_digest"):
             return _skip("expansion_before_final_qa_only")
-        request = {"query": args["query"], "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}
+        request = {"query": args["query"], "effort": "ultra",
+                   "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}
         if not _cap_supported(tool_schema, request):
             return _skip("expansion_supported_native_cap_unverified")
         if not _allocation(allocation, row, args["max_cost_micros"], now, deadline):

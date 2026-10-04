@@ -9,8 +9,10 @@ import pytest
 from tools.daily_research.exa_transport import ENDPOINT, ExaTransport, ExaTransportError
 
 SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}, "runId": {"type": "string"},
+    "effort": {"type": "string", "enum": ["low", "auto", "ultra"], "default": "low"},
     "budget": {"type": "object", "properties": {"maxCostDollars": {"type": "number", "maximum": 5}}}}}
-REQUEST = {"query": "US regional laundry sites with towel handling evidence", "budget": {"maxCostDollars": 1.75}}
+REQUEST = {"query": "US regional laundry sites with towel handling evidence", "effort": "ultra",
+           "budget": {"maxCostDollars": 1.75}}
 RECORD = {"id": "agent_run_synthetic", "status": "running", "outputReady": False, "usage": None}
 
 
@@ -86,7 +88,8 @@ def test_full_unicode_provider_output_and_costs_are_unchanged():
 @pytest.mark.parametrize("schema", [
     {"type": "object", "properties": {"query": {"type": "string"}, "runId": {"type": "string"}}},
     {"properties": {"query": {"type": "string"}, "maxCostDollars": {"type": "number"}}},
-    {**SCHEMA, "required": ["query", "effort"]},
+    {**SCHEMA, "required": ["query", "previousRunId"]},
+    {**SCHEMA, "properties": {**SCHEMA["properties"], "effort": {"type": "string", "enum": ["low", "auto"]}}},
     {"properties": {"query": {"type": "string"}, "budget": {"type": "object", "properties": {"maxCostDollars": {"type": "string"}}}}},
 ])
 def test_no_guessed_or_unsupported_cost_cap_and_no_native_start(schema):
@@ -100,15 +103,31 @@ def test_no_guessed_or_unsupported_cost_cap_and_no_native_start(schema):
 
 @pytest.mark.parametrize("start_request", [
     {**REQUEST, "previousRunId": RECORD["id"]}, {**REQUEST, "runId": RECORD["id"]},
-    {"query": "US", "maxCostDollars": 1}, {"query": "", "budget": {"maxCostDollars": 1}},
-    {"query": "US", "budget": {"maxCostDollars": True}},
-    {"query": "US", "budget": {"maxCostDollars": float("nan")}},
+    {"query": "US", "maxCostDollars": 1}, {**REQUEST, "query": "", "budget": {"maxCostDollars": 1}},
+    {**REQUEST, "budget": {"maxCostDollars": True}},
+    {**REQUEST, "budget": {"maxCostDollars": float("nan")}},
+    {k: v for k, v in REQUEST.items() if k != "effort"}, {**REQUEST, "effort": "auto"},
+    {**REQUEST, "budget": {"maxCostDollars": .99}}, {**REQUEST, "budget": {"maxCostDollars": 5.01}},
 ])
 def test_bad_start_is_rejected_before_any_http(start_request):
     wire = Wire()
     with pytest.raises(ExaTransportError, match="exa_mcp_start_arguments_invalid"):
         ExaTransport(request_io=wire).start(start_request)
     assert not wire.calls
+
+
+@pytest.mark.parametrize("cap", [1, 5])
+def test_ultra_cap_endpoints_and_required_effort_are_sent_explicitly(cap):
+    wire = Wire(schema={**SCHEMA, "required": ["query", "effort"]})
+    request = {**REQUEST, "budget": {"maxCostDollars": cap}}
+    assert ExaTransport(request_io=wire).start(request) == RECORD
+    assert wire.native_calls == [{"name": "agent_run", "arguments": request}]
+
+
+def test_legacy_original_id_read_needs_no_ultra_start_schema():
+    wire = Wire(schema={"type": "object", "properties": {"runId": {"type": "string"}}})
+    assert ExaTransport(request_io=wire).read(RECORD["id"]) == RECORD
+    assert wire.native_calls == [{"name": "agent_run", "arguments": {"runId": RECORD["id"]}}]
 
 
 def test_receipt_sink_precedes_return_and_failed_sink_prevents_replay():
@@ -387,3 +406,18 @@ def test_retained_ack_parser_never_constructs_transport(retained_ack, monkeypatc
 
     monkeypatch.setattr(ExaTransport, "__init__", lambda *a, **k: pytest.fail("No transport construction"))
     assert reconcile_start_ack(retained_ack, REQUEST) == RECORD
+
+
+def test_legacy_no_effort_raw_ack_keeps_original_request_binding(retained_ack, monkeypatch):
+    from tools.daily_research.exa_transport import reconcile_start_ack
+
+    original = {k: v for k, v in REQUEST.items() if k != "effort"}
+    body = json.loads(base64.b64decode(retained_ack["request_body_base64"]))
+    body["params"]["arguments"] = original
+    raw = json.dumps(body).encode()
+    retained_ack["request_body_base64"] = base64.b64encode(raw).decode()
+    retained_ack["request_sha256"] = hashlib.sha256(raw).hexdigest()
+    monkeypatch.setattr(ExaTransport, "__init__", lambda *a, **k: pytest.fail("No transport construction"))
+    assert reconcile_start_ack(retained_ack, original) == RECORD
+    with pytest.raises(ExaTransportError, match="retained_ack_request_binding_mismatch"):
+        reconcile_start_ack(retained_ack, REQUEST)

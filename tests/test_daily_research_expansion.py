@@ -10,6 +10,7 @@ from tools.daily_research import expansion as e
 NOW = datetime(2026, 10, 4, 12, 1, tzinfo=timezone.utc)
 ARGS = {"query": "US regional laundry sites with towel handling evidence", "max_cost_micros": 2_000_000}
 SCHEMA = {"type": "object", "required": ["query"], "properties": {
+    "effort": {"type": "string", "enum": ["low", "auto", "ultra"], "default": "low"},
     "query": {"type": "string"}, "budget": {"type": "object", "properties": {"maxCostDollars": {"type": "number"}}}}}
 
 
@@ -98,7 +99,10 @@ def test_unknown_or_mismatched_allocation_skips_without_claim_or_post(context, c
 
 @pytest.mark.parametrize("schema", [None, {"properties": {}}, {"properties": None},
     {"properties": {"budget": None}},
-    {**SCHEMA, "required": ["query", "effort"]},
+    {**SCHEMA, "required": ["query", "previousRunId"]},
+    {**SCHEMA, "properties": {**SCHEMA["properties"], "effort": {"type": "string", "enum": ["low", "auto"]}}},
+    {**SCHEMA, "properties": {k: v for k, v in SCHEMA["properties"].items() if k != "effort"}},
+    {**SCHEMA, "properties": {**SCHEMA["properties"], "effort": {"type": "string", "enum": "ultra"}}},
     {"properties": {"query": {"type": "string"}, "budget": {"properties": {"maxCostDollars": {"type": "number", "maximum": 1}}}}},
 ])
 def test_no_guessed_cap_or_required_native_fields(context, schema):
@@ -120,10 +124,10 @@ def test_host_unavailable_reason_is_actionable_without_claim(context):
 
 
 def test_native_start_is_once_across_restart_and_preserves_exact_cap(context):
-    first = call(context)
+    first = call(context, tool_schema={**SCHEMA, "required": ["query", "effort"]})
     row, ledger, transport, _ = context
     assert first["run_id"] == "agent_run_synthetic"
-    assert transport.starts == [{"query": ARGS["query"], "budget": {"maxCostDollars": 2.0}}]
+    assert transport.starts == [{"query": ARGS["query"], "effort": "ultra", "budget": {"maxCostDollars": 2.0}}]
     restored = ledger.get(row["date"])
     resumed = (restored, Ledger(ledger.path), transport, context[3])
     assert call(resumed)["run_id"] == first["run_id"] and len(transport.starts) == 1
@@ -131,6 +135,45 @@ def test_native_start_is_once_across_restart_and_preserves_exact_cap(context):
         call(resumed, args={**ARGS, "query": "Another query"})
     with pytest.raises(e.ExpansionError, match="already_claimed_different_request"):
         call(resumed, args={**ARGS, "max_cost_micros": 1_000_000})
+
+
+def test_documented_ultra_minimum_is_enforced_when_catalog_omits_it(context):
+    result = call(context, args={**ARGS, "max_cost_micros": 999_999})
+    assert result["reason"] == "expansion_supported_native_cap_unverified"
+    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
+
+
+@pytest.mark.parametrize("bounds", [{"minimum": 3}, {"maximum": 1}, {"exclusiveMinimum": 2},
+                                     {"exclusiveMaximum": 2}, {"enum": [1, 3]}])
+def test_live_native_cap_bounds_are_not_overridden_by_application_range(context, bounds):
+    schema = copy.deepcopy(SCHEMA)
+    schema["properties"]["budget"]["properties"]["maxCostDollars"].update(bounds)
+    assert call(context, tool_schema=schema)["reason"] == "expansion_supported_native_cap_unverified"
+    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
+
+
+@pytest.mark.parametrize("name", [e.START, e.READ])
+def test_legacy_no_effort_ack_recovers_unchanged_after_deadline_without_post(context, name):
+    row, ledger, transport, _ = context
+    original_request = {"query": ARGS["query"], "budget": {"maxCostDollars": 0.5}}
+    intent = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
+              "request": original_request}
+    intent_raw = e._bytes(intent)
+    claim = {"date": row["date"], "run_key": row["run_key"], "intent": intent,
+             "intent_json": intent_raw.decode(), "intent_sha256": e._hash(intent_raw), "cap_micros": 500_000,
+             "state": "submission_unresolved", "attempted": True, "run_id": None}
+    row["exa_expansion"] = copy.deepcopy(claim)
+    ledger.put(row)
+    provider_record = {"id": "agent_run_legacy", "status": "completed", "costDollars": None}
+    record = {"intent_sha256": claim["intent_sha256"], "run_id": provider_record["id"], "provider_record": provider_record}
+    ledger.write_bytes(f"{row['date']}-exa-{claim['intent_sha256']}-start.json", e._bytes(record))
+    args = {**ARGS, "max_cost_micros": 500_000} if name == e.START else {}
+    result = call(context, name, args, transport=None, now=NOW + timedelta(days=1))
+    restored = ledger.get(row["date"])["exa_expansion"]
+    assert result["provider_record"] == provider_record and result["billing_verified"] is False
+    assert restored["intent_json"].encode() == intent_raw and restored["intent_sha256"] == claim["intent_sha256"]
+    assert restored["intent"]["request"] == original_request
+    assert not transport.starts and not transport.reads
 
 
 def test_uncertain_ack_is_permanent_not_a_retry_or_free_budget(context):
