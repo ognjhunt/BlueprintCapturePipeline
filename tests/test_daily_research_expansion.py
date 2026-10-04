@@ -139,7 +139,31 @@ def test_native_start_is_once_across_restart_and_preserves_exact_cap(context):
 
 def test_documented_ultra_minimum_is_enforced_when_catalog_omits_it(context):
     result = call(context, args={**ARGS, "max_cost_micros": 999_999})
-    assert result["reason"] == "expansion_supported_native_cap_unverified"
+    assert result["reason"] == "expansion_cap_below_ultra_minimum"
+    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
+
+
+def test_advertised_cap_bounds_equal_enforced_ultra_bounds():
+    """2026-10-04: the agent requested 500000 micros because the tool advertised a 1-micro minimum."""
+    cap = e.tools()[0]["parameters"]["properties"]["max_cost_micros"]
+    assert (cap["minimum"], cap["maximum"]) == (e.ULTRA_MIN_MICROS, e.LIMIT_MICROS) == (1_000_000, 5_000_000)
+    assert "1000000" in e.instructions() and "5000000" in e.instructions()
+
+
+@pytest.mark.parametrize("overrides", [{}, {"transport": None, "allocation": None,
+                                            "unavailable_reason": "expansion_remaining_all_in_allocation_unverified"}])
+def test_cap_below_ultra_minimum_is_actionable_and_consumes_no_claim(context, overrides):
+    result = call(context, args={**ARGS, "max_cost_micros": 500_000}, **overrides)
+    assert result["state"] == "skipped" and result["reason"] == "expansion_cap_below_ultra_minimum"
+    assert "1000000" in result["action"] and "5000000" in result["action"] and "no claim" in result["action"].lower()
+    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
+
+
+def test_cap_above_remaining_allocation_names_the_headroom(context):
+    context[3].update(reserved_micros=3_000_000, remaining_micros=1_000_000)
+    result = call(context)
+    assert result["state"] == "skipped" and result["reason"] == "expansion_cap_exceeds_remaining_allocation"
+    assert result["remaining_micros"] == 1_000_000
     assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
 
 

@@ -558,7 +558,8 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                         if not result.get("error") and result.get("action"):
                             failure["guidance"] = result["action"]
                         outcome["error"] = canonical(failure)
-                except ToolFailure as exc:
+                except (ToolFailure, expansion.ExpansionError) as exc:
+                    # Both carry fixed, secret-free codes the agent can act on.
                     failure = {"code": str(exc)}
                     outcome = {"success": False, "error": canonical(failure),
                                "output": canonical({"ok": False, "error": failure})}
