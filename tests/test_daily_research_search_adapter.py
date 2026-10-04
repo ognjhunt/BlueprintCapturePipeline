@@ -446,7 +446,11 @@ def test_attempt_receipt_without_result_never_replays_paid_post():
     assert api.replies[0][1]["error"] == "research_tool_reply_unresolved_no_replay"
 
 
-def test_immutable_result_file_recovers_after_crash_before_row_pointer_without_paid_replay():
+@pytest.mark.parametrize("outcome", [
+    {"success": True, "output": canonical(provider_response())},
+    {"success": False, "error": "source_http_failure"},
+])
+def test_immutable_result_file_recovers_after_crash_before_row_pointer_without_paid_replay(outcome):
     value, ledger = row(), MemoryLedger()
     pending = action()
     binding = {field: pending[field] for field in ("turn_id", "call_id", "name", "arguments")}
@@ -454,7 +458,7 @@ def test_immutable_result_file_recovers_after_crash_before_row_pointer_without_p
         "request_digest": digest(binding), "request": binding, "phase": "research", "attempted": True}}
     ledger.put(value)
     event = {"type": "agent.session.input.tool_result", "turn_id": "turn_research", "call_id": "call_1",
-             "success": True, "output": canonical(provider_response())}
+             **outcome}
     raw = (canonical(event) + "\n").encode()
     filename = DAY + "-tool-call_1.json"
     ledger.write_bytes(filename, raw)
@@ -465,7 +469,7 @@ def test_immutable_result_file_recovers_after_crash_before_row_pointer_without_p
     receipt = value["application_tool_calls"]["call_1"]
     assert receipt["result_file"] == filename and receipt["result_bytes"] == len(raw)
     assert receipt["result_sha256"] == hashlib.sha256(raw).hexdigest()
-    assert receipt["result_digest"] == digest(event) and receipt["success"] is True
+    assert receipt["result_digest"] == digest(event) and receipt["success"] is outcome["success"]
 
 
 @pytest.mark.parametrize("changes", [
@@ -589,7 +593,8 @@ def test_absolute_request_alarm_covers_blocked_dns_and_restores_signal_handler(m
     pending = action(name=search.READ, arguments={"url": "https://operator.example/source"})
     assert respond(value, [pending], ledger, api, clock=lambda: near_deadline)
     assert dns == ["operator.example"]
-    assert api.replies[0][1]["error"] == "research_tool_absolute_deadline"
+    assert json.loads(api.replies[0][1]["error"]) == {"code": "research_tool_absolute_deadline"}
+    assert json.loads(api.replies[0][1]["output"]) == {"ok": False, "error": {"code": "research_tool_absolute_deadline"}}
     assert api.replies[0][1]["success"] is False
     assert signal.getsignal(signal.SIGALRM) == prior_handler
     assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
@@ -614,6 +619,7 @@ def test_request_alarm_rejects_nonpositive_allowance_before_execution():
 
 @pytest.mark.parametrize("error", [
     "source_response_too_large_no_truncation", "source_format_unsupported", "source_destination_not_public",
+    "source_http_failure", "source_request_unavailable",
 ])
 def test_source_refusal_is_a_visible_failed_tool_result_without_replay(error):
     value, ledger = row(), MemoryLedger()
@@ -623,8 +629,9 @@ def test_source_refusal_is_a_visible_failed_tool_result_without_replay(error):
     respond(value, [pending], ledger, api)
     respond(value, [pending], ledger, api)
     assert len(api.executions) == 1 and api.replies[0] == api.replies[1]
-    assert api.replies[0][1]["error"] == error and api.replies[0][1]["success"] is False
-    assert "output" not in api.replies[0][1]
+    event = api.replies[0][1]
+    assert json.loads(event["error"]) == {"code": error} and event["success"] is False
+    assert json.loads(event["output"]) == {"ok": False, "error": {"code": error}}
 
 
 def test_oversized_tool_result_is_visible_refusal_instead_of_truncated_success(monkeypatch):
@@ -633,8 +640,10 @@ def test_oversized_tool_result_is_visible_refusal_instead_of_truncated_success(m
     api = ToolAPI(ledger, result={"text": "full decisive evidence" * 10, "truncated": False})
     respond(value, [action()], ledger, api)
     event = api.replies[0][1]
-    assert event["success"] is False and "output" not in event
-    assert event["error"] == "research_tool_result_too_large_no_truncation"
+    assert event["success"] is False
+    assert json.loads(event["error"]) == {"code": "research_tool_result_too_large_no_truncation"}
+    assert json.loads(event["output"]) == {"ok": False, "error": json.loads(event["error"])}
+    assert "full decisive evidence" not in event["output"]
 
 
 def test_upstream_execution_error_is_secret_free_and_never_replayed():
@@ -645,6 +654,7 @@ def test_upstream_execution_error_is_secret_free_and_never_replayed():
     respond(value, [action()], ledger, api)
     assert len(api.executions) == 1
     assert api.replies[0][1]["error"] == "research_tool_unavailable_no_replay"
+    assert "output" not in api.replies[0][1] and api.replies[0] == api.replies[1]
     assert "synthetic-private" not in canonical(value)
 
 

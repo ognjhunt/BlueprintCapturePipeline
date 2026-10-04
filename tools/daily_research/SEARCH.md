@@ -74,6 +74,22 @@ Unknown execution becomes a visible no-replay error. Render rechecks the lease,
 enabled flag and pinned search profile before execution and result submission.
 Stop/deadline checks preserve the pinned shared research/QA watchdog.
 
+Known public-source tool failures expose JSON output `{ok:false,error:{code}}`
+and a JSON error with the unchanged stable code, so a caller can inspect the
+failure without parsing a bare error string as JSON. These failures provide no
+source text, publication dates or successful-read evidence. Optional Exa skips
+preserve their explicit reason and continuation guidance in both output and
+error; an unverified allocation remains a skip with no native start. Existing
+immutable tool-result receipts are returned byte-for-byte, never reformatted.
+
+The October 4 disposition `BP-RESEARCH-IMPROVE-20261004-TOOL-ERRORS` corrects
+future result formatting, preserving the original valid accounting skip and
+failed source results. Its company-owned proposal and five original results are
+retained at `gs://blueprint-8c1ca.appspot.com/operations/research/improvements/2026-10-04/BP-RESEARCH-IMPROVE-20261004-TOOL-ERRORS/cd1b2be2b3041fa35a7d849edb5ef86705d8cb1605a61878935b53b63be883b4/proposal-and-original-evidence.json`,
+generation `1791119633053384`, 8,838 bytes, SHA256
+`cd1b2be2b3041fa35a7d849edb5ef86705d8cb1605a61878935b53b63be883b4`.
+This evidence reference changes no allocation, native-start authority or access.
+
 The explicit `publication_profile=agent-owned-v1` additionally advertises
 `blueprint_inspect_publication` and `blueprint_publish_research` when creating a
 new session. After QA validates the research, that same saved session receives
