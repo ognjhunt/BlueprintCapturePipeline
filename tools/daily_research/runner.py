@@ -972,7 +972,8 @@ class Runner:
                 return {"date": day, "state": "stopped_before_create"}
             body = {"agent_id": AGENT, "environment": {"type": "openai_hosted", "container_size": "small",
                     "environment_template_id": TEMPLATE, "network": {"access": "disabled"},
-                    "capability_directories": [capabilities.ROOT], "files": capabilities.inline_files()},
+                    "capability_directories": [capabilities.ROOT], "files": capabilities.inline_files(),
+                    "setup_commands": capabilities.setup_commands()},
                     "input": prompt(day, context, version, adaptive=self.config.get("discovery_profile") == "adaptive-sites-v1",
                                     target_usd=self.config["soft_target_usd"],
                                     search_provider=self.config.get("search_provider")), "stream": False,
