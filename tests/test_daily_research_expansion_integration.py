@@ -113,7 +113,8 @@ def test_unknown_native_ack_does_not_stop_next_days_ordinary_research(fixture):
     assert len(transport.starts) == 1 and not transport.reads
 
 
-def test_daily_resume_recovers_retained_original_ack_after_deadline_without_credentials_or_post(fixture, monkeypatch):
+@pytest.mark.parametrize("fail_recovered_pointer", [False, True])
+def test_daily_resume_recovers_retained_original_ack_after_deadline_without_credentials_or_post(fixture, monkeypatch, fail_recovered_pointer):
     runner, api, ledger, row = setup(fixture)
     monkeypatch.setenv("EXA_API_KEY", "synthetic-not-a-real-key")
     wire = Wire(record={"id": "agent_run_synthetic", "status": "completed", "output": {"sites": []}})
@@ -135,6 +136,21 @@ def test_daily_resume_recovers_retained_original_ack_after_deadline_without_cred
     ledger.put(row)
     monkeypatch.delenv("EXA_API_KEY")
     runner.clock = lambda: NOW + timedelta(days=1)
+    if fail_recovered_pointer:
+        original_put = ledger.put
+        failed = False
+
+        def put(updated):
+            nonlocal failed
+            if updated.get("exa_expansion", {}).get("run_id") and not failed:
+                failed = True
+                raise OSError("synthetic_second_pointer_failure")
+            return original_put(updated)
+
+        monkeypatch.setattr(ledger, "put", put)
+        with pytest.raises(OSError, match="synthetic_second_pointer_failure"):
+            runner.start_or_resume()
+        assert ledger.get(DAY)["exa_expansion"]["run_id"] is None
     assert runner.start_or_resume()["date"] == "2026-10-01"
     claim = ledger.get(DAY)["exa_expansion"]
     assert claim["run_id"] == "agent_run_synthetic" and claim["state"] == "completed"

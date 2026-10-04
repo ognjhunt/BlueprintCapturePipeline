@@ -214,9 +214,6 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
             except (FileNotFoundError, ValueError):
                 return _project(claim)
             raw_ref = {"file": raw_filename, "sha256": _hash(raw_ack), "bytes": len(raw_ack)}
-            refs = row.setdefault("exa_transport_receipts", [])
-            if raw_ref not in refs:
-                refs.append(raw_ref)
             record = {"intent_sha256": claim["intent_sha256"], "run_id": result["id"],
                       "provider_record": result, "source_raw_ack": raw_ref}
             raw = _bytes(record)
@@ -226,6 +223,16 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
         if (record.get("intent_sha256") != claim["intent_sha256"] or not _valid_id(result.get("id"))
                 or record.get("run_id") != result["id"]):
             raise ExpansionError("expansion_ack_binding_changed")
+        source = record.get("source_raw_ack")
+        if source is not None:
+            from tools.daily_research.exa_transport import reconcile_start_ack
+            if (not isinstance(source, dict)
+                    or source.get("file") != f"{claim['date']}-exa-{claim['intent_sha256']}-start-http.json"
+                    or reconcile_start_ack(_read_receipt(ledger, source), claim["intent"]["request"]) != result):
+                raise ExpansionError("expansion_ack_source_binding_changed")
+            refs = row.setdefault("exa_transport_receipts", [])
+            if source not in refs:
+                refs.append(source)
         claim.update(run_id=result["id"], state=result.get("status", "accepted"),
                      start_receipt={"file": filename, "sha256": _hash(raw), "bytes": len(raw)})
         if claim["state"] in TERMINAL:
