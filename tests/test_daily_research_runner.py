@@ -222,6 +222,7 @@ def test_saved_resources_one_create_and_exact_bytes(fixture):
     assert environment["environment_template_id"] == TEMPLATE
     assert environment["network"] == {"access": "disabled"}
     assert environment["capability_directories"] == [capabilities.ROOT]
+    assert environment["setup_commands"] == capabilities.setup_commands()
     assert len(environment["files"]) == 5
     for item in environment["files"]:
         if item["path"] == "/workspace/inputs/blueprint-research-crm-identities.json":
@@ -237,6 +238,47 @@ def test_saved_resources_one_create_and_exact_bytes(fixture):
     assert (ledger.root / (DAY + "-artifact.json")).read_bytes() == api.raw
     assert result["raw_output_digest"] == hashlib.sha256(api.raw).hexdigest()
     assert result["delivery"] == {}  # The Blueprint QA agent must review before publication.
+
+
+@pytest.mark.parametrize("mutation", [None, "changed", "missing", "symlink", "parent_symlink"])
+def test_session_setup_checks_actual_reviewed_files(fixture, tmp_path, monkeypatch, mutation):
+    runner, api, _ = fixture
+    monkeypatch.setattr(capabilities, "ROOT", str(tmp_path / "mounted-capabilities"))
+    api.template["capability_directories"] = [capabilities.ROOT]
+    for item in api.template["files"]:
+        item["path"] = item["path"].replace("/workspace/capabilities/blueprint", capabilities.ROOT)
+    row = runner.start_or_resume()
+    environment = api.payloads[0]["environment"]
+    assert row["create_payload"]["environment"]["setup_commands"] == environment["setup_commands"]
+    assert len(environment["setup_commands"]) == 1
+    assert set(environment["setup_commands"][0]) == {"command"}
+    for item in environment["files"]:
+        if not item["path"].startswith(capabilities.ROOT + "/"):
+            continue
+        path = Path(item["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(base64.b64decode(item["data"], validate=True))
+    target = Path(capabilities.ROOT) / "blueprint-evidence-qualification/SKILL.md"
+    if mutation == "changed":
+        raw = target.read_bytes()
+        target.write_bytes(b"!" + raw[1:])  # Same size: require the actual SHA check.
+    elif mutation == "missing":
+        target.unlink()
+    elif mutation == "symlink":
+        original = tmp_path / "same-reviewed-bytes.md"
+        original.write_bytes(target.read_bytes())
+        target.unlink()
+        target.symlink_to(original)
+    elif mutation == "parent_symlink":
+        root = Path(capabilities.ROOT)
+        original = tmp_path / "same-reviewed-directory"
+        root.rename(original)
+        root.symlink_to(original, target_is_directory=True)
+    result = subprocess.run(["sh", "-c", environment["setup_commands"][0]["command"]], check=False,
+                            capture_output=True, text=True)
+    assert result.returncode == (0 if mutation is None else 1)
+    if mutation is not None:
+        assert "reviewed_skill_file_" in result.stderr
 
 
 def test_normal_history_requirement_fails_before_any_provider_action(fixture):

@@ -47,6 +47,21 @@ def inline_files():
     return result
 
 
+def setup_commands():
+    """Verify the actual reviewed overrides instead of the template's old bytes."""
+    files = {ROOT + "/" + name: value for name, value in FILES.items()}
+    script = (
+        "import hashlib\nfrom pathlib import Path\n"
+        f"files = {files!r}\n"
+        "for name, (size, expected) in files.items():\n"
+        "    path = Path(name)\n"
+        "    assert all(not p.is_symlink() for p in (path, *path.parents)) and path.is_file(), 'reviewed_skill_file_missing'\n"
+        "    assert path.stat().st_size == size, 'reviewed_skill_file_changed'\n"
+        "    assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, 'reviewed_skill_file_changed'\n"
+    )
+    return [{"command": "python3 - <<'PY'\n" + script + "PY"}]
+
+
 def check_template(template):
     """Check the documented file-discovery setup, without pretending to hash GET bytes."""
     if (template.get("capability_directories") != [ROOT]
