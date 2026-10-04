@@ -137,6 +137,29 @@ def workflow(control, *, allow_stopped=False):
     return value
 
 
+# Exact v1 assessment shape shown to QA. Placeholders describe each value; they are
+# never facts. Field names must match verification.binding_problems/claim_reasons.
+LEAD_VERIFICATION_EXAMPLE = {
+    "version": verification.VERSION,
+    "candidate_digest": "exact supplied candidate_digests value for this candidate key",
+    "assessed_at": "actual ISO-8601 assessment time with offset",
+    "valid_until": "evidence-based ISO-8601 expiry with offset, or null when freshness cannot be established",
+    "claims": {name: {"status": "verified_fact|inference|unresolved|contradicted|stale|unreachable",
+                      "reason": "exact named operator/site/task relationship and its limits",
+                      "source_refs": ["S1"]} for name in verification.CLAIMS},
+    "sources": [{"id": "S1", "url": "exact retrieved URL", "publisher": "owner of the page",
+                 "source_date": None, "event_date": None,
+                 "checked_at": "actual retrieval time copied from the source read, with offset",
+                 "retrieval": "rendered|static|operator_document|snippet|unreachable",
+                 "classification": "operator|primary|independent|vendor",
+                 "quote": "supporting excerpt", "freshness": "current|historical|unknown|stale",
+                 "freshness_reason": "why this freshness applies"}],
+    "counterevidence": {"status": "checked|unresolved|contradicted",
+                        "reason": "bounded automation/contradiction check and its limits",
+                        "searches": ["actual bounded search performed"], "source_refs": ["S1"]},
+}
+
+
 def qa_text(row, snapshot, crm_digest):
     identities = [{"id": r[0], "organization": r[1], "site": r[3],
                    "task": r[14], "task_source_url": r[9].splitlines()[0]}
@@ -147,7 +170,7 @@ def qa_text(row, snapshot, crm_digest):
                "accepted_keys": [], "summary": "Evidence-backed brief with citations and explicit gaps",
                "checks": [{"candidate_key": "exact candidate key", "source_support_verified": False,
                            "duplicate": False, "reason": "exact claim/source scope or duplicate reason",
-                           "lead_verification": None}]}
+                           "lead_verification": LEAD_VERIFICATION_EXAMPLE}]}
     adaptive = row.get("discovery_profile") == "adaptive-sites-v1"
     allowance = "Adaptively open the sources required for QA; retain actual coverage and honest incomplete checks. " if adaptive else f"At most {remaining} further observed web activities across search/open, then stop. "
     assessment = ("Existing deployments and CRM duplicates must not count toward new "
@@ -180,6 +203,10 @@ def qa_text(row, snapshot, crm_digest):
                "keys may have verified source support and no duplicate. For EVERY candidate, add lead_verification using "
                "the evidence skill's v1 assessment: bind its supplied candidate_digest, sources, dates/retrieval/freshness, "
                "operator/physical_site/site_task/human_workflow/plausible_fit claims and bounded counterevidence assessment. "
+               "Use the example's lead_verification field names exactly: the marker is `version` (not schema_version); "
+               "assessed_at and checked_at are actual ISO-8601 times with offset. Set valid_until to an evidence-based "
+               "ISO-8601 expiry only when the decisive facts are verified; otherwise use null, which correctly keeps the "
+               "candidate unresolved. Never invent a date. "
                "A source_support_verified boolean alone never qualifies a lead. Do not guess missing facts or repeat research "
                "to force a pass: incomplete assessments are retained unresolved with actionable feedback. Verification gates "
                "qualified promotion and downstream outreach eligibility; public evidence cannot prove buying intent, rights, "

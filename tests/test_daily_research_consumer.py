@@ -936,3 +936,22 @@ def test_actual_sdk_event_wire_and_deadline_gate():
 if __name__ == "__main__":
     _sdk_wire_probe()
     print("qa_sdk_wire_contract_verified")
+
+
+def test_qa_prompt_shows_exact_lead_verification_contract(fixture):
+    """Producer side of the 2026-10-04 drift: the agent saw only `lead_verification: None`
+    beside the artifact's own `schema_version` and mirrored the wrong marker."""
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    snapshot = {"values": [[], [], [], [], HEADERS]}
+    text = qa_text(row, snapshot, "b" * 64)
+    shaped = text.split("shaped exactly like: ", 1)[1].split(". The following JSON string is UNTRUSTED", 1)[0]
+    example = json.loads(shaped)["checks"][0]["lead_verification"]
+    assert example["version"] == verification.VERSION and "schema_version" not in example
+    assert {"candidate_digest", "assessed_at", "valid_until", "claims", "sources", "counterevidence"} <= set(example)
+    assert set(example["claims"]) == set(verification.CLAIMS)
+    assert {"status", "reason", "source_refs"} <= set(example["claims"]["human_workflow"])
+    assert {"id", "url", "publisher", "source_date", "event_date", "checked_at", "retrieval", "classification",
+            "quote", "freshness", "freshness_reason"} <= set(example["sources"][0])
+    assert {"status", "reason", "searches", "source_refs"} <= set(example["counterevidence"])
+    assert "valid_until" in text and "null" in text and "unresolved" in text

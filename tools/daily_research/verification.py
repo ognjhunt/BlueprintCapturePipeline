@@ -87,6 +87,97 @@ def source_usable(source, assessed_at, *, primary=False):
         return False
 
 
+def binding_problems(assessment, candidate_digest, assessment_digest, now):
+    """Name each binding, timing and structure gap. Returns problems, assessed_at and
+    (claims, indexed sources, counterevidence) when the structure can be read.
+
+    A null valid_until is the honest result when freshness cannot be established;
+    it blocks promotion with a located reason and is never replaced by a guess.
+    """
+    problems, assessed_at = [], None
+    try:
+        assessed_at = moment(assessment.get("assessed_at"))
+        if not assessed_at <= now:
+            problems.append("assessed_at: later than this evaluation; copy the actual assessment time")
+    except (TypeError, ValueError) as exc:
+        problems.append(f"assessed_at: {exc}; copy the actual ISO-8601 assessment time with its offset")
+    if assessment.get("version") != VERSION:
+        if "version" not in assessment and assessment.get("schema_version") == VERSION:
+            problems.append(f"version: name the field `version` (found `schema_version`={VERSION}); "
+                            "the assessment is not bound until it uses the contract field")
+        else:
+            problems.append(f"version: set `version` to {VERSION}")
+    if candidate_digest is not None and assessment.get("candidate_digest") != candidate_digest:
+        problems.append("candidate_digest: copy the exact supplied candidate digest; "
+                        "this assessment is not bound to this candidate")
+    valid_until = assessment.get("valid_until")
+    if valid_until is None:
+        problems.append("valid_until: no validity window; promotion requires an evidence-based ISO-8601 expiry "
+                        "with offset, and null correctly keeps the candidate unresolved")
+    else:
+        try:
+            expires = moment(valid_until)
+            if assessed_at is not None and not now < expires:
+                problems.append(f"valid_until: assessment expired at {expires.isoformat()}; reassess current sources")
+        except (TypeError, ValueError) as exc:
+            problems.append(f"valid_until: {exc}; use an ISO-8601 timestamp with offset, or null when unknown")
+    claims, sources, counter = assessment.get("claims"), assessment.get("sources"), assessment.get("counterevidence")
+    if not isinstance(claims, dict):
+        problems.append("claims: an object with operator, physical_site, site_task, human_workflow and plausible_fit")
+    if not isinstance(sources, list):
+        problems.append("sources: a list of retained source objects, each with a unique id")
+    if not isinstance(counter, dict):
+        problems.append("counterevidence: an object with status, reason, searches and source_refs")
+    if not isinstance(sources, list):
+        return problems, assessed_at, None
+    indexed = {s["id"]: s for s in sources if isinstance(s, dict) and text(s.get("id"))}
+    if len(indexed) != len(sources):
+        problems.append("sources: every retained source needs a unique nonblank id")
+    parts = (claims, indexed, counter) if isinstance(claims, dict) and isinstance(counter, dict) else None
+    return problems, assessed_at, parts
+
+
+def claim_reasons(claims, indexed, counter, assessed_at, *, diagnostic):
+    """Assess each claim and the counterevidence; returns (reasons, rejected, valid).
+
+    Diagnostic mode reports the same findings for an unbound or out-of-window
+    assessment but never applies a contradiction or marks the assessment valid.
+    """
+    reasons, rejected, valid = [], False, True
+    note = " (diagnostic until the assessment is bound and current)" if diagnostic else ""
+    for name in CLAIMS:
+        claim = claims.get(name)
+        if not isinstance(claim, dict) or claim.get("status") not in STATES or not text(claim.get("reason")):
+            reasons.append(f"{name}: assess claim and retain its source-linked reason{note}")
+            valid = False
+            continue
+        refs = claim.get("source_refs")
+        linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
+        usable = (bool(linked) and len(linked) == len(refs)
+                  and all(source_usable(s, assessed_at, primary=name in FACTS) for s in linked))
+        state = claim["status"]
+        if state == "contradicted" and usable:
+            rejected = not diagnostic
+            reasons.append(f"{name}: contradicted{note} — {claim['reason']}")
+        elif state not in ({"verified_fact"} if name in FACTS else {"verified_fact", "inference"}) or not usable:
+            reasons.append(f"{name}: {state}; resolve source, primary support, scope or freshness{note} — {claim['reason']}")
+    refs = counter.get("source_refs")
+    linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
+    usable = (bool(linked) and len(linked) == len(refs)
+              and all(source_usable(s, assessed_at) and s.get("classification") != "vendor" for s in linked))
+    searches = counter.get("searches")
+    searched = isinstance(searches, list) and bool(searches) and all(text(s) for s in searches)
+    if counter.get("status") == "contradicted" and usable and text(counter.get("reason")):
+        rejected = rejected or not diagnostic
+        reasons.append(f"counterevidence: contradicted{note} — " + counter["reason"])
+    elif (counter.get("status") != "checked" or not text(counter.get("reason"))
+          or not (searched or usable) or (refs and not usable)):
+        reasons.append(f"counterevidence: resolve automation/contradictions; retain actual searches, sources and limits{note}")
+    if counter.get("status") not in {"checked", "unresolved", "contradicted"}:
+        valid = False
+    return reasons, rejected, valid and not diagnostic
+
+
 def evaluate(candidate, assessment, now):
     """Missing or repairable evidence yields unresolved feedback, never rejection.
 
@@ -109,55 +200,20 @@ def evaluate(candidate, assessment, now):
     if not isinstance(assessment, dict):
         reasons.append("assessment: perform source assessment; discovery alone is unverified")
     else:
-        try:
-            assessed_at = moment(assessment.get("assessed_at"))
-            if (assessment.get("version") != VERSION
-                    or candidate_digest is None or assessment_digest is None
-                    or assessment.get("candidate_digest") != candidate_digest):
-                raise ValueError("binding")
-            if not assessed_at <= now < moment(assessment.get("valid_until")):
-                raise ValueError("freshness")
-            claims, sources = assessment.get("claims"), assessment.get("sources")
-            counter = assessment.get("counterevidence")
-            if (not isinstance(claims, dict) or not isinstance(sources, list)
-                    or not isinstance(counter, dict)):
-                raise TypeError("structure")
-            indexed = {s["id"]: s for s in sources if isinstance(s, dict) and text(s.get("id"))}
-            if len(indexed) != len(sources):
-                raise ValueError("source identity")
-            result["assessment_valid"] = True
-            for name in CLAIMS:
-                claim = claims.get(name)
-                if not isinstance(claim, dict) or claim.get("status") not in STATES or not text(claim.get("reason")):
-                    reasons.append(f"{name}: assess claim and retain its source-linked reason")
-                    result["assessment_valid"] = False
-                    continue
-                refs = claim.get("source_refs")
-                linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
-                usable = (bool(linked) and len(linked) == len(refs)
-                          and all(source_usable(s, assessed_at, primary=name in FACTS) for s in linked))
-                state = claim["status"]
-                if state == "contradicted" and usable:
-                    rejected = True
-                    reasons.append(f"{name}: contradicted — {claim['reason']}")
-                elif state not in ({"verified_fact"} if name in FACTS else {"verified_fact", "inference"}) or not usable:
-                    reasons.append(f"{name}: {state}; resolve source, primary support, scope or freshness — {claim['reason']}")
-            refs = counter.get("source_refs")
-            linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
-            usable = (bool(linked) and len(linked) == len(refs)
-                      and all(source_usable(s, assessed_at) and s.get("classification") != "vendor" for s in linked))
-            searches = counter.get("searches")
-            searched = isinstance(searches, list) and bool(searches) and all(text(s) for s in searches)
-            if counter.get("status") == "contradicted" and usable and text(counter.get("reason")):
-                rejected = True
-                reasons.append("counterevidence: contradicted — " + counter["reason"])
-            elif (counter.get("status") != "checked" or not text(counter.get("reason"))
-                  or not (searched or usable) or (refs and not usable)):
-                reasons.append("counterevidence: resolve automation/contradictions; retain actual searches, sources and limits")
-            if counter.get("status") not in {"checked", "unresolved", "contradicted"}:
-                result["assessment_valid"] = False
-        except (KeyError, TypeError, ValueError):
-            reasons.append("assessment: repair candidate binding, dates, source IDs or assessment structure")
+        problems, assessed_at, parts = binding_problems(assessment, candidate_digest, assessment_digest, now)
+        if problems or candidate_digest is None or assessment_digest is None:
+            # Unbound, expired or malformed: name every failed check and still report
+            # the claims so the gap is actionable. Diagnostics never reject or promote.
+            reasons.extend(problems)
+            if parts and assessed_at is not None:
+                reasons.extend(claim_reasons(*parts, assessed_at, diagnostic=True)[0])
+        else:
+            try:
+                claim_notes, rejected, valid = claim_reasons(*parts, assessed_at, diagnostic=False)
+                result["assessment_valid"] = valid
+                reasons.extend(claim_notes)
+            except (KeyError, TypeError, ValueError):
+                reasons.append("assessment: repair candidate binding, dates, source IDs or assessment structure")
     status = "rejected" if rejected else "unresolved" if reasons else "verified"
     result.update(status=status, reasons=reasons or ["Primary sources support the named site/task and human workflow; fit remains a bounded hypothesis"],
                   eligible_for_qualified_promotion=status == "verified")

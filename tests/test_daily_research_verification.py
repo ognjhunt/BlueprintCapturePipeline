@@ -167,3 +167,192 @@ def test_same_city_named_facilities_survive_without_semantic_alias_decision():
     assert result["candidate_count"] == result["unique_site_task_candidates"] == 2
     assert result["duplicates"] == 0 and result["verified_unique_site_task_candidates"] == 2
     assert all(r["eligible_for_qualified_promotion"] for r in result["results"])
+
+
+# --- Located diagnostics (2026-10-04 replay class) ---------------------------------
+# The October 4 QA assessments used `schema_version` for the version marker and an
+# honest `valid_until: null` (the evidence skill says to leave freshness unresolved).
+# The gate then returned one generic reason and evaluated no claim. These synthetic
+# shapes pin the repair: same decisions, but every failed check is named and claims
+# are still reported, without inventing dates or accepting an unbound assessment.
+CATCH_ALL = "assessment: repair candidate binding, dates, source IDs or assessment structure"
+
+
+def _legacy_evaluate(candidate, assessment, now):
+    """Frozen copy of the pre-2026-10-04 decision logic; only reasons may differ now."""
+    reasons, rejected = [], False
+    try:
+        candidate_digest, assessment_digest = verification.digest(candidate), verification.digest(assessment)
+    except (ValueError, TypeError, OverflowError):
+        candidate_digest, assessment_digest = None, None
+        reasons.append("digest")
+    result = {"assessment_valid": False}
+    if not verification.identity_key(candidate):
+        reasons.append("identity")
+    if not isinstance(assessment, dict):
+        reasons.append("assessment")
+    else:
+        try:
+            assessed_at = verification.moment(assessment.get("assessed_at"))
+            if (assessment.get("version") != verification.VERSION
+                    or candidate_digest is None or assessment_digest is None
+                    or assessment.get("candidate_digest") != candidate_digest):
+                raise ValueError("binding")
+            if not assessed_at <= now < verification.moment(assessment.get("valid_until")):
+                raise ValueError("freshness")
+            claims, sources = assessment.get("claims"), assessment.get("sources")
+            counter = assessment.get("counterevidence")
+            if (not isinstance(claims, dict) or not isinstance(sources, list)
+                    or not isinstance(counter, dict)):
+                raise TypeError("structure")
+            indexed = {s["id"]: s for s in sources if isinstance(s, dict) and verification.text(s.get("id"))}
+            if len(indexed) != len(sources):
+                raise ValueError("source identity")
+            result["assessment_valid"] = True
+            for name in verification.CLAIMS:
+                claim = claims.get(name)
+                if not isinstance(claim, dict) or claim.get("status") not in verification.STATES or not verification.text(claim.get("reason")):
+                    reasons.append(name)
+                    result["assessment_valid"] = False
+                    continue
+                refs = claim.get("source_refs")
+                linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
+                usable = (bool(linked) and len(linked) == len(refs)
+                          and all(verification.source_usable(s, assessed_at, primary=name in verification.FACTS) for s in linked))
+                state = claim["status"]
+                if state == "contradicted" and usable:
+                    rejected = True
+                    reasons.append(name)
+                elif state not in ({"verified_fact"} if name in verification.FACTS else {"verified_fact", "inference"}) or not usable:
+                    reasons.append(name)
+            refs = counter.get("source_refs")
+            linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
+            usable = (bool(linked) and len(linked) == len(refs)
+                      and all(verification.source_usable(s, assessed_at) and s.get("classification") != "vendor" for s in linked))
+            searches = counter.get("searches")
+            searched = isinstance(searches, list) and bool(searches) and all(verification.text(s) for s in searches)
+            if counter.get("status") == "contradicted" and usable and verification.text(counter.get("reason")):
+                rejected = True
+                reasons.append("counterevidence")
+            elif (counter.get("status") != "checked" or not verification.text(counter.get("reason"))
+                  or not (searched or usable) or (refs and not usable)):
+                reasons.append("counterevidence")
+            if counter.get("status") not in {"checked", "unresolved", "contradicted"}:
+                result["assessment_valid"] = False
+        except (KeyError, TypeError, ValueError):
+            reasons.append("catch-all")
+    status = "rejected" if rejected else "unresolved" if reasons else "verified"
+    return {"status": status, "eligible_for_qualified_promotion": status == "verified",
+            "assessment_valid": result["assessment_valid"]}
+
+
+def oct4_shape(c):
+    """Synthetic assessment with the retained October 4 field shape (no real lead data)."""
+    value = assessment(c, NOW)
+    value["schema_version"] = value.pop("version")
+    value["valid_until"] = None
+    value["claims"]["human_workflow"].update(status="unresolved", reason="Company-wide staffing wording; exact-site step unconfirmed")
+    value["counterevidence"].update(status="unresolved", reason="Bounded automation search left the station method open")
+    value.update(assessment_status="unresolved", freshness_boundary_reason="No defensible expiry; missing facts stay unresolved",
+                 contact_assessment={"status": "unresolved"}, duplicate_assessment={"duplicate": False},
+                 qualification_gates={"buying_intent": "unknown"})
+    return value
+
+
+def test_oct4_shape_names_each_failed_check_and_still_reports_claims():
+    c = candidate()
+    value = oct4_shape(c)
+    saved = deepcopy(value)
+    result = verification.evaluate(c, value, NOW)
+    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
+    assert result["assessment_valid"] is False
+    assert CATCH_ALL not in result["reasons"]
+    assert any(r.startswith("version:") and "schema_version" in r for r in result["reasons"])
+    assert any(r.startswith("valid_until:") for r in result["reasons"])
+    assert any(r.startswith("human_workflow:") for r in result["reasons"])
+    assert any(r.startswith("counterevidence:") for r in result["reasons"])
+    assert result["assessment"] == saved and value == saved
+
+
+def test_null_valid_until_blocks_promotion_without_inventing_a_date():
+    c = candidate()
+    value = assessment(c, NOW)
+    value["valid_until"] = None
+    result = verification.evaluate(c, value, NOW)
+    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
+    assert [r.split(":")[0] for r in result["reasons"]] == ["valid_until"]
+    assert result["assessment"]["valid_until"] is None
+
+
+@pytest.mark.parametrize(("mutation", "prefix"), [
+    (lambda v: v.update(candidate_digest="0" * 64), "candidate_digest:"),
+    (lambda v: v.update(version="blueprint.lead-verification.v0"), "version:"),
+    (lambda v: v.pop("assessed_at"), "assessed_at:"),
+    (lambda v: v.update(assessed_at=NOW.replace(tzinfo=None).isoformat()), "assessed_at:"),
+    (lambda v: v.update(assessed_at=(NOW + timedelta(seconds=1)).isoformat()), "assessed_at:"),
+    (lambda v: v.update(valid_until=NOW.isoformat()), "valid_until:"),
+    (lambda v: v.update(valid_until="2026-10-05"), "valid_until:"),
+    (lambda v: v.update(claims=[]), "claims:"),
+    (lambda v: v.update(sources={}), "sources:"),
+    (lambda v: v.update(counterevidence="checked"), "counterevidence:"),
+    (lambda v: v["sources"].append(deepcopy(v["sources"][0])), "sources:"),
+])
+def test_each_unbound_or_malformed_check_has_its_own_located_reason(mutation, prefix):
+    c = candidate()
+    value = assessment(c, NOW)
+    mutation(value)
+    result = verification.evaluate(c, value, NOW)
+    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
+    assert CATCH_ALL not in result["reasons"]
+    assert any(r.startswith(prefix) for r in result["reasons"]), result["reasons"]
+
+
+def test_unbound_assessment_reports_but_never_applies_a_contradiction():
+    c = candidate()
+    value = assessment(c, NOW)
+    value["candidate_digest"] = "0" * 64
+    value["claims"]["site_task"].update(status="contradicted", reason="Operator page says this task moved off site")
+    result = verification.evaluate(c, value, NOW)
+    assert result["status"] == "unresolved"
+    assert any(r.startswith("site_task:") and "diagnostic" in r for r in result["reasons"])
+
+
+def _equivalence_corpus():
+    c = candidate()
+    mutations = [
+        lambda v: None,
+        lambda v: v.update(valid_until=None),
+        lambda v: v.update(schema_version=v.pop("version")),
+        lambda v: v.update(candidate_digest="0" * 64),
+        lambda v: v.update(version="x"),
+        lambda v: v.pop("assessed_at"),
+        lambda v: v.update(assessed_at=(NOW + timedelta(seconds=1)).isoformat()),
+        lambda v: v.update(valid_until=NOW.isoformat()),
+        lambda v: v.update(valid_until="2026-10-05"),
+        lambda v: v.update(claims=[]),
+        lambda v: v.update(sources={}),
+        lambda v: v.update(counterevidence="checked"),
+        lambda v: v["sources"].append(deepcopy(v["sources"][0])),
+        lambda v: v["claims"]["site_task"].update(status="contradicted"),
+        lambda v: (v.update(candidate_digest="0" * 64), v["claims"]["site_task"].update(status="contradicted")),
+        lambda v: (v.update(valid_until=None), v["claims"]["site_task"].update(status="contradicted")),
+        lambda v: v["counterevidence"].update(status="contradicted", source_refs=["synthetic-primary"]),
+        lambda v: v["counterevidence"].update(status="bogus"),
+        lambda v: v["claims"].pop("operator"),
+        lambda v: v["sources"][0].update(freshness="historical"),
+    ]
+    for mutate in mutations:
+        value = assessment(c, NOW)
+        mutate(value)
+        yield c, value
+    yield c, oct4_shape(c)
+    yield c, None
+    yield {**c, "organization": ""}, assessment(c, NOW)
+
+
+@pytest.mark.parametrize("case", list(_equivalence_corpus()))
+def test_decisions_match_frozen_legacy_gate_only_reasons_change(case):
+    c, value = case
+    legacy = _legacy_evaluate(c, deepcopy(value), NOW)
+    current = verification.evaluate(c, deepcopy(value), NOW)
+    assert {k: current[k] for k in legacy} == legacy
