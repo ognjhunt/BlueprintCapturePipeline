@@ -7,10 +7,43 @@ from decimal import Decimal
 
 TARGET_NEW = 10
 MAX_CANDIDATES = 100  # Input/resource ceiling, not a research quota.
+TEAM_DIRECTORY = "https://app.notion.com/p/3eb80154161d817aa3e6d9b9d7eba938"
 
 
 def instructions(target_usd=1):
     return (
+        "Work breadth-first, then deepen. Before external searches, read the broader Team Directory "
+        f"through the existing Notion read connection when available: {TEAM_DIRECTORY}. "
+        "Read its index, role groups and relevant full records, not just the four-record supplied capability register. "
+        "Record actual directory coverage and original evidence dates; directory entries are research leads, "
+        "not qualified partners. Read prior run summaries, tested hypotheses, rejections and actual outcomes "
+        "through authorized company history. Browse with an empty query when useful, follow available pages, "
+        "then fetch relevant full records. Missing or expired access is a gap, never permission to widen scope. "
+        "If Notion reads fail, use available reviewed context and public primary sources to broaden discovery; "
+        "do not silently treat the small snapshot as the whole directory or stop all research. "
+        "Build a capability/task/industry opportunity map from that evidence. Consider manufacturing machine "
+        "tending, kitting/assembly, warehouse picking/unloading/material transport, food handling, commercial "
+        "cleaning and inspection, and textiles only where supported; these are starting examples, not fixed filters. "
+        "Software, policies, components and world models need a concrete robot/workflow integration hypothesis. "
+        "Survey several distinct supported task families before spending most of the run on one. Choose "
+        "queries and allocation yourself based on evidence and prior outcomes. An early easy hit, prior laundry "
+        "success or the first CRM-ready row is not a reason to end exploration. Avoid recent-announcement-only "
+        "searches: established operating sites, operator service/process pages and employer-affiliated job "
+        "descriptions can establish current recurring work without new funding or an expansion announcement. "
+        "First build a substantial source-backed opportunity_shortlist, then deepen its strongest entries. "
+        "Aim for roughly 20-40 distinct site/task leads across supported families when sources and the admitted "
+        "envelope allow; this is a planning aim, never a required count, padded quota or stopping rule. "
+        "Open operator sources to verify initial leads, dedupe identities early, and record remaining questions "
+        "and next checks. Retain promising incomplete, rejected and duplicate leads with their honest status "
+        "instead of losing them when they cannot yet enter the CRM. A search passage alone is an unverified lead. "
+        "Deepen the strongest entries using specific task evidence, robot limitations, incumbent automation, "
+        "geography and credible professional routing. Keep confidence in site/task evidence and robot fit "
+        "separate from buying interest. High-confidence public task evidence can coexist with unknown buying "
+        "interest; never lower task confidence solely because nobody has replied, or invent demand from a task. "
+        "Only candidates satisfying the existing source/evidence contract enter candidate QA and CRM admission. "
+        "Before stopping, revisit underexplored supported families and unresolved strong leads; marginal returns "
+        "must be assessed across the stated breadth, not just one laundry query sequence. Reserve the existing "
+        "QA/publication time and record whether breadth was interrupted rather than claiming completion. "
         "Research a defined, evidence-based scope of NEW distinct commercial site/task opportunities. Never pad the list. "
         "Work in two stages: first discover relevant physical work at named operating sites, then rank and "
         "assess the useful candidates against their evidence and limits. Do not require a verified contact, "
@@ -117,6 +150,58 @@ def validate_coverage(value, candidate_count):
     elif candidate_count < TARGET_NEW and reason is None:
         raise ValueError("discovery_shortfall_reason_required")
     return value
+
+
+def shortlist_issues(value, run_date):
+    """Research backlog only, never candidate admission or contact authority."""
+    from datetime import date
+
+    from tools.daily_research.runner import Refusal, public_url
+
+    text_fields = {"organization", "site", "location", "task", "capability_family", "robot_fit", "buying_interest"}
+    fields = text_fields | {"site_task_confidence", "robot_fit_confidence", "status", "remaining_questions", "sources"}
+    source_fields = {"claim", "url", "publisher", "quote", "source_date", "checked_date"}
+    def text(v):
+        return isinstance(v, str) and 1 <= len(v.strip()) <= 2000
+    if not isinstance(value, list) or len(value) > MAX_CANDIDATES:
+        yield "", "discovery_shortlist_invalid"
+        return
+    for index, item in enumerate(value):
+        pointer = f"/{index}"
+        if not isinstance(item, dict) or set(item) != fields:
+            yield pointer, "discovery_shortlist_invalid"
+            continue
+        for field in text_fields:
+            if not text(item[field]):
+                yield pointer + "/" + field, "discovery_shortlist_invalid"
+        for field in ("site_task_confidence", "robot_fit_confidence"):
+            if item[field] not in ("unknown", "low", "medium", "high"):
+                yield pointer + "/" + field, "discovery_shortlist_invalid"
+        if item["status"] not in ("needs_research", "candidate", "rejected", "duplicate", "existing_deployment"):
+            yield pointer + "/status", "discovery_shortlist_invalid"
+        questions = item["remaining_questions"]
+        if not isinstance(questions, list) or len(questions) > 20 or any(not text(q) for q in questions):
+            yield pointer + "/remaining_questions", "discovery_shortlist_invalid"
+        sources = item["sources"]
+        if not isinstance(sources, list) or not 1 <= len(sources) <= 12:
+            yield pointer + "/sources", "discovery_shortlist_invalid"
+            continue
+        for si, source in enumerate(sources):
+            sp = pointer + f"/sources/{si}"
+            if not isinstance(source, dict) or set(source) != source_fields:
+                yield sp, "discovery_shortlist_invalid"
+                continue
+            if any(not text(source[f]) for f in ("claim", "url", "publisher", "quote")):
+                yield sp, "discovery_shortlist_invalid"
+            try:
+                public_url(source["url"])
+                published = source["source_date"]
+                if published is not None and (not isinstance(published, str) or date.fromisoformat(published).isoformat() != published or published > run_date):
+                    raise ValueError
+                if source["checked_date"] != run_date:
+                    raise ValueError
+            except (Refusal, TypeError, ValueError):
+                yield sp, "discovery_shortlist_invalid"
 
 
 ESTIMATOR_VERSION = "blueprint.model-token-estimate.v2"
