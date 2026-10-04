@@ -55,7 +55,7 @@ remain separate.
 
 The fixed-destination publisher rechecks the protected result, exact candidate
 and raw assessment digests and current validity before a new write. GET-only
-reconciliation validates at the retained review time so an expired assessment
+reconciliation validates the retained exact payload and plan so an expired assessment
 does not prevent recovery of an already completed write or cause a duplicate
 effect. Historical readback does not refresh evidence or grant another write.
 
@@ -92,6 +92,12 @@ Buying intent, consent/rights, commercial qualification, robot compatibility and
 deployment readiness remain explicitly separate gates. A verified public human
 task is a research lead; it is not an interested buyer, a cleared capture, a robot
 match or a ready deployment.
+
+The controlled runtime retains its native agent publication, company history, paginated
+Notion batching, fixed-range Sheets writes, durable claims and terminal recovery.
+Inspection exposes raw assessments and repair reasons without requiring positive
+verification. Rejected-presentation retries and every fresh Notion batch require
+current evidence; readback alone grants no new mutation.
 
 Release: package `verification.py` through the existing immutable standalone
 archive and revise the two hash-bound instruction files as session overrides.

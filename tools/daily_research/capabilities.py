@@ -27,7 +27,7 @@ TEMPLATE_FILES = {
 # these reviewed release bytes while preflight still checks the unchanged saved
 # template's original discovery inventory. No live template mutation is needed.
 FILES = dict(TEMPLATE_FILES)
-FILES['blueprint-evidence-qualification/SKILL.md'] = (7714, '4d929210c18681d2136230778d719762ef63568a9ed33c8f2826bba1af76ffa4')
+FILES['blueprint-evidence-qualification/SKILL.md'] = (8455, 'f6b4ffe95a10207395b9ea7989e2cc179dcc2a5cc5490b808f3857d2a9036750')
 FILES['blueprint-evidence-qualification/references/prospect-contract.md'] = (2226, '39571718234ce2f7536a56f6e8440183536c259bf9b4e9a0d54944cc9aaaf6b3')
 
 
@@ -45,6 +45,21 @@ def inline_files():
         result.append({"type": "inline", "path": ROOT + "/" + name,
                        "data": base64.b64encode(raw).decode("ascii")})
     return result
+
+
+def setup_commands():
+    """Verify the actual reviewed overrides instead of the template's old bytes."""
+    files = {ROOT + "/" + name: value for name, value in FILES.items()}
+    script = (
+        "import hashlib\nfrom pathlib import Path\n"
+        f"files = {files!r}\n"
+        "for name, (size, expected) in files.items():\n"
+        "    path = Path(name)\n"
+        "    assert all(not p.is_symlink() for p in (path, *path.parents)) and path.is_file(), 'reviewed_skill_file_missing'\n"
+        "    assert path.stat().st_size == size, 'reviewed_skill_file_changed'\n"
+        "    assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, 'reviewed_skill_file_changed'\n"
+    )
+    return [{"command": "python3 - <<'PY'\n" + script + "PY"}]
 
 
 def check_template(template):

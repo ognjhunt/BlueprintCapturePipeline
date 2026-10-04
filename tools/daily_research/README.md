@@ -242,7 +242,7 @@ private copy of state for inspection; mutations belong in the canonical ledger.
 
 ## Lifecycle and rollback
 
-The runner never deletes a session. Cancel stops a turn; no non-destructive
+Session deletion is **off by default**. Cancel stops a turn; no non-destructive
 hosted sandbox billing-stop control is verified. Idle is not documented billing
 shutdown. Preserve the artifact before any approved cleanup. Permanent deletion
 still needs **action-time approval naming the actual session/environment**;
@@ -253,10 +253,38 @@ next-run guard. Physical reclamation/billing timing remains unverified.
 
 **A timer alone cannot make indefinite daily operation ready:** after the canary,
 unresolved hosted cleanup blocks the next paid date. Current policy needs an
-owner/operator closeout process each day or a separately approved documented
-lifecycle solution. This package does not introduce automatic irreversible
-cleanup or broaden deletion authority.
+owner/operator closeout process each day or the prospective standing-policy
+path below. Enabling the worker alone never grants deletion authority.
 [OpenAI session lifecycle](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage).
+
+For the owner's requested unattended daily cleanup, the canonical control may
+retain `cleanup_policy` with `enabled: true`, a real `approval_reference` to the
+owner's standing direction, `first_date` (2026-10-03 or later), `expires_at` (UTC),
+and the exact existing `project_id`, `agent_id`, `template_id` and private
+`bucket: "blueprint-8c1ca.appspot.com"`. The local owner installs this retained
+policy; empty or `PENDING` references and missing/expired/revoked policy never admit
+deletion. This does not alter the separately approved Oct2 closeout.
+
+The existing scheduler first requires completed canonical research, validated QA,
+terminal publication and both bound Notion/Sheets acknowledged readbacks. It
+fully inventories the exact session/turns/items/artifacts and preserves every
+downloadable artifact's content alongside the validated portable export and
+original source-row bytes under `operations/research/cleanup/DATE/HASH` in the
+existing private company bucket. Every object is created without overwrite and
+read back at its retained generation with its byte count and SHA-256 verified.
+Provider credential material is not archived. Archive or inventory gaps leave
+cleanup blocked; a historical incomplete-publication label remains unchanged
+when later exact readbacks prove canonical completion.
+
+Under the existing renewable lease, a durable one-use deletion claim and exact
+policy/resource/archive binding precede the SDK session DELETE. Final inventory,
+policy, expiry, stop and lease checks still apply. A lost response, crash or
+unused consumed claim is GET-only on restart, including after revocation: no
+second DELETE, cancellation or new inference. Cleanup is retried through the
+existing five-minute schedule, and `record-cleanup` clears the next-run guard
+only after authenticated session **and** environment 404s. A surviving sandbox
+remains an explicit lifecycle gap; no undocumented environment-delete endpoint
+is guessed. `billing_stop_verified` stays false and unknown usage/cost is retained.
 
 Rollback uses the independent host's ordinary service controls, not Pipeline
 app health or an operator-door hold action:

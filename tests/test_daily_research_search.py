@@ -20,6 +20,7 @@ from tools.daily_research.runner import (
     canonical,
     check_agent,
     configuration,
+    digest,
     preflight,
 )
 
@@ -98,6 +99,305 @@ def test_new_session_replaces_tools_without_saved_agent_or_sandbox_changes(fixtu
     assert "Native web_search only." not in payload["input"]
     assert "PERPLEXITY_API_KEY" not in canonical(payload)
     assert ledger.get(DAY)["create_payload"] == payload
+
+
+def test_owner_mcp_is_explicit_additive_and_frozen_before_create(fixture):
+    runner, api, ledger = fixture
+    connections = [{"type": "mcp", "server_label": label,
+        "transport": {"type": "http", "server_url": url, "headers": {}},
+        "credential_id": "credential_synthetic_owner_" + label, "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+        for label, (url, _) in search.MCP_READ_TOOLS.items() if label in {"googlesheets", "slack"}]
+    api.agent["tools"].extend(deepcopy(connections))
+    original = deepcopy(api.agent)
+    with pytest.raises(Refusal, match="agent_configuration_mismatch"):
+        runner.start_or_resume()
+    assert not api.payloads and ledger.rows() == []
+    runner.config.update(mcp_profile=search.MCP_PROFILE, publication_profile="agent-owned-v1")
+    checked = preflight(api, search_provider=search.PROFILE, publication_profile="agent-owned-v1", mcp_profile=search.MCP_PROFILE)
+    assert checked["inference_started"] is False and not api.payloads and not api.executions
+    with_history = preflight(api, search_provider=search.PROFILE, publication_profile="agent-owned-v1",
+                             history_profile="agent-history-v1", mcp_profile=search.MCP_PROFILE)
+    assert with_history["session_agent_override"]["tools"] == search.tools("agent-owned-v1", "agent-history-v1") + search.mcp_tools(connections)
+    row = runner.start_or_resume()
+    payload = api.payloads[0]
+    assert payload["agent"]["tools"] == search.tools("agent-owned-v1") + search.mcp_tools(connections)
+    assert api.agent == original and payload["environment"]["network"] == {"access": "disabled"}
+    assert payload["vault_ids"] == ["vault_synthetic_googlesheets", "vault_synthetic_slack"]
+    assert "headers" not in payload["environment"]
+    assert row["mcp_binding"] == connections == row["preflight"]["mcp_binding"]
+    assert payload["metadata"]["mcp_binding_digest"] == digest(connections)
+    assert payload["metadata"]["mcp_vault_binding_digest"] == digest(row["mcp_vault_binding"])
+    assert len(row["mcp_vault_binding"]) == 2
+    assert ledger.get(DAY)["create_payload"] == payload
+    assert all(tool["required"] is False and tool["credential_id"] == source["credential_id"]
+        for tool, source in zip(payload["agent"]["tools"][-2:], connections, strict=True))
+    assert not any(name.startswith(("update", "slack_send", "slack_schedule"))
+        for tool in payload["agent"]["tools"][-2:] for name in tool["allowed_tools"])
+    assert [tool["name"] for tool in search.tools("agent-owned-v1", "agent-history-v1")][-2:] == [
+        "search_company_history", "fetch_company_history_record"]
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    for tool in session["agent"]["tools"][-2:]:
+        tool["transport"].pop("headers")
+    Consumer.check_session(row, session)
+    changed = deepcopy(connections)
+    changed[0]["credential_id"] += "_changed"
+    api.agent["tools"][-2:] = changed
+    notion = {"type": "mcp", "server_label": "notion",
+        "transport": {"type": "http", "server_url": "https://mcp.notion.com/mcp", "headers": {}},
+        "credential_id": "credential_synthetic_owner_notion", "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(notion)
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+    fresh = preflight(api, search_provider=search.PROFILE, mcp_profile=search.MCP_PROFILE)
+    assert fresh["mcp_binding"] == changed + [notion] and row["mcp_binding"] == connections
+    assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == payload
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "unrelated", "shared_selected", "endpoint", "static_endpoint", "auth_type", "vault_id"])
+def test_owner_vault_metadata_rejects_unbound_scope_before_intent_or_create(fixture, change):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "notion", "transport": {"type": "http", "server_url": "https://mcp.notion.com/mcp"},
+        "credential_id": "credential_synthetic_notion", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    credential = {"id": tool["credential_id"], "vault_id": "vault_synthetic_notion",
+        "auth": {"type": "mcp_oauth", "mcp_server_url": tool["transport"]["server_url"]}}
+    api.vault_credentials = {"vault_synthetic_notion": [credential]}
+    if change == "missing":
+        api.vault_credentials = {}
+    elif change == "duplicate":
+        api.vault_credentials["vault_synthetic_second"] = [{**credential, "vault_id": "vault_synthetic_second"}]
+    elif change == "unrelated":
+        api.vault_credentials["vault_synthetic_notion"].append({**credential, "id": "credential_unrelated"})
+    elif change == "shared_selected":
+        api.agent["tools"].append({**deepcopy(tool), "server_label": "slack", "credential_id": "credential_synthetic_slack",
+            "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"}})
+        api.vault_credentials["vault_synthetic_notion"].append({**credential, "id": "credential_synthetic_slack"})
+    elif change == "endpoint":
+        credential["auth"]["mcp_server_url"] += "/unreviewed"
+    elif change == "static_endpoint":
+        credential["auth"].update(type="static_bearer", mcp_server_url="https://unreviewed.example/mcp")
+    elif change == "auth_type":
+        credential["auth"]["type"] = "environment_variable"
+    else:
+        credential["vault_id"] = "vault_different"
+    with pytest.raises(Refusal, match="research_mcp_vault_"):
+        runner.start_or_resume()
+    assert ledger.rows() == [] and not api.payloads and not api.executions
+    assert all(call[0] == "GET" for call in api.calls)
+
+
+@pytest.mark.parametrize("url_metadata", ["absent", "null", "matched"])
+def test_saved_static_bearer_keeps_unknown_url_distinct_from_configured_endpoint(fixture, url_metadata):
+    runner, api, _ = fixture
+    tool = {"type": "mcp", "server_label": "slack", "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"},
+        "credential_id": "credential_synthetic_slack", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    auth = {"type": "static_bearer"}
+    if url_metadata != "absent":
+        auth["mcp_server_url"] = None if url_metadata == "null" else tool["transport"]["server_url"]
+    api.vault_credentials = {"vault_synthetic_slack": [{"id": tool["credential_id"],
+        "vault_id": "vault_synthetic_slack", "auth": {**auth, "metadata_not_retained": "synthetic"}}]}
+    row = runner.start_or_resume()
+    assert row["mcp_vault_binding"][0]["credential_auth"] == auth
+    assert row["mcp_vault_binding"][0]["mcp_server_url"] == tool["transport"]["server_url"]
+    assert row["create_payload"]["vault_ids"] == ["vault_synthetic_slack"]
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+    assert len(api.payloads) == 1 and not api.executions
+
+
+@pytest.mark.parametrize("change", ["missing_attachment", "extra_attachment", "duplicate_attachment", "binding", "payload"])
+def test_charged_mcp_vault_binding_cannot_change_during_recovery(fixture, change):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "slack", "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"},
+        "credential_id": "credential_synthetic_slack", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    original = deepcopy(row["create_payload"])
+    session = api.get("session", row["session_id"])
+    if change == "missing_attachment":
+        session.pop("vault_ids")
+    elif change == "extra_attachment":
+        session["vault_ids"].append("vault_unrelated")
+    elif change == "duplicate_attachment":
+        session["vault_ids"] *= 2
+    elif change == "binding":
+        row["mcp_vault_binding"][0]["vault_id"] = "vault_other"
+    else:
+        row["create_payload"]["vault_ids"] = ["vault_other"]
+    with pytest.raises(Refusal, match="research_mcp_vault_binding_changed"):
+        Consumer.check_session(row, session)
+    assert ledger.get(DAY)["create_payload"] == original and len(api.payloads) == 1 and not api.executions
+
+
+def test_old_charged_mcp_intent_does_not_gain_vaults_or_read_new_inventory(fixture):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "slack", "transport": {"type": "http", "server_url": "https://mcp.slack.com/mcp"},
+        "credential_id": "credential_synthetic_slack", "allowed_tools": None, "connection_origin": "service",
+        "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    # Reproduce the original, already charged pre-vault intent without changing its tools/instructions.
+    row.pop("mcp_vault_binding")
+    row["metadata"].pop("mcp_vault_binding_digest")
+    row["create_payload"].pop("vault_ids")
+    legacy_digest_input = deepcopy(row["create_payload"])
+    legacy_digest_input["metadata"].pop("payload_digest")
+    row["metadata"]["payload_digest"] = digest(legacy_digest_input)
+    api.payloads[0] = deepcopy(row["create_payload"])
+    api.sessions[0]["metadata"] = deepcopy(row["metadata"])
+    api.sessions[0].pop("vault_ids")
+    ledger.put(row)
+    original = deepcopy(row["create_payload"])
+    api.resolve_mcp_vaults = lambda _: pytest.fail("charged recovery must not resolve or attach new vaults")
+    api.agent["tools"].append({"type": "mcp", "server_label": "later_owner_connection"})
+    resumed = runner.start_or_resume(allow_create=False)
+    Consumer.check_session(resumed, api.get("session", resumed["session_id"]))
+    assert resumed["create_payload"] == original and "mcp_vault_binding" not in resumed
+    assert "vault_ids" not in resumed["create_payload"] and len(api.payloads) == 1
+
+
+@pytest.mark.parametrize("allowed", [None, ["notion-fetch", "notion-create-pages"]])
+def test_owner_notion_is_frozen_and_session_tools_are_only_official_reads(fixture, allowed):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "notion",
+        "transport": {"type": "http", "server_url": "https://mcp.notion.com/mcp", "headers": {}},
+        "credential_id": "credential_synthetic_owner_notion", "allowed_tools": allowed,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(deepcopy(tool))
+    original = deepcopy(api.agent)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    expected = ["notion-get-tool-access", "notion-search", "notion-fetch"] if allowed is None else ["notion-fetch"]
+    assert api.agent == original and row["mcp_binding"] == [tool]
+    assert row["metadata"]["mcp_binding_digest"] == digest([tool])
+    assert api.payloads[0]["agent"]["tools"][-1] == {**tool, "allowed_tools": expected}
+    assert "notion-create-pages" not in api.payloads[0]["agent"]["tools"][-1]["allowed_tools"]
+    assert "notion-get-tool-access" in api.payloads[0]["agent"]["instructions"]
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    session["agent"]["tools"][-1]["allowed_tools"].append("notion-update-page")
+    with pytest.raises(Refusal, match="agent_search_profile_mismatch"):
+        Consumer.check_session(row, session)
+    assert len(api.payloads) == 1 and ledger.get(DAY)["create_payload"] == row["create_payload"]
+    assert not api.executions
+
+
+def test_owner_firebase_preserves_connection_but_admits_only_database_metadata(fixture):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "firebase",
+        "transport": {"type": "http", "server_url": "https://firestore.googleapis.com/mcp", "headers": {}},
+        "credential_id": "credential_synthetic_owner_firebase", "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(deepcopy(tool))
+    original = deepcopy(api.agent)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    assert api.agent == original and row["mcp_binding"] == [tool]
+    assert row["metadata"]["mcp_binding_digest"] == digest([tool])
+    assert api.payloads[0]["agent"]["tools"][-1] == {**tool, "allowed_tools": ["get_database"]}
+    assert api.payloads[0]["vault_ids"] == ["vault_synthetic_firebase"]
+    assert "existing scoped search_company_history/fetch_company_history_record" in api.payloads[0]["agent"]["instructions"]
+    session = api.get("session", row["session_id"])
+    Consumer.check_session(row, session)
+    session["agent"]["tools"][-1]["allowed_tools"].append("get_document")
+    with pytest.raises(Refusal, match="agent_search_profile_mismatch"):
+        Consumer.check_session(row, session)
+    assert len(api.payloads) == 1 and not api.executions
+    assert ledger.get(DAY)["create_payload"] == row["create_payload"]
+
+
+@pytest.mark.parametrize("change", ["headers", "metadata", "endpoint", "origin", "unknown_server", "malformed_label"])
+def test_owner_mcp_rejects_unsafe_configuration_before_intent_or_create(fixture, change):
+    runner, api, ledger = fixture
+    tool = {"type": "mcp", "server_label": "googlesheets",
+        "transport": {"type": "http", "server_url": search.MCP_READ_TOOLS["googlesheets"][0], "headers": {}},
+        "credential_id": "credential_synthetic_owner", "allowed_tools": None,
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    if change == "headers":
+        tool["transport"]["headers"] = {"Authorization": "synthetic-secret-must-not-be-retained"}
+    elif change == "metadata":
+        tool["request_metadata"] = {"token": "synthetic-secret-must-not-be-retained"}
+    elif change == "endpoint":
+        tool["transport"]["server_url"] += "/unreviewed"
+    elif change == "origin":
+        tool["connection_origin"] = "environment"
+    elif change == "unknown_server":
+        tool["server_label"] = "unreviewed"
+    else:
+        tool["server_label"] = ["googlesheets"]
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    with pytest.raises(Refusal, match="research_mcp_configuration_invalid"):
+        runner.start_or_resume()
+    assert not api.payloads and ledger.rows() == []
+
+
+@pytest.mark.parametrize("change", ["credential", "write_tool", "required", "binding", "headers", "payload"])
+def test_owner_mcp_session_uses_only_original_read_only_binding(fixture, change):
+    runner, api, _ = fixture
+    tool = {"type": "mcp", "server_label": "slack",
+        "transport": {"type": "http", "server_url": search.MCP_READ_TOOLS["slack"][0]},
+        "credential_id": "credential_synthetic_owner", "allowed_tools": ["slack_read_thread", "slack_send_message"],
+        "connection_origin": "service", "required": False, "request_metadata": {}}
+    api.agent["tools"].append(tool)
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    row = runner.start_or_resume()
+    session = api.get("session", row["session_id"])
+    assert session["agent"]["tools"][-1]["allowed_tools"] == ["slack_read_thread"]
+    if change == "credential":
+        session["agent"]["tools"][-1]["credential_id"] += "_changed"
+    elif change == "write_tool":
+        session["agent"]["tools"][-1]["allowed_tools"].append("slack_send_message")
+    elif change == "required":
+        session["agent"]["tools"][-1]["required"] = True
+    elif change == "binding":
+        row["mcp_binding"][0]["credential_id"] += "_changed"
+    elif change == "headers":
+        session["agent"]["tools"][-1]["transport"]["headers"] = {"Authorization": "synthetic-unsafe-header"}
+    else:
+        row["create_payload"]["agent"]["tools"][-1]["credential_id"] += "_changed"
+    with pytest.raises(Refusal, match="agent_search_profile_mismatch|research_mcp_binding_changed"):
+        Consumer.check_session(row, session)
+    assert not api.executions and len(api.payloads) == 1
+
+
+def test_mcp_does_not_retrofit_an_existing_legacy_session(fixture):
+    runner, api, ledger = fixture
+    row = runner.start_or_resume()
+    original = deepcopy(row["create_payload"])
+    runner.config["mcp_profile"] = search.MCP_PROFILE
+    resumed = runner.start_or_resume(allow_create=False)
+    assert resumed["create_payload"] == original and "mcp_profile" not in resumed
+    assert "mcp_binding_digest" not in resumed["metadata"] and len(api.payloads) == 1
+    assert ledger.get(DAY)["create_payload"] == original
+
+
+def test_fenced_provider_refuses_changed_mcp_profile_with_original_budget(fixture):
+    runner, api, _ = fixture
+    row = runner.start_or_resume()
+    row["mcp_profile"] = search.MCP_PROFILE
+    control = {"enabled": True, "config": {"search_provider": search.PROFILE,
+        "recurring_budget_authority_reference": row["recurring_budget_authority_reference"],
+        "soft_target_usd": row["soft_target_usd"]}}
+    calls = []
+    class Bridge:
+        def call(self, op):
+            calls.append(op)
+            return control if op == "control" else True
+    provider = FencedProvider.__new__(FencedProvider)
+    provider.ledger = type("Ledger", (), {"bridge": Bridge()})()
+    with pytest.raises(Refusal, match="disabled_or_profile_changed"):
+        provider.tool_admit(row, "research")
+    assert calls == ["assert_lease", "control"] and not api.executions
 
 
 def test_exact_pending_root_call_is_served_and_retained_then_ten_collected(fixture):
@@ -286,6 +586,54 @@ def test_defined_coverage_can_return_fewer_than_ten_without_count_shortfall(fixt
     api.raw, api.turn_status = canonical(output).encode(), "completed"
     row = runner.start_or_resume()
     assert row["state"] == "awaiting_review" and len(row["packet"]["candidates"]) == 2
+
+
+def test_employer_posting_sources_survive_site_task_deduplication_unqualified(fixture):
+    runner, api, ledger = fixture
+    output = json.loads(api.raw)
+    first = deepcopy(output["candidates"][0])
+    duty = next(e for e in first["evidence"] if e["role"] == "task")
+    duty.update(url="https://operator0.example/careers/REQ-100", source_date=None,
+                quote="Load trays into the packing line at Synthetic site 0.")
+    repeated = deepcopy(first)
+    next(e for e in repeated["evidence"] if e["role"] == "task").update(
+        url="https://operator0.example/careers/REQ-101", source_date="2026-09-29")
+    finding = canonical({"employer": first["organization"], "site": first["site"],
+                         "requisitions": ["REQ-100", "REQ-101"], "observed_date": DAY,
+                         "application_status_evidence": "Employer pages display Apply links",
+                         "active_hiring": "unknown", "automation_interest": "unknown",
+                         "conversation_or_evaluation_outcome": "not observed"})
+    output.update(candidates=[first, repeated], findings=[finding])
+    api.raw, api.turn_status = canonical(output).encode(), "completed"
+    row = runner.start_or_resume()
+    assert row["state"] == "awaiting_review" and row["packet"]["findings"] == [finding]
+    cohort = row["packet"]["candidates"] + row["packet"]["duplicates"]
+    assert len(row["packet"]["candidates"]) == len(row["packet"]["duplicates"]) == 1
+    assert [c["evidence"] for c in cohort] == [first["evidence"], repeated["evidence"]]
+    assert all(c["qualification_status"] == "unqualified" for c in cohort)
+    assert ledger.read_bytes(DAY + "-artifact.json") == api.raw
+    assert not row.get("qa") and not row.get("delivery")
+
+
+@pytest.mark.parametrize("formal_candidate", [False, True])
+def test_posting_with_unknown_site_or_capability_stays_a_finding_not_invented_support(fixture, formal_candidate):
+    runner, api, ledger = fixture
+    output = json.loads(api.raw)
+    candidate = deepcopy(output["candidates"][0])
+    candidate["evidence"] = [e for e in candidate["evidence"] if e["role"] != "capability"]
+    finding = "Employer REQ-100 quotes tray loading; source https://operator0.example/careers/REQ-100; " \
+              "exact site/currentness/published date/application status/robot capability unknown; observed " + DAY
+    output.update(candidates=[candidate] if formal_candidate else [], findings=[finding])
+    api.raw, api.turn_status = canonical(output).encode(), "completed"
+    row = runner.start_or_resume()
+    assert ledger.read_bytes(DAY + "-artifact.json") == api.raw
+    if formal_candidate:
+        # Without capability evidence a v3 candidate cannot keep a claimed robot match.
+        assert row["state"] == "failed" and row["error"] == "unsupported_robot_match_must_remain_unknown"
+        assert "packet" not in row and not row.get("qa") and not row.get("delivery")
+    else:
+        assert row["state"] == "awaiting_review" and row["packet"]["candidates"] == []
+        assert row["packet"]["findings"] == [finding]
 
 
 def test_unresolved_in_scope_branch_cannot_claim_coverage_complete():

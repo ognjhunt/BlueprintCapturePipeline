@@ -15,6 +15,18 @@ Budget/time interruption and access blockage remain explicitly incomplete.
 Existing CRM duplicates and
 robot deployments never count toward the target. Incomplete coverage is honest.
 
+Employer job postings are another source of site-linked physical-duty evidence,
+not a prerequisite or proof of automation interest. The runtime and
+[`saved-agent-discovery-policy.md`](saved-agent-discovery-policy.md) direct the
+agent to retain posting identity, quoted duties, original dates and observed
+application status, with unknown currentness explicit. Use existing evidence
+fields for supported claims and concise findings for requisition/status/source
+details and unresolved site joins; no new candidate schema or automatic job
+scraper is introduced. Posting aliases/reposts and facility/task duplicates are
+separate identities. All original evidence remains in the packet/duplicate
+cohort; hiring-led conversation or evaluation improvement remains a hypothesis
+until actual downstream outcomes are recorded.
+
 ## Exact bindings and activation gate
 
 - Application worker only: owner-managed `PERPLEXITY_API_KEY`
@@ -61,6 +73,86 @@ with the original tool-result idempotency key while that action is still pending
 Unknown execution becomes a visible no-replay error. Render rechecks the lease,
 enabled flag and pinned search profile before execution and result submission.
 Stop/deadline checks preserve the pinned shared research/QA watchdog.
+
+Known public-source tool failures expose JSON output `{ok:false,error:{code}}`
+and a JSON error with the unchanged stable code, so a caller can inspect the
+failure without parsing a bare error string as JSON. These failures provide no
+source text, publication dates or successful-read evidence. Optional Exa skips
+preserve their explicit reason and continuation guidance in both output and
+error; an unverified allocation remains a skip with no native start. Existing
+immutable tool-result receipts are returned byte-for-byte, never reformatted.
+
+The October 4 disposition `BP-RESEARCH-IMPROVE-20261004-TOOL-ERRORS` corrects
+future result formatting, preserving the original valid accounting skip and
+failed source results. Its company-owned proposal and five original results are
+retained at `gs://blueprint-8c1ca.appspot.com/operations/research/improvements/2026-10-04/BP-RESEARCH-IMPROVE-20261004-TOOL-ERRORS/cd1b2be2b3041fa35a7d849edb5ef86705d8cb1605a61878935b53b63be883b4/proposal-and-original-evidence.json`,
+generation `1791119633053384`, 8,838 bytes, SHA256
+`cd1b2be2b3041fa35a7d849edb5ef86705d8cb1605a61878935b53b63be883b4`.
+This evidence reference changes no allocation, native-start authority or access.
+
+The explicit `publication_profile=agent-owned-v1` additionally advertises
+`blueprint_inspect_publication` and `blueprint_publish_research` when creating a
+new session. After QA validates the research, that same saved session receives
+the complete validated results and retained history. The agent inspects approved
+destinations, selects full or concise presentation, uploads to each destination,
+and receives structured transport errors and exact readback receipts. The worker
+executes these requests and retains original results, decisions, claims and
+receipts. A definitive initial Notion 400 validation rejection permits a revised
+agent choice only after complete readback proves absence; unknown writes retain
+their claims and remain observation-only. The original absolute deadline retains
+its admitted cancellation request once, preserving an unknown reply.
+Stopped or changed-authority observers use GET-only terminal reconciliation;
+unknown attempts stay pending and cannot resume inference, tool calls or uploads.
+This profile grants no additional time, spending, destinations or sends. Deploying
+source alone cannot add tools to an existing session; activation requires this
+explicit profile in a newly admitted session. The example remains disabled.
+
+`history_profile=agent-history-v1` adds `search_company_history` and
+`fetch_company_history_record` to a newly admitted session. The agent chooses
+queries, optional city/industry/task/company/kind filters, pages and exact record
+IDs across research, QA and publication. It receives full record content,
+provenance, coverage, semantic-search availability and correctable field errors
+through the same saved tool-result loop. This profile uses the trusted company
+access binding and omits the legacy preselected history preload. Query arguments
+cannot grant access or choose another company scope. Original requests/results
+remain immutable and exportable; a repeated pending call reuses its saved result.
+The legacy learning-context path and saved tool definitions remain unchanged.
+
+`mcp_profile=owner-readonly-mcp-v1` explicitly preserves the owner's existing
+official Sheets, Slack, Notion and Firestore service connections in a new session, alongside the
+selected search, publication and history tools. Preflight retains their exact
+non-secret configuration and digest before creation; session/QA recovery checks
+that frozen binding. Credential references and optional initialization remain
+as configured by the owner; metadata-only SDK GETs resolve each exact credential
+to its existing active project vault and approved MCP endpoint. Only matching
+singleton vaults are attached through `vault_ids`; a vault containing another
+credential, an ambiguous match or a missing credential is refused before intent
+or create. The non-secret credential/vault binding and digest are frozen in the
+original create payload and verified against session attachments during recovery.
+An omitted/null static-bearer credential URL remains unknown in its retained auth
+metadata, separately from the owner's configured endpoint; a reported mismatch
+is refused. OAuth credential URLs must match the configured endpoint.
+Older charged payloads keep their original omitted vault attachment and never
+resolve or acquire new vaults. No vault, token, credential or grant is created.
+Session allowlists expose only Sheets `get_values`/`get_spreadsheet` and Slack
+public/channel search and channel/thread reads, plus Notion
+`notion-get-tool-access`/`notion-search`/`notion-fetch`, intersected with any existing
+owner allowlist. Firebase's official remote Firestore endpoint admits only
+`get_database` database metadata. Native document reads, queries and collection
+lists are excluded because they cannot enforce the existing subject/prospect
+history grants; business records continue through bounded inputs and the scoped
+company-history search/full-record fetch tools. All writes and sends stay with the existing authorized canonical
+transports. Saved-agent configuration and previously charged sessions are not
+changed. Source/catalog validation is not proof of authentication or successful
+MCP reads; unavailable optional connections remain explicit gaps.
+Tool-name sources are the [official Sheets catalog](https://developers.google.com/workspace/sheets/api/reference/mcp)
+and [Slack's own tool guidance](https://github.com/slackapi/slack-skills-plugin/blob/main/skills/slack-search/SKILL.md),
+plus the [official Notion catalog](https://developers.notion.com/guides/mcp/mcp-supported-tools)
+and [Firestore database metadata tool](https://docs.cloud.google.com/firestore/docs/reference/mcp/tools_list/get_database).
+Notion access metadata is checked once when available before content search;
+dropped filters, truncation and unavailable tools remain explicit coverage gaps.
+Adding an owner connection affects only fresh preflight/create bindings;
+charged sessions continue validating their original configuration and instructions.
 
 No native web-search fallback is enabled. API errors, missing credentials,
 unsupported sources and evidence size ceilings are visible gaps. This avoids an
@@ -111,3 +203,110 @@ Sources: [Perplexity Fast Search](https://docs.perplexity.ai/docs/search/fast-se
 [Search request/response schema](https://docs.perplexity.ai/api-reference/search-post),
 [Agents functions](https://developers.openai.com/api/docs/guides/agents-api/tools/functions),
 [session overrides](https://developers.openai.com/api/docs/guides/agents-api/configuration#override-settings-for-one-session)
+
+### Prospective delegated research over MCP
+
+`mcp_profile=owner-delegated-research-mcp-v1` is a new, explicitly selected
+profile. It preserves the old read-only context allowlists and adds optional
+owner-authenticated research connections without altering saved agents or any
+charged `owner-readonly-mcp-v1` intent. The lead model remains `gpt-6.1-sol`;
+Perplexity fast and scoped history functions remain available. The lead agent
+chooses queries, delegation, comparison, source verification and publication.
+
+The default read-only profile validates known owner research connections but
+excludes them from its frozen connection/vault bindings and session tools. Adding
+Exa, Parallel or Blueprint to the saved agent therefore does not block ordinary
+read-only research or activate paid delegation. Unknown or malformed connections
+still refuse before a new intent; charged sessions retain their original scope.
+
+| Saved server label | Frozen endpoint | Session tools |
+| --- | --- | --- |
+| `exa` | `https://mcp.exa.ai/mcp` | `agent_run` |
+| `blueprint` | `https://tryblueprint.io/api/blueprint-work/mcp` | `start_gemini_deep_research`, `get_gemini_deep_research` |
+| `parallel_task` | `https://task-mcp.parallel.ai/mcp` | `createDeepResearch`, `getStatus`, `getResultMarkdown` |
+
+The new profile also admits Exa's documented `?login` (blank value) and
+`?tools=...` selectors for its four documented catalog names, alone or together.
+The complete original URL is frozen unchanged in connection, credential/vault
+identity and digests. Secret/unknown query keys, duplicate keys, other origins or
+paths, userinfo and fragments are refused; old profiles do not gain URL aliases.
+
+These are paid research tools, not read-only context. An actual authenticated
+`tools/list`, existing singleton credential/vault metadata and retained spending
+allocation are needed before live use. Inline keys, credential copying, extra
+vault attachments and inferred catalog fields are not introduced. The existing
+Work MCP path is defined by WebApp's `WORK_MCP_PATH`; Blueprint provides the
+Gemini research adapter. Google's own Deep Research MCP support is not an
+official hosted server exposing research start/get tools.
+
+Exa reports a running `id`; `agent_run(runId=...)` observes that same run.
+`previousRunId` creates a new follow-up. Use `effort=ultra` only when advertised
+by the current authenticated tool schema. Gemini and Parallel starts similarly
+retain their returned identifiers for observation; missing acknowledgment is
+never permission to create a duplicate. Parallel `ultra8x` is documented for its
+API, but must be present in the MCP schema before use; its long runtime does not
+extend the existing research deadline. No Find All MCP tool was found in the
+verified Parallel catalog, so no guessed tool or API fallback is added.
+
+The original non-secret connection and singleton vault binding are frozen in the
+create payload and metadata. QA/recovery use the frozen profile, never the
+owner's later saved connection changes. Profile changes are refused at durable
+create admission. Provider MCP items are retained in the existing exact-turn
+evidence export. Native external charges are **not measured** by Perplexity or
+OpenAI usage; prospective preflight explicitly retains
+`native_research_cost_status=unknown_not_metered_by_host`. Missing provider cost
+receipts remain unknown, never zero or an all-provider total. An advertised cost
+limit may be set within a retained allocation, but this source does not pretend
+an optional limit or the existing soft target is a measured hard spending cap.
+It does not activate tools, amend grants, lengthen deadlines or run a comparison.
+
+Catalog sources: [Exa MCP](https://exa.ai/docs/get-started/exa-mcp),
+[Parallel Task MCP](https://docs.parallel.ai/integrations/mcp/task-mcp).
+Find All and native authentication/results require separate actual evidence.
+
+## Guarded optional daily Exa expansion
+
+`expansion_profile=exa-guarded-v1` exposes only
+`blueprint_start_exa_expansion` and `blueprint_read_exa_expansion` through the
+existing daily function boundary. It cannot be combined with the unrestricted
+paid research MCP profile. The lead chooses a US physical-task hypothesis after
+initial discovery and before the original final artifact/QA; returned findings
+remain unqualified, use the same source checks and exact site/task deduplication,
+and enter the existing company publication and learning path.
+
+A new start explicitly selects `effort: "ultra"`; the hosted tool defaults to
+low effort, where the budget is not an applicable metered cap. Admission requires
+an advertised string effort enum containing `ultra`, a numeric
+`budget.maxCostDollars` within both the live schema's bounds and $1–$5 (Exa's
+[documented Ultra minimum](https://exa.ai/docs/agent/agent-ultra) is $1),
+the existing worker's `EXA_API_KEY`, and a trusted
+company control `exa_expansion_allocation` snapshot with schema
+`blueprint.research-expansion-allocation.v1`. That snapshot binds the run key,
+existing authority, evidence reference, checked/expiry times, verified all-in
+usage, committed/reserved/remaining integer microdollars and exactly the shared
+$5 research limit. The host rechecks the allocation before submission. Native
+Exa caps are not a claim that OpenAI/hosting or the daily total is hard-capped.
+The existing soft-target authority alone cannot produce this snapshot; unknown
+headroom means skip, never zero. No key, accounting writer or verified live tool
+schema is created by selecting the profile.
+
+The start tool advertises exactly the enforced `max_cost_micros` range, 1,000,000–5,000,000
+(Exa Ultra's $1 minimum to the $5 ceiling). A smaller request returns
+`expansion_cap_below_ultra_minimum` before any credential or allocation lookup, and a cap
+above verified headroom returns `expansion_cap_exceeds_remaining_allocation` with
+`remaining_micros`; neither starts Exa or consumes the claim. Stable `ExpansionError`
+codes reach the agent unchanged instead of a generic unavailable error.
+
+The worker consumes one durable whole-run claim before the native POST, retains
+complete private MCP receipts and provider records in the existing company
+ledger, and permits subsequent reads of only the acknowledged original ID.
+Unknown submissions retain their claim/reservation and prevent another optional
+Exa start; they do not discard evidence or stop ordinary research.
+Claims made before explicit Ultra selection keep their original request bytes;
+only their retained ACK or original-ID reads may recover them, never a new start.
+The original research deadline is preserved; no extension, enrichment, alternate provider,
+`previousRunId`, automatic POST retry, outreach or provider deletion is allowed.
+Saved OpenAI OAuth credentials remain in their URL-bound vault and are never
+extracted into the worker. The MCP transport uses the documented `x-api-key`
+header at `https://mcp.exa.ai/mcp?tools=agent_run`, with credentials excluded from
+company receipts and logs.

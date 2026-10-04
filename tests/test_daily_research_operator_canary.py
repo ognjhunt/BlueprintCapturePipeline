@@ -140,7 +140,8 @@ def fixture(tmp_path, monkeypatch):
         "const crmReader=async()=>JSON.parse(readFileSync(crmPath,'utf8'));",
         "const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]};const c=await crmReader();c.values.push(...body.values);writeFileSync(crmPath,JSON.stringify(c));return {};};",
         "const notion=async(method,path,body)=>{const p=existsSync(pagesPath)?JSON.parse(readFileSync(pagesPath,'utf8')):[];if(method==='POST'){p.push(body);writeFileSync(pagesPath,JSON.stringify(p));return {id:'synthetic-page-'+p.length};}",
-        "if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:p.map((x,i)=>({id:'synthetic-page-'+(i+1),type:'child_page',child_page:{title:x.properties.title.title[0].text.content}}))};if(path.startsWith('/pages/synthetic-page-'))return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};const number=Number(path.match(/synthetic-page-(\\d+)/)?.[1]);return {has_more:false,results:p[number-1]?.children||[]};};",
+        "const number=Number(path.match(/synthetic-page-(\\d+)/)?.[1]);if(method==='PATCH'){p[number-1].children.push(...body.children);writeFileSync(pagesPath,JSON.stringify(p));return {};}",
+        "if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:p.map((x,i)=>({id:'synthetic-page-'+(i+1),type:'child_page',child_page:{title:x.properties.title.title[0].text.content}}))};if(path.startsWith('/pages/synthetic-page-'))return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};const start=Number(new URL('https://fixture.invalid'+path).searchParams.get('start_cursor')||0),all=p[number-1]?.children||[],results=all.slice(start,start+100).map((b,i)=>({id:'block-'+number+'-'+(start+i),...b})),next=start+results.length;return {has_more:next<all.length,next_cursor:String(next),results};};",
         "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new CanaryChannel(db,crmReader,new Publisher({crmReader,google,notion}),()=>testNow);",
         "for await(const line of createInterface({input:process.stdin})){try{const r=JSON.parse(line);",
         "if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}",
@@ -751,6 +752,76 @@ def test_baseline_completed_partial_report_allows_retry_with_distinct_publicatio
         # Fresh CRM dedupe excludes the already-published task from the retry.
         assert len(json.loads(fixture[7].read_text())["values"]) == 6
         assert len(bridge.call("baseline_status")["attempts"]) == 2
+    finally:
+        bridge.close()
+
+
+def test_scoped_baseline_large_qa_report_preserves_identity_content_and_export_claims(fixture, monkeypatch, tmp_path):
+    closed_original(fixture)
+    bridge, ledger, api, approval, _ = attempt_bridge(fixture, monkeypatch, 1)
+    receipt, cache = fixture[3], fixture[5]
+    summary = "Scoped supported source https://plant.example/tasks; interest unknown. " * 3500
+    original = api.qa_input
+    def large(*args, **kwargs):
+        original(*args, **kwargs)
+        api.qa_result["summary"] = summary
+    api.qa_input = large
+    try:
+        canary.stage(bridge, canary.inspect(bridge, approval, receipt, api, cache, now=NOW), receipt)
+        result = complete_baseline(bridge, api, cache)
+        for _ in range(10):
+            if result["state"] == "completed":
+                break
+            assert result["observer_state"] == "publication_pending"
+            result = canary.run(bridge, cache, api_factory=lambda *_: api, clock=lambda: NOW, sleep=lambda _: None)
+        assert result["state"] == "completed"
+        row = ledger.get(canary.DAY)
+        delivery = row["delivery"]["notion"]
+        assert delivery["key"] == "blueprint-research-canary:" + canary.TEST + ":notion"
+        assert delivery["payload"]["summary"] == "Blueprint baseline attempt " + canary.TEST + "\n" + summary
+        assert summary in "".join(delivery["plan"]["paragraphs"][1:])
+        assert len(delivery["plan"]["batches"]) > 1
+        exported = tmp_path / "scoped-large-export"
+        assert render.export_snapshot(bridge, canary.DAY, exported)["missing_files"] == []
+        proof = json.loads(json.loads((exported / "publication-manifest.json").read_bytes())["manifest_json"])
+        assert len(proof["publication_batches"]["notion"]) == len(delivery["plan"]["batches"])
+        assert len(api.payloads) == len(api.inputs) == 1
+    finally:
+        bridge.close()
+
+
+def test_scoped_pagination_rechecks_origin_after_inventory_before_append(fixture, monkeypatch):
+    closed_original(fixture)
+    bridge, ledger, api, approval, driver = attempt_bridge(fixture, monkeypatch, 1)
+    bridge.close()
+    source = driver.read_text()
+    needle = "for await(const line of createInterface({input:process.stdin}))"
+    hook = ("const originalProgress=channel.store.publisher?.notionProgress;"
+        "if(originalProgress)channel.store.publisher.notionProgress=async(...args)=>{"
+        "const result=await originalProgress(...args);if(result.step?.number>0){"
+        "await normal.acquire();const origin=await normal.get('2026-10-01');"
+        "await normal.put({...origin,cleanup_receipt:{action_time_approval_reference:'changed-after-inventory'}});"
+        "await normal.release();}return result;};")
+    assert needle in source
+    driver.write_text(source.replace(needle, hook + needle))
+    bridge = canary.CanaryBridge(script=driver)
+    ledger = api.ledger = FirestoreLedger(bridge)
+    original = api.qa_input
+    def large(*args, **kwargs):
+        original(*args, **kwargs)
+        api.qa_result["summary"] = "Scoped supported source https://plant.example/tasks; interest unknown. " * 3500
+    api.qa_input = large
+    try:
+        canary.stage(bridge, canary.inspect(bridge, approval, fixture[3], api, fixture[5], now=NOW), fixture[3])
+        result = complete_baseline(bridge, api, fixture[5])
+        assert result["observer_state"] == "publication_pending"
+        with ledger.lock(), pytest.raises(Refusal, match="publication_canary_authority_unavailable_or_changed"):
+            bridge.call("publish", day=canary.DAY)
+        proof = json.loads(bridge.call("snapshot", day=canary.DAY)["publication_manifest"]["manifest_json"])
+        assert set(proof["publication_batches"]["notion"]) == {"0", "1"}
+        pages = json.loads(fixture[8].read_bytes())
+        assert len(pages[-1]["children"]) == ledger.get(canary.DAY)["delivery"]["notion"]["plan"]["batches"][0]["end"]
+        assert len(api.payloads) == len(api.inputs) == 1
     finally:
         bridge.close()
 

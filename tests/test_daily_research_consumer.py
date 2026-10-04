@@ -35,7 +35,8 @@ class QAAPI(FakeAPI):
 
     def qa_input(self, sid, event, key, day, request_digest, deadline_ms):
         row = self.ledger.get(day)
-        assert row["qa"]["event"] == event and row["qa"]["request_digest"] == request_digest
+        saved = row["qa"].get("event") or json.loads(self.ledger.read_bytes(row["qa"]["input_file"]))
+        assert saved == event and row["qa"]["request_digest"] == request_digest
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
         self.inputs.append((sid, key))
         self.qa_exists = True
@@ -73,22 +74,24 @@ class QAAPI(FakeAPI):
         return canonical(self.qa_result).encode() if aid == "artifact_qa" else super().artifact(sid, aid)
 
 
-def consumer_setup(tmp_path, *, failed=False):
+def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False, mcp=False):
     crm = tmp_path / "crm.json"
     save_json(crm, {"sheet_id": SHEET, "complete": True, "captured_at": NOW.isoformat(),
                     "values": [["CRM"], [], [], [], HEADERS]})
     script = tmp_path / "bridge.mjs"
     script.write_text("\n".join([
-        "import {createInterface} from 'node:readline'; import {readFileSync} from 'node:fs';",
+        "import {createInterface} from 'node:readline'; import {readFileSync} from 'node:fs'; import {createHash} from 'node:crypto';",
         "import {Store,LeaseChannel} from " + json.dumps((ROOT / "tools/daily_research/firestore_bridge.mjs").as_uri()) + ";",
         "import {Publisher} from " + json.dumps((ROOT / "tools/daily_research/publisher.mjs").as_uri()) + ";",
         "import {MemoryFirestore} from " + json.dumps((ROOT / "tests/fixtures/daily_research/firestore-memory.mjs").as_uri()) + ";",
         "const db=new MemoryFirestore(" + json.dumps(str(tmp_path / "db.json")) + ");",
         "const crmReader=async()=>JSON.parse(readFileSync(" + json.dumps(str(crm)) + ",'utf8'));",
         "const pages=[]; const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]}; const crm=await crmReader();crm.values.push(...body.values);await import('node:fs').then(fs=>fs.writeFileSync(" + json.dumps(str(crm)) + ",JSON.stringify(crm)));return {};};",
-        "const notion=async(method,path,body)=>{if(method==='POST'){pages.push(body);return {id:'page-result'};}if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:pages.map(p=>({id:'page-result',type:'child_page',child_page:{title:p.properties.title.title[0].text.content}}))};if(path==='/pages/page-result')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};return {has_more:false,results:pages[0].children};};",
+        "let rejectInitial=" + json.dumps(publication_rejection) + "; const sha=v=>createHash('sha256').update(v).digest('hex');",
+        "const notion=async(method,path,body)=>{if(method==='POST'){if(rejectInitial){rejectInitial=false;const raw=JSON.stringify({object:'error',status:400,code:'validation_error',message:'Requested presentation rejected'});const error=new Error('publication_notion_unavailable');error.provider_response=raw;error.provider_feedback={provider:'notion',http_status:400,code:'validation_error',request_digest:sha(JSON.stringify(body)),response_digest:sha(raw)};throw error;}pages.push(body);return {id:'page-result'};}if(method==='PATCH'){pages[0].children.push(...body.children);return {};}if(path==='/pages/3eb80154161d8116858ed5f376b4b7a9')return {object:'page',id:'3eb80154161d8116858ed5f376b4b7a9'};if(path.startsWith('/blocks/3eb80154161d8116858ed5f376b4b7a9/'))return {has_more:false,results:pages.map(p=>({id:'page-result',type:'child_page',child_page:{title:p.properties.title.title[0].text.content}}))};if(path==='/pages/page-result')return {parent:{page_id:'3eb80154161d8116858ed5f376b4b7a9'}};const start=Number(new URL('https://fixture.invalid'+path).searchParams.get('start_cursor')||0),results=pages[0].children.slice(start,start+100).map((b,i)=>({id:'block-'+(start+i),...b})),next=start+results.length;return {has_more:next<pages[0].children.length,next_cursor:String(next),results};};",
         "const publisher=new Publisher({crmReader,google,notion,clock:()=>testNow});",
-        "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher));",
+        "const historyLog=" + json.dumps(str(tmp_path / "history-requests.json")) + ";let requests=[];const learning=async(request,binding)=>{requests.push({request,binding});await import('node:fs').then(fs=>fs.writeFileSync(historyLog,JSON.stringify(requests)));if(request.op==='history_search')return {ok:true,rows:[{record_id:request.cursor?'record_b':'record_a',title:'Retained task evidence'}],next_cursor:request.cursor?null:'page-2',coverage:{complete:true},semantic:{status:'unavailable',error:'offline_fixture'}};if(request.op==='history_fetch')return request.record_id==='record_a'?{ok:true,record:{record_id:'record_a',content:'Complete original evidence — '.repeat(400),source:'synthetic-company-record',created_at:'2026-09-29T08:00:00Z'}}:{ok:false,error:{code:'company_history_record_not_found',issues:[{field:'record_id',expected:'existing authorized exact ID'}]}};throw new Error('company_history_unexpected_frozen_preload');};",
+        "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher,learning));",
         "for await (const line of createInterface({input:process.stdin})) {try {const r=JSON.parse(line);if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}const value=await channel.call(r);process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
         "catch(error){process.stdout.write(JSON.stringify({ok:false,error:error.message})+'\\n');}} await channel.close();",
     ]))
@@ -113,8 +116,47 @@ def consumer_setup(tmp_path, *, failed=False):
         proposal = delta()
         proposal["evidence"][0].update(classification="operator", evidence_level=None)
         output["proposed_knowledge_deltas"] = [proposal]
+    if publication or history or mcp:
+        from tools.daily_research import search
+        cfg.update(search_provider=search.PROFILE,
+            discovery_profile="adaptive-sites-v1", max_runtime_seconds=1800, qa_reserved_seconds=600,
+            recurring_budget_authority_reference="approved-shared-research-total")
+        if publication:
+            cfg["publication_profile"] = "agent-owned-v1"
+        if history:
+            cfg["history_profile"] = "agent-history-v1"
+        output["coverage"] = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
+            "stop_reason": "Synthetic bounded corpus checked", "shortfall_reason": None,
+            "defined_run_scope": ["Synthetic bounded site task corpus"], "unresolved_promising_branches": [],
+            "completion_state": "coverage_complete"}
+        api.search_binding_present = lambda: True
+        api.agent["instructions"] = "Reviewed research; no outreach or sends."
+        if mcp:
+            cfg["mcp_profile"] = search.MCP_PROFILE
+            api.agent["tools"].extend({"type": "mcp", "server_label": label,
+                "transport": {"type": "http", "server_url": url, "headers": {}},
+                "credential_id": "credential_synthetic_owner_" + label, "allowed_tools": None,
+                "connection_origin": "service", "required": False, "request_metadata": {}}
+                for label, (url, _) in search.MCP_READ_TOOLS.items())
+        original_get = api.get
+        def selected_get(resource, rid):
+            value = original_get(resource, rid)
+            if resource == "session" and api.payloads:
+                value["agent"].update(deepcopy(api.payloads[0]["agent"]))
+            return value
+        api.get = selected_get
+        with ledger.lock():
+            control = bridge.call("control")
+            control["config"] = cfg
+            if history:
+                expiry = (NOW + timedelta(hours=1)).isoformat()
+                control["learning"] = {"enabled": True, "binding": {"companyId": "synthetic-company", "principal": "company-owner", "expiresAt": expiry},
+                    "businessScope": {"subjectKeys": ["all-authorized-company-history"], "expiresAt": expiry}}
+            bridge.call("configure", value=control)
     api.raw = canonical(output).encode()
-    assert Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()["state"] == ("failed" if failed else "awaiting_review")
+    if research_running:
+        api.turn_status = "in_progress"
+    assert Runner(ledger, cfg, api, clock=lambda: NOW).start_or_resume()["state"] == ("running" if research_running else "failed" if failed else "awaiting_review")
     consumer = Consumer(ledger, cfg, api, clock=lambda: NOW + timedelta(seconds=30))
     yield consumer, api, ledger, bridge, script
     bridge.close()
@@ -123,6 +165,27 @@ def consumer_setup(tmp_path, *, failed=False):
 @pytest.fixture
 def fixture(tmp_path):
     yield from consumer_setup(tmp_path)
+
+
+def test_charged_mcp_session_completes_qa_under_original_scope_after_owner_connections_change(tmp_path):
+    generator = consumer_setup(tmp_path, publication=True, mcp=True)
+    consumer, api, ledger, _, _ = next(generator)
+    try:
+        original = ledger.get(DAY)
+        agent_reads = len([call for call in api.calls if call[:2] == ("GET", "agent")])
+        api.agent["tools"][-1]["credential_id"] += "_owner_changed"
+        api.agent["tools"].append({"type": "mcp", "server_label": "future_owner_connection"})
+        assert consumer.step()["state"] == "reviewed"
+        recovered = ledger.get(DAY)
+        assert recovered["mcp_binding"] == original["mcp_binding"]
+        assert recovered["create_payload"] == original["create_payload"] and recovered["metadata"] == original["metadata"]
+        assert len(api.payloads) == 1 and api.inputs == [("sess_1", "blueprint-researcher:" + DAY + ":qa")]
+        assert len([call for call in api.calls if call[:2] == ("GET", "agent")]) == agent_reads
+    finally:
+        try:
+            next(generator)
+        except StopIteration:
+            pass
 
 
 def test_automatic_qa_exact_artifact_review_and_private_export(fixture, tmp_path):
@@ -301,6 +364,63 @@ def test_malformed_qa_returns_precise_feedback_to_same_session_and_preserves_bot
     assert render.export_snapshot(bridge, DAY, tmp_path / "correction-export")["missing_files"] == []
 
 
+def test_valid_234kb_qa_report_completes_canonical_publication_without_truncation(fixture, tmp_path):
+    consumer, api, ledger, bridge, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    summary = "Supported source https://plant.example/tasks; actual buying interest unknown. " * 3100
+    assert 234000 < len(summary.encode()) < 2_000_000
+    api.qa_result["summary"] = summary
+    assert consumer.step()["state"] == "reviewed"
+    for _ in range(30):
+        if consumer.step()["state"] == "completed":
+            break
+    row = ledger.get(DAY)
+    assert row["state"] == "completed"
+    assert row["review"]["summary"] == row["delivery"]["notion"]["payload"]["summary"] == summary
+    plan = row["delivery"]["notion"]["plan"]
+    assert plan["protocol"] == "notion-paginated-v1" and len(plan["batches"]) > 1
+    assert summary in "".join(plan["paragraphs"][1:])
+    assert json.loads(ledger.read_bytes(DAY + "-qa.json"))["summary"] == summary
+    assert all(delivery["receipt"]["readback_verified"] for delivery in row["delivery"].values())
+    exported = tmp_path / "large-report-export"
+    assert render.export_snapshot(bridge, DAY, exported)["missing_files"] == []
+    envelope = json.loads((exported / "publication-manifest.json").read_bytes())
+    proof = json.loads(envelope["manifest_json"])
+    assert len(proof["publication_batches"]["notion"]) == len(plan["batches"])
+    assert json.loads(proof["plans"]["notion"]["plan_json"]) == plan
+
+
+@pytest.mark.parametrize("change", ["missing", "claim", "plan", "row_bytes", "missing_claim", "claim_rehashed"])
+def test_paginated_publication_export_refuses_missing_or_tampered_manifest(fixture, tmp_path, change):
+    consumer, api, _ledger, bridge, _ = fixture
+    api.lost_reply = True
+    consumer.step()
+    api.qa_result["summary"] = "Supported source https://plant.example/tasks; actual interest unknown. " * 3500
+    assert consumer.step()["state"] == "reviewed"
+    assert consumer.step()["state"] == "publication_pending"
+    snapshot = bridge.call("snapshot", day=DAY)
+    if change == "missing":
+        snapshot.pop("publication_manifest")
+    else:
+        proof = json.loads(snapshot["publication_manifest"]["manifest_json"])
+        if change in {"claim", "claim_rehashed"}:
+            proof["publication_batches"]["notion"]["0"]["request_digest"] = "f" * 64
+        elif change == "plan":
+            proof["plans"]["notion"]["plan_json"] += " "
+        elif change == "row_bytes":
+            proof["source_row_json"] += " "
+        else:
+            proof["publication_batches"].pop("notion")
+        snapshot["publication_manifest"]["manifest_json"] = canonical(proof)
+        if change in {"row_bytes", "missing_claim", "claim_rehashed"}:
+            snapshot["publication_manifest"]["manifest_digest"] = __import__("hashlib").sha256(canonical(proof).encode()).hexdigest()
+    changed = SimpleNamespace(call=lambda *_a, **_k: snapshot)
+    with pytest.raises(Refusal, match="publication_manifest_binding_invalid"):
+        render.export_snapshot(changed, DAY, tmp_path / change)
+    assert not (tmp_path / change).exists()
+
+
 def test_correction_history_files_are_immutable_and_export_rejects_tampering(fixture, tmp_path):
     import base64
     consumer, api, ledger, bridge, _ = fixture
@@ -342,6 +462,141 @@ def test_repeated_invalid_qa_exhausts_two_corrections_without_fabricating_accept
     assert final["delivery"] == {} and "decision" not in final["qa"]
     assert ledger.read_bytes(DAY + "-qa.json") == raw
     assert final["qa"]["validation_feedback"][0]["path"] == "/checks/0/duplicate"
+
+
+def test_assessment_only_defect_left_after_corrections_does_not_block_the_day(fixture):
+    """Independent review S1: an assessment defect that survives the bounded corrections leaves
+    only that candidate unresolved; QA and the rest of the day are not blocked."""
+    consumer, api, ledger, bridge, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    api.qa_result["checks"][0]["lead_verification"]["sources"] = "not-a-list"
+    key = api.qa_result["checks"][0]["candidate_key"]
+    submitted = correction_provider(consumer, api, ledger, bridge, fix=False)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=60)
+    consumer.step()
+    final = ledger.get(DAY)
+    assert len(submitted) == len(final["qa"]["corrections"]) == 2
+    assert final["qa"]["state"] == "validated" and final["qa"].get("error") is None
+    reasons = {i["reason"] for i in final["qa"]["assessment_feedback_unresolved"]}
+    assert "agent_qa_assessment_sources_invalid" in reasons and all(r.startswith("agent_qa_assessment_") for r in reasons)
+    results = {r["candidate_key"]: r for r in final["qa"]["decision"]["lead_verification"]["results"]}
+    assert results[key]["status"] == "unresolved" and not results[key]["eligible_for_qualified_promotion"]
+    assert key not in final["qa"]["decision"]["accepted_keys"]
+
+
+def test_assessment_feedback_digests_once_and_is_bounded(fixture):
+    """Independent review S4: thousands of malformed sources must not cost quadratic time."""
+    import time
+
+    from tools.daily_research.consumer import (
+        MAX_ASSESSMENT_ISSUES_PER_CHECK,
+        qa_validation_feedback,
+    )
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    c = verification.packet_candidates(row["packet"])[0]
+    value = assessment(c, NOW)
+    value["sources"] = [{"id": ""} for _ in range(4000)]
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Synthetic bounded feedback",
+          "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": False, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": value}]}
+    row["qa"] = {"crm_digest": "crm"}
+    started = time.monotonic()
+    issues = [i for i in qa_validation_feedback(row, qa) if i["reason"].startswith("agent_qa_assessment_")]
+    assert time.monotonic() - started < 2
+    assert len(issues) <= MAX_ASSESSMENT_ISSUES_PER_CHECK + 1
+    assert issues[-1]["reason"] == "agent_qa_assessment_feedback_truncated"
+
+
+def _copy_example_placeholders(value):
+    """Fill free-text fields with the QA prompt's own example strings. The verification gate only
+    requires text there, so only QA can see that nothing real was assessed."""
+    from tools.daily_research.consumer import LEAD_VERIFICATION_EXAMPLE as example
+    value["sources"][0].update({field: example["sources"][0][field] for field in ("quote", "publisher", "freshness_reason")})
+    for name, claim in value["claims"].items():
+        claim["reason"] = example["claims"][name]["reason"]
+    value["counterevidence"].update(reason=example["counterevidence"]["reason"], searches=example["counterevidence"]["searches"])
+
+
+def test_copied_placeholder_assessment_blocks_qa_even_after_exhausted_corrections(fixture):
+    """Re-review of S1: placeholders are the one assessment defect the gate cannot refuse, so they
+    must never be deferred to it; otherwise template text is verified and published."""
+    consumer, api, ledger, bridge, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    _copy_example_placeholders(api.qa_result["checks"][0]["lead_verification"])
+    row = ledger.get(DAY)
+    candidate = verification.packet_candidates(row["packet"])[0]
+    gate = verification.evaluate(candidate, api.qa_result["checks"][0]["lead_verification"], NOW,
+                                 result_version=row["packet"]["lead_verification_result_version"])
+    assert gate["status"] == "verified"  # why QA, not the gate, must refuse
+    correction_provider(consumer, api, ledger, bridge, fix=False)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=60)
+    for _ in range(4):
+        consumer.step()
+    final = ledger.get(DAY)
+    assert final["qa"]["state"] == "qa_blocked" and final["qa"]["error"] == "agent_qa_correction_exhausted"
+    assert "decision" not in final["qa"] and "assessment_feedback_unresolved" not in final["qa"]
+    assert not final.get("review") and not final.get("delivery", {}).get("sheets", {}).get("receipt")
+
+
+def test_qa_decision_defers_assessment_defects_only_when_the_caller_exhausted_corrections(fixture):
+    """Re-review of S1: callers outside the correction loop (the canary's terminal collection)
+    keep the strict decision; deferral is explicit and never covers placeholders."""
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    row["qa"] = {"crm_digest": "crm", "turn_id": "turn_qa", "artifact_digest": "a" * 64}
+    row.setdefault("session_id", "session_synthetic")
+    candidates = verification.packet_candidates(row["packet"])
+
+    def review(mutate):
+        checks = []
+        for candidate in candidates:
+            value = assessment(candidate, NOW)
+            mutate(value)
+            checks.append({"candidate_key": candidate["candidate_key"], "source_support_verified": True, "duplicate": False,
+                           "reason": "Synthetic", "lead_verification": value})
+        return {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+                "source_support_verified": True, "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
+                "summary": "Synthetic", "checks": checks}
+    malformed = review(lambda value: value.update(sources="not-a-list"))
+    with pytest.raises(Refusal, match="agent_qa_assessment_sources_invalid"):
+        qa_decision(row, malformed, set(), NOW)
+    deferred = qa_decision(row, malformed, set(), NOW, defer_assessment_issues=True)
+    assert deferred["accepted_keys"] == []  # the gate leaves every malformed assessment unresolved
+    placeholders = review(_copy_example_placeholders)
+    for defer in (False, True):
+        with pytest.raises(Refusal, match="agent_qa_assessment_placeholder_copied"):
+            qa_decision(row, placeholders, set(), NOW, defer_assessment_issues=defer)
+
+
+def test_truncated_assessment_feedback_always_keeps_a_copied_placeholder(fixture):
+    from tools.daily_research.consumer import (
+        MAX_ASSESSMENT_ISSUES_PER_CHECK,
+        PLACEHOLDER_COPIED,
+        qa_validation_feedback,
+    )
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    row["qa"] = {"crm_digest": "crm"}
+    candidate = verification.packet_candidates(row["packet"])[0]
+    value = assessment(candidate, NOW)
+    _copy_example_placeholders(value)
+    value["sources"] += [{"id": ""} for _ in range(4 * MAX_ASSESSMENT_ISSUES_PER_CHECK)]
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+          "source_support_verified": True, "accepted_keys": [], "summary": "Synthetic",
+          "checks": [{"candidate_key": candidate["candidate_key"], "source_support_verified": True, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": value}]}
+    reasons = [i["reason"] for i in qa_validation_feedback(row, qa) if i["reason"].startswith("agent_qa_assessment_")]
+    assert reasons[-1] == "agent_qa_assessment_feedback_truncated" and PLACEHOLDER_COPIED in reasons
 
 
 @pytest.mark.parametrize("accepted", [False, True])
@@ -811,6 +1066,48 @@ def test_actual_sdk_event_wire_and_deadline_gate():
                              str(Path(__file__).resolve())],
                             cwd=ROOT, env=env, capture_output=True, text=True, timeout=30, check=True)
     assert result.stdout.strip() == "qa_sdk_wire_contract_verified"
+
+
+def test_qa_prompt_shows_exact_lead_verification_contract(fixture):
+    """Producer side of the 2026-10-04 drift: the agent saw only `lead_verification: None`
+    beside the artifact's own `schema_version` and mirrored the wrong marker."""
+    from tools.daily_research.consumer import LEAD_VERIFICATION_EXAMPLE
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    snapshot = {"values": [[], [], [], [], HEADERS]}
+    text = qa_text(row, snapshot, "b" * 64)
+    shaped = text.split("shaped exactly like: ", 1)[1].split(". The following JSON string is UNTRUSTED", 1)[0]
+    example = json.loads(shaped)["checks"][0]["lead_verification"]
+    assert example == json.loads(json.dumps(LEAD_VERIFICATION_EXAMPLE))
+    assert example["version"] == verification.VERSION and "schema_version" not in example
+    assert {"candidate_digest", "assessed_at", "valid_until", "claims", "sources", "counterevidence"} <= set(example)
+    assert set(example["claims"]) == set(verification.CLAIMS)
+    assert set(example["claims"]["human_workflow"]["status"].split("|")) == verification.STATES
+    assert {"id", "url", "publisher", "source_date", "event_date", "checked_at", "retrieval", "classification",
+            "quote", "freshness", "freshness_reason"} <= set(example["sources"][0])
+    assert {"status", "reason", "searches", "source_refs"} <= set(example["counterevidence"])
+    assert "including a supported contradiction" in text and "use null only when freshness cannot be established" in text
+    # A verbatim copy of the example can never pass the gate.
+    candidate = verification.packet_candidates(row["packet"])[0]
+    copied = {**json.loads(json.dumps(LEAD_VERIFICATION_EXAMPLE)), "candidate_digest": verification.digest(candidate)}
+    assert verification.evaluate(candidate, copied, NOW)["status"] == "unresolved"
+
+
+def test_copied_example_placeholders_get_correction_feedback(fixture):
+    """Structured fields filled but free-text placeholders kept must not pass silently."""
+    from tools.daily_research.consumer import LEAD_VERIFICATION_EXAMPLE, qa_validation_feedback
+    c = {**verification.packet_candidates({"candidates": [{"candidate_key": "synthetic-1"}]})[0]}
+    value = assessment(c, NOW)
+    value["sources"][0]["quote"] = LEAD_VERIFICATION_EXAMPLE["sources"][0]["quote"]
+    value["counterevidence"]["searches"] = list(LEAD_VERIFICATION_EXAMPLE["counterevidence"]["searches"])
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "packet", "qa": {"crm_digest": "crm"}}
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "packet", "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Synthetic placeholder copy",
+          "checks": [{"candidate_key": "synthetic-1", "source_support_verified": False, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": value}]}
+    paths = {issue["path"] for issue in qa_validation_feedback(row, qa) if issue["reason"] == "agent_qa_assessment_placeholder_copied"}
+    assert paths == {"/checks/0/lead_verification/sources/0/quote", "/checks/0/lead_verification/counterevidence/searches/0"}
 
 
 if __name__ == "__main__":

@@ -17,6 +17,63 @@ async function fixture() {
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
 
+for (const profile of ['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'])
+test(`owner MCP creation requires frozen binding and exact current ${profile}`,async()=>{
+  const {db,store}=await fixture(),binding=[{server_label:'synthetic-owner-connection'}];
+  const hash=createHash('sha256').update(JSON.stringify(binding)).digest('hex');
+  const value={...row(),mcp_profile:profile,mcp_binding:binding,
+    metadata:{...row().metadata,mcp_binding_digest:hash}};
+  await store.put(value);
+  await assert.rejects(store.put({...value,mcp_binding:[]}),/research_mcp_binding_changed/);
+  if(profile==='owner-delegated-research-mcp-v1') {
+    assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).mcp_profile,profile);
+    await assert.rejects(store.put({...value,mcp_profile:'owner-readonly-mcp-v1'}),/research_mcp_profile_changed/);
+  } else assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).mcp_profile,undefined);
+  await assert.rejects(store.createCheck(value.date,value.metadata),/research_mcp_profile_changed/);
+  db.values.get(ROOT).config={mcp_profile:profile==='owner-readonly-mcp-v1'?'owner-delegated-research-mcp-v1':'owner-readonly-mcp-v1'};
+  await assert.rejects(store.createCheck(value.date,value.metadata),/research_mcp_profile_changed/);
+  db.values.get(ROOT).config={mcp_profile:profile};
+  await store.createCheck(value.date,value.metadata);
+  await assert.rejects(store.createCheck(value.date,value.metadata),/not_admitted/);
+  assert.deepEqual((await store.get(value.date)).mcp_binding,binding);
+});
+
+test('new owner MCP vault metadata is immutable while old charged intents stay unchanged',async()=>{
+  const {store}=await fixture(),binding=[{server_label:'synthetic-owner-connection'}];
+  const vaults=[{credential_id:'credential_synthetic',vault_id:'vault_synthetic'}];
+  const hash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const value={...row(),mcp_profile:'owner-readonly-mcp-v1',mcp_binding:binding,mcp_vault_binding:vaults,
+    metadata:{...row().metadata,mcp_binding_digest:hash(binding),mcp_vault_binding_digest:hash(vaults)}};
+  await store.put(value);
+  await assert.rejects(store.put({...value,mcp_vault_binding:[]}),/research_mcp_vault_binding_changed/);
+  const legacy={...value,metadata:{...value.metadata}};delete legacy.metadata.mcp_vault_binding_digest;
+  await assert.rejects(store.put(legacy),/firestore_intent_conflict/);
+  assert.deepEqual((await store.get(value.date)).mcp_vault_binding,vaults);
+});
+
+test('supported source commits await the existing learning writer, and observation failure cannot undo research',async()=>{
+  const {db,store}=await fixture(),calls=[],sourceHashes=[];let committed;
+  store.learning=async request=>{
+    assert.equal((await store.get(request.day)).state,'reviewed');calls.push(request);
+    committed=structuredClone(db.values.get(`${ROOT}/runs/${request.day}`));
+    sourceHashes.push(createHash('sha256').update(JSON.stringify(committed)).digest('hex'));
+    return {event:{eventId:'source-bound-event'},append:'existing'};
+  };
+  await store.put(row());assert.equal(calls.length,0);
+  await store.put({...row(),state:'reviewed'});
+  assert.deepEqual(calls,[{op:'learning_after_run',day:'2026-09-30'}]);
+  assert.deepEqual(db.values.get(`${ROOT}/runs/2026-09-30`),committed);
+  const hash=committed.blob;
+  assert.equal(db.values.get(`${ROOT}/learningObservations/${hash}`).status,'observed');
+  await store.learning({op:'learning_after_run',day:'2026-09-30'});
+  assert.equal(sourceHashes[0],sourceHashes[1]);
+  store.learning=async()=>{throw new Error('private provider message contains spaces');};
+  assert.equal(await store.put({...row(),state:'reviewed'}),true);
+  assert.equal((await store.get('2026-09-30')).state,'reviewed');
+  assert.deepEqual(db.values.get(`${ROOT}/runs/2026-09-30`),committed);
+  assert.equal(db.values.get(`${ROOT}/learningObservations/${hash}`).code,'research_learning_observation_unavailable');
+});
+
 test('terminal collection alone may publish validated evidence while control stays stopped', async () => {
   const {db,store}=await fixture(), proof={session_id:'synthetic-session',qa_artifact_sha256:'a'.repeat(64)}, writes=[];
   const workflow={enabled:true,qa_authority_reference:'owner-qa',publication_authority_reference:'owner-publication'};
@@ -25,7 +82,7 @@ test('terminal collection alone may publish validated evidence while control sta
   const value={...row(),state:'reviewed',session_id:proof.session_id,
     qa:{state:'validated',artifact_digest:proof.qa_artifact_sha256,
       terminal_collection_recovery:{native_receipt:proof,workflow_authority:workflow}},
-    delivery:{notion:{state:'acknowledged'},sheets:{state:'pending'}}};
+    delivery:{notion:{state:'acknowledged'},sheets:{state:'pending',payload:{candidates:[]}}}};
   await store.put({...value,state:'creating'});
   db.values.get(ROOT).enabled=false;
   store.terminalCollectionReceipt=proof;
@@ -72,6 +129,40 @@ test('learning uses the existing fenced pipe and absent control performs no hand
   time.now+=180001;
   await assert.rejects(store.dispatch({op:'learning_context',day:row().date,allow_create:true}),/lease_lost/);
   assert.equal(invoked,1);
+});
+
+test('agent history admits the original company binding without a relevance grant or frozen preload',async()=>{
+  const {db,store,time}=await fixture(),expiry=new Date(time.now+60000).toISOString();
+  const binding={enabled:true,binding:{companyId:'authorized-company',expiresAt:expiry},
+    businessScope:{subjectKeys:['company-history'],expiresAt:expiry}};
+  Object.assign(db.values.get(ROOT),{learning:binding,config:{history_profile:'agent-history-v1'}});
+  const value={...row(),history_profile:'agent-history-v1',history_binding:binding};
+  await store.put(value);
+  const calls=[];store.learning=async(request,scope)=>{calls.push({request,scope});return {ok:true,rows:[],next_cursor:null,coverage:{complete:true},semantic:{status:'unavailable'}};};
+  await store.createCheck(value.date,value.metadata);
+  const request={op:'history_search',day:value.date,query:'agent chosen unfamiliar task',filters:{city:'Seattle'},page_size:3};
+  assert.equal((await store.dispatch(request)).ok,true);
+  assert.deepEqual(calls,[{request,scope:binding}]);
+  await assert.rejects(store.put({...value,history_binding:{...binding,binding:{companyId:'other'}}}),/company_history_intent_conflict/);
+  store.learning=async()=>{throw new Error('company_history_cursor_invalid');};
+  assert.equal((await store.dispatch({...request,cursor:'wrong'})).error.code,'company_history_cursor_invalid');
+  store.learning=async()=>{throw new Error('PRIVATE_UPSTREAM_SECRET');};
+  assert.equal((await store.dispatch(request)).error.code,'company_history_unavailable');
+  time.now+=60001;
+  await assert.rejects(store.dispatch(request),/company_history_scope_expired/);
+  store.terminalCollectionReceipt={};
+  await assert.rejects(store.dispatch(request),/terminal_qa_operation_forbidden/);
+});
+
+test('legacy saved sessions cannot silently acquire the company history profile',async()=>{
+  const {store,db,time}=await fixture();await store.put(row());
+  const expiry=new Date(time.now+60000).toISOString();
+  const binding={enabled:true,binding:{expiresAt:expiry},businessScope:{expiresAt:expiry}};
+  Object.assign(db.values.get(ROOT),{learning:binding,config:{history_profile:'agent-history-v1'}});
+  await assert.rejects(store.put({...row(),history_profile:'agent-history-v1',history_binding:binding}),/company_history_intent_conflict/);
+  let called=false;store.learning=async()=>{called=true;};
+  await assert.rejects(store.dispatch({op:'history_fetch',day:row().date,record_id:'chosen'}),/company_history_authority_changed/);
+  assert.equal(called,false);
 });
 
 test('learning scope drift, disable or expiry cannot claim provider creation', async () => {
@@ -296,4 +387,43 @@ test('adaptive artifact files are immutable in their own namespace and preserve 
   assert.equal(Buffer.from(await store.fileGet(name),'base64').toString(),'original');
   assert.equal(Buffer.from(await store.adaptiveFileGet(name),'base64').toString(),'test result');
   await assert.rejects(store.adaptiveFilePut(name,Buffer.from('replacement').toString('base64')),/identity_conflict/);
+});
+
+test('replacement observer discovers saved publication cancellation states while control is disabled without admissions',async()=>{
+  const {db,store}=await fixture();db.values.get(ROOT).enabled=false;
+  const replacement=new Store(db,Date.now,'replacement');
+  for(const state of ['running','input_unresolved','cancel_pending']) {
+    db.values.set(`${ROOT}/runs/2026-09-30`,{date:'2026-09-30',state:'reviewed',publication_state:state});
+    const before=JSON.stringify([...db.values]);
+    assert.equal(await replacement.dispatch({op:'active_qa'}),'2026-09-30');
+    assert.equal(JSON.stringify([...db.values]),before);
+  }
+  db.values.get(`${ROOT}/runs/2026-09-30`).publication_state='cancelled';
+  assert.equal(await replacement.activeQA(),null);
+});
+
+test('inventory pages are complete against the independently pinned artifact, not self-consistent replacement manifests',async()=>{
+  const {verificationDigest}=await import('../tools/daily_research/verification-digest.mjs');
+  const {store,db}=await fixture(),r=row(),outputDigest='a'.repeat(64);
+  const records=Array.from({length:3},(_,i)=>({operator:'Invented operator',site:`Invented site ${i}`,location:null,
+    task_hypothesis:null,source_urls:[`https://fixture.example/${i}`],evidence_gap:'Actual work unknown',disposition:'unresolved'}));
+  const artifact=Buffer.from(JSON.stringify({discovery_inventory:records})),artifactSha=createHash('sha256').update(artifact).digest('hex');
+  const filename=`${r.date}-inventory-${outputDigest}-0.json`;
+  const page={version:'blueprint.discovery-inventory.v1',run_key:r.run_key,source_output_digest:outputDigest,start:0,end:3,records};
+  const raw=Buffer.from(JSON.stringify(page)+'\n'),pageSha=createHash('sha256').update(raw).digest('hex');
+  const manifest={version:page.version,source_output_digest:outputDigest,record_count:3,page_count:1,complete_retention:true,
+    records_digest:verificationDigest(records),source_artifact_file:`${r.date}-artifact.json`,source_artifact_sha256:artifactSha,
+    pages:[{index:0,file:filename,sha256:pageSha,bytes:raw.length,start:0,end:3}]};
+  Object.assign(r,{artifact_downloaded:true,raw_output_digest:artifactSha,packet:{candidates:[],discovery_inventory_manifest:manifest}});
+  await store.put(r);await store.filePut(`${r.date}-artifact.json`,artifact.toString('base64'));await store.filePut(filename,raw.toString('base64'));
+  assert.ok((await store.snapshot(r.date)).files[`inventory-${outputDigest}-0`]);
+  const replaced={...page,end:2,records:records.slice(0,2)},replacedRaw=Buffer.from(JSON.stringify(replaced)+'\n');
+  await assert.rejects(store.filePut(filename,replacedRaw.toString('base64')),/artifact_identity_conflict/);
+  const blob=await store.blobPut(replacedRaw.toString('base64'));db.values.set(`${ROOT}/files/${filename}`,{blob});
+  for(const rebindRecords of [true,false]) {
+    const forged={...manifest,record_count:2,records_digest:rebindRecords?verificationDigest(replaced.records):manifest.records_digest,
+      pages:[{...manifest.pages[0],end:2,bytes:replacedRaw.length,sha256:createHash('sha256').update(replacedRaw).digest('hex')}]};
+    await store.put({...r,packet:{...r.packet,discovery_inventory_manifest:forged}});
+    await assert.rejects(store.snapshot(r.date),/discovery_inventory_(source_binding|manifest)_invalid/);
+  }
 });

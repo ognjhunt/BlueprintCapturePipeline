@@ -16,9 +16,31 @@ import ssl
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 PROFILE = "perplexity-fast-v1"
+MCP_PROFILE = "owner-readonly-mcp-v1"
+MCP_READ_TOOLS = {
+    "googlesheets": ("https://sheetsmcp.googleapis.com/mcp/v1", ("get_values", "get_spreadsheet")),
+    "slack": ("https://mcp.slack.com/mcp", ("slack_search_public", "slack_search_channels", "slack_read_channel", "slack_read_thread")),
+    "notion": ("https://mcp.notion.com/mcp", ("notion-get-tool-access", "notion-search", "notion-fetch")),
+    "firebase": ("https://firestore.googleapis.com/mcp", ("get_database",)),
+}
+# Prospective only: these tools can submit paid research, unlike MCP_PROFILE.
+# Blueprint's Gemini adapter is its existing authenticated Work MCP transport;
+# Google's Deep Research MCP support is not a hosted research-tool endpoint.
+MCP_RESEARCH_PROFILE = "owner-delegated-research-mcp-v1"
+MCP_RESEARCH_TOOLS = {
+    "exa": ("https://mcp.exa.ai/mcp", ("agent_run",)),
+    "blueprint": ("https://tryblueprint.io/api/blueprint-work/mcp",
+                  ("start_gemini_deep_research", "get_gemini_deep_research")),
+    "parallel_task": ("https://task-mcp.parallel.ai/mcp",
+                      ("createDeepResearch", "getStatus", "getResultMarkdown")),
+}
+MCP_PROFILES = {
+    MCP_PROFILE: MCP_READ_TOOLS,
+    MCP_RESEARCH_PROFILE: {**MCP_READ_TOOLS, **MCP_RESEARCH_TOOLS},
+}
 SEARCH = "blueprint_search"
 READ = "blueprint_read_source"
 MAX_RESPONSE = 500_000
@@ -32,6 +54,114 @@ MAX_CALLS = 500  # Resource ceiling, never a quality quota; shared research+QA.
 
 class ToolFailure(ValueError):
     """Only stable, secret-free codes may leave the application boundary."""
+
+
+def mcp_endpoint_admitted(label, value, profile, catalog):
+    """Allow Exa's documented non-secret URL options only in the new profile.
+
+    Validate without normalizing: credentials, vaults and payload digests bind
+    the full original endpoint, including its query.
+    """
+    if value == catalog[label][0]:
+        return True
+    if profile != MCP_RESEARCH_PROFILE or label != "exa" or not isinstance(value, str):
+        return False
+    try:
+        url = urlsplit(value)
+        if (url.scheme != "https" or url.netloc != "mcp.exa.ai" or url.path != "/mcp"
+                or "#" in value or not url.query or len(url.query) > 1024
+                or any(ord(char) < 33 or ord(char) > 126 for char in value)):
+            return False
+        pairs = parse_qsl(url.query, keep_blank_values=True)
+        if not pairs or len(pairs) != len({name for name, _ in pairs}):
+            return False
+        documented = {"web_search_exa", "web_fetch_exa", "web_search_advanced_exa", "agent_run"}
+        for name, parameter in pairs:
+            if name == "login" and parameter == "":
+                continue
+            if name == "tools":
+                selected = parameter.split(",")
+                if len(selected) == len(set(selected)) and all(tool in documented for tool in selected):
+                    continue
+            return False
+        return True
+    except ValueError:
+        return False
+
+
+def mcp_connections(declared, profile=MCP_PROFILE):
+    """Validate known owner connections, retaining only the selected profile."""
+    catalog = MCP_PROFILES.get(profile)
+    known_catalog = MCP_PROFILES[MCP_RESEARCH_PROFILE]
+    if catalog is None or not isinstance(declared, list) or any(not isinstance(tool, dict) for tool in declared):
+        raise ToolFailure("research_mcp_configuration_invalid")
+    connections, labels = [], set()
+    for tool in declared:
+        if tool.get("type") != "mcp":
+            continue
+        label, transport = tool.get("server_label"), tool.get("transport")
+        allowed = tool.get("allowed_tools")
+        if (set(tool) != {"type", "server_label", "transport", "allowed_tools", "connection_origin",
+                         "credential_id", "request_metadata", "required"}
+                or not isinstance(label, str) or label not in known_catalog or label in labels
+                or not isinstance(transport, dict) or set(transport) - {"type", "server_url", "headers"}
+                or transport.get("type") != "http"
+                or not mcp_endpoint_admitted(label, transport.get("server_url"), MCP_RESEARCH_PROFILE, known_catalog)
+                or transport.get("headers", {}) != {} or tool["request_metadata"] != {}
+                or tool["connection_origin"] != "service" or type(tool["required"]) is not bool
+                or not isinstance(tool["credential_id"], str)
+                or not re.fullmatch(r"credential_[A-Za-z0-9_-]{1,150}", tool["credential_id"])
+                or allowed is not None and (not isinstance(allowed, list) or any(not isinstance(x, str) for x in allowed)
+                                            or len(allowed) != len(set(allowed)))):
+            raise ToolFailure("research_mcp_configuration_invalid")
+        labels.add(label)
+        if label in catalog:
+            connections.append(json.loads(json.dumps(tool, allow_nan=False)))
+    if not connections:
+        raise ToolFailure("research_mcp_connection_missing")
+    return connections
+
+
+def mcp_tools(connections, profile=MCP_PROFILE):
+    """Narrow session calls without altering the owner's saved connections."""
+    catalog = MCP_PROFILES.get(profile)
+    if catalog is None:
+        raise ToolFailure("research_mcp_configuration_invalid")
+    return [{**tool, "allowed_tools": [name for name in catalog[tool["server_label"]][1]
+             if tool["allowed_tools"] is None or name in tool["allowed_tools"]]}
+            for tool in mcp_connections(connections, profile)]
+
+
+def delegated_research_instructions():
+    return (" You remain the lead researcher: read company history and the robot capability directory, form "
+            "several hypotheses, choose Perplexity fast discovery and decide which substantial investigations "
+            "to delegate through the available MCP research tools. The delegated tools can create paid work; "
+            "their presence does not create spending or disclosure authority. Use only the retained allocation "
+            "and current deadline, and pass only information authorized for those providers. "
+            "Use Exa agent_run with effort=ultra when the authenticated current tool schema advertises it; "
+            "a running result's id is observed with runId on the SAME run. previousRunId starts a NEW follow-up "
+            "and must not be used as polling or automatic retry. Gemini start_gemini_deep_research starts one "
+            "research job; retain its returned job identifier and use get_gemini_deep_research for observation. "
+            "Choose Gemini Deep Research Max only when advertised and authorized by the adapter schema. "
+            "For Parallel, createDeepResearch starts paid work; observe its SAME returned identifier with "
+            "getStatus and retrieve getResultMarkdown. Select processor ultra8x only if the authenticated "
+            "current MCP schema actually advertises that processor; API documentation alone is not proof "
+            "of its MCP availability. A long-running provider does not extend this run's original deadline. "
+            "Retain its identifier and pending state instead of creating another task. Find All is not "
+            "advertised by this verified MCP catalog: report that comparison as unavailable, do not guess "
+            "a tool or substitute a raw API call. "
+            "Do not guess cost-control fields. If a tool actually advertises maxCostDollars, set it within "
+            "the remaining retained allocation; otherwise its budget is a soft target, not a hard cap. "
+            "Unknown acknowledgment, timeout or missing output is not permission to start a duplicate job. "
+            "Keep returned reports, citations, run IDs, usage and cost receipts. Native MCP provider charges "
+            "are not measured by Blueprint's Perplexity meter or OpenAI token usage: missing charges remain "
+            "unknown, never zero or a complete total. Compare source-backed yield, primary-source quality, "
+            "novelty, task fit, latency and actual cost across providers, verifying important claims against "
+            "original pages. Agreement citing the same webpage is not independent corroboration. Deduplicate "
+            "without discarding unique supported findings; keep task fit separate from buying interest. "
+            "The lead agent decides what to retain and later publishes through the existing QA-validated "
+            "Blueprint tools. Unavailable optional research MCPs remain explicit gaps; other authorized "
+            "research continues without inventing authentication, receipts or comparison results.")
 
 
 @contextmanager
@@ -56,8 +186,8 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools():
-    return [
+def tools(publication_profile=None, history_profile=None, expansion_profile=None):
+    declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
          "description": "Search public web evidence using Perplexity Search API Fast. Returns complete provider passages, URLs and dates. Choose follow-up queries yourself; passages are leads, not complete primary-page verification.",
@@ -74,13 +204,47 @@ def tools():
                         "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     ]
 
+    if publication_profile == "agent-owned-v1":
+        from tools.daily_research.publication import tools as publication_tools
+        declared.extend(publication_tools())
+    if history_profile == "agent-history-v1":
+        from tools.daily_research.history import tools as history_tools
+        declared.extend(history_tools())
+    if expansion_profile == "exa-guarded-v1":
+        from tools.daily_research.expansion import tools as expansion_tools
+        declared.extend(expansion_tools())
+    return declared
+
 
 def instructions():
     return ("Use blueprint_search (Perplexity Search API search_type=fast) for all public discovery and "
             "adaptive follow-up queries, then blueprint_read_source for underlying primary pages. "
             "You choose the queries, domains, contradictions and follow-ups; the controller never preselects prospects. "
             "Define this run's concrete task/industry/region hypotheses before searching and expand promising "
-            "branches adaptively. There is no prospect-count stopping rule: ten, fifteen or fifty valid "
+            "branches adaptively. Search for physical workflow verbs, objects and operator terminology, including "
+            "regional equivalents such as handballing/devanning/container unloading or machine loading/tending, "
+            "rather than only industry categories or robotics marketing. When results are generic, duplicates, "
+            "inaccessible or low-yield, diagnose the source gap, vary terms or primary-source routes, and switch "
+            "to another promising in-scope branch when that offers more evidence. Do not repeat the same failed "
+            "query indefinitely or infer market absence from access failure. "
+            "Search employer careers/applicant-tracking pages alongside other primary sources using "
+            "site, physical-duty verbs and regional role terms; job-board or recruiter copies are leads "
+            "until employer/site affiliation is supported. Read the exact posting and retain employer, "
+            "site, requisition, original URLs, quoted physical duties, published/modified dates if supported, "
+            "observed date and application-status evidence. Do not substitute a search recency filter, "
+            "HTTP Last-Modified, first-seen date or repost date for a vacancy's publication/currentness. "
+            "Closed or undated postings can support bounded historical task findings; unknown currentness "
+            "stays unknown. Hiring is an optional prioritization hypothesis, not a match condition or proof "
+            "of shortage, interest or robot capability. Compare employer/requisition/canonical posting "
+            "identities separately from exact facility/task duplicates; preserve original sources and "
+            "status changes rather than count reposts as new prospects. "
+            "When an authorized list-building/FindAll tool is actually available, use simple positive discovery "
+            "conditions: an identifiable operating facility and public evidence linking it to the requested "
+            "physical task. Request one operator/site/task per entity; assess human workflow, exact-step "
+            "automation, robot fit and contact/interest separately afterward. Do not ask a provider to invent "
+            "historical novelty; compare exact facilities/tasks with retained prior identities after discovery "
+            "and keep unresolved matches. These instructions do not expose or authorize another tool or paid run. "
+            "There is no prospect-count stopping rule: ten, fifteen or fifty valid "
             "new prospects do not prove coverage. Retain all defensible rows within the declared resource "
             "envelope; do not stop at ten or discard later valid rows. Stop for evidence-based coverage "
             "and diminishing returns at the defined scope, or explicitly mark budget/time/access interruption. "
@@ -306,7 +470,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
         return False
     if len(canonical(row).encode()) > MAX_RECORD:
         raise Refusal("research_tool_record_resource_ceiling")
-    tid = row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
+    tid = row.get("publication", {}).get("turn_id") if phase == "publication" else row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
           if phase == "repair" else row.get("qa", {}).get("turn_id"))
     deadline = instant(row["started_at"]).timestamp() + phase_runtime_seconds(row, {}, phase)
     if phase == "qa" and row.get("qa_continuation"):
@@ -317,11 +481,21 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     if phase == "repair" or phase == "qa" and row.get("validation_repair_authority") and not row.get("qa_continuation"):
         from tools.daily_research.recovery import repair_deadline
         deadline = repair_deadline(row).timestamp()
+    if phase == "publication":
+        from tools.daily_research.consumer import qa_deadline
+        deadline = qa_deadline(row, {}).timestamp()
+    from tools.daily_research import expansion, history, publication
+    early_publication = ({publication.INSPECT, publication.PUBLISH}
+                         if row.get("publication_profile") == publication.PROFILE and phase != "publication" else set())
+    admitted_names = {SEARCH, READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
+    admitted_names |= early_publication
+    expansion_names = {expansion.START, expansion.READ} if row.get("expansion_profile") == expansion.PROFILE else set()
+    admitted_names |= expansion_names
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":
             continue
-        if (action.get("type") != "function_call" or action.get("name") not in {SEARCH, READ}
+        if (action.get("type") != "function_call" or action.get("name") not in admitted_names
                 or not tid or action.get("turn_id") != tid):
             raise Refusal("research_tool_action_binding_invalid")
         cid = identifier(action.get("call_id"))
@@ -347,7 +521,10 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             raise Refusal("research_tool_stopped_or_expired")
         if "result_file" not in prior:
             outcome = {"success": False, "error": "research_tool_reply_unresolved_no_replay"}
-            if not prior["attempted"]:
+            # Expansion's whole-run claim, rather than a model call ID, owns
+            # the paid start. Re-entering it can only recover the original ACK
+            # or read that same run; it never repeats an uncertain submission.
+            if not prior["attempted"] or action["name"] in expansion_names:
                 prior["attempted"] = True
                 ledger.put(row)  # No paid POST is replayed after a lost reply/crash.
                 api.tool_admit(row, phase)
@@ -355,13 +532,39 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                     raise Refusal("research_tool_stopped_or_expired")
                 try:
                     with bounded_request(min(15, deadline - clock().timestamp())):
-                        result = api.application_tool(action["name"], action.get("arguments"))
+                        if action["name"] in early_publication:
+                            result = {"ok": False, "error": {"code": "publication_requires_review",
+                                "guidance": "Finish research and QA validation first. Then inspect destinations and choose publication in this same session."}}
+                        elif action["name"] in history.NAMES:
+                            result = history.execute(ledger, row, action["name"], action.get("arguments"))
+                        elif action["name"] in expansion_names:
+                            claim = row.get("exa_expansion")
+                            # Terminal receipts and an already consumed start
+                            # need no catalog/auth calls. Other phases cannot
+                            # initialize a paid-provider connection.
+                            context = (api.expansion_context(row, action["name"])
+                                if phase == "research" and not (claim and (claim.get("terminal_receipt")
+                                    or action["name"] == expansion.START))
+                                and not (not claim and expansion.below_ultra_minimum(action["name"], action.get("arguments")))
+                                else {})
+                            result = expansion.execute(action["name"], action.get("arguments"), row, ledger,
+                                phase=phase, now=clock(), admit=lambda current: api.expansion_admit(current, phase), **context)
+                        else:
+                            result = api.application_tool(action["name"], action.get("arguments"))
                         output = canonical(result)
                     if len(output.encode()) > MAX_RESPONSE:
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
-                    outcome = {"success": True, "output": output}
-                except ToolFailure as exc:
-                    outcome = {"success": False, "error": str(exc)}
+                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names else True, "output": output}
+                    if outcome["success"] is False:
+                        failure = result.get("error") or {"code": result.get("reason") or "research_tool_unavailable_no_replay"}
+                        if not result.get("error") and result.get("action"):
+                            failure["guidance"] = result["action"]
+                        outcome["error"] = canonical(failure)
+                except (ToolFailure, expansion.ExpansionError) as exc:
+                    # Both carry fixed, secret-free codes the agent can act on.
+                    failure = {"code": str(exc)}
+                    outcome = {"success": False, "error": canonical(failure),
+                               "output": canonical({"ok": False, "error": failure})}
                 except Exception:  # noqa: BLE001 - stable error, never upstream secrets
                     outcome = {"success": False, "error": "research_tool_unavailable_no_replay"}
             event = {"type": "agent.session.input.tool_result", "turn_id": tid, "call_id": cid, **outcome}

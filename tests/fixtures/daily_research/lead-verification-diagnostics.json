@@ -1,0 +1,1225 @@
+[
+  {
+    "name": "canonical",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "verified",
+      "assessment_valid": true,
+      "eligible_for_qualified_promotion": true,
+      "validation_errors": [],
+      "reasons": [
+        "Primary sources support the named site/task and human workflow; fit remains a bounded hypothesis"
+      ],
+      "assessment_digest": "b3b340167de87ed591bcdf7f497a250e13e434f65aa252159fd3dfbe43e46f8f",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "schema_alias",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      },
+      "schema_version": "blueprint.lead-verification.v1"
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "verified",
+      "assessment_valid": true,
+      "eligible_for_qualified_promotion": true,
+      "validation_errors": [],
+      "reasons": [
+        "Primary sources support the named site/task and human workflow; fit remains a bounded hypothesis"
+      ],
+      "assessment_digest": "ad18793b9aab05d3c7f523e550e04ef51fab8b3e5f72babaf3361e19fbe67fef",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "both_aliases",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      },
+      "schema_version": "blueprint.lead-verification.v1"
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "verified",
+      "assessment_valid": true,
+      "eligible_for_qualified_promotion": true,
+      "validation_errors": [],
+      "reasons": [
+        "Primary sources support the named site/task and human workflow; fit remains a bounded hypothesis"
+      ],
+      "assessment_digest": "f287e6a2fe669fdda63abdd2e0e551b9ef70510cce60c689ea5c8af19c102581",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "conflicting_alias",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "other.version",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      },
+      "schema_version": "blueprint.lead-verification.v1"
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": false,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [
+        {
+          "path": "/version",
+          "code": "assessment_version_invalid",
+          "expected": "\"version\": \"blueprint.lead-verification.v1\"; a matching schema_version alias is accepted without rewriting evidence"
+        }
+      ],
+      "reasons": [
+        "/version: \"version\": \"blueprint.lead-verification.v1\"; a matching schema_version alias is accepted without rewriting evidence"
+      ],
+      "assessment_digest": "e0fbcb6d9b701343cbdaf2c47bf1a614f23cd2fc1ac540171d904457a8feacab",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "null_canonical",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": null,
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      },
+      "schema_version": "blueprint.lead-verification.v1"
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": false,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [
+        {
+          "path": "/version",
+          "code": "assessment_version_invalid",
+          "expected": "\"version\": \"blueprint.lead-verification.v1\"; a matching schema_version alias is accepted without rewriting evidence"
+        }
+      ],
+      "reasons": [
+        "/version: \"version\": \"blueprint.lead-verification.v1\"; a matching schema_version alias is accepted without rewriting evidence"
+      ],
+      "assessment_digest": "f354dba0c975afb2e6a44b547cba829154cbbfa62c99207d749640971447f43c",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "unknown_expiry",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": null,
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": true,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [],
+      "reasons": [
+        "/valid_until: freshness is unknown; retain unresolved evidence and establish a supported currentness boundary before promotion"
+      ],
+      "assessment_digest": "be4fbf8e58a72e881951bd6b8f722fc21ba3bad3a0a8b11c85ff5e74b5af6ed1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "unknown_expiry_contradiction",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": null,
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "contradicted",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": true,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [],
+      "reasons": [
+        "/valid_until: freshness is unknown; retain unresolved evidence and establish a supported currentness boundary before promotion",
+        "human_workflow: contradicted — Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis"
+      ],
+      "assessment_digest": "624c0fc4b53e7b51c9302c55dd687d5646dcb2d414edbae687f5f74044d1dff0",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "future_assessment",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-10-01T12:00:00.000001Z",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": false,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [],
+      "reasons": [
+        "/assessed_at: assessment is in the future; retain the actual checked time"
+      ],
+      "assessment_digest": "0e66fc2d639dff000ecea8825e460969545a43a34c65c71087af0bdf5fb11365",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "bad_source_id",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        },
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": false,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [
+        {
+          "path": "/sources/1/id",
+          "code": "assessment_source_id_invalid",
+          "expected": "a unique nonempty local source ID; do not invent or merge sources"
+        }
+      ],
+      "reasons": [
+        "/sources/1/id: a unique nonempty local source ID; do not invent or merge sources"
+      ],
+      "assessment_digest": "5cf7a1addb1a404efaf0aee5d625f29f1c2acd0080ffdd19bbecb191881c83dc",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "bad_binding",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "wrong",
+      "assessed_at": "2026-09-30T12:00:00+00:00",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": false,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [
+        {
+          "path": "/candidate_digest",
+          "code": "assessment_candidate_binding_invalid",
+          "expected": "copy the supplied exact candidate_digest; retain portable metadata and retain large IDs as strings"
+        }
+      ],
+      "reasons": [
+        "/candidate_digest: copy the supplied exact candidate_digest; retain portable metadata and retain large IDs as strings"
+      ],
+      "assessment_digest": "590bf4441022f516cd4c8ca149d43d5c3c841b42167dfa8d95e7975ef99cecd4",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "bad_timestamp",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-02-31T12:00:00Z",
+      "valid_until": "2026-10-07T12:00:00+00:00",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+00:00",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "unresolved",
+      "assessment_valid": false,
+      "eligible_for_qualified_promotion": false,
+      "validation_errors": [
+        {
+          "path": "/assessed_at",
+          "code": "assessment_timestamp_invalid",
+          "expected": "actual ISO timestamp with timezone; valid_until may be null when freshness is unknown, never invent an expiry"
+        }
+      ],
+      "reasons": [
+        "/assessed_at: actual ISO timestamp with timezone; valid_until may be null when freshness is unknown, never invent an expiry"
+      ],
+      "assessment_digest": "9fb5a3ddc8bdb28a4b08550d7968e54a7df0a507929680d261b8638bf6e60e28",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  },
+  {
+    "name": "basic_utc_offset",
+    "candidate": {
+      "candidate_key": "synthetic-golden",
+      "organization": "Synthetic Åcme 工場",
+      "location": "123 Fixture Avenue, Testville",
+      "site": "Fixture cell",
+      "task": "Human carton extraction",
+      "metadata": {
+        "confidence": 0.5,
+        "round": 1.0,
+        "tiny": 1e-07
+      }
+    },
+    "assessment": {
+      "version": "blueprint.lead-verification.v1",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1",
+      "assessed_at": "2026-09-30T12:00:00+0000",
+      "valid_until": "2026-10-07T12:00:00+0000",
+      "claims": {
+        "operator": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "physical_site": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "site_task": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "human_workflow": {
+          "status": "verified_fact",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        },
+        "plausible_fit": {
+          "status": "inference",
+          "reason": "Synthetic fixture explicitly links this operator, physical site and human task; fit is a hypothesis",
+          "source_refs": [
+            "synthetic-primary"
+          ]
+        }
+      },
+      "sources": [
+        {
+          "id": "synthetic-primary",
+          "url": "https://fixture.example/site-task",
+          "publisher": "Synthetic operator",
+          "source_date": null,
+          "event_date": null,
+          "checked_at": "2026-09-30T12:00:00+0000",
+          "retrieval": "static",
+          "classification": "operator",
+          "quote": "Synthetic operator runs this exact physical site where humans perform this task.",
+          "freshness": "current",
+          "freshness_reason": "Synthetic current-state fixture, not live proof"
+        }
+      ],
+      "counterevidence": {
+        "status": "checked",
+        "reason": "Synthetic bounded automation check; no physical/robot proof",
+        "source_refs": [],
+        "searches": [
+          "Synthetic task automation and incumbent-system search"
+        ]
+      },
+      "extra": {
+        "inert_confidence": 0.5,
+        "unknown": null
+      }
+    },
+    "now": "2026-09-30T12:00:00+00:00",
+    "expected": {
+      "version": "blueprint.lead-verification-result.v2",
+      "status": "verified",
+      "assessment_valid": true,
+      "eligible_for_qualified_promotion": true,
+      "validation_errors": [],
+      "reasons": [
+        "Primary sources support the named site/task and human workflow; fit remains a bounded hypothesis"
+      ],
+      "assessment_digest": "dbe83312c1fd95a2687d7676ac58ff1e0b805f60acd2588128d7bc3c070e7c64",
+      "candidate_digest": "9f32de8fcd86f0fd744f6a83c003b1ded55df25d039695d85e4b0bf15964fda1"
+    }
+  }
+]

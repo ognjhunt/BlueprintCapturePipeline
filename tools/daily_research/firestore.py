@@ -1,5 +1,6 @@
 """Optional Render store. Existing Firebase Admin is used through a private pipe."""
 import base64
+import hashlib
 import json
 import os
 import re
@@ -28,7 +29,7 @@ class Bridge:
             [node, str(script or Path(__file__).with_name("firestore_bridge.mjs"))],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1,
-            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON", "NOTION_API_TOKEN", "NOTION_API_KEY", "BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE"}},
+            env={k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "FIREBASE_SERVICE_ACCOUNT_JSON", "NOTION_API_TOKEN", "NOTION_API_KEY", "BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE", "BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED"}},
         )
 
     def call(self, op, **fields):
@@ -37,7 +38,8 @@ class Bridge:
         try:
             self.process.stdin.write(canonical({"op": op, **fields}) + "\n")
             self.process.stdin.flush()
-            if not select.select([self.process.stdout], [], [], 35)[0]:
+            timeout = 120 if op in {"cleanup_archive", "cleanup_archive_verify"} else 35
+            if not select.select([self.process.stdout], [], [], timeout)[0]:
                 self.broken = True
                 self.close()
                 raise Refusal("firestore_bridge_deadline")
@@ -89,6 +91,16 @@ class FirestoreLedger:
     def learning_context(self, day, *, allow_create=True):
         return self.bridge.call("learning_context", day=day, allow_create=allow_create)
 
+    def company_history_binding(self):
+        control = self.bridge.call("control")
+        return control.get("learning") if isinstance(control, dict) else None
+
+    def contact_research_context(self, day):
+        return self.bridge.call("contact_research_context", day=day)
+
+    def reconcile_contact_research(self, day):
+        return self.bridge.call("contact_research_reconcile", day=day)
+
     def put(self, row):
         from tools.daily_research import search
         if row.get("search_provider") == search.PROFILE and len(canonical(row).encode()) > search.MAX_RECORD:
@@ -119,21 +131,133 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("create_check", day=payload["metadata"]["run_key"].split(":", 1)[1], metadata=payload["metadata"])
         return super().create(payload)
 
+    def expansion_context(self, row, name):
+        from tools.daily_research import expansion
+        from tools.daily_research.exa_transport import ExaTransport, ExaTransportError
+        self.tool_admit(row, "research")
+        if name == expansion.START and any(previous.get("exa_expansion")
+                and not previous["exa_expansion"].get("terminal_receipt") for previous in self.ledger.rows()):
+            return {"unavailable_reason": "expansion_original_run_or_ack_pending_no_new_start"}
+        control = self.ledger.bridge.call("control")
+        allocation = control.get("exa_expansion_allocation")
+        allocation_status = expansion.allocation_diagnostic(row, allocation)
+        if name == expansion.START and not isinstance(allocation, dict):
+            return {"unavailable_reason": "expansion_remaining_all_in_allocation_unverified",
+                    "allocation_status": allocation_status}
+        key = os.environ.get("EXA_API_KEY")
+        if not key:
+            return {"unavailable_reason": "expansion_worker_exa_binding_missing", "allocation": allocation,
+                    "allocation_status": allocation_status}
+
+        def retain(receipt):
+            from tools.daily_research.runner import digest
+            raw = (canonical(receipt) + "\n").encode()
+            receipt_hash = digest(receipt)
+            filename = row["date"] + "-exa-http-" + receipt_hash + ".json"
+            claim = row.get("exa_expansion")
+            if claim and receipt.get("operation") == "tools/call":
+                request = json.loads(base64.b64decode(receipt["request_body_base64"], validate=True))
+                if request.get("params") == {"name": "agent_run", "arguments": claim["intent"]["request"]}:
+                    filename = row["date"] + "-exa-" + claim["intent_sha256"] + "-start-http.json"
+            try:
+                existing = self.ledger.read_bytes(filename)
+            except FileNotFoundError:
+                self.ledger.write_bytes(filename, raw)
+            else:
+                if existing != raw:
+                    raise Refusal("expansion_transport_receipt_conflict")
+            refs = row.setdefault("exa_transport_receipts", [])
+            ref = {"file": filename, "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+            if ref not in refs:
+                refs.append(ref)
+                self.ledger.put(row)
+
+        transport = ExaTransport(receipt_sink=retain)
+        try:
+            schema = transport.discover()
+        except ExaTransportError:
+            return {"unavailable_reason": "expansion_authenticated_catalog_unavailable"}
+        return {"transport": transport, "allocation": allocation, "tool_schema": schema,
+                "allocation_status": allocation_status}
+
+    def expansion_admit(self, row, phase):
+        self.tool_admit(row, phase)
+        claim = row.get("exa_expansion")
+        if claim and not claim.get("run_id"):
+            control = self.ledger.bridge.call("control")
+            if control.get("exa_expansion_allocation") != claim["intent"]["allocation"]:
+                raise Refusal("expansion_allocation_changed_before_submission")
+
     def cancel(self, session_id, run_key):
         self.ledger.bridge.call("assert_lease")
         return super().cancel(session_id, run_key)
+
+    def delete_session(self, session_id, day, binding_digest):
+        self.cleanup_delete_phase = "preconditions"
+        row = self.ledger.get(day)
+        if not row or row.get("session_id") != session_id:
+            raise Refusal("cleanup_session_binding_changed")
+        from tools.daily_research.render import cleanup_inventory
+        inventory = cleanup_inventory(self, row, contents=False)
+        import hashlib
+        for name in ("provider-items.json", "provider-artifacts.json"):
+            expected = next((o for o in row["cleanup"]["archive"]["objects"] if o["name"].endswith("/" + name)), None)
+            if not expected or expected["sha256"] != hashlib.sha256(inventory[name]).hexdigest():
+                raise Refusal("cleanup_archived_inventory_changed")
+        self.ledger.bridge.call("cleanup_delete_check", day=day, binding_digest=binding_digest)
+        if getattr(self, "stopped", lambda: False)():
+            raise Refusal("cleanup_stopped_before_delete")
+        self.cleanup_delete_phase = "provider_submission"
+        return super().delete_session(session_id, day, binding_digest)
 
     def tool_admit(self, row, phase):
         super().tool_admit(row, phase)
         self.ledger.bridge.call("assert_lease")
         control = self.ledger.bridge.call("control")
         if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
-                or phase in {"qa", "repair"} and control.get("workflow", {}).get("enabled") is not True):
+                or row.get("mcp_profile") and control.get("config", {}).get("mcp_profile") != row["mcp_profile"]
+                or row.get("expansion_profile") and control.get("config", {}).get("expansion_profile") != row["expansion_profile"]
+                or phase in {"qa", "repair", "publication"} and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
         if (
                 control.get("config", {}).get("recurring_budget_authority_reference") != row["recurring_budget_authority_reference"]
                 or control.get("config", {}).get("soft_target_usd") != row["soft_target_usd"]):
             raise Refusal("research_tool_budget_authority_changed")
+        if phase == "publication" and control.get("workflow") != row["publication"]["workflow_authority"]:
+            raise Refusal("publication_agent_authority_changed")
+        if row.get("history_profile") == "agent-history-v1" and control.get("learning") != row["history_binding"]:
+            raise Refusal("company_history_authority_changed")
+
+    def publication_input(self, session_id, event, key, day, request_digest, deadline_ms):
+        from tools.daily_research.consumer import Consumer, qa_deadline
+        from tools.daily_research.runner import digest
+        self.publication_input_phase = "preconditions"
+        row = self.ledger.get(day)
+        phase = row["publication"]
+        if (row.get("publication_profile") != "agent-owned-v1" or row["state"] != "reviewed"
+                or row["qa"]["state"] != "validated" or session_id != row["session_id"]
+                or key != row["run_key"] + ":publication" or phase["idempotency_key"] != key
+                or digest(event) != phase["request_digest"] or request_digest != phase["request_digest"]
+                or deadline_ms != phase["deadline_ms"] or deadline_ms != int(qa_deadline(row, {}).timestamp() * 1000)
+                or json.loads(self.ledger.read_bytes(phase["input_file"])) != event):
+            raise Refusal("publication_agent_input_not_admitted")
+        def guard():
+            session = self.get("session", session_id)
+            Consumer.check_session(row, session)
+            turns = self.listing("turns", session_id)
+            if (session.get("status") != "idle" or session.get("required_actions")
+                    or {t["id"] for t in turns} != set(phase["baseline_turn_ids"]) or any(t.get("subagent_id") for t in turns)):
+                raise Refusal("publication_agent_turn_scope_changed")
+            self.tool_admit(row, "publication")
+            control = self.ledger.bridge.call("control")
+            if (getattr(self, "stopped", lambda: False)() or control.get("workflow") != phase["workflow_authority"]
+                    or getattr(self, "clock", lambda: datetime.now(timezone.utc))().timestamp() * 1000 >= deadline_ms):
+                raise Refusal("publication_agent_input_not_admitted")
+        guard()
+        self.ledger.bridge.call("publication_input_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)
+        guard()
+        self.publication_input_phase = "provider_submission"
+        self.api.sessions.events.create(session_id, events=[event], idempotency_key=key)
 
     def qa_input(self, session_id, event, key, day, request_digest, deadline_ms):
         self.ledger.bridge.call("qa_check", day=day, request_digest=request_digest, deadline_ms=deadline_ms)

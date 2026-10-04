@@ -3,31 +3,55 @@ import {createHash, randomUUID} from 'node:crypto';
 import {gzipSync, gunzipSync} from 'node:zlib';
 import {createInterface} from 'node:readline';
 import {pathToFileURL} from 'node:url';
-import {livePublisher} from './publisher.mjs';
+import {livePublisher,publicationVerification,requirePublicationVerification} from './publisher.mjs';
+import {verificationDigest} from './verification-digest.mjs';
+import {contactResearchContext,claimContactResearch,finishContactResearchSafely} from './contact_research.mjs';
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
 export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
 const TERMINAL = ['awaiting_review', 'reviewed', 'completed', 'failed', 'cancelled'];
+const CLEANUP_BUCKET = 'blueprint-8c1ca.appspot.com';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const canonicalValue = value => Array.isArray(value) ? value.map(canonicalValue) : value && typeof value === 'object'
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalValue(value[key])])) : value;
 const valueHash = value => sha(JSON.stringify(canonicalValue(value)));
+const pythonHash = value => sha(JSON.stringify(canonicalValue(value)).replace(/[^\x00-\x7F]/g,
+  c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0')));
 const same = (a, b) => JSON.stringify(Object.entries(a || {}).sort()) === JSON.stringify(Object.entries(b || {}).sort());
 class Refusal extends Error {}
 const refuse = code => {throw new Refusal(code);};
 const dateOK = x => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x);
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const sourceBinding=d=>valueHash({key:d.key,payload:d.payload,payload_json:d.payload_json,payload_digest:d.payload_digest});
+const deliveryBinding=d=>valueHash({key:d.key,payload:d.payload,payload_json:d.payload_json,payload_digest:d.payload_digest,
+  plan:d.plan||null,presentation:d.presentation||null});
+const attemptState=(run,row,name)=>row.delivery[name].attempt_number
+  ?run.publication_attempts?.[name]?.[row.delivery[name].attempt_number] || {}
+  :{claimed:run.publication_claimed?.[name],batches:run.publication_batches?.[name] || {},
+    delivery_binding:run.publication_delivery_bindings?.[name],rejection:run.publication_rejections?.[name]};
+const claimUpdate=(run,row,name,digest,batches=null)=>{
+  const d=row.delivery[name],binding=deliveryBinding(d);
+  if(d.attempt_number) return {publication_attempts:{...run.publication_attempts,[name]:{
+    ...run.publication_attempts?.[name],[d.attempt_number]:{...attemptState(run,row,name),claimed:digest,
+      delivery_binding:binding,...(batches?{batches}:{})}}}};
+  return {publication_claimed:{...run.publication_claimed,[name]:digest},
+    publication_delivery_bindings:{...run.publication_delivery_bindings,[name]:binding},
+    publication_source_bindings:{...run.publication_source_bindings,[name]:sourceBinding(d)},
+    ...(batches?{publication_batches:{...run.publication_batches,[name]:batches}}:{})};
+};
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
-    terminalCollectionReceipt = null) {
+    terminalCollectionReceipt = null, schedulerStopped = false, archiveBucket = null) {
     this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
     this.publisher = publisher;
     this.learning = learning;
     this.terminalCollectionReceipt = terminalCollectionReceipt;
+    this.schedulerStopped = schedulerStopped;
+    this.archiveBucket = archiveBucket;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -138,7 +162,7 @@ export class Store {
       observer_receipt_required: false, scope: 'research_only_no_outreach'
     });
   }
-  async put(row) {
+  async put(row,terminalWrite=null) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}`) refuse('firestore_row_binding_invalid');
     if (row.search_provider === 'perplexity-fast-v1' && Buffer.byteLength(JSON.stringify(row)) > 7000000)
       refuse('research_tool_record_resource_ceiling');
@@ -147,8 +171,36 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
+      if(terminalWrite) {
+        if(prior.data()?.blob!==terminalWrite.expected_blob) refuse('terminal_sheets_recovery_source_changed');
+        this.terminalSheetsGate(control,row,terminalWrite.context);
+      }
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      if ((row.expansion_profile || null)!==(row.metadata?.expansion_profile || null)
+          || row.expansion_profile && row.expansion_profile!=='exa-guarded-v1') refuse('research_expansion_profile_invalid');
+      const exa=row.exa_expansion;
+      if(exa && (row.expansion_profile!=='exa-guarded-v1' || exa.run_key!==row.run_key || exa.date!==row.date
+          || typeof exa.intent_json!=='string' || sha(Buffer.from(exa.intent_json))!==exa.intent_sha256
+          || valueHash(JSON.parse(exa.intent_json))!==valueHash(exa.intent))) refuse('expansion_intent_binding_changed');
+      if(prior.data()?.exa_expansion_intent_digest && prior.data().exa_expansion_intent_digest!==exa?.intent_sha256)
+        refuse('expansion_start_claim_already_consumed');
+      if(prior.data()?.exa_expansion_run_id && prior.data().exa_expansion_run_id!==exa?.run_id)
+        refuse('expansion_original_id_changed');
+      if(prior.data()?.exa_expansion_terminal_receipt && !same(prior.data().exa_expansion_terminal_receipt,exa?.terminal_receipt))
+        refuse('expansion_terminal_receipt_changed');
+      if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
+        refuse('research_mcp_profile_changed');
+      if(row.mcp_profile && (!['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'].includes(row.mcp_profile)
+          || valueHash(row.mcp_binding)!==row.metadata?.mcp_binding_digest)) refuse('research_mcp_binding_changed');
+      if(row.metadata?.mcp_vault_binding_digest && (!row.mcp_profile
+          || valueHash(row.mcp_vault_binding)!==row.metadata.mcp_vault_binding_digest)) refuse('research_mcp_vault_binding_changed');
+      const historyBinding=row.history_profile==='agent-history-v1'?valueHash(row.history_binding):null;
+      if(row.history_profile && row.history_profile!=='agent-history-v1') refuse('company_history_profile_invalid');
+      if(prior.exists && ((prior.data().history_profile || null)!==(row.history_profile || null)
+          || (prior.data().history_binding_digest || null)!==historyBinding)) refuse('company_history_intent_conflict');
+      if(!prior.exists && historyBinding && (row.history_binding?.enabled!==true
+          || !control.learning || valueHash(control.learning)!==historyBinding)) refuse('company_history_authority_changed');
       const retryPhase = row.qa_retry_continuation ? sha(Buffer.from(JSON.stringify(row.qa_retry_continuation))) : null;
       const submissionBinding = row.qa?.submission_binding ? sha(Buffer.from(JSON.stringify(row.qa.submission_binding))) : null;
       const terminalCollection = row.qa?.terminal_collection_recovery ? sha(Buffer.from(JSON.stringify(row.qa.terminal_collection_recovery))) : null;
@@ -165,12 +217,52 @@ export class Store {
         authority_reference:c.authority_reference,previous_review:c.previous_review,baseline_turn_ids:c.baseline_turn_ids}]));
       if (Object.entries(prior.data()?.qa_correction_bindings || {}).some(([n,b])=>!same(b,correctionBindings[n])))
         refuse('qa_correction_already_bound');
+      const publication=row.publication;
+      const publicationBinding=publication?valueHash({profile:publication.profile,request_digest:publication.request_digest,
+        session_id:publication.session_id,
+        input_file:publication.input_file,idempotency_key:publication.idempotency_key,deadline_ms:publication.deadline_ms,
+        authority_reference:publication.authority_reference,workflow_authority:publication.workflow_authority,
+        baseline_turn_ids:publication.baseline_turn_ids}):null;
+      if(prior.data()?.publication_input_binding && prior.data().publication_input_binding!==publicationBinding)
+        refuse('publication_input_already_bound');
+      if(prior.data()?.publication_turn_id && prior.data().publication_turn_id!==publication?.turn_id)
+        refuse('publication_turn_already_bound');
+      const cleanupBinding = row.cleanup ? pythonHash(row.cleanup.binding) : null;
+      if (prior.data()?.cleanup_binding_digest && prior.data().cleanup_binding_digest !== cleanupBinding)
+        refuse('cleanup_binding_already_bound');
+      if (row.cleanup && (!prior.data()?.cleanup_archive || valueHash(prior.data().cleanup_archive)!==valueHash(row.cleanup.archive)))
+        refuse('cleanup_archive_not_verified');
+      if (prior.data()?.cleanup_delete_claimed && row.cleanup?.delete_claimed !== true)
+        refuse('cleanup_claim_already_consumed');
+      if (prior.data()?.cleanup_delete_confirmation
+          && valueHash(prior.data().cleanup_delete_confirmation)!==valueHash(row.cleanup?.delete_confirmation))
+        refuse('cleanup_confirmation_already_bound');
+      for(const [name,binding] of Object.entries(prior.data()?.publication_delivery_bindings || {})) {
+        // Receipts/state may advance; immutable request/plan/presentation evidence may not.
+        const d=row.delivery?.[name];
+        const active= d?.attempt_number?prior.data().publication_attempts?.[name]?.[d.attempt_number]:null;
+        if(d?.attempt_number && (!active || sourceBinding(d)!==prior.data().publication_source_bindings?.[name]
+            || (d.presentation?.decision_digest || null)!==active.presentation_digest))
+          refuse('publication_attempt_not_admitted');
+        const expected=active?active.delivery_binding:binding;
+        if(expected && expected!==deliveryBinding(d)) refuse('publication_delivery_already_bound');
+      }
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
+        expansion_profile:row.expansion_profile || null,
+        exa_expansion_intent_digest:exa?.intent_sha256 || null,
+        exa_expansion_run_id:exa?.run_id || null,
+        exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
+        ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
+        cleanup_binding_digest: cleanupBinding,
+        cleanup_archive: prior.data()?.cleanup_archive || null,
+        cleanup_delete_claimed: prior.data()?.cleanup_delete_claimed === true,
+        cleanup_delete_confirmation:row.cleanup?.delete_confirmation || null,
         create_attempt_claimed: prior.exists && prior.data().create_attempt_claimed === true,
         session_id: row.session_id || null, turn_id: row.turn_id || null, environment_id: row.environment_id || null,
         qa_request_digest: row.qa?.request_digest || null, qa_state: row.qa?.state || null,
         qa_deadline_ms: row.qa?.deadline_ms || null,
         search_provider: row.search_provider || null, soft_target_usd: row.soft_target_usd ?? null,
+        history_profile:row.history_profile || null,history_binding_digest:historyBinding,
         recurring_budget_authority_reference: row.recurring_budget_authority_reference || null,
         qa_request_claimed: prior.exists && prior.data().qa_request_claimed === true,
         qa_retry_phase_digest: retryPhase,
@@ -190,9 +282,38 @@ export class Store {
         repair_number: row.validation_repairs?.at(-1)?.number || null,
         repair_state: row.validation_repairs?.at(-1)?.state || null,
         repair_claims: prior.exists ? prior.data().repair_claims || {} : {},
-        publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {}});
+        publication_claimed: prior.exists ? prior.data().publication_claimed || {} : {},
+        publication_batches: prior.exists ? prior.data().publication_batches || {} : {},
+        publication_delivery_bindings:prior.exists ? prior.data().publication_delivery_bindings || {} : {},
+        publication_source_bindings:prior.data()?.publication_source_bindings || {},
+        publication_attempts:prior.data()?.publication_attempts || {},publication_rejections:prior.data()?.publication_rejections || {},
+        publication_input_binding:publicationBinding,publication_input_claimed:prior.data()?.publication_input_claimed || false,
+        publication_request_digest:publication?.request_digest || null,publication_deadline_ms:publication?.deadline_ms || null,
+        publication_authority_reference:publication?.authority_reference || null,
+        publication_state:publication?.state || null,publication_turn_id:publication?.turn_id || null});
       this.projectWorkItem(tx, row, hash);
     });
+    await finishContactResearchSafely(this,row,hash);
+    if(this.learning && ['awaiting_review','reviewed','completed','failed','cancelled'].includes(row.state)) {
+      let observation;
+      try {
+        const control=(await this.control.get()).data();
+        const result=await this.learning({op:'learning_after_run',day:row.date},control.learning);
+        observation={row_blob:hash,status:['created','existing'].includes(result?.append)?'observed':'unavailable',
+          append:result?.append || null,event_id:result?.event?.eventId || null,observed_at:new Date(this.clock()).toISOString()};
+      } catch(error) {
+        observation={row_blob:hash,status:'unavailable',code:/^[a-z_]{1,100}$/.test(error?.message || '')
+          ?error.message:'research_learning_observation_unavailable',observed_at:new Date(this.clock()).toISOString()};
+      }
+      // Observation cannot undo or relabel the source commit. A later source
+      // owns its own observation; do not overwrite it with this older result.
+      try {await this.transaction(async tx=>{
+        const control=(await tx.get(this.control)).data();this.fence(control);
+        const current=await tx.get(ref);
+        if(current.data()?.blob===hash) tx.set(this.db.doc(`${ROOT}/learningObservations/${hash}`),
+          {...observation,run_ref:ref.path,source_row_blob:hash},{merge:true});
+      });}catch { /* The committed research row remains authoritative. */ }
+    }
     return true;
   }
   async filePut(name, encoded) {
@@ -201,7 +322,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-recovery.json') || /-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-publication-input.json') || name.endsWith('-publication-evidence.json') || name.endsWith('-recovery.json') || /-inventory-|-exa-|-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -213,11 +334,18 @@ export class Store {
     return this.blobGet(snap.data().blob);
   }
   async snapshot(day) {
-    const row = await this.get(day);
-    if (!row) refuse('run_missing');
+    if(!dateOK(day)) refuse('firestore_date_invalid');
+    const manifest=(await this.db.doc(`${ROOT}/runs/${day}`).get());
+    if(!manifest.exists) refuse('run_missing');
+    const metadata=manifest.data(),source_row_json=Buffer.from(await this.blobGet(metadata.blob),'base64').toString('utf8');
+    const row=JSON.parse(source_row_json);
+    if(row.date!==day || row.run_key!==`blueprint-researcher:${day}` || !same(row.metadata,metadata.metadata))
+      refuse('firestore_row_binding_invalid');
     const files = {}, missing = [];
     for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
       ...(row.qa?.input_file ? ['qa-input'] : []),
+      ...(row.publication?.input_file ? ['publication-input'] : []),
+      ...(row.publication?.evidence_file ? ['publication-evidence'] : []),
       ...(row.qa?.corrections?.length ? ['qa-original','qa-original-evidence'] : []),
       ...(row.qa?.corrections || []).flatMap(c=>[`qa-correction-${c.number}-input`,
         ...(c.artifact_file ? [`qa-correction-${c.number}-artifact`] : []),
@@ -236,6 +364,48 @@ export class Store {
     }
     if (files.artifact && row.raw_output_digest !== sha(Buffer.from(files.artifact, 'base64')))
       refuse('artifact_not_downloaded_or_digest_mismatch');
+    const inventory=row.packet?.discovery_inventory_manifest;
+    if(inventory) {
+      if(inventory.version!=='blueprint.discovery-inventory.v1' || inventory.complete_retention!==true
+        || !Array.isArray(inventory.pages) || inventory.page_count!==inventory.pages.length
+        || !/^[a-f0-9]{64}$/.test(inventory.source_output_digest)) refuse('discovery_inventory_manifest_invalid');
+      const sources=[{artifact_file:`${day}-artifact.json`,artifact_digest:row.raw_output_digest},...(row.validation_repairs || [])];
+      if(typeof inventory.source_artifact_file!=='string' || typeof inventory.source_artifact_sha256!=='string'
+        || !sources.some(source=>source.artifact_file===inventory.source_artifact_file && source.artifact_digest===inventory.source_artifact_sha256))
+        refuse('discovery_inventory_source_binding_invalid');
+      const sourceRaw=Buffer.from(await this.fileGet(inventory.source_artifact_file),'base64');
+      if(sha(sourceRaw)!==inventory.source_artifact_sha256) refuse('discovery_inventory_source_binding_invalid');
+      let sourceText=sourceRaw.toString('utf8').replace(/^\uFEFF/,'');
+      const fence=/^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```$/i.exec(sourceText.trim());
+      if(fence) sourceText=fence[1];
+      let sourceInventory;try {sourceInventory=JSON.parse(sourceText).discovery_inventory;}catch {refuse('discovery_inventory_source_binding_invalid');}
+      if(!Array.isArray(sourceInventory) || verificationDigest(sourceInventory)!==inventory.records_digest)
+        refuse('discovery_inventory_source_binding_invalid');
+      let count=0;const retained=[];
+      for(const [index,page] of inventory.pages.entries()) {
+        if(page.index!==index || page.start!==count || !Number.isInteger(page.end) || page.end<=count
+          || page.file!==`${day}-inventory-${inventory.source_output_digest}-${index}.json`) refuse('discovery_inventory_manifest_invalid');
+        const encoded=await this.fileGet(page.file),raw=Buffer.from(encoded,'base64');
+        // Verify size and digest before parsing untrusted page bytes.
+        if(raw.length>100000 || raw.length!==page.bytes || sha(raw)!==page.sha256) refuse('discovery_inventory_page_binding_invalid');
+        let value;try {value=JSON.parse(raw);}catch {refuse('discovery_inventory_page_binding_invalid');}
+        if(value.version!==inventory.version
+          || value.run_key!==row.run_key || value.source_output_digest!==inventory.source_output_digest
+          || value.start!==page.start || value.end!==page.end || !Array.isArray(value.records)
+          || value.records.length!==page.end-page.start) refuse('discovery_inventory_page_binding_invalid');
+        files[page.file.slice(day.length+1,-5)]=encoded;retained.push(...value.records);count=page.end;
+      }
+      if(count!==inventory.record_count || verificationDigest(retained)!==inventory.records_digest) refuse('discovery_inventory_manifest_invalid');
+    }
+    const exaRefs=[...(row.exa_transport_receipts || []),
+      ...['start_receipt','last_receipt','terminal_receipt'].map(key=>row.exa_expansion?.[key]).filter(Boolean)];
+    for(const receipt of exaRefs) {
+      if(typeof receipt.file!=='string' || !receipt.file.startsWith(`${day}-exa-`) || !receipt.file.endsWith('.json'))
+        refuse('expansion_export_binding_invalid');
+      const encoded=await this.fileGet(receipt.file),raw=Buffer.from(encoded,'base64');
+      if(sha(raw)!==receipt.sha256 || raw.length!==receipt.bytes) refuse('expansion_receipt_digest_mismatch');
+      files[receipt.file.slice(day.length+1,-5)]=encoded;
+    }
     if (row.qa?.input_file) {
       const input = files['qa-input'] && Buffer.from(files['qa-input'], 'base64');
       if (row.qa.input_file !== `${day}-qa-input.json` || !input || input.at(-1) !== 10
@@ -247,7 +417,35 @@ export class Store {
         || !files[`tool-${call.request.call_id}`] || call.result_sha256 !== sha(Buffer.from(files[`tool-${call.request.call_id}`], 'base64'))))
         refuse('research_tool_result_digest_mismatch');
     }
-    return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing};
+    const plans=Object.fromEntries(Object.entries(row.delivery || {}).filter(([,d])=>d.plan).map(([name,d])=>{
+      const plan_json=JSON.stringify(canonicalValue(d.plan));return [name,{plan_json,plan_digest:sha(plan_json)}];
+    }));
+    const attempt_history={};
+    for(const [name,attempts] of Object.entries(metadata.publication_attempts || {})) {
+      attempt_history[name]={};
+      for(const [number,attempt] of Object.entries(attempts)) {
+        const history={...attempt};
+        if(attempt.source_row_blob) history.source_row_json=Buffer.from(await this.blobGet(attempt.source_row_blob),'base64').toString('utf8');
+        if(attempt.rejection?.response_blob) history.response_json=Buffer.from(await this.blobGet(attempt.rejection.response_blob),'base64').toString('utf8');
+        attempt_history[name][number]=history;
+      }
+    }
+    const activeClaims=Object.fromEntries(Object.keys(row.delivery || {}).filter(name=>attemptState(metadata,row,name).claimed)
+      .map(name=>[name,attemptState(metadata,row,name).claimed]));
+    const activeBatches=Object.fromEntries(Object.keys(row.delivery || {}).filter(name=>Object.keys(attemptState(metadata,row,name).batches || {}).length)
+      .map(name=>[name,attemptState(metadata,row,name).batches]));
+    const publicationProof={
+        schema_version:'blueprint.research-publication-manifest.v1',date:row.date,run_key:row.run_key,
+        source_row_blob:metadata.blob,source_row_json,plans,publication_claimed:activeClaims,
+        publication_batches:activeBatches,...(Object.keys(attempt_history).length?{attempt_history}:{} )};
+    const manifest_json=JSON.stringify(publicationProof);
+    const publication=Object.keys(plans).length || Object.keys(metadata.publication_claimed || {}).length
+      || Object.keys(metadata.publication_batches || {}).length ? {publication_manifest:{
+        manifest_json,manifest_digest:sha(manifest_json)}} : {};
+    const cleanup=metadata.cleanup_binding_digest ? {cleanup_manifest:{binding_digest:metadata.cleanup_binding_digest,
+      archive:metadata.cleanup_archive,delete_claimed:metadata.cleanup_delete_claimed===true,
+      delete_confirmation:metadata.cleanup_delete_confirmation || null}} : {};
+    return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing,...publication,...cleanup};
   }
   async importRun(row) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}` || !row.metadata)
@@ -259,8 +457,19 @@ export class Store {
       const prior = await tx.get(ref);
       if (control.enabled !== false) refuse('firestore_import_requires_disabled');
       if (prior.exists && prior.data().blob !== hash) refuse('firestore_import_date_conflict');
+      // An identical import is archival reconciliation, never a reset of consumed claims.
+      if(prior.exists) {this.projectWorkItem(tx,row,hash);return true;}
+      const archived=row.state==='completed' && ['notion','sheets'].every(name=>
+        row.delivery?.[name]?.state==='acknowledged' && row.delivery[name].receipt?.readback_verified===true);
+      if((row.delivery?.notion?.plan?.protocol==='notion-paginated-v1' || row.publication
+          || row.delivery?.notion?.attempt_number) && !archived)
+        refuse('firestore_publication_restore_manifest_required');
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: true, session_id: row.session_id || null, turn_id: row.turn_id || null,
+        expansion_profile:row.expansion_profile || null,
+        exa_expansion_intent_digest:row.exa_expansion?.intent_sha256 || null,
+        exa_expansion_run_id:row.exa_expansion?.run_id || null,
+        exa_expansion_terminal_receipt:row.exa_expansion?.terminal_receipt || null,
         environment_id: row.environment_id || null});
       this.projectWorkItem(tx, row, hash);
       return true;
@@ -274,13 +483,27 @@ export class Store {
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
       this.budgetGate(control, snap.data());
-      if (control.learning?.enabled === true || metadata.learning_binding_digest) {
+      if(metadata.expansion_profile && (metadata.expansion_profile!=='exa-guarded-v1'
+          || control.config?.expansion_profile!==metadata.expansion_profile
+          || control.config?.mcp_profile==='owner-delegated-research-mcp-v1'))
+        refuse('research_expansion_profile_changed');
+      if(metadata.mcp_binding_digest && control.config?.mcp_profile!==(snap.data().mcp_profile || 'owner-readonly-mcp-v1'))
+        refuse('research_mcp_profile_changed');
+      if(snap.data().history_profile==='agent-history-v1') {
+        if(control.config?.history_profile!=='agent-history-v1' || control.learning?.enabled!==true
+            || snap.data().history_binding_digest!==valueHash(control.learning)
+            || ['binding','businessScope'].some(key=>{
+              const expiry=Date.parse(control.learning[key]?.expiresAt);
+              return !Number.isFinite(expiry) || expiry<=this.clock();
+            })) refuse('company_history_authority_changed_or_expired');
+      } else if (control.learning?.enabled === true || metadata.learning_binding_digest) {
         if (control.learning?.enabled !== true || metadata.learning_binding_digest !== valueHash(control.learning)
             || ['binding','businessScope','learningGrant'].some(key => {
               const expiry = Date.parse(control.learning[key]?.expiresAt);
               return !Number.isFinite(expiry) || expiry <= this.clock();
             })) refuse('research_learning_create_scope_changed_or_expired');
       }
+      await claimContactResearch(this,tx,day,metadata);
       tx.set(this.db.doc(`${ROOT}/runs/${day}`), {create_attempt_claimed: true}, {merge: true});
       return true;
     });
@@ -294,6 +517,135 @@ export class Store {
     ]);
     return {latest_date: latest.docs[0]?.id || null, unfinished: unfinished.docs.length > 0,
       cleanup_required: uncleaned.docs.length > 0};
+  }
+  cleanupGate(control,row,policy) {
+    this.fence(control);
+    if (this.schedulerStopped || control?.enabled!==true || control.config?.enabled!==true
+        || policy?.enabled!==true || valueHash(control.cleanup_policy)!==valueHash(policy)
+        || typeof policy.approval_reference!=='string' || !policy.approval_reference.trim()
+        || policy.approval_reference.startsWith('PENDING') || !dateOK(policy.first_date)
+        || policy.first_date<'2026-10-03' || row.date<policy.first_date
+        || !Number.isFinite(Date.parse(policy.expires_at)) || Date.parse(policy.expires_at)<=this.clock()
+        || policy.bucket!==CLEANUP_BUCKET || policy.project_id!==control.project_id
+        || policy.project_id!==row.preflight?.project_id
+        || policy.agent_id!==control.agent_id || policy.template_id!==control.template_id
+        || row.create_payload?.agent_id!==policy.agent_id
+        || row.create_payload?.environment?.environment_template_id!==policy.template_id
+        || row.state!=='completed' || row.cleanup_required!==true || row.qa?.state!=='validated'
+        || !['completed','agent_finished_without_complete_receipts'].includes(row.publication?.state)
+        || !['completed','failed','cancelled'].includes(row.publication?.turn_status)
+        || !['notion','sheets'].every(n=>row.delivery?.[n]?.state==='acknowledged'
+          && row.delivery[n].receipt?.readback_verified===true
+          && row.delivery[n].receipt.key===row.delivery[n].key
+          && row.delivery[n].receipt.payload_digest===row.delivery[n].payload_digest))
+      refuse('cleanup_standing_authority_not_admitted');
+  }
+  async cleanupAdmit(day,policy) {
+    const control=(await this.control.get()).data(),row=await this.get(day);
+    if (!row) refuse('run_missing');
+    this.cleanupGate(control,row,policy);
+    return true;
+  }
+  async cleanupStatus(day) {
+    await this.assertLease();
+    if (!dateOK(day)) refuse('firestore_date_invalid');
+    const snap=await this.db.doc(`${ROOT}/runs/${day}`).get();
+    return {delete_claimed:snap.data()?.cleanup_delete_claimed===true};
+  }
+  async archiveReadback(receipt) {
+    if (!this.archiveBucket || receipt?.bucket!==CLEANUP_BUCKET || this.archiveBucket.name!==CLEANUP_BUCKET
+        || !receipt.objects?.length) refuse('cleanup_archive_transport_unavailable');
+    if (!receipt.objects.some(o=>o.name===receipt.prefix+'/source-row.json' && o.sha256===receipt.source_row_blob))
+      refuse('cleanup_archive_readback_mismatch');
+    for(let start=0;start<receipt.objects.length;start+=4) await Promise.all(receipt.objects.slice(start,start+4).map(async object=>{
+      if (!object.name.startsWith(receipt.prefix+'/') || !/^[1-9][0-9]*$/.test(String(object.generation)))
+        refuse('cleanup_archive_readback_mismatch');
+      const file=this.archiveBucket.file(object.name,{generation:String(object.generation)});
+      const [meta]=await file.getMetadata(),[raw]=await file.download();
+      if(String(meta.generation)!==String(object.generation) || Number(meta.size)!==object.bytes
+          || raw.length!==object.bytes || sha(raw)!==object.sha256) refuse('cleanup_archive_readback_mismatch');
+    }));
+    return true;
+  }
+  async cleanupArchive(request) {
+    await this.cleanupAdmit(request.day,request.policy);
+    const ref=this.db.doc(`${ROOT}/runs/${request.day}`),before=(await ref.get()).data();
+    if(before.cleanup_archive) {
+      await this.archiveReadback(before.cleanup_archive);
+      return before.cleanup_archive;
+    }
+    if (!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('cleanup_archive_transport_unavailable');
+    const row=await this.get(request.day),files=request.files;
+    const required=['status.json',...(Object.values(row.delivery || {}).some(d=>d.plan)?['publication-manifest.json']:[]),
+      'provider-session.json','provider-environment.json',
+      'provider-turns.json','provider-items.json','provider-artifacts.json',`${request.day}-artifact.json`,
+      `${request.day}-publication-evidence.json`];
+    if (!files || !required.every(n=>typeof files[n]==='string')
+        || valueHash(JSON.parse(Buffer.from(files['status.json'],'base64')))!==valueHash(row))
+      refuse('cleanup_archive_incomplete');
+    const names=[...Object.keys(files),'source-row.json'].sort(),objects=[];
+    if(Object.hasOwn(files,'source-row.json')) refuse('cleanup_archive_source_changed');
+    if(names.some(n=>!/^[-A-Za-z0-9_.]{1,200}$/.test(n))) refuse('cleanup_archive_name_invalid');
+    const rawFiles=Object.fromEntries(Object.keys(files).map(n=>[n,Buffer.from(files[n],'base64')]));
+    rawFiles['source-row.json']=Buffer.from(await this.blobGet(before.blob),'base64');
+    const artifacts=JSON.parse(rawFiles['provider-artifacts.json']),session=JSON.parse(rawFiles['provider-session.json']);
+    if(session.id!==row.session_id || session.environment?.id!==row.environment_id
+        || valueHash(session.metadata)!==valueHash(row.metadata) || session.status!=='idle'
+        || session.required_actions?.length || !Array.isArray(artifacts) || !artifacts.length
+        || !artifacts.every(a=>typeof a.id==='string' && files[`provider-artifact-${sha(a.id)}.bin`]))
+      refuse('cleanup_archive_incomplete');
+    const secrets=value=>value && typeof value==='object' && Object.entries(value).some(([k,v])=>
+      /^(?:access_token|refresh_token|api_key|private_key|client_secret|bearer_token)$/.test(k) && v
+        || typeof v==='string' && /^Bearer\s/i.test(v) || secrets(v));
+    if(secrets(session) || secrets(JSON.parse(rawFiles['provider-environment.json']))) refuse('cleanup_archive_credential_material');
+    const manifest=Object.fromEntries(names.map(n=>[n,{sha256:sha(rawFiles[n]),bytes:rawFiles[n].length}]));
+    const prefix=`operations/research/cleanup/${request.day}/${valueHash(manifest)}`;
+    for(let start=0;start<names.length;start+=4) await Promise.all(names.slice(start,start+4).map(async n=>{
+      const file=this.archiveBucket.file(`${prefix}/${n}`),raw=rawFiles[n];
+      try {await file.save(raw,{resumable:false,preconditionOpts:{ifGenerationMatch:0},
+        metadata:{contentType:'application/octet-stream',metadata:{sha256:sha(raw)}}});}
+      catch(error) {if(Number(error.code)!==412) throw error;}
+      const [meta]=await file.getMetadata();
+      objects.push({name:file.name,sha256:sha(raw),bytes:raw.length,generation:String(meta.generation)});
+    }));
+    objects.sort((a,b)=>a.name.localeCompare(b.name));
+    const receipt={bucket:CLEANUP_BUCKET,prefix,source_row_blob:before.blob,objects};
+    await this.archiveReadback(receipt);
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(),current=await tx.get(ref);
+      this.cleanupGate(control,row,request.policy);
+      if(current.data()?.blob!==before.blob || current.data()?.cleanup_archive) refuse('cleanup_archive_source_changed');
+      tx.set(ref,{cleanup_archive:receipt},{merge:true});
+    });
+    return receipt;
+  }
+  async cleanupArchiveVerify(day,binding) {
+    await this.assertLease();
+    const run=(await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row=await this.get(day);
+    if (!run || run.cleanup_binding_digest!==binding || pythonHash(row?.cleanup?.binding)!==binding
+        || valueHash(row.cleanup.archive)!==valueHash(run.cleanup_archive)) refuse('cleanup_binding_changed');
+    await this.archiveReadback(run.cleanup_archive);
+    await this.assertLease();
+    return true;
+  }
+  async cleanupClaim(day,binding,checkOnly=false) {
+    const row=await this.get(day),ref=this.db.doc(`${ROOT}/runs/${day}`);
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(),run=(await tx.get(ref)).data();
+      this.cleanupGate(control,row,row?.cleanup?.binding?.policy);
+      if(run?.cleanup_binding_digest!==binding || pythonHash(row?.cleanup?.binding)!==binding
+          || valueHash(row.cleanup.archive)!==valueHash(run.cleanup_archive)
+          || row.cleanup.binding.session_id!==run.session_id || row.cleanup.binding.environment_id!==run.environment_id)
+        refuse('cleanup_binding_changed');
+      if(checkOnly) {
+        if(run.cleanup_delete_claimed!==true) refuse('cleanup_delete_not_claimed');
+        return true;
+      }
+      if(run.cleanup_delete_claimed) return {submit:false};
+      tx.set(ref,{cleanup_delete_claimed:true},{merge:true});
+      tx.set(this.control,{cleanup_observation_required:true},{merge:true});
+      return {submit:true};
+    });
   }
   workflowGate(control, allowStopped = false) {
     const workflow=control?.workflow;
@@ -323,7 +675,8 @@ export class Store {
     const runs=this.db.collection(`${ROOT}/runs`);
     const groups=await Promise.all([
       ...['qa_running','qa_input_unresolved','qa_correction_input_unresolved','qa_cancel_pending'].map(state=>['qa_state',state]),
-      ...['running','input_unresolved','cancel_pending'].map(state=>['repair_state',state])]
+      ...['running','input_unresolved','cancel_pending'].map(state=>['repair_state',state]),
+      ...['running','input_unresolved','cancel_pending'].map(state=>['publication_state',state])]
       .map(([field,state])=>runs.where(field,'==',state).limit(1).get()));
     const days=groups.flatMap(s=>s.docs.map(d=>d.id)).sort();
     return days[0] || null;
@@ -387,11 +740,316 @@ export class Store {
       tx.set(ref,{qa_correction_claims:{...run.qa_correction_claims,[number]:requestDigest}},{merge:true});return true;
     });
   }
-  async publish(day) {
+  publicationAgentGate(control,row,requestDigest,action=null) {
+    this.fence(control);this.workflowGate(control);this.budgetGate(control,row || {});
+    const p=row?.publication;
+    if(row?.publication_profile!=='agent-owned-v1' || p?.profile!=='agent-owned-v1'
+        || row.state!=='reviewed' || row.qa?.state!=='validated' || !/^[a-f0-9]{64}$/.test(requestDigest || '')
+        || p.request_digest!==requestDigest || p.input_file!==`${row.date}-publication-input.json`
+        || p.idempotency_key!==`${row.run_key}:publication` || !Number.isSafeInteger(p.deadline_ms)
+        || p.deadline_ms<=this.clock() || p.authority_reference!==control.workflow.publication_authority_reference
+        || !p.workflow_authority || !same(p.workflow_authority,control.workflow)
+        || typeof row.session_id!=='string' || !row.session_id || p.session_id!==row.session_id)
+      refuse('publication_agent_input_not_admitted');
+    if(action) {
+      const intent=row.application_tool_calls?.[action.call_id];
+      let exactRequest;try {exactRequest=JSON.parse(intent?.request_json);}catch {}
+      if(p.state!=='running' || typeof action.turn_id!=='string' || action.turn_id!==p.turn_id
+          || typeof action.call_id!=='string' || !action.call_id || intent?.phase!=='publication'
+          || intent.attempted!==true || typeof intent.request_json!=='string' || intent.request_digest!==sha(intent.request_json)
+          || valueHash(exactRequest || null)!==valueHash(action)
+          || valueHash(intent.request)!==valueHash(action)) refuse('publication_agent_tool_not_admitted');
+    }
+  }
+  async publicationInputCheck(day,requestDigest,deadlineMS) {
+    const row=await this.get(day),ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
+    if(!row?.publication?.input_file) refuse('publication_input_binding_invalid');
+    const input=Buffer.from(await this.fileGet(row.publication.input_file),'base64');
+    let event;try {event=JSON.parse(input.toString('utf8'));}catch {refuse('publication_input_binding_invalid');}
+    if(input.at(-1)!==10 || sha(input.subarray(0,-1))!==requestDigest || event?.type!=='agent.session.input.message')
+      refuse('publication_input_binding_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.publicationAgentGate(control,row,requestDigest);
+      const run=(await tx.get(ref)).data();
+      if(row.publication.state!=='input_unresolved' || row.publication.deadline_ms!==deadlineMS
+          || run.blob!==before.data().blob || run.publication_input_claimed
+          || run.publication_request_digest!==requestDigest || run.publication_deadline_ms!==deadlineMS)
+        refuse('publication_agent_input_not_admitted');
+      tx.set(ref,{publication_input_claimed:true},{merge:true});return true;
+    });
+  }
+  async admitRejectedPresentation(row,presentation,context) {
+    const name='notion',d=row.delivery[name],ref=this.db.doc(`${ROOT}/runs/${row.date}`),before=(await ref.get()).data();
+    const state=attemptState(before,row,name),rejection=state.rejection;
+    if(!state.claimed || !rejection || rejection.request_digest!==state.claimed
+        || rejection.plan_digest!==valueHash(d.plan) || Object.keys(state.batches || {}).some(n=>n!=='0'))
+      refuse('publication_presentation_already_bound');
+    const raw=Buffer.from(await this.blobGet(rejection.response_blob),'base64').toString('utf8');
+    let body;try {body=JSON.parse(raw);}catch {refuse('publication_rejection_receipt_invalid');}
+    if(sha(raw)!==rejection.response_digest || body.object!=='error' || body.status!==400
+        || body.code!=='validation_error' || rejection.http_status!==400)
+      refuse('publication_rejection_receipt_invalid');
+    const observation=await this.publisher.notionProgress(row,d.plan);
+    if(!observation.absence_verified || observation.receipt) refuse('publication_rejection_absence_not_verified');
+    const number=(d.attempt_number || 0)+1;
+    const pending=before.publication_attempts?.[name]?.[number];
+    if(pending && (pending.prior_attempt!==(d.attempt_number || 0) || pending.rejection_digest!==rejection.response_digest
+        || pending.presentation_digest!==(presentation?.decision_digest || null) || pending.claimed || pending.archived))
+      refuse('publication_attempt_not_admitted');
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.publicationAgentGate(control,row,context.request_digest,context.action);
+      requirePublicationVerification(row,name,this.clock());
+      const run=(await tx.get(ref)).data();
+      if(run.blob!==before.blob || valueHash(attemptState(run,row,name))!==valueHash(state)
+          || valueHash(run.publication_attempts?.[name]?.[number] || null)!==valueHash(pending || null))
+        refuse('publication_attempt_not_admitted');
+      if(pending) return;
+      const priorNumber=d.attempt_number || 0;
+      tx.set(ref,{publication_attempts:{...run.publication_attempts,[name]:{...run.publication_attempts?.[name],
+        [priorNumber]:{...state,source_row_blob:run.blob,archived:true},
+        [number]:{prior_attempt:priorNumber,rejection_digest:rejection.response_digest,
+          presentation_digest:presentation?.decision_digest || null,absence_verified:true}}}},{merge:true});
+    });
+    d.attempt_number=number;delete d.plan;d.presentation=presentation;
+    await this.put(row);
+  }
+  async publicationAgentTool(day,action,requestDigest) {
+    let destination, row, argumentIssues;
+    const invalidArguments=issues=>{argumentIssues=issues;refuse('publication_agent_tool_arguments_invalid');};
+    try {
+      row=await this.get(day);
+      const control=(await this.control.get()).data();this.publicationAgentGate(control,row,requestDigest,action);
+      let args=action?.arguments;
+      if(typeof args==='string') {try {args=JSON.parse(args);}catch {invalidArguments([{path:'/',code:'invalid_json',
+        expectations:{type:'object'},allowed_repair:'Provide one JSON object matching the declared publication tool fields.'}]);}}
+      if(action?.name==='blueprint_inspect_publication' && args==null) args={};
+      if(!action || !['blueprint_inspect_publication','blueprint_publish_research'].includes(action.name)
+          || !args || typeof args!=='object' || Array.isArray(args))
+        invalidArguments([{path:'/',code:'invalid_type',expectations:{type:'object'},
+          allowed_repair:'Use a declared publication tool with one arguments object.'}]);
+      const ref=this.db.doc(`${ROOT}/runs/${day}`),run=(await ref.get()).data();
+      if(!run.publication_input_claimed) refuse('publication_agent_input_not_claimed');
+      if(action.name==='blueprint_inspect_publication') {
+        if(Object.keys(args).length) invalidArguments([{path:'/',code:'unexpected_properties',expectations:{allowed_properties:[]},
+          allowed_repair:'Call blueprint_inspect_publication with an empty object.'}]);
+        return {success:true,output:{validated_research:row.qa.decision || null,packet:row.packet,
+          lead_verification:row.review?.lead_verification || null,
+          verification_eligibility:Object.fromEntries(Object.keys(row.delivery || {}).map(name=>[name,publicationVerification(row,name,this.clock())])),
+          destinations:Object.fromEntries(Object.entries(row.delivery || {}).map(([name,d])=>[name,{
+            key:d.key,payload:d.payload,payload_digest:d.payload_digest,presentation:d.presentation || null,
+            state:d.state,receipt:d.receipt || null,plan:d.plan || null,
+            claimed:!!attemptState(run,row,name).claimed,batches:attemptState(run,row,name).batches || {},
+            rejection:attemptState(run,row,name).rejection || null,attempts:run.publication_attempts?.[name] || {}}])),
+          transport_limits:{notion:{blocks_per_request:90,utf8_json_bytes_per_request:450000,text_code_units_per_block:1800}},
+          presentation_rules:{sheets:{strategies:['full'],summary:'must_be_absent',example:{destination:'sheets',strategy:'full'}},
+            notion:{full:{summary:'must_be_absent'},concise:{summary:'required_nonblank',max_utf8_bytes:2000000}}},
+          guidance:'Sheets requires full with summary omitted. Notion permits full with summary omitted or concise with a nonblank summary up to 2,000,000 UTF-8 bytes. Choose before a write claim. A current protected evidence assessment is required before every new candidate publication claim or batch. Missing or expired evidence stays unresolved; inspect its reasons and retain raw research. Buying intent, rights, commercial qualification, robot compatibility and deployment readiness require separate gates. Unknown writes are observation-only; never replace a consumed plan.'}};
+      }
+      const a=args;destination=a.destination;
+      const issues=[];
+      if(Object.keys(a).some(key=>!['destination','strategy','summary'].includes(key)))
+        issues.push({path:'/',code:'unexpected_properties',expectations:{allowed_properties:['destination','strategy','summary']},
+          allowed_repair:'Remove undeclared fields; keep the original request retained.'});
+      if(!['notion','sheets'].includes(destination)) issues.push({path:'/destination',code:'invalid_enum',
+        expectations:{allowed_values:['notion','sheets']},allowed_repair:'Select one already approved destination: notion or sheets.'});
+      if(!['full','concise'].includes(a.strategy) || destination==='sheets' && a.strategy!=='full')
+        issues.push({path:'/strategy',code:'invalid_enum',expectations:{allowed_values:destination==='sheets'?['full']:['full','concise']},
+          allowed_repair:destination==='sheets'?'Use {"destination":"sheets","strategy":"full"} with summary omitted.':'Choose full or concise; concise is available only for Notion.'});
+      if((destination==='sheets' || a.strategy==='full') && a.summary!==undefined)
+        issues.push({path:'/summary',code:'field_must_be_absent',expectations:{present:false},
+          allowed_repair:'Omit summary for Sheets and every full presentation; original canonical research remains retained.'});
+      if(destination==='notion' && a.strategy==='concise' && (typeof a.summary!=='string'
+          || !a.summary.trim() || Buffer.byteLength(a.summary)>2000000))
+        issues.push({path:'/summary',code:'invalid_summary',expectations:{type:'string',nonblank:true,max_utf8_bytes:2000000},
+          allowed_repair:'Supply a supported nonblank Notion summary within 2,000,000 UTF-8 bytes, or choose full and omit summary.'});
+      if(issues.length) invalidArguments(issues);
+      const d=row.delivery?.[destination];if(!d) refuse('publication_destination_invalid');
+      let presentation=null;
+      if(a.strategy==='concise') {
+        const decision_json=JSON.stringify({destination,strategy:a.strategy,summary:a.summary,source_payload_digest:d.payload_digest});
+        presentation={schema_version:'blueprint.research-presentation.v1',strategy:a.strategy,summary:a.summary,
+          source_payload_digest:d.payload_digest,decision_json,decision_digest:sha(decision_json)};
+      }
+      if((d.plan || attemptState(run,row,destination).claimed || d.state==='acknowledged')
+          && valueHash(d.presentation || null)!==valueHash(presentation)) {
+        if(destination!=='notion' || d.state==='acknowledged') refuse('publication_presentation_already_bound');
+        await this.admitRejectedPresentation(row,presentation,{request_digest:requestDigest,action});
+      }
+      if(valueHash(d.presentation || null)!==valueHash(presentation)) {d.presentation=presentation;await this.put(row);}
+      const receipt=d.state==='acknowledged'?d.receipt:await this.publish(day,destination,{request_digest:requestDigest,action});
+      const latest=(await ref.get()).data();
+      return {success:true,output:{destination,status:receipt?'acknowledged':'pending',
+        mutation_policy:attemptState(latest,row,destination).claimed?'reconcile_exact_claims_only':'not_claimed',
+        canonical_payload_digest:d.payload_digest,presentation_digest:presentation?.decision_digest || null,
+        guidance:receipt?'Exact destination readback verified.':'Inspect and retry the same choice to reconcile or advance verified ordered batches; never resend an unobserved claimed request.'},...(receipt?{receipt}:{})};
+    } catch(error) {
+      const code=/^(?:publication|workflow|firestore|research_tool)_[a-z_]{1,100}$/.test(error.message)
+        ?error.message:'publication_attempt_unresolved';
+      let evidence_file,definitive_rejection=false;
+      if(typeof error.provider_response==='string') {
+        evidence_file=`${day}-tool-publication-error-${sha(error.provider_response)}.json`;
+        try {await this.filePut(evidence_file,Buffer.from(error.provider_response).toString('base64'));}catch {evidence_file=null;}
+        let parsed;try {parsed=JSON.parse(error.provider_response);}catch {}
+        if(destination==='notion' && error.provider_feedback?.http_status===400 && parsed?.object==='error'
+            && parsed.status===400 && parsed.code==='validation_error'
+            && sha(error.provider_response)===error.provider_feedback.response_digest) {
+          try {
+            const current=await this.get(day),ref=this.db.doc(`${ROOT}/runs/${day}`),before=(await ref.get()).data();
+            const state=attemptState(before,current,destination),plan=current.delivery.notion.plan;
+            const response_blob=await this.blobPut(Buffer.from(error.provider_response).toString('base64'));
+            if(state.claimed===error.provider_feedback.request_digest && plan?.request_digest===state.claimed
+                && !Object.keys(state.batches || {}).some(n=>n!=='0')) {
+              const rejection={http_status:400,provider_code:'validation_error',response_blob,
+                response_digest:sha(error.provider_response),request_digest:state.claimed,plan_digest:valueHash(plan)};
+              await this.transaction(async tx=>{
+                const control=(await tx.get(this.control)).data();this.publicationAgentGate(control,current,requestDigest,action);
+                const run=(await tx.get(ref)).data();
+                if(run.blob!==before.blob || valueHash(attemptState(run,current,destination))!==valueHash(state))
+                  refuse('publication_attempt_not_admitted');
+                if(current.delivery.notion.attempt_number) tx.set(ref,{publication_attempts:{...run.publication_attempts,
+                  notion:{...run.publication_attempts?.notion,[current.delivery.notion.attempt_number]:{...state,rejection}}}},{merge:true});
+                else tx.set(ref,{publication_rejections:{...run.publication_rejections,notion:rejection}},{merge:true});
+              });
+              definitive_rejection=true;
+            }
+          } catch { /* Failed rejection proof never grants another write. */ }
+        }
+      }
+      return {success:false,error:{code,destination:destination || null,
+        ...(argumentIssues?{status:'recoverable_issue',issues:argumentIssues,
+          allowed_repair:'Correct the indicated arguments in this same turn within current authority. Inspect claims before changing a presentation; existing claims and receipts remain binding.'}:{}),
+        ...(code==='publication_lead_verification_required'?{status:'recoverable_issue',
+          evidence_issues:publicationVerification(row,destination,this.clock()).reasons,
+          allowed_repair:'Inspect the retained evidence and reasons. Supply a supported current assessment through the existing protected research review within original authority; preserve raw findings and consumed claims. Do not invent qualification or repeat uncertain writes.'}:{}),
+        recovery_policy:argumentIssues?'repair_arguments_preserve_claims':definitive_rejection?'new_agent_presentation_after_verified_absence':'preserve_claims_and_inspect',
+        guidance:code==='publication_lead_verification_required'?'Current evidence verification is required for a new qualified candidate claim or batch. Raw source and existing readback remain available; missing evidence is unresolved, with all commercial and rights gates still separate.':argumentIssues?'Sheets requires full with summary omitted; Notion permits full without summary or concise with a supported nonblank summary. Original requests remain retained; argument repair grants no new authority.':definitive_rejection
+          ?'The provider definitively rejected the initial create request. Choose a revised presentation; a new attempt is admitted only after complete readback proves the report absent. Original plan, claim and error remain retained.'
+          :'Inspect retained source and current claims. An uncertain write is GET-only until exact readback; choose a revised presentation before a claim or after a proven initial validation rejection.',
+        ...(error.provider_feedback?{provider_feedback:error.provider_feedback}:{}),
+        ...(typeof error.provider_response==='string'?{provider_response_json:error.provider_response}:{}),
+        ...(evidence_file?{evidence_file}:{})}};
+    }
+  }
+  terminalSheetsGate(control,row,context) {
+    this.fence(control);
+    const source=context.source,original=source.publication,projection=structuredClone(row);
+    for(const key of ['plan','receipt','state']) delete projection.delivery?.sheets?.[key];
+    const expected=structuredClone(source);
+    for(const key of ['plan','receipt','state']) delete expected.delivery.sheets[key];
+    const authority=control.workflow,stored=original.workflow_authority;
+    if(this.schedulerStopped!==true || control.enabled!==false || control.config?.enabled!==false
+        || !authority || typeof authority.enabled!=='boolean'
+        || Object.keys(authority).sort().join(',')!=='enabled,publication_authority_reference,qa_authority_reference'
+        || authority.publication_authority_reference!==context.publication_authority_reference
+        || authority.publication_authority_reference!==stored.publication_authority_reference
+        || authority.qa_authority_reference!==stored.qa_authority_reference
+        || valueHash(projection)!==valueHash(expected)) refuse('terminal_sheets_recovery_not_admitted');
+  }
+  async recoverTerminalSheets(request) {
+    const keys=['op','day','source_row_blob','payload_digest','rejected_call_id','publication_authority_reference'];
+    if(Object.keys(request).sort().join(',')!==keys.sort().join(',') || !dateOK(request.day)
+        || !['source_row_blob','payload_digest'].every(k=>/^[a-f0-9]{64}$/.test(request[k] || ''))
+        || !/^[A-Za-z0-9_-]{1,200}$/.test(request.rejected_call_id || '')
+        || typeof request.publication_authority_reference!=='string') refuse('terminal_sheets_recovery_request_invalid');
+    const source=JSON.parse(Buffer.from(await this.blobGet(request.source_row_blob),'base64').toString('utf8'));
+    const p=source.publication,d=source.delivery?.sheets,review=source.review,qa=source.qa;
+    if(source.date!==request.day || source.run_key!==`blueprint-researcher:${request.day}` || source.canary
+        || source.state!=='reviewed' || source.publication_profile!=='agent-owned-v1'
+        || !source.session_id || !source.turn_id || qa?.state!=='validated' || !qa.turn_id
+        || p?.profile!=='agent-owned-v1' || p.session_id!==source.session_id || !p.turn_id
+        || p.turn_status!=='completed' || p.state!=='agent_finished_without_complete_receipts'
+        || !Number.isSafeInteger(p.completed_at) || !Number.isSafeInteger(p.deadline_ms)
+        || p.completed_at*1000>p.deadline_ms || p.cancel_attempted || p.observation_only_reason
+        || !Array.isArray(p.baseline_turn_ids) || ![source.turn_id,qa.turn_id].every(id=>p.baseline_turn_ids.includes(id))
+        || p.idempotency_key!==source.run_key+':publication' || !p.workflow_authority
+        || p.authority_reference!==request.publication_authority_reference
+        || p.workflow_authority.publication_authority_reference!==p.authority_reference
+        || review?.source_support_verified!==true || review.crm_rechecked!==true
+        || review.packet_digest!==source.packet_digest || pythonHash(source.packet)!==source.packet_digest
+        || review.qa_artifact_digest!==qa.artifact_digest || verificationDigest(qa.decision)!==verificationDigest(review)
+        || ![`${source.date}-qa.json`,`${source.date}-qa-correction-1-artifact.json`,`${source.date}-qa-correction-2-artifact.json`].includes(qa.artifact_file)
+        || review.reviewer_reference!==`agent-turn:${source.session_id}:${qa.turn_id}`
+        || !Array.isArray(review.accepted_keys) || !review.accepted_keys.length
+        || new Set(review.accepted_keys).size!==review.accepted_keys.length
+        || d?.state!=='pending' || d.presentation || d.plan || d.receipt || d.attempt_number
+        || source.delivery.notion?.state!=='acknowledged' || source.delivery.notion.receipt?.readback_verified!==true
+        || source.delivery.notion.receipt.key!==source.run_key+':notion'
+        || source.delivery.notion.receipt.payload_digest!==source.delivery.notion.payload_digest
+        || d.key!==source.run_key+':sheets' || d.payload_digest!==request.payload_digest)
+      refuse('terminal_sheets_recovery_source_invalid');
+    const input=Buffer.from(await this.fileGet(p.input_file),'base64');
+    if(p.input_file!==`${source.date}-publication-input.json` || input.at(-1)!==10
+        || sha(input.subarray(0,-1))!==p.request_digest) refuse('terminal_sheets_recovery_evidence_invalid');
+    const selected=source.packet.candidates.filter(c=>review.accepted_keys.includes(c.candidate_key));
+    if(selected.length!==review.accepted_keys.length || valueHash(selected)!==valueHash(d.payload?.candidates)
+        || d.payload.sheet_id!=='1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY' || d.payload.tab!=='Prospects'
+        || typeof d.payload_json!=='string' || sha(d.payload_json)!==d.payload_digest
+        || valueHash(JSON.parse(d.payload_json))!==valueHash(d.payload)) refuse('terminal_sheets_recovery_payload_invalid');
+    const rawQA=Buffer.from(await this.fileGet(qa.artifact_file),'base64');
+    let qaResult;try {qaResult=JSON.parse(rawQA.toString('utf8'));}catch {refuse('terminal_sheets_recovery_qa_invalid');}
+    if(sha(rawQA)!==qa.artifact_digest || qaResult.packet_digest!==source.packet_digest
+        || qaResult.source_support_verified!==true || !Array.isArray(qaResult.accepted_keys)
+        || !review.accepted_keys.every(key=>qaResult.accepted_keys.includes(key))) refuse('terminal_sheets_recovery_qa_invalid');
+    if(review.lead_verification) for(const result of review.lead_verification.results || []) {
+      const check=qaResult.checks?.find(check=>check.candidate_key===result.candidate_key);
+      if(!check || verificationDigest(check.lead_verification ?? null)!==verificationDigest(result.assessment ?? null)
+          || result.assessment_digest!==verificationDigest(result.assessment ?? null))
+        refuse('terminal_sheets_recovery_qa_invalid');
+    }
+    const evidence=JSON.parse(Buffer.from(await this.fileGet(p.evidence_file),'base64').toString('utf8'));
+    if(p.evidence_file!==`${source.date}-publication-evidence.json` || !Array.isArray(evidence)
+        || evidence.some(item=>item.turn_id!==p.turn_id) || pythonHash(evidence)!==p.evidence_digest)
+      refuse('terminal_sheets_recovery_evidence_invalid');
+    const call=source.application_tool_calls?.[request.rejected_call_id],action=call?.request;
+    let args;try {args=typeof action?.arguments==='string'?JSON.parse(action.arguments):action?.arguments;}catch {}
+    if(call?.phase!=='publication' || call.attempted!==true || call.success!==false || call.result_acknowledged!==true
+        || action?.call_id!==request.rejected_call_id || action.turn_id!==p.turn_id
+        || action.name!=='blueprint_publish_research' || args?.destination!=='sheets' || args.strategy!=='concise'
+        || typeof call.request_json!=='string' || sha(call.request_json)!==call.request_digest
+        || valueHash(JSON.parse(call.request_json))!==valueHash(action)
+        || call.result_file!==`${source.date}-tool-${action.call_id}.json`) refuse('terminal_sheets_recovery_rejection_invalid');
+    const raw=Buffer.from(await this.fileGet(call.result_file),'base64'),event=JSON.parse(raw.toString('utf8'));
+    const outcome=JSON.parse(event.output);
+    if(sha(raw)!==call.result_sha256 || pythonHash(event)!==call.result_digest || event.success!==false
+        || event.call_id!==action.call_id || event.turn_id!==p.turn_id || outcome.success!==false
+        || outcome.error?.code!=='publication_agent_tool_arguments_invalid' || outcome.error.destination!=='sheets')
+      refuse('terminal_sheets_recovery_rejection_invalid');
+    const context={...request,source},row=await this.get(request.day),control=(await this.control.get()).data();
+    this.terminalSheetsGate(control,row,context);
+    const recoveryRef=this.db.doc(`${ROOT}/terminalSheetsRecoveries/${request.source_row_blob}`);
+    const binding={source_row_blob:request.source_row_blob,payload_digest:d.payload_digest,rejected_call_id:action.call_id,
+      rejection_result_sha256:call.result_sha256,qa_artifact_digest:qa.artifact_digest,
+      publication_evidence_digest:p.evidence_digest,publication_authority_reference:p.authority_reference};
+    context.recoveryRef=recoveryRef;context.binding=binding;
+    const receipt=await this.publish(request.day,'sheets',null,context);
+    if(!receipt) return {state:'readback_pending',mutation_policy:'existing_claim_readback_only',recovery_ref:recoveryRef.path};
+    if(receipt.destination!=='sheets' || receipt.payload_digest!==d.payload_digest || receipt.key!==d.key
+        || receipt.readback_verified!==true || !receipt.reference) refuse('terminal_sheets_recovery_receipt_invalid');
+    const current=await this.get(request.day);this.terminalSheetsGate((await this.control.get()).data(),current,context);
+    if(current.delivery.sheets.receipt && valueHash(current.delivery.sheets.receipt)!==valueHash(receipt))
+      refuse('delivery_receipt_already_bound');
+    const expected_blob=sha(JSON.stringify(current));
+    current.delivery.sheets.receipt=receipt;current.delivery.sheets.state='acknowledged';
+    await this.put(current,{expected_blob,context});
+    await this.transaction(async tx=>{
+      const ctrl=(await tx.get(this.control)).data();this.terminalSheetsGate(ctrl,current,context);
+      const saved=(await tx.get(recoveryRef)).data();
+      if(!saved || valueHash(saved.binding)!==valueHash(binding)) refuse('terminal_sheets_recovery_binding_changed');
+      if(saved.receipt && valueHash(saved.receipt)!==valueHash(receipt)) refuse('delivery_receipt_already_bound');
+      if(!saved.receipt) tx.set(recoveryRef,{...saved,receipt,state:'acknowledged',readback_at:new Date(this.clock()).toISOString()});
+    });
+    return {state:'acknowledged',receipt,recovery_ref:recoveryRef.path,original_publication_state:p.state};
+  }
+  async publish(day,selectedDestination=null,agentContext=null,terminalRecovery=null) {
     await this.assertLease(); const initialControl=(await this.control.get()).data();
-    this.workflowGate(initialControl,!!this.terminalCollectionReceipt);
+    if(terminalRecovery) this.terminalSheetsGate(initialControl,await this.get(day),terminalRecovery);
+    else this.workflowGate(initialControl,!!this.terminalCollectionReceipt);
     if (!this.publisher) refuse('publication_binding_unavailable');
     const row=await this.get(day);
+    if(row?.publication_profile==='agent-owned-v1' && !terminalRecovery) {
+      if(!agentContext || !selectedDestination) refuse('publication_agent_choice_required');
+      this.publicationAgentGate(initialControl,row,agentContext.request_digest,agentContext.action);
+    }
     const proof=this.terminalCollectionReceipt;
     if (proof && (!['reviewed','completed'].includes(row?.state) || row?.qa?.state!=='validated'
         || valueHash(row.qa.terminal_collection_recovery?.native_receipt||null)!==valueHash(proof)
@@ -399,27 +1057,114 @@ export class Store {
       refuse('terminal_qa_collection_validated_receipt_required');
     const collectionAuthority=row?.qa?.terminal_collection_recovery?.workflow_authority;
     if (collectionAuthority && !same(collectionAuthority,initialControl.workflow)) refuse('publication_authority_changed');
-    const destination=['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
+    const destination=selectedDestination || ['notion','sheets'].find(name=>row?.delivery?.[name]?.state!=='acknowledged');
+    if(selectedDestination && !['notion','sheets'].includes(selectedDestination)) refuse('publication_destination_invalid');
     if (!destination) return null;
+    if(terminalRecovery && destination!=='sheets') refuse('terminal_sheets_recovery_request_invalid');
     const d=row.delivery[destination];
     try {
-      if (!d.plan) {d.plan=await this.publisher.prepare(row,destination);await this.put(row);}
+      if(terminalRecovery && attemptState((await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row,destination).claimed && !d.plan)
+        refuse('terminal_sheets_recovery_claim_plan_missing');
+      if (!d.plan) {
+        requirePublicationVerification(row,destination,this.clock());
+        const expected_blob=terminalRecovery?sha(JSON.stringify(row)):null;
+        d.plan=await this.publisher.prepare(row,destination);
+        await this.put(row,terminalRecovery?{expected_blob,context:terminalRecovery}:null);
+      }
+      if(terminalRecovery) await this.transaction(async tx=>{
+        const control=(await tx.get(this.control)).data();this.terminalSheetsGate(control,row,terminalRecovery);
+        const saved=(await tx.get(terminalRecovery.recoveryRef)).data(),plan_digest=valueHash(d.plan);
+        if(saved && (valueHash(saved.binding)!==valueHash(terminalRecovery.binding) || saved.plan_digest!==plan_digest))
+          refuse('terminal_sheets_recovery_binding_changed');
+        if(!saved) tx.set(terminalRecovery.recoveryRef,{schema_version:'blueprint.terminal-sheets-recovery.v1',
+          binding:terminalRecovery.binding,plan_digest,state:'prepared',prepared_at:new Date(this.clock()).toISOString()});
+      });
+      if(destination==='notion' && d.plan.protocol==='notion-paginated-v1')
+        return await this.publishNotionBatch(row,d.plan,initialControl.workflow,collectionAuthority,proof,agentContext);
+      const terminalBlob=terminalRecovery?sha(JSON.stringify(row)):null;
       const receipt=await this.publisher.reconcile(row,destination,d.plan);
       if (receipt) return receipt;
       const ref=this.db.doc(`${ROOT}/runs/${day}`),before=await ref.get();
-      if (before.data().publication_claimed?.[destination]) return null; // uncertain: GET reconciliation only
+      if(terminalRecovery && before.data().blob!==terminalBlob) refuse('publication_authority_or_plan_changed');
+      if (attemptState(before.data(),row,destination).claimed) return null; // uncertain: GET reconciliation only
       await this.transaction(async tx=>{
-        const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control,!!proof);
+        const control=(await tx.get(this.control)).data();this.fence(control);
+        if(terminalRecovery) this.terminalSheetsGate(control,row,terminalRecovery);else this.workflowGate(control,!!proof);
         if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
-        if (run.blob!==before.data().blob || run.publication_claimed?.[destination]) refuse('publication_attempt_not_admitted');
-        tx.set(ref,{publication_claimed:{...run.publication_claimed,[destination]:d.plan.request_digest}},{merge:true});
+        if (run.blob!==before.data().blob || attemptState(run,row,destination).claimed) refuse('publication_attempt_not_admitted');
+        if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+        requirePublicationVerification(row,destination,this.clock());
+        tx.set(ref,claimUpdate(run,row,destination,d.plan.request_digest),{merge:true});
       });
-      await this.publisher.write(row,destination,d.plan);
+      if(agentContext) {
+        if(this.publisher.beforeNotionStep) await this.publisher.beforeNotionStep(row,d.plan,null);
+        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+        if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
+          refuse('publication_authority_or_plan_changed');
+      }
+      if(terminalRecovery) {
+        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        this.terminalSheetsGate(control,row,terminalRecovery);
+        if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
+          refuse('publication_authority_or_plan_changed');
+      }
+      requirePublicationVerification(row,destination,this.clock());
+      await this.publisher.write(row,destination,d.plan,{beforeWrite:async()=>{
+        requirePublicationVerification(row,destination,this.clock());
+        if(!terminalRecovery) return;
+        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        this.terminalSheetsGate(control,row,terminalRecovery);
+        if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
+          refuse('publication_authority_or_plan_changed');
+      }});
       return await this.publisher.reconcile(row,destination,d.plan);
     } catch(error) {
-      refuse(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
+      if(error instanceof Refusal && /^(?:publication|workflow|firestore|research_tool|terminal_sheets_recovery)_[a-z_]+$/.test(error.message)) throw error;
+      const wrapped=new Refusal(typeof error.message==='string' && /^publication_[a-z_]+$/.test(error.message) ? error.message : 'publication_attempt_unresolved');
+      if(error.provider_feedback) wrapped.provider_feedback=error.provider_feedback;
+      if(error.provider_response) wrapped.provider_response=error.provider_response;
+      throw wrapped;
     }
+  }
+  async publishNotionBatch(row,plan,authority,collectionAuthority,proof,agentContext=null) {
+    const ref=this.db.doc(`${ROOT}/runs/${row.date}`),before=await ref.get();
+    const claims=attemptState(before.data(),row,'notion').batches || {},planDigest=valueHash(plan);
+    if(Object.values(claims).some(claim=>claim.plan_digest!==planDigest || !same(claim.workflow_authority,authority)))
+      refuse('publication_authority_or_plan_changed');
+    const progress=await this.publisher.notionProgress(row,plan);
+    if(progress.receipt) return progress.receipt;
+    const step=progress.step;
+    if(claims[step.number]) return null; // Unknown acknowledgment: observe this exact batch, never replay it.
+    if(step.number>0 && (!claims[step.number-1] || claims[step.number-1].end!==step.start
+        || step.number>1 && claims[step.number-1].page_id!==step.page_id))
+      refuse('publication_notion_unclaimed_prefix');
+    const claim={...step,plan_digest:planDigest,workflow_authority:authority};
+    // The immutable plan already holds full request bytes. Store only exact bindings in the manifest.
+    delete claim.body_json;
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);this.workflowGate(control,!!proof);
+      if(!same(authority,control.workflow) || collectionAuthority && !same(collectionAuthority,control.workflow))
+        refuse('publication_authority_changed');
+      if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+      requirePublicationVerification(row,'notion',this.clock());
+      const snap=await tx.get(ref),run=snap.data();
+      if(run.blob!==before.data().blob || attemptState(run,row,'notion').batches?.[step.number])
+        refuse('publication_attempt_not_admitted');
+      tx.set(ref,claimUpdate(run,row,'notion',plan.request_digest,{...claims,[step.number]:claim}),{merge:true});
+    });
+    // Reads and the claim can be slow. Check current authority and lease immediately before mutation.
+    if(this.publisher.beforeNotionStep) await this.publisher.beforeNotionStep(row,plan,step);
+    const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+    this.fence(control);
+    this.workflowGate(control,!!proof);
+    if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
+    if(!same(authority,control.workflow) || latest.blob!==before.data().blob
+        || !same(attemptState(latest,row,'notion').batches?.[step.number],claim)) refuse('publication_authority_or_plan_changed');
+    requirePublicationVerification(row,'notion',this.clock());
+    await this.publisher.writeNotionStep(row,plan,step);
+    return await this.publisher.reconcile(row,'notion',plan);
   }
   async repairCheck(day, requestDigest, deadlineMS) {
     if (!dateOK(day) || !/^[a-f0-9]{64}$/.test(requestDigest)) refuse('validation_repair_request_invalid');
@@ -533,7 +1278,8 @@ export class Store {
           refuse('firestore_control_binding_invalid');
         return this.transaction(async tx => {
           const control = (await tx.get(this.control)).data(); this.fence(control);
-          tx.set(this.control, {...value, lease: control.lease}); return true;
+          tx.set(this.control, {...value, cleanup_observation_required:control.cleanup_observation_required===true,
+            lease: control.lease}); return true;
         });
       }
       case 'acquire': return this.acquire();
@@ -541,6 +1287,13 @@ export class Store {
       case 'release': return this.release();
       case 'assert_lease': return this.assertLease();
       case 'control': return (await this.control.get()).data() || null;
+      case 'contact_research_context': return contactResearchContext(this,request.day);
+      case 'contact_research_reconcile': {
+        await this.assertLease();
+        const row=await this.get(request.day);
+        const manifest=(await this.db.doc(`${ROOT}/runs/${request.day}`).get()).data();
+        return row ? finishContactResearchSafely(this,row,manifest.blob) : {state:'missing'};
+      }
       case 'learning_context':
       {
         const control = (await this.control.get()).data();
@@ -553,6 +1306,26 @@ export class Store {
           const code=error.message;
           refuse(/^(?:research_learning|business_daily|business_run|learning_consumer)_[a-z_]{1,75}$/.test(code)
             ? code : 'research_learning_unavailable');
+        }
+      }
+      case 'history_search':
+      case 'history_fetch': {
+        await this.assertLease();
+        const control=(await this.control.get()).data(),row=await this.get(request.day);
+        if(control?.enabled!==true || control.learning?.enabled!==true || !this.learning
+            || row?.history_profile!=='agent-history-v1'
+            || control.config?.history_profile!=='agent-history-v1'
+            || valueHash(row.history_binding)!==valueHash(control.learning))
+          refuse('company_history_authority_changed');
+        if(['binding','businessScope'].some(key=>{
+          const expiry=Date.parse(control.learning[key]?.expiresAt);
+          return !Number.isFinite(expiry) || expiry<=this.clock();
+        })) refuse('company_history_scope_expired');
+        try {return await this.learning(request,control.learning);}
+        catch(error) {
+          const code=error.message;
+          return {ok:false,error:{code:/^(?:company_history|research_history)_[a-z_]{1,100}$/.test(code)
+            ?code:'company_history_unavailable',guidance:'Correct the request or report the current company access/coverage gap.'}};
         }
       }
       case 'read_crm': {
@@ -576,6 +1349,9 @@ export class Store {
       case 'qa_correction_check': return this.qaCorrectionCheck(request.day,request.request_digest,request.deadline_ms,request.number);
       case 'repair_check': return this.repairCheck(request.day,request.request_digest,request.deadline_ms);
       case 'publish': return this.publish(request.day);
+      case 'recover_terminal_sheets': return this.recoverTerminalSheets(request);
+      case 'publication_input_check': return this.publicationInputCheck(request.day,request.request_digest,request.deadline_ms);
+      case 'publication_agent_tool': return this.publicationAgentTool(request.day,request.action,request.request_digest);
       case 'refresh_crm': {
         await this.assertLease();
         if (!this.crmReader) refuse('canonical_crm_read_unavailable');
@@ -588,6 +1364,12 @@ export class Store {
       case 'file_put': return this.filePut(request.name, request.bytes);
       case 'file_get': return this.fileGet(request.name);
       case 'snapshot': return this.snapshot(request.day);
+      case 'cleanup_admit': return this.cleanupAdmit(request.day,request.policy);
+      case 'cleanup_status': return this.cleanupStatus(request.day);
+      case 'cleanup_archive': return this.cleanupArchive(request);
+      case 'cleanup_archive_verify': return this.cleanupArchiveVerify(request.day,request.binding_digest);
+      case 'cleanup_claim': return this.cleanupClaim(request.day,request.binding_digest);
+      case 'cleanup_delete_check': return this.cleanupClaim(request.day,request.binding_digest,true);
       case 'create_check': return this.createCheck(request.day, request.metadata);
       default: refuse('firestore_operation_invalid');
     }
@@ -651,11 +1433,14 @@ async function main() {
   if (account.project_id !== 'blueprint-8c1ca') refuse('firestore_project_binding_mismatch');
   const crmReader=()=>readCanonicalCRM(account);
   const publisher=await livePublisher(account,crmReader,process.env.NOTION_API_TOKEN || process.env.NOTION_API_KEY);
-  const db = getFirestore(initializeApp({credential: cert(account)}));
+  const app = initializeApp({credential: cert(account)});
+  const db = getFirestore(app);
+  const {getStorage}=await import('firebase-admin/storage');
   // The trusted worker supplies a local compiled module, never a model URL.
   const learningPath = process.env.BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE;
   const learning = learningPath ? (await import(pathToFileURL(learningPath).href)).researchLearningHost(db) : null;
-  const store = new Store(db, undefined, undefined,crmReader,publisher,learning);
+  const store = new Store(db, undefined, undefined,crmReader,publisher,learning,null,
+    process.env.BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED==='false',getStorage(app).bucket(CLEANUP_BUCKET));
   const channel = new LeaseChannel(store);
   for await (const line of createInterface({input: process.stdin})) {
     try {

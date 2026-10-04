@@ -3,16 +3,149 @@
 No provider, credentials, sink writes or scheduling. The daily $1 soft target is
 separate from the explicitly authorized one-time test ceiling.
 """
+import hashlib
+import json
 from decimal import Decimal
 
 TARGET_NEW = 10
-MAX_CANDIDATES = 100  # Input/resource ceiling, not a research quota.
+MAX_CANDIDATES = 100  # Legacy batch size; v3 retention is bounded by bytes.
+INVENTORY_PAGE_BYTES = 100_000
+INVENTORY_VERSION = "blueprint.discovery-inventory.v1"
+
+
+def inventory_issues(entries):
+    """Thin discoveries have their own contract and no promotion authority."""
+    fields = {"operator", "site", "location", "task_hypothesis", "source_urls", "evidence_gap", "disposition"}
+    if not isinstance(entries, list):
+        yield {"pointer": "/discovery_inventory", "code": "discovery_inventory_invalid"}
+        return
+    from tools.daily_research.runner import Refusal, public_url
+    for index, entry in enumerate(entries):
+        path = f"/discovery_inventory/{index}"
+        if not isinstance(entry, dict) or set(entry) != fields:
+            yield {"pointer": path, "code": "discovery_inventory_invalid"}
+            continue
+        for field in ("operator", "site", "location", "task_hypothesis"):
+            value = entry[field]
+            if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 2000):
+                yield {"pointer": path + "/" + field, "code": "discovery_inventory_invalid"}
+        if not isinstance(entry["disposition"], str) or entry["disposition"] not in {"candidate", "unresolved", "rejected", "learning", "duplicate"} or not isinstance(entry["evidence_gap"], str) or not entry["evidence_gap"].strip() or len(entry["evidence_gap"]) > 2000:
+            yield {"pointer": path, "code": "discovery_inventory_invalid"}
+        from tools.daily_research.runner import canonical
+        if len(canonical(entry).encode()) > INVENTORY_PAGE_BYTES - 1000:
+            yield {"pointer": path, "code": "discovery_inventory_record_resource_ceiling_raw_retained"}
+        urls = entry["source_urls"]
+        if not isinstance(urls, list) or not urls or len(urls) > 12:
+            yield {"pointer": path + "/source_urls", "code": "discovery_inventory_invalid"}
+        else:
+            for number, url in enumerate(urls):
+                try:
+                    public_url(url)
+                except (Refusal, ValueError, TypeError):
+                    yield {"pointer": path + f"/source_urls/{number}", "code": "discovery_inventory_invalid"}
+
+
+def retain_inventory(entries, row, ledger, output_digest):
+    """Store all original records in immutable bounded pages; never trim a list.
+
+    The cursor is a page number, so read-only callers can resume without a new
+    search or changing eligibility. The full original output remains archived.
+    """
+    from tools.daily_research.recovery import parse_artifact_json
+    from tools.daily_research.runner import Refusal, canonical
+    from tools.daily_research.verification import digest as evidence_digest
+    records_digest = evidence_digest(entries)
+    sources = [(f"{row['date']}-artifact.json", row.get("raw_output_digest"))] + [
+        (revision.get("artifact_file"), revision.get("artifact_digest")) for revision in row.get("validation_repairs", [])]
+    source_binding = None
+    for filename, expected in reversed(sources):
+        if not filename or not expected:
+            continue
+        raw = ledger.read_bytes(filename)
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise Refusal("discovery_inventory_source_binding_invalid")
+        try:
+            original, _ = parse_artifact_json(raw)
+            if isinstance(original, dict) and evidence_digest(original.get("discovery_inventory")) == records_digest:
+                source_binding = {"source_artifact_file": filename, "source_artifact_sha256": expected}
+                break
+        except (ValueError, UnicodeError, TypeError):
+            continue
+    if source_binding is None:
+        raise Refusal("discovery_inventory_source_binding_invalid")
+    pages, current, start = [], [], 0
+    def save(records):
+        nonlocal start
+        value = {"version": INVENTORY_VERSION, "run_key": row["run_key"], "source_output_digest": output_digest,
+                 "start": start, "end": start + len(records), "records": records}
+        raw = (canonical(value) + "\n").encode()
+        if len(raw) > INVENTORY_PAGE_BYTES:
+            raise Refusal("discovery_inventory_record_resource_ceiling_raw_retained")
+        filename = f"{row['date']}-inventory-{output_digest}-{len(pages)}.json"
+        ledger.write_json(filename, value)
+        pages.append({"index": len(pages), "file": filename, "sha256": hashlib.sha256(raw).hexdigest(),
+                      "bytes": len(raw), "start": start, "end": value["end"]})
+        start = value["end"]
+    for entry in entries:
+        if current and len(canonical(current + [entry]).encode()) > INVENTORY_PAGE_BYTES - 1000:
+            save(current)
+            current = []
+        current.append(entry)
+    if current:
+        save(current)
+    return {"version": INVENTORY_VERSION, "source_output_digest": output_digest,
+            "record_count": len(entries), "page_count": len(pages), "pages": pages,
+            "records_digest": records_digest, **source_binding,
+            "eligibility": "discovery_only_no_promotion", "complete_retention": start == len(entries)}
+
+
+def read_inventory_page(manifest, ledger, cursor=0):
+    """Bounded, digest-verified page read. No model call or business mutation."""
+    if (not isinstance(manifest, dict) or manifest.get("version") != INVENTORY_VERSION
+            or type(cursor) is not int or cursor < 0 or cursor >= manifest.get("page_count", 0)):
+        raise ValueError("discovery_inventory_cursor_invalid")
+    page = manifest["pages"][cursor]
+    import re
+    if (not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("source_output_digest")))
+            or not re.fullmatch(r"\d{4}-\d{2}-\d{2}-inventory-" + manifest["source_output_digest"] + "-" + str(cursor) + r"\.json", str(page.get("file")))):
+        raise ValueError("discovery_inventory_page_binding_invalid")
+    raw = ledger.read_bytes(page["file"])
+    if len(raw) > INVENTORY_PAGE_BYTES or len(raw) != page["bytes"] or hashlib.sha256(raw).hexdigest() != page["sha256"]:
+        raise ValueError("discovery_inventory_page_binding_invalid")
+    value = json.loads(raw)
+    if (value.get("version") != INVENTORY_VERSION or value.get("source_output_digest") != manifest["source_output_digest"]
+            or value.get("start") != page["start"] or value.get("end") != page["end"]
+            or len(value.get("records", [])) != page["end"] - page["start"]):
+        raise ValueError("discovery_inventory_page_binding_invalid")
+    return {**value, "record_count": manifest["record_count"],
+            "next_cursor": cursor + 1 if cursor + 1 < manifest["page_count"] else None}
 
 
 def instructions(target_usd=1):
     return (
         "Research a defined, evidence-based scope of NEW distinct commercial site/task opportunities. Never pad the list. "
+        "Work in two stages: first discover relevant physical work at named operating sites, then rank and "
+        "assess the useful candidates against their evidence and limits. Do not require a verified contact, "
+        "buying interest, budget or robot fit before retaining relevant work. Within the requested scope, "
+        "consider basic handling families such as loading/unloading, picking/placing, kitting/sorting, "
+        "moving bins/totes, line feeding, machine tending, portioning/packing and finishing; these are "
+        "search hypotheses, not a requirement to cover every "
+        "family or expand beyond the admitted geography, time or spend. "
         "Use exact operator-sourced site/location and evidence of real recurring physical work. "
+        "Use employer job postings alongside operator pages, case studies and other discovery sources, "
+        "including an employer's own applicant-tracking page. Extract the quoted physical duties linked "
+        "to the exact operating site; a role title or whole job is not a robot-capable task. Hiring is "
+        "optional: relevant active hiring may prioritize a sourced site/task, but is neither a discovery "
+        "requirement nor proof of labor shortage, automation interest, manual work or robot fit. Retain "
+        "employer, site, requisition ID when available, original source URL, quoted duties, supported "
+        "published/modified dates, observed date and application-status evidence in findings and existing "
+        "sourced evidence fields. Unknown dates, status and currentness remain unknown; first-seen dates "
+        "and reposts do not prove new vacancies. An open application link alone does not prove active "
+        "hiring. Deduplicate posting identities by employer/requisition or canonical posting URL, and "
+        "facility/task identities separately, preserving every original source and changed status. "
+        "Treat improved conversations or Task Evaluation Runs from hiring-led discovery as a testable "
+        "hypothesis: label hiring-supported and other discoveries, propose a relevant first question, "
+        "and only record conversations or evaluations when actual retained outcomes support them. "
         "A plausible task/team fit is a labeled hypothesis, not a deployment or pilot qualification. "
         "Unknown buyer interest, owner, budget, provider willingness, support and rights remain explicit "
         "unknowns; they do not alone exclude a sourced discovery opportunity. Check incumbent automation "
@@ -22,7 +155,21 @@ def instructions(target_usd=1):
         "duplicates before publication. Emit a concise candidate row with one useful non-confidential first "
         "question in proposed_next_action; add deeper notes only for the strongest cases. "
         "Explore relevant tasks, industries and regions before deepening promising cases; count distinct sites/tasks, "
-        "never findings as prospects. A site may explore robotics before a proven ROI advantage: do not assume "
+        "never findings as prospects. Retain one operator at one physical site with one bounded task per record; "
+        "country lists, company-wide services and multi-site aggregates are not individual sites. Compare exact "
+        "facilities and tasks with supplied CRM/history after discovery, preserving aliases and uncertain matches; "
+        "the same company or city alone is not a duplicate, and unavailable history cannot establish newness. "
+        "Retain every distinct discovered site/task in discovery_inventory, including thin, unresolved, disputed, rejected, "
+        "duplicate and learning discoveries. Use separate records for separate sites; unknown operator/site/location/task_hypothesis is null. "
+        "Each record has operator, site, location, task_hypothesis, source_urls, evidence_gap and disposition "
+        "(candidate, unresolved, rejected, learning or duplicate). Preserve actual sources and the next evidence question. "
+        "Never drop discoveries because the brief or one response is full; full inventory is stored in resumable pages. "
+        "A raw candidate needs task and geography evidence; robot capability is optional and unmatched potential_robot_match stays unknown. "
+        "Missing evidence alone is not rejection or automatic qualification. "
+        "Distinguish publication/event dates from current operating state; a fresh page retrieval does not "
+        "make an old workflow current. Check automation of the exact proposed physical step: conveyors, "
+        "inventory software or downstream pallet handling do not alone prove robotic extraction or eliminate "
+        "remaining manual work. A site may explore robotics before a proven ROI advantage: do not assume "
         "manual work, costly pain, buying intent or existing robotics interest. Discover the actual decision and "
         "uncertainty; interest in conversation never means agreement to pilot. Search for a publicly evidenced "
         "workflow owner, technology evaluator, decision-maker or credible routing contact and explain relevance. "

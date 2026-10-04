@@ -124,9 +124,13 @@ def test_background_is_not_a_robot_grade_and_employer_sources_require_agent_qa()
     assert accepted[0]["operator_affiliation_qa_required"] is True
     assert accepted[0]["qualification_status"] == "unqualified"
     candidate["evidence"] = [e for e in candidate["evidence"] if e["role"] != "capability"]
-    with pytest.raises(Refusal, match="task_capability_geography_evidence_required"):
+    with pytest.raises(Refusal, match="unsupported_robot_match_must_remain_unknown"):
         validate_output(output, DAY, set(), contract_version=3, knowledge_context=context,
                         refresh_policy=policy, observed_at=NOW)
+    candidate["potential_robot_match"] = "unknown"
+    accepted, _ = validate_output(output, DAY, set(), contract_version=3, knowledge_context=context,
+                                 refresh_policy=policy, observed_at=NOW)
+    assert accepted[0]["qualification_status"] == "unqualified"
 
 
 def test_feedback_checks_coverage_after_independent_delta_and_date_errors():
