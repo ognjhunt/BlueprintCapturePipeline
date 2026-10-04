@@ -11,7 +11,7 @@ from pathlib import Path
 
 FILES = (
     "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "ADAPTIVE.md", "standalone.py", "runner.py", "knowledge.py",
-    "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "verification.py", "recovery.py", "qa_retry.py", "adaptive.py", "adaptive_runtime.py", "search.py", "SEARCH.md",
+    "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "verification.py", "recovery.py", "qa_retry.py", "adaptive.py", "adaptive_runtime.py", "search.py", "expansion.py", "exa_transport.py", "SEARCH.md",
     "history.py", "adaptive-test.config.example.json", "adaptive-daily.config.example.json", "perplexity-daily.config.example.json",
     "consumer.py", "publication.py", "publisher.mjs", "verification-digest.mjs", "requirements.txt", "standalone.config.example.json",
     "capabilities/blueprint-evidence-qualification/SKILL.md",

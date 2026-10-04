@@ -186,7 +186,7 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools(publication_profile=None, history_profile=None):
+def tools(publication_profile=None, history_profile=None, expansion_profile=None):
     declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
@@ -210,6 +210,9 @@ def tools(publication_profile=None, history_profile=None):
     if history_profile == "agent-history-v1":
         from tools.daily_research.history import tools as history_tools
         declared.extend(history_tools())
+    if expansion_profile == "exa-guarded-v1":
+        from tools.daily_research.expansion import tools as expansion_tools
+        declared.extend(expansion_tools())
     return declared
 
 
@@ -481,11 +484,13 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     if phase == "publication":
         from tools.daily_research.consumer import qa_deadline
         deadline = qa_deadline(row, {}).timestamp()
-    from tools.daily_research import history, publication
+    from tools.daily_research import expansion, history, publication
     early_publication = ({publication.INSPECT, publication.PUBLISH}
                          if row.get("publication_profile") == publication.PROFILE and phase != "publication" else set())
     admitted_names = {SEARCH, READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
     admitted_names |= early_publication
+    expansion_names = {expansion.START, expansion.READ} if row.get("expansion_profile") == expansion.PROFILE else set()
+    admitted_names |= expansion_names
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":
@@ -516,7 +521,10 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             raise Refusal("research_tool_stopped_or_expired")
         if "result_file" not in prior:
             outcome = {"success": False, "error": "research_tool_reply_unresolved_no_replay"}
-            if not prior["attempted"]:
+            # Expansion's whole-run claim, rather than a model call ID, owns
+            # the paid start. Re-entering it can only recover the original ACK
+            # or read that same run; it never repeats an uncertain submission.
+            if not prior["attempted"] or action["name"] in expansion_names:
                 prior["attempted"] = True
                 ledger.put(row)  # No paid POST is replayed after a lost reply/crash.
                 api.tool_admit(row, phase)
@@ -529,12 +537,22 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                                 "guidance": "Finish research and QA validation first. Then inspect destinations and choose publication in this same session."}}
                         elif action["name"] in history.NAMES:
                             result = history.execute(ledger, row, action["name"], action.get("arguments"))
+                        elif action["name"] in expansion_names:
+                            claim = row.get("exa_expansion")
+                            # Terminal receipts and an already consumed start
+                            # need no catalog/auth calls. Other phases cannot
+                            # initialize a paid-provider connection.
+                            context = (api.expansion_context(row, action["name"])
+                                if phase == "research" and not (claim and (claim.get("terminal_receipt")
+                                    or action["name"] == expansion.START)) else {})
+                            result = expansion.execute(action["name"], action.get("arguments"), row, ledger,
+                                phase=phase, now=clock(), admit=lambda current: api.expansion_admit(current, phase), **context)
                         else:
                             result = api.application_tool(action["name"], action.get("arguments"))
                         output = canonical(result)
                     if len(output.encode()) > MAX_RESPONSE:
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
-                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication else True, "output": output}
+                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names else True, "output": output}
                     if outcome["success"] is False:
                         outcome["error"] = canonical(result.get("error") or {"code": "research_tool_unavailable_no_replay"})
                 except ToolFailure as exc:

@@ -131,7 +131,7 @@ def configuration(value):
                "crm_snapshot", "slack_channel_id", "max_runtime_seconds", "soft_target_usd",
                "research_contract_version", "knowledge_snapshot", "knowledge_filters", "knowledge_refresh_policy",
                "expected_agent_instructions_sha256", "discovery_profile", "qa_reserved_seconds", "search_provider",
-               "recurring_budget_authority_reference", "publication_profile", "history_profile", "mcp_profile"}
+               "recurring_budget_authority_reference", "publication_profile", "history_profile", "mcp_profile", "expansion_profile"}
     if set(value) - allowed or type(value.get("enabled")) is not bool:
         raise Refusal("config_invalid")
     date.fromisoformat(value["first_date"])
@@ -147,6 +147,10 @@ def configuration(value):
         raise Refusal("history_profile_invalid")
     if value.get("mcp_profile") not in (None, *search.MCP_PROFILES) or value.get("mcp_profile") and not selected_search:
         raise Refusal("research_mcp_profile_invalid")
+    if (value.get("expansion_profile") not in (None, "exa-guarded-v1")
+            or value.get("expansion_profile") and (not selected_search or value.get("mcp_profile") == search.MCP_RESEARCH_PROFILE
+                or value.get("soft_target_usd") != 5)):
+        raise Refusal("research_expansion_profile_invalid")
     target = value.get("soft_target_usd")
     if selected_search:
         valid_target = type(target) in {int, float} and 0 < target <= 1_000_000 and math.isfinite(target)
@@ -581,6 +585,14 @@ class Provider:
     def application_tool(self, name, arguments):
         return search.ApplicationTools()(name, arguments)
 
+    def expansion_context(self, row, name):
+        # Disk execution has no approved allocation source or authenticated
+        # Exa transport. An optional gap must never become a paid fallback.
+        return {"unavailable_reason": "expansion_host_allocation_and_transport_missing"}
+
+    def expansion_admit(self, row, phase):
+        self.tool_admit(row, phase)
+
     def tool_admit(self, row, phase):
         # Disk runner already owns its process lock; Render adds a fresh fence.
         if row.get("search_provider") != search.PROFILE:
@@ -660,7 +672,7 @@ class Ledger:
 
 
 def preflight(api, expected_instructions_sha256=None, search_provider=None, publication_profile=None, history_profile=None,
-              mcp_profile=None):
+              mcp_profile=None, expansion_profile=None):
     if mcp_profile and search_provider != search.PROFILE:
         raise Refusal("research_mcp_profile_invalid")
     agent, template = api.get("agent", AGENT), api.get("template", TEMPLATE)
@@ -693,7 +705,7 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
             raise Refusal("agent_instructions_unavailable")
         result["search_provider"] = search.PROFILE
         result["session_agent_override"] = {
-            "tools": search.tools(publication_profile, history_profile), "service_tier": "default",
+            "tools": search.tools(publication_profile, history_profile, expansion_profile), "service_tier": "default",
             "instructions": instructions + "\nFor this explicitly selected search profile, the following "
             "application-tool instructions replace prior native-web-search-only restrictions. All other "
             "evidence, authority and safety boundaries remain in force. " + search.instructions()}
@@ -730,6 +742,12 @@ def preflight(api, expected_instructions_sha256=None, search_provider=None, publ
                 "search_company_history/fetch_company_history_record tools for company records under their current "
                 "grants; report unavailable history access as a gap. No document queries, collection/document lists, "
                 "raw document reads or database changes through this MCP connection.")
+    if expansion_profile is not None:
+        if expansion_profile != "exa-guarded-v1" or search_provider != search.PROFILE or mcp_profile == search.MCP_RESEARCH_PROFILE:
+            raise Refusal("research_expansion_profile_invalid")
+        from tools.daily_research.expansion import instructions as expansion_instructions
+        result["expansion_profile"] = expansion_profile
+        result["session_agent_override"]["instructions"] += expansion_instructions()
     if mcp_profile == search.MCP_RESEARCH_PROFILE:
         result["native_research_cost_status"] = "unknown_not_metered_by_host"
         result["session_agent_override"]["instructions"] += search.delegated_research_instructions()
@@ -767,7 +785,10 @@ def check_mcp_vault_binding(row, session):
         raise Refusal("research_mcp_vault_binding_changed")
 
 
-def check_agent(agent, search_provider=None, publication_profile=None, history_profile=None, mcp_profile=None, mcp_binding=None):
+def check_agent(agent, search_provider=None, publication_profile=None, history_profile=None, mcp_profile=None, mcp_binding=None, expansion_profile=None):
+    if (expansion_profile not in (None, "exa-guarded-v1") or expansion_profile
+            and (search_provider != search.PROFILE or mcp_profile == search.MCP_RESEARCH_PROFILE)):
+        raise Refusal("research_expansion_profile_invalid")
     if (agent.get("id") != AGENT or agent.get("model") != MODEL
             or agent.get("reasoning", {}).get("effort") != "medium"
             or agent.get("multi_agent", {}).get("enabled") is not False):
@@ -781,7 +802,7 @@ def check_agent(agent, search_provider=None, publication_profile=None, history_p
         except (search.ToolFailure, TypeError):
             raise Refusal("research_mcp_configuration_invalid") from None
     if search_provider == search.PROFILE:
-        expected_tools = search.tools(publication_profile, history_profile) + mcp_tools
+        expected_tools = search.tools(publication_profile, history_profile, expansion_profile) + mcp_tools
         actual_tools = agent.get("tools")
         if mcp_profile:
             # Optional empty request headers are absent from SDK HTTP responses.
@@ -938,6 +959,13 @@ class Runner:
     def start_or_resume(self, *, allow_create=True):
         with self.ledger.lock():
             rows = self.ledger.rows()
+            for existing in rows:
+                if (existing.get("expansion_profile") == "exa-guarded-v1"
+                        and existing.get("exa_expansion") and not existing["exa_expansion"].get("run_id")):
+                    # Parse already retained ACK bytes only. No credential,
+                    # discovery, provider request or deadline extension.
+                    from tools.daily_research import expansion
+                    expansion.execute(expansion.READ, {}, existing, self.ledger, now=self.clock())
             unfinished = [x for x in rows if x["state"] not in TERMINAL]
             if unfinished:
                 return self.observe(unfinished[0])
@@ -967,7 +995,7 @@ class Runner:
             learning = None if agent_history else self.ledger.learning_context(day) if hasattr(self.ledger, "learning_context") else None
             if self.required_history and learning is None and not agent_history:
                 raise Refusal("research_learning_input_required")
-            checked = preflight(self.api, self.config.get("expected_agent_instructions_sha256"), self.config.get("search_provider"), self.config.get("publication_profile"), self.config.get("history_profile"), self.config.get("mcp_profile"))
+            checked = preflight(self.api, self.config.get("expected_agent_instructions_sha256"), self.config.get("search_provider"), self.config.get("publication_profile"), self.config.get("history_profile"), self.config.get("mcp_profile"), self.config.get("expansion_profile"))
             if self.stop_requested():
                 return {"date": day, "state": "stopped_before_create"}
             body = {"agent_id": AGENT, "environment": {"type": "openai_hosted", "container_size": "small",
@@ -1038,6 +1066,8 @@ class Runner:
                 body["metadata"]["mcp_binding_digest"] = checked["mcp_binding_digest"]
                 body["metadata"]["mcp_vault_binding_digest"] = checked["mcp_vault_binding_digest"]
                 body["vault_ids"] = checked["vault_ids"]
+            if checked.get("expansion_profile"):
+                body["metadata"]["expansion_profile"] = checked["expansion_profile"]
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),
                    "run_key": body["metadata"]["run_key"], "metadata": body["metadata"],
@@ -1045,6 +1075,8 @@ class Runner:
                    "environment_id": None, "cleanup_required": True, "cancel_attempted": False,
                    "soft_target_usd": self.config["soft_target_usd"], "budget_is_hard_cap": False, "usage": None,
                    "cost_status": "unknown_pending_billing_reconciliation", "delivery": {}}
+            if checked.get("expansion_profile"):
+                row["expansion_profile"] = checked["expansion_profile"]
             if self.config.get("publication_profile"):
                 row["publication_profile"] = self.config["publication_profile"]
             if checked.get("mcp_profile"):
@@ -1130,7 +1162,7 @@ class Runner:
             if row.get("mcp_profile") and digest(row.get("mcp_binding")) != row["metadata"].get("mcp_binding_digest"):
                 raise Refusal("research_mcp_binding_changed")
             check_mcp_vault_binding(row, session)
-            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"))
+            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"))
             if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
                 raise Refusal("session_search_instructions_mismatch")
             row["reported_container_size"] = session["environment"].get("container_size")
@@ -1490,7 +1522,7 @@ def main(argv=None):
         api = None if local else Provider(os.environ.get("OPENAI_API_KEY", ""))
         runner = Runner(ledger, cfg, api)
         if args.command == "preflight":
-            result = {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider"), cfg.get("publication_profile"), cfg.get("history_profile"), cfg.get("mcp_profile")), "crm_digest": digest(snapshot), "enabled": cfg["enabled"],
+            result = {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider"), cfg.get("publication_profile"), cfg.get("history_profile"), cfg.get("mcp_profile"), cfg.get("expansion_profile")), "crm_digest": digest(snapshot), "enabled": cfg["enabled"],
                       "unresolved_runs": [r["run_key"] for r in ledger.rows() if r.get("cleanup_required")]}
             if context is not None:
                 result.update(snapshot_content_hash=context["content_hash"], knowledge_context_digest=digest(context))

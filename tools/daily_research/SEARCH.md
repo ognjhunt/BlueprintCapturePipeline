@@ -247,3 +247,37 @@ It does not activate tools, amend grants, lengthen deadlines or run a comparison
 Catalog sources: [Exa MCP](https://exa.ai/docs/get-started/exa-mcp),
 [Parallel Task MCP](https://docs.parallel.ai/integrations/mcp/task-mcp).
 Find All and native authentication/results require separate actual evidence.
+
+## Guarded optional daily Exa expansion
+
+`expansion_profile=exa-guarded-v1` exposes only
+`blueprint_start_exa_expansion` and `blueprint_read_exa_expansion` through the
+existing daily function boundary. It cannot be combined with the unrestricted
+paid research MCP profile. The lead chooses a US physical-task hypothesis after
+initial discovery and before the original final artifact/QA; returned findings
+remain unqualified, use the same source checks and exact site/task deduplication,
+and enter the existing company publication and learning path.
+
+A start requires the existing worker's `EXA_API_KEY`, an authenticated current
+Exa `agent_run` schema supporting numeric `budget.maxCostDollars`, and a trusted
+company control `exa_expansion_allocation` snapshot with schema
+`blueprint.research-expansion-allocation.v1`. That snapshot binds the run key,
+existing authority, evidence reference, checked/expiry times, verified all-in
+usage, committed/reserved/remaining integer microdollars and exactly the shared
+$5 research limit. The host rechecks the allocation before submission. Native
+Exa caps are not a claim that OpenAI/hosting or the daily total is hard-capped.
+The existing soft-target authority alone cannot produce this snapshot; unknown
+headroom means skip, never zero. No key, accounting writer or verified live tool
+schema is created by selecting the profile.
+
+The worker consumes one durable whole-run claim before the native POST, retains
+complete private MCP receipts and provider records in the existing company
+ledger, and permits subsequent reads of only the acknowledged original ID.
+Unknown submissions retain their claim/reservation and prevent another optional
+Exa start; they do not discard evidence or stop ordinary research. The original
+research deadline is preserved; no extension, enrichment, alternate provider,
+`previousRunId`, automatic POST retry, outreach or provider deletion is allowed.
+Saved OpenAI OAuth credentials remain in their URL-bound vault and are never
+extracted into the worker. The MCP transport uses the documented `x-api-key`
+header at `https://mcp.exa.ai/mcp?tools=agent_run`, with credentials excluded from
+company receipts and logs.

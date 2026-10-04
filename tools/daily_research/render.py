@@ -109,7 +109,7 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
                         raise Refusal("company_history_binding_required")
                 elif not day or ledger.learning_context(day, allow_create=False) is None:
                     raise Refusal("research_learning_input_required")
-        return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider"), cfg.get("publication_profile"), cfg.get("history_profile"), cfg.get("mcp_profile")), "enabled": cfg["enabled"],
+        return {**preflight(api, cfg.get("expected_agent_instructions_sha256"), cfg.get("search_provider"), cfg.get("publication_profile"), cfg.get("history_profile"), cfg.get("mcp_profile"), cfg.get("expansion_profile")), "enabled": cfg["enabled"],
                 "unresolved_runs": [row["run_key"] for row in ledger.rows() if row.get("cleanup_required")]}
     if command in {"review", "receipt", "record-cleanup"}:
         if not day or decision is None:
@@ -413,6 +413,14 @@ def export_snapshot(bridge, day, destination):
                 or call["request"].get("turn_id") not in expected_turns
                 or event.get("type") != "agent.session.input.tool_result"):
             raise Refusal("research_tool_result_digest_mismatch")
+    exa_refs = list(row.get("exa_transport_receipts", [])) + [row.get("exa_expansion", {}).get(key)
+        for key in ("start_receipt", "last_receipt", "terminal_receipt")]
+    for receipt in filter(None, exa_refs):
+        filename = receipt.get("file", "")
+        raw = files.get(filename[len(day) + 1:-5])
+        if (not filename.startswith(day + "-exa-") or not filename.endswith(".json") or raw is None
+                or hashlib.sha256(raw).hexdigest() != receipt.get("sha256") or len(raw) != receipt.get("bytes")):
+            raise Refusal("expansion_export_binding_invalid")
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     save_bytes(destination / "status.json", canonical(row).encode())
