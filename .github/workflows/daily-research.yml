@@ -23,6 +23,7 @@ on:
       - "tests/test_daily_research_exa_transport.py"
       - "tests/test_daily_research_operator*.py"
       - "tests/daily_research_*.test.mjs"
+      - "tests/daily_contact_research.test.mjs"
       - "tests/fixtures/daily_research/**"
       - ".github/workflows/daily-research.yml"
   push:
@@ -48,6 +49,7 @@ on:
       - "tests/test_daily_research_exa_transport.py"
       - "tests/test_daily_research_operator*.py"
       - "tests/daily_research_*.test.mjs"
+      - "tests/daily_contact_research.test.mjs"
       - "tests/fixtures/daily_research/**"
       - ".github/workflows/daily-research.yml"
 

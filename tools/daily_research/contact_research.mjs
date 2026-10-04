@@ -39,6 +39,8 @@ export function publicContactResearchTask(t) {
 }
 
 export async function contactResearchContext(store,day) {
+  // Isolated canary adapters must never read the production communications queue.
+  if(store.control?.path!==ROOT) return null;
   if(!dateOK(day)) fail('contact_research_date_invalid');
   const ref=store.db.doc(`${ROOT}/contactResearchRuns/${day}`);
   return store.transaction(async tx=>{
@@ -61,6 +63,7 @@ export async function contactResearchContext(store,day) {
 /** Called inside the existing one-use daily create transaction, before POST. */
 export async function claimContactResearch(store,tx,day,metadata) {
   if(!metadata.contact_research_digest) return;
+  if(store.control?.path!==ROOT) fail('contact_research_scope_changed');
   const manifest=await tx.get(store.db.doc(`${ROOT}/contactResearchRuns/${day}`)),context=manifest.data()?.context;
   if(!context||manifest.data().inputDigest!==metadata.contact_research_digest
     ||pythonDigest(context)!==metadata.contact_research_digest||context.date!==day) fail('contact_research_input_changed');
@@ -152,6 +155,7 @@ async function nativeSources(store,row,task) {
 /** Read-only verification of saved native bytes, not mutable summary assertions.
  * Only cleanup fields may change after the original completed evidence blob. */
 export async function verifyContactResearchDiscovery(store,task,proof) {
+  if(store.control?.path!==ROOT) fail('contact_research_scope_changed');
   if(!publicContactResearchTask(task)||proof?.requestId!==task.requestId||proof.sourceDigest!==task.sourceDigest
     ||proof.version!=='blueprint.contact-research-discovery.v1'||!dateOK(proof.run?.date)||!hashOK(proof.run?.rowBlob)) fail('contact_research_source_changed');
   const ref=store.db.doc(`${ROOT}/runs/${proof.run.date}`),current=(await ref.get()).data();
@@ -171,6 +175,7 @@ export async function verifyContactResearchDiscovery(store,task,proof) {
 }
 
 export async function finishContactResearch(store,row,rowBlob) {
+  if(store.control?.path!==ROOT) return;
   if(!row.metadata?.contact_research_digest||!['completed','failed','cancelled'].includes(row.state)) return;
   const claims=await store.db.collection(CONTACT).where('nativeRunKey','==',row.run_key).limit(4).get();
   const running=claims.docs.filter(s=>s.data()?.state==='running'&&s.data()?.inputDigest===row.metadata.contact_research_digest);

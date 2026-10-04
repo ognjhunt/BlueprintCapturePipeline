@@ -63,6 +63,19 @@ async function completed(f) {
   const blob=f.saveRow();await finishContactResearch(f.store,f.row,blob);
   return f.records.get(`${CONTACT}/${f.task.requestId}`).discovery;
 }
+test('isolated canary runs never access or claim the production contact queue',async()=>{
+  const f=fixture();
+  f.store.control={path:`${ROOT}/canaries/isolated-proof`};
+  f.store.db={doc(){throw Error('unexpected production doc');},collection(){throw Error('unexpected production queue');}};
+  f.store.transaction=async()=>{throw Error('unexpected production transaction');};
+  assert.equal(await contactResearchContext(f.store,DAY),null);
+  await claimContactResearch(f.store,f.tx,DAY,{});
+  await assert.rejects(()=>claimContactResearch(f.store,f.tx,DAY,f.metadata),/contact_research_scope_changed/);
+  assert.equal((await finishContactResearchSafely(f.store,f.row,'a'.repeat(64))).state,'observed');
+  await assert.rejects(()=>verifyContactResearchDiscovery(f.store,f.task,{}),/contact_research_scope_changed/);
+  assert.equal(f.records.get(`${CONTACT}/${f.task.requestId}`).state,'running');
+  assert.equal(f.records.get(`${CONTACT}/${f.task.requestId}`).attempts,1);
+});
 test('Unicode context hashes match the actual Python canonical encoder; claim consumes once',async()=>{
   const f=fixture({unicode:true});
   const oracle=spawnSync('python3',['-c','import sys,json,hashlib;print(hashlib.sha256(json.dumps(json.load(sys.stdin),sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest())'],{input:JSON.stringify(f.context),encoding:'utf8'});
