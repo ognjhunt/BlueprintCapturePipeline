@@ -133,3 +133,53 @@ automatic qualification, extra paid runs or changes outside the original eight
 workstreams; AWS remains skipped. Never claim a proposal has been applied without
 its release and live readback evidence. Do not modify terminal artifacts to add
 proposals or start another paid turn just to produce them.
+
+## Execution and output lessons from the October 4 run
+
+Keep the initial operator/site/task discovery pass separate from deeper robot
+capability, service-geography and formal-candidate assessment. Retain supported
+discoveries before choosing which evidence questions deserve deeper work. Missing
+robot inputs limit assessment, not continued site discovery. Use useful unresolved
+branches from retained history when available; do not repeat completed searches
+without a new evidence question. When an in-scope branch becomes repetitive or
+inaccessible, move to another promising physical-task branch within the existing
+US multisector scope and admitted envelope. No fixed sector mix or count applies.
+
+An employer ATS shell or application interface is an access limitation, not a
+read job description. Pivot to an accessible employer posting or operator
+facility/task page using existing authorized tools. Preserve supported duties,
+requisition identity, dates and unresolved facility joins. Do not infer current
+hiring, manual work or robot fit from an application link or search recency.
+
+Make useful discoveries visible in the existing findings and coverage fields:
+distinguish supported site/task findings, unresolved search leads and formal
+unqualified proposals, with the next evidence question for each useful unresolved
+branch. A formal-proposal count is not the total discovery yield, market size or
+number of qualified buyers. Preserve exact-site/task deduplication and unknown
+novelty when history is incomplete. Do not add incompatible output fields.
+
+Before the final artifact write, check the supplied contract against the JSON
+you will submit. In the current v3 contract, findings, blockers and
+proposed_next_actions contain nonempty strings, not objects; each string is at
+most 2000 characters and each list at most 20 entries. Use the contract's actual
+coverage completion enum: coverage_complete, budget_interrupted,
+time_interrupted or access_blocked. Unresolved promising branches cannot accompany
+coverage_complete. Follow the supplied contract if a later version differs.
+
+For live evidence, copy the retained source read's checked_at timestamp verbatim
+into source_checked_at and, when revalidation occurred, revalidated_at; do not
+replace a precise timestamp with the run date or current time. Derive checked_date
+from that timestamp in America/Chicago. Snapshot citations retain their original
+source dates and supplied bindings. Apply the same retained timestamp rule to
+live knowledge-proposal evidence. Validate existing strings, dates and enums
+without another research turn, fabricated evidence or terminal-artifact edits.
+
+This prospective instruction refinement is proposal
+BP-RESEARCH-IMPROVE-20261004-DISCOVERY-OUTPUT, supporting ADP-010 partner selection
+at the partner-phase day-7 gate. The original terminal run, coverage, findings and
+two output-repair turns are retained at
+`gs://blueprint-8c1ca.appspot.com/operations/research/improvements/2026-10-04/BP-RESEARCH-IMPROVE-20261004-DISCOVERY-OUTPUT/ec940eb5e1950693c99227678ec88abe28d4ecea5ba4a3135dffb2483b20a32e/proposal-and-original-evidence.json`
+(generation 1791122498870579; SHA-256 ec940eb5e1950693c99227678ec88abe28d4ecea5ba4a3135dffb2483b20a32e).
+No improved yield or fewer repair turns is claimed before the next real run.
+Existing budgets, unknown-usage holds, Exa admission, access, expiry, scheduling,
+qualification and draft-only/no-send direction remain unchanged.
