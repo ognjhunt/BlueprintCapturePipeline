@@ -274,3 +274,116 @@ def test_elapsed_operation_deadline_retains_returned_bytes_before_refusing_ack(m
     with pytest.raises(ExaTransportError, match="exa_mcp_request_timeout") as error:
         transport.discover()
     assert len(wire.calls) == 1 and error.value.receipt["response_complete"]
+
+
+@pytest.mark.parametrize("mode", ["json", "sse"])
+def test_retained_ack_recovers_after_deadline_with_no_credential_http_or_schema(mode, monkeypatch):
+    from tools.daily_research import exa_transport as module
+
+    wire, saved = Wire(mode=mode), []
+    transport = ExaTransport(request_io=wire, receipt_sink=saved.append)
+    transport.discover()
+    current = [0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: current[0])
+    original_io = wire.__call__
+
+    def delayed(*args):
+        response = original_io(*args)
+        current[0] = 30
+        return response
+
+    transport.request_io = delayed
+    with pytest.raises(ExaTransportError, match="exa_mcp_request_timeout"):
+        transport.start(REQUEST)
+    ack = saved[-1]
+    assert ack["operation"] == "tools/call" and ack["response_complete"]
+    monkeypatch.delenv("EXA_API_KEY")
+    monkeypatch.setattr(module, "_http_post", lambda *a, **k: pytest.fail("No recovery HTTP"))
+    monkeypatch.setattr(module.ExaTransport, "discover", lambda *a: pytest.fail("No recovery schema query"))
+    monkeypatch.setattr(module.time, "monotonic", lambda: pytest.fail("Recovery has no active deadline"))
+    assert module.reconcile_start_ack(ack, REQUEST) == RECORD
+    assert len(wire.native_calls) == 1
+
+
+@pytest.fixture
+def retained_ack():
+    wire = Wire()
+    transport = ExaTransport(request_io=wire)
+    transport.start(REQUEST)
+    return transport.last_receipt
+
+
+@pytest.mark.parametrize("change,code", [
+    ({"response_sha256": "0" * 64}, "exa_mcp_retained_ack_digest_mismatch"),
+    ({"request_sha256": "0" * 64}, "exa_mcp_retained_ack_digest_mismatch"),
+    ({"response_body_base64": "not base64"}, "exa_mcp_retained_ack_bytes_invalid"),
+    ({"response_bytes": 1}, "exa_mcp_retained_ack_length_mismatch"),
+    ({"response_complete": False}, "exa_mcp_retained_ack_envelope_invalid"),
+    ({"http_status": 202}, "exa_mcp_retained_ack_envelope_invalid"),
+    ({"operation": "tools/list"}, "exa_mcp_retained_ack_envelope_invalid"),
+    ({"endpoint": "https://another.example/mcp"}, "exa_mcp_retained_ack_envelope_invalid"),
+    ({"request_id": 7}, "exa_mcp_retained_ack_request_binding_mismatch"),
+])
+def test_retained_ack_hash_length_completeness_and_rpc_binding_are_required(retained_ack, change, code):
+    from tools.daily_research.exa_transport import reconcile_start_ack
+
+    retained_ack.update(change)
+    with pytest.raises(ExaTransportError, match=code):
+        reconcile_start_ack(retained_ack, REQUEST)
+
+
+@pytest.mark.parametrize("expected", [
+    {**REQUEST, "query": "Different frozen query"},
+    {**REQUEST, "budget": {"maxCostDollars": 2}},
+    {**REQUEST, "runId": RECORD["id"]},
+    {**REQUEST, "previousRunId": RECORD["id"]},
+])
+def test_retained_ack_cannot_bind_another_start_or_read(retained_ack, expected):
+    from tools.daily_research.exa_transport import reconcile_start_ack
+
+    with pytest.raises(ExaTransportError, match="exa_mcp_retained_ack_request_binding_mismatch"):
+        reconcile_start_ack(retained_ack, expected)
+
+
+def test_retained_ack_known_failed_record_is_recovered_unchanged():
+    from tools.daily_research.exa_transport import reconcile_start_ack
+
+    failed = {**RECORD, "status": "failed", "error": "synthetic", "costDollars": None}
+    wire = Wire()
+    wire.tool_result = {"isError": True, "structuredContent": failed}
+    transport = ExaTransport(request_io=wire)
+    transport.start(REQUEST)
+    assert reconcile_start_ack(transport.last_receipt, REQUEST) == failed
+
+
+@pytest.mark.parametrize("target", ["request", "response", "status"])
+def test_retained_ack_valid_digests_cannot_hide_changed_arguments_response_id_or_missing_status(retained_ack, target):
+    from tools.daily_research.exa_transport import reconcile_start_ack
+
+    side = "request" if target == "request" else "response"
+    raw = json.loads(base64.b64decode(retained_ack[side + "_body_base64"]))
+    if target == "request":
+        raw["params"]["arguments"]["runId"] = RECORD["id"]
+        code = "exa_mcp_retained_ack_request_binding_mismatch"
+    elif target == "response":
+        raw["id"] += 1
+        code = "exa_mcp_response_id_mismatch"
+    else:
+        native = json.loads(raw["result"]["content"][0]["text"])
+        native.pop("status")
+        raw["result"]["content"][0]["text"] = json.dumps(native)
+        code = "exa_mcp_retained_ack_status_invalid"
+    encoded = json.dumps(raw).encode()
+    retained_ack[side + "_body_base64"] = base64.b64encode(encoded).decode()
+    retained_ack[side + "_sha256"] = hashlib.sha256(encoded).hexdigest()
+    if side == "response":
+        retained_ack["response_bytes"] = len(encoded)
+    with pytest.raises(ExaTransportError, match=code):
+        reconcile_start_ack(retained_ack, REQUEST)
+
+
+def test_retained_ack_parser_never_constructs_transport(retained_ack, monkeypatch):
+    from tools.daily_research.exa_transport import reconcile_start_ack
+
+    monkeypatch.setattr(ExaTransport, "__init__", lambda *a, **k: pytest.fail("No transport construction"))
+    assert reconcile_start_ack(retained_ack, REQUEST) == RECORD

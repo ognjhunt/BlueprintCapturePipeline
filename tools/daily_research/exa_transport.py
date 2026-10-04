@@ -67,7 +67,93 @@ def _http_post(url, headers, body, timeout, max_bytes):
         connection.close()
 
 
-class ExaTransport:
+class _EvidenceParser:
+    """Pure shared JSON/SSE/native parsing, with no transport or credentials."""
+
+    def __init__(self, receipt=None):
+        self.last_receipt = copy.deepcopy(receipt)
+
+    def _fail(self, code):
+        raise ExaTransportError(code, self.last_receipt)
+
+    def _messages(self, raw, content_type):
+        try:
+            text = raw.decode("utf-8-sig")
+            media = content_type.split(";", 1)[0].strip().lower()
+            if media == "application/json":
+                return [_json(text)]
+            if media != "text/event-stream":
+                self._fail("exa_mcp_content_type_invalid")
+            messages, data = [], []
+            # SSE data dispatch requires a blank line; retain incomplete streams.
+            for line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+                if not line:
+                    if data:
+                        messages.append(_json("\n".join(data)))
+                        data = []
+                elif line.startswith("data:"):
+                    value = line[5:]
+                    data.append(value[1:] if value.startswith(" ") else value)
+            if data:
+                self._fail("exa_mcp_sse_incomplete")
+            return messages
+        except ExaTransportError:
+            raise
+        except (ValueError, UnicodeError, RecursionError):
+            self._fail("exa_mcp_json_invalid")
+
+    def _response(self, raw, content_type, identifier):
+        matched = []
+        for response in self._messages(raw, content_type):
+            if not isinstance(response, dict) or response.get("jsonrpc") != "2.0":
+                self._fail("exa_mcp_protocol_invalid")
+            if "id" not in response and isinstance(response.get("method"), str):
+                continue  # Notifications/progress are retained in the complete raw stream.
+            if type(response.get("id")) is not int or response["id"] != identifier:
+                self._fail("exa_mcp_response_id_mismatch")
+            matched.append(response)
+        if len(matched) != 1:
+            self._fail("exa_mcp_response_ambiguous")
+        response = matched[0]
+        if "error" in response:
+            self._fail("exa_mcp_rpc_error")
+        if not isinstance(response.get("result"), dict):
+            self._fail("exa_mcp_result_invalid")
+        return response["result"]
+
+    def _record(self, result, expected_id=None):
+        flagged_error = result.get("isError") is True
+        if "isError" in result and type(result["isError"]) is not bool:
+            self._fail("exa_mcp_tool_result_invalid")
+        records = []
+        if "structuredContent" in result:
+            if not isinstance(result["structuredContent"], dict):
+                self._fail("exa_mcp_provider_record_invalid")
+            records.append(result["structuredContent"])
+        content = result.get("content", [])
+        if not isinstance(content, list):
+            self._fail("exa_mcp_tool_result_invalid")
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                try:
+                    candidate = _json(block["text"])
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(candidate, dict):
+                    records.append(candidate)
+        if not records or any(record != records[0] for record in records[1:]):
+            self._fail("exa_mcp_tool_error" if flagged_error else "exa_mcp_provider_record_ambiguous")
+        record = records[0]
+        if flagged_error and record.get("status") != "failed":
+            self._fail("exa_mcp_tool_error")
+        if not isinstance(record.get("id"), str) or not re.fullmatch(r"agent_run_[A-Za-z0-9_-]+", record["id"]):
+            self._fail("exa_mcp_provider_id_missing")
+        if expected_id is not None and record["id"] != expected_id:
+            self._fail("exa_mcp_provider_id_mismatch")
+        return copy.deepcopy(record)
+
+
+class ExaTransport(_EvidenceParser):
     """request_io(url, headers, body, timeout, max_bytes) returns status/headers/bytes.
 
     Each public operation has a bounded wall-time allowance (also bounded by the
@@ -90,8 +176,6 @@ class ExaTransport:
         receipts, self.receipts = self.receipts, []
         return copy.deepcopy(receipts)
 
-    def _fail(self, code):
-        raise ExaTransportError(code, self.last_receipt)
 
     def _retain(self, record):
         self.last_receipt = copy.deepcopy(record)
@@ -143,31 +227,6 @@ class ExaTransport:
             self._fail("exa_mcp_http_status_" + str(status))
         return raw, response_headers, status
 
-    def _messages(self, raw, content_type):
-        try:
-            text = raw.decode("utf-8-sig")
-            media = content_type.split(";", 1)[0].strip().lower()
-            if media == "application/json":
-                return [_json(text)]
-            if media != "text/event-stream":
-                self._fail("exa_mcp_content_type_invalid")
-            messages, data = [], []
-            # SSE data dispatch requires a blank line; retain incomplete streams.
-            for line in text.replace("\r\n", "\n").replace("\r", "\n").splitlines():
-                if not line:
-                    if data:
-                        messages.append(_json("\n".join(data)))
-                        data = []
-                elif line.startswith("data:"):
-                    value = line[5:]
-                    data.append(value[1:] if value.startswith(" ") else value)
-            if data:
-                self._fail("exa_mcp_sse_incomplete")
-            return messages
-        except ExaTransportError:
-            raise
-        except (ValueError, UnicodeError, RecursionError):
-            self._fail("exa_mcp_json_invalid")
 
     def _rpc(self, method, params, deadline):
         self._sequence += 1
@@ -176,23 +235,8 @@ class ExaTransport:
         raw, headers, status = self._post(message, deadline, method)
         if status != 200:
             self._fail("exa_mcp_response_missing")
-        matched = []
-        for response in self._messages(raw, headers.get("content-type", "")):
-            if not isinstance(response, dict) or response.get("jsonrpc") != "2.0":
-                self._fail("exa_mcp_protocol_invalid")
-            if "id" not in response and isinstance(response.get("method"), str):
-                continue  # Notifications/progress are retained in the complete raw stream.
-            if type(response.get("id")) is not int or response["id"] != identifier:
-                self._fail("exa_mcp_response_id_mismatch")
-            matched.append(response)
-        if len(matched) != 1:
-            self._fail("exa_mcp_response_ambiguous")
-        response = matched[0]
-        if "error" in response:
-            self._fail("exa_mcp_rpc_error")
-        if not isinstance(response.get("result"), dict):
-            self._fail("exa_mcp_result_invalid")
-        return response["result"], headers
+        return self._response(raw, headers.get("content-type", ""), identifier), headers
+
 
     def _discover(self, deadline):
         if self._schema is not None:
@@ -222,36 +266,6 @@ class ExaTransport:
     def discover(self):
         return self._discover(time.monotonic() + self.timeout)
 
-    def _record(self, result, expected_id=None):
-        flagged_error = result.get("isError") is True
-        if "isError" in result and type(result["isError"]) is not bool:
-            self._fail("exa_mcp_tool_result_invalid")
-        records = []
-        if "structuredContent" in result:
-            if not isinstance(result["structuredContent"], dict):
-                self._fail("exa_mcp_provider_record_invalid")
-            records.append(result["structuredContent"])
-        content = result.get("content", [])
-        if not isinstance(content, list):
-            self._fail("exa_mcp_tool_result_invalid")
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
-                try:
-                    candidate = _json(block["text"])
-                except (ValueError, RecursionError):
-                    continue
-                if isinstance(candidate, dict):
-                    records.append(candidate)
-        if not records or any(record != records[0] for record in records[1:]):
-            self._fail("exa_mcp_tool_error" if flagged_error else "exa_mcp_provider_record_ambiguous")
-        record = records[0]
-        if flagged_error and record.get("status") != "failed":
-            self._fail("exa_mcp_tool_error")
-        if not isinstance(record.get("id"), str) or not re.fullmatch(r"agent_run_[A-Za-z0-9_-]+", record["id"]):
-            self._fail("exa_mcp_provider_id_missing")
-        if expected_id is not None and record["id"] != expected_id:
-            self._fail("exa_mcp_provider_id_mismatch")
-        return copy.deepcopy(record)
 
     def start(self, request):
         from tools.daily_research.expansion import _cap_supported
@@ -281,3 +295,58 @@ class ExaTransport:
             self._fail("exa_mcp_original_read_schema_missing")
         result, _ = self._rpc("tools/call", {"name": "agent_run", "arguments": {"runId": original_run_id}}, deadline)
         return self._record(result, original_run_id)
+
+
+def reconcile_start_ack(receipt, expected_request):
+    """Recover a company-retained original ACK; no clock, credentials or HTTP.
+
+    A prior wall-time/receipt-pointer error does not invalidate complete retained
+    bytes. Hash, exact start intent and RPC binding must all agree before an ID
+    is returned. Incomplete bodies and generic tool errors remain unresolved.
+    """
+    parser = _EvidenceParser(receipt)
+    if (not isinstance(receipt, dict) or receipt.get("endpoint") != ENDPOINT
+            or receipt.get("operation") != "tools/call" or receipt.get("request_attempted") is not True
+            or receipt.get("response_complete") is not True or type(receipt.get("http_status")) is not int
+            or receipt["http_status"] != 200 or not isinstance(receipt.get("content_type"), str)):
+        parser._fail("exa_mcp_retained_ack_envelope_invalid")
+
+    def decode(field, digest_field):
+        encoded, digest = receipt.get(field), receipt.get(digest_field)
+        if (not isinstance(encoded, str) or len(encoded) > ((MAX_BYTES + 2) // 3) * 4
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+            parser._fail("exa_mcp_retained_ack_bytes_invalid")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, UnicodeError):
+            parser._fail("exa_mcp_retained_ack_bytes_invalid")
+        if len(raw) > MAX_BYTES or hashlib.sha256(raw).hexdigest() != digest:
+            parser._fail("exa_mcp_retained_ack_digest_mismatch")
+        return raw
+
+    request_raw = decode("request_body_base64", "request_sha256")
+    response_raw = decode("response_body_base64", "response_sha256")
+    if type(receipt.get("response_bytes")) is not int or receipt["response_bytes"] != len(response_raw):
+        parser._fail("exa_mcp_retained_ack_length_mismatch")
+    try:
+        request = _json(request_raw)
+    except (ValueError, UnicodeError, RecursionError):
+        parser._fail("exa_mcp_retained_ack_request_invalid")
+    if (not isinstance(expected_request, dict) or set(expected_request) != {"query", "budget"}
+            or not isinstance(expected_request.get("query"), str) or not expected_request["query"].strip()
+            or not isinstance(expected_request.get("budget"), dict)
+            or set(expected_request["budget"]) != {"maxCostDollars"}
+            or type(expected_request["budget"]["maxCostDollars"]) not in (int, float)
+            or not math.isfinite(expected_request["budget"]["maxCostDollars"])
+            or expected_request["budget"]["maxCostDollars"] <= 0
+            or not isinstance(request, dict) or set(request) != {"jsonrpc", "id", "method", "params"}
+            or request["jsonrpc"] != "2.0" or request["method"] != "tools/call"
+            or type(request["id"]) is not int or type(receipt.get("request_id")) is not int
+            or request["id"] != receipt["request_id"]
+            or request["params"] != {"name": "agent_run", "arguments": expected_request}):
+        parser._fail("exa_mcp_retained_ack_request_binding_mismatch")
+    result = parser._response(response_raw, receipt["content_type"], request["id"])
+    record = parser._record(result)
+    if not isinstance(record.get("status"), str) or record["status"] not in {"running", "completed", "failed", "cancelled"}:
+        parser._fail("exa_mcp_retained_ack_status_invalid")
+    return record
