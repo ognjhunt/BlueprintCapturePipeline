@@ -1,5 +1,6 @@
 """Optional Render store. Existing Firebase Admin is used through a private pipe."""
 import base64
+import hashlib
 import json
 import os
 import re
@@ -124,6 +125,54 @@ class FencedProvider(Provider):
         self.ledger.bridge.call("create_check", day=payload["metadata"]["run_key"].split(":", 1)[1], metadata=payload["metadata"])
         return super().create(payload)
 
+    def expansion_context(self, row, name):
+        from tools.daily_research import expansion
+        from tools.daily_research.exa_transport import ExaTransport, ExaTransportError
+        self.tool_admit(row, "research")
+        if name == expansion.START and any(previous.get("exa_expansion")
+                and not previous["exa_expansion"].get("terminal_receipt") for previous in self.ledger.rows()):
+            return {"unavailable_reason": "expansion_original_run_or_ack_pending_no_new_start"}
+        control = self.ledger.bridge.call("control")
+        allocation = control.get("exa_expansion_allocation")
+        if name == expansion.START and not isinstance(allocation, dict):
+            return {"unavailable_reason": "expansion_remaining_all_in_allocation_unverified"}
+        key = os.environ.get("EXA_API_KEY")
+        if not key:
+            return {"unavailable_reason": "expansion_worker_exa_binding_missing"}
+
+        def retain(receipt):
+            from tools.daily_research.runner import digest
+            raw = (canonical(receipt) + "\n").encode()
+            receipt_hash = digest(receipt)
+            filename = row["date"] + "-exa-http-" + receipt_hash + ".json"
+            try:
+                existing = self.ledger.read_bytes(filename)
+            except FileNotFoundError:
+                self.ledger.write_bytes(filename, raw)
+            else:
+                if existing != raw:
+                    raise Refusal("expansion_transport_receipt_conflict")
+            refs = row.setdefault("exa_transport_receipts", [])
+            ref = {"file": filename, "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+            if ref not in refs:
+                refs.append(ref)
+                self.ledger.put(row)
+
+        transport = ExaTransport(receipt_sink=retain)
+        try:
+            schema = transport.discover()
+        except ExaTransportError:
+            return {"unavailable_reason": "expansion_authenticated_catalog_unavailable"}
+        return {"transport": transport, "allocation": allocation, "tool_schema": schema}
+
+    def expansion_admit(self, row, phase):
+        self.tool_admit(row, phase)
+        claim = row.get("exa_expansion")
+        if claim and not claim.get("run_id"):
+            control = self.ledger.bridge.call("control")
+            if control.get("exa_expansion_allocation") != claim["intent"]["allocation"]:
+                raise Refusal("expansion_allocation_changed_before_submission")
+
     def cancel(self, session_id, run_key):
         self.ledger.bridge.call("assert_lease")
         return super().cancel(session_id, run_key)
@@ -152,6 +201,7 @@ class FencedProvider(Provider):
         control = self.ledger.bridge.call("control")
         if (control.get("enabled") is not True or control.get("config", {}).get("search_provider") != row.get("search_provider")
                 or row.get("mcp_profile") and control.get("config", {}).get("mcp_profile") != row["mcp_profile"]
+                or row.get("expansion_profile") and control.get("config", {}).get("expansion_profile") != row["expansion_profile"]
                 or phase in {"qa", "repair", "publication"} and control.get("workflow", {}).get("enabled") is not True):
             raise Refusal("research_tool_disabled_or_profile_changed")
         if (

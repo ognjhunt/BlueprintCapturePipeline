@@ -38,7 +38,7 @@ const claimUpdate=(run,row,name,digest,batches=null)=>{
     publication_source_bindings:{...run.publication_source_bindings,[name]:sourceBinding(d)},
     ...(batches?{publication_batches:{...run.publication_batches,[name]:batches}}:{})};
 };
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
@@ -176,6 +176,18 @@ export class Store {
       }
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      if ((row.expansion_profile || null)!==(row.metadata?.expansion_profile || null)
+          || row.expansion_profile && row.expansion_profile!=='exa-guarded-v1') refuse('research_expansion_profile_invalid');
+      const exa=row.exa_expansion;
+      if(exa && (row.expansion_profile!=='exa-guarded-v1' || exa.run_key!==row.run_key || exa.date!==row.date
+          || typeof exa.intent_json!=='string' || sha(Buffer.from(exa.intent_json))!==exa.intent_sha256
+          || valueHash(JSON.parse(exa.intent_json))!==valueHash(exa.intent))) refuse('expansion_intent_binding_changed');
+      if(prior.data()?.exa_expansion_intent_digest && prior.data().exa_expansion_intent_digest!==exa?.intent_sha256)
+        refuse('expansion_start_claim_already_consumed');
+      if(prior.data()?.exa_expansion_run_id && prior.data().exa_expansion_run_id!==exa?.run_id)
+        refuse('expansion_original_id_changed');
+      if(prior.data()?.exa_expansion_terminal_receipt && !same(prior.data().exa_expansion_terminal_receipt,exa?.terminal_receipt))
+        refuse('expansion_terminal_receipt_changed');
       if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
         refuse('research_mcp_profile_changed');
       if(row.mcp_profile && (!['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'].includes(row.mcp_profile)
@@ -235,6 +247,10 @@ export class Store {
         if(expected && expected!==deliveryBinding(d)) refuse('publication_delivery_already_bound');
       }
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
+        expansion_profile:row.expansion_profile || null,
+        exa_expansion_intent_digest:exa?.intent_sha256 || null,
+        exa_expansion_run_id:exa?.run_id || null,
+        exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
         cleanup_binding_digest: cleanupBinding,
         cleanup_archive: prior.data()?.cleanup_archive || null,
@@ -304,7 +320,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-publication-input.json') || name.endsWith('-publication-evidence.json') || name.endsWith('-recovery.json') || /-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-publication-input.json') || name.endsWith('-publication-evidence.json') || name.endsWith('-recovery.json') || /-exa-|-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -346,6 +362,15 @@ export class Store {
     }
     if (files.artifact && row.raw_output_digest !== sha(Buffer.from(files.artifact, 'base64')))
       refuse('artifact_not_downloaded_or_digest_mismatch');
+    const exaRefs=[...(row.exa_transport_receipts || []),
+      ...['start_receipt','last_receipt','terminal_receipt'].map(key=>row.exa_expansion?.[key]).filter(Boolean)];
+    for(const receipt of exaRefs) {
+      if(typeof receipt.file!=='string' || !receipt.file.startsWith(`${day}-exa-`) || !receipt.file.endsWith('.json'))
+        refuse('expansion_export_binding_invalid');
+      const encoded=await this.fileGet(receipt.file),raw=Buffer.from(encoded,'base64');
+      if(sha(raw)!==receipt.sha256 || raw.length!==receipt.bytes) refuse('expansion_receipt_digest_mismatch');
+      files[receipt.file.slice(day.length+1,-5)]=encoded;
+    }
     if (row.qa?.input_file) {
       const input = files['qa-input'] && Buffer.from(files['qa-input'], 'base64');
       if (row.qa.input_file !== `${day}-qa-input.json` || !input || input.at(-1) !== 10
@@ -406,6 +431,10 @@ export class Store {
         refuse('firestore_publication_restore_manifest_required');
       tx.set(ref, {date: row.date, blob: hash, metadata: row.metadata, state: row.state, cleanup_required: row.cleanup_required,
         create_attempt_claimed: true, session_id: row.session_id || null, turn_id: row.turn_id || null,
+        expansion_profile:row.expansion_profile || null,
+        exa_expansion_intent_digest:row.exa_expansion?.intent_sha256 || null,
+        exa_expansion_run_id:row.exa_expansion?.run_id || null,
+        exa_expansion_terminal_receipt:row.exa_expansion?.terminal_receipt || null,
         environment_id: row.environment_id || null});
       this.projectWorkItem(tx, row, hash);
       return true;
@@ -419,6 +448,10 @@ export class Store {
       if (control.enabled !== true || !snap.exists || snap.data().state !== 'creating' || snap.data().create_attempt_claimed
           || !same(snap.data().metadata, metadata)) refuse('firestore_create_not_admitted');
       this.budgetGate(control, snap.data());
+      if(metadata.expansion_profile && (metadata.expansion_profile!=='exa-guarded-v1'
+          || control.config?.expansion_profile!==metadata.expansion_profile
+          || control.config?.mcp_profile==='owner-delegated-research-mcp-v1'))
+        refuse('research_expansion_profile_changed');
       if(metadata.mcp_binding_digest && control.config?.mcp_profile!==(snap.data().mcp_profile || 'owner-readonly-mcp-v1'))
         refuse('research_mcp_profile_changed');
       if(snap.data().history_profile==='agent-history-v1') {

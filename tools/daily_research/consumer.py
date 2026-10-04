@@ -331,7 +331,7 @@ class Consumer:
             if self.clock() >= deadline:
                 raise Refusal("agent_qa_total_runtime_exhausted")
             if row.get("mcp_profile") is None:
-                preflight(self.api, self.config.get("expected_agent_instructions_sha256"), row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"))
+                preflight(self.api, self.config.get("expected_agent_instructions_sha256"), row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), None, row.get("expansion_profile"))
             # A charged MCP session keeps its original owner configuration.
             # The session/create-payload checks below verify that frozen scope;
             # later saved-agent changes apply only to a newly admitted create.
@@ -641,9 +641,9 @@ class Consumer:
             raise Refusal("research_mcp_binding_changed")
         check_mcp_vault_binding(row, session)
         if row.get("mcp_profile") and row["create_payload"]["agent"]["tools"] != (
-                search.tools(row.get("publication_profile"), row.get("history_profile"))
+                search.tools(row.get("publication_profile"), row.get("history_profile"), row.get("expansion_profile"))
                 + search.mcp_tools(row["mcp_binding"], row["mcp_profile"])):
             raise Refusal("research_mcp_binding_changed")
-        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"))
+        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"))
         if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
             raise Refusal("session_search_instructions_mismatch")

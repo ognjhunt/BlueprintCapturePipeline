@@ -177,7 +177,8 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
         row["exa_expansion"] = copy.deepcopy(claim)
         if (claim["run_key"] != row["run_key"] or claim["date"] != row["date"]
                 or any(claim["intent"].get(k) != row.get(k) for k in ("run_key", "session_id", "turn_id"))
-                or _hash(_bytes(claim["intent"])) != claim["intent_sha256"]):
+                or _hash(_bytes(claim["intent"])) != claim["intent_sha256"]
+                or claim.get("intent_json") != _bytes(claim["intent"]).decode()):
             raise ExpansionError("expansion_intent_binding_changed")
     if name == READ:
         if args:
@@ -239,6 +240,7 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
                   "request": request,
                   "allocation": copy.deepcopy(allocation), "tool_schema_sha256": _hash(_bytes(tool_schema))}
         claim = {"date": row["date"], "run_key": row["run_key"], "intent": intent,
+                 "intent_json": _bytes(intent).decode(),
                  "intent_sha256": _hash(_bytes(intent)), "cap_micros": args["max_cost_micros"],
                  "state": "submission_unresolved", "attempted": True, "run_id": None}
         if row["date"] != now.astimezone(ZoneInfo("America/Chicago")).date().isoformat():
