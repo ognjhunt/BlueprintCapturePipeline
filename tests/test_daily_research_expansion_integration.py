@@ -7,10 +7,12 @@ from datetime import timedelta
 import pytest
 
 from tests.test_daily_research_expansion import ARGS, SCHEMA, Transport
+from tests.test_daily_research_exa_transport import Wire
 from tests.test_daily_research_runner import DAY, NOW
 from tests.test_daily_research_render import fixture as render_fixture
 from tests.test_daily_research_search import fixture as search_fixture
 from tools.daily_research import expansion, render, search
+from tools.daily_research.exa_transport import ExaTransport
 from tools.daily_research.consumer import Consumer
 from tools.daily_research.runner import Refusal, canonical, configuration
 
@@ -44,6 +46,15 @@ def respond(api, ledger, row):
                           phase="research", clock=lambda: NOW)
 
 
+def allocation_for(row):
+    return {"schema_version": expansion.ALLOCATION, "run_key": row["run_key"],
+        "authority_reference": row["recurring_budget_authority_reference"], "all_in_verified": True,
+        "usage_unknown": False, "evidence_reference": "company-synthetic-bound-receipt",
+        "limit_micros": 5_000_000, "committed_micros": 1_000_000, "reserved_micros": 2_000_000,
+        "remaining_micros": 2_000_000, "checked_at": NOW.isoformat(),
+        "valid_until": (NOW + timedelta(seconds=30)).isoformat()}
+
+
 def test_daily_payload_binds_only_guarded_exa_functions_and_survives_qa_session_check(fixture):
     runner, api, _, row = setup(fixture)
     configuration(runner.config)
@@ -72,12 +83,7 @@ def test_unverified_room_is_a_durable_optional_skip_and_ordinary_search_continue
 def test_different_function_call_ids_cannot_repeat_paid_start_and_original_read_is_retained(fixture):
     _, api, ledger, row = setup(fixture)
     transport = Transport(ledger, row)
-    allocation = {"schema_version": expansion.ALLOCATION, "run_key": row["run_key"],
-        "authority_reference": row["recurring_budget_authority_reference"], "all_in_verified": True,
-        "usage_unknown": False, "evidence_reference": "company-synthetic-bound-receipt",
-        "limit_micros": 5_000_000, "committed_micros": 1_000_000, "reserved_micros": 2_000_000,
-        "remaining_micros": 2_000_000, "checked_at": NOW.isoformat(),
-        "valid_until": (NOW + timedelta(seconds=30)).isoformat()}
+    allocation = allocation_for(row)
     api.expansion_context = lambda row, name: {"transport": transport, "allocation": allocation, "tool_schema": SCHEMA}
     api.actions = [action(row)]
     respond(api, ledger, row)
@@ -94,13 +100,46 @@ def test_different_function_call_ids_cannot_repeat_paid_start_and_original_read_
 
 def test_unknown_native_ack_does_not_stop_next_days_ordinary_research(fixture):
     runner, api, ledger, row = setup(fixture)
+    transport = Transport(ledger, row)
+    transport.start_error = True
+    expansion.execute(expansion.START, ARGS, row, ledger, transport=transport,
+        allocation=allocation_for(row), tool_schema=SCHEMA, now=NOW)
     row.update(state="completed", cleanup_required=False)
-    row["exa_expansion"] = {"state": "submission_unresolved", "run_id": None}
     ledger.put(row)
     runner.clock = lambda: NOW + timedelta(days=1)
     assert runner.start_or_resume()["date"] == "2026-10-01"
     assert len(api.payloads) == 2
     assert ledger.get(DAY)["exa_expansion"]["state"] == "submission_unresolved"
+    assert len(transport.starts) == 1 and not transport.reads
+
+
+def test_daily_resume_recovers_retained_original_ack_after_deadline_without_credentials_or_post(fixture, monkeypatch):
+    runner, api, ledger, row = setup(fixture)
+    monkeypatch.setenv("EXA_API_KEY", "synthetic-not-a-real-key")
+    wire = Wire(record={"id": "agent_run_synthetic", "status": "completed", "output": {"sites": []}})
+
+    def sink(receipt):
+        if receipt["operation"] == "tools/call":
+            claim = ledger.get(DAY)["exa_expansion"]
+            filename = f"{DAY}-exa-{claim['intent_sha256']}-start-http.json"
+            ledger.write_bytes(filename, canonical(receipt).encode())
+            raise OSError("synthetic_pointer_failure_after_raw_retention")
+
+    transport = ExaTransport(request_io=wire, receipt_sink=sink)
+    schema = transport.discover()
+    result = expansion.execute(expansion.START, ARGS, row, ledger, transport=transport,
+        allocation=allocation_for(row), tool_schema=schema, now=NOW)
+    assert result["state"] == "submission_unresolved" and result["run_id"] is None
+    assert len(wire.native_calls) == 1
+    row.update(state="completed", cleanup_required=False)
+    ledger.put(row)
+    monkeypatch.delenv("EXA_API_KEY")
+    runner.clock = lambda: NOW + timedelta(days=1)
+    assert runner.start_or_resume()["date"] == "2026-10-01"
+    claim = ledger.get(DAY)["exa_expansion"]
+    assert claim["run_id"] == "agent_run_synthetic" and claim["state"] == "completed"
+    assert claim["terminal_receipt"] and len(wire.native_calls) == 1
+    assert ledger.get(DAY)["exa_transport_receipts"][0]["file"].endswith("-start-http.json")
 
 
 def test_company_store_keeps_float_intent_claim_irreversible_and_exports_native_receipts(render_context, tmp_path):

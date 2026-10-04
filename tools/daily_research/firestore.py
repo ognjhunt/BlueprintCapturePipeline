@@ -145,6 +145,11 @@ class FencedProvider(Provider):
             raw = (canonical(receipt) + "\n").encode()
             receipt_hash = digest(receipt)
             filename = row["date"] + "-exa-http-" + receipt_hash + ".json"
+            claim = row.get("exa_expansion")
+            if claim and receipt.get("operation") == "tools/call":
+                request = json.loads(base64.b64decode(receipt["request_body_base64"], validate=True))
+                if request.get("params") == {"name": "agent_run", "arguments": claim["intent"]["request"]}:
+                    filename = row["date"] + "-exa-" + claim["intent_sha256"] + "-start-http.json"
             try:
                 existing = self.ledger.read_bytes(filename)
             except FileNotFoundError:

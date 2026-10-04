@@ -206,7 +206,21 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
         try:
             raw = ledger.read_bytes(filename)
         except FileNotFoundError:
-            return _project(claim)
+            raw_filename = f"{claim['date']}-exa-{claim['intent_sha256']}-start-http.json"
+            try:
+                raw_ack = ledger.read_bytes(raw_filename)
+                from tools.daily_research.exa_transport import reconcile_start_ack
+                result = reconcile_start_ack(json.loads(raw_ack), claim["intent"]["request"])
+            except (FileNotFoundError, ValueError):
+                return _project(claim)
+            raw_ref = {"file": raw_filename, "sha256": _hash(raw_ack), "bytes": len(raw_ack)}
+            refs = row.setdefault("exa_transport_receipts", [])
+            if raw_ref not in refs:
+                refs.append(raw_ref)
+            record = {"intent_sha256": claim["intent_sha256"], "run_id": result["id"],
+                      "provider_record": result, "source_raw_ack": raw_ref}
+            raw = _bytes(record)
+            _receipt(ledger, claim, "start", raw)
         record = json.loads(raw)
         result = record.get("provider_record", {})
         if (record.get("intent_sha256") != claim["intent_sha256"] or not _valid_id(result.get("id"))

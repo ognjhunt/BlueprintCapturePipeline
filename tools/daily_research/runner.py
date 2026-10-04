@@ -959,6 +959,13 @@ class Runner:
     def start_or_resume(self, *, allow_create=True):
         with self.ledger.lock():
             rows = self.ledger.rows()
+            for existing in rows:
+                if (existing.get("expansion_profile") == "exa-guarded-v1"
+                        and existing.get("exa_expansion") and not existing["exa_expansion"].get("run_id")):
+                    # Parse already retained ACK bytes only. No credential,
+                    # discovery, provider request or deadline extension.
+                    from tools.daily_research import expansion
+                    expansion.execute(expansion.READ, {}, existing, self.ledger, now=self.clock())
             unfinished = [x for x in rows if x["state"] not in TERMINAL]
             if unfinished:
                 return self.observe(unfinished[0])
