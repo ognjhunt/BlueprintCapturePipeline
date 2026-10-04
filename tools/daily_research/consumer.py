@@ -5,6 +5,7 @@ Every request/attempt is durable before its mutation; uncertain attempts reconci
 by GET only. Credentials and CRM contacts are never sent to the hosted agent.
 """
 import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -207,9 +208,15 @@ def _example_strings(value):
         yield value
 
 
-# Free-text placeholders shown in LEAD_VERIFICATION_EXAMPLE. Real source IDs ("S1")
-# and the actual version marker are legitimate values, not placeholders.
-LEAD_VERIFICATION_PLACEHOLDERS = frozenset(_example_strings(LEAD_VERIFICATION_EXAMPLE)) - {verification.VERSION, "S1"}
+def _placeholder_form(text):
+    """Case, whitespace and punctuation never make a copied placeholder an actual value."""
+    return re.sub(r"[\W_]+", "", text.casefold())
+
+
+# Free-text placeholders shown in LEAD_VERIFICATION_EXAMPLE, compared in normalized form.
+# Real source IDs ("S1") and the actual version marker are legitimate values, not placeholders.
+LEAD_VERIFICATION_PLACEHOLDERS = frozenset(_placeholder_form(text) for text in _example_strings(LEAD_VERIFICATION_EXAMPLE)) - {
+    _placeholder_form(verification.VERSION), _placeholder_form("S1")}
 
 
 def _placeholder_paths(value, path=""):
@@ -219,7 +226,7 @@ def _placeholder_paths(value, path=""):
     elif isinstance(value, list):
         for index, item in enumerate(value):
             yield from _placeholder_paths(item, f"{path}/{index}")
-    elif isinstance(value, str) and value in LEAD_VERIFICATION_PLACEHOLDERS:
+    elif isinstance(value, str) and _placeholder_form(value) in LEAD_VERIFICATION_PLACEHOLDERS:
         yield path
 
 

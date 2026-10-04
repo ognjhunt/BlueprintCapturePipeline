@@ -578,6 +578,41 @@ def test_qa_decision_defers_assessment_defects_only_when_the_caller_exhausted_co
             qa_decision(row, placeholders, set(), NOW, defer_assessment_issues=defer)
 
 
+@pytest.mark.parametrize("variant", ["Supporting excerpt.", "  supporting   EXCERPT ", "supporting-excerpt!", "Supporting_excerpt",
+                                     "supportingexcerpt", "supporting.excerpt", "SUPPORTINGEXCERPT"])
+def test_copied_placeholder_is_detected_despite_case_spacing_or_punctuation(fixture, variant):
+    """Re-review of #2585: exact-string matching let a near-copy of the example (a trailing period)
+    pass both QA and the gate as verified."""
+    from tools.daily_research.consumer import PLACEHOLDER_COPIED, qa_validation_feedback
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    row["qa"] = {"crm_digest": "crm"}
+    candidate = verification.packet_candidates(row["packet"])[0]
+    value = assessment(candidate, NOW)
+    value["sources"][0]["quote"] = variant
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+          "source_support_verified": True, "accepted_keys": [], "summary": "Synthetic",
+          "checks": [{"candidate_key": candidate["candidate_key"], "source_support_verified": True, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": value}]}
+    found = [i for i in qa_validation_feedback(row, qa) if i["reason"] == PLACEHOLDER_COPIED]
+    assert [i["path"] for i in found] == ["/checks/0/lead_verification/sources/0/quote"]
+    with pytest.raises(Refusal, match="agent_qa_assessment_placeholder_copied"):
+        qa_decision(row, qa, set(), NOW, defer_assessment_issues=True)
+
+
+def test_real_values_never_match_a_placeholder_form(fixture):
+    from tools.daily_research.consumer import PLACEHOLDER_COPIED, qa_validation_feedback
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    row["qa"] = {"crm_digest": "crm"}
+    candidate = verification.packet_candidates(row["packet"])[0]
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+          "source_support_verified": True, "accepted_keys": [], "summary": "Synthetic",
+          "checks": [{"candidate_key": candidate["candidate_key"], "source_support_verified": True, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": assessment(candidate, NOW)}]}
+    assert not [i for i in qa_validation_feedback(row, qa) if i["reason"] == PLACEHOLDER_COPIED]
+
+
 def test_truncated_assessment_feedback_always_keeps_a_copied_placeholder(fixture):
     from tools.daily_research.consumer import (
         MAX_ASSESSMENT_ISSUES_PER_CHECK,
