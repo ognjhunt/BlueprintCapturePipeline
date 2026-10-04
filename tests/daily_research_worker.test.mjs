@@ -50,9 +50,14 @@ test('shutdown drains the canonical terminal hook after the child has stopped', 
   finish(); await stop;
   assert.equal(drained, true);
 });
-test('Perplexity secret passes only to the application worker, never logs', async () => {
-  const previous = process.env.PERPLEXITY_API_KEY;
-  process.env.PERPLEXITY_API_KEY = 'offline-placeholder';
+for (const key of ['PERPLEXITY_API_KEY', 'EXA_API_KEY']) {
+test(`${key} passes only to the application worker, never logs`, async t => {
+  const previous = process.env[key];
+  process.env[key] = 'offline-placeholder';
+  t.after(() => {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  });
   let captured;
   const logs = [], child = new EventEmitter(); child.stdout = new EventEmitter(); child.pid = 100;
   const handle = startDailyResearchWorker({bundleRoot: '/isolated', python: '/venv/python', enabled: true,
@@ -60,12 +65,13 @@ test('Perplexity secret passes only to the application worker, never logs', asyn
     captured = options;
     return child;
   }});
-  assert.equal(captured.env.PERPLEXITY_API_KEY, 'offline-placeholder');
+  assert.equal(captured.env[key], 'offline-placeholder');
   assert.deepEqual(logs, []);
+  child.stdout.emit('data', JSON.stringify({state: 'running', private_key: 'offline-placeholder'}) + '\n');
+  assert.equal(logs.some(line => line.includes('offline-placeholder')), false);
   const stop = handle.stop(); child.emit('exit'); await stop;
-  if (previous === undefined) delete process.env.PERPLEXITY_API_KEY;
-  else process.env.PERPLEXITY_API_KEY = previous;
 });
+}
 test('split and coalesced JSON status frames survive without forwarding raw output', async () => {
   const {handle, children, logs} = fixture(); const out = children[0].stdout;
   out.emit('data', '{"state":"await');
