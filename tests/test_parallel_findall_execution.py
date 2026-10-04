@@ -75,6 +75,10 @@ class SyntheticJournal:
         self.state[operation] = {"state": "submission_unresolved", "prepared": prepared}
         return True
 
+    def authorize_submission(self, prepared):
+        self.events.append("authorize")
+        return self.state[prepared["operation_id"]]["prepared"] == prepared
+
     def record_created(self, operation_id, binding, run):
         self.events.append("record")
         assert self.state[operation_id]["prepared"]["allocation_binding_digest"] == binding
@@ -166,7 +170,7 @@ def test_valid_create_claims_before_post_records_run_and_preserves_all_fields(mo
     calls = provider_stub(monkeypatch, journal)
     result = submit(execution.AdmittedFindAllClient(FAKE_KEY), spec, synthetic_grant(prepare(spec)), journal)
     assert result == run() == journal.receipt
-    assert journal.events == ["claim", "post", "record"]
+    assert journal.events == ["claim", "authorize", "post", "record"]
     assert len(calls) == 1
     request, options = calls[0]
     assert request.get_method() == "POST"
@@ -288,3 +292,21 @@ def test_cancel_errors_are_not_success_receipts_and_do_not_retry(monkeypatch, st
 def test_cancel_cannot_retarget_request():
     with pytest.raises(execution.FindAllError, match="findall_id_invalid"):
         execution.AdmittedFindAllClient(FAKE_KEY).cancel("findall_fixture/other")
+
+
+@pytest.mark.parametrize("decision", [False, None, 1, "true", OSError("synthetic")])
+def test_post_claim_fresh_authorization_is_required_without_replay(monkeypatch, spec, decision):
+    journal = SyntheticJournal()
+    calls = provider_stub(monkeypatch, journal)
+    def authorize(prepared):
+        if isinstance(decision, Exception):
+            raise decision
+        return decision
+    journal.authorize_submission = authorize
+    with pytest.raises(execution.FindAllError, match="post_claim_not_authorized"):
+        submit(execution.AdmittedFindAllClient(FAKE_KEY), spec, synthetic_grant(prepare(spec)), journal)
+    assert calls == [] and journal.state[OPERATION_ID]["state"] == "submission_unresolved"
+    journal.authorize_submission = lambda prepared: True
+    with pytest.raises(execution.FindAllError, match="already_claimed"):
+        submit(execution.AdmittedFindAllClient(FAKE_KEY), spec, synthetic_grant(prepare(spec)), journal)
+    assert calls == []

@@ -12,8 +12,9 @@ import http.client
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from . import safe_outbound_http
 from .paid_resource_admission import (
@@ -21,10 +22,10 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .parallel_findall import (
+    _MAX_RESPONSE_BYTES,
     RUNS_URL,
     FindAllClient,
     FindAllError,
-    _MAX_RESPONSE_BYTES,
     _validate_run,
     _validate_run_id,
     prepare_run,
@@ -49,11 +50,14 @@ class FindAllSubmissionJournal(Protocol):
     operation_id with state submission_unresolved BEFORE returning literal True.
     It must reject any previously claimed operation_id, even for a changed body,
     including after crashes, timeouts and HTTP failures. It must not release an
-    ambiguous claim. record_created durably binds the exact provider run receipt;
+    ambiguous claim. authorize_submission freshly checks post-commit authority
+    and the held lease immediately before POST. record_created durably binds the exact provider run receipt;
     write failure raises. Neither method receives an API key.
     """
 
     def claim_submission(self, prepared: Mapping[str, Any]) -> bool: ...
+
+    def authorize_submission(self, prepared: Mapping[str, Any]) -> bool: ...
 
     def record_created(
         self, operation_id: str, allocation_binding_digest: str, run: Mapping[str, Any]
@@ -173,10 +177,19 @@ class AdmittedFindAllClient(FindAllClient):
         )
         try:
             claimed = journal.claim_submission(json.loads(json.dumps(prepared)))
-        except Exception:
+        except Exception:  # noqa: BLE001 - expose a stable error without secret-bearing store prose
             raise FindAllError("findall_submission_claim_failed") from None
         if claimed is not True:
             raise FindAllError("findall_submission_already_claimed_or_not_authorized")
+        # A durable commit may outlive its action-time authority. Recheck the
+        # held lease, live grant and deadline after commit, directly before POST.
+        # Missing callbacks fail closed; the consumed claim remains nonreplayable.
+        try:
+            authorized = journal.authorize_submission(json.loads(json.dumps(prepared)))
+        except Exception:  # noqa: BLE001 - fail closed without reflecting owner/store exception prose
+            authorized = False
+        if authorized is not True:
+            raise FindAllError("findall_submission_post_claim_not_authorized")
         run_id = None
         try:
             payload = json.loads(self._post(RUNS_URL, prepared["body_json"]).decode("utf-8"))
@@ -191,7 +204,7 @@ class AdmittedFindAllClient(FindAllClient):
             if payload.get("generator") != prepared["body_json"]["generator"]:
                 raise FindAllError("findall_response_generator_mismatch")
             return payload
-        except Exception:
+        except Exception:  # noqa: BLE001 - preserve uncertain submission and known ID without leaking upstream prose
             raise FindAllSubmissionUnresolved(findall_id=run_id) from None
 
     def cancel(self, findall_id: str) -> None:

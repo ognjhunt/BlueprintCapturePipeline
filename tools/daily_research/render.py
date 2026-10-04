@@ -457,6 +457,18 @@ def export_snapshot(bridge, day, destination):
         if (not filename.startswith(day + "-exa-") or not filename.endswith(".json") or raw is None
                 or hashlib.sha256(raw).hexdigest() != receipt.get("sha256") or len(raw) != receipt.get("bytes")):
             raise Refusal("expansion_export_binding_invalid")
+    from tools.daily_research.findall import receipt_refs, validate_snapshot_exports
+    for receipt in receipt_refs(row):
+        filename = receipt.get("file", "")
+        raw = files.get(filename[len(day) + 1:-5])
+        if (not filename.startswith(day + "-tool-findall-") or not filename.endswith(".json") or raw is None
+                or hashlib.sha256(raw).hexdigest() != receipt.get("sha256")
+                or "bytes" in receipt and len(raw) != receipt["bytes"]):
+            raise Refusal("findall_export_binding_invalid")
+    try:
+        validate_snapshot_exports(row, lambda filename: files[filename[len(day) + 1:-5]])
+    except (ValueError, KeyError, TypeError):
+        raise Refusal("findall_export_binding_invalid") from None
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     save_bytes(destination / "status.json", canonical(row).encode())

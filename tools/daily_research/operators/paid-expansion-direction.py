@@ -1,4 +1,4 @@
-"""Owner command for the per-run paid expansion allowance (Exa now; FindAll later).
+"""Owner command for the combined per-run paid expansion allowance (Exa and Parallel FindAll).
 
 show: control and audit reads only. set/disable are dry runs unless --apply.
 Apply writes only the content-addressed, create-only direction object (set) and

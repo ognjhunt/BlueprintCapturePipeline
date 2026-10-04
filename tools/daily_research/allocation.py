@@ -1,21 +1,24 @@
 """Owner-directed paid expansion allowance: the single producer and arbiter.
 
 The owner sets one combined per-run USD limit for paid expansion sources (Exa
-now; FindAll later) as a content-addressed direction record. Company control
+and Parallel FindAll) as a content-addressed direction record. Company control
 carries it top-level as ``control.paid_expansion = {enabled, current: {sha256,
 version, uri, direction}}``: config keys stay allowlisted and older packages
 ignore it. The runner freezes one grant per daily row under its lease before the
-durable intent (``grant``); every paid start is admitted only by ``problem``.
+durable intent (``grant``); every paid start is admitted only by ``problem``
+with its ``source`` ("exa" or "findall").
 A frozen grant is the run's upper bound: live control can only tighten it (the
 brake, a changed release, a lower current amount or a removed source apply at
 once), while a higher amount waits for the next run's grant.
-Durable claims are the debits and an unknown cost holds its whole reservation.
+Durable claims are the debits and an unknown cost holds its whole reservation:
+an Exa claim reserves its native cap and each FindAll claim (row
+``parallel_findall_submissions``) its prepared request's whole
+``maximum_cost_usd``. Exa and FindAll together never exceed the one limit.
+A direction whose ``sources`` omits a source admits none of its starts. The owner
+command writes every supported source, so re-running ``set`` after a release
+that adds one enables it.
 This allowance is host-reserved and separate from the research soft target.
 Standard library only; the worker never reads object storage.
-
-FindAll interface (PR 2, TODO): add its name to SOURCES and the bridge's
-PAID_SOURCES, return its durable claims from claims() with reserved_micros, and
-admit each start with problem(..., source="findall"). The limit stays combined.
 """
 import hashlib
 import re
@@ -30,8 +33,10 @@ HARD_CEILING_MICROS = 100_000_000  # $100.00 per run; a typo above it refuses in
 FLOOR_MICROS = 1_000_000  # $1.00
 PER_START_CEILING_MICROS = 50_000_000
 AMOUNT = re.compile(r"[1-9][0-9]{0,2}(\.[0-9]{2})?")  # ASCII digits only, like the bridge
-# TODO(FindAll): add "findall" here, in the bridge's PAID_SOURCES and as a claims() reader.
-SOURCES = ("exa",)
+SOURCES = ("exa", "findall")  # Mirrored by the bridge's PAID_SOURCES.
+# FindAll claims live in the owner journal field parallel_findall_owner.SUBMISSIONS_FIELD.
+FINDALL_FIELD = "parallel_findall_submissions"
+FINDALL_AMOUNT = re.compile(r"(0|[1-9][0-9]{0,2})(\.[0-9]{1,2})?")  # USD, at most cents, like the bridge
 BUCKET = "blueprint-8c1ca.appspot.com"
 OBJECT_PREFIX = "operations/research/paid-expansion/"
 SCOPE = {"project_id": PROJECT, "agent_id": AGENT, "firestore_root": "blueprintDailyResearch/sites-first",
@@ -56,6 +61,15 @@ def micros(amount):
     whole, _, cents = amount.partition(".")
     value = int(whole) * 1_000_000 + int(cents or "0") * 10_000
     return value if FLOOR_MICROS <= value <= HARD_CEILING_MICROS else None
+
+
+def findall_micros(amount):
+    """Exact integer microdollars of a FindAll ``maximum_cost_usd`` such as "2.5" (above $0, at most $100), else None."""
+    if not isinstance(amount, str) or not FINDALL_AMOUNT.fullmatch(amount):
+        return None
+    whole, _, cents = amount.partition(".")
+    value = int(whole) * 1_000_000 + int(cents.ljust(2, "0")) * 10_000
+    return value if 0 < value <= HARD_CEILING_MICROS else None
 
 
 def usd(value):
@@ -237,12 +251,22 @@ def effective_limit(value, control):
 
 def claims(row):
     """This run's durable paid claims. Each debits its whole reserved cap: nothing is
-    released without a provider-reported terminal cost, and none is pinned yet."""
+    released without a provider-reported terminal cost, and none is pinned yet.
+
+    An Exa claim reserves its native cap. A FindAll claim reserves its prepared
+    request's whole maximum_cost_usd whatever its state (unresolved, created,
+    cancelled or completed); a malformed claim makes every debit unknowable."""
     found = []
     exa = row.get("exa_expansion") if isinstance(row, dict) else None
     if exa:
         found.append({"source": "exa", "intent_sha256": exa.get("intent_sha256"), "reserved_micros": exa.get("cap_micros")})
-    # TODO(FindAll): append this row's FindAll claims under the same reserved_micros contract.
+    findall = row.get(FINDALL_FIELD) if isinstance(row, dict) else None
+    if findall:
+        entries = sorted(findall.items()) if isinstance(findall, dict) else [(None, findall)]
+        for key, entry in entries:
+            prepared = entry.get("prepared") if isinstance(entry, dict) else None
+            amount = prepared.get("maximum_cost_usd") if isinstance(prepared, dict) else None
+            found.append({"source": "findall", "operation_sha256": key, "reserved_micros": findall_micros(amount)})
     return found
 
 

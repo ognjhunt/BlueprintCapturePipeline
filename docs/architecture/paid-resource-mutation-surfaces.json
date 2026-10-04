@@ -9,6 +9,7 @@
       "src/blueprint_pipeline/native_g1_paid_campaign.py",
       "src/blueprint_pipeline/native_g1_team_paid_policy.py",
       "src/blueprint_pipeline/paid_resource_allocator.py",
+      "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/nvidia_warehouse_native_camera_gpu_admission.py",
       "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
@@ -34,6 +35,7 @@
       "src/blueprint_pipeline/native_g1_paid_campaign.py",
       "src/blueprint_pipeline/native_g1_team_paid_policy.py",
       "src/blueprint_pipeline/paid_resource_allocator.py",
+      "src/blueprint_pipeline/parallel_findall_admission.py",
       "src/blueprint_pipeline/policy_canary_allocator_lane.py",
       "src/blueprint_pipeline/policy_ranking_cosmos_reasoner_gpu_admission.py",
       "src/blueprint_pipeline/policy_ranking_evaluator_diagnostic_gemini_matrix.py",
@@ -51,6 +53,18 @@
     ]
   },
   "surfaces": [
+    {
+      "path": "src/blueprint_pipeline/parallel_findall_owner.py",
+      "classification": "grant_gated_legacy_adapter",
+      "required_markers": [
+        "require_paid_resource_admission_grant",
+        "require_allocation_binding=True",
+        "with ledger.lock():",
+        "client.create(",
+        "claim_submission",
+        "record_created"
+      ]
+    },
     {
       "path": "src/blueprint_pipeline/parallel_findall_execution.py",
       "classification": "grant_gated_legacy_adapter",

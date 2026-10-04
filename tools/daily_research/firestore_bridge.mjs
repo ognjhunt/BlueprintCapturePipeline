@@ -42,7 +42,7 @@ const claimUpdate=(run,row,name,digest,batches=null)=>{
 const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 // Owner-directed paid expansion allowance; mirrors tools/daily_research/allocation.py.
 const PAID_DIRECTION='blueprint.research-paid-expansion-direction.v1', PAID_GRANT='blueprint.research-paid-expansion-grant.v1';
-const PAID_PREFIX='operations/research/paid-expansion/', PAID_SOURCES=['exa']; // TODO(FindAll): mirror allocation.SOURCES.
+const PAID_PREFIX='operations/research/paid-expansion/', PAID_SOURCES=['exa','findall']; // Mirrors allocation.SOURCES.
 const PAID_FIELDS=['approval_reference','approved_by','effective_from','expires_at','issued_at','per_run_limit_usd',
   'reason','schema_version','scope','sources','supersedes','version'];
 const PAID_GRANT_FIELDS=['approval_reference','direction_sha256','direction_uri','frozen_at','grant_id','limit_micros',
@@ -56,6 +56,34 @@ const paidMicros=x=>{
   return value>=1000000 && value<=100000000?value:null;
 };
 const paidPerStart=limit=>Math.min(Math.max(Math.floor(limit/2),1000000),50000000);
+// FindAll claims are the owner journal entries (parallel_findall_owner.SUBMISSIONS_FIELD). Each
+// reserves its prepared request's whole maximum_cost_usd (mirrors allocation.findall_micros).
+const FINDALL_FIELD='parallel_findall_submissions', FINDALL_PROFILE='parallel-findall-v1';
+const findallMicros=x=>{
+  if(typeof x!=='string' || !/^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/.test(x)) return null;
+  const [whole,cents='']=x.split('.'),value=Number(whole)*1000000+Number(cents.padEnd(2,'0'))*10000;
+  return value>0 && value<=100000000?value:null;
+};
+function findallClaims(row) {
+  const entries=row[FINDALL_FIELD];
+  if(entries===undefined || entries===null) return {};
+  if(typeof entries!=='object' || Array.isArray(entries)) refuse('findall_claim_binding_invalid');
+  const claims={};
+  for(const [key,entry] of Object.entries(entries)) {
+    const prepared=entry?.prepared,reserved=findallMicros(prepared?.maximum_cost_usd);
+    if(!hexOK(key) || typeof entry?.operation_id!=='string' || sha(Buffer.from(entry.operation_id))!==key
+        || !entry.operation_id.startsWith(`${row.run_key}:findall:`) || prepared?.operation_id!==entry.operation_id
+        || prepared?.resource_class!=='parallel_findall' || typeof entry.allocation_binding_digest!=='string'
+        || prepared.allocation_binding_digest!==entry.allocation_binding_digest || reserved===null
+        || ![null,undefined].includes(entry.findall_id) && !/^findall_[A-Za-z0-9_-]+$/.test(entry.findall_id))
+      refuse('findall_claim_binding_invalid');
+    // The binding is immutable; state, receipt and the provider ID (once known) may advance.
+    claims[key]={binding:valueHash({operation_id:entry.operation_id,
+      allocation_binding_digest:entry.allocation_binding_digest,prepared}),
+      reserved_micros:reserved,findall_id:entry.findall_id || null};
+  }
+  return claims;
+}
 const paidUri=hash=>`gs://${CLEANUP_BUCKET}/${PAID_PREFIX}${hash}/direction.json`;
 // Whole UTC seconds on a real calendar day; Date.parse alone rolls 11-31 into 12-01.
 const paidStamp=x=>{
@@ -236,6 +264,22 @@ export class Store {
       const unbound=prior.exists && (priorGrant===undefined || prior.data().paid_expansion_grant_unbound===true);
       if(prior.exists && priorGrant!==undefined && priorGrant!==grantDigest) refuse('paid_expansion_grant_already_bound');
       if(!prior.exists && grant?.state==='granted') await this.paidGrantGate(tx,control,row,grant,true);
+      // FindAll claims are append-only: a known claim keeps its exact binding and provider ID.
+      // A manifest an older bridge rewrote adopts the row's claims and admits no new one.
+      const findall=findallClaims(row),priorFindall=prior.data()?.findall_claims;
+      const findallUnbound=prior.exists && (priorFindall===undefined || prior.data().findall_unbound===true);
+      const knownFindall=priorFindall===undefined?(findallUnbound?findall:{}):priorFindall;
+      for(const [key,claim] of Object.entries(knownFindall)) {
+        if(!findall[key] || findall[key].binding!==claim.binding) refuse('findall_claim_already_consumed');
+        if(claim.findall_id && findall[key].findall_id!==claim.findall_id) refuse('findall_original_id_changed');
+      }
+      if(Object.keys(findall).length && (row.findall_profile!==FINDALL_PROFILE || !hexOK(row.metadata?.findall_tools_digest)))
+        refuse('findall_profile_invalid');
+      const freshFindall=Object.keys(findall).filter(key=>!knownFindall[key]);
+      // Exa and FindAll debit one combined allowance; an unknown cost holds its whole reservation.
+      const reserved=[...(exa?[exa.cap_micros]:[]),...Object.values(findall).map(claim=>claim.reserved_micros)];
+      const overGrant=limit=>!reserved.every(v=>Number.isSafeInteger(v) && v>0)
+        || reserved.reduce((a,b)=>a+b,0)>limit;
       if(exa && !prior.data()?.exa_expansion_intent_digest) {
         // A new paid claim debits the frozen grant; an unknown cost holds its whole cap.
         if(unbound || grant?.state!=='granted' || valueHash(exa.intent?.grant ?? null)!==grantDigest)
@@ -243,9 +287,13 @@ export class Store {
         const liveLimit=await this.paidGrantGate(tx,control,row,grant,false,'exa');
         const dollars=exa.intent?.request?.budget?.maxCostDollars;
         if(typeof dollars!=='number' || Math.round(dollars*1000000)!==exa.cap_micros) refuse('paid_expansion_claim_cap_mismatch');
-        const reserved=[exa.cap_micros]; // TODO(FindAll): add this row's FindAll reservations.
-        if(!reserved.every(v=>Number.isSafeInteger(v) && v>0) || exa.cap_micros>paidPerStart(liveLimit)
-            || reserved.reduce((a,b)=>a+b,0)>liveLimit) refuse('paid_expansion_reservation_exceeds_grant');
+        if(exa.cap_micros>paidPerStart(liveLimit) || overGrant(liveLimit)) refuse('paid_expansion_reservation_exceeds_grant');
+      }
+      if(freshFindall.length) {
+        if(unbound || findallUnbound || grant?.state!=='granted') refuse('paid_expansion_grant_required');
+        const liveLimit=await this.paidGrantGate(tx,control,row,grant,false,'findall');
+        if(freshFindall.some(key=>findall[key].reserved_micros>paidPerStart(liveLimit)) || overGrant(liveLimit))
+          refuse('paid_expansion_reservation_exceeds_grant');
       }
       if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
         refuse('research_mcp_profile_changed');
@@ -311,6 +359,7 @@ export class Store {
         exa_expansion_run_id:exa?.run_id || null,
         exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
         paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
+        findall_claims:findall,findall_unbound:findallUnbound,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
         cleanup_binding_digest: cleanupBinding,
         cleanup_archive: prior.data()?.cleanup_archive || null,
@@ -465,6 +514,47 @@ export class Store {
       if(sha(raw)!==receipt.sha256 || raw.length!==receipt.bytes) refuse('expansion_receipt_digest_mismatch');
       files[receipt.file.slice(day.length+1,-5)]=encoded;
     }
+    // FindAll created-run, owned-read and settlement receipts (findall.receipt_refs).
+    const snapshotReceipts=[
+      ...Object.values(row[FINDALL_FIELD] || {}).map(entry=>entry?.receipt),
+      ...Object.values(row.parallel_findall_reads || {}),
+      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || [])]
+      .filter(receipt=>receipt && Array.isArray(receipt.parts));
+    const findallRefs=[
+      ...Object.values(row[FINDALL_FIELD] || {}).filter(entry=>entry?.receipt_file)
+        .map(entry=>({file:entry.receipt_file,sha256:entry.receipt_sha256})),
+      ...Object.values(row.parallel_findall_reads || {}).map(read=>({file:read?.file,sha256:read?.sha256,bytes:read?.bytes})),
+      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || []),
+      ...snapshotReceipts.flatMap(receipt=>receipt.parts)];
+    for(const receipt of findallRefs) {
+      if(typeof receipt?.file!=='string' || !receipt.file.startsWith(`${day}-tool-findall-`) || !receipt.file.endsWith('.json'))
+        refuse('findall_export_binding_invalid');
+      const encoded=await this.fileGet(receipt.file),raw=Buffer.from(encoded,'base64');
+      if(sha(raw)!==receipt.sha256 || receipt.bytes!==undefined && raw.length!==receipt.bytes) refuse('findall_receipt_digest_mismatch');
+      files[receipt.file.slice(day.length+1,-5)]=encoded;
+    }
+    for(const receipt of snapshotReceipts) {
+      const artifact=name=>Buffer.from(files[name.slice(day.length+1,-5)],'base64');
+      const manifest=JSON.parse(artifact(receipt.file));
+      if(!keysAre(manifest,['schema_version','snapshot_sha256','snapshot_bytes','parts'])
+          || manifest.schema_version!=='blueprint.findall-snapshot-parts.v1'
+          || manifest.snapshot_sha256!==receipt.snapshot_sha256 || manifest.snapshot_bytes!==receipt.snapshot_bytes
+          || valueHash(manifest.parts)!==valueHash(receipt.parts) || !hexOK(manifest.snapshot_sha256)
+          || !Number.isSafeInteger(manifest.snapshot_bytes) || manifest.snapshot_bytes<=0 || !manifest.parts.length)
+        refuse('findall_snapshot_binding_invalid');
+      const fragments=manifest.parts.map((ref,index)=>{
+        const part=JSON.parse(artifact(ref.file));
+        if(!keysAre(part,['schema_version','snapshot_sha256','page','json_fragment'])
+            || part.schema_version!==manifest.schema_version || part.snapshot_sha256!==manifest.snapshot_sha256
+            || part.page!==index || typeof part.json_fragment!=='string' || !part.json_fragment.length
+            || [...part.json_fragment].length>24000) refuse('findall_snapshot_binding_invalid');
+        return part.json_fragment;
+      });
+      const raw=Buffer.from(fragments.join(''),'utf8');
+      if(raw.length!==manifest.snapshot_bytes || sha(raw)!==manifest.snapshot_sha256)
+        refuse('findall_snapshot_binding_invalid');
+      JSON.parse(raw);
+    }
     if (row.qa?.input_file) {
       const input = files['qa-input'] && Buffer.from(files['qa-input'], 'base64');
       if (row.qa.input_file !== `${day}-qa-input.json` || !input || input.at(-1) !== 10
@@ -530,6 +620,8 @@ export class Store {
         exa_expansion_run_id:row.exa_expansion?.run_id || null,
         exa_expansion_terminal_receipt:row.exa_expansion?.terminal_receipt || null,
         paid_expansion_grant_digest:row.paid_expansion_grant?valueHash(row.paid_expansion_grant):null,
+        // An imported row keeps its claims and never admits a new one.
+        findall_claims:findallClaims(row),findall_unbound:true,
         environment_id: row.environment_id || null});
       this.projectWorkItem(tx, row, hash);
       return true;

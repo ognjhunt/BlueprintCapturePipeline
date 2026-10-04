@@ -20,6 +20,7 @@ export function startDailyResearchWorker({bundleRoot, python,
         OPENAI_API_KEY: process.env.OPENAI_API_KEY,
         PERPLEXITY_API_KEY: process.env.PERPLEXITY_API_KEY,
         EXA_API_KEY: process.env.EXA_API_KEY,
+        PARALLEL_API_KEY: process.env.PARALLEL_API_KEY,
         FIREBASE_SERVICE_ACCOUNT_JSON: process.env.FIREBASE_SERVICE_ACCOUNT_JSON,
         NOTION_API_TOKEN: process.env.NOTION_API_TOKEN, NOTION_API_KEY: process.env.NOTION_API_KEY,
         BLUEPRINT_DAILY_RESEARCH_LEARNING_MODULE: learningHostModule

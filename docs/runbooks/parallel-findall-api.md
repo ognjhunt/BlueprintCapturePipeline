@@ -1,9 +1,10 @@
 # Parallel FindAll API setup for Blueprint agents
 
-This optional utility prepares the official FindAll request offline, checks
-authentication with a read-only list endpoint, and reads an existing run's status
-or result. A separate Python adapter supports future grant-dependent creation
-and explicitly selected cancellation. It adds no dependency, server, scheduled
+This optional utility prepares the official FindAll request offline and reads
+an existing FindAll run's status or result. A separate Python adapter supports
+future grant-dependent creation and explicitly selected cancellation. An optional
+owner-ledger helper reuses existing durable state and locking. It adds no
+dependency, server, scheduled
 task, deployment, issued grant, or pipeline hook; no provider operation was run
 during setup. It uses Blueprint's existing
 `safe_outbound_http` boundary with the Parallel HTTPS host pinned, redirects
@@ -47,30 +48,11 @@ with `body_json`, `POST https://api.parallel.ai/v1beta/findall/runs`, required
 and does not read credentials. The example is reviewable input, not a launched
 search. `preview` is also a real run and must not be treated as offline setup.
 
-## Secure user authentication check (no run ID)
+## Private read check for an existing FindAll run
 
-An authorized user can check their own existing API key privately:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m blueprint_pipeline.parallel_findall auth-check --prompt-key
-```
-
-This makes exactly one `GET https://api.parallel.ai/v1/monitors?limit=1`, using
-the documented `x-api-key` authentication. It creates no monitor or run, starts
-no research, and reports only authentication facts; monitor contents and IDs are
-not returned to the caller. A successful response proves access to this list
-endpoint, not FindAll entitlement, billing readiness, or a spend grant. A 401/403
-or other failure remains a typed error. No authentication probe was executed
-against Parallel during setup.
-
-The Account API's apps/balance reads require an account OAuth access token,
-not a standard API key; this utility does not request that wider grant. The
-standard API docs do not list a FindAll run-list endpoint, so this documented
-Monitor GET avoids inventing one or requiring an existing FindAll run ID.
-
-## Secure user handoff for an existing run
-
-An authorized user may enter their own existing API key privately in a terminal:
+Use the user's own existing FindAll run ID for the relevant API read check.
+Replace the placeholder below and enter the user's existing key privately in
+their own terminal. No Monitor check is required first:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m blueprint_pipeline.parallel_findall status findall_REPLACE_WITH_OWN_RUN --prompt-key
@@ -78,7 +60,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m blueprin
 ```
 
 The prompt refuses non-terminal input, does not echo or save the key, and uses it
-only for the selected GET. These commands are for the user's own terminal,
+only for the selected GET. `status` calls
+`GET https://api.parallel.ai/v1beta/findall/runs/{findall_id}`. A successful read
+establishes access to that run; it does not prove create entitlement, billing
+readiness or spend authority. These commands are for the user's own terminal,
 not an agent credential-retrieval workflow. Do not paste a key into chat, a command argument, a
 tracked file, or an agent tool call. Do not unlock the user's screen or read a
 saved Task MCP credential. A saved MCP credential does not authorize API reuse.
@@ -88,6 +73,23 @@ selected API read, `--use-runtime-key` is the alternative to private terminal en
 The client never discovers or loads a credential automatically. Results preserve
 the provider run, pending and non-matching candidates, reasoning, and citations;
 they are snapshots, not proof of a completed search or admitted partner.
+
+## Optional generic authentication check (no run ID)
+
+When no owned FindAll run ID is available, this separate check can test generic
+Monitor-list read permission. It is optional and never a FindAll setup gate:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m blueprint_pipeline.parallel_findall auth-check --prompt-key
+```
+
+It makes exactly one `GET https://api.parallel.ai/v1/monitors?limit=1`, using
+`x-api-key`. It creates no monitor or run and reports only authentication facts;
+monitor contents and IDs are not returned to the caller. Success proves only
+this list permission, not FindAll entitlement, billing readiness or a spend
+grant. No authentication probe was executed during setup. Account API apps and
+balance reads require a wider account OAuth token, which this utility does not
+request. The inspected FindAll contract does not provide a run-list endpoint.
 
 ## Guarded future creation (Python controller seam)
 
@@ -147,11 +149,50 @@ standard API contract. A timeout, HTTP failure or malformed receipt therefore
 leaves an unresolved claim requiring owner/provider reconciliation. Do not retry
 based on a guessed absence or treat a Monitor read as FindAll reconciliation.
 
-The Python call after **separate action-time authorization and controller wiring**
-is `client.create(reviewed_spec, operation_id=..., maximum_cost_usd=...,
-paid_resource_admission_grant=exact_grant, journal=owner_journal)`. This setup did
-not wire or execute it. Production integration/deployment and any later run remain
-with the sole release owner, distinct from the owner-managed console comparison.
+The direct Python call after separate action-time authorization is
+`client.create(reviewed_spec, operation_id=..., maximum_cost_usd=...,
+paid_resource_admission_grant=exact_grant, journal=owner_journal)`.
+The optional existing-ledger helper below supplies the concrete journal wiring.
+No paid call or default runtime activation was performed. Production release
+and later authorized runs remain with the sole release owner.
+
+## Existing owner-ledger wiring
+
+`parallel_findall_owner.create_with_owner_ledger()` reuses the existing research
+`Ledger` or `FirestoreLedger` interface. It creates no store or owner row, and
+changes no provider/tool selection, template, schedule, credential binding or
+issuer allowlist. A caller supplies the already configured client, exact opaque
+grant, existing daily owner record and the owner's current-authority check:
+
+```python
+from blueprint_pipeline.parallel_findall_owner import create_with_owner_ledger
+
+# Future owner-authorized call; not executed by setup.
+run = create_with_owner_ledger(
+    preconfigured_client, reviewed_spec,
+    ledger=existing_ledger, day=approved_day,
+    operation_id=approved_operation_id, maximum_cost_usd=approved_ceiling,
+    paid_resource_admission_grant=exact_grant,
+    current_authority=owner_check_current_authority,
+)
+```
+
+Call outside an already-held ledger lock. The helper holds the existing lock or
+lease across claim, the single create attempt and raw-receipt persistence. The
+authority check runs inside that scope after complete history reads and must
+return literal `True`; it must check current stop/scope/expiry/disclosure,
+pricing and remaining allowance. It receives no API key and cannot alter the
+actual request by editing its copied inputs. This is a check of existing owner
+authority, not a new grant issuer or an `allow_paid` switch.
+
+Claims are retained under `parallel_findall_submissions` in the existing row.
+The same operation ID is refused across all daily records in that owner ledger,
+including changed-body/restart/failure cases. Existing daily state, metadata and
+research/verification outputs stay unchanged. A known provider ID is committed
+before raw receipt serialization/storage. The unchanged receipt uses the existing
+immutable `YYYY-MM-DD-tool-findall-<operation SHA256>.json` artifact namespace;
+its bytes are read back and its digest retained. Storage or lease-release failure
+after submission leaves the claim held and reports any known ID for recovery.
 
 `AdmittedFindAllClient.cancel(findall_id)` sends one empty-body POST to
 `/v1beta/findall/runs/{findall_id}/cancel`, requiring the documented 204 response.
@@ -166,13 +207,20 @@ cancellation, extension, or enrichment is installed by setup.
 
 The code and synthetic checks do not establish a production binding, key
 validity, FindAll entitlement, budget grant, deployed caller or paid success.
-The authorized user first performs the private authentication check described
-above. A Monitor success remains only Monitor-read scope. A later authorized
-read of the user's existing FindAll run can verify that run's read scope; it
-still does not prove create authority. No live or paid proof was performed here.
-The owner then wires the existing authority/one-start controller to this journal
-interface and binds the runtime credential through the supported private flow.
-No new API key, storage grant, spending or infrastructure was created.
+The relevant private read check is the user's existing FindAll run, described
+above; generic Monitor authentication is optional and is not a prerequisite.
+That read verifies only the selected run's read scope, not creation authority.
+No live or paid proof was performed here.
+
+The concrete owner-store/one-start wiring is implemented. A future live call
+still requires private credential entry/binding and the existing owner's fresh
+exact-request grant and current-authority check. Existing hosted research is
+configured for native web or an explicitly approved Perplexity profile, with
+template networking disabled. Automatically registering/enabling FindAll as a
+tool/provider would change that access and spending scope; it is not activated
+by this setup. No new API key, storage/access grant, spending or infrastructure
+was created. These are future private configuration/authorization actions,
+not evidence that a Monitor check or paid proof must be run first.
 
 ## Verification/scoring consumer boundary
 
@@ -196,7 +244,8 @@ verification command and was not run here.
 ## Verification
 
 ```bash
-env -u PARALLEL_API_KEY PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m pytest -q tests/test_parallel_findall.py tests/test_parallel_findall_execution.py
+env -u PARALLEL_API_KEY PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m pytest -q tests/test_parallel_findall.py tests/test_parallel_findall_execution.py tests/test_parallel_findall_owner.py
+env -u PARALLEL_API_KEY PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src "$BLUEPRINT_FINDALL_PYTHON" -m pytest -q -m '' tests/test_parallel_findall_owner.py::test_raw_receipt_obeys_actual_firestore_artifact_contract
 ```
 
 Tests block networking, replace credential input with synthetic fixtures, verify
@@ -205,13 +254,21 @@ transport policy, response identity/shape, preservation of candidates/citations,
 secret-free failures, explicit credential-source selection, and no-run-ID
 authentication that does not expose monitor data. Execution fixtures check exact
 grant binding, claim-before-POST ordering, restart/changed-body duplicate refusal,
-ambiguous outcomes, persisted IDs and cancellation responses. No scientific,
-production-authentication, or paid-execution claim follows from these tests.
+ambiguous outcomes, persisted IDs and cancellation responses. Owner fixtures
+exercise the actual temporary SQLite ledger and the existing FirestoreLedger
+wrapper with a synthetic bridge, retained leases, cross-record replay refusal,
+current-authority checks, raw receipts and known-ID retention on storage failures.
+The actual JavaScript Firestore store accepts the generated receipt filename,
+preserves its bytes and enforces existing artifact immutability and lease fencing
+against an in-memory database. No scientific, production-authentication, or
+paid-execution claim follows from these tests.
 
 Official documentation checked on 2026-10-03:
 
 - [FindAll quickstart](https://docs.parallel.ai/findall-api/findall-quickstart)
 - [Create request contract](https://docs.parallel.ai/api-reference/findall/create-findall-run)
+- [Selected-run status read, rechecked 2026-10-04](https://docs.parallel.ai/api-reference/findall/retrieve-findall-run-status)
+- [Raw result snapshot, rechecked 2026-10-04](https://docs.parallel.ai/api-reference/findall/findall-run-result)
 - [Parallel CLI, authentication and dry-run semantics](https://docs.parallel.ai/integrations/cli)
 - [Monitor list read and API-key contract](https://docs.parallel.ai/api-reference/monitor/list-monitors)
 - [Account API token boundary](https://docs.parallel.ai/integrations/account-api)

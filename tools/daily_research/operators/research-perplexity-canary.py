@@ -691,6 +691,7 @@ def spend(api, row):
 
 
 class CanaryProvider(FencedProvider):
+    findall_from_worker_binding = False  # The frozen canary never advertises paid FindAll tools.
     stopped = staticmethod(lambda: False)
     clock = staticmethod(lambda: datetime.now(timezone.utc))
 

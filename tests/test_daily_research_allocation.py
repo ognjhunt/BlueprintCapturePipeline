@@ -86,7 +86,9 @@ def test_grant_for_a_sixty_minute_row_lasts_its_forty_five_minute_research_windo
     (control(direction(supersedes="a" * 64)), {}, "paid_expansion_direction_invalid"),
     (control(direction(version=True)), {}, "paid_expansion_direction_invalid"),
     (control(direction(sources=["exa", "exa"])), {}, "paid_expansion_direction_invalid"),
-    (control(direction(sources=["findall"])), {}, "paid_expansion_direction_invalid"),
+    (control(direction(sources=["exa", "parallel"])), {}, "paid_expansion_direction_invalid"),
+    (control(direction(sources=["findall", "exa"])), {}, "paid_expansion_direction_invalid"),
+    (control(direction(sources=["findall", "findall"])), {}, "paid_expansion_direction_invalid"),
     (control(direction(sources=[])), {}, "paid_expansion_direction_invalid"),
     (control(direction(approval_reference="PENDING-owner")), {}, "paid_expansion_direction_invalid"),
     (control(direction(approval_reference=" ")), {}, "paid_expansion_direction_invalid"),
@@ -246,7 +248,7 @@ def test_refused_record_keeps_bindings_and_names_the_store_code():
 
 @pytest.mark.parametrize("change", [
     {"limit_micros": 20_000_000}, {"per_start_max_micros": 10_000_000}, {"limit_micros": 200_000_000, "per_start_max_micros": 50_000_000},
-    {"grant_id": "0" * 64}, {"run_key": "blueprint-researcher:2026-10-06"}, {"sources": ["findall"]}, {"state": "maybe"},
+    {"grant_id": "0" * 64}, {"run_key": "blueprint-researcher:2026-10-06"}, {"sources": ["parallel"]}, {"state": "maybe"},
     {"valid_until": "not-a-time"}, {"valid_until": "2026-10-05T12:20:00"}, {"schema_version": "v0"}, {"extra": True}])
 def test_tampered_or_malformed_grants_are_refused(change):
     grant = {**frozen(), **change}
@@ -287,3 +289,82 @@ def test_direction_digest_is_canonical_and_copy_independent():
     assert a.digest(value) == a.digest(copy.deepcopy(dict(reversed(list(value.items())))))
     assert a.uri(a.digest(value)).startswith("gs://blueprint-8c1ca.appspot.com/operations/research/paid-expansion/")
     assert a.uri(a.digest(value)).endswith("/direction.json")
+
+
+# --- Parallel FindAll joins the same combined allowance ------------------------------------
+
+
+def findall_claim(cost, state="submission_unresolved", operation="call_a"):
+    operation_id = RUN + ":findall:" + operation
+    return {"operation_id": operation_id, "state": state, "findall_id": None,
+            "prepared": {"operation_id": operation_id, "maximum_cost_usd": cost}}
+
+
+def both(limit="10.00"):
+    return direction(per_run_limit_usd=limit, sources=["exa", "findall"])
+
+
+def test_findall_is_a_supported_source_that_a_direction_must_name():
+    assert a.SOURCES == ("exa", "findall")
+    assert a.direction_problem(both()) is None and a.direction_problem(direction(sources=["findall"])) is None
+    grant = a.grant(control(both()), row(), NOW)
+    assert grant["sources"] == ["exa", "findall"] and a.granted(grant) is None
+    assert a.problem(grant, [], 1_000_000, NOW, control=control(both()), source="findall") is None
+
+
+@pytest.mark.parametrize(("amount", "micros"), [
+    ("0.1", 100_000), ("0.10", 100_000), ("0.4", 400_000), ("1", 1_000_000), ("2.75", 2_750_000),
+    ("5", 5_000_000), ("100", 100_000_000), ("0", None), ("0.00", None), ("0.001", None), ("100.01", None),
+    ("01", None), ("1.", None), (".5", None), ("$1", None), ("1e1", None), (" 1", None), ("1２", None),
+    (1, None), (None, None),
+])
+def test_findall_reservation_amounts_are_exact_cents(amount, micros):
+    assert a.findall_micros(amount) == micros
+
+
+@pytest.mark.parametrize("state", ["submission_unresolved", "provider_id_recorded", "receipt_retained"])
+def test_findall_claims_debit_their_whole_maximum_whatever_their_state(state):
+    found = a.claims({a.FINDALL_FIELD: {"k1": findall_claim("2.5", state)}})
+    assert found == [{"source": "findall", "operation_sha256": "k1", "reserved_micros": 2_500_000}]
+    assert a.headroom(frozen(), found)["remaining_micros"] == 7_500_000
+
+
+def test_exa_and_findall_debit_one_combined_limit():
+    grant, owner = a.grant(control(both()), row(), NOW), control(both())
+    value = {"exa_expansion": {"cap_micros": 4_000_000, "intent_sha256": "e" * 64},
+             a.FINDALL_FIELD: {"k1": findall_claim("3"), "k2": findall_claim("2", operation="call_b")}}
+    found = a.claims(value)
+    assert [claim["source"] for claim in found] == ["exa", "findall", "findall"]
+    assert a.headroom(grant, found) == {"reserved_micros": 9_000_000, "remaining_micros": 1_000_000,
+                                        "max_start_micros": 1_000_000}
+    assert a.problem(grant, found, 1_000_000, NOW, control=owner, source="findall") is None
+    assert a.problem(grant, found, 1_000_001, NOW, control=owner, source="findall") == "paid_expansion_cap_exceeds_remaining"
+    assert a.problem(grant, found, 1_000_001, NOW, control=owner, source="exa") == "paid_expansion_cap_exceeds_remaining"
+    assert a.diagnostic({**value, "paid_expansion_grant": grant})["remaining_micros"] == 1_000_000
+
+
+def test_a_findall_start_above_the_per_start_maximum_is_refused():
+    grant, owner = a.grant(control(both()), row(), NOW), control(both())
+    assert a.problem(grant, [], 5_000_000, NOW, control=owner, source="findall") is None
+    assert a.problem(grant, [], 5_000_001, NOW, control=owner, source="findall") == (
+        "paid_expansion_cap_exceeds_per_start_maximum")
+    assert a.problem(grant, [], None, NOW, control=owner, source="findall") == "paid_expansion_cap_invalid"
+
+
+def test_a_direction_that_omits_findall_admits_no_findall_start():
+    exa_only = a.grant(control(), row(), NOW)  # Frozen from a direction naming only Exa.
+    assert a.problem(exa_only, [], 1_000_000, NOW, control=control(both()), source="findall") == (
+        "paid_expansion_source_not_directed")
+    assert a.problem(exa_only, [], 1_000_000, NOW, control=control(both()), source="exa") is None
+    grant = a.grant(control(both()), row(), NOW)  # The live direction can only tighten it.
+    assert a.problem(grant, [], 1_000_000, NOW, control=control(), source="findall") == (
+        "paid_expansion_source_not_directed")
+    assert a.problem(grant, [], 1_000_000, NOW, control=control(both(), enabled=False), source="findall") == (
+        "paid_expansion_disabled")
+
+
+@pytest.mark.parametrize("journal", [{"k1": {"prepared": {"maximum_cost_usd": "1e1"}}}, {"k1": "claim"},
+                                     ["not", "a", "journal"], {"k1": {"operation_id": "x"}}])
+def test_a_malformed_findall_claim_makes_every_debit_unknowable(journal):
+    found = a.claims({a.FINDALL_FIELD: journal})
+    assert a.problem(frozen(), found, 1_000_000, NOW, control=control()) == "paid_expansion_claims_unverified"

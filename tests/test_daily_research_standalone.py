@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from tools.daily_research.runner import Refusal, configuration
-from tools.daily_research.standalone import FILES, PREFIX, build
+from tools.daily_research.standalone import BLUEPRINT_RUNTIME_FILES, FILES, PREFIX, RUNTIME_PREFIX, build
 
 SOURCE = Path(__file__).resolve().parents[1]
 
@@ -30,6 +30,10 @@ def repository(tmp_path):
         target = root / PREFIX / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(SOURCE / PREFIX / name, target)
+    for name in BLUEPRINT_RUNTIME_FILES:
+        target = root / "src/blueprint_pipeline" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SOURCE / "src/blueprint_pipeline" / name, target)
     # Even tracked unrelated/private inputs must not enter the portable release.
     (root / ".env").write_text("SYNTHETIC_PRIVATE_INPUT=do-not-package\n")
     (root / PREFIX / "crm.json").write_text('{"private": "synthetic"}')
@@ -52,7 +56,9 @@ def test_exact_commit_bundle_is_deterministic_and_preserves_hashes(repository, t
     assert archive.stat().st_size == first["bytes"]
     assert archive.stat().st_mode & 0o777 == 0o600
     with tarfile.open(archive) as package:
-        assert set(package.getnames()) == {PREFIX + name for name in FILES} | {"manifest.json"}
+        assert set(package.getnames()) == ({PREFIX + name for name in FILES}
+            | {RUNTIME_PREFIX + name for name in BLUEPRINT_RUNTIME_FILES}
+            | {"manifest.json"})
         manifest = json.load(package.extractfile("manifest.json"))
         assert manifest["source_commit"] == revision
         assert manifest["activation_performed"] is False
@@ -137,6 +143,33 @@ def test_export_runs_isolated_without_sdk_or_pipeline(repository, tmp_path):
                           str(isolated / PREFIX / "standalone.config.example.json"),
                           str(tmp_path / "state")], capture_output=True, text=True, check=True)
     assert json.loads(run.stdout) == []
+
+
+@pytest.mark.slow
+def test_optional_findall_import_uses_only_exported_stdlib_closure(repository, tmp_path):
+    root, revision = repository
+    receipt = build(revision, tmp_path / "output", root)
+    isolated = tmp_path / "isolated"
+    isolated.mkdir()
+    with tarfile.open(tmp_path / "output" / receipt["archive"]) as package:
+        package.extractall(isolated, filter="data")
+    code = (
+        "import json, pathlib, socket, sys; sys.path.insert(0, sys.argv[1]); "
+        "socket.create_connection = lambda *a, **k: (_ for _ in ()).throw(AssertionError('network')); "
+        "from tools.daily_research import findall; "
+        "assert not any(m.startswith(('openai', 'torch')) for m in sys.modules); "
+        "assert all(pathlib.Path(m.__file__).is_relative_to(sys.argv[1]) "
+        "for n, m in sys.modules.items() if n.startswith('blueprint_pipeline')); "
+        "print(json.dumps(findall.runtime_status()))"
+    )
+    run = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(isolated)],
+                         capture_output=True, text=True, check=True,
+                         env={"PYTHONDONTWRITEBYTECODE": "1"}, timeout=30)
+    status = json.loads(run.stdout)
+    assert status["module_imported"] is True
+    assert status["credential_binding_present"] is False
+    assert status["callable_handler_installed"] is False
+    assert status["production_binding_verified"] is False
 
 
 def test_disabled_v3_configuration_requires_real_cutover():

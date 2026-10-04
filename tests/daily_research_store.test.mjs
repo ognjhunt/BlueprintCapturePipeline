@@ -658,3 +658,157 @@ test('a run manifest written by an older bridge admits no new paid claim',async(
   await store.put(regranted);
   await assert.rejects(store.put({...regranted,exa_expansion:exaClaim(regranted)}),/paid_expansion_grant_required/);
 });
+
+// Parallel FindAll claims debit the same frozen grant (tools/daily_research/findall.py).
+// The production combination: the Exa profile and the pinned FindAll registry on one row.
+const findallRow=date=>({...row(),date,run_key:`blueprint-researcher:${date}`,findall_profile:'parallel-findall-v1',
+  expansion_profile:'exa-guarded-v1',
+  metadata:{...row().metadata,findall_tools_digest:'d'.repeat(64),expansion_profile:'exa-guarded-v1'}});
+function findallEntry(value,operation,cost,findallId=null) {
+  const operation_id=`${value.run_key}:findall:${operation}`,binding='sha256:'+createHash('sha256').update(operation).digest('hex');
+  const prepared={schema_version:'parallel_findall_submission.v1',resource_class:'parallel_findall',operation_id,method:'POST',
+    url:'https://api.parallel.ai/v1beta/findall/runs',body_json:{objective:'US sites',entity_type:'company',generator:'base',
+      match_limit:5,match_conditions:[{name:'task',description:'Exact site task'}]},maximum_cost_usd:cost,
+    allocation_binding_digest:binding,execution_authorized:false,network_called:false};
+  return [createHash('sha256').update(operation_id).digest('hex'),{schema_version:'blueprint.findall-owner-submission.v1',
+    operation_id,allocation_binding_digest:binding,prepared,state:'submission_unresolved',findall_id:findallId}];
+}
+const withClaims=(value,...entries)=>({...value,state:'running',parallel_findall_submissions:Object.fromEntries(entries)});
+async function findallFixture(sources=['exa','findall']) {
+  const fixtureValue=await paidFixture();
+  const current=entry(direction(1,null,{sources}));await setDirection(fixtureValue.store,null,current);
+  const value=findallRow('2026-10-05');
+  value.paid_expansion_grant=grantFor(current,value,{sources});
+  await fixtureValue.store.put(value);
+  return {...fixtureValue,current,value};
+}
+
+test('FindAll and Exa claims debit one frozen grant within its per-start maximum',async()=>{
+  const {db,store,value}=await findallFixture();
+  const first=findallEntry(value,'call_a','4'),second=findallEntry(value,'call_b','2.5');
+  await store.put(withClaims(value,first));
+  await store.put(withClaims(value,first,second));
+  assert.deepEqual(Object.keys(db.values.get(`${ROOT}/runs/${value.date}`).findall_claims).sort(),[first[0],second[0]].sort());
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).findall_unbound,false);
+  // $4 + $2.50 + a $4 Exa cap is $10.50 > $10: refused in the same transaction as the claim.
+  await assert.rejects(store.put({...withClaims(value,first,second),exa_expansion:exaClaim(value,4000000)}),
+    /paid_expansion_reservation_exceeds_grant/);
+  await assert.rejects(store.put(withClaims(value,first,second,findallEntry(value,'call_c','3.51'))),
+    /paid_expansion_reservation_exceeds_grant/);
+  await assert.rejects(store.put(withClaims(value,first,second,findallEntry(value,'call_d','5.01'))),
+    /paid_expansion_reservation_exceeds_grant/);
+  await store.put({...withClaims(value,first,second),exa_expansion:exaClaim(value,3500000)});
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).exa_expansion_intent_digest!==null,true);
+});
+
+test('a FindAll claim is append-only and keeps its provider ID',async()=>{
+  const {store,value}=await findallFixture();
+  const first=findallEntry(value,'call_a','1');
+  await store.put(withClaims(value,first));
+  await assert.rejects(store.put({...value,state:'running'}),/findall_claim_already_consumed/);
+  const lowered=findallEntry(value,'call_a','0.5');
+  await assert.rejects(store.put(withClaims(value,[first[0],lowered[1]])),/findall_claim_already_consumed/);
+  const known=[first[0],{...first[1],findall_id:'findall_synthetic',state:'receipt_retained',receipt_file:'x'}];
+  await store.put(withClaims(value,known));
+  await assert.rejects(store.put(withClaims(value,[first[0],{...known[1],findall_id:'findall_other'}])),
+    /findall_original_id_changed/);
+  await assert.rejects(store.put(withClaims(value,[first[0],{...known[1],findall_id:null}])),/findall_original_id_changed/);
+});
+
+for(const [label,grantChange,controlChange,code] of [
+  ['a grant that omits FindAll',{sources:['exa']},null,'paid_expansion_grant_not_admitted'],
+  ['the owner brake',null,fixture=>setDirection(fixture.store,fixture.current.sha256,fixture.current,false),
+    'paid_expansion_grant_not_admitted'],
+  ['a changed release',null,fixture=>{fixture.db.values.get(ROOT).source_commit='e'.repeat(40);},
+    'paid_expansion_grant_not_admitted'],
+  ['a refused grant',{state:'refused'},null,'paid_expansion_grant_required'],
+]) test(`${label} refuses a new FindAll claim`,async()=>{
+  const fixture=await findallFixture();
+  const value=findallRow('2026-10-06');
+  // Grant changes bind at the durable intent; control changes apply to a later claim.
+  value.paid_expansion_grant=grantChange?.state==='refused'?{schema_version:'blueprint.research-paid-expansion-grant.v1',
+    state:'refused',code:'paid_expansion_disabled',run_key:value.run_key,frozen_at:'2026-10-05T12:00:00+00:00',
+    direction_sha256:null}:grantFor(fixture.current,value,{sources:['exa','findall'],...grantChange});
+  await fixture.store.put(value);
+  if(controlChange) await controlChange(fixture);
+  await assert.rejects(fixture.store.put(withClaims(value,findallEntry(value,'call_a','1'))),new RegExp(code));
+});
+
+test('a direction without FindAll freezes a grant that cannot admit one',async()=>{
+  const {store,value}=await findallFixture(['exa']);
+  await assert.rejects(store.put(withClaims(value,findallEntry(value,'call_a','1'))),/paid_expansion_grant_not_admitted/);
+  await store.put({...value,state:'running',exa_expansion:exaClaim(value,2000000)});
+});
+
+test('FindAll claims need the pinned profile and an exact owner-journal shape',async()=>{
+  const {store,value}=await findallFixture();
+  const [key,claim]=findallEntry(value,'call_a','1');
+  await assert.rejects(store.put(withClaims({...value,findall_profile:undefined},[key,claim])),/findall_profile_invalid/);
+  for(const bad of [[key,{...claim,operation_id:'blueprint-researcher:2026-10-04:findall:call_a'}],
+      ['0'.repeat(64),claim],[key,{...claim,prepared:{...claim.prepared,maximum_cost_usd:'1e1'}}],
+      [key,{...claim,prepared:{...claim.prepared,resource_class:'gpu_canary'}}],
+      [key,{...claim,allocation_binding_digest:'sha256:'+'0'.repeat(64)}]])
+    await assert.rejects(store.put(withClaims(value,bad)),/findall_claim_binding_invalid/);
+});
+
+test('a manifest an older bridge rewrote keeps its FindAll claims and admits no new one',async()=>{
+  const {db,store,value}=await findallFixture();
+  const first=findallEntry(value,'call_a','1');
+  await store.put(withClaims(value,first));
+  delete db.values.get(`${ROOT}/runs/${value.date}`).findall_claims; // Older bridge rewrite.
+  await store.put(withClaims(value,first));
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).findall_unbound,true);
+  await assert.rejects(store.put(withClaims(value,first,findallEntry(value,'call_b','1'))),/paid_expansion_grant_required/);
+  await assert.rejects(store.put({...value,state:'running'}),/findall_claim_already_consumed/);
+});
+
+test('portable snapshots carry every FindAll receipt with its digest',async()=>{
+  const {store,value}=await findallFixture();
+  const raw=Buffer.from('{"findall_id":"findall_synthetic"}\n'),hash=createHash('sha256').update(raw).digest('hex');
+  const file=`${value.date}-tool-findall-${'f'.repeat(64)}.json`;
+  await store.filePut(file,raw.toString('base64'));
+  const [key,claim]=findallEntry(value,'call_a','1');
+  const retained=withClaims(value,[key,{...claim,findall_id:'findall_synthetic',state:'receipt_retained',
+    receipt_file:file,receipt_sha256:hash}]);
+  await store.put(retained);
+  const snapshot=await store.snapshot(value.date);
+  assert.equal(Buffer.from(snapshot.files[file.slice(value.date.length+1,-5)],'base64').toString(),raw.toString());
+  await store.put({...retained,parallel_findall_reads:{call_read:{file,sha256:'0'.repeat(64),bytes:raw.length}}});
+  await assert.rejects(store.snapshot(value.date),/findall_receipt_digest_mismatch/);
+});
+
+
+test('FindAll paged snapshots export all evidence and reject missing or mixed parts',async()=>{
+  const {store,value}=await findallFixture();
+  const hash=raw=>createHash('sha256').update(raw).digest('hex');
+  const encode=value=>Buffer.from(JSON.stringify(value)+'\n');
+  const schema_version='blueprint.findall-snapshot-parts.v1';
+  const snapshot={run:{findall_id:'findall_synthetic'},candidates:[{status:'matched',future:'🚀'.repeat(25000)}],unknown:true};
+  const raw=encode(snapshot),text=raw.toString(),snapshot_sha256=hash(raw),parts=[];
+  const file=`${value.date}-tool-findall-read-${'a'.repeat(64)}.json`;
+  const chars=[...text];
+  for(let page=0;page*24000<chars.length;page++) {
+    const bytes=encode({schema_version,snapshot_sha256,page,json_fragment:chars.slice(page*24000,(page+1)*24000).join('')});
+    const name=file.slice(0,-5)+`-part-${String(page).padStart(5,'0')}.json`;
+    await store.filePut(name,bytes.toString('base64'));
+    parts.push({file:name,sha256:hash(bytes),bytes:bytes.length});
+  }
+  const manifest={schema_version,snapshot_sha256,snapshot_bytes:raw.length,parts};
+  const encoded=encode(manifest);
+  await store.filePut(file,encoded.toString('base64'));
+  const receipt={file,sha256:hash(encoded),bytes:encoded.length,...manifest};
+  const retained={...withClaims(value,findallEntry(value,'call_a','1')),
+    parallel_findall_reads:{call_read:{operation:'result',findall_id:'findall_synthetic',...receipt}}};
+  await store.put(retained);
+  const exported=await store.snapshot(value.date);
+  assert.equal(exported.files[file.slice(value.date.length+1,-5)],encoded.toString('base64'));
+  for(const part of parts) assert.ok(exported.files[part.file.slice(value.date.length+1,-5)]);
+  await store.put({...retained,parallel_findall_reads:{call_read:{...receipt,parts:parts.slice(0,-1)}}});
+  await assert.rejects(store.snapshot(value.date),/findall_snapshot_binding_invalid/);
+  const invalidFile=file.replace('a'.repeat(64),'b'.repeat(64));
+  const bad=encode({...manifest,snapshot_sha256:'0'.repeat(64)});
+  await store.filePut(invalidFile,bad.toString('base64'));
+  await store.put({...retained,parallel_findall_reads:{call_read:{...receipt,file:invalidFile,
+    sha256:hash(bad),bytes:bad.length,snapshot_sha256:'0'.repeat(64)}}});
+  await assert.rejects(store.snapshot(value.date),/findall_snapshot_binding_invalid/);
+});

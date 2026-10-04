@@ -129,9 +129,18 @@ class FirestoreLedger:
 
 
 class FencedProvider(Provider):
+    # The daily worker's default provider. Like EXA_API_KEY for Exa, PARALLEL_API_KEY
+    # in the worker environment (presence only) adds the FindAll application handler;
+    # every create is still admitted by the run's shared paid expansion grant.
+    findall_from_worker_binding = True
+
     def __init__(self, ledger, api_key):
         super().__init__(api_key)
         self.ledger = ledger
+        if self.findall_from_worker_binding:
+            from tools.daily_research import findall
+            # None without the binding: no FindAll tool is advertised and research is unchanged.
+            self.findall_application_tools = findall.owner_handler(self)
 
     def create(self, payload):
         self.ledger.bridge.call("create_check", day=payload["metadata"]["run_key"].split(":", 1)[1], metadata=payload["metadata"])

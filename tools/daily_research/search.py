@@ -186,7 +186,7 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools(publication_profile=None, history_profile=None, expansion_profile=None):
+def tools(publication_profile=None, history_profile=None, expansion_profile=None, findall_profile=None):
     declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
@@ -213,6 +213,11 @@ def tools(publication_profile=None, history_profile=None, expansion_profile=None
     if expansion_profile == "exa-guarded-v1":
         from tools.daily_research.expansion import tools as expansion_tools
         declared.extend(expansion_tools())
+    if findall_profile is not None:
+        from tools.daily_research import findall
+        if findall_profile != findall.PROFILE:
+            raise ToolFailure("findall_tool_registry_binding_changed")
+        declared.extend(findall.tools())
     return declared
 
 
@@ -459,6 +464,29 @@ class ApplicationTools:
                 "search_cost_estimate_usd": "0.001", "billing_receipt_verified": False}
 
 
+def assert_findall_caller(row, ledger, api, *, registry=True):
+    """Run before outer lifecycle writes of a FindAll-pinned row, outside their persistence handlers.
+
+    With a handler, the held lease and the stored row's call, FindAll and Exa claim
+    fields must match this caller's row, so a stale row can never erase a claim.
+    Without one (this process holds no FindAll binding), the pinned session continues
+    ordinary research and its FindAll calls report an actionable unavailable result.
+    Cancellation passes registry=False: a registry change never blocks a cancel.
+    """
+    if row.get("findall_profile") is None:
+        return
+    from tools.daily_research import findall
+    from tools.daily_research.runner import Refusal
+    handler = getattr(api, "findall_application_tools", None)
+    if handler is not None:
+        findall.installed_profile(api)
+        if handler.ledger is not ledger:
+            raise Refusal("findall_tool_ledger_binding_changed")
+        handler.assert_fresh_caller(row)
+    if registry:
+        findall.check_binding(row)
+
+
 def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     """Serve only pending exact-turn actions, saving intent/result before mutations."""
     from tools.daily_research.runner import (
@@ -472,6 +500,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
 
     if row.get("search_provider") != PROFILE:
         return False
+    assert_findall_caller(row, ledger, api)
     if len(canonical(row).encode()) > MAX_RECORD:
         raise Refusal("research_tool_record_resource_ceiling")
     tid = row.get("publication", {}).get("turn_id") if phase == "publication" else row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
@@ -495,6 +524,15 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     admitted_names |= early_publication
     expansion_names = {expansion.START, expansion.READ} if row.get("expansion_profile") == expansion.PROFILE else set()
     admitted_names |= expansion_names
+    findall_handler = getattr(api, "findall_application_tools", None)
+    findall_names = set()
+    stable_errors = (ToolFailure, expansion.ExpansionError)
+    if row.get("findall_profile") is not None:
+        # Only a session whose intent froze the FindAll registry may call it.
+        from tools.daily_research import findall
+        findall_names = set(findall.NAMES)
+        admitted_names |= findall_names
+        stable_errors += findall.stable_errors()
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":
@@ -553,19 +591,23 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                                 else {})
                             result = expansion.execute(action["name"], action.get("arguments"), row, ledger,
                                 phase=phase, now=clock(), admit=lambda current: api.expansion_admit(current, phase), **context)
+                        elif action["name"] in findall_names:
+                            # Admission is the shared paid expansion allowance (findall.py).
+                            result = (findall_handler.execute(action, row=row, phase=phase)
+                                      if findall_handler is not None else findall.unavailable(action["name"]))
                         else:
                             result = api.application_tool(action["name"], action.get("arguments"))
                         output = canonical(result)
                     if len(output.encode()) > MAX_RESPONSE:
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
-                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names else True, "output": output}
+                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names | findall_names else True, "output": output}
                     if outcome["success"] is False:
                         failure = result.get("error") or {"code": result.get("reason") or "research_tool_unavailable_no_replay"}
                         if not result.get("error") and result.get("action"):
                             failure["guidance"] = result["action"]
                         outcome["error"] = canonical(failure)
-                except (ToolFailure, expansion.ExpansionError) as exc:
-                    # Both carry fixed, secret-free codes the agent can act on.
+                except stable_errors as exc:
+                    # Tool, Exa and FindAll failures carry fixed, secret-free codes the agent can act on.
                     failure = {"code": str(exc)}
                     outcome = {"success": False, "error": canonical(failure),
                                "output": canonical({"ok": False, "error": failure})}
