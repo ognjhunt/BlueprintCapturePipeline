@@ -15,6 +15,18 @@ Budget/time interruption and access blockage remain explicitly incomplete.
 Existing CRM duplicates and
 robot deployments never count toward the target. Incomplete coverage is honest.
 
+Employer job postings are another source of site-linked physical-duty evidence,
+not a prerequisite or proof of automation interest. The runtime and
+[`saved-agent-discovery-policy.md`](saved-agent-discovery-policy.md) direct the
+agent to retain posting identity, quoted duties, original dates and observed
+application status, with unknown currentness explicit. Use existing evidence
+fields for supported claims and concise findings for requisition/status/source
+details and unresolved site joins; no new candidate schema or automatic job
+scraper is introduced. Posting aliases/reposts and facility/task duplicates are
+separate identities. All original evidence remains in the packet/duplicate
+cohort; hiring-led conversation or evaluation improvement remains a hypothesis
+until actual downstream outcomes are recorded.
+
 ## Exact bindings and activation gate
 
 - Application worker only: owner-managed `PERPLEXITY_API_KEY`
