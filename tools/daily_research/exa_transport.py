@@ -93,7 +93,7 @@ class _EvidenceParser:
                         data = []
                 elif line.startswith("data:"):
                     value = line[5:]
-                    data.append(value[1:] if value.startswith(" ") else value)
+                    data.append(value.removeprefix(" "))
             if data:
                 self._fail("exa_mcp_sse_incomplete")
             return messages
@@ -183,7 +183,7 @@ class ExaTransport(_EvidenceParser):
         if self.receipt_sink:
             try:
                 self.receipt_sink(copy.deepcopy(record))
-            except Exception:
+            except Exception:  # noqa: BLE001 - sanitize sink failures after retaining the original ACK
                 self._fail("exa_mcp_receipt_retention_failed")
 
     def _post(self, message, deadline, operation):
@@ -205,7 +205,7 @@ class ExaTransport(_EvidenceParser):
                   "request_sha256": hashlib.sha256(body).hexdigest(), "response_complete": False}
         try:
             status, response_headers, raw = self.request_io(ENDPOINT, headers, body, remaining, self.max_bytes)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - retain uncertain writes without leaking exception details
             code = "exa_mcp_request_timeout" if isinstance(error, TimeoutError) or str(error) == "research_tool_absolute_deadline" else "exa_mcp_transport_unavailable"
             self._retain({**record, "error_code": code})
             self._fail(code)

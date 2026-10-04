@@ -251,7 +251,7 @@ def test_actual_http_adapter_is_fixed_host_bounded_and_closes_without_redirect_o
         status = 302
 
     monkeypatch.setattr(module.http.client, "HTTPSConnection", Connection)
-    status, headers, raw = module._http_post(ENDPOINT, {}, b"request", 2, 15)
+    status, _headers, raw = module._http_post(ENDPOINT, {}, b"request", 2, 15)
     assert status == 302 and raw == b"redirect body"
     assert calls == [("connect", "mcp.exa.ai", 2), ("post", "POST", "/mcp?tools=agent_run", b"request"),
                      ("read", 16), ("close",)]

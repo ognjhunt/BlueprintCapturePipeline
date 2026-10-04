@@ -1,19 +1,19 @@
 """The actual daily function boundary, without paid providers or credentials."""
-import json
 import hashlib
+import json
 from copy import deepcopy
 from datetime import timedelta
 
 import pytest
 
-from tests.test_daily_research_expansion import ARGS, SCHEMA, Transport
 from tests.test_daily_research_exa_transport import Wire
-from tests.test_daily_research_runner import DAY, NOW
+from tests.test_daily_research_expansion import ARGS, SCHEMA, Transport
 from tests.test_daily_research_render import fixture as render_fixture
+from tests.test_daily_research_runner import DAY, NOW
 from tests.test_daily_research_search import fixture as search_fixture
 from tools.daily_research import expansion, render, search
-from tools.daily_research.exa_transport import ExaTransport
 from tools.daily_research.consumer import Consumer
+from tools.daily_research.exa_transport import ExaTransport
 from tools.daily_research.runner import Refusal, canonical, configuration
 
 
@@ -115,7 +115,7 @@ def test_unknown_native_ack_does_not_stop_next_days_ordinary_research(fixture):
 
 @pytest.mark.parametrize("fail_recovered_pointer", [False, True])
 def test_daily_resume_recovers_retained_original_ack_after_deadline_without_credentials_or_post(fixture, monkeypatch, fail_recovered_pointer):
-    runner, api, ledger, row = setup(fixture)
+    runner, _api, ledger, row = setup(fixture)
     monkeypatch.setenv("EXA_API_KEY", "synthetic-not-a-real-key")
     wire = Wire(record={"id": "agent_run_synthetic", "status": "completed", "output": {"sites": []}})
 

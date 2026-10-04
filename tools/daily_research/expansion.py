@@ -190,9 +190,8 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
                 or not args["query"].strip() or len(args["query"].encode()) > 24000
                 or type(args.get("max_cost_micros")) is not int or not 0 < args["max_cost_micros"] <= LIMIT_MICROS):
             raise ExpansionError("expansion_start_arguments_invalid")
-        if claim:
-            if claim["intent"]["request"] != {"query": args["query"], "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}:
-                raise ExpansionError("expansion_already_claimed_different_request")
+        if claim and claim["intent"]["request"] != {"query": args["query"], "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}:
+            raise ExpansionError("expansion_already_claimed_different_request")
     if claim and claim.get("terminal_receipt"):
         record = _read_receipt(ledger, claim["terminal_receipt"])
         if (record.get("intent_sha256") != claim["intent_sha256"]
