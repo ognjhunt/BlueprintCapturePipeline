@@ -692,8 +692,13 @@ def test_v3_non_task_facts_only_supplement_background_not_required_capability(fi
     with pytest.raises(Refusal, match="cached_positive_capability_not_supported"):
         validate_v3(result, ctx, policy)
     result["candidates"][0]["evidence"][1]["role"] = "background"
-    with pytest.raises(Refusal, match="task_capability_geography_evidence_required"):
+    # v3 makes capability optional at discovery, but a cached background fact can
+    # never supply it: the robot match must stay unknown without live support.
+    with pytest.raises(Refusal, match="unsupported_robot_match_must_remain_unknown"):
         validate_v3(result, ctx, policy)
+    unknown = deepcopy(result)
+    unknown["candidates"][0]["potential_robot_match"] = "unknown"
+    validate_v3(unknown, ctx, policy)
     live = deepcopy(result["candidates"][0]["evidence"][0])
     live.update(role="capability", evidence_level="demonstrated_capability")
     result["candidates"][0]["evidence"].append(live)

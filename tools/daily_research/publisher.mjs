@@ -58,7 +58,10 @@ export function publicationVerification(row,destination,now=Date.now()) {
       && result.assessment.candidate_digest===result.candidate_digest;}catch {}
     if(row.review?.source_support_verified!==true || result?.status!=='verified'
         || result.eligible_for_qualified_promotion!==true || result.duplicate_of || !bound
-        || result.assessment.version!=='blueprint.lead-verification.v1'
+        || (result.version==='blueprint.lead-verification-result.v2'
+          ? (!Object.hasOwn(result.assessment,'version') && !Object.hasOwn(result.assessment,'schema_version'))
+            || ['version','schema_version'].some(key=>Object.hasOwn(result.assessment,key) && result.assessment[key]!=='blueprint.lead-verification.v1')
+          : result.assessment.version!=='blueprint.lead-verification.v1')
         || !(Date.parse(result.assessment.assessed_at)<=now && now<Date.parse(result.assessment.valid_until))) {
       reasons.push(`${candidate.candidate_key || candidate.organization || 'candidate'}: retain a current, exact evidence assessment and protected verified review before promotion; missing, expired, duplicate or contradicted evidence remains ineligible.`);
       if(Array.isArray(result?.reasons)) reasons.push(...result.reasons);
@@ -82,7 +85,7 @@ function bind(row, destination, now=Date.now()) {
   if (destination === 'sheets' && (delivery.payload.sheet_id !== SHEET || delivery.payload.tab !== 'Prospects'))
     fail('publication_destination_invalid');
   if (destination === 'notion' && delivery.payload.parent_id !== NOTION) fail('publication_destination_invalid');
-  if (!Array.isArray(delivery.payload.candidates) || delivery.payload.candidates.length > 100)
+  if (!Array.isArray(delivery.payload.candidates) || Buffer.byteLength(delivery.payload_json)>2000000)
     fail('publication_candidates_invalid');
   // GET-only reconciliation proves an existing exact effect. Legacy or expired
   // assessments cannot authorize a new claim, but cannot erase its readback.
@@ -113,11 +116,11 @@ export function planSheets(row, snapshot, now=Date.now()) {
   const rows = d.payload.candidates.map(c => {
     if (++sequence > 999999) fail('publication_crm_id_capacity');
     const task = c.evidence.find(e => e.role === 'task'), capability = c.evidence.find(e => e.role === 'capability');
-    if (!task || !capability || !['unqualified','needs_review'].includes(c.qualification_status))
+    if (!task || !capability && c.potential_robot_match!=='unknown' || !['unqualified','needs_review'].includes(c.qualification_status))
       fail('publication_candidate_scope_invalid');
     return [`BP-${String(sequence).padStart(6,'0')}`,c.organization,'Facility / site',c.site,'','',
       'Needs recheck','',c.potential_robot_match,task.url,'Research','',c.proposed_next_action+'\n'+marker,'',c.task,
-      capability.url,'Unverified',c.location,row.date];
+      capability?.url || '','Unverified',c.location,row.date];
   });
   const body = JSON.stringify({majorDimension:'ROWS',values:rows});
   return {destination:'sheets',key:d.key,payload_digest:d.payload_digest,body_json:body,request_digest:sha(body),

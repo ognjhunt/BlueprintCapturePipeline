@@ -166,8 +166,8 @@ RULES = {
     "output_schema_invalid": "The document must be one JSON object with exactly the contract's top-level fields, each of the contract type.",
     "output_version_or_snapshot_binding_invalid": "Copy schema_version blueprint.daily-research.v{version} and the trusted snapshot_content_hash exactly.",
     "output_refresh_policy_binding_invalid": "Copy the trusted refresh_policy_hash exactly.",
-    "output_date_or_count_invalid": "checked_date is the run date {day}; candidates is a list of at most {limit} entries.",
-    "output_summary_invalid": "findings, blockers and proposed_next_actions are lists of at most 20 nonempty strings of at most 2000 characters.",
+    "output_date_or_count_invalid": "checked_date is the run date {day}; candidates is a list within the active contract's byte/resource envelope{candidate_limit}.",
+    "output_summary_invalid": "findings, blockers and proposed_next_actions are lists of nonempty strings of at most 2000 characters{summary_limit}; retain full v3 discovery separately from display.",
     "discovery_coverage_invalid": "Report coverage with its exact fields: query/page counts, branches, rejections, stop and shortfall reasons, scope, unresolved branches and completion state.",
     "discovery_scope_or_completion_invalid": "defined_run_scope is nonempty; completion_state is coverage_complete, budget_interrupted, time_interrupted or access_blocked.",
     "discovery_completion_has_unresolved_branches": "coverage_complete cannot have unresolved promising branches; resolve them or report the honest interrupted state.",
@@ -176,7 +176,13 @@ RULES = {
     "candidate_field_invalid": "Use a supported nonempty string of at most 2000 characters, or quarantine the unsupported candidate.",
     "candidate_claim_ceiling_invalid": "confidence is low, medium or high; qualification_status is unqualified or needs_review, never qualified.",
     "candidate_unknowns_required": "unknowns is a nonempty list (at most 20) of nonempty strings; unverified availability, interest or deployment belongs here.",
-    "candidate_evidence_required": "evidence is a list of 3 to 12 entries.",
+    "candidate_evidence_required": "evidence is a list of {evidence_min} to 12 entries.",
+    "task_geography_evidence_required": "Retain supported task and geography evidence for raw discovery. Robot capability is optional; never invent evidence.",
+    "unsupported_robot_match_must_remain_unknown": "Without capability evidence, potential_robot_match is exactly unknown. Preserve the sourced site/task discovery.",
+    "discovery_inventory_record_resource_ceiling_raw_retained": "This original inventory record is retained in the source artifact but exceeds the page byte envelope. Preserve its source/provenance and report unresolved size; do not silently omit the record or claim complete inventory retention.",
+    "discovery_inventory_invalid": "Each inventory record has operator, site, location, task_hypothesis (null when unknown), actual source_urls, evidence_gap and disposition (candidate/unresolved/rejected/learning/duplicate). Separate sites stay separate; inventory cannot qualify a lead.",
+    "research_packet_resource_ceiling_use_inventory": "Everything except discovery_inventory enters the 500,000-byte review packet. Move thin, unresolved, duplicate and learning discoveries into discovery_inventory, which is retained losslessly in pages, and keep formal candidates and display lists inside the packet; never drop a discovery.",
+    "research_output_resource_ceiling_raw_retained": "The complete artifact is retained. Batch the inventory within the 2,000,000-byte artifact envelope; never silently trim or fabricate completion.",
     "task_capability_geography_evidence_required": "Keep supported task, capability and geography evidence; a candidate missing one stays unknown or is quarantined.",
     "operator_task_source_required": "At least one task evidence entry is an operator source for the actual work; a delegated employer job board is allowed and QA verifies affiliation.",
     "source_url_invalid": "Use the actual public http(s) source URL with a hostname: no credentials, IP addresses or malformed brackets.",
@@ -215,7 +221,9 @@ def explain(row, code):
     template = RULES.get(code, "Return the same research contract with supported claims and honest unknowns; do not rewrite trusted context hashes.")
     from tools.daily_research import discovery
     return template.format(version=version, day=row.get("date"), limit=discovery.MAX_CANDIDATES if version == 3 else 3,
-                           age_reason="refresh_due" if version == 3 else "stale")
+                           age_reason="refresh_due" if version == 3 else "stale", evidence_min=2 if version == 3 else 3,
+                           candidate_limit="" if version == 3 else "; at most three entries",
+                           summary_limit="; v2 has at most 20 items" if version == 2 else "")
 
 
 def validation_feedback(output, row, known, observed_at):
@@ -225,7 +233,7 @@ def validation_feedback(output, row, known, observed_at):
     corrective turn is never told less, or other, than validation enforces.
     """
     from tools.daily_research import discovery
-    from tools.daily_research.runner import Refusal, output_issues, validate_output
+    from tools.daily_research.runner import Refusal, output_issues, packet_overflow, validate_output
 
     issues, seen = [], set()
 
@@ -267,6 +275,8 @@ def validation_feedback(output, row, known, observed_at):
                 raise Refusal("research_scope_coverage_required")
         except (Refusal, ValueError, KeyError, TypeError) as error:
             issue("/coverage", str(error) if isinstance(error, (Refusal, ValueError)) else "discovery_coverage_invalid")
+    if row.get("search_provider") == search.PROFILE and isinstance(output, dict) and packet_overflow(output):
+        issue("/", "research_packet_resource_ceiling_use_inventory")
     if not issues:
         # The strict gate stays the authority; a diagnosis gap never passes silently.
         try:
@@ -286,13 +296,23 @@ def exclude_located_items(document, feedback):
     and QA; nothing is rewritten, promoted or invented.
     """
     from tools.daily_research.runner import digest
-    targets = {}
+    targets, quarantine = {}, []
     for found in feedback:
         parts = found["path"].split("/")[1:]
+        if parts and parts[0] == "discovery_inventory" and isinstance(document, dict):
+            # The optional inventory is quarantined whole (never trimmed to a "complete"
+            # subset); its records stay in the immutable source artifact.
+            quarantine.append({"path": found["path"], "reason": found["reason"]})
+            continue
         if len(parts) < 2 or parts[0] not in ITEM_FIELDS or not parts[1].isdigit() or not isinstance(document, dict):
             return None, None
         targets.setdefault((parts[0], int(parts[1])), []).append({"path": found["path"], "reason": found["reason"]})
     derived, excluded = deepcopy(document), []
+    if quarantine:
+        inventory = derived.pop("discovery_inventory", None)
+        excluded.append({"field": "discovery_inventory", "quarantined_whole_field": True,
+                         "record_count": len(inventory) if isinstance(inventory, list) else None,
+                         "failures": quarantine, "item_digest": digest(inventory)})
     for field in ITEM_FIELDS:
         indexes = sorted(index for name, index in targets if name == field)
         values = derived.get(field)

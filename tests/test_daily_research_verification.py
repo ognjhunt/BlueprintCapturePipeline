@@ -167,3 +167,126 @@ def test_same_city_named_facilities_survive_without_semantic_alias_decision():
     assert result["candidate_count"] == result["unique_site_task_candidates"] == 2
     assert result["duplicates"] == 0 and result["verified_unique_site_task_candidates"] == 2
     assert all(r["eligible_for_qualified_promotion"] for r in result["results"])
+
+
+@pytest.mark.parametrize("aliases", [{"schema_version": verification.VERSION},
+    {"version": verification.VERSION, "schema_version": verification.VERSION}])
+def test_lossless_version_alias_is_bound_without_rewriting_raw_assessment(aliases):
+    c = candidate()
+    value = assessment(c, NOW)
+    value.pop("version")
+    value.update(aliases)
+    original = deepcopy(value)
+    result = verification.evaluate(c, value, NOW)
+    assert result["eligible_for_qualified_promotion"] and result["assessment"] == original
+    assert result["assessment_digest"] == verification.digest(original) and value == original
+
+
+@pytest.mark.parametrize("canonical", [None, "other.version"])
+def test_explicit_null_or_conflicting_version_is_not_aliased(canonical):
+    c = candidate()
+    value = assessment(c, NOW)
+    value.update(version=canonical, schema_version=verification.VERSION)
+    result = verification.evaluate(c, value, NOW)
+    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
+    assert result["validation_errors"][0]["path"] == "/version"
+
+
+@pytest.mark.parametrize("contradiction", [False, True])
+def test_unknown_expiry_retains_claim_feedback_without_promotion_or_rejection(contradiction):
+    c = candidate()
+    value = assessment(c, NOW)
+    value["valid_until"] = None
+    value["claims"]["human_workflow"]["status"] = "contradicted" if contradiction else "unresolved"
+    result = verification.evaluate(c, value, NOW)
+    assert result["status"] == "unresolved" and result["assessment_valid"]
+    assert not result["eligible_for_qualified_promotion"] and result["validation_errors"] == []
+    assert any("human_workflow" in reason for reason in result["reasons"])
+    assert value["valid_until"] is None and result["assessment_digest"] == verification.digest(value)
+
+
+def test_legacy_retained_cohort_digest_is_unchanged():
+    c = candidate()
+    value = assessment(c, NOW)
+    value["valid_until"] = None
+    result = verification.cohort([c], {c["candidate_key"]: value}, NOW, result_version=verification.RESULT_VERSION)
+    assert "result_version" not in result and "validation_errors" not in result["results"][0]
+    assert result["results"][0]["version"] == verification.RESULT_VERSION
+    assert result["assessed_count"] == 0
+    assert result["results"][0]["reasons"] == ["assessment: repair candidate binding, dates, source IDs or assessment structure"]
+
+
+def test_qa_feedback_uses_nested_structural_paths_but_accepts_honest_unknown_expiry():
+    from tools.daily_research.consumer import qa_validation_feedback
+    c = candidate()
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "synthetic-packet", "qa": {"crm_digest": "synthetic-crm"}}
+    value = assessment(c, NOW)
+    value["valid_until"] = None
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "synthetic-packet",
+          "crm_digest": "synthetic-crm", "source_support_verified": False, "accepted_keys": [],
+          "summary": "Synthetic unresolved assessment", "checks": [{"candidate_key": c["candidate_key"],
+          "source_support_verified": False, "duplicate": False, "reason": "Missing evidence", "lead_verification": value}]}
+    assert qa_validation_feedback(row, qa) == []
+    value["candidate_digest"] = "wrong"
+    value["sources"].append(deepcopy(value["sources"][0]))
+    paths = {issue["path"] for issue in qa_validation_feedback(row, qa)}
+    assert paths == {"/checks/0/lead_verification/candidate_digest", "/checks/0/lead_verification/sources/1/id"}
+
+
+def test_retained_query_record_is_lossless_and_future_search_cannot_supply_a_check():
+    c = candidate()
+    value = assessment(c, NOW)
+    query = {"id": "synthetic-Q1", "query": "Synthetic task automation", "checked_at": NOW.isoformat(), "scope": "One bounded synthetic search"}
+    value["counterevidence"]["searches"] = [query]
+    original = deepcopy(value)
+    result = verification.evaluate(c, value, NOW)
+    assert result["status"] == "verified" and result["assessment"] == original and value == original
+    query["checked_at"] = (NOW + timedelta(seconds=1)).isoformat()
+    assert verification.evaluate(c, value, NOW)["status"] == "unresolved"
+
+
+def test_diagnostic_fixture_is_exactly_recomputed_without_any_live_source():
+    cases = json.loads((Path(__file__).parent / "fixtures/daily_research/lead-verification-diagnostics.json").read_text())
+    for case in cases:
+        result = verification.evaluate(case["candidate"], case["assessment"], verification.moment(case["now"]))
+        assert {key: result[key] for key in case["expected"]} == case["expected"], case["name"]
+
+
+@pytest.mark.parametrize("bad_key", [[], {}, None])
+def test_malformed_check_identity_receives_feedback_without_a_lookup_crash(bad_key):
+    from tools.daily_research.consumer import qa_validation_feedback
+    c = candidate()
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "packet", "qa": {"crm_digest": "crm"}}
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "packet", "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Unresolved synthetic record",
+          "checks": [{"candidate_key": bad_key, "source_support_verified": False, "duplicate": False,
+                      "reason": "Retained malformed identity", "lead_verification": assessment(c, NOW)}]}
+    assert any(issue["path"] == "/checks/0/candidate_key" for issue in qa_validation_feedback(row, qa))
+
+
+def test_nonportable_qa_metadata_returns_feedback_and_preserves_original_assessment():
+    from tools.daily_research.consumer import qa_validation_feedback
+    c = candidate()
+    value = assessment(c, NOW)
+    value["metadata"] = float("inf")
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "packet", "qa": {"crm_digest": "crm"}}
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "packet", "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Unresolved synthetic record",
+          "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": False, "duplicate": False,
+                      "reason": "Retained nonportable metadata", "lead_verification": value}]}
+    issues = qa_validation_feedback(row, qa)
+    assert issues and all(len(issue["offending_value_digest"]) == 64 for issue in issues)
+    assert value["metadata"] == float("inf")
+
+
+@pytest.mark.parametrize("version", [verification.RESULT_VERSION, verification.DIAGNOSTIC_RESULT_VERSION])
+@pytest.mark.parametrize("url", [123, True, ["https://fixture.example"]])
+def test_non_string_source_url_is_unresolved_not_a_stuck_qa_crash(version, url):
+    c = candidate()
+    value = assessment(c, NOW)
+    value["sources"][0]["url"] = url
+    result = verification.evaluate(c, value, NOW, result_version=version)
+    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]

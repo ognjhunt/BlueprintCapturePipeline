@@ -401,3 +401,29 @@ test('replacement observer discovers saved publication cancellation states while
   db.values.get(`${ROOT}/runs/2026-09-30`).publication_state='cancelled';
   assert.equal(await replacement.activeQA(),null);
 });
+
+test('inventory pages are complete against the independently pinned artifact, not self-consistent replacement manifests',async()=>{
+  const {verificationDigest}=await import('../tools/daily_research/verification-digest.mjs');
+  const {store,db}=await fixture(),r=row(),outputDigest='a'.repeat(64);
+  const records=Array.from({length:3},(_,i)=>({operator:'Invented operator',site:`Invented site ${i}`,location:null,
+    task_hypothesis:null,source_urls:[`https://fixture.example/${i}`],evidence_gap:'Actual work unknown',disposition:'unresolved'}));
+  const artifact=Buffer.from(JSON.stringify({discovery_inventory:records})),artifactSha=createHash('sha256').update(artifact).digest('hex');
+  const filename=`${r.date}-inventory-${outputDigest}-0.json`;
+  const page={version:'blueprint.discovery-inventory.v1',run_key:r.run_key,source_output_digest:outputDigest,start:0,end:3,records};
+  const raw=Buffer.from(JSON.stringify(page)+'\n'),pageSha=createHash('sha256').update(raw).digest('hex');
+  const manifest={version:page.version,source_output_digest:outputDigest,record_count:3,page_count:1,complete_retention:true,
+    records_digest:verificationDigest(records),source_artifact_file:`${r.date}-artifact.json`,source_artifact_sha256:artifactSha,
+    pages:[{index:0,file:filename,sha256:pageSha,bytes:raw.length,start:0,end:3}]};
+  Object.assign(r,{artifact_downloaded:true,raw_output_digest:artifactSha,packet:{candidates:[],discovery_inventory_manifest:manifest}});
+  await store.put(r);await store.filePut(`${r.date}-artifact.json`,artifact.toString('base64'));await store.filePut(filename,raw.toString('base64'));
+  assert.ok((await store.snapshot(r.date)).files[`inventory-${outputDigest}-0`]);
+  const replaced={...page,end:2,records:records.slice(0,2)},replacedRaw=Buffer.from(JSON.stringify(replaced)+'\n');
+  await assert.rejects(store.filePut(filename,replacedRaw.toString('base64')),/artifact_identity_conflict/);
+  const blob=await store.blobPut(replacedRaw.toString('base64'));db.values.set(`${ROOT}/files/${filename}`,{blob});
+  for(const rebindRecords of [true,false]) {
+    const forged={...manifest,record_count:2,records_digest:rebindRecords?verificationDigest(replaced.records):manifest.records_digest,
+      pages:[{...manifest.pages[0],end:2,bytes:replacedRaw.length,sha256:createHash('sha256').update(replacedRaw).digest('hex')}]};
+    await store.put({...r,packet:{...r.packet,discovery_inventory_manifest:forged}});
+    await assert.rejects(store.snapshot(r.date),/discovery_inventory_(source_binding|manifest)_invalid/);
+  }
+});

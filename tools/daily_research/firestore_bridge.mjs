@@ -39,7 +39,7 @@ const claimUpdate=(run,row,name,digest,batches=null)=>{
     publication_source_bindings:{...run.publication_source_bindings,[name]:sourceBinding(d)},
     ...(batches?{publication_batches:{...run.publication_batches,[name]:batches}}:{})};
 };
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
@@ -322,7 +322,7 @@ export class Store {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
       const prior = await tx.get(ref);
-      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-publication-input.json') || name.endsWith('-publication-evidence.json') || name.endsWith('-recovery.json') || /-exa-|-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
+      if ((name.endsWith('-artifact.json') || name.endsWith('-qa.json') || name.endsWith('-qa-input.json') || name.endsWith('-publication-input.json') || name.endsWith('-publication-evidence.json') || name.endsWith('-recovery.json') || /-inventory-|-exa-|-tool-|-repair-|-qa-correction-[12]-input/.test(name)) && prior.exists && prior.data().blob !== hash) refuse('artifact_identity_conflict');
       tx.set(ref, {blob: hash});
     });
     return true;
@@ -364,6 +364,39 @@ export class Store {
     }
     if (files.artifact && row.raw_output_digest !== sha(Buffer.from(files.artifact, 'base64')))
       refuse('artifact_not_downloaded_or_digest_mismatch');
+    const inventory=row.packet?.discovery_inventory_manifest;
+    if(inventory) {
+      if(inventory.version!=='blueprint.discovery-inventory.v1' || inventory.complete_retention!==true
+        || !Array.isArray(inventory.pages) || inventory.page_count!==inventory.pages.length
+        || !/^[a-f0-9]{64}$/.test(inventory.source_output_digest)) refuse('discovery_inventory_manifest_invalid');
+      const sources=[{artifact_file:`${day}-artifact.json`,artifact_digest:row.raw_output_digest},...(row.validation_repairs || [])];
+      if(typeof inventory.source_artifact_file!=='string' || typeof inventory.source_artifact_sha256!=='string'
+        || !sources.some(source=>source.artifact_file===inventory.source_artifact_file && source.artifact_digest===inventory.source_artifact_sha256))
+        refuse('discovery_inventory_source_binding_invalid');
+      const sourceRaw=Buffer.from(await this.fileGet(inventory.source_artifact_file),'base64');
+      if(sha(sourceRaw)!==inventory.source_artifact_sha256) refuse('discovery_inventory_source_binding_invalid');
+      let sourceText=sourceRaw.toString('utf8').replace(/^\uFEFF/,'');
+      const fence=/^```(?:json)?[ \t]*\r?\n([\s\S]*)\r?\n```$/i.exec(sourceText.trim());
+      if(fence) sourceText=fence[1];
+      let sourceInventory;try {sourceInventory=JSON.parse(sourceText).discovery_inventory;}catch {refuse('discovery_inventory_source_binding_invalid');}
+      if(!Array.isArray(sourceInventory) || verificationDigest(sourceInventory)!==inventory.records_digest)
+        refuse('discovery_inventory_source_binding_invalid');
+      let count=0;const retained=[];
+      for(const [index,page] of inventory.pages.entries()) {
+        if(page.index!==index || page.start!==count || !Number.isInteger(page.end) || page.end<=count
+          || page.file!==`${day}-inventory-${inventory.source_output_digest}-${index}.json`) refuse('discovery_inventory_manifest_invalid');
+        const encoded=await this.fileGet(page.file),raw=Buffer.from(encoded,'base64');
+        // Verify size and digest before parsing untrusted page bytes.
+        if(raw.length>100000 || raw.length!==page.bytes || sha(raw)!==page.sha256) refuse('discovery_inventory_page_binding_invalid');
+        let value;try {value=JSON.parse(raw);}catch {refuse('discovery_inventory_page_binding_invalid');}
+        if(value.version!==inventory.version
+          || value.run_key!==row.run_key || value.source_output_digest!==inventory.source_output_digest
+          || value.start!==page.start || value.end!==page.end || !Array.isArray(value.records)
+          || value.records.length!==page.end-page.start) refuse('discovery_inventory_page_binding_invalid');
+        files[page.file.slice(day.length+1,-5)]=encoded;retained.push(...value.records);count=page.end;
+      }
+      if(count!==inventory.record_count || verificationDigest(retained)!==inventory.records_digest) refuse('discovery_inventory_manifest_invalid');
+    }
     const exaRefs=[...(row.exa_transport_receipts || []),
       ...['start_receipt','last_receipt','terminal_receipt'].map(key=>row.exa_expansion?.[key]).filter(Boolean)];
     for(const receipt of exaRefs) {

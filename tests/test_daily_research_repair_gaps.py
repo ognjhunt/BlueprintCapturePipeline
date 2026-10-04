@@ -1,7 +1,8 @@
 """Exact located feedback, exclusion instead of blocking, approval as data.
 
 Hermetic: fake provider and in-memory Firestore only. The frozen copy below is
-main's strict gate at 73d3be8d6, byte-for-byte except names; the refactored
+main's strict gate at 73d3be8d6, with the explicit October4 v3 discovery-only
+exceptions (optional capability and byte-based inventory retention); the refactored
 gate must agree on admission/refusal for every corruption so feedback never
 loosens QA input. New discovery audit fields are compared through the frozen
 payload projection; full raw retention is covered by the verification tests.
@@ -159,12 +160,12 @@ def legacy_validate_output(output, run_date, known, *, contract_version=1, knowl
             raise Refusal(str(exc) if isinstance(exc, ValueError) else "discovery_coverage_invalid") from None
     if set(output) != required_output:
         raise Refusal("output_schema_invalid")
-    limit = discovery.MAX_CANDIDATES if contract_version == 3 else 3
-    if output["checked_date"] != run_date or not isinstance(output["candidates"], list) or len(output["candidates"]) > limit:
+    limit = None if contract_version == 3 else 3
+    if output["checked_date"] != run_date or not isinstance(output["candidates"], list) or limit is not None and len(output["candidates"]) > limit:
         raise Refusal("output_date_or_count_invalid")
     for field in ("findings", "blockers", "proposed_next_actions"):
         if (not isinstance(output[field], list)
-                or (contract_version in {2, 3} and len(output[field]) > 20)
+                or (contract_version == 2 and len(output[field]) > 20)
                 or any(not isinstance(x, str) or len(x) > 2000 or (contract_version in {2, 3} and not x.strip()) for x in output[field])):
             raise Refusal("output_summary_invalid")
     accepted, duplicates = [], []
@@ -183,7 +184,7 @@ def legacy_validate_output(output, run_date, known, *, contract_version=1, knowl
             raise Refusal("candidate_unknowns_required")
         if contract_version in {2, 3} and (len(c["unknowns"]) > 20 or any(not x.strip() or len(x) > 2000 for x in c["unknowns"])):
             raise Refusal("candidate_unknowns_required")
-        if not isinstance(c["evidence"], list) or not 3 <= len(c["evidence"]) <= 12:
+        if not isinstance(c["evidence"], list) or not (2 if contract_version == 3 else 3) <= len(c["evidence"]) <= 12:
             raise Refusal("candidate_evidence_required")
         roles = set()
         for e in c["evidence"]:
@@ -216,8 +217,10 @@ def legacy_validate_output(output, run_date, known, *, contract_version=1, knowl
                 except knowledge.SnapshotError as exc:
                     raise Refusal(str(exc)) from None
             roles.add(e["role"])
-        if (not {"task", "capability", "geography"} <= roles if contract_version == 3 else roles != {"task", "capability", "geography"}):
-            raise Refusal("task_capability_geography_evidence_required")
+        if (not {"task", "geography"} <= roles if contract_version == 3 else roles != {"task", "capability", "geography"}):
+            raise Refusal("task_geography_evidence_required" if contract_version == 3 else "task_capability_geography_evidence_required")
+        if contract_version == 3 and "capability" not in roles and c["potential_robot_match"] != "unknown":
+            raise Refusal("unsupported_robot_match_must_remain_unknown")
         operator_task_sources = [e for e in c["evidence"] if e["role"] == "task" and e["classification"] == "operator"]
         if not operator_task_sources:
             raise Refusal("operator_task_source_required")

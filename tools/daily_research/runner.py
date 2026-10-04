@@ -45,6 +45,19 @@ NOTION = "3ea80154161d81c7810cc42e9e7df9c5"
 CENTRAL = ZoneInfo("America/Chicago")
 REMOTE_OUTPUT = "/workspace/outputs/daily-research.json"
 LIMIT_BYTES = 2_000_000
+# The review packet carries everything in the output except the paged discovery
+# inventory. Flag an oversized display at validation, where the agent gets repair
+# feedback, instead of after it, where the packet ceiling would block the whole run.
+PACKET_OUTPUT_BUDGET = 450_000
+PACKET_CANDIDATE_ALLOWANCE = 400  # normalization adds ~230 bytes per candidate (identity keys, index)
+
+
+def packet_overflow(output):
+    shown = {key: value for key, value in output.items() if key != "discovery_inventory"}
+    candidates = output.get("candidates") if isinstance(output.get("candidates"), list) else []
+    return len(canonical(shown).encode()) + PACKET_CANDIDATE_ALLOWANCE * len(candidates) > PACKET_OUTPUT_BUDGET
+
+
 TERMINAL = {"awaiting_review", "reviewed", "completed", "failed", "cancelled"}
 
 
@@ -287,8 +300,9 @@ def required_output_fields(output, contract_version):
         fields |= {"schema_version", "snapshot_content_hash", "proposed_knowledge_deltas"}
     if contract_version == 3:
         fields.add("refresh_policy_hash")
-        if isinstance(output, dict) and "coverage" in output:
-            fields.add("coverage")
+        for optional in ("coverage", "discovery_inventory"):
+            if isinstance(output, dict) and optional in output:
+                fields.add(optional)
     return fields
 
 
@@ -321,6 +335,13 @@ def output_issues(output, run_date, *, contract_version=1, knowledge_context=Non
     if not isinstance(output, dict):
         yield _issue("", "output_schema_invalid")
         return
+    if collect:
+        code = _probe(lambda: knowledge.require(len(canonical(output).encode()) <= LIMIT_BYTES,
+                                               "research_output_resource_ceiling_raw_retained"), True)
+        if code:
+            yield _issue("", code)
+    elif len(canonical(output).encode()) > LIMIT_BYTES:
+        yield _issue("", "research_output_resource_ceiling_raw_retained")
     v23 = contract_version in {2, 3}
     if v23:
         if not knowledge_context:
@@ -355,23 +376,25 @@ def output_issues(output, run_date, *, contract_version=1, knowledge_context=Non
             yield _issue("/coverage", str(exc) if isinstance(exc, ValueError) else "discovery_coverage_invalid")
     if set(output) != required_output_fields(output, contract_version):
         yield _issue("", "output_schema_invalid")
-    limit = discovery.MAX_CANDIDATES if contract_version == 3 else 3
+    limit = None if contract_version == 3 else 3
     if "checked_date" in output and output["checked_date"] != run_date:
         yield _issue("/checked_date", "output_date_or_count_invalid")
     candidates = output.get("candidates")
-    if "candidates" in output and (not isinstance(candidates, list) or len(candidates) > limit):
+    if "candidates" in output and (not isinstance(candidates, list) or limit is not None and len(candidates) > limit):
         yield _issue("/candidates", "output_date_or_count_invalid")
         candidates = None
     for field in SUMMARY_FIELDS:
         if field not in output:
             continue
         values = output[field]
-        if not isinstance(values, list) or (v23 and len(values) > 20):
+        if not isinstance(values, list) or (contract_version == 2 and len(values) > 20):
             yield _issue("/" + field, "output_summary_invalid")
             continue
         for index, value in enumerate(values):
             if not isinstance(value, str) or len(value) > 2000 or (v23 and not value.strip()):
                 yield _issue(f"/{field}/{index}", "output_summary_invalid")
+    if contract_version == 3 and "discovery_inventory" in output:
+        yield from discovery.inventory_issues(output["discovery_inventory"])
     for index, candidate in enumerate(candidates or []):
         for pointer, code in _candidate_issues(candidate, run_date, contract_version, knowledge_context,
                                                observed_at, refresh_policy, collect):
@@ -396,7 +419,7 @@ def _candidate_issues(c, run_date, contract_version, knowledge_context, observed
     if malformed or contract_version in {2, 3} and (len(unknowns) > 20 or any(not x.strip() or len(x) > 2000 for x in unknowns)):
         yield "/unknowns", "candidate_unknowns_required"
     evidence = c["evidence"]
-    if not isinstance(evidence, list) or not 3 <= len(evidence) <= 12:
+    if not isinstance(evidence, list) or not (2 if contract_version == 3 else 3) <= len(evidence) <= 12:
         yield "/evidence", "candidate_evidence_required"
         if not isinstance(evidence, list):
             return
@@ -417,8 +440,10 @@ def _candidate_issues(c, run_date, contract_version, knowledge_context, observed
         roles.add(entry["role"])
         operator_unknown |= entry["role"] == "task" and "/classification" in reported
         operator_tasks += entry["role"] == "task" and entry["classification"] == "operator"
-    if not roles_unknown and (not REQUIRED_ROLES <= roles if contract_version == 3 else roles != REQUIRED_ROLES):
-        yield "/evidence", "task_capability_geography_evidence_required"
+    if not roles_unknown and (not {"task", "geography"} <= roles if contract_version == 3 else roles != REQUIRED_ROLES):
+        yield "/evidence", "task_geography_evidence_required" if contract_version == 3 else "task_capability_geography_evidence_required"
+    if contract_version == 3 and not roles_unknown and "capability" not in roles and c["potential_robot_match"] != "unknown":
+        yield "/potential_robot_match", "unsupported_robot_match_must_remain_unknown"
     if not operator_tasks:
         if not operator_unknown:
             yield "/evidence", "operator_task_source_required"
@@ -843,6 +868,7 @@ def prompt(day, knowledge_context=None, contract_version=2, *, adaptive=False, t
     if adaptive and contract_version != 3:
         raise Refusal("adaptive_research_requires_v3")
     if adaptive:
+        example["discovery_inventory"] = []
         example["coverage"] = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
                                "stop_reason": "actual evidence-based stop reason", "shortfall_reason": "explain if fewer than 10 new opportunities"}
         if search_provider == search.PROFILE:
@@ -868,6 +894,9 @@ def prompt(day, knowledge_context=None, contract_version=2, *, adaptive=False, t
         # Preserve the evidence/output instruction body; replace only the old
         # task envelope before appending any untrusted knowledge data.
         result = result[result.index("For each candidate require task") :]
+        result = result.replace("For each candidate require task, capability and geography evidence roles; unknown availability stays unknown.",
+            "For each raw candidate require task and geography evidence roles. Robot capability is optional at discovery; without capability evidence set potential_robot_match to unknown. Unknown availability stays unknown.")
+        result = result.replace("(evidence needs all three roles)", "(evidence needs task and geography; capability is optional)")
         result = f"Blueprint adaptive sites-first discovery for {day}. " + discovery.instructions(target_usd) + result
         if search_provider == search.PROFILE:
             result = result.replace("Target at least 10 NEW distinct commercial site/task opportunities. Never pad the list.",
@@ -1122,6 +1151,7 @@ class Runner:
             if version in {2, 3}:
                 row.update(research_contract_version=version, knowledge_context=context,
                            knowledge_context_digest=digest(context))
+            row["lead_verification_result_version"] = verification.DIAGNOSTIC_RESULT_VERSION
             if version == 3:
                 row.update(refresh_policy=policy, refresh_policy_digest=digest(policy))
             row["total_runtime_seconds"] = self.config.get("max_runtime_seconds", 180)
@@ -1322,6 +1352,8 @@ class Runner:
                 discovery.validate_coverage(output.get("coverage"), len(output["candidates"]))
                 if row.get("search_provider") == search.PROFILE and "defined_run_scope" not in output["coverage"]:
                     raise Refusal("research_scope_coverage_required")
+            if row.get("search_provider") == search.PROFILE and packet_overflow(output):
+                raise Refusal("research_packet_resource_ceiling_use_inventory")
         except (KeyError, TypeError, ValueError):
             raise Refusal("output_schema_invalid") from None
         packet = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
@@ -1332,6 +1364,12 @@ class Runner:
                   "cost_status": row["cost_status"], "usage": row["usage"], "cleanup_required": True,
                   "destinations": {"sheet_id": SHEET, "sheet_tab": "Prospects", "notion_parent": NOTION},
                   "scope": "proposals_only_no_outreach", "budget_is_hard_cap": False}
+        # New diagnostics are explicitly pinned; historical retained v1 reviews
+        # continue to recompute with their original algorithm and digest shape.
+        packet["lead_verification_result_version"] = row.get("lead_verification_result_version", verification.RESULT_VERSION)
+        if "discovery_inventory" in output:
+            packet["discovery_inventory_manifest"] = discovery.retain_inventory(
+                output["discovery_inventory"], row, self.ledger, digest(output))
         if row.get("research_contract_version", 1) in {2, 3}:
             packet.update(schema_version=f"blueprint.daily-research.v{row['research_contract_version']}", snapshot_content_hash=context["content_hash"],
                           snapshot_loaded_at=context["snapshot_loaded_at"],
@@ -1424,7 +1462,8 @@ class Runner:
                 if row.get("review", {}).get("lead_verification", {}).get("results"):
                     evaluated_at = verification.moment(row["review"]["lead_verification"]["results"][0]["evaluated_at"])
                 decision = {**decision, "lead_verification": verification.cohort(
-                    verification.packet_candidates(row["packet"]), {}, evaluated_at)}
+                    verification.packet_candidates(row["packet"]), {}, evaluated_at,
+                    result_version=row["packet"].get("lead_verification_result_version", verification.RESULT_VERSION))}
             if row.get("review"):
                 if row["review"] != decision:
                     raise Refusal("review_already_bound")
@@ -1442,13 +1481,17 @@ class Runner:
             assessments = {r.get("candidate_key"): r.get("assessment") for r in retained if isinstance(r, dict)}
             all_candidates = verification.packet_candidates(row["packet"])
             duplicate_checks = decision.get("lead_verification", {}).get("duplicate_checks", {})
-            cohort = verification.cohort(all_candidates, assessments, self.clock(), duplicate_checks=duplicate_checks)
+            result_version = row["packet"].get("lead_verification_result_version", verification.RESULT_VERSION)
+            if ("lead_verification" in decision and decision["lead_verification"].get("result_version", verification.RESULT_VERSION)
+                    != result_version):
+                raise Refusal("lead_verification_result_version_mismatch")
+            cohort = verification.cohort(all_candidates, assessments, self.clock(), duplicate_checks=duplicate_checks, result_version=result_version)
             if "lead_verification" in decision:
                 try:
                     evaluated_at = verification.moment(retained[0]["evaluated_at"]) if retained else self.clock()
                     if evaluated_at > self.clock():
                         raise ValueError("future assessment")
-                    expected = verification.cohort(all_candidates, assessments, evaluated_at, duplicate_checks=duplicate_checks)
+                    expected = verification.cohort(all_candidates, assessments, evaluated_at, duplicate_checks=duplicate_checks, result_version=result_version)
                     # The fenced Node bridge preserves numeric values, not JSON
                     # float lexemes (coverage 1.0 becomes 1). Use the dedicated
                     # portable binding for new verification receipts only.

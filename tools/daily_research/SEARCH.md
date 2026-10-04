@@ -290,6 +290,13 @@ The existing soft-target authority alone cannot produce this snapshot; unknown
 headroom means skip, never zero. No key, accounting writer or verified live tool
 schema is created by selecting the profile.
 
+The start tool advertises exactly the enforced `max_cost_micros` range, 1,000,000–5,000,000
+(Exa Ultra's $1 minimum to the $5 ceiling). A smaller request returns
+`expansion_cap_below_ultra_minimum` before any credential or allocation lookup, and a cap
+above verified headroom returns `expansion_cap_exceeds_remaining_allocation` with
+`remaining_micros`; neither starts Exa or consumes the claim. Stable `ExpansionError`
+codes reach the agent unchanged instead of a generic unavailable error.
+
 The worker consumes one durable whole-run claim before the native POST, retains
 complete private MCP receipts and provider records in the existing company
 ledger, and permits subsequent reads of only the acknowledged original ID.
