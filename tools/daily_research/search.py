@@ -554,9 +554,14 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
                     outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names else True, "output": output}
                     if outcome["success"] is False:
-                        outcome["error"] = canonical(result.get("error") or {"code": "research_tool_unavailable_no_replay"})
+                        failure = result.get("error") or {"code": result.get("reason") or "research_tool_unavailable_no_replay"}
+                        if not result.get("error") and result.get("action"):
+                            failure["guidance"] = result["action"]
+                        outcome["error"] = canonical(failure)
                 except ToolFailure as exc:
-                    outcome = {"success": False, "error": str(exc)}
+                    failure = {"code": str(exc)}
+                    outcome = {"success": False, "error": canonical(failure),
+                               "output": canonical({"ok": False, "error": failure})}
                 except Exception:  # noqa: BLE001 - stable error, never upstream secrets
                     outcome = {"success": False, "error": "research_tool_unavailable_no_replay"}
             event = {"type": "agent.session.input.tool_result", "turn_id": tid, "call_id": cid, **outcome}

@@ -72,8 +72,11 @@ def test_unverified_room_is_a_durable_optional_skip_and_ordinary_search_continue
     _, api, ledger, row = setup(fixture)
     api.actions = [action(row)]
     respond(api, ledger, row)
-    outcome = json.loads(api.result_events[-1][1]["output"])
+    event = api.result_events[-1][1]
+    outcome = json.loads(event["output"])
     assert outcome["state"] == "skipped" and "allocation_unverified" in outcome["reason"]
+    assert json.loads(event["error"]) == {"code": outcome["reason"], "guidance": outcome["action"]}
+    assert event["success"] is False
     assert "exa_expansion" not in ledger.get(DAY) and not api.executions
     api.actions = [action(row, search.SEARCH, {"query": "US laundry folding work"}, "call_synthetic_regular")]
     respond(api, ledger, row)
