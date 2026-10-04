@@ -110,12 +110,12 @@ def setup(tmp_path):
         return values
     api.get, api.listing = retrieve, inventory
     api.artifact = lambda sid, aid: qa_raw if aid == "artifact_qa" else artifact(sid, aid)
-    def provider_factory(l, key):
+    def provider_factory(factory_ledger, key):
         provider = object.__new__(FencedProvider)
-        provider.ledger, provider.get, provider.listing = l, api.get, api.listing
+        provider.ledger, provider.get, provider.listing = factory_ledger, api.get, api.listing
         provider.artifact = api.artifact
         def delete(sid):
-            saved = l.get(DAY)
+            saved = factory_ledger.get(DAY)
             assert saved["cleanup"]["delete_claimed"] is True
             receipt = saved["cleanup"]["archive"]
             actual = json.loads(objects.read_text())
@@ -171,18 +171,25 @@ def test_complete_archive_precedes_only_delete_and_preserves_unknown_cost(setup)
 def test_authority_and_active_work_never_archive_or_delete(setup, change):
     s = setup
     policy = deepcopy(s.policy)
-    if change == "expired": policy["expires_at"] = NOW.isoformat()
-    if change == "wrong_agent": policy["agent_id"] = "foreign-agent"
-    if change == "wrong_project": policy["project_id"] = "foreign-project"
-    if change == "early_date": policy["first_date"] = "2026-10-02"
+    if change == "expired":
+        policy["expires_at"] = NOW.isoformat()
+    if change == "wrong_agent":
+        policy["agent_id"] = "foreign-agent"
+    if change == "wrong_project":
+        policy["project_id"] = "foreign-project"
+    if change == "early_date":
+        policy["first_date"] = "2026-10-02"
     s.enable(policy)
     if change in {"qa_active", "receipt_missing"}:
         with s.ledger.lock():
             row = s.ledger.get(DAY)
-            if change == "qa_active": row["qa"]["state"] = "running"
-            else: row["delivery"]["sheets"]["receipt"]["readback_verified"] = False
+            if change == "qa_active":
+                row["qa"]["state"] = "running"
+            else:
+                row["delivery"]["sheets"]["receipt"]["readback_verified"] = False
             s.ledger.put(row)
-    if change == "running": s.api.session_status = "running"
+    if change == "running":
+        s.api.session_status = "running"
     with pytest.raises(Refusal):
         run(s)
     assert not s.objects.exists() and s.state["delete_calls"] == []
@@ -245,7 +252,8 @@ def test_last_action_fence_and_durable_claim_survive_failure(setup, boundary):
                 original("configure", value=control)
             if boundary == "lost_row_put":
                 raise Refusal("synthetic_persistence_lost_after_claim")
-        if op == "cleanup_delete_check" and boundary == "stopped": stopping[0] = True
+        if op == "cleanup_delete_check" and boundary == "stopped":
+            stopping[0] = True
         return result
     s.bridge.call = race
     if boundary == "lost_row_put":
@@ -264,7 +272,8 @@ def test_archive_readback_must_pass_before_deletion_claim(setup):
     original = s.bridge.call
     def tamper(op, **kw):
         result = original(op, **kw)
-        if op == "cleanup_archive": original("test_corrupt_archive")
+        if op == "cleanup_archive":
+            original("test_corrupt_archive")
         return result
     s.bridge.call = tamper
     with pytest.raises(Refusal, match="cleanup_archive_readback_mismatch"):
@@ -291,7 +300,8 @@ def test_saved_session_id_mismatch_never_archives_or_deletes(setup):
     get = s.api.get
     def mismatch(resource, rid):
         value = get(resource, rid)
-        if resource == "session": value["id"] = "foreign_session"
+        if resource == "session":
+            value["id"] = "foreign_session"
         return value
     s.api.get = mismatch
     with pytest.raises(Refusal, match="session_binding_mismatch"):
@@ -318,7 +328,8 @@ def test_completed_correction_keeps_original_qa_turn_in_exact_inventory(setup):
     listing = s.api.listing
     def corrected(resource, sid=None):
         values = listing(resource, sid)
-        if resource == "turns": values.append({"id": "turn_qa_fixed", "status": "completed"})
+        if resource == "turns":
+            values.append({"id": "turn_qa_fixed", "status": "completed"})
         return values
     s.api.listing = corrected
     assert render.cleanup_inventory(s.api, row, contents=False)["provider-turns.json"]
