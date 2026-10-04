@@ -10,10 +10,19 @@ import pytest
 from blueprint_pipeline import parallel_findall_execution as execution
 from blueprint_pipeline import parallel_findall_owner as owner
 from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission_grant
-from tools.daily_research import findall, search
-from tools.daily_research import capabilities
+from tools.daily_research import capabilities, findall, search
 from tools.daily_research.consumer import Consumer
-from tools.daily_research.runner import AGENT, MODEL, TEMPLATE, Ledger, Refusal, Runner, check_agent, digest, preflight
+from tools.daily_research.runner import (
+    AGENT,
+    MODEL,
+    TEMPLATE,
+    Ledger,
+    Refusal,
+    Runner,
+    check_agent,
+    digest,
+    preflight,
+)
 
 DAY = "2026-10-04"
 NOW = datetime(2026, 10, 4, 12, tzinfo=timezone.utc)

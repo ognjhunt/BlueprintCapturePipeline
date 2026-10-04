@@ -9,8 +9,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from datetime import date
-from typing import Any, Callable, ContextManager, Mapping, Protocol
+from typing import Any, Protocol
 
 from .paid_resource_admission import (
     PaidResourceAdmissionBlocked,
@@ -31,7 +33,7 @@ SUBMISSIONS_FIELD = "parallel_findall_submissions"
 class OwnerResearchLedger(Protocol):
     """Existing Ledger/FirestoreLedger interface; rows must cover all history."""
 
-    def lock(self) -> ContextManager[Any]: ...
+    def lock(self) -> AbstractContextManager[Any]: ...
     def rows(self) -> list[dict[str, Any]]: ...
     def get(self, day: str) -> dict[str, Any] | None: ...
     def put(self, row: dict[str, Any]) -> None: ...
@@ -172,7 +174,7 @@ def create_with_owner_ledger(
             )
     except (FindAllError, PaidResourceAdmissionBlocked):
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - retain known IDs and sanitize release/store failures
         # A lease-release/storage failure after the provider attempt must still
         # expose its known ID and retain the claim, never invite a replay.
         if journal.claimed:
@@ -216,7 +218,7 @@ def create_under_owner_lease(
         )
     except (FindAllError, PaidResourceAdmissionBlocked):
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - uncertain starts must remain recoverable without exposing store prose
         if journal.claimed:
             raise FindAllSubmissionUnresolved(findall_id=journal.known_id) from None
         raise FindAllError("findall_owner_ledger_failed") from None

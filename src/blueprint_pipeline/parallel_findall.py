@@ -17,8 +17,9 @@ import sys
 import urllib.error
 import urllib.request
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from . import safe_outbound_http
 

@@ -12,8 +12,9 @@ import http.client
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from . import safe_outbound_http
 from .paid_resource_admission import (
@@ -21,10 +22,10 @@ from .paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 from .parallel_findall import (
+    _MAX_RESPONSE_BYTES,
     RUNS_URL,
     FindAllClient,
     FindAllError,
-    _MAX_RESPONSE_BYTES,
     _validate_run,
     _validate_run_id,
     prepare_run,
@@ -173,7 +174,7 @@ class AdmittedFindAllClient(FindAllClient):
         )
         try:
             claimed = journal.claim_submission(json.loads(json.dumps(prepared)))
-        except Exception:
+        except Exception:  # noqa: BLE001 - expose a stable error without secret-bearing store prose
             raise FindAllError("findall_submission_claim_failed") from None
         if claimed is not True:
             raise FindAllError("findall_submission_already_claimed_or_not_authorized")
@@ -191,7 +192,7 @@ class AdmittedFindAllClient(FindAllClient):
             if payload.get("generator") != prepared["body_json"]["generator"]:
                 raise FindAllError("findall_response_generator_mismatch")
             return payload
-        except Exception:
+        except Exception:  # noqa: BLE001 - preserve uncertain submission and known ID without leaking upstream prose
             raise FindAllSubmissionUnresolved(findall_id=run_id) from None
 
     def cancel(self, findall_id: str) -> None:

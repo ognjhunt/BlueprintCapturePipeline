@@ -591,7 +591,9 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                 except Exception as exc:  # noqa: BLE001 - stable error, never upstream secrets
                     outcome = {"success": False, "error": "research_tool_unavailable_no_replay"}
                     if action["name"] in findall_names:
-                        from blueprint_pipeline.parallel_findall_execution import FindAllSubmissionUnresolved
+                        from blueprint_pipeline.parallel_findall_execution import (
+                            FindAllSubmissionUnresolved,
+                        )
                         if isinstance(exc, FindAllSubmissionUnresolved) and exc.findall_id:
                             outcome["findall_id"] = exc.findall_id
             event = {"type": "agent.session.input.tool_result", "turn_id": tid, "call_id": cid, **outcome}
