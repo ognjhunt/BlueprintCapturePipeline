@@ -20,6 +20,27 @@ positive conditions: an identifiable operating facility and public evidence
 linking it to the requested physical work. Require one operator/site/task per
 entity. A country page or multi-company bundle is not one operating site.
 
+Use employer job postings, including employer-owned applicant-tracking pages,
+alongside other discovery sources. Link quoted physical duties to the exact
+operating site; a role title or whole job is not a robot-capable task. Recruiter
+or job-board copies need employer/site affiliation evidence. Relevant active
+hiring may prioritize useful site/tasks, but is never required and does not prove
+labor shortage, automation interest, manual work or robot fit. Keep employer,
+site, requisition ID if available, original source URLs, quoted duties, supported
+published/modified dates, observed date and application-status evidence in
+findings and existing evidence fields. Unknown dates, status and currentness
+stay unknown. An open application link, search recency, HTTP Last-Modified,
+first-seen date or repost does not establish a new or active vacancy. Closed or
+undated postings can support explicitly historical task findings.
+
+Deduplicate employer/requisition or canonical posting identities separately from
+exact facility/task identities, retaining original sources and status changes.
+Multiple vacancies or reposts are not multiple site/task prospects. Treat better
+conversations or Task Evaluation Runs from hiring-led discovery as a hypothesis:
+distinguish hiring-supported discoveries from other routes, retain the relevant
+first question, and record outcomes only from actual company evidence. Do not
+invent success, causal uplift or a quota.
+
 Retain thin, unresolved and disputed discoveries with the actual source, source
 and event dates if known, evidence type, uncertainties and next evidence question.
 Put these in findings when the formal candidate schema cannot represent them

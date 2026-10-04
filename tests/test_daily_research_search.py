@@ -588,6 +588,53 @@ def test_defined_coverage_can_return_fewer_than_ten_without_count_shortfall(fixt
     assert row["state"] == "awaiting_review" and len(row["packet"]["candidates"]) == 2
 
 
+def test_employer_posting_sources_survive_site_task_deduplication_unqualified(fixture):
+    runner, api, ledger = fixture
+    output = json.loads(api.raw)
+    first = deepcopy(output["candidates"][0])
+    duty = next(e for e in first["evidence"] if e["role"] == "task")
+    duty.update(url="https://operator0.example/careers/REQ-100", source_date=None,
+                quote="Load trays into the packing line at Synthetic site 0.")
+    repeated = deepcopy(first)
+    next(e for e in repeated["evidence"] if e["role"] == "task").update(
+        url="https://operator0.example/careers/REQ-101", source_date="2026-09-29")
+    finding = canonical({"employer": first["organization"], "site": first["site"],
+                         "requisitions": ["REQ-100", "REQ-101"], "observed_date": DAY,
+                         "application_status_evidence": "Employer pages display Apply links",
+                         "active_hiring": "unknown", "automation_interest": "unknown",
+                         "conversation_or_evaluation_outcome": "not observed"})
+    output.update(candidates=[first, repeated], findings=[finding])
+    api.raw, api.turn_status = canonical(output).encode(), "completed"
+    row = runner.start_or_resume()
+    assert row["state"] == "awaiting_review" and row["packet"]["findings"] == [finding]
+    cohort = row["packet"]["candidates"] + row["packet"]["duplicates"]
+    assert len(row["packet"]["candidates"]) == len(row["packet"]["duplicates"]) == 1
+    assert [c["evidence"] for c in cohort] == [first["evidence"], repeated["evidence"]]
+    assert all(c["qualification_status"] == "unqualified" for c in cohort)
+    assert ledger.read_bytes(DAY + "-artifact.json") == api.raw
+    assert not row.get("qa") and not row.get("delivery")
+
+
+@pytest.mark.parametrize("formal_candidate", [False, True])
+def test_posting_with_unknown_site_or_capability_stays_a_finding_not_invented_support(fixture, formal_candidate):
+    runner, api, ledger = fixture
+    output = json.loads(api.raw)
+    candidate = deepcopy(output["candidates"][0])
+    candidate["evidence"] = [e for e in candidate["evidence"] if e["role"] != "capability"]
+    finding = "Employer REQ-100 quotes tray loading; source https://operator0.example/careers/REQ-100; " \
+              "exact site/currentness/published date/application status/robot capability unknown; observed " + DAY
+    output.update(candidates=[candidate] if formal_candidate else [], findings=[finding])
+    api.raw, api.turn_status = canonical(output).encode(), "completed"
+    row = runner.start_or_resume()
+    assert ledger.read_bytes(DAY + "-artifact.json") == api.raw
+    if formal_candidate:
+        assert row["state"] == "failed" and row["error"] == "candidate_evidence_required"
+        assert "packet" not in row and not row.get("qa") and not row.get("delivery")
+    else:
+        assert row["state"] == "awaiting_review" and row["packet"]["candidates"] == []
+        assert row["packet"]["findings"] == [finding]
+
+
 def test_unresolved_in_scope_branch_cannot_claim_coverage_complete():
     coverage = result()[0]["coverage"]
     coverage.update(defined_run_scope=["Bounded task/industry/region hypotheses"], completion_state="coverage_complete",
