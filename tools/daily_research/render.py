@@ -407,7 +407,7 @@ def export_snapshot(bridge, day, destination):
         source_bindings = [(day + "-artifact.json", row.get("raw_output_digest"))] + [
             (revision.get("artifact_file"), revision.get("artifact_digest")) for revision in row.get("validation_repairs", [])]
         source_file, source_sha = inventory.get("source_artifact_file"), inventory.get("source_artifact_sha256")
-        if (source_file, source_sha) not in source_bindings:
+        if not isinstance(source_file, str) or not isinstance(source_sha, str) or (source_file, source_sha) not in source_bindings:
             raise Refusal("discovery_inventory_source_binding_invalid")
         source_raw = files.get(source_file[len(day) + 1:-5], b"")
         if hashlib.sha256(source_raw).hexdigest() != source_sha:

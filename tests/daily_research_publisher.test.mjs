@@ -1065,6 +1065,7 @@ test('publishes verified raw site/task with unknown robot match and a blank capa
 
 test('publication accepts a lossless schema_version alias but refuses null/conflicting versions and unknown expiry',()=>{
   const r=row(),result=r.review.lead_verification.results[0],a=result.assessment;
+  result.version='blueprint.lead-verification-result.v2'; // alias acceptance is a v2 rule (independent review N2)
   a.schema_version=a.version;delete a.version;result.assessment_digest=verificationDigest(a);
   assert.equal(publicationVerification(r,'sheets').eligible,true);
   for(const value of [null,'other.version']) {
@@ -1072,6 +1073,15 @@ test('publication accepts a lossless schema_version alias but refuses null/confl
     assert.equal(publicationVerification(r,'sheets').eligible,false);
   }
   delete a.version;a.valid_until=null;result.assessment_digest=verificationDigest(a);
+  assert.equal(publicationVerification(r,'sheets').eligible,false);
+});
+
+test('a v1 result keeps its exact original version rule; the alias rule applies to v2 only',()=>{
+  const r=row(),result=r.review.lead_verification.results[0],a=result.assessment;
+  result.version='blueprint.lead-verification-result.v1';
+  a.schema_version='inert.conflicting.marker';result.assessment_digest=verificationDigest(a);
+  assert.equal(publicationVerification(r,'sheets').eligible,true);
+  delete a.schema_version;a.schema_version=a.version;delete a.version;result.assessment_digest=verificationDigest(a);
   assert.equal(publicationVerification(r,'sheets').eligible,false);
 });
 

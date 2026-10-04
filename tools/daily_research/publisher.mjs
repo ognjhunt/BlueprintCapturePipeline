@@ -58,8 +58,10 @@ export function publicationVerification(row,destination,now=Date.now()) {
       && result.assessment.candidate_digest===result.candidate_digest;}catch {}
     if(row.review?.source_support_verified!==true || result?.status!=='verified'
         || result.eligible_for_qualified_promotion!==true || result.duplicate_of || !bound
-        || (!Object.hasOwn(result.assessment,'version') && !Object.hasOwn(result.assessment,'schema_version'))
-        || ['version','schema_version'].some(key=>Object.hasOwn(result.assessment,key) && result.assessment[key]!=='blueprint.lead-verification.v1')
+        || (result.version==='blueprint.lead-verification-result.v2'
+          ? (!Object.hasOwn(result.assessment,'version') && !Object.hasOwn(result.assessment,'schema_version'))
+            || ['version','schema_version'].some(key=>Object.hasOwn(result.assessment,key) && result.assessment[key]!=='blueprint.lead-verification.v1')
+          : result.assessment.version!=='blueprint.lead-verification.v1')
         || !(Date.parse(result.assessment.assessed_at)<=now && now<Date.parse(result.assessment.valid_until))) {
       reasons.push(`${candidate.candidate_key || candidate.organization || 'candidate'}: retain a current, exact evidence assessment and protected verified review before promotion; missing, expired, duplicate or contradicted evidence remains ineligible.`);
       if(Array.isArray(result?.reasons)) reasons.push(...result.reasons);

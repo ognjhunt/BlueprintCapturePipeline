@@ -464,6 +464,55 @@ def test_repeated_invalid_qa_exhausts_two_corrections_without_fabricating_accept
     assert final["qa"]["validation_feedback"][0]["path"] == "/checks/0/duplicate"
 
 
+def test_assessment_only_defect_left_after_corrections_does_not_block_the_day(fixture):
+    """Independent review S1: an assessment defect that survives the bounded corrections leaves
+    only that candidate unresolved; QA and the rest of the day are not blocked."""
+    consumer, api, ledger, bridge, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    api.qa_result["checks"][0]["lead_verification"]["sources"] = "not-a-list"
+    key = api.qa_result["checks"][0]["candidate_key"]
+    submitted = correction_provider(consumer, api, ledger, bridge, fix=False)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=60)
+    consumer.step()
+    final = ledger.get(DAY)
+    assert len(submitted) == len(final["qa"]["corrections"]) == 2
+    assert final["qa"]["state"] == "validated" and final["qa"].get("error") is None
+    reasons = {i["reason"] for i in final["qa"]["assessment_feedback_unresolved"]}
+    assert "agent_qa_assessment_sources_invalid" in reasons and all(r.startswith("agent_qa_assessment_") for r in reasons)
+    results = {r["candidate_key"]: r for r in final["qa"]["decision"]["lead_verification"]["results"]}
+    assert results[key]["status"] == "unresolved" and not results[key]["eligible_for_qualified_promotion"]
+    assert key not in final["qa"]["decision"]["accepted_keys"]
+
+
+def test_assessment_feedback_digests_once_and_is_bounded(fixture):
+    """Independent review S4: thousands of malformed sources must not cost quadratic time."""
+    import time
+
+    from tools.daily_research.consumer import (
+        MAX_ASSESSMENT_ISSUES_PER_CHECK,
+        qa_validation_feedback,
+    )
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    c = verification.packet_candidates(row["packet"])[0]
+    value = assessment(c, NOW)
+    value["sources"] = [{"id": ""} for _ in range(4000)]
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Synthetic bounded feedback",
+          "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": False, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": value}]}
+    row["qa"] = {"crm_digest": "crm"}
+    started = time.monotonic()
+    issues = [i for i in qa_validation_feedback(row, qa) if i["reason"].startswith("agent_qa_assessment_")]
+    assert time.monotonic() - started < 2
+    assert len(issues) <= MAX_ASSESSMENT_ISSUES_PER_CHECK + 1
+    assert issues[-1]["reason"] == "agent_qa_assessment_feedback_truncated"
+
+
 @pytest.mark.parametrize("accepted", [False, True])
 def test_uncertain_qa_correction_never_submits_a_duplicate_turn(fixture, accepted):
     consumer, api, ledger, bridge, _ = fixture

@@ -49,11 +49,15 @@ LIMIT_BYTES = 2_000_000
 # inventory. Flag an oversized display at validation, where the agent gets repair
 # feedback, instead of after it, where the packet ceiling would block the whole run.
 PACKET_OUTPUT_BUDGET = 450_000
+PACKET_CANDIDATE_ALLOWANCE = 400  # normalization adds ~230 bytes per candidate (identity keys, index)
 
 
 def packet_overflow(output):
     shown = {key: value for key, value in output.items() if key != "discovery_inventory"}
-    return len(canonical(shown).encode()) > PACKET_OUTPUT_BUDGET
+    candidates = output.get("candidates") if isinstance(output.get("candidates"), list) else []
+    return len(canonical(shown).encode()) + PACKET_CANDIDATE_ALLOWANCE * len(candidates) > PACKET_OUTPUT_BUDGET
+
+
 TERMINAL = {"awaiting_review", "reviewed", "completed", "failed", "cancelled"}
 
 
@@ -1477,7 +1481,10 @@ class Runner:
             assessments = {r.get("candidate_key"): r.get("assessment") for r in retained if isinstance(r, dict)}
             all_candidates = verification.packet_candidates(row["packet"])
             duplicate_checks = decision.get("lead_verification", {}).get("duplicate_checks", {})
-            result_version = decision.get("lead_verification", {}).get("result_version", verification.RESULT_VERSION)
+            result_version = row["packet"].get("lead_verification_result_version", verification.RESULT_VERSION)
+            if ("lead_verification" in decision and decision["lead_verification"].get("result_version", verification.RESULT_VERSION)
+                    != result_version):
+                raise Refusal("lead_verification_result_version_mismatch")
             cohort = verification.cohort(all_candidates, assessments, self.clock(), duplicate_checks=duplicate_checks, result_version=result_version)
             if "lead_verification" in decision:
                 try:

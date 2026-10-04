@@ -223,7 +223,7 @@ def explain(row, code):
     return template.format(version=version, day=row.get("date"), limit=discovery.MAX_CANDIDATES if version == 3 else 3,
                            age_reason="refresh_due" if version == 3 else "stale", evidence_min=2 if version == 3 else 3,
                            candidate_limit="" if version == 3 else "; at most three entries",
-                           summary_limit="; v2 has at most20 items" if version == 2 else "")
+                           summary_limit="; v2 has at most 20 items" if version == 2 else "")
 
 
 def validation_feedback(output, row, known, observed_at):
@@ -296,13 +296,23 @@ def exclude_located_items(document, feedback):
     and QA; nothing is rewritten, promoted or invented.
     """
     from tools.daily_research.runner import digest
-    targets = {}
+    targets, quarantine = {}, []
     for found in feedback:
         parts = found["path"].split("/")[1:]
+        if parts and parts[0] == "discovery_inventory" and isinstance(document, dict):
+            # The optional inventory is quarantined whole (never trimmed to a "complete"
+            # subset); its records stay in the immutable source artifact.
+            quarantine.append({"path": found["path"], "reason": found["reason"]})
+            continue
         if len(parts) < 2 or parts[0] not in ITEM_FIELDS or not parts[1].isdigit() or not isinstance(document, dict):
             return None, None
         targets.setdefault((parts[0], int(parts[1])), []).append({"path": found["path"], "reason": found["reason"]})
     derived, excluded = deepcopy(document), []
+    if quarantine:
+        inventory = derived.pop("discovery_inventory", None)
+        excluded.append({"field": "discovery_inventory", "quarantined_whole_field": True,
+                         "record_count": len(inventory) if isinstance(inventory, list) else None,
+                         "failures": quarantine, "item_digest": digest(inventory)})
     for field in ITEM_FIELDS:
         indexes = sorted(index for name, index in targets if name == field)
         values = derived.get(field)

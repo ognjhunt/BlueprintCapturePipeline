@@ -28,20 +28,25 @@ from tools.daily_research.runner import (
 
 QA_PATH = "/workspace/outputs/daily-research-qa.json"
 MAX_QA_CORRECTIONS = 2
+# Assessment (lead_verification) issues are correctable but never block the day on their own:
+# after the bounded corrections the affected candidate simply stays unresolved.
+ASSESSMENT_ISSUE = "agent_qa_assessment_"
+MAX_ASSESSMENT_ISSUES_PER_CHECK = 40
 
 
 def qa_validation_feedback(row, result):
     """Locate every disposition/type error without inferring an agent decision."""
     issues = []
-    def issue(path, expected, value=None, code="agent_qa_candidate_checks_invalid"):
+    def value_digest_of(value):
         try:
-            value_digest = digest(value)
+            return digest(value)
         except (ValueError, TypeError, OverflowError):
             # Original artifact bytes remain the authority. Nonportable inert
             # metadata still receives bounded feedback instead of crashing QA.
-            value_digest = hashlib.sha256(repr(value).encode("utf-8", errors="backslashreplace")).hexdigest()
+            return hashlib.sha256(repr(value).encode("utf-8", errors="backslashreplace")).hexdigest()
+    def issue(path, expected, value=None, code="agent_qa_candidate_checks_invalid", value_digest=None):
         issues.append({"path": path, "expected": expected, "reason": code,
-                       "offending_value_digest": value_digest})
+                       "offending_value_digest": value_digest if value_digest is not None else value_digest_of(value)})
     def valid_text(value):
         try:
             return isinstance(value, str) and bool(value) and len(value.encode("utf-8")) <= LIMIT_BYTES
@@ -87,13 +92,20 @@ def qa_validation_feedback(row, result):
                 issue(path + "/reason", "nonempty valid UTF-8 text explaining the actual source/duplicate disposition", reason)
             if (isinstance(key, str) and key in indexed_candidates and row["packet"].get("lead_verification_result_version") == verification.DIAGNOSTIC_RESULT_VERSION):
                 assessment = check.get("lead_verification")
-                for error in verification.assessment_issues(indexed_candidates[key], assessment):
-                    issue(path + "/lead_verification" + ("" if error["path"] == "/" else error["path"]),
-                          error["expected"], assessment, "agent_qa_" + error["code"])
-                for pointer in _placeholder_paths(assessment):
-                    issue(path + "/lead_verification" + pointer, "replace the copied example placeholder with the "
-                          "actual retained value, or an explicit unknown where the contract allows it",
-                          assessment, "agent_qa_assessment_placeholder_copied")
+                found = [(("" if error["path"] == "/" else error["path"]), error["expected"], "agent_qa_" + error["code"])
+                         for error in verification.assessment_issues(indexed_candidates[key], assessment)]
+                found += [(pointer, ("replace the copied example placeholder with the actual retained value, "
+                                     "or an explicit unknown where the contract allows it"),
+                           "agent_qa_assessment_placeholder_copied")
+                          for pointer in _placeholder_paths(assessment)]
+                if found:
+                    assessment_digest = value_digest_of(assessment)
+                    for pointer, expected, code in found[:MAX_ASSESSMENT_ISSUES_PER_CHECK]:
+                        issue(path + "/lead_verification" + pointer, expected, code=code, value_digest=assessment_digest)
+                    if len(found) > MAX_ASSESSMENT_ISSUES_PER_CHECK:
+                        issue(path + "/lead_verification", f"{len(found) - MAX_ASSESSMENT_ISSUES_PER_CHECK} more assessment "
+                              "issues are omitted; fix the reported paths first", code=ASSESSMENT_ISSUE + "feedback_truncated",
+                              value_digest=assessment_digest)
         if set(usable) != candidates:
             issue("/checks", "cover every original candidate exactly once; missing evidence stays unresolved", sorted(set(usable)))
     accepted = result.get("accepted_keys")
@@ -246,15 +258,14 @@ def qa_text(row, snapshot, crm_digest):
                "do not claim verified support. Use every original candidate key exactly once in checks. Only accepted "
                "keys may have verified source support and no duplicate. For EVERY candidate, add lead_verification using "
                "the evidence skill's v1 assessment: bind its supplied candidate_digest, sources, dates/retrieval/freshness, "
-               "Use the literal key version with value blueprint.lead-verification.v1; assessed_at is the actual assessment timestamp with timezone. "
-               "valid_until is a supported future freshness boundary, or explicit null when currentness is unknown. Null never qualifies a lead. "
-               "counterevidence.searches is a list of actual query strings or original query records with a query field, empty when none were performed. "
                "operator/physical_site/site_task/human_workflow/plausible_fit claims and bounded counterevidence assessment. "
-               "Use the example's lead_verification field names exactly: the marker is `version` (not schema_version); "
-               "assessed_at and checked_at are actual ISO-8601 times with offset. Set valid_until to an evidence-based "
-               "ISO-8601 expiry whenever the sources establish currentness, including a supported contradiction; "
-               "use null only when freshness cannot be established, which correctly keeps the candidate unresolved. "
-               "Replace every example placeholder with the actual retained value. Never invent a date. "
+               "Use the example's lead_verification field names exactly: the literal key `version` has value "
+               "blueprint.lead-verification.v1 (not schema_version); assessed_at and checked_at are actual ISO-8601 times "
+               "with offset. Set valid_until to an evidence-based ISO-8601 expiry whenever the sources establish currentness, "
+               "including a supported contradiction; use null only when freshness cannot be established, which keeps the "
+               "candidate unresolved; null never qualifies a lead. counterevidence.searches lists actual query strings or "
+               "original query records with a query field, empty when none were performed. Replace every example "
+               "placeholder with the actual retained value. Never invent a date. "
                "A source_support_verified boolean alone never qualifies a lead. Do not guess missing facts or repeat research "
                "to force a pass: incomplete assessments are retained unresolved with actionable feedback. Verification gates "
                "qualified promotion and downstream outreach eligibility; public evidence cannot prove buying intent, rights, "
@@ -280,7 +291,7 @@ def qa_text(row, snapshot, crm_digest):
 
 def qa_decision(row, result, known, observed_at=None):
     qa = row["qa"]
-    feedback = qa_validation_feedback(row, result)
+    feedback = [item for item in qa_validation_feedback(row, result) if not item["reason"].startswith(ASSESSMENT_ISSUE)]
     if feedback:
         raise Refusal(feedback[0]["reason"])
     all_candidates = verification.packet_candidates(row["packet"])
@@ -538,14 +549,22 @@ class Consumer:
         if len(corrections) >= MAX_QA_CORRECTIONS:
             error = "agent_qa_correction_exhausted"
         permission = workflow(self.ledger.bridge.call("control"))
-        if (not row.get("qa_retry_continuation")
-                and qa.get("submission_binding", {}).get("authority_reference") != (permission or {}).get("qa_authority_reference")):
+        not_admitted = ((not row.get("qa_retry_continuation")
+                         and qa.get("submission_binding", {}).get("authority_reference") != (permission or {}).get("qa_authority_reference"))
+                        or self.terminal_collection_receipt is not None or bool(qa.get("cancel_attempted")))
+        if not_admitted:
             error = "agent_qa_correction_not_admitted"
-        if self.terminal_collection_receipt is not None or qa.get("cancel_attempted"):
-            error = "agent_qa_correction_not_admitted"
-        if self.stopped() or not permission or self.clock() >= deadline:
+        stopped_or_disabled = self.stopped() or not permission
+        if stopped_or_disabled or self.clock() >= deadline:
             error = "agent_qa_correction_stopped_disabled_or_expired"
         if error:
+            if (not not_admitted and not stopped_or_disabled
+                    and all(item["reason"].startswith(ASSESSMENT_ISSUE) for item in feedback)):
+                # Exhausted corrections or an expired window leave only these candidates
+                # unresolved; the rest of the day's research still proceeds.
+                qa["assessment_feedback_unresolved"] = feedback
+                self.ledger.put(row)
+                return "decide"
             qa.update(state="qa_blocked", error=error)
             self.ledger.put(row)
             return
@@ -681,8 +700,7 @@ class Consumer:
                 else:
                     qa.pop("artifact_format_normalization", None)
                 feedback = qa_validation_feedback(row, result)
-                if feedback:
-                    self.correct_qa(row, feedback, session, deadline)
+                if feedback and self.correct_qa(row, feedback, session, deadline) != "decide":
                     return None
                 decision = qa_decision(row, result, known, self.clock())
                 if late_deadline_cancel:

@@ -570,6 +570,21 @@ def test_review_rejects_forged_derived_verification_metrics(fixture):
         runner.review(DAY, value)
 
 
+def test_review_derives_the_result_version_from_the_packet_pin(fixture):
+    """Independent review S6: a decision cannot choose its own evaluator version."""
+    from tests.daily_research_verification_fixture import assessment
+    from tools.daily_research import verification
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    assert row["packet"]["lead_verification_result_version"] == verification.DIAGNOSTIC_RESULT_VERSION
+    value = decision(row)
+    value["lead_verification"] = verification.cohort(row["packet"]["candidates"],
+        {c["candidate_key"]: assessment(c, NOW) for c in row["packet"]["candidates"]}, NOW,
+        result_version=verification.RESULT_VERSION)
+    with pytest.raises(Refusal, match="lead_verification_result_version_mismatch"):
+        runner.review(DAY, value)
+
+
 def test_review_accepts_portable_whole_number_metrics_after_bridge_roundtrip(fixture):
     runner, _, _ = fixture
     row = runner.start_or_resume()

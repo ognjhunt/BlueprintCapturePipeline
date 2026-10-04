@@ -370,7 +370,8 @@ export class Store {
         || !Array.isArray(inventory.pages) || inventory.page_count!==inventory.pages.length
         || !/^[a-f0-9]{64}$/.test(inventory.source_output_digest)) refuse('discovery_inventory_manifest_invalid');
       const sources=[{artifact_file:`${day}-artifact.json`,artifact_digest:row.raw_output_digest},...(row.validation_repairs || [])];
-      if(!sources.some(source=>source.artifact_file===inventory.source_artifact_file && source.artifact_digest===inventory.source_artifact_sha256))
+      if(typeof inventory.source_artifact_file!=='string' || typeof inventory.source_artifact_sha256!=='string'
+        || !sources.some(source=>source.artifact_file===inventory.source_artifact_file && source.artifact_digest===inventory.source_artifact_sha256))
         refuse('discovery_inventory_source_binding_invalid');
       const sourceRaw=Buffer.from(await this.fileGet(inventory.source_artifact_file),'base64');
       if(sha(sourceRaw)!==inventory.source_artifact_sha256) refuse('discovery_inventory_source_binding_invalid');
@@ -384,8 +385,11 @@ export class Store {
       for(const [index,page] of inventory.pages.entries()) {
         if(page.index!==index || page.start!==count || !Number.isInteger(page.end) || page.end<=count
           || page.file!==`${day}-inventory-${inventory.source_output_digest}-${index}.json`) refuse('discovery_inventory_manifest_invalid');
-        const encoded=await this.fileGet(page.file),raw=Buffer.from(encoded,'base64'),value=JSON.parse(raw);
-        if(raw.length>100000 || raw.length!==page.bytes || sha(raw)!==page.sha256 || value.version!==inventory.version
+        const encoded=await this.fileGet(page.file),raw=Buffer.from(encoded,'base64');
+        // Verify size and digest before parsing untrusted page bytes.
+        if(raw.length>100000 || raw.length!==page.bytes || sha(raw)!==page.sha256) refuse('discovery_inventory_page_binding_invalid');
+        let value;try {value=JSON.parse(raw);}catch {refuse('discovery_inventory_page_binding_invalid');}
+        if(value.version!==inventory.version
           || value.run_key!==row.run_key || value.source_output_digest!==inventory.source_output_digest
           || value.start!==page.start || value.end!==page.end || !Array.isArray(value.records)
           || value.records.length!==page.end-page.start) refuse('discovery_inventory_page_binding_invalid');

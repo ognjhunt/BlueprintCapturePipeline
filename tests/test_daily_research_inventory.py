@@ -107,15 +107,23 @@ def test_inventory_cannot_bind_replaced_or_truncated_records_to_an_original_arti
 
 
 def test_exhausted_repair_does_not_exclude_inventory_records_or_claim_false_complete_retention():
+    """Independent review S5 (2026-10-04): one malformed optional inventory record must not discard
+    the day. The inventory is quarantined whole with a receipt; it is never trimmed to a subset
+    presented as complete, and its records stay in the immutable source artifact."""
     from tools.daily_research.recovery import exclude_located_items
+    from tools.daily_research.runner import digest as row_digest
     original = {"discovery_inventory": inventory(3), "candidates": []}
     original["discovery_inventory"][1]["disposition"] = "invalid"
     saved = deepcopy(original)
     feedback = [{"path": "/discovery_inventory/1", "reason": "discovery_inventory_invalid"}]
     derived, exclusions = exclude_located_items(original, feedback)
-    assert derived is None and exclusions is None and original == saved
-    # The exhausted repair path retains the original failed artifact; no
-    # subset can become a complete inventory or automatic qualified candidate.
+    assert original == saved
+    assert "discovery_inventory" not in derived and derived["candidates"] == []
+    assert exclusions == [{"field": "discovery_inventory", "quarantined_whole_field": True, "record_count": 3,
+                           "failures": feedback, "item_digest": row_digest(saved["discovery_inventory"])}]
+    # A located inventory failure never removes other fields or a partial set of records.
+    mixed, _ = exclude_located_items(original, feedback + [{"path": "/coverage", "reason": "discovery_coverage_invalid"}])
+    assert mixed is None
 
 
 def test_oversized_review_packet_is_repairable_feedback_not_a_blocked_run():
@@ -139,3 +147,48 @@ def test_oversized_review_packet_is_repairable_feedback_not_a_blocked_run():
     other = dict(row, search_provider="native")
     assert "research_packet_resource_ceiling_use_inventory" not in {
         issue["reason"] for issue in validation_feedback(out, other, set(), NOW)}
+
+
+def test_largest_output_the_packet_guard_admits_still_fits_the_review_packet(tmp_path):
+    """Independent review S3: candidate normalization adds bytes after validation, so the
+    guard must leave room for it; otherwise a valid output hits the unrepairable ceiling."""
+    from tests.test_daily_research_search import fixture as search_fixture
+    from tools.daily_research import search
+    from tools.daily_research.recovery import validation_feedback
+    from tools.daily_research.runner import canonical, packet_overflow
+    def build(n):
+        out = result(n)[0]
+        out["coverage"].update(defined_run_scope=["Synthetic exact site/task industry/region scope"],
+                               unresolved_promising_branches=[], completion_state="coverage_complete")
+        return out
+    n = 1
+    while not packet_overflow(build(n + 1)):
+        n += 1
+    runner, api, _ledger = next(search_fixture.__wrapped__(tmp_path))
+    api.raw, api.turn_status = canonical(build(n)).encode(), "completed"
+    row = runner.start_or_resume()
+    assert row["state"] == "awaiting_review", row.get("error")
+    assert len(canonical(row["packet"]).encode()) <= search.MAX_PACKET
+    over = build(n + 1)
+    reasons = {f["reason"] for f in validation_feedback(over, {**row, "search_provider": search.PROFILE}, set(), NOW)}
+    assert "research_packet_resource_ceiling_use_inventory" in reasons
+
+
+def test_forged_inventory_manifest_with_null_source_refuses_instead_of_crashing(tmp_path):
+    """Independent review N5: a repair revision without an artifact must not let a manifest
+    with null source fields match it and crash the export with a TypeError."""
+    import base64
+
+    from tools.daily_research import render
+    repair_input = b'{"synthetic": "repair input"}'
+    row = {"date": DAY, "run_key": "blueprint-researcher:" + DAY,
+           "validation_repairs": [{"number": 1, "input_file": DAY + "-repair-1-input.json",
+                                   "request_digest": digest(json.loads(repair_input)), "state": "invalid"}],
+           "packet": {"discovery_inventory_manifest": {"version": discovery.INVENTORY_VERSION, "complete_retention": True,
+                      "page_count": 0, "pages": [], "source_artifact_file": None, "source_artifact_sha256": None}}}
+    class Bridge:
+        def call(self, name, **_):
+            assert name == "snapshot"
+            return {"row": row, "files": {"repair-1-input": base64.b64encode(repair_input).decode()}}
+    with pytest.raises(Refusal, match="discovery_inventory_source_binding_invalid"):
+        render.export_snapshot(Bridge(), DAY, tmp_path / "export")
