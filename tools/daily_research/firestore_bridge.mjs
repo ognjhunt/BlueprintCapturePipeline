@@ -5,6 +5,7 @@ import {createInterface} from 'node:readline';
 import {pathToFileURL} from 'node:url';
 import {livePublisher,publicationVerification,requirePublicationVerification} from './publisher.mjs';
 import {verificationDigest} from './verification-digest.mjs';
+import {contactResearchContext,claimContactResearch,finishContactResearchSafely} from './contact_research.mjs';
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
 export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
@@ -292,6 +293,7 @@ export class Store {
         publication_state:publication?.state || null,publication_turn_id:publication?.turn_id || null});
       this.projectWorkItem(tx, row, hash);
     });
+    await finishContactResearchSafely(this,row,hash);
     if(this.learning && ['awaiting_review','reviewed','completed','failed','cancelled'].includes(row.state)) {
       let observation;
       try {
@@ -468,6 +470,7 @@ export class Store {
               return !Number.isFinite(expiry) || expiry <= this.clock();
             })) refuse('research_learning_create_scope_changed_or_expired');
       }
+      await claimContactResearch(this,tx,day,metadata);
       tx.set(this.db.doc(`${ROOT}/runs/${day}`), {create_attempt_claimed: true}, {merge: true});
       return true;
     });
@@ -1251,6 +1254,13 @@ export class Store {
       case 'release': return this.release();
       case 'assert_lease': return this.assertLease();
       case 'control': return (await this.control.get()).data() || null;
+      case 'contact_research_context': return contactResearchContext(this,request.day);
+      case 'contact_research_reconcile': {
+        await this.assertLease();
+        const row=await this.get(request.day);
+        const manifest=(await this.db.doc(`${ROOT}/runs/${request.day}`).get()).data();
+        return row ? finishContactResearchSafely(this,row,manifest.blob) : {state:'missing'};
+      }
       case 'learning_context':
       {
         const control = (await this.control.get()).data();

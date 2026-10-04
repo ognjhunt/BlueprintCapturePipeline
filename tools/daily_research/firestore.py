@@ -95,6 +95,12 @@ class FirestoreLedger:
         control = self.bridge.call("control")
         return control.get("learning") if isinstance(control, dict) else None
 
+    def contact_research_context(self, day):
+        return self.bridge.call("contact_research_context", day=day)
+
+    def reconcile_contact_research(self, day):
+        return self.bridge.call("contact_research_reconcile", day=day)
+
     def put(self, row):
         from tools.daily_research import search
         if row.get("search_provider") == search.PROFILE and len(canonical(row).encode()) > search.MAX_RECORD:
@@ -134,11 +140,14 @@ class FencedProvider(Provider):
             return {"unavailable_reason": "expansion_original_run_or_ack_pending_no_new_start"}
         control = self.ledger.bridge.call("control")
         allocation = control.get("exa_expansion_allocation")
+        allocation_status = expansion.allocation_diagnostic(row, allocation)
         if name == expansion.START and not isinstance(allocation, dict):
-            return {"unavailable_reason": "expansion_remaining_all_in_allocation_unverified"}
+            return {"unavailable_reason": "expansion_remaining_all_in_allocation_unverified",
+                    "allocation_status": allocation_status}
         key = os.environ.get("EXA_API_KEY")
         if not key:
-            return {"unavailable_reason": "expansion_worker_exa_binding_missing"}
+            return {"unavailable_reason": "expansion_worker_exa_binding_missing", "allocation": allocation,
+                    "allocation_status": allocation_status}
 
         def retain(receipt):
             from tools.daily_research.runner import digest
@@ -168,7 +177,8 @@ class FencedProvider(Provider):
             schema = transport.discover()
         except ExaTransportError:
             return {"unavailable_reason": "expansion_authenticated_catalog_unavailable"}
-        return {"transport": transport, "allocation": allocation, "tool_schema": schema}
+        return {"transport": transport, "allocation": allocation, "tool_schema": schema,
+                "allocation_status": allocation_status}
 
     def expansion_admit(self, row, phase):
         self.tool_admit(row, phase)

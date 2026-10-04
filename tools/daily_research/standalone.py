@@ -17,7 +17,7 @@ FILES = (
     "capabilities/blueprint-evidence-qualification/SKILL.md",
     "capabilities/blueprint-evidence-qualification/references/prospect-contract.md",
     "capabilities/deep-research/SKILL.md", "capabilities/deep-research/LICENSE",
-    "firestore.py", "firestore_bridge.mjs", "render.py", "render_worker.mjs", "render.control.example.json",
+    "firestore.py", "firestore_bridge.mjs", "contact_research.mjs", "render.py", "render_worker.mjs", "render.control.example.json",
     "config.example.json", "knowledge.config.example.json", "knowledge.v3.config.example.json",
     "daily-research.v2.schema.json", "daily-research.v3.schema.json",
     "knowledge-snapshot.v1.schema.json", "knowledge-refresh-policy.v1.schema.json",

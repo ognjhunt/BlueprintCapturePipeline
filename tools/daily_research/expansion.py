@@ -129,6 +129,61 @@ def _allocation(snapshot, row, cap, now, deadline):
     return True
 
 
+def allocation_diagnostic(row, snapshot=None, *, now=None):
+    """Read-only, allowlisted explanation; never manufactures cost evidence.
+
+    A token count, soft target or communications reservation cannot produce an
+    all-in research allocation. The original admission predicate remains the
+    source of truth. Unknown/malformed evidence yields no numeric headroom.
+    """
+    now = now or datetime.now(timezone.utc)
+    result = {"schema_version": "blueprint.research-expansion-allocation-status.v1",
+              "verification": "unknown", "remaining_micros": None,
+              "reasons": [], "claim_created": False, "provider_started": False}
+    if not isinstance(row, dict):
+        result["reasons"] = ["research_run_context_missing"]
+        return result
+    result["model_usage_present"] = isinstance(row.get("usage"), dict)
+    result["application_tool_billing_verified"] = row.get("application_tool_usage", {}).get("provider_billing_verified") is True if isinstance(row.get("application_tool_usage"), dict) else False
+    if not isinstance(snapshot, dict):
+        result["reasons"] = ["company_all_in_allocation_missing"]
+        result["required_evidence"] = ["model_and_agent_hosting_billing", "research_tool_billing",
+                                       "remaining_phase_reservations", "current_run_authority_binding"]
+        return result
+    reasons = result["reasons"]
+    if snapshot.get("schema_version") != ALLOCATION:
+        reasons.append("allocation_schema_invalid")
+    if snapshot.get("all_in_verified") is not True or snapshot.get("usage_unknown") is not False:
+        reasons.append("all_in_usage_unverified")
+    if snapshot.get("run_key") != row.get("run_key"):
+        reasons.append("allocation_run_mismatch")
+    if snapshot.get("authority_reference") != row.get("recurring_budget_authority_reference"):
+        reasons.append("allocation_authority_mismatch")
+    if not isinstance(snapshot.get("evidence_reference"), str) or not snapshot["evidence_reference"].strip():
+        reasons.append("allocation_evidence_reference_missing")
+    fields = ("limit_micros", "committed_micros", "reserved_micros", "remaining_micros")
+    integers = all(type(snapshot.get(key)) is int and snapshot[key] >= 0 for key in fields)
+    if not integers:
+        reasons.append("allocation_amounts_invalid")
+    elif snapshot["remaining_micros"] != LIMIT_MICROS - snapshot["committed_micros"] - snapshot["reserved_micros"]:
+        reasons.append("allocation_arithmetic_invalid")
+    if snapshot.get("limit_micros") != LIMIT_MICROS or row.get("soft_target_usd") != 5:
+        reasons.append("allocation_existing_limit_mismatch")
+    try:
+        deadline = _deadline(row)
+        if not _time(snapshot["checked_at"]) <= now < _time(snapshot["valid_until"]) <= deadline:
+            reasons.append("allocation_not_current_within_original_deadline")
+        valid = _allocation(snapshot, row, 0, now, deadline)
+    except (KeyError, TypeError, ValueError):
+        reasons.append("allocation_time_or_run_context_invalid")
+        valid = False
+    if valid:
+        result.update(verification="verified_retained_snapshot", remaining_micros=snapshot["remaining_micros"])
+    elif not reasons:
+        reasons.append("allocation_admission_unverified")
+    return result
+
+
 def _receipt(ledger, claim, label, raw):
     if len(raw) > MAX_BYTES:
         raise ExpansionError("expansion_receipt_too_large_not_truncated")
@@ -164,7 +219,7 @@ def _project(claim, result=None):
 
 def execute(name, args, row, ledger, *, transport=None, allocation=None,
             tool_schema=None, phase="research", now=None, admit=None,
-            unavailable_reason="expansion_authenticated_transport_missing"):
+            unavailable_reason="expansion_authenticated_transport_missing", allocation_status=None):
     """Single start per daily run; original-ID reads retain full JSON provenance."""
     now = now or datetime.now(timezone.utc)
     started = time.monotonic()
@@ -258,7 +313,10 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
     if now >= deadline:
         return _skip("expansion_original_deadline_exhausted") if not claim else _project(claim)
     if transport is None or not callable(getattr(transport, "start", None)) or not callable(getattr(transport, "read", None)):
-        return _skip(unavailable_reason) if not claim else _project(claim)
+        outcome = _skip(unavailable_reason) if not claim else _project(claim)
+        if allocation_status is not None:
+            outcome["allocation_status"] = allocation_diagnostic(row, allocation, now=now)
+        return outcome
     if name == START:
         if phase != "research" or row.get("state") != "running" or row.get("qa") or row.get("raw_output_digest"):
             return _skip("expansion_before_final_qa_only")
