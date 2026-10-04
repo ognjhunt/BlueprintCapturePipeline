@@ -285,6 +285,8 @@ def required_output_fields(output, contract_version):
         fields.add("refresh_policy_hash")
         if isinstance(output, dict) and "coverage" in output:
             fields.add("coverage")
+        if isinstance(output, dict) and "opportunity_shortlist" in output:
+            fields.add("opportunity_shortlist")
     return fields
 
 
@@ -349,6 +351,9 @@ def output_issues(output, run_date, *, contract_version=1, knowledge_context=Non
             discovery.validate_coverage(output["coverage"], len(output.get("candidates", [])))
         except (ValueError, TypeError) as exc:
             yield _issue("/coverage", str(exc) if isinstance(exc, ValueError) else "discovery_coverage_invalid")
+    if contract_version == 3 and "opportunity_shortlist" in output:
+        for pointer, code in discovery.shortlist_issues(output["opportunity_shortlist"], run_date):
+            yield _issue("/opportunity_shortlist" + pointer, code)
     if set(output) != required_output_fields(output, contract_version):
         yield _issue("", "output_schema_invalid")
     limit = discovery.MAX_CANDIDATES if contract_version == 3 else 3
@@ -822,6 +827,13 @@ def prompt(day, knowledge_context=None, contract_version=2, *, adaptive=False, t
     if adaptive and contract_version != 3:
         raise Refusal("adaptive_research_requires_v3")
     if adaptive:
+        example["opportunity_shortlist"] = [{"organization": "source-supported operator name", "site": "specific site or explicitly unknown",
+            "location": "sourced location or explicitly unknown", "task": "bounded task hypothesis", "capability_family": "supported task family",
+            "site_task_confidence": "low", "robot_fit_confidence": "unknown", "robot_fit": "hypothesis and concrete evidence gaps",
+            "buying_interest": "unknown; no actual buyer response", "status": "needs_research",
+            "remaining_questions": ["next concrete evidence check"], "sources": [{"claim": "bounded source claim",
+                "url": "https://operator.example/source", "publisher": "operator", "quote": "exact observed passage",
+                "source_date": None, "checked_date": day}]}]
         example["coverage"] = {"search_queries": 0, "pages_opened": 0, "branches_checked": [], "rejection_reasons": [],
                                "stop_reason": "actual evidence-based stop reason", "shortfall_reason": "explain if fewer than 10 new opportunities"}
         if search_provider == search.PROFILE:
@@ -1283,6 +1295,8 @@ class Runner:
                                           "semantic_and_deployment_qa_pending": True}
             if row.get("search_provider") == search.PROFILE:
                 packet["discovery_counts"].update(target_new=None, shortfall=None, candidate_count_is_stopping_rule=False)
+        if "opportunity_shortlist" in output:
+            packet["opportunity_shortlist"] = output["opportunity_shortlist"]
         if output_recovery is not None:
             packet["output_recovery"] = output_recovery
         packet["remote_completion_timestamp_verified"] = row.get("remote_completed_at") is not None
