@@ -31,7 +31,14 @@ MAX_QA_CORRECTIONS = 2
 # Assessment (lead_verification) issues are correctable but never block the day on their own:
 # after the bounded corrections the affected candidate simply stays unresolved.
 ASSESSMENT_ISSUE = "agent_qa_assessment_"
+PLACEHOLDER_COPIED = ASSESSMENT_ISSUE + "placeholder_copied"
 MAX_ASSESSMENT_ISSUES_PER_CHECK = 40
+
+
+def deferrable_assessment_issue(item):
+    """An assessment defect the per-candidate verification gate itself refuses. Copied example
+    placeholders are not among them (the gate only requires text), so they always block QA."""
+    return item["reason"].startswith(ASSESSMENT_ISSUE) and item["reason"] != PLACEHOLDER_COPIED
 
 
 def qa_validation_feedback(row, result):
@@ -92,12 +99,12 @@ def qa_validation_feedback(row, result):
                 issue(path + "/reason", "nonempty valid UTF-8 text explaining the actual source/duplicate disposition", reason)
             if (isinstance(key, str) and key in indexed_candidates and row["packet"].get("lead_verification_result_version") == verification.DIAGNOSTIC_RESULT_VERSION):
                 assessment = check.get("lead_verification")
-                found = [(("" if error["path"] == "/" else error["path"]), error["expected"], "agent_qa_" + error["code"])
-                         for error in verification.assessment_issues(indexed_candidates[key], assessment)]
-                found += [(pointer, ("replace the copied example placeholder with the actual retained value, "
-                                     "or an explicit unknown where the contract allows it"),
-                           "agent_qa_assessment_placeholder_copied")
-                          for pointer in _placeholder_paths(assessment)]
+                # Placeholders come first so truncation can never hide the one issue that always blocks.
+                found = [(pointer, ("replace the copied example placeholder with the actual retained value, "
+                                    "or an explicit unknown where the contract allows it"), PLACEHOLDER_COPIED)
+                         for pointer in _placeholder_paths(assessment)]
+                found += [(("" if error["path"] == "/" else error["path"]), error["expected"], "agent_qa_" + error["code"])
+                          for error in verification.assessment_issues(indexed_candidates[key], assessment)]
                 if found:
                     assessment_digest = value_digest_of(assessment)
                     for pointer, expected, code in found[:MAX_ASSESSMENT_ISSUES_PER_CHECK]:
@@ -289,9 +296,12 @@ def qa_text(row, snapshot, crm_digest):
                               for c in verification.packet_candidates(row["packet"])}}))
 
 
-def qa_decision(row, result, known, observed_at=None):
+def qa_decision(row, result, known, observed_at=None, defer_assessment_issues=False):
+    """Every QA defect refuses unless the caller already exhausted bounded corrections; then
+    only gate-refused assessment defects are deferred to the per-candidate verification."""
     qa = row["qa"]
-    feedback = [item for item in qa_validation_feedback(row, result) if not item["reason"].startswith(ASSESSMENT_ISSUE)]
+    feedback = [item for item in qa_validation_feedback(row, result)
+                if not (defer_assessment_issues and deferrable_assessment_issue(item))]
     if feedback:
         raise Refusal(feedback[0]["reason"])
     all_candidates = verification.packet_candidates(row["packet"])
@@ -559,7 +569,7 @@ class Consumer:
             error = "agent_qa_correction_stopped_disabled_or_expired"
         if error:
             if (not not_admitted and not stopped_or_disabled
-                    and all(item["reason"].startswith(ASSESSMENT_ISSUE) for item in feedback)):
+                    and all(deferrable_assessment_issue(item) for item in feedback)):
                 # Exhausted corrections or an expired window leave only these candidates
                 # unresolved; the rest of the day's research still proceeds.
                 qa["assessment_feedback_unresolved"] = feedback
@@ -702,7 +712,7 @@ class Consumer:
                 feedback = qa_validation_feedback(row, result)
                 if feedback and self.correct_qa(row, feedback, session, deadline) != "decide":
                     return None
-                decision = qa_decision(row, result, known, self.clock())
+                decision = qa_decision(row, result, known, self.clock(), defer_assessment_issues=bool(feedback))
                 if late_deadline_cancel:
                     qa["terminal_collection_receipt"] = {"turn_id": tid, "completed_at": turn["completed_at"],
                                                          "deadline_ms": int(deadline.timestamp() * 1000),

@@ -1330,7 +1330,7 @@ class Runner:
         self.ledger.write_json(row["date"] + "-output.json", output)
         return self.prepare_output(row, output)
 
-    def prepare_output(self, row, output, *, output_recovery=None):
+    def prepare_output(self, row, output, *, output_recovery=None, research_exclusions=None):
         """The same strict output/CRM validation for collection and offline replay."""
         _, known = crm_snapshot(self.config["crm_snapshot"], self.clock())
         for previous in self.ledger.rows():
@@ -1387,6 +1387,8 @@ class Runner:
                 packet["discovery_counts"].update(target_new=None, shortfall=None, candidate_count_is_stopping_rule=False)
         if output_recovery is not None:
             packet["output_recovery"] = output_recovery
+        if research_exclusions is not None:
+            packet["research_exclusions"] = research_exclusions
         packet["remote_completion_timestamp_verified"] = row.get("remote_completed_at") is not None
         if row.get("search_provider") == search.PROFILE and len(canonical(packet).encode()) > search.MAX_PACKET:
             raise Refusal("research_profile_packet_resource_ceiling_raw_retained")
