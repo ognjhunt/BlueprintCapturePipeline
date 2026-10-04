@@ -393,6 +393,42 @@ def export_snapshot(bridge, day, destination):
                 or "publication-evidence" not in files
                 or digest(json.loads(files["publication-evidence"])) != publication_phase["evidence_digest"]):
             raise Refusal("publication_agent_export_digest_mismatch")
+    inventory = row.get("packet", {}).get("discovery_inventory_manifest")
+    if inventory:
+        from tools.daily_research.discovery import read_inventory_page
+        class ExportedInventory:
+            def read_bytes(self, name):
+                raw = files.get(name[len(day) + 1:-5])
+                if raw is None:
+                    raise ValueError("discovery_inventory_page_binding_invalid")
+                return raw
+        if inventory.get("complete_retention") is not True or inventory.get("page_count") != len(inventory.get("pages", [])):
+            raise Refusal("discovery_inventory_manifest_invalid")
+        source_bindings = [(day + "-artifact.json", row.get("raw_output_digest"))] + [
+            (revision.get("artifact_file"), revision.get("artifact_digest")) for revision in row.get("validation_repairs", [])]
+        source_file, source_sha = inventory.get("source_artifact_file"), inventory.get("source_artifact_sha256")
+        if (source_file, source_sha) not in source_bindings:
+            raise Refusal("discovery_inventory_source_binding_invalid")
+        source_raw = files.get(source_file[len(day) + 1:-5], b"")
+        if hashlib.sha256(source_raw).hexdigest() != source_sha:
+            raise Refusal("discovery_inventory_source_binding_invalid")
+        from tools.daily_research.recovery import parse_artifact_json
+        from tools.daily_research.verification import digest as evidence_digest
+        source_output, _ = parse_artifact_json(source_raw)
+        if evidence_digest(source_output.get("discovery_inventory")) != inventory.get("records_digest"):
+            raise Refusal("discovery_inventory_source_binding_invalid")
+        count, retained = 0, []
+        try:
+            for cursor in range(inventory["page_count"]):
+                page = read_inventory_page(inventory, ExportedInventory(), cursor)
+                if page["start"] != count or page["run_key"] != row["run_key"]:
+                    raise ValueError("discovery_inventory_page_binding_invalid")
+                count = page["end"]
+                retained.extend(page["records"])
+            if count != inventory["record_count"] or evidence_digest(retained) != inventory["records_digest"]:
+                raise ValueError("discovery_inventory_manifest_invalid")
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise Refusal("discovery_inventory_export_binding_invalid") from None
     for cid, call in row.get("application_tool_calls", {}).items():
         if not call.get("result_file"):
             continue

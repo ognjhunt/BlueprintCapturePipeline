@@ -208,3 +208,15 @@ def test_company_store_keeps_float_intent_claim_irreversible_and_exports_native_
             return snapshot
     with pytest.raises(Refusal, match="expansion_export_binding_invalid"):
         render.export_snapshot(Missing(), DAY, tmp_path / "bad-export")
+
+
+def test_below_minimum_start_never_builds_an_authenticated_context(fixture):
+    """The cap pre-check needs no allocation read, key or MCP catalog call."""
+    _, api, ledger, row = setup(fixture)
+    contexts = []
+    api.expansion_context = lambda row, name: contexts.append(name) or {"unavailable_reason": "should_not_be_reached"}
+    api.actions = [action(row, args={**ARGS, "max_cost_micros": 500_000})]
+    respond(api, ledger, row)
+    outcome = json.loads(api.result_events[-1][1]["output"])
+    assert outcome["reason"] == "expansion_cap_below_ultra_minimum" and contexts == []
+    assert "exa_expansion" not in ledger.get(DAY)

@@ -544,7 +544,9 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                             # initialize a paid-provider connection.
                             context = (api.expansion_context(row, action["name"])
                                 if phase == "research" and not (claim and (claim.get("terminal_receipt")
-                                    or action["name"] == expansion.START)) else {})
+                                    or action["name"] == expansion.START))
+                                and not (not claim and expansion.below_ultra_minimum(action["name"], action.get("arguments")))
+                                else {})
                             result = expansion.execute(action["name"], action.get("arguments"), row, ledger,
                                 phase=phase, now=clock(), admit=lambda current: api.expansion_admit(current, phase), **context)
                         else:

@@ -50,7 +50,8 @@ def instructions():
         "packing, machine tending, material handling, warehouses and other relevant physical tasks. "
         "Use one exact query grounded in retained findings, without enrichments or outreach. "
         "The requested max_cost_micros is an integer from 1000000 ($1, Exa Ultra's documented minimum) to 5000000 ($5); "
-        "it shares the existing all-in $5 research allocation and is not extra authority. "
+        "a smaller cap is refused, never raised automatically. "
+        "It shares the existing all-in $5 research allocation and is not extra authority. "
         "Host admission requires verified authentication, actual native cap support and remaining all-in headroom. "
         "If any is unavailable or unknown, retain the actionable skip and continue ordinary research. "
         "Once attempted, never repeat a native start, change the query, use previousRunId or create another job. "
@@ -80,6 +81,12 @@ def _skip(reason):
             "action": "Continue ordinary research; retain this expansion gap. No Exa start was made."}
 
 
+def below_ultra_minimum(name, args):
+    """A start whose cap is below Exa Ultra's minimum needs no context, key or catalog call."""
+    return (name == START and isinstance(args, dict) and type(args.get("max_cost_micros")) is int
+            and 0 < args["max_cost_micros"] < ULTRA_MIN_MICROS)
+
+
 def _deadline(row):
     seconds = row.get("research_runtime_seconds")
     if type(seconds) is not int or not 0 < seconds <= 1800:
@@ -103,7 +110,7 @@ def _cap_supported(schema, request):
                 and not set(schema.get("required", [])) - {"query", "effort", "budget"}
                 and not set(budget.get("required", [])) - {"maxCostDollars"})
         # Ultra's documented minimum applies even when tools/list omits it.
-        return (compatible and 1 <= dollars <= LIMIT_MICROS / 1_000_000
+        return (compatible and ULTRA_MIN_MICROS / 1_000_000 <= dollars <= LIMIT_MICROS / 1_000_000
                 and dollars >= cap.get("minimum", 1) and dollars <= cap.get("maximum", 5)
                 and ("exclusiveMinimum" not in cap or dollars > cap["exclusiveMinimum"])
                 and ("exclusiveMaximum" not in cap or dollars < cap["exclusiveMaximum"])
@@ -132,7 +139,7 @@ def _allocation_problem(snapshot, row, cap, now, deadline):
                 or snapshot["remaining_micros"] != LIMIT_MICROS - snapshot["committed_micros"] - snapshot["reserved_micros"]
                 or not _time(snapshot["checked_at"]) <= now < _time(snapshot["valid_until"]) <= deadline):
             return "unverified"
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         return "unverified"
     return "cap_exceeds_remaining" if cap > snapshot["remaining_micros"] else None
 
@@ -182,7 +189,7 @@ def allocation_diagnostic(row, snapshot=None, *, now=None):
         if not _time(snapshot["checked_at"]) <= now < _time(snapshot["valid_until"]) <= deadline:
             reasons.append("allocation_not_current_within_original_deadline")
         valid = _allocation(snapshot, row, 0, now, deadline)
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         reasons.append("allocation_time_or_run_context_invalid")
         valid = False
     if valid:

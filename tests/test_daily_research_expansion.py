@@ -297,3 +297,24 @@ def test_expired_admission_after_claim_keeps_reservation_without_native_start(co
     assert result["reserved_micros"] == ARGS["max_cost_micros"] and result["replay_permitted"] is False
     assert not context[2].starts
     assert context[1].get(context[0]["date"])["exa_expansion"]["attempted"]
+
+
+def test_cap_supported_enforces_ultra_floor_even_when_catalog_omits_minimum():
+    """Direct guard for _cap_supported; the pre-check must not be the only $1 floor."""
+    request = {"query": ARGS["query"], "effort": "ultra", "budget": {"maxCostDollars": 0.999999}}
+    assert not e._cap_supported(SCHEMA, request)
+    assert e._cap_supported(SCHEMA, {**request, "budget": {"maxCostDollars": 1.0}})
+
+
+def test_no_ultra_cap_fits_remaining_allocation_says_so(context):
+    context[3].update(committed_micros=1_000_000, reserved_micros=3_500_000, remaining_micros=500_000)
+    result = call(context)
+    assert result["reason"] == "expansion_cap_exceeds_remaining_allocation" and result["remaining_micros"] == 500_000
+    assert "No Ultra cap fits" in result["action"] and not context[2].starts
+
+
+@pytest.mark.parametrize("value", [None, 5, "not-a-time"])
+def test_malformed_allocation_times_skip_instead_of_crashing(context, value):
+    context[3]["checked_at"] = value
+    assert call(context)["reason"] == "expansion_remaining_all_in_allocation_unverified"
+    assert e.allocation_diagnostic(context[0], context[3], now=NOW)["remaining_micros"] is None

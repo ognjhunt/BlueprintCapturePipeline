@@ -76,8 +76,8 @@ def test_shortfall_and_resource_ceiling_are_honest_not_padded():
     with pytest.raises(Refusal, match="shortfall_reason_required"):
         validate_output(out, DAY, set(), contract_version=3, knowledge_context=ctx, refresh_policy=policy, observed_at=NOW)
     out, ctx, policy = result(101)
-    with pytest.raises(Refusal, match="output_date_or_count_invalid"):
-        validate_output(out, DAY, set(), contract_version=3, knowledge_context=ctx, refresh_policy=policy, observed_at=NOW)
+    accepted, _ = validate_output(out, DAY, set(), contract_version=3, knowledge_context=ctx, refresh_policy=policy, observed_at=NOW)
+    assert len(accepted) == 101  # Retention is bounded by bytes, not a prospect quota.
 
 
 def test_adaptive_prompt_uses_skill_paths_and_does_not_inherit_scan_caps():

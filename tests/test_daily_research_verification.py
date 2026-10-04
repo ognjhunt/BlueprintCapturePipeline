@@ -169,190 +169,124 @@ def test_same_city_named_facilities_survive_without_semantic_alias_decision():
     assert all(r["eligible_for_qualified_promotion"] for r in result["results"])
 
 
-# --- Located diagnostics (2026-10-04 replay class) ---------------------------------
-# The October 4 QA assessments used `schema_version` for the version marker and an
-# honest `valid_until: null` (the evidence skill says to leave freshness unresolved).
-# The gate then returned one generic reason and evaluated no claim. These synthetic
-# shapes pin the repair: same decisions, but every failed check is named and claims
-# are still reported, without inventing dates or accepting an unbound assessment.
-CATCH_ALL = "assessment: repair candidate binding, dates, source IDs or assessment structure"
-
-
-def _legacy_evaluate(candidate, assessment, now):
-    """Frozen copy of the pre-2026-10-04 decision logic; only reasons may differ now."""
-    reasons, rejected = [], False
-    try:
-        candidate_digest, assessment_digest = verification.digest(candidate), verification.digest(assessment)
-    except (ValueError, TypeError, OverflowError):
-        candidate_digest, assessment_digest = None, None
-        reasons.append("digest")
-    result = {"assessment_valid": False}
-    if not verification.identity_key(candidate):
-        reasons.append("identity")
-    if not isinstance(assessment, dict):
-        reasons.append("assessment")
-    else:
-        try:
-            assessed_at = verification.moment(assessment.get("assessed_at"))
-            if (assessment.get("version") != verification.VERSION
-                    or candidate_digest is None or assessment_digest is None
-                    or assessment.get("candidate_digest") != candidate_digest):
-                raise ValueError("binding")
-            if not assessed_at <= now < verification.moment(assessment.get("valid_until")):
-                raise ValueError("freshness")
-            claims, sources = assessment.get("claims"), assessment.get("sources")
-            counter = assessment.get("counterevidence")
-            if (not isinstance(claims, dict) or not isinstance(sources, list)
-                    or not isinstance(counter, dict)):
-                raise TypeError("structure")
-            indexed = {s["id"]: s for s in sources if isinstance(s, dict) and verification.text(s.get("id"))}
-            if len(indexed) != len(sources):
-                raise ValueError("source identity")
-            result["assessment_valid"] = True
-            for name in verification.CLAIMS:
-                claim = claims.get(name)
-                if not isinstance(claim, dict) or claim.get("status") not in verification.STATES or not verification.text(claim.get("reason")):
-                    reasons.append(name)
-                    result["assessment_valid"] = False
-                    continue
-                refs = claim.get("source_refs")
-                linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
-                usable = (bool(linked) and len(linked) == len(refs)
-                          and all(verification.source_usable(s, assessed_at, primary=name in verification.FACTS) for s in linked))
-                state = claim["status"]
-                if state == "contradicted" and usable:
-                    rejected = True
-                    reasons.append(name)
-                elif state not in ({"verified_fact"} if name in verification.FACTS else {"verified_fact", "inference"}) or not usable:
-                    reasons.append(name)
-            refs = counter.get("source_refs")
-            linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
-            usable = (bool(linked) and len(linked) == len(refs)
-                      and all(verification.source_usable(s, assessed_at) and s.get("classification") != "vendor" for s in linked))
-            searches = counter.get("searches")
-            searched = isinstance(searches, list) and bool(searches) and all(verification.text(s) for s in searches)
-            if counter.get("status") == "contradicted" and usable and verification.text(counter.get("reason")):
-                rejected = True
-                reasons.append("counterevidence")
-            elif (counter.get("status") != "checked" or not verification.text(counter.get("reason"))
-                  or not (searched or usable) or (refs and not usable)):
-                reasons.append("counterevidence")
-            if counter.get("status") not in {"checked", "unresolved", "contradicted"}:
-                result["assessment_valid"] = False
-        except (KeyError, TypeError, ValueError):
-            reasons.append("catch-all")
-    status = "rejected" if rejected else "unresolved" if reasons else "verified"
-    return {"status": status, "eligible_for_qualified_promotion": status == "verified",
-            "assessment_valid": result["assessment_valid"]}
-
-
-def oct4_shape(c):
-    """Synthetic assessment with the retained October 4 field shape (no real lead data)."""
-    value = assessment(c, NOW)
-    value["schema_version"] = value.pop("version")
-    value["valid_until"] = None
-    value["claims"]["human_workflow"].update(status="unresolved", reason="Company-wide staffing wording; exact-site step unconfirmed")
-    value["counterevidence"].update(status="unresolved", reason="Bounded automation search left the station method open")
-    value.update(assessment_status="unresolved", freshness_boundary_reason="No defensible expiry; missing facts stay unresolved",
-                 contact_assessment={"status": "unresolved"}, duplicate_assessment={"duplicate": False},
-                 qualification_gates={"buying_intent": "unknown"})
-    return value
-
-
-def test_oct4_shape_names_each_failed_check_and_still_reports_claims():
+@pytest.mark.parametrize("aliases", [{"schema_version": verification.VERSION},
+    {"version": verification.VERSION, "schema_version": verification.VERSION}])
+def test_lossless_version_alias_is_bound_without_rewriting_raw_assessment(aliases):
     c = candidate()
-    value = oct4_shape(c)
-    saved = deepcopy(value)
+    value = assessment(c, NOW)
+    value.pop("version")
+    value.update(aliases)
+    original = deepcopy(value)
+    result = verification.evaluate(c, value, NOW)
+    assert result["eligible_for_qualified_promotion"] and result["assessment"] == original
+    assert result["assessment_digest"] == verification.digest(original) and value == original
+
+
+@pytest.mark.parametrize("canonical", [None, "other.version"])
+def test_explicit_null_or_conflicting_version_is_not_aliased(canonical):
+    c = candidate()
+    value = assessment(c, NOW)
+    value.update(version=canonical, schema_version=verification.VERSION)
     result = verification.evaluate(c, value, NOW)
     assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
-    assert result["assessment_valid"] is False
-    assert CATCH_ALL not in result["reasons"]
-    assert any(r.startswith("version:") and "schema_version" in r for r in result["reasons"])
-    assert any(r.startswith("valid_until:") for r in result["reasons"])
-    assert any(r.startswith("human_workflow:") for r in result["reasons"])
-    assert any(r.startswith("counterevidence:") for r in result["reasons"])
-    assert result["assessment"] == saved and value == saved
+    assert result["validation_errors"][0]["path"] == "/version"
 
 
-def test_null_valid_until_blocks_promotion_without_inventing_a_date():
+@pytest.mark.parametrize("contradiction", [False, True])
+def test_unknown_expiry_retains_claim_feedback_without_promotion_or_rejection(contradiction):
     c = candidate()
     value = assessment(c, NOW)
     value["valid_until"] = None
+    value["claims"]["human_workflow"]["status"] = "contradicted" if contradiction else "unresolved"
     result = verification.evaluate(c, value, NOW)
-    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
-    assert [r.split(":")[0] for r in result["reasons"]] == ["valid_until"]
-    assert result["assessment"]["valid_until"] is None
+    assert result["status"] == "unresolved" and result["assessment_valid"]
+    assert not result["eligible_for_qualified_promotion"] and result["validation_errors"] == []
+    assert any("human_workflow" in reason for reason in result["reasons"])
+    assert value["valid_until"] is None and result["assessment_digest"] == verification.digest(value)
 
 
-@pytest.mark.parametrize(("mutation", "prefix"), [
-    (lambda v: v.update(candidate_digest="0" * 64), "candidate_digest:"),
-    (lambda v: v.update(version="blueprint.lead-verification.v0"), "version:"),
-    (lambda v: v.pop("assessed_at"), "assessed_at:"),
-    (lambda v: v.update(assessed_at=NOW.replace(tzinfo=None).isoformat()), "assessed_at:"),
-    (lambda v: v.update(assessed_at=(NOW + timedelta(seconds=1)).isoformat()), "assessed_at:"),
-    (lambda v: v.update(valid_until=NOW.isoformat()), "valid_until:"),
-    (lambda v: v.update(valid_until="2026-10-05"), "valid_until:"),
-    (lambda v: v.update(claims=[]), "claims:"),
-    (lambda v: v.update(sources={}), "sources:"),
-    (lambda v: v.update(counterevidence="checked"), "counterevidence:"),
-    (lambda v: v["sources"].append(deepcopy(v["sources"][0])), "sources:"),
-])
-def test_each_unbound_or_malformed_check_has_its_own_located_reason(mutation, prefix):
+def test_legacy_retained_cohort_digest_is_unchanged():
     c = candidate()
     value = assessment(c, NOW)
-    mutation(value)
-    result = verification.evaluate(c, value, NOW)
-    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
-    assert CATCH_ALL not in result["reasons"]
-    assert any(r.startswith(prefix) for r in result["reasons"]), result["reasons"]
+    value["valid_until"] = None
+    result = verification.cohort([c], {c["candidate_key"]: value}, NOW, result_version=verification.RESULT_VERSION)
+    assert "result_version" not in result and "validation_errors" not in result["results"][0]
+    assert result["results"][0]["version"] == verification.RESULT_VERSION
+    assert result["assessed_count"] == 0
+    assert result["results"][0]["reasons"] == ["assessment: repair candidate binding, dates, source IDs or assessment structure"]
 
 
-def test_unbound_assessment_reports_but_never_applies_a_contradiction():
+def test_qa_feedback_uses_nested_structural_paths_but_accepts_honest_unknown_expiry():
+    from tools.daily_research.consumer import qa_validation_feedback
+    c = candidate()
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "synthetic-packet", "qa": {"crm_digest": "synthetic-crm"}}
+    value = assessment(c, NOW)
+    value["valid_until"] = None
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "synthetic-packet",
+          "crm_digest": "synthetic-crm", "source_support_verified": False, "accepted_keys": [],
+          "summary": "Synthetic unresolved assessment", "checks": [{"candidate_key": c["candidate_key"],
+          "source_support_verified": False, "duplicate": False, "reason": "Missing evidence", "lead_verification": value}]}
+    assert qa_validation_feedback(row, qa) == []
+    value["candidate_digest"] = "wrong"
+    value["sources"].append(deepcopy(value["sources"][0]))
+    paths = {issue["path"] for issue in qa_validation_feedback(row, qa)}
+    assert paths == {"/checks/0/lead_verification/candidate_digest", "/checks/0/lead_verification/sources/1/id"}
+
+
+def test_retained_query_record_is_lossless_and_future_search_cannot_supply_a_check():
     c = candidate()
     value = assessment(c, NOW)
-    value["candidate_digest"] = "0" * 64
-    value["claims"]["site_task"].update(status="contradicted", reason="Operator page says this task moved off site")
+    query = {"id": "synthetic-Q1", "query": "Synthetic task automation", "checked_at": NOW.isoformat(), "scope": "One bounded synthetic search"}
+    value["counterevidence"]["searches"] = [query]
+    original = deepcopy(value)
     result = verification.evaluate(c, value, NOW)
-    assert result["status"] == "unresolved"
-    assert any(r.startswith("site_task:") and "diagnostic" in r for r in result["reasons"])
+    assert result["status"] == "verified" and result["assessment"] == original and value == original
+    query["checked_at"] = (NOW + timedelta(seconds=1)).isoformat()
+    assert verification.evaluate(c, value, NOW)["status"] == "unresolved"
 
 
-def _equivalence_corpus():
+def test_diagnostic_fixture_is_exactly_recomputed_without_any_live_source():
+    cases = json.loads((Path(__file__).parent / "fixtures/daily_research/lead-verification-diagnostics.json").read_text())
+    for case in cases:
+        result = verification.evaluate(case["candidate"], case["assessment"], verification.moment(case["now"]))
+        assert {key: result[key] for key in case["expected"]} == case["expected"], case["name"]
+
+
+@pytest.mark.parametrize("bad_key", [[], {}, None])
+def test_malformed_check_identity_receives_feedback_without_a_lookup_crash(bad_key):
+    from tools.daily_research.consumer import qa_validation_feedback
     c = candidate()
-    mutations = [
-        lambda v: None,
-        lambda v: v.update(valid_until=None),
-        lambda v: v.update(schema_version=v.pop("version")),
-        lambda v: v.update(candidate_digest="0" * 64),
-        lambda v: v.update(version="x"),
-        lambda v: v.pop("assessed_at"),
-        lambda v: v.update(assessed_at=(NOW + timedelta(seconds=1)).isoformat()),
-        lambda v: v.update(valid_until=NOW.isoformat()),
-        lambda v: v.update(valid_until="2026-10-05"),
-        lambda v: v.update(claims=[]),
-        lambda v: v.update(sources={}),
-        lambda v: v.update(counterevidence="checked"),
-        lambda v: v["sources"].append(deepcopy(v["sources"][0])),
-        lambda v: v["claims"]["site_task"].update(status="contradicted"),
-        lambda v: (v.update(candidate_digest="0" * 64), v["claims"]["site_task"].update(status="contradicted")),
-        lambda v: (v.update(valid_until=None), v["claims"]["site_task"].update(status="contradicted")),
-        lambda v: v["counterevidence"].update(status="contradicted", source_refs=["synthetic-primary"]),
-        lambda v: v["counterevidence"].update(status="bogus"),
-        lambda v: v["claims"].pop("operator"),
-        lambda v: v["sources"][0].update(freshness="historical"),
-    ]
-    for mutate in mutations:
-        value = assessment(c, NOW)
-        mutate(value)
-        yield c, value
-    yield c, oct4_shape(c)
-    yield c, None
-    yield {**c, "organization": ""}, assessment(c, NOW)
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "packet", "qa": {"crm_digest": "crm"}}
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "packet", "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Unresolved synthetic record",
+          "checks": [{"candidate_key": bad_key, "source_support_verified": False, "duplicate": False,
+                      "reason": "Retained malformed identity", "lead_verification": assessment(c, NOW)}]}
+    assert any(issue["path"] == "/checks/0/candidate_key" for issue in qa_validation_feedback(row, qa))
 
 
-@pytest.mark.parametrize("case", list(_equivalence_corpus()))
-def test_decisions_match_frozen_legacy_gate_only_reasons_change(case):
-    c, value = case
-    legacy = _legacy_evaluate(c, deepcopy(value), NOW)
-    current = verification.evaluate(c, deepcopy(value), NOW)
-    assert {k: current[k] for k in legacy} == legacy
+def test_nonportable_qa_metadata_returns_feedback_and_preserves_original_assessment():
+    from tools.daily_research.consumer import qa_validation_feedback
+    c = candidate()
+    value = assessment(c, NOW)
+    value["metadata"] = float("inf")
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "packet", "qa": {"crm_digest": "crm"}}
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "packet", "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Unresolved synthetic record",
+          "checks": [{"candidate_key": c["candidate_key"], "source_support_verified": False, "duplicate": False,
+                      "reason": "Retained nonportable metadata", "lead_verification": value}]}
+    issues = qa_validation_feedback(row, qa)
+    assert issues and all(len(issue["offending_value_digest"]) == 64 for issue in issues)
+    assert value["metadata"] == float("inf")
+
+
+@pytest.mark.parametrize("version", [verification.RESULT_VERSION, verification.DIAGNOSTIC_RESULT_VERSION])
+@pytest.mark.parametrize("url", [123, True, ["https://fixture.example"]])
+def test_non_string_source_url_is_unresolved_not_a_stuck_qa_crash(version, url):
+    c = candidate()
+    value = assessment(c, NOW)
+    value["sources"][0]["url"] = url
+    result = verification.evaluate(c, value, NOW, result_version=version)
+    assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]

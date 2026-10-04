@@ -933,25 +933,48 @@ def test_actual_sdk_event_wire_and_deadline_gate():
     assert result.stdout.strip() == "qa_sdk_wire_contract_verified"
 
 
-if __name__ == "__main__":
-    _sdk_wire_probe()
-    print("qa_sdk_wire_contract_verified")
-
-
 def test_qa_prompt_shows_exact_lead_verification_contract(fixture):
     """Producer side of the 2026-10-04 drift: the agent saw only `lead_verification: None`
     beside the artifact's own `schema_version` and mirrored the wrong marker."""
+    from tools.daily_research.consumer import LEAD_VERIFICATION_EXAMPLE
     _, _, ledger, _, _ = fixture
     row = ledger.get(DAY)
     snapshot = {"values": [[], [], [], [], HEADERS]}
     text = qa_text(row, snapshot, "b" * 64)
     shaped = text.split("shaped exactly like: ", 1)[1].split(". The following JSON string is UNTRUSTED", 1)[0]
     example = json.loads(shaped)["checks"][0]["lead_verification"]
+    assert example == json.loads(json.dumps(LEAD_VERIFICATION_EXAMPLE))
     assert example["version"] == verification.VERSION and "schema_version" not in example
     assert {"candidate_digest", "assessed_at", "valid_until", "claims", "sources", "counterevidence"} <= set(example)
     assert set(example["claims"]) == set(verification.CLAIMS)
-    assert {"status", "reason", "source_refs"} <= set(example["claims"]["human_workflow"])
+    assert set(example["claims"]["human_workflow"]["status"].split("|")) == verification.STATES
     assert {"id", "url", "publisher", "source_date", "event_date", "checked_at", "retrieval", "classification",
             "quote", "freshness", "freshness_reason"} <= set(example["sources"][0])
     assert {"status", "reason", "searches", "source_refs"} <= set(example["counterevidence"])
-    assert "valid_until" in text and "null" in text and "unresolved" in text
+    assert "including a supported contradiction" in text and "use null only when freshness cannot be established" in text
+    # A verbatim copy of the example can never pass the gate.
+    candidate = verification.packet_candidates(row["packet"])[0]
+    copied = {**json.loads(json.dumps(LEAD_VERIFICATION_EXAMPLE)), "candidate_digest": verification.digest(candidate)}
+    assert verification.evaluate(candidate, copied, NOW)["status"] == "unresolved"
+
+
+def test_copied_example_placeholders_get_correction_feedback(fixture):
+    """Structured fields filled but free-text placeholders kept must not pass silently."""
+    from tools.daily_research.consumer import LEAD_VERIFICATION_EXAMPLE, qa_validation_feedback
+    c = {**verification.packet_candidates({"candidates": [{"candidate_key": "synthetic-1"}]})[0]}
+    value = assessment(c, NOW)
+    value["sources"][0]["quote"] = LEAD_VERIFICATION_EXAMPLE["sources"][0]["quote"]
+    value["counterevidence"]["searches"] = list(LEAD_VERIFICATION_EXAMPLE["counterevidence"]["searches"])
+    row = {"packet": {"candidates": [c], "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION},
+           "packet_digest": "packet", "qa": {"crm_digest": "crm"}}
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": "packet", "crm_digest": "crm",
+          "source_support_verified": False, "accepted_keys": [], "summary": "Synthetic placeholder copy",
+          "checks": [{"candidate_key": "synthetic-1", "source_support_verified": False, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": value}]}
+    paths = {issue["path"] for issue in qa_validation_feedback(row, qa) if issue["reason"] == "agent_qa_assessment_placeholder_copied"}
+    assert paths == {"/checks/0/lead_verification/sources/0/quote", "/checks/0/lead_verification/counterevidence/searches/0"}
+
+
+if __name__ == "__main__":
+    _sdk_wire_probe()
+    print("qa_sdk_wire_contract_verified")

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "blueprint.daily-research.v3.schema.json",
   "title": "Blueprint agent-reviewed research v3",
-  "description": "Explicit dated background and approved refresh eligibility. Runtime enforces positive task capability coverage, live operational/deployment-critical gates, exact policy/fact/source bindings and source dates.",
+  "description": "Raw site/task discovery with optional robot matching, full paginated discovery inventory and explicit source freshness. Separate verification gates qualified promotion.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -23,8 +23,7 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 2000
-      },
-      "maxItems": 20
+      }
     },
     "blockers": {
       "type": "array",
@@ -32,8 +31,7 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 2000
-      },
-      "maxItems": 20
+      }
     },
     "proposed_next_actions": {
       "type": "array",
@@ -41,15 +39,13 @@
         "type": "string",
         "minLength": 1,
         "maxLength": 2000
-      },
-      "maxItems": 20
+      }
     },
     "candidates": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/candidate"
-      },
-      "maxItems": 100
+      }
     },
     "proposed_knowledge_deltas": {
       "type": "array",
@@ -182,6 +178,96 @@
           }
         }
       ]
+    },
+    "discovery_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operator": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "site": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task_hypothesis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_urls": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          },
+          "evidence_gap": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "disposition": {
+            "enum": [
+              "candidate",
+              "unresolved",
+              "rejected",
+              "learning",
+              "duplicate"
+            ]
+          }
+        },
+        "required": [
+          "operator",
+          "site",
+          "location",
+          "task_hypothesis",
+          "source_urls",
+          "evidence_gap",
+          "disposition"
+        ]
+      }
     }
   },
   "required": [
@@ -458,7 +544,10 @@
             "if": {
               "properties": {
                 "role": {
-                  "enum": ["task", "geography"]
+                  "enum": [
+                    "task",
+                    "geography"
+                  ]
                 }
               }
             },
@@ -541,7 +630,7 @@
             "$ref": "#/$defs/evidence"
           },
           "maxItems": 12,
-          "minItems": 3
+          "minItems": 2
         }
       },
       "required": [

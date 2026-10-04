@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {Publisher,planSheets,planNotion} from '../tools/daily_research/publisher.mjs';
+import {Publisher,planSheets,planNotion,publicationVerification} from '../tools/daily_research/publisher.mjs';
 import {Store,ROOT} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 import {verificationDigest} from '../tools/daily_research/verification-digest.mjs';
@@ -450,7 +450,8 @@ test('ten agent-approved discoveries publish under the same durable claims with 
   assert.equal(f.writes.filter(x=>x.destination==='sheets').length,1);
   assert.ok(f.pages[0].body.children.some(b=>b.paragraph.rich_text[0].text.content.includes('Synthetic operator 9')));
   assert.ok(f.values.slice(5).every(r=>r[10]==='Research'&&r[16]==='Unverified'));
-  assert.throws(()=>planSheets(row(Array.from({length:101},candidate)),f.snapshot()),/publication_candidates_invalid/);
+  const oversized=Array.from({length:800},(_,i)=>({...candidate(),site:`Distinct site ${i}`,proposed_next_action:'x'.repeat(2000)}));
+  assert.throws(()=>planSheets(row(oversized),f.snapshot()),/publication_candidates_invalid/);
 });
 
 test('long QA brief is published losslessly in bounded Notion blocks and exact readback rejects truncation',async()=>{
@@ -1051,4 +1052,32 @@ test('provider JSON-string tool arguments execute losslessly while exact origina
   const r=await f.store.get(f.r.date);
   assert.equal(typeof r.application_tool_calls['publication-call-1'].request.arguments,'string');
   assert.equal(r.delivery.notion.presentation.summary,'完整 source retained; concise display');
+});
+
+test('publishes verified raw site/task with unknown robot match and a blank capability URL',()=>{
+  const c=candidate();c.evidence=c.evidence.filter(e=>e.role!=='capability');c.potential_robot_match='unknown';
+  const r=row([c]);const snapshot={sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers]};
+  const plan=planSheets(r,snapshot);
+  assert.equal(plan.sheet_rows[0][15],'');assert.equal(plan.sheet_rows[0][8],'unknown');
+  const unsupported=row([{...c,potential_robot_match:'Invented unsupported robot'}]);
+  assert.throws(()=>planSheets(unsupported,snapshot),/publication_candidate_scope_invalid/);
+});
+
+test('publication accepts a lossless schema_version alias but refuses null/conflicting versions and unknown expiry',()=>{
+  const r=row(),result=r.review.lead_verification.results[0],a=result.assessment;
+  a.schema_version=a.version;delete a.version;result.assessment_digest=verificationDigest(a);
+  assert.equal(publicationVerification(r,'sheets').eligible,true);
+  for(const value of [null,'other.version']) {
+    a.version=value;result.assessment_digest=verificationDigest(a);
+    assert.equal(publicationVerification(r,'sheets').eligible,false);
+  }
+  delete a.version;a.valid_until=null;result.assessment_digest=verificationDigest(a);
+  assert.equal(publicationVerification(r,'sheets').eligible,false);
+});
+
+test('retains more than100 source-supported candidates through Sheets planning without a count quota',()=>{
+  const candidates=Array.from({length:125},(_,i)=>({...candidate(),site:`Invented site ${i}`}));
+  const r=row(candidates),snapshot={sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers]};
+  const plan=planSheets(r,snapshot);assert.equal(plan.sheet_rows.length,125);
+  assert.equal(plan.sheet_rows[124][3],'Invented site 124');
 });
