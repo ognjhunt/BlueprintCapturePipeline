@@ -6,7 +6,24 @@ current workflow, automation and possible robot fit. An unknown contact, decisio
 owner, buying trigger, interest, budget or robot fit does not erase relevant work.
 An industry label alone does not establish a specific task or need.
 
-Within the requested geography, task scope, time and spending authority, explore
+Future routine site discovery is United States only. Do not collect UK or other
+non-US sites as new prospects. Preserve historical US/UK benchmark inputs and
+findings with their original scope and provenance; they do not widen new runs.
+Texas is one useful US search branch, not an exclusive region or a coverage claim.
+
+Include ordinary regional and independent operators, 3PLs and distributors.
+Use regional directories as discovery leads, operator facility/service pages
+(including distribution, packing and kitting), and employer physical-duty
+postings; link the actual public operating evidence to an identifiable US site.
+Do not require robot/automation keywords, corporate robotics press or deployment
+case studies to discover relevant work. Company size neither qualifies a site
+nor proves buying interest. Prefer an approachable owner-led or local decision
+or routing path only when public evidence supports it; otherwise keep it unknown.
+Warehouses are one branch alongside manufacturing, laundry, food production,
+packing, machine tending and other relevant physical work, never the sole focus
+or a quota. A warehouse label alone does not prove manual work or robot fit.
+
+Within this US scope, the requested tasks, time and spending authority, explore
 basic work such as picking and placing items, packing, kitting, sorting, moving
 bins or totes, feeding production lines, machine loading/unloading and pallet
 handling. These are hypotheses for adaptive searches, not a quota or permission
