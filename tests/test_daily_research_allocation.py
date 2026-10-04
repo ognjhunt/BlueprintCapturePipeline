@@ -214,6 +214,16 @@ def test_a_current_direction_without_the_source_stops_new_starts():
     assert a.problem(frozen(), [], 1_000_000, NOW, control=owner) == "paid_expansion_direction_invalid"
 
 
+@pytest.mark.parametrize("changes, code", [
+    ({"expires_at": "2026-10-05T12:00:10+00:00"}, "paid_expansion_expired"),
+    ({"effective_from": "2026-10-05T12:01:00+00:00"}, "paid_expansion_not_yet_effective"),
+])
+def test_live_successor_interval_tightens_an_unexpired_frozen_grant(changes, code):
+    grant = frozen("30.00")
+    assert a.problem(grant, [], 1_000_000, NOW + timedelta(seconds=11),
+                     control=control(successor("30.00", **changes))) == code
+
+
 def test_refused_record_keeps_bindings_and_names_the_store_code():
     record = a.refused(frozen(), "paid_expansion_grant_not_admitted")
     assert record["state"] == "refused" and record["code"] == "paid_expansion_grant_not_admitted"

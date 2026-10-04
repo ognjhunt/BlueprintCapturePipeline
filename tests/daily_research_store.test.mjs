@@ -8,8 +8,8 @@ import {pathToFileURL} from 'node:url';
 import {Store, ROOT, LeaseChannel, ADAPTIVE_TEST} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 
-async function fixture() {
-  const db = new MemoryFirestore(), time = {now: Date.now()};
+async function fixture(now=Date.now()) {
+  const db = new MemoryFirestore(), time = {now};
   db.values.set(ROOT, {enabled: true, schema_version: 'blueprint.research-control.v1'});
   const store = new Store(db, () => time.now, 'first');
   await store.acquire(); return {db, store, time};
@@ -445,7 +445,7 @@ function entry(value) {
     uri:`gs://blueprint-8c1ca.appspot.com/operations/research/paid-expansion/${sha}/direction.json`,direction:value};
 }
 async function paidFixture() {
-  const value=await fixture();
+  const value=await fixture(Date.parse('2026-10-05T12:00:00+00:00'));
   Object.assign(value.db.values.get(ROOT),{project_id:PROJECT,agent_id:AGENT,source_commit:'c'.repeat(40)});
   return value;
 }
@@ -573,6 +573,43 @@ function exaClaim(value,cap=2000000,dollars=cap/1000000) {
   return {date:value.date,run_key:value.run_key,intent,intent_json:json,intent_sha256:createHash('sha256').update(json).digest('hex'),
     cap_micros:cap,state:'submission_unresolved',attempted:true,run_id:null};
 }
+
+test('new reservations honor a lower live amount atomically, while existing claims stay recoverable',async()=>{
+  for(const amount of ['6.00','1.00']) {
+    const {db,store}=await paidFixture();
+    const original=entry(direction(1,null,{per_run_limit_usd:'30.00'}));await setDirection(store,null,original);
+    const value=exaRow('2026-10-05');
+    value.paid_expansion_grant=grantFor(original,value,{limit_micros:30000000,per_start_max_micros:15000000});
+    await store.put(value);
+    const lower=entry(direction(2,original.sha256,{per_run_limit_usd:amount}));
+    await setDirection(store,original.sha256,lower);
+    await assert.rejects(store.put({...value,state:'running',exa_expansion:exaClaim(value,5000000)}),
+      /paid_expansion_reservation_exceeds_grant/);
+    assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).exa_expansion_intent_digest,null);
+    const admitted={...value,state:'running',exa_expansion:exaClaim(value,1000000)};
+    await store.put(admitted);
+    await setDirection(store,lower.sha256,lower,false);
+    await store.put({...admitted,exa_expansion:{...admitted.exa_expansion,run_id:'synthetic_existing'}});
+    assert.equal((await store.get(value.date)).exa_expansion.run_id,'synthetic_existing');
+  }
+});
+
+test('a live successor interval and audit bind every new reservation',async()=>{
+  for(const change of [{expires_at:'2026-10-05T12:00:10+00:00'},
+    {effective_from:'2026-10-05T12:01:00+00:00'}]) {
+    const {db,store,time}=await paidFixture(),original=entry(direction());await setDirection(store,null,original);
+    const value=exaRow('2026-10-05');value.paid_expansion_grant=grantFor(original,value);await store.put(value);
+    const successor=entry(direction(2,original.sha256,change));await setDirection(store,original.sha256,successor);
+    time.now+=11000;
+    await assert.rejects(store.put({...value,state:'running',exa_expansion:exaClaim(value)}),/paid_expansion_grant_not_admitted/);
+    assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).exa_expansion_intent_digest,null);
+  }
+  const {db,store}=await paidFixture(),original=entry(direction());await setDirection(store,null,original);
+  const value=exaRow('2026-10-05');value.paid_expansion_grant=grantFor(original,value);await store.put(value);
+  const successor=entry(direction(2,original.sha256));await setDirection(store,original.sha256,successor);
+  db.values.delete(`${ROOT}/paidExpansionDirections/${successor.sha256}`);
+  await assert.rejects(store.put({...value,state:'running',exa_expansion:exaClaim(value)}),/paid_expansion_grant_not_admitted/);
+});
 
 test('direction times must be real calendar instants in both languages',async()=>{
   const {db,store}=await paidFixture();

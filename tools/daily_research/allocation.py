@@ -219,6 +219,10 @@ def standing(value, control, now, *, source="exa"):
         return "paid_expansion_source_not_directed"
     if control.get("source_commit") != value["source_commit"]:
         return "paid_expansion_source_commit_changed"
+    if now < stamp(entry["direction"]["effective_from"]):
+        return "paid_expansion_not_yet_effective"
+    if now >= stamp(entry["direction"]["expires_at"]):
+        return "paid_expansion_expired"
     if now >= datetime.fromisoformat(value["valid_until"]):
         return "paid_expansion_expired"
     return None

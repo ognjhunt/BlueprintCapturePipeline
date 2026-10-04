@@ -193,12 +193,15 @@ class FencedProvider(Provider):
         self.tool_admit(row, phase)
         claim = row.get("exa_expansion")
         if claim and not claim.get("run_id"):
-            # Final pre-POST fence: the claim's frozen grant is unchanged and the brake
-            # and release still admit it. Legacy snapshot intents never submit again.
+            # Recheck the complete allocation against fresh control after persisting
+            # the claim. Its own reservation is the proposed cap, not a prior debit.
             control = self.ledger.bridge.call("control")
             grant = claim["intent"].get("grant")
+            prior = [value for value in allocation.claims(row)
+                     if not (value["source"] == "exa" and value["intent_sha256"] == claim["intent_sha256"])]
             if (grant is None or grant != row.get("paid_expansion_grant")
-                    or allocation.standing(grant, control, getattr(self, "clock", lambda: datetime.now(timezone.utc))())):
+                    or allocation.problem(grant, prior, claim.get("cap_micros"),
+                                          getattr(self, "clock", lambda: datetime.now(timezone.utc))(), control=control)):
                 raise Refusal("expansion_allocation_changed_before_submission")
 
     def cancel(self, session_id, run_key):

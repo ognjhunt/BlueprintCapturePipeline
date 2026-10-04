@@ -384,6 +384,39 @@ def test_company_store_debits_claims_against_the_frozen_grant_and_live_fences(re
     assert bridge.call("control")["paid_expansion"] == {"enabled": False, "current": current}
 
 
+@pytest.mark.parametrize("amount", ["6.00", "1.00"])
+def test_company_store_refuses_a_new_claim_after_live_allowance_decreases(render_context, amount):
+    _, _, ledger, bridge, _ = render_context
+    first = company_direction(bridge, "30.00")
+    row = granted_row(first)
+    with ledger.lock():
+        ledger.put(row)
+    company_direction(bridge, amount)
+    with ledger.lock(), pytest.raises(Refusal, match="paid_expansion_reservation_exceeds_grant"):
+        ledger.put({**row, "state": "running", "exa_expansion": claim_for(row, 5_000_000)})
+    assert not ledger.get(DAY).get("exa_expansion")
+
+
+@pytest.mark.parametrize("amount, cap", [("6.00", 5_000_000), ("1.00", 5_000_000), ("6.00", 3_000_000)])
+def test_final_pre_post_admission_rechecks_live_cap_without_double_debit(render_context, amount, cap):
+    _, _, ledger, bridge, _ = render_context
+    first = company_direction(bridge, "30.00")
+    row = granted_row(first)
+    pending = {**row, "state": "running", "exa_expansion": claim_for(row, cap)}
+    with ledger.lock():
+        ledger.put(row)
+        ledger.put(pending)
+    lower = company_direction(bridge, amount)
+    provider, _ = fenced(lower)
+    # Isolate paid allocation; the real Store above already owns and fences the row.
+    provider.tool_admit = lambda row, phase: None
+    if cap == 3_000_000:
+        provider.expansion_admit(pending, "research")
+    else:
+        with pytest.raises(Refusal, match="expansion_allocation_changed_before_submission"):
+            provider.expansion_admit(pending, "research")
+
+
 @pytest.mark.parametrize("code", ["paid_expansion_grant_not_admitted", "firestore_create_not_admitted"])
 def test_store_refusal_of_the_frozen_grant_is_recorded_and_research_continues(fixture, monkeypatch, code):
     runner, api, ledger = fixture

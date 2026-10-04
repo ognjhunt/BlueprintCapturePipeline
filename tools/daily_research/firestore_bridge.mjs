@@ -240,12 +240,12 @@ export class Store {
         // A new paid claim debits the frozen grant; an unknown cost holds its whole cap.
         if(unbound || grant?.state!=='granted' || valueHash(exa.intent?.grant ?? null)!==grantDigest)
           refuse('paid_expansion_grant_required');
-        await this.paidGrantGate(tx,control,row,grant,false,'exa');
+        const liveLimit=await this.paidGrantGate(tx,control,row,grant,false,'exa');
         const dollars=exa.intent?.request?.budget?.maxCostDollars;
         if(typeof dollars!=='number' || Math.round(dollars*1000000)!==exa.cap_micros) refuse('paid_expansion_claim_cap_mismatch');
         const reserved=[exa.cap_micros]; // TODO(FindAll): add this row's FindAll reservations.
-        if(!reserved.every(v=>Number.isSafeInteger(v) && v>0) || exa.cap_micros>grant.per_start_max_micros
-            || reserved.reduce((a,b)=>a+b,0)>grant.limit_micros) refuse('paid_expansion_reservation_exceeds_grant');
+        if(!reserved.every(v=>Number.isSafeInteger(v) && v>0) || exa.cap_micros>paidPerStart(liveLimit)
+            || reserved.reduce((a,b)=>a+b,0)>liveLimit) refuse('paid_expansion_reservation_exceeds_grant');
       }
       if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
         refuse('research_mcp_profile_changed');
@@ -726,8 +726,9 @@ export class Store {
   async paidGrantGate(tx,control,row,grant,atIntent,source=null) {
     // A granted record binds its audited owner direction, the live brake and the reviewed
     // release; at the durable intent it must also be frozen from the current direction.
-    // Time stays with the worker, which rechecks valid_until after the claim and before the
-    // POST: a bridge clock check here could refuse an admitted claim at the boundary.
+    // Validate the live successor in this same transaction: it can tighten the source,
+    // allowance or interval before a new reservation is durable. The worker repeats
+    // the complete check immediately before POST, including the frozen run deadline.
     const limit=grant?.limit_micros;
     if(!keysAre(grant,PAID_GRANT_FIELDS) || grant.schema_version!==PAID_GRANT || grant.state!=='granted'
         || grant.run_key!==row.run_key || !hexOK(grant.direction_sha256) || source && !grant.sources?.includes(source)
@@ -738,6 +739,17 @@ export class Store {
         || !Array.isArray(grant.sources) || !grant.sources.every(s=>audit.direction.sources?.includes(s))
         || control?.paid_expansion?.enabled!==true || control.source_commit!==grant.source_commit
         || atIntent && control.paid_expansion.current?.sha256!==grant.direction_sha256) refuse('paid_expansion_grant_not_admitted');
+    const current=control.paid_expansion.current;
+    if(!keysAre(control.paid_expansion,['enabled','current']) || !keysAre(current,['sha256','version','uri','direction'])
+        || paidDirectionProblem(current.direction,control) || valueHash(current.direction)!==current.sha256
+        || current.version!==current.direction.version || current.uri!==paidUri(current.sha256)
+        || source && !current.direction.sources.includes(source)
+        || this.clock()<paidStamp(current.direction.effective_from) || this.clock()>=paidStamp(current.direction.expires_at))
+      refuse('paid_expansion_grant_not_admitted');
+    const liveAudit=(await tx.get(this.db.doc(`${ROOT}/paidExpansionDirections/${current.sha256}`))).data();
+    if(!liveAudit || valueHash(liveAudit.direction)!==current.sha256 || liveAudit.sha256!==current.sha256
+        || liveAudit.version!==current.version || liveAudit.uri!==current.uri) refuse('paid_expansion_grant_not_admitted');
+    return Math.min(limit,paidMicros(current.direction.per_run_limit_usd));
   }
   async paidExpansionSet(expected,value) {
     // The only writer of control.paid_expansion: an owner direction compare-and-swap under
