@@ -243,6 +243,11 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
    Pipeline `source_commit`. Keep `enabled=false`; initialize once with
    `init --input /PRIVATE/control.json`. Existing control refuses replacement;
    use `configure --input /PRIVATE/control.json` for a validated update.
+   `configure` keeps the top-level `paid_expansion` owner direction, which only
+   `operators/paid-expansion-direction.py` changes ([SEARCH.md](SEARCH.md#owner-directed-paid-expansion-allowance)).
+   Deploy a release that changes a session tool schema only while the worker is
+   idle. The 2026-10-04 release raises the Exa `max_cost_micros` maximum from
+   5,000,000 to 50,000,000, and an in-flight session's tool check would refuse it.
 3. Publish reviewed `knowledge.json` and approved `refresh-policy.json` with
    `publish-input --name NAME --input /PRIVATE/FILE`. The same command can import
    the latest reviewed `crm.json`; each new run refreshes the full canonical

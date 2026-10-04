@@ -574,3 +574,55 @@ probe. Keep the production scheduler disabled until actual QA validation,
 both publication receipts, and `export-recovered` are verified. No worker
 deployment, Pipeline host deployment, paid GPU job, outreach or deletion is
 part of this command.
+
+## Owner paid expansion allowance
+
+`paid-expansion-direction.py` sets the combined per-run allowance for paid
+expansion sources (Exa now; FindAll later). The 2026-10-04 owner decision is $10
+per daily research run, separate from the unchanged $5 research soft target.
+The amount is data; a new value needs no code change, redeploy or package. It is
+the only binding number: each start may use up to half of it ($10 allows a $5
+Exa start, $20 a $10 start, $30 a $15 start; never above $50). A raised amount
+applies from the next run. A lower amount or the brake applies to the run in
+progress.
+
+Run it from the installed release with the existing worker environment
+(`FIREBASE_SERVICE_ACCOUNT_JSON`, `node`); it is packaged with the release.
+
+```bash
+RELEASE=/opt/render/project/src/dist/daily-research/release
+COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/paid-expansion-direction.py"
+PYTHONPATH=$RELEASE $COMMAND show
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 20.00 --approval-reference REF
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 20.00 --approval-reference REF --apply
+PYTHONPATH=$RELEASE $COMMAND disable --apply
+```
+
+- `show` reads control and the `paidExpansionDirections` audit chain and verifies
+  the current object. It writes nothing.
+- `set` is a dry run without `--apply`. It prints the next direction: version+1,
+  superseding the current SHA-256. Amounts must match `^[1-9]\d{0,2}(\.\d{2})?$`
+  within $1.00–$100.00 (`20` becomes `20.00`). Optional flags: `--approved-by`,
+  `--reason`, `--expires-at` (UTC, at most 366 days; default 90 days) and
+  `--expect-current SHA|none` to pin the transition shown by a dry run.
+- `set --apply` writes `gs://blueprint-8c1ca.appspot.com/operations/research/paid-expansion/<sha256>/direction.json`
+  create-only through the existing bridge identity and reads it back. It then
+  takes the fenced lease only for the `paid_expansion_set` compare-and-swap and
+  reads control back. A concurrent change refuses with
+  `paid_expansion_direction_conflict`; run `show` and plan again. While a run or
+  QA is active it refuses with `paid_expansion_run_active_apply_after_run`;
+  `--during-active-run` overrides this (a lower amount then also tightens the run
+  in progress). The new direction supersedes control's current one, or the audit
+  head if a rollback dropped control's copy. A current direction this package
+  cannot verify is reported as `current_problem` and can still be replaced.
+- `disable --apply` is the emergency brake. It stops new paid starts at once,
+  including in an active run, and needs no object write. Re-enable with a new
+  `set`; to correct a mistaken amount mid-run, brake and then `set` the lower
+  amount.
+- Both commands poll every 0.25 s, for up to 200 s, for the worker's next lease
+  release. They hold the lease only for the swap, so they never displace an
+  active worker.
+
+All I/O goes through injectable adapters; the hermetic tests use the real bridge
+with in-memory Firestore and a fake object store. No provider, model, session,
+CRM write or send.

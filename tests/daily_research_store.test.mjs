@@ -427,3 +427,197 @@ test('inventory pages are complete against the independently pinned artifact, no
     await assert.rejects(store.snapshot(r.date),/discovery_inventory_(source_binding|manifest)_invalid/);
   }
 });
+
+// Owner-directed paid expansion allowance (tools/daily_research/allocation.py mirror).
+const canonicalJSON=value=>JSON.stringify(function sort(x){return Array.isArray(x)?x.map(sort):x && typeof x==='object'
+  ?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sort(x[k])])):x;}(value));
+const PROJECT='proj_F2tFJuxLaovJru8RrtXRaqNj',AGENT='agent_5a01ec367d1042ef8632bb5f2e6af8b4919909d2abed48ed95';
+function direction(version=1,supersedes=null,changes={}) {
+  return {schema_version:'blueprint.research-paid-expansion-direction.v1',version,supersedes,per_run_limit_usd:'10.00',
+    sources:['exa'],scope:{project_id:PROJECT,agent_id:AGENT,firestore_root:ROOT,run_key_prefix:'blueprint-researcher:',
+      timezone:'America/Chicago'},effective_from:'2026-10-04T18:00:00+00:00',expires_at:'2027-01-02T18:00:00+00:00',
+    approval_reference:'owner-decision-2026-10-04',approved_by:'owner',issued_at:'2026-10-04T18:00:00+00:00',
+    reason:'Owner per-run allowance',...changes};
+}
+function entry(value) {
+  const sha=createHash('sha256').update(canonicalJSON(value)).digest('hex');
+  return {sha256:sha,version:value.version,
+    uri:`gs://blueprint-8c1ca.appspot.com/operations/research/paid-expansion/${sha}/direction.json`,direction:value};
+}
+async function paidFixture() {
+  const value=await fixture();
+  Object.assign(value.db.values.get(ROOT),{project_id:PROJECT,agent_id:AGENT,source_commit:'c'.repeat(40)});
+  return value;
+}
+const setDirection=(store,expected,current,enabled=true)=>store.dispatch({op:'paid_expansion_set',expected_sha256:expected,value:{enabled,current}});
+
+test('owner direction swap is a fenced compare-and-swap with a create-only audit chain',async()=>{
+  const {db,store,time}=await paidFixture();db.replay=true;
+  const first=entry(direction());
+  assert.deepEqual(await setDirection(store,null,first),{enabled:true,sha256:first.sha256,version:1,audit:'created'});
+  assert.deepEqual(db.values.get(ROOT).paid_expansion,{enabled:true,current:first});
+  const audit=db.values.get(`${ROOT}/paidExpansionDirections/${first.sha256}`);
+  assert.deepEqual({...audit,recorded_at:undefined},{...first,recorded_at:undefined});
+  assert.equal(audit.recorded_at,new Date(time.now).toISOString());
+  await assert.rejects(setDirection(store,null,first),/paid_expansion_direction_conflict/);
+  const second=entry(direction(2,first.sha256,{per_run_limit_usd:'20.00'}));
+  const competing=entry(direction(2,first.sha256,{per_run_limit_usd:'30.00'}));
+  await setDirection(store,first.sha256,second);
+  await assert.rejects(setDirection(store,first.sha256,competing),/paid_expansion_direction_conflict/);
+  assert.equal(db.values.has(`${ROOT}/paidExpansionDirections/${competing.sha256}`),false);
+  for(const [value,code] of [
+    [entry(direction(4,second.sha256)),'direction_chain_invalid'],[entry(direction(3,first.sha256)),'direction_chain_invalid'],
+    [entry(direction(3,second.sha256,{per_run_limit_usd:'200.00'})),'limit_invalid'],
+    [entry(direction(3,second.sha256,{per_run_limit_usd:'10.0'})),'limit_invalid'],
+    [entry(direction(3,second.sha256,{scope:{...direction().scope,agent_id:'agent_other'}})),'scope_mismatch'],
+    [entry(direction(3,second.sha256,{approval_reference:'PENDING-owner'})),'direction_invalid'],
+    [entry(direction(3,second.sha256,{reason:'café'})),'direction_invalid'],
+    [entry(direction(3,second.sha256,{expires_at:'2027-10-06T18:00:00+00:00'})),'direction_invalid'],
+    [{...entry(direction(3,second.sha256)),sha256:'0'.repeat(64)},'direction_digest_mismatch'],
+    [{...entry(direction(3,second.sha256)),uri:'gs://other/direction.json'},'direction_digest_mismatch']])
+    await assert.rejects(setDirection(store,second.sha256,value),new RegExp(`^Error: paid_expansion_${code}$`));
+  await assert.rejects(store.dispatch({op:'paid_expansion_set',value:{enabled:true,current:second}}),/paid_expansion_request_invalid/);
+  assert.deepEqual((await store.dispatch({op:'paid_expansion_audit'})).map(record=>record.version),[1,2]);
+  time.now+=180001;
+  await assert.rejects(setDirection(store,second.sha256,entry(direction(3,second.sha256))),/firestore_lease_lost/);
+  assert.deepEqual(db.values.get(ROOT).paid_expansion.current,second);
+});
+
+test('the emergency brake needs no new direction while re-enabling does',async()=>{
+  const {db,store}=await paidFixture();
+  const first=entry(direction());await setDirection(store,null,first);
+  // A brake keeps the current record exactly, even one this package can no longer parse.
+  db.values.get(ROOT).paid_expansion.current.direction.future_field=true;
+  const stored=structuredClone(db.values.get(ROOT).paid_expansion.current);
+  assert.equal((await setDirection(store,first.sha256,stored,false)).enabled,false);
+  assert.deepEqual(db.values.get(ROOT).paid_expansion,{enabled:false,current:stored});
+  assert.equal((await setDirection(store,first.sha256,stored,false)).enabled,false);
+  await assert.rejects(setDirection(store,first.sha256,stored,true),/reenable_requires_new_direction/);
+  await assert.rejects(setDirection(store,first.sha256,{...stored,version:7},false),/paid_expansion_direction_conflict/);
+  const next=entry(direction(2,first.sha256));
+  await assert.rejects(setDirection(store,first.sha256,next,false),/chain_invalid/);
+  await setDirection(store,first.sha256,next);
+  assert.deepEqual(db.values.get(ROOT).paid_expansion,{enabled:true,current:next});
+});
+
+test('configure keeps the owner direction and neither configure nor init can write one',async()=>{
+  const {db,store}=await paidFixture();
+  const first=entry(direction());await setDirection(store,null,first);
+  const replacement={schema_version:'blueprint.research-control.v1',enabled:true,project_id:PROJECT,agent_id:AGENT,config:{x:1}};
+  await store.dispatch({op:'configure',value:replacement});
+  assert.deepEqual(db.values.get(ROOT).paid_expansion,{enabled:true,current:first});
+  assert.deepEqual(db.values.get(ROOT).config,{x:1});
+  await store.dispatch({op:'configure',value:{...replacement,paid_expansion:{enabled:true,current:first}}});
+  for(const paid of [{enabled:false,current:first},null,{enabled:true,current:entry(direction(1,null,{per_run_limit_usd:'90.00'}))}])
+    await assert.rejects(store.dispatch({op:'configure',value:{...replacement,paid_expansion:paid}}),/paid_expansion_requires_direction_operation/);
+  assert.deepEqual(db.values.get(ROOT).paid_expansion,{enabled:true,current:first});
+  const fresh=new MemoryFirestore(),other=new Store(fresh,()=>Date.now(),'other');
+  await assert.rejects(other.dispatch({op:'init',value:{schema_version:'blueprint.research-control.v1',enabled:false,
+    paid_expansion:{enabled:true,current:first}}}),/paid_expansion_requires_direction_operation/);
+  assert.equal(fresh.values.has(ROOT),false);
+});
+
+class FakeBucket {
+  constructor() {this.name='blueprint-8c1ca.appspot.com';this.objects=new Map();this.generation=1000;}
+  file(name) {
+    const bucket=this;
+    return {name,async save(raw,options) {
+      if(options?.preconditionOpts?.ifGenerationMatch!==0) throw new Error('create-only precondition required');
+      if(bucket.objects.has(name)) {const error=new Error('exists');error.code=412;throw error;}
+      bucket.objects.set(name,{raw:Buffer.from(raw),generation:++bucket.generation});
+    },async getMetadata() {
+      const object=bucket.objects.get(name);if(!object) throw new Error('missing');
+      return [{generation:object.generation,size:String(object.raw.length)}];
+    },async download() {
+      const object=bucket.objects.get(name);if(!object) throw new Error('missing');return [Buffer.from(object.raw)];
+    }};
+  }
+}
+
+test('direction objects are content-addressed, validated and create-only without a lease',async()=>{
+  const {db}=await paidFixture(),bucket=new FakeBucket();
+  const store=new Store(db,()=>Date.now(),'operator',null,null,null,null,false,bucket);
+  const first=entry(direction()),raw=Buffer.from(canonicalJSON(first.direction));
+  const put=hash=>store.dispatch({op:'paid_expansion_object_put',sha256:hash,bytes:raw.toString('base64')});
+  const stored=await put(first.sha256);
+  assert.deepEqual({...stored,generation:undefined},{uri:first.uri,sha256:first.sha256,bytes:raw.toString('base64'),generation:undefined});
+  assert.deepEqual(await put(first.sha256),stored);
+  assert.equal(bucket.objects.size,1);
+  assert.deepEqual(await store.dispatch({op:'paid_expansion_object_get',sha256:first.sha256}),stored);
+  await assert.rejects(put('0'.repeat(64)),/digest_mismatch/);
+  const spaced=Buffer.from(JSON.stringify(first.direction,null,1)),spacedHash=createHash('sha256').update(spaced).digest('hex');
+  await assert.rejects(store.dispatch({op:'paid_expansion_object_put',sha256:spacedHash,bytes:spaced.toString('base64')}),/digest_mismatch/);
+  const typo=entry(direction(1,null,{per_run_limit_usd:'1000.00'})),typoRaw=Buffer.from(canonicalJSON(typo.direction));
+  await assert.rejects(store.dispatch({op:'paid_expansion_object_put',sha256:typo.sha256,bytes:typoRaw.toString('base64')}),/limit_invalid/);
+  await assert.rejects(store.dispatch({op:'paid_expansion_object_get',sha256:typo.sha256}),/paid_expansion_object_missing/);
+  await assert.rejects(store.dispatch({op:'paid_expansion_object_get',sha256:'../x'}),/paid_expansion_request_invalid/);
+  bucket.objects.get(`operations/research/paid-expansion/${first.sha256}/direction.json`).raw=Buffer.from('{}');
+  await assert.rejects(store.dispatch({op:'paid_expansion_object_get',sha256:first.sha256}),/paid_expansion_object_conflict/);
+  await assert.rejects(new Store(db).dispatch({op:'paid_expansion_object_get',sha256:first.sha256}),/object_transport_unavailable/);
+  assert.equal(db.values.get(ROOT).paid_expansion,undefined);
+});
+
+function grantFor(current,value,changes={}) {
+  return {schema_version:'blueprint.research-paid-expansion-grant.v1',state:'granted',run_key:value.run_key,
+    frozen_at:'2026-10-05T12:00:00+00:00',direction_sha256:current.sha256,
+    grant_id:createHash('sha256').update(JSON.stringify([current.sha256,value.run_key])).digest('hex'),
+    direction_uri:current.uri,version:current.version,sources:['exa'],limit_micros:10000000,per_start_max_micros:5000000,
+    source_commit:'c'.repeat(40),approval_reference:current.direction.approval_reference,
+    valid_until:'2026-10-05T12:20:00+00:00',...changes};
+}
+const exaRow=date=>({...row(),date,run_key:`blueprint-researcher:${date}`,expansion_profile:'exa-guarded-v1',
+  metadata:{...row().metadata,expansion_profile:'exa-guarded-v1'}});
+function exaClaim(value,cap=2000000,dollars=cap/1000000) {
+  const intent={request:{query:'US laundry towel handling',effort:'ultra',budget:{maxCostDollars:dollars}},grant:value.paid_expansion_grant};
+  const json=JSON.stringify(intent);
+  return {date:value.date,run_key:value.run_key,intent,intent_json:json,intent_sha256:createHash('sha256').update(json).digest('hex'),
+    cap_micros:cap,state:'submission_unresolved',attempted:true,run_id:null};
+}
+
+test('direction times must be real calendar instants in both languages',async()=>{
+  const {db,store}=await paidFixture();
+  for(const expires_at of ['2026-11-31T18:00:00+00:00','2027-02-29T18:00:00+00:00','2026-12-01T24:00:00+00:00'])
+    await assert.rejects(setDirection(store,null,entry(direction(1,null,{expires_at}))),/^Error: paid_expansion_direction_invalid$/);
+  assert.equal(db.values.get(ROOT).paid_expansion,undefined);
+});
+
+test('a control copy dropped by an older release keeps one chain from the audit head',async()=>{
+  const {db,store}=await paidFixture();
+  const first=entry(direction());await setDirection(store,null,first);
+  delete db.values.get(ROOT).paid_expansion; // An older configure replaced control wholesale.
+  await assert.rejects(setDirection(store,null,entry(direction())),/paid_expansion_direction_chain_invalid/);
+  const second=entry(direction(2,first.sha256,{per_run_limit_usd:'20.00'}));
+  await setDirection(store,null,second);
+  assert.deepEqual(db.values.get(ROOT).paid_expansion,{enabled:true,current:second});
+  assert.deepEqual((await store.dispatch({op:'paid_expansion_audit'})).map(r=>[r.version,r.direction.supersedes]),
+    [[1,null],[2,first.sha256]]);
+});
+
+test('claims bind the frozen grant, its source and the exact native budget',async()=>{
+  const {db,store}=await paidFixture();
+  const current=entry(direction());await setDirection(store,null,current);
+  const value=exaRow('2026-10-05');
+  value.paid_expansion_grant=grantFor(current,value);
+  await store.put(value);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).paid_expansion_grant_unbound,false);
+  await assert.rejects(store.put({...value,state:'running',exa_expansion:exaClaim(value,2000000,5)}),/paid_expansion_claim_cap_mismatch/);
+  await store.put({...value,state:'running',exa_expansion:exaClaim(value,5000000)});
+  const sourceless=exaRow('2026-10-06');
+  sourceless.paid_expansion_grant=grantFor(current,sourceless,{sources:[]});
+  await store.put(sourceless);
+  await assert.rejects(store.put({...sourceless,state:'running',exa_expansion:exaClaim(sourceless)}),/paid_expansion_grant_not_admitted/);
+});
+
+test('a run manifest written by an older bridge admits no new paid claim',async()=>{
+  const {db,store}=await paidFixture();
+  const current=entry(direction());await setDirection(store,null,current);
+  const value=exaRow('2026-10-05');
+  await store.put(value);
+  delete db.values.get(`${ROOT}/runs/${value.date}`).paid_expansion_grant_digest; // Older bridge rewrite.
+  const regranted={...value,state:'running',paid_expansion_grant:grantFor(current,value)};
+  await store.put(regranted);
+  assert.equal(db.values.get(`${ROOT}/runs/${value.date}`).paid_expansion_grant_unbound,true);
+  await assert.rejects(store.put({...regranted,exa_expansion:exaClaim(regranted)}),/paid_expansion_grant_required/);
+  await store.put(regranted);
+  await assert.rejects(store.put({...regranted,exa_expansion:exaClaim(regranted)}),/paid_expansion_grant_required/);
+});

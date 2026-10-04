@@ -1159,12 +1159,29 @@ class Runner:
             if self.config.get("discovery_profile") == "adaptive-sites-v1":
                 row["discovery_profile"] = "adaptive-sites-v1"
                 row["research_runtime_seconds"] -= self.config["qa_reserved_seconds"]
+            if checked.get("expansion_profile"):
+                # One owner-directed paid expansion grant per daily row, frozen under
+                # this lease before the durable intent. A refusal keeps its code and
+                # research continues without expansion; recovery reuses this row.
+                from tools.daily_research import allocation
+                control = self.ledger.paid_expansion_control() if hasattr(self.ledger, "paid_expansion_control") else None
+                row["paid_expansion_grant"] = allocation.grant(control, row, self.clock())
             if self.config.get("search_provider") == search.PROFILE:
                 row["search_provider"] = search.PROFILE
                 row["recurring_budget_authority_reference"] = self.config["recurring_budget_authority_reference"]
                 if len(canonical(row).encode()) > search.MAX_INTENT:
                     raise Refusal("research_profile_intent_resource_ceiling")
-            self.ledger.put(row)  # Durable intent BEFORE the only create attempt.
+            try:
+                self.ledger.put(row)  # Durable intent BEFORE the only create attempt.
+            except Refusal as exc:
+                grant = row.get("paid_expansion_grant")
+                if str(exc) != "paid_expansion_grant_not_admitted" or not isinstance(grant, dict) or grant.get("state") != "granted":
+                    raise
+                # The store refused the grant inside its transaction, so nothing was recorded:
+                # keep the code and research without paid expansion instead of blocking the day.
+                from tools.daily_research import allocation
+                row["paid_expansion_grant"] = allocation.refused(grant, str(exc))
+                self.ledger.put(row)
             if self.stop_requested():
                 row.update(state="cancelled", error="stopped_before_create", cleanup_required=False)
                 self.ledger.put(row)

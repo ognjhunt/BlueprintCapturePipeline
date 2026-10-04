@@ -277,25 +277,101 @@ and enter the existing company publication and learning path.
 A new start explicitly selects `effort: "ultra"`; the hosted tool defaults to
 low effort, where the budget is not an applicable metered cap. Admission requires
 an advertised string effort enum containing `ultra`, a numeric
-`budget.maxCostDollars` within both the live schema's bounds and $1–$5 (Exa's
-[documented Ultra minimum](https://exa.ai/docs/agent/agent-ultra) is $1),
-the existing worker's `EXA_API_KEY`, and a trusted
-company control `exa_expansion_allocation` snapshot with schema
-`blueprint.research-expansion-allocation.v1`. That snapshot binds the run key,
-existing authority, evidence reference, checked/expiry times, verified all-in
-usage, committed/reserved/remaining integer microdollars and exactly the shared
-$5 research limit. The host rechecks the allocation before submission. Native
-Exa caps are not a claim that OpenAI/hosting or the daily total is hard-capped.
-The existing soft-target authority alone cannot produce this snapshot; unknown
-headroom means skip, never zero. No key, accounting writer or verified live tool
-schema is created by selecting the profile.
+`budget.maxCostDollars` of at least $1 (Exa's
+[documented Ultra minimum](https://exa.ai/docs/agent/agent-ultra)) within the live
+schema's bounds, the existing worker's `EXA_API_KEY`, and headroom in this run's
+frozen paid expansion grant (below). A live schema maximum still binds; without
+one, the host's single $50 per-start ceiling applies. The host rechecks the grant,
+brake and release before submission. Native Exa caps are not a claim that
+OpenAI/hosting or the daily total is hard-capped. Unknown headroom means skip,
+never zero. No key or verified live tool schema is created by selecting the profile.
 
-The start tool advertises exactly the enforced `max_cost_micros` range, 1,000,000–5,000,000
-(Exa Ultra's $1 minimum to the $5 ceiling). A smaller request returns
-`expansion_cap_below_ultra_minimum` before any credential or allocation lookup, and a cap
-above verified headroom returns `expansion_cap_exceeds_remaining_allocation` with
-`remaining_micros`; neither starts Exa or consumes the claim. Stable `ExpansionError`
-codes reach the agent unchanged instead of a generic unavailable error.
+The owner's per-run amount is the only binding number. The start tool's schema
+accepts `max_cost_micros` from 1,000,000 (Exa Ultra's $1 minimum) to 50,000,000
+(the code's per-start ceiling); the host admits at most half of this run's
+allowance per start and only within what remains ($10 allows 5,000,000, $20
+10,000,000, $30 15,000,000). A smaller request returns
+`expansion_cap_below_ultra_minimum` before any credential or allocation lookup. A
+cap above the remaining allowance or per-start maximum returns
+`expansion_cap_exceeds_remaining_allocation` or
+`expansion_cap_exceeds_per_start_maximum`; any other grant gap keeps
+`expansion_remaining_all_in_allocation_unverified` and names `allocation_reason`.
+These skips name the exact `max_start_micros` and `remaining_micros`; none starts
+Exa or consumes the claim. Stable `ExpansionError` codes reach the agent unchanged
+instead of a generic unavailable error. With one Exa start per run, Exa alone can
+use at most half of the allowance; the rest stays combined headroom for FindAll.
+
+The 2026-10-04 release raised the schema maximum from 5,000,000 once, at an idle
+release boundary: session checks compare live tools with `search.tools()`, so a
+schema change must never land while a daily session is in flight, and tools are
+never built per run.
+
+### Owner-directed paid expansion allowance
+
+Paid expansion sources (Exa now; FindAll later) share one combined per-run
+allowance that the owner sets as data; the 2026-10-04 owner decision is $10 per
+daily research run. It is host-reserved and separate from `soft_target_usd`, which
+stays $5 and covers the rest of the run; neither is extra authority. Changing
+$10 to $20 or $30 needs no code change, redeploy or new package; run the packaged
+owner command as in [operators/README.md](operators/README.md#owner-paid-expansion-allowance):
+
+```bash
+paid-expansion-direction.py show
+paid-expansion-direction.py set --per-run-usd 20.00 --approval-reference REF [--apply]
+paid-expansion-direction.py disable [--apply]
+```
+
+- `allocation.py` is the single producer and arbiter. An owner direction
+  (`blueprint.research-paid-expansion-direction.v1`) has version, supersedes,
+  `per_run_limit_usd` (format `^[1-9]\d{0,2}(\.\d{2})?$` within $1.00–$100.00; the
+  code ceiling refuses typos such as `200` or `1000`), sources, scope (project,
+  agent, Firestore root, run-key prefix, America/Chicago), effective/expiry times,
+  approval reference, approver, issue time and reason. The SHA-256 of its canonical
+  JSON names a create-only record at
+  `gs://blueprint-8c1ca.appspot.com/operations/research/paid-expansion/<sha256>/direction.json`.
+- Company control carries it top-level, `control.paid_expansion = {enabled,
+  current: {sha256, version, uri, direction}}`. Config keys stay allowlisted, so
+  older packages ignore it and keep today's skip. Only the fenced bridge op
+  `paid_expansion_set` writes it: a compare-and-swap on the caller's expected
+  previous SHA that validates format, ceiling, scope, digest and version chain and
+  appends `paidExpansionDirections/<sha256>` create-only. `configure` keeps the
+  current value; neither `init` nor `configure` can write a different one.
+- Under its lease and before the durable intent, the runner freezes one
+  `paid_expansion_grant` per daily row: `grant_id = sha256([direction_sha256,
+  run_key])`, version, `limit_micros`, `per_start_max_micros` (half the limit,
+  clamped to $1–$50: $10→$5, $20→$10, $30→$15), `source_commit` and `valid_until`
+  (the earlier of the direction expiry and the research deadline). The worker
+  verifies the direction digest in control and never reads object storage. A
+  refusal such as `paid_expansion_disabled`, `paid_expansion_direction_invalid`,
+  `paid_expansion_limit_invalid` or `paid_expansion_expired` is recorded and
+  ordinary research continues without expansion; so is a grant the company store
+  refuses at the intent (`paid_expansion_grant_not_admitted`). A crash or retry
+  reuses the row.
+- The frozen grant is the run's upper bound, and live control can only tighten
+  it. A raised amount applies from the next run. The brake, a lower amount, a
+  removed source or a changed release applies at once, so a mistaken amount can
+  be braked and corrected for the run already in progress.
+- `allocation.problem` admits each start. Remaining is the effective limit minus
+  the reserved caps of this run's durable claims; an unknown cost holds the whole
+  reservation, and nothing is released without a provider-reported terminal cost
+  (none is pinned yet). It refuses a start above the remaining allowance or
+  per-start maximum, after `valid_until`, while the owner's brake is applied, or
+  after a `source_commit` change. The put transaction for an Exa claim also
+  refuses a reservation beyond the frozen grant, a grant not backed by its audited
+  direction or not naming Exa, a cap that differs from the native request budget,
+  a braked control, a changed release and a row whose manifest an older bridge
+  rewrote. Time stays with the worker, which rechecks `valid_until` after the
+  claim and before the POST.
+- `set` and `disable` are dry runs unless `--apply`. `set` builds version+1
+  superseding the current SHA (or, after a rollback dropped control's copy, the
+  audit head), writes the object create-only, swaps control and reads both back;
+  it waits for an active run unless `--during-active-run`. `disable` is the
+  emergency brake: it stops new paid starts at once, including in an active run,
+  needs no object write, and only a new `set` re-enables expansion. Both poll for
+  the worker's next lease release instead of displacing it. A direction lasts 90
+  days unless `--expires-at` sets up to 366 days.
+- FindAll (PR 2) joins `allocation.SOURCES`, the bridge's `PAID_SOURCES` and
+  `allocation.claims()`, marked `TODO(FindAll)`. Sending stays off.
 
 The worker consumes one durable whole-run claim before the native POST, retains
 complete private MCP receipts and provider records in the existing company

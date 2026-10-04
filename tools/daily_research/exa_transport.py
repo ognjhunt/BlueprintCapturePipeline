@@ -268,7 +268,7 @@ class ExaTransport(_EvidenceParser):
 
 
     def start(self, request):
-        from tools.daily_research.expansion import _cap_supported
+        from tools.daily_research.expansion import LIMIT_MICROS, _cap_supported
 
         deadline = time.monotonic() + self.timeout
         if self._start_attempted:
@@ -279,7 +279,7 @@ class ExaTransport(_EvidenceParser):
                 or not isinstance(request.get("budget"), dict) or set(request["budget"]) != {"maxCostDollars"}
                 or type(request["budget"]["maxCostDollars"]) not in (int, float)
                 or not math.isfinite(request["budget"]["maxCostDollars"])
-                or not 1 <= request["budget"]["maxCostDollars"] <= 5):
+                or not 1 <= request["budget"]["maxCostDollars"] <= LIMIT_MICROS / 1_000_000):
             self._fail("exa_mcp_start_arguments_invalid")
         if not _cap_supported(self._discover(deadline), request):
             self._fail("exa_mcp_supported_cost_cap_missing")
