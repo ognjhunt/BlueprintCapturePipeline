@@ -23,6 +23,7 @@ on:
       - "tests/test_daily_research_exa_transport.py"
       - "tests/test_daily_research_operator*.py"
       - "tests/daily_research_*.test.mjs"
+      - "tests/daily_contact_research.test.mjs"
       - "tests/fixtures/daily_research/**"
       - ".github/workflows/daily-research.yml"
   push:
@@ -48,6 +49,7 @@ on:
       - "tests/test_daily_research_exa_transport.py"
       - "tests/test_daily_research_operator*.py"
       - "tests/daily_research_*.test.mjs"
+      - "tests/daily_contact_research.test.mjs"
       - "tests/fixtures/daily_research/**"
       - ".github/workflows/daily-research.yml"
 
@@ -90,7 +92,7 @@ jobs:
           uv pip install --python "${RUNNER_TEMP}/daily-research-venv/bin/python" -r tools/daily_research/requirements.txt pytest==9.1.1 ruff==0.16.9 jsonschema==4.26.0
       - name: Verify lifecycle, SDK contracts and changed-file lint
         run: |
-          node --test tests/daily_research_store.test.mjs tests/daily_research_worker.test.mjs tests/daily_research_publisher.test.mjs
+          node --test tests/daily_research_store.test.mjs tests/daily_research_worker.test.mjs tests/daily_research_publisher.test.mjs tests/daily_contact_research.test.mjs
           "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_verification.py tests/test_daily_research_agent_history.py tests/test_daily_research_agent_publication.py tests/test_daily_research_unattended_cleanup.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_recovery.py tests/test_daily_research_consumer.py tests/test_daily_research_qa_retry.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tests/test_daily_research_search.py tests/test_daily_research_expansion.py tests/test_daily_research_expansion_integration.py tests/test_daily_research_exa_transport.py tests/test_daily_research_search_adapter.py tests/test_daily_research_operator*.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/expansion.py tools/daily_research/exa_transport.py tools/daily_research/qa_retry.py tests/test_daily_research_qa_retry.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/recovery.py tests/test_daily_research_recovery.py
