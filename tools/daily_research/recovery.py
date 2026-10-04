@@ -27,14 +27,20 @@ def parse_artifact_json(raw):
         transformations.append("utf8_bom")
     def reject_nonfinite(value):
         raise ValueError("nonfinite_json_constant:" + value)
+    def finite_float(value):
+        # An overflowing literal such as 1e400 parses to inf, which no canonical digest can hold.
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("nonfinite_json_number")
+        return number
     try:
-        output = json.loads(text, parse_constant=reject_nonfinite)
+        output = json.loads(text, parse_constant=reject_nonfinite, parse_float=finite_float)
     except json.JSONDecodeError:
         fence = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*)\r?\n```", text.strip(), re.DOTALL | re.IGNORECASE)
         if fence is None:
             raise
         text = fence[1]
-        output = json.loads(text, parse_constant=reject_nonfinite)
+        output = json.loads(text, parse_constant=reject_nonfinite, parse_float=finite_float)
         transformations.append("single_json_fence")
     if not transformations:
         return output, None
@@ -289,6 +295,9 @@ def validation_feedback(output, row, known, observed_at):
 ITEM_FIELDS = ("candidates", "proposed_knowledge_deltas", "findings", "blockers", "proposed_next_actions")
 
 
+MAX_QUARANTINE_FAILURES = 20
+
+
 def exclude_located_items(document, feedback):
     """Drop only items whose every failure is located inside them; else (None, None).
 
@@ -309,10 +318,13 @@ def exclude_located_items(document, feedback):
         targets.setdefault((parts[0], int(parts[1])), []).append({"path": found["path"], "reason": found["reason"]})
     derived, excluded = deepcopy(document), []
     if quarantine:
+        # The receipt joins the review packet, so it lists a bounded sample; the full list is
+        # digested and always reproducible from the immutable source artifact.
         inventory = derived.pop("discovery_inventory", None)
         excluded.append({"field": "discovery_inventory", "quarantined_whole_field": True,
                          "record_count": len(inventory) if isinstance(inventory, list) else None,
-                         "failures": quarantine, "item_digest": digest(inventory)})
+                         "failures": quarantine[:MAX_QUARANTINE_FAILURES], "failure_count": len(quarantine),
+                         "failures_digest": digest(quarantine), "item_digest": digest(inventory)})
     for field in ITEM_FIELDS:
         indexes = sorted(index for name, index in targets if name == field)
         values = derived.get(field)
@@ -600,7 +612,7 @@ class RepairLoop:
         used. Anything global stays blocked with the complete feedback.
         """
         from tools.daily_research.consumer import Consumer
-        from tools.daily_research.runner import Refusal, Runner, digest
+        from tools.daily_research.runner import Refusal, Runner
         latest = row["validation_repairs"][-1]
         if row["state"] != "failed" or latest.get("cancel_attempted"):
             return row
@@ -627,11 +639,9 @@ class RepairLoop:
         if best is None:
             return row
         _, binding, derived = best
-        Runner(self.ledger, self.config, None, clock=self.clock).prepare_output(row, derived)
+        # The exclusion receipt is part of the review packet, so it counts against the packet ceiling.
+        Runner(self.ledger, self.config, None, clock=self.clock).prepare_output(row, derived, research_exclusions=binding)
         row["validation_repair_outcome"] = {"state": "accepted_with_exclusions", "reason": latest.get("error"), **binding}
-        row["packet"]["research_exclusions"] = binding
-        row["packet_digest"] = digest(row["packet"])
-        self.ledger.write_json(row["date"] + "-review.json", {**row["packet"], "packet_digest": row["packet_digest"]})
         self.ledger.put(row)
         return row
 

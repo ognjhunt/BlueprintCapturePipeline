@@ -120,10 +120,60 @@ def test_exhausted_repair_does_not_exclude_inventory_records_or_claim_false_comp
     assert original == saved
     assert "discovery_inventory" not in derived and derived["candidates"] == []
     assert exclusions == [{"field": "discovery_inventory", "quarantined_whole_field": True, "record_count": 3,
-                           "failures": feedback, "item_digest": row_digest(saved["discovery_inventory"])}]
+                           "failures": feedback, "failure_count": 1, "failures_digest": row_digest(feedback),
+                           "item_digest": row_digest(saved["discovery_inventory"])}]
     # A located inventory failure never removes other fields or a partial set of records.
     mixed, _ = exclude_located_items(original, feedback + [{"path": "/coverage", "reason": "discovery_coverage_invalid"}])
     assert mixed is None
+
+
+def test_inventory_quarantine_receipt_is_bounded_and_counts_toward_the_packet_ceiling(tmp_path):
+    """Re-review of S5: thousands of located inventory failures once produced a receipt larger than
+    the review packet ceiling, attached after the ceiling check. The receipt now carries a bounded
+    sample plus the count and digest, and exclusions join the packet before it is checked."""
+    from tools.daily_research import search
+    from tools.daily_research.recovery import MAX_QUARANTINE_FAILURES, exclude_located_items
+    from tools.daily_research.runner import canonical
+    from tools.daily_research.runner import digest as row_digest
+    original = {"discovery_inventory": inventory(7000), "candidates": []}
+    feedback = [{"path": f"/discovery_inventory/{i}", "reason": "discovery_inventory_invalid"} for i in range(7000)]
+    _, exclusions = exclude_located_items(original, feedback)
+    receipt = exclusions[0]
+    assert len(receipt["failures"]) == MAX_QUARANTINE_FAILURES and receipt["failure_count"] == 7000
+    assert receipt["failures_digest"] == row_digest(feedback)
+    assert len(canonical(exclusions).encode()) < search.MAX_PACKET // 100
+
+
+def test_exclusion_receipt_counts_toward_the_review_packet_ceiling(tmp_path):
+    """Re-review of S5: exclusions join the packet before its ceiling check, so an oversized
+    receipt refuses (raw retained) before the packet or its review file is written."""
+    from tests.test_daily_research_search import fixture as search_fixture
+    from tools.daily_research import search
+    from tools.daily_research.runner import Refusal, canonical
+    out = result(40)[0]
+    out["coverage"].update(defined_run_scope=["Synthetic exact site/task industry/region scope"],
+                           unresolved_promising_branches=[], completion_state="coverage_complete")
+    runner, api, ledger = next(search_fixture.__wrapped__(tmp_path))
+    api.raw, api.turn_status = canonical(out).encode(), "completed"
+    row = runner.start_or_resume()
+    assert row["state"] == "awaiting_review", row.get("error")
+    before, review = deepcopy(row), ledger.read_bytes(DAY + "-review.json")
+    oversized = {"revision": 1, "excluded": [{"field": "candidates", "index": i, "failures": [], "item_digest": "0" * 64}
+                                             for i in range(search.MAX_PACKET // 60)]}
+    with pytest.raises(Refusal, match="research_profile_packet_resource_ceiling_raw_retained"):
+        runner.prepare_output(row, out, research_exclusions=oversized)
+    assert row == before and ledger.read_bytes(DAY + "-review.json") == review
+    runner.prepare_output(row, out, research_exclusions={"revision": 1, "excluded": []})
+    assert row["packet"]["research_exclusions"] == {"revision": 1, "excluded": []}
+
+
+def test_overflowing_number_literal_is_invalid_json_not_a_crash():
+    from tools.daily_research.recovery import parse_artifact_json
+    with pytest.raises(ValueError, match="nonfinite_json_number"):
+        parse_artifact_json(b'{"discovery_inventory": [{"confidence": 1e400}]}')
+    with pytest.raises(ValueError, match="nonfinite_json_number"):
+        parse_artifact_json(b'```json\n{"x": -1e999}\n```')
+    assert parse_artifact_json(b'{"x": 1.5e3}') == ({"x": 1500.0}, None)
 
 
 def test_oversized_review_packet_is_repairable_feedback_not_a_blocked_run():

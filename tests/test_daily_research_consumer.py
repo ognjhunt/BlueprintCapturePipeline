@@ -513,6 +513,92 @@ def test_assessment_feedback_digests_once_and_is_bounded(fixture):
     assert issues[-1]["reason"] == "agent_qa_assessment_feedback_truncated"
 
 
+def _copy_example_placeholders(value):
+    """Fill free-text fields with the QA prompt's own example strings. The verification gate only
+    requires text there, so only QA can see that nothing real was assessed."""
+    from tools.daily_research.consumer import LEAD_VERIFICATION_EXAMPLE as example
+    value["sources"][0].update({field: example["sources"][0][field] for field in ("quote", "publisher", "freshness_reason")})
+    for name, claim in value["claims"].items():
+        claim["reason"] = example["claims"][name]["reason"]
+    value["counterevidence"].update(reason=example["counterevidence"]["reason"], searches=example["counterevidence"]["searches"])
+
+
+def test_copied_placeholder_assessment_blocks_qa_even_after_exhausted_corrections(fixture):
+    """Re-review of S1: placeholders are the one assessment defect the gate cannot refuse, so they
+    must never be deferred to it; otherwise template text is verified and published."""
+    consumer, api, ledger, bridge, _ = fixture
+    api.lost_reply = True
+    assert consumer.step()["state"] == "qa_input_unresolved"
+    _copy_example_placeholders(api.qa_result["checks"][0]["lead_verification"])
+    row = ledger.get(DAY)
+    candidate = verification.packet_candidates(row["packet"])[0]
+    gate = verification.evaluate(candidate, api.qa_result["checks"][0]["lead_verification"], NOW,
+                                 result_version=row["packet"]["lead_verification_result_version"])
+    assert gate["status"] == "verified"  # why QA, not the gate, must refuse
+    correction_provider(consumer, api, ledger, bridge, fix=False)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=45)
+    consumer.step()
+    consumer.clock = lambda: NOW + timedelta(seconds=60)
+    for _ in range(4):
+        consumer.step()
+    final = ledger.get(DAY)
+    assert final["qa"]["state"] == "qa_blocked" and final["qa"]["error"] == "agent_qa_correction_exhausted"
+    assert "decision" not in final["qa"] and "assessment_feedback_unresolved" not in final["qa"]
+    assert not final.get("review") and not final.get("delivery", {}).get("sheets", {}).get("receipt")
+
+
+def test_qa_decision_defers_assessment_defects_only_when_the_caller_exhausted_corrections(fixture):
+    """Re-review of S1: callers outside the correction loop (the canary's terminal collection)
+    keep the strict decision; deferral is explicit and never covers placeholders."""
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    row["qa"] = {"crm_digest": "crm", "turn_id": "turn_qa", "artifact_digest": "a" * 64}
+    row.setdefault("session_id", "session_synthetic")
+    candidates = verification.packet_candidates(row["packet"])
+
+    def review(mutate):
+        checks = []
+        for candidate in candidates:
+            value = assessment(candidate, NOW)
+            mutate(value)
+            checks.append({"candidate_key": candidate["candidate_key"], "source_support_verified": True, "duplicate": False,
+                           "reason": "Synthetic", "lead_verification": value})
+        return {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+                "source_support_verified": True, "accepted_keys": [c["candidate_key"] for c in row["packet"]["candidates"]],
+                "summary": "Synthetic", "checks": checks}
+    malformed = review(lambda value: value.update(sources="not-a-list"))
+    with pytest.raises(Refusal, match="agent_qa_assessment_sources_invalid"):
+        qa_decision(row, malformed, set(), NOW)
+    deferred = qa_decision(row, malformed, set(), NOW, defer_assessment_issues=True)
+    assert deferred["accepted_keys"] == []  # the gate leaves every malformed assessment unresolved
+    placeholders = review(_copy_example_placeholders)
+    for defer in (False, True):
+        with pytest.raises(Refusal, match="agent_qa_assessment_placeholder_copied"):
+            qa_decision(row, placeholders, set(), NOW, defer_assessment_issues=defer)
+
+
+def test_truncated_assessment_feedback_always_keeps_a_copied_placeholder(fixture):
+    from tools.daily_research.consumer import (
+        MAX_ASSESSMENT_ISSUES_PER_CHECK,
+        PLACEHOLDER_COPIED,
+        qa_validation_feedback,
+    )
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    row["qa"] = {"crm_digest": "crm"}
+    candidate = verification.packet_candidates(row["packet"])[0]
+    value = assessment(candidate, NOW)
+    _copy_example_placeholders(value)
+    value["sources"] += [{"id": ""} for _ in range(4 * MAX_ASSESSMENT_ISSUES_PER_CHECK)]
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+          "source_support_verified": True, "accepted_keys": [], "summary": "Synthetic",
+          "checks": [{"candidate_key": candidate["candidate_key"], "source_support_verified": True, "duplicate": False,
+                      "reason": "Synthetic", "lead_verification": value}]}
+    reasons = [i["reason"] for i in qa_validation_feedback(row, qa) if i["reason"].startswith("agent_qa_assessment_")]
+    assert reasons[-1] == "agent_qa_assessment_feedback_truncated" and PLACEHOLDER_COPIED in reasons
+
+
 @pytest.mark.parametrize("accepted", [False, True])
 def test_uncertain_qa_correction_never_submits_a_duplicate_turn(fixture, accepted):
     consumer, api, ledger, bridge, _ = fixture
