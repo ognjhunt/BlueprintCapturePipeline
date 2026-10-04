@@ -9,6 +9,7 @@ episode packet used by the existing Task Evaluation launch path.
 
 from __future__ import annotations
 
+from .task_evaluation_scene_retirement_access import scene_participant
 import argparse
 import hashlib
 import json
@@ -296,6 +297,7 @@ def _expected_compilation_bytes(
     return total
 
 
+@scene_participant('claimed', 'inputs', 'outputs')
 def compile_claimed_envelope(
     claimed: Path,
     *,
@@ -352,7 +354,13 @@ def compile_claimed_envelope(
         # Owned only once this mkdir creates it: the failure path must never remove an output directory
         # that was already there, whoever made it.
         target = outputs / envelope["compilation_id"]
-        target.mkdir(mode=0o750, exist_ok=False)
+        from .task_evaluation_scene_retirement_producer_births import enroll_preparation_child
+        generation = enroll_preparation_child(target,
+            preparation_root=inputs / envelope['request']['preparation_id'],
+            request=envelope['request'],
+            verified_paths=[row['materialized_path'] for row in references.values()])
+        if generation is None:
+            target.mkdir(mode=0o750, exist_ok=False)
         owned_output = target
         compiler_output = _validated_compiler_output(
             episode_compiler(
@@ -514,6 +522,7 @@ def record_compilation(
     return terminal_state
 
 
+@scene_participant('queue_root', 'input_root', 'output_root')
 def process_episode_compilation_queue(
     *,
     queue_root: str | Path,

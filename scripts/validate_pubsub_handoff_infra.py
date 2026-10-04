@@ -250,6 +250,7 @@ def main(repo_root: Path | None = None) -> None:
     repo_root = repo_root or Path(__file__).resolve().parents[1]
     pyproject = repo_root / "pyproject.toml"
     listener = repo_root / "src" / "blueprint_pipeline" / "pubsub_handoff_listener.py"
+    operations = repo_root / "src" / "blueprint_pipeline" / "pubsub_handoff_scene_operations.py"
     terraform = repo_root / "deploy" / "terraform" / "main.tf"
     deploy_script = repo_root / "deploy" / "scripts" / "deploy.sh"
     systemd_service = repo_root / "deploy" / "systemd" / "blueprint-pubsub-handoff-listener.service"
@@ -260,6 +261,7 @@ def main(repo_root: Path | None = None) -> None:
     for path in (
         pyproject,
         listener,
+        operations,
         terraform,
         deploy_script,
         systemd_service,
@@ -272,6 +274,7 @@ def main(repo_root: Path | None = None) -> None:
 
     pyproject_text = pyproject.read_text(encoding="utf-8")
     listener_text = listener.read_text(encoding="utf-8")
+    operations_text = operations.read_text(encoding="utf-8")
     terraform_text = compact(terraform.read_text(encoding="utf-8"))
     deploy_text = deploy_script.read_text(encoding="utf-8")
     deploy_compact = compact(deploy_text)
@@ -299,15 +302,23 @@ def main(repo_root: Path | None = None) -> None:
         ("stage_capture_handoff_for_control_plane", "control-plane staging helper call"),
         ("--stage-control-plane", "control-plane staging CLI flag"),
         ("--skip-run-e2e", "stage-only listener CLI flag"),
-        ("from google.cloud import pubsub_v1", "Pub/Sub subscriber import"),
-        ("subscriber.pull", "pull subscription call"),
         ("from .run_e2e import run_end_to_end", "pipeline entrypoint import"),
-        ("run_e2e: Callable[..., dict[str, Any]] = run_end_to_end", "pipeline invocation default"),
-        ("subscriber.acknowledge", "post-success ack"),
         ("run_evaluation_prep=run_evaluation_prep", "evaluation prep handoff"),
+        ("from .pubsub_handoff_scene_operations import _process_handoff_payload_body", "native processor import"),
+        ("return _process_handoff_payload_body(", "native processor invocation"),
+        ("from .pubsub_handoff_scene_operations import _pull_and_process_body", "native subscriber import"),
+        ("return _pull_and_process_body(", "native subscriber invocation"),
     ]:
         require_contains(listener_text, needle, description)
-    if not has_run_e2e_result_binding(listener_text):
+    if not re.search(r"run_e2e\s*:\s*Callable\[\.\.\.,\s*dict\[str,\s*Any\]\]\s*=\s*run_end_to_end\b", listener_text):
+        fail("missing pipeline invocation default")
+    for needle, description in [
+        ("from google.cloud import pubsub_v1", "Pub/Sub subscriber import"),
+        ("subscriber.pull", "pull subscription call"),
+        ("subscriber.acknowledge", "post-success ack"),
+    ]:
+        require_contains(operations_text, needle, description)
+    if not has_run_e2e_result_binding(operations_text):
         fail("missing pipeline invocation result binding")
 
     for needle, description in [

@@ -16,8 +16,12 @@ CONTAINERS = {
     "preparation": ("identities", "results/conflicts", "source-progress",
                     "source-resume-pending", "source-resume-blocked", "source-resume-completed"),
     "sam": ("results", "started", "progress", "wake-pending", "wake-completed"),
+    "activation": ("identities", "results/conflicts"),
 }
 LAYOUTS = (
+    ("activation", "identities/activation-1.json", "identity"),
+    ("activation", f"results/activation-1-{HEX}.json", "result"),
+    ("activation", f"results/conflicts/activation-1-{HEX}-{OTHER}.json", "result_conflict"),
     ("preparation", "identities/room.part-with-hyphen.json", "identity"),
     ("preparation", f"results/{STEM}.json", "result"),
     ("preparation", f"results/conflicts/{STEM}-{OTHER}.json", "result_conflict"),

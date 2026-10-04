@@ -15,6 +15,7 @@ first writer wins; a pin is never rewritten except to record its release.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -56,6 +57,18 @@ _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,191}\Z")
 
 class ControlPlaneStoragePinError(RuntimeError):
     """A pin could not be written or read safely."""
+
+
+def scene_participant():
+    """Keep pin observers leaf-only; admit mutations through the real lifetime fence."""
+    def decorate(function):
+        @functools.wraps(function)
+        def admitted(*args, **kwargs):
+            from .task_evaluation_scene_retirement_lifetime import scene_participant as participant
+            return participant()(function)(*args, **kwargs)
+        admitted.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'
+        return admitted
+    return decorate
 
 
 def pins_root_from_environment(environ: Mapping[str, str] = os.environ) -> Path | None:
@@ -132,6 +145,7 @@ def storage_pin_guard(pins_root: str | Path, *, exclusive: bool):
         yield
 
 
+@scene_participant()
 @_publisher_observation
 def write_storage_pin(
     *,
@@ -146,6 +160,7 @@ def write_storage_pin(
 ) -> dict[str, Any]:
     """Pin ``paths`` for ``owner_id``; an existing pin is returned unchanged."""
 
+    from .task_evaluation_scene_retirement_lifetime import scene_access
     from .control_plane_registered_reference_gate import refuse_registered_references
     refuse_registered_references(paths, pins_root, depends_on)
 
@@ -176,7 +191,7 @@ def write_storage_pin(
         "released_at_epoch": None,
     }
     path = pin_path(pins_root, kind, owner_id)
-    with storage_pin_guard(pins_root, exclusive=False):
+    with scene_access(*pinned), storage_pin_guard(pins_root, exclusive=False):
         if _write_atomic(path, payload, exclusive=True):
             if on_created is not None:
                 on_created(payload)
@@ -264,6 +279,7 @@ def live_pinned_paths(pins_root: str | Path, *, now: Any = time.time) -> set[str
     }
 
 
+@scene_participant()
 @_publisher_observation
 def release_storage_pin(
     *, pins_root: str | Path, kind: str, owner_id: str, now: Any = time.time

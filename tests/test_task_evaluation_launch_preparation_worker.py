@@ -950,6 +950,13 @@ def test_worker_accepts_recipe_without_prebuilt_packet_or_adapter_call(tmp_path)
     envelope = json.loads(queued[0].read_text())
     assert envelope["run_id"] == value["run_id"]
     assert envelope["recipe_digest"] == result["construction_recipe_digest"]
+    from blueprint_pipeline.task_evaluation_scene_compilation_owner_contracts import PREPARATION_BASE_FIELDS
+    pre_handoff = {key: result[key] for key in PREPARATION_BASE_FIELDS}
+    pre_handoff["status"] = "inputs_materialized_awaiting_construction_adapter"
+    assert envelope["preparation_result_digest"] == canonical_digest(
+        pre_handoff, digest_field="result_digest"
+    )
+    assert envelope["materialized_references"] == result["references"]
     assert envelope["automatic_progression_required"] is True
     assert envelope["render_inputs_result"]["derived_frame_count"] == 8
     assert result["construction_packet_materialized"] is False

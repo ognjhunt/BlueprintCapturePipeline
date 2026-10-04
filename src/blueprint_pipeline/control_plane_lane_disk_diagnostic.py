@@ -41,6 +41,7 @@ SOURCE_MODULES = frozenset({
     'control_plane_lane_experiment_recovery', 'control_plane_lane_experiment_restore_checkpoint',
     'control_plane_lane_experiment_restore_reconcile', 'control_plane_lane_experiment_acquisition',
     'control_plane_storage_pins', 'control_plane_disk_budget', 'control_plane_lane_historical_restore_limits',
+    's3_compatible_transport',
 })
 _REQUEST_FIELDS = frozenset({'schema_version', 'run_ref', 'config', 'roots',
                              'root_identities', 'installed_sources', 'request_digest'})

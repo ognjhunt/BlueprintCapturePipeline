@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +85,7 @@ def _registered_operator_run_root(*, activation_root: Path | None, run_id: str) 
     return root
 
 
-def resolve_live_pipeline_result_artifact(
+def _resolve_live_pipeline_result_artifact(
     *,
     legacy_state_root: str | Path,
     policy_canary_result_root: str | Path | None,
@@ -133,9 +134,48 @@ def resolve_live_pipeline_result_artifact(
     return path, record
 
 
+def resolve_live_pipeline_result_artifact(
+    *, legacy_state_root: str | Path, policy_canary_result_root: str | Path | None,
+    run_id: str, artifact_id: str, retain_read_lease: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    from .task_evaluation_scene_retirement_access import scene_access
+    # The outer lock precedes registry selection and existing artifact leases.
+    # For HTTP, ownership transfers to the actual response's finally cleanup.
+    stack = ExitStack()
+    try:
+        stack.enter_context(scene_access(legacy_state_root, *(
+            [policy_canary_result_root] if policy_canary_result_root is not None else [])))
+        path, record = _resolve_live_pipeline_result_artifact(
+            legacy_state_root=legacy_state_root, policy_canary_result_root=policy_canary_result_root,
+            run_id=run_id, artifact_id=artifact_id, retain_read_lease=retain_read_lease)
+        # Exact returned member generation is checked before the response reads.
+        stack.enter_context(scene_access(path))
+        if not retain_read_lease:
+            return path, record  # Direct external path lifetime remains unproven.
+        previous = record.get('_artifact_cleanup')
+        retained = stack.pop_all()
+        closed = False
+        def cleanup():
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            try:
+                if previous is not None:
+                    previous()
+            finally:
+                retained.close()
+        return path, {**record, '_artifact_cleanup': cleanup}
+    finally:
+        stack.close()
+
+
 
 __all__ = [
     "TASK_EVALUATION_POLICY_CANARY_RESULT_ROOT_ENV",
     "TaskEvaluationResultDeliveryError",
     "resolve_live_pipeline_result_artifact",
 ]
+
+# These real manual lifetimes are retained through resolver cleanup and ASGI send.
+resolve_live_pipeline_result_artifact.__scene_retirement_lifetime__ = 'scene_retirement_lifetime.v1'

@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Mapping
 
+from .task_evaluation_scene_retirement_access import scene_participant
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .public_scene_artifixer3d_native_exports import geometry_protection_is_qualified
 from .task_evaluation_scene_configuration_artifixer_warm_checkpoint import (
@@ -156,6 +157,7 @@ def admitted_teacher_training_images(teacher):
             for row in frames if row["camera_id"] not in excluded}
 
 
+@scene_participant('source_launch_root')
 def stage_completed_training(
     *, source_launch_root: Path, prepared: dict, stage_input: dict, tuning: dict, output_root: Path
 ) -> dict:
@@ -362,6 +364,7 @@ def hydrate_completed_training(
 REVIEW_ENV = "BLUEPRINT_ARTIFIXER_COMPLETED_TRAINING_REVIEW_ROOT"
 
 
+@scene_participant('source_root')
 def stage_completed_review(*, source_root: Path, output_root: Path) -> dict:
     """Carry a real accepted CPU review; admission on the worker checks its full input."""
     from .task_evaluation_artifixer_ai_visual_review import (

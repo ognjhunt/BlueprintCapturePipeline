@@ -420,6 +420,72 @@ def test_outer_native_scan_failure_retains_actual_errno_and_original_counters(tm
     assert observed.get('references_clear') is None
 
 
+def test_failed_process_view_retains_only_numeric_original_snapshots():
+    raw = b'6317 (private command) S 1 ' + b'0 ' * 17 + b'31500\n'
+    observed = native._failed_process_view(dict(pid='6317', started=31500,
+        initial_stat=raw, names=['0', '2'], after_names=['0', '3']))
+    assert observed['initial_process'] == dict(pid=6317, parent_pid=1, start_tick=31500)
+    assert observed['fd_names']['added'] == [3] and observed['fd_names']['removed'] == [2]
+    assert observed['fd_names']['before_count'] == observed['fd_names']['after_count'] == 2
+    assert observed['final_process_identity_verified'] is False
+    assert 'private' not in json.dumps(observed) and 'references_clear' not in observed
+
+
+def test_failed_fd_view_bounds_retained_names_and_deltas():
+    before = [str(i) for i in range(100)]
+    after = [str(i) for i in range(100, 200)]
+    observed = native._failed_process_view(dict(names=before, after_names=after))['fd_names']
+    assert observed['before_count'] == observed['after_count'] == 100
+    assert observed['before_names'] == list(range(8))
+    assert observed['added'] == list(range(100, 108)) and observed['removed'] == list(range(8))
+    assert observed['truncated'] is True
+    assert before == [str(i) for i in range(100)] and after == [str(i) for i in range(100, 200)]
+
+
+@pytest.mark.parametrize('local', [dict(names=['private'], after_names=['2']),
+    dict(names=['1'], after_names=['1', '1']), dict(names=[[]], after_names=['1']),
+    dict(names=['01'], after_names=['1']), dict(initial_stat=b'private', pid='1', started=1)])
+def test_ambiguous_failure_metadata_does_not_invent_process_identity(local):
+    assert native._failed_process_view(local) == {}
+
+
+def test_actual_fd_set_refusal_retains_both_original_lists(tmp_path, monkeypatch):
+    """Parser fixture reaches the actual guard; it supplies no native clearance."""
+    import os
+    from blueprint_pipeline import control_plane_lane_historical_processes as processes
+    (tmp_path / 'fd').mkdir()
+    namespace = ('pid:[1]', 'user:[1]', 'mnt:[1]')
+    monkeypatch.setattr(processes, '_namespace', lambda *args, **kwargs: namespace)
+    monkeypatch.setattr(processes, 'kernel_has_no_user_memory', lambda *args, **kwargs: True)
+    class Scan:
+        def tick(self):
+            pass
+        def read(self, directory, name, cap=1024**2):
+            return b'6317 (private command) S 1 ' + b'0 ' * 17 + b'31500\n' if name == 'stat' else b''
+        def names(self, directory, limit):
+            self.calls += 1
+            return ['0', '2'] if self.calls == 1 else ['0', '3']
+        calls = 0
+    # The FD loop must inspect real entries before reaching its set comparison.
+    for name in ('0', '2'):
+        (tmp_path / 'fd' / name).symlink_to(tmp_path)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    scan = Scan()
+    try:
+        with pytest.raises(processes.HistoricalProcessError, match='process_unknown') as failure:
+            processes._inspect_process(scan, fd, '6317', '/unselected', {(999, 999)},
+                namespace, namespace[2], (1, 1))
+        trace = failure.value.__traceback__
+        while trace.tb_frame.f_code.co_name != '_inspect_process':
+            trace = trace.tb_next
+        observed = native._failed_process_view(trace.tb_frame.f_locals)
+        assert scan.calls == 2
+        assert observed['fd_names']['added'] == [3] and observed['fd_names']['removed'] == [2]
+        assert observed['initial_process']['parent_pid'] == 1
+    finally:
+        os.close(fd)
+
+
 @pytest.mark.parametrize('expected', ['recovered_stage', 'recovered_split', 'recovered_prefix'])
 def test_actual_later_restore_observation_may_follow_refused_boundary(tmp_path, expected):
     import hashlib

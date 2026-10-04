@@ -1,6 +1,7 @@
 """Pull BlueprintCapture bridge handoffs from Pub/Sub and run the pipeline."""
 
 from __future__ import annotations
+from .task_evaluation_scene_retirement_access import scene_participant
 
 import argparse
 import fcntl
@@ -23,7 +24,7 @@ import google.auth
 from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
-from .pubsub_handoff_disk_admission import (
+from .pubsub_handoff_disk_admission import (  # noqa: F401 - native bodies resolve this live namespace
     HandoffStagingCapacityError,
     download_with_reservation,
     finish_staging_capacity_blocked,
@@ -57,6 +58,8 @@ class HandoffMessage:
     robot_eval_simulator: str | None = None
     robot_eval_evaluation_substrate: str | None = None
     robot_eval_budget_usd: float | None = None
+    source_finalize: Mapping[str, str] | None = None
+    source_membership_selector: Mapping[str, Any] | None = None
 
     @property
     def capture_prefix(self) -> str:
@@ -110,6 +113,42 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
             "Pub/Sub handoff pipeline_handoff_uri does not match bucket/scene/capture identity."
         )
 
+    source_finalize = data.get("source_finalize")
+    if source_finalize is not None:
+        expected_marker = f"scenes/{scene_id}/captures/{capture_id}/raw/capture_upload_complete.json"
+        if (type(source_finalize) is not dict
+                or set(source_finalize) != {"bucket", "object_name", "generation", "event_id", "event_source"}
+                or any(type(value) is not str for value in source_finalize.values())
+                or source_finalize["bucket"] != bucket
+                or source_finalize["object_name"] != expected_marker
+                or re.fullmatch(r"[1-9][0-9]{0,19}", source_finalize["generation"]) is None
+                or not 0 < len(source_finalize["event_id"].encode("utf-8")) <= 256
+                or not 0 < len(source_finalize["event_source"].encode("utf-8")) <= 1024
+                or "\x00" in source_finalize["event_id"]
+                or "\x00" in source_finalize["event_source"]):
+            raise PipelineError("Pub/Sub handoff source finalize identity invalid.")
+
+    source_membership_selector = data.get("source_membership_selector")
+    if source_membership_selector is not None:
+        if source_finalize is None or type(source_membership_selector) is not dict or set(source_membership_selector) != {
+            "object_name", "generation", "size_bytes", "sha256"
+        }:
+            raise PipelineError("Pub/Sub handoff source membership selector invalid.")
+        import hashlib
+        delivery_key = hashlib.sha256(json.dumps([
+            bucket, source_finalize["object_name"], source_finalize["generation"]
+        ], separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        expected_member = (f"scenes/{scene_id}/captures/{capture_id}/deliveries/"
+                           f"{delivery_key}/capture_delivery_membership.json")
+        if (source_membership_selector["object_name"] != expected_member
+                or type(source_membership_selector["generation"]) is not str
+                or re.fullmatch(r"[1-9][0-9]{0,19}", source_membership_selector["generation"]) is None
+                or type(source_membership_selector["size_bytes"]) is not int
+                or not 0 < source_membership_selector["size_bytes"] <= 65536
+                or type(source_membership_selector["sha256"]) is not str
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", source_membership_selector["sha256"]) is None):
+            raise PipelineError("Pub/Sub handoff source membership selector invalid.")
+
     robot_eval_job_request_uri = _optional_string(
         data,
         "robot_eval_job_request_uri",
@@ -138,111 +177,16 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
             "robot_eval_evaluation_substrate",
         ),
         robot_eval_budget_usd=robot_eval_budget_usd,
+        source_finalize=source_finalize,
+        source_membership_selector=source_membership_selector,
     )
 
 
-def stage_handoff_capture(
-    handoff: HandoffMessage,
-    *,
-    storage_root: Path,
-    storage_client: storage.Client | None = None,
-) -> Path:
-    client = storage_client or storage.Client()
-    resolved_storage_root = storage_root.resolve()
-    bucket_root = contained_path(
-        resolved_storage_root,
-        handoff.bucket,
-        field="Pub/Sub staging bucket path",
-    )
-    capture_root = contained_path(
-        bucket_root,
-        "scenes",
-        handoff.scene_id,
-        "captures",
-        handoff.capture_id,
-        field="Pub/Sub capture staging path",
-    )
-    capture_root.mkdir(parents=True, exist_ok=True)
-
-    expected_prefix = f"{handoff.capture_prefix}/"
-    blobs = list(client.list_blobs(handoff.bucket, prefix=expected_prefix))
-    if not blobs:
-        raise PipelineError(f"No objects found for handoff prefix: {handoff.capture_prefix}/")
-
-    # Decide everything before writing anything: every name is validated, and
-    # an object whose generation and size match the previous staging (with the
-    # local copy intact) is not downloaded again.
-    prefix_depth = len(PurePosixPath(handoff.capture_prefix).parts)
-    previously_staged = _previous_staging_rows(capture_root, handoff=handoff)
-    manifest_rows: list[dict[str, Any]] = []
-    downloads: list[tuple[Any, Path]] = []
-    for blob in blobs:
-        blob_name = str(blob.name or "")
-        if not blob_name.startswith(expected_prefix):
-            raise PipelineError("Pub/Sub blob escaped the declared capture prefix")
-        blob_path = PurePosixPath(blob_name)
-        if (
-            blob_path.is_absolute()
-            or any(part in {"", ".", ".."} for part in blob_path.parts)
-            or "\\" in blob_name
-            or "\x00" in blob_name
-        ):
-            raise PipelineError("Pub/Sub blob name contains an unsafe path")
-        if blob_name.endswith("/"):
-            continue
-        try:
-            destination = contained_path(
-                bucket_root,
-                *blob_path.parts,
-                field="Pub/Sub blob destination",
-            )
-            prove_path_contained(
-                capture_root,
-                destination,
-                field="Pub/Sub blob capture destination",
-            )
-        except SecurityValidationError as exc:
-            raise PipelineError(str(exc)) from exc
-        row = _staging_manifest_row(
-            blob,
-            name=blob_name,
-            relative_path=PurePosixPath(*blob_path.parts[prefix_depth:]).as_posix(),
-        )
-        # Every row is the listing's view of the object now; a skipped object
-        # only keeps its local bytes.
-        manifest_rows.append(row)
-        previous = previously_staged.get(blob_name)
-        if previous is not None and _staged_copy_is_current(previous, row, destination):
-            continue
-        downloads.append((blob, destination))
-
-    download_with_reservation(
-        downloads=downloads, manifest_rows=manifest_rows,
-        storage_root=storage_root, capture_root=capture_root,
-    )
-    write_json(
-        capture_root / STAGING_MANIFEST_FILENAME,
-        {
-            "schema_version": STAGING_MANIFEST_SCHEMA_VERSION,
-            "bucket": handoff.bucket,
-            "prefix": expected_prefix,
-            "staged_at": utc_now_iso(),
-            "objects": manifest_rows,
-        },
-    )
-
-    if not (capture_root / "raw" / "capture_upload_complete.json").is_file():
-        raise PipelineError(
-            "Staged handoff capture is missing raw/capture_upload_complete.json; "
-            f"capture_root={capture_root}"
-        )
-    _preserve_local_website_derivatives(capture_root, {str(blob.name) for blob in blobs}, handoff.capture_prefix)
-    if not (capture_root / "pipeline_handoff.json").is_file():
-        # Real iOS bundles never upload pipeline_handoff.json (XR-03); synthesize it from the
-        # provenance already carried by raw/manifest.json + raw/capture_context.json so the
-        # capture_job_id / site_submission_id / buyer_request_id data contract stays intact.
-        _synthesize_pipeline_handoff(handoff, capture_root=capture_root)
-    return capture_root
+@scene_participant('storage_root')
+def stage_handoff_capture(handoff: HandoffMessage, *, storage_root: Path, storage_client: storage.Client | None=None) -> Path:
+    import sys
+    from .pubsub_handoff_scene_operations import _stage_handoff_capture_body
+    return _stage_handoff_capture_body(sys.modules[__name__], handoff, storage_root=storage_root, storage_client=storage_client)
 
 
 def _previous_staging_rows(capture_root: Path, *, handoff: HandoffMessage) -> dict[str, dict[str, Any]]:
@@ -397,68 +341,9 @@ def _first_list(*sources: Mapping[str, Any], keys: Sequence[str]) -> list[Any]:
 
 
 def _synthesize_pipeline_handoff(handoff: HandoffMessage, *, capture_root: Path) -> Path:
-    """Materialize pipeline_handoff.json from raw sidecars when the iOS bundle omits it.
-
-    We never invent provenance: values come only from raw/manifest.json and
-    raw/capture_context.json, both of which the iOS app already writes.
-    """
-
-    raw_root = capture_root / "raw"
-    manifest = _read_optional_json_object(raw_root / "manifest.json")
-    context = _read_optional_json_object(raw_root / "capture_context.json")
-
-    site_submission_id = _first_non_empty(
-        manifest, context, keys=("site_submission_id", "siteSubmissionId")
-    )
-    buyer_request_id = _first_non_empty(
-        manifest, context, keys=("buyer_request_id", "buyerRequestId")
-    )
-    capture_job_id = _first_non_empty(manifest, context, keys=("capture_job_id", "captureJobId"))
-    request_id = buyer_request_id or capture_job_id
-
-    requested_outputs: list[str] = []
-    for source in (manifest, context):
-        for key in ("requested_outputs", "requestedOutputs", "requested_lanes", "requestedLanes"):
-            value = source.get(key)
-            if isinstance(value, list):
-                for item in value:
-                    text = str(item).strip()
-                    if text and text not in requested_outputs:
-                        requested_outputs.append(text)
-
-    payload: dict[str, Any] = {
-        "schema_version": "pipeline_handoff.v1",
-        "synthesized": True,
-        "synthesized_from": ["raw/manifest.json", "raw/capture_context.json"],
-        "scene_id": handoff.scene_id,
-        "capture_id": handoff.capture_id,
-        "bucket": handoff.bucket,
-        "raw_prefix_uri": handoff.raw_prefix_uri,
-        "site_submission_id": site_submission_id,
-        "buyer_request_id": buyer_request_id,
-        "capture_job_id": capture_job_id,
-        "owner_system": {
-            "owner_system": "blueprint_capture",
-            "request_id": request_id,
-            "site_submission_id": site_submission_id,
-            "buyer_request_id": buyer_request_id,
-            "capture_job_id": capture_job_id,
-        },
-    }
-    if requested_outputs:
-        payload["requested_outputs"] = requested_outputs
-
-    destination = capture_root / "pipeline_handoff.json"
-    write_json(destination, payload)
-    logger.info(
-        "pubsub_handoff.synthesized_pipeline_handoff",
-        extra={
-            "scene_id": handoff.scene_id,
-            "capture_id": handoff.capture_id,
-            "capture_job_id": capture_job_id,
-        },
-    )
-    return destination
+    import sys
+    from .pubsub_handoff_scene_operations import __synthesize_pipeline_handoff_body
+    return __synthesize_pipeline_handoff_body(sys.modules[__name__], handoff, capture_root=capture_root)
 
 
 def _control_plane_handoff_payload(
@@ -840,21 +725,36 @@ def _claim_job_lease(
     lease_seconds: int,
     now: datetime | None = None,
     payload_sha256: str | None = None,
+    producer_delivery_key: str | None = None,
     create_capture_root: bool = True,
     retired_ended_payload_sha256s: Sequence[str] = (),
+    retired_ended_producer_delivery_keys: Sequence[str] = (),
 ) -> tuple[str, dict[str, Any]]:
+    if producer_delivery_key is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", producer_delivery_key) is None:
+        raise PipelineError('capture_delivery_key_invalid')
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     with _locked_job_ledger(capture_root, create=create_capture_root) as ledger:
         revision = int(ledger.get("revision") or 0)
         status = _string(ledger.get("status"))
         if status == "corrupt":
             return "corrupt", dict(ledger)
+        if producer_delivery_key is not None and ledger and ledger.get('producer_delivery_key') != producer_delivery_key:
+            return 'source_conflict', dict(ledger)
         history = _attempt_history(ledger)
         if not ledger and retired_ended_payload_sha256s:
             history.extend({"status": TERMINAL_AUTHORITY_STATUS, "payload_sha256": digest,
                             "source": "scene_retirement_receipt"}
                            for digest in sorted(set(retired_ended_payload_sha256s))
                            if re.fullmatch(r"[0-9a-f]{64}", digest))
+        if not ledger and retired_ended_producer_delivery_keys:
+            history.extend({'status': TERMINAL_AUTHORITY_STATUS,
+                            'producer_delivery_key': key,
+                            'source': 'scene_retirement_receipt'}
+                           for key in sorted(set(retired_ended_producer_delivery_keys))
+                           if re.fullmatch(r"sha256:[0-9a-f]{64}", key))
+        if producer_delivery_key is not None and producer_delivery_key in (
+                _ended_delivery_keys(ledger) | set(retired_ended_producer_delivery_keys)):
+            return 'terminal', dict(ledger)
         # A payload whose run ended for lost authority never runs again, even
         # while a later payload reopened the job and is running or retrying.
         # Only a completed job answers a redelivery from its output commit.
@@ -865,6 +765,8 @@ def _claim_job_lease(
         ):
             return "terminal", dict(ledger)
         if status == TERMINAL_AUTHORITY_STATUS:
+            if producer_delivery_key is not None:
+                return 'terminal', dict(ledger)
             ended_by = _string(ledger.get("terminal_payload_sha256"))
             # Without both digests nothing proves this is a new request, so the
             # ending stands (a redelivery must not re-run an ended scene).
@@ -930,6 +832,9 @@ def _claim_job_lease(
                 "previous_lease_owner": ledger.get("lease_owner")
                 if status == "processing"
                 else None,
+                **({'producer_delivery_key': producer_delivery_key,
+                    'source_payload_sha256': payload_sha256}
+                   if producer_delivery_key is not None else {}),
             },
             previous_revision=revision,
         )
@@ -1083,6 +988,17 @@ def _ended_payload_digests(ledger: Mapping[str, Any]) -> set[str]:
             digests.add(_string(row.get("terminal_payload_sha256")))
     digests.discard("")
     return digests
+
+
+def _ended_delivery_keys(ledger: Mapping[str, Any]) -> set[str]:
+    keys = {_string(ledger.get('terminal_producer_delivery_key'))}
+    for row in _attempt_history(ledger):
+        if row.get('status') == TERMINAL_AUTHORITY_STATUS:
+            keys.add(_string(row.get('producer_delivery_key')))
+        elif row.get('status') == 'reopened_after_terminal_authority':
+            keys.add(_string(row.get('terminal_producer_delivery_key')))
+    keys.discard('')
+    return keys
 
 
 def _output_commit(
@@ -1594,6 +1510,7 @@ def _finish_terminal_authority_ending(
     attempt_started_at: str,
     previous_history: Sequence[Mapping[str, Any]],
     payload_digest: str,
+    producer_delivery_key: str | None = None,
 ) -> dict[str, Any]:
     """End the job for good: the website ended this scene's authority.
 
@@ -1617,6 +1534,8 @@ def _finish_terminal_authority_ending(
             "terminal_at": ended_at,
             "updated_at": ended_at,
             "terminal_payload_sha256": payload_digest,
+            **({'terminal_producer_delivery_key': producer_delivery_key}
+               if producer_delivery_key is not None else {}),
             "last_error_type": type(error).__name__,
             "last_error": str(error)[:500],
             "queue_disposition": TERMINAL_AUTHORITY_STATUS,
@@ -1631,6 +1550,8 @@ def _finish_terminal_authority_ending(
                     "code": code,
                     "operation": operation,
                     "payload_sha256": payload_digest,
+                    **({'producer_delivery_key': producer_delivery_key}
+                       if producer_delivery_key is not None else {}),
                 },
             ],
         },
@@ -1652,437 +1573,11 @@ def _finish_terminal_authority_ending(
     )
 
 
-def process_handoff_payload(
-    payload: bytes | str | Mapping[str, Any],
-    *,
-    storage_root: Path,
-    provider: str,
-    run_e2e: Callable[..., dict[str, Any]] = run_end_to_end,
-    storage_client: storage.Client | None = None,
-    run_evaluation_prep: bool = True,
-    run_e2e_enabled: bool = True,
-    stage_control_plane: bool = False,
-    control_plane_manifest_path: str | Path | None = None,
-    control_plane_work_dir: str | Path | None = None,
-    control_plane_staged_inputs_path: str | Path | None = None,
-    overwrite_control_plane_input: bool = False,
-    lease_owner: str | None = None,
-    lease_seconds: int = DEFAULT_JOB_LEASE_SECONDS,
-    payload_digest: str | None = None,
-) -> dict[str, Any]:
-    handoff = parse_handoff_payload(payload)
-    digest = payload_digest or payload_sha256(payload)
-    capture_root = _handoff_capture_root(handoff, storage_root=storage_root)
-    prior_retired: dict[str, Any] | None = None
-
-    def retired_terminal() -> dict[str, Any] | None:
-        nonlocal prior_retired
-        # A retired scene answers the messages its retirement receipt proves terminal,
-        # without staging the capture again (claiming would recreate the workspace).
-        try:
-            from .website_scene_workspace_retention import retired_capture_status
-
-            retired = retired_capture_status(storage_root=storage_root, bucket=handoff.bucket,
-                                             scene_id=handoff.scene_id, capture_id=handoff.capture_id)
-            prior_retired = retired
-        except Exception:  # noqa: BLE001 - an unanswerable lookup waits for the next delivery
-            logger.exception("pubsub_handoff.retirement_lookup_failed")
-            return {"schema_version": "v1", "status": "retirement_lookup_failed_retryable",
-                    "queue_disposition": "retryable", "bucket": handoff.bucket, "scene_id": handoff.scene_id,
-                    "capture_id": handoff.capture_id, "capture_root": str(capture_root),
-                    "blockers": ["retirement_lookup_failed"], "alerts": ["retirement_lookup_failed"]}
-        # Answered exactly as the capture's own ledger would: a completed capture, any payload.
-        if retired is None or not (retired.get("covers_every_payload") or digest in retired["payload_sha256s"]):
-            return None
-        logger.info("pubsub_handoff.skipped_retired_terminal",
-                    extra={"scene_id": handoff.scene_id, "capture_id": handoff.capture_id})
-        return {"schema_version": "v1", "status": "skipped_retired_terminal",
-                "queue_disposition": retired["queue_disposition"], "bucket": handoff.bucket,
-                "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
-                "capture_root": str(capture_root), "retirement_receipt": retired["receipt"]}
-
-    capture_present = capture_root.exists()
-    if not capture_present and (skipped := retired_terminal()) is not None:
-        return skipped
-    owner = lease_owner or _lease_owner()
-    try:
-        claim_status, ledger = _claim_job_lease(
-            capture_root,
-            scene_id=handoff.scene_id,
-            capture_id=handoff.capture_id,
-            owner=owner,
-            lease_seconds=lease_seconds,
-            payload_sha256=digest,
-            # A capture that was here a moment ago and is gone now was retired: never recreate it.
-            create_capture_root=not capture_present,
-            retired_ended_payload_sha256s=(prior_retired["payload_sha256s"]
-                                           if prior_retired is not None and
-                                           prior_retired["status"] == TERMINAL_AUTHORITY_STATUS else ()),
-        )
-    except HandoffCaptureRetired:
-        # Retirement removed the workspace while this claim waited for its lock. Acknowledge
-        # what the receipt proves terminal; anything else waits for its next delivery.
-        return retired_terminal() or {
-            "schema_version": "v1", "status": "capture_retired_retryable", "queue_disposition": "retryable",
-            "bucket": handoff.bucket, "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
-            "capture_root": str(capture_root), "blockers": ["handoff_capture_retired_while_claiming"],
-        }
-    if claim_status == "terminal":
-        _repair_terminal_receipt(capture_root, handoff=handoff)
-        logger.info(
-            "pubsub_handoff.skipped_terminal_authority_ended",
-            extra={
-                "scene_id": handoff.scene_id,
-                "capture_id": handoff.capture_id,
-                "terminal_code": ledger.get("terminal_code"),
-            },
-        )
-        return _terminal_authority_result(
-            handoff,
-            capture_root=capture_root,
-            ledger=ledger,
-            status="skipped_terminal_authority_ended",
-        )
-    if claim_status == "completed":
-        commit = _output_commit(
-            capture_root,
-            scene_id=handoff.scene_id,
-            capture_id=handoff.capture_id,
-        )
-        if not commit:
-            return {
-                "schema_version": "v1",
-                "status": "completed_output_commit_missing_retryable",
-                "queue_disposition": "retryable",
-                "bucket": handoff.bucket,
-                "scene_id": handoff.scene_id,
-                "capture_id": handoff.capture_id,
-                "capture_root": str(capture_root),
-                "job_ledger": ledger,
-                "blockers": ["completed_handoff_output_commit_missing_or_invalid"],
-            }
-        logger.info(
-            "pubsub_handoff.skipped_already_processed",
-            extra={
-                "scene_id": handoff.scene_id,
-                "capture_id": handoff.capture_id,
-            },
-        )
-        return {
-            "schema_version": "v1",
-            "status": "skipped_already_processed",
-            "bucket": handoff.bucket,
-            "scene_id": handoff.scene_id,
-            "capture_id": handoff.capture_id,
-            "capture_root": str(capture_root),
-            "queue_disposition": "terminal_success",
-            "output_commit": commit,
-            "job_ledger": ledger,
-        }
-    if claim_status == "active":
-        return {
-            "schema_version": "v1",
-            "status": "lease_active_retryable",
-            "queue_disposition": "retryable",
-            "bucket": handoff.bucket,
-            "scene_id": handoff.scene_id,
-            "capture_id": handoff.capture_id,
-            "capture_root": str(capture_root),
-            "job_ledger": ledger,
-            "blockers": ["handoff_job_active_lease"],
-        }
-    if claim_status == "corrupt":
-        return {
-            "schema_version": "v1",
-            "status": "job_ledger_corrupt_retryable",
-            "queue_disposition": "retryable",
-            "bucket": handoff.bucket,
-            "scene_id": handoff.scene_id,
-            "capture_id": handoff.capture_id,
-            "capture_root": str(capture_root),
-            "job_ledger": ledger,
-            "blockers": ["handoff_job_ledger_corrupt"],
-        }
-
-    attempt_count = int(ledger.get("attempt_count") or 0)
-    previous_history = _attempt_history(ledger)
-    job_started_at = _string(ledger.get("started_at")) or utc_now_iso()
-    attempt_started_at = _string(ledger.get("last_attempt_started_at")) or utc_now_iso()
-    token = _string(ledger.get("lease_token"))
-    recovered_commit = _output_commit(
-        capture_root,
-        scene_id=handoff.scene_id,
-        capture_id=handoff.capture_id,
-    )
-    if ledger.get("recovered_expired_lease") is True and recovered_commit:
-        recovered_at = utc_now_iso()
-        recovered_record = {
-            "attempt_number": attempt_count,
-            "status": "completed_from_output_commit",
-            "stage": "output_commit_recovery",
-            "started_at": attempt_started_at,
-            "completed_at": recovered_at,
-            "result_sha256": recovered_commit.get("result_sha256"),
-        }
-        completed_ledger = _finish_job_lease(
-            capture_root,
-            owner=owner,
-            token=token,
-            update={
-                "status": "completed",
-                "updated_at": recovered_at,
-                "completed_at": recovered_at,
-                "output_commit_status": "committed",
-                "output_commit_path": JOB_OUTPUT_COMMIT_FILENAME,
-                "attempt_history": [*previous_history, recovered_record],
-            },
-        )
-        return {
-            "schema_version": "v1",
-            "status": "skipped_committed_output_recovered",
-            "queue_disposition": "terminal_success",
-            "bucket": handoff.bucket,
-            "scene_id": handoff.scene_id,
-            "capture_id": handoff.capture_id,
-            "capture_root": str(capture_root),
-            "output_commit": recovered_commit,
-            "job_ledger": completed_ledger,
-        }
-    control_plane_staging: dict[str, Any] | None = None
-    reconstruction_enqueue: dict[str, Any] | None = None
-    failure_stage = "stage_handoff_capture"
-    try:
-        with _JobLeaseHeartbeat(
-            capture_root=capture_root,
-            owner=owner,
-            token=token,
-            lease_seconds=lease_seconds,
-        ):
-            staged_capture_root = stage_handoff_capture(
-                handoff=handoff,
-                storage_root=storage_root,
-                storage_client=storage_client,
-            )
-            # Website uploads need scene preparation before a robot team can
-            # submit a run. They cannot enter the legacy device-job converter,
-            # which requires an already-built dataset and a capture-app job ID.
-            raw_manifest = _read_optional_json_object(staged_capture_root / "raw" / "manifest.json")
-            website_capture = is_website_capture_manifest(raw_manifest)
-            run_kwargs: dict[str, Any] = {
-                "capture_root": str(staged_capture_root),
-                "provider": provider,
-                "run_evaluation_prep": run_evaluation_prep,
-                "resume_completed_stages": True,
-            }
-            if website_capture:
-                # The website preparation callback owns native construction;
-                # device evaluation/simulation lanes are a different intake.
-                run_kwargs.update(pipeline_lane="qualification", run_evaluation_prep=False)
-            robot_eval_job_request = _resolve_staged_handoff_path(
-                handoff.robot_eval_job_request_uri,
-                handoff=handoff,
-                capture_root=staged_capture_root,
-                storage_root=storage_root,
-                expect_directory=False,
-            )
-            robot_eval_request_inbox = _resolve_staged_handoff_path(
-                handoff.robot_eval_request_inbox_uri,
-                handoff=handoff,
-                capture_root=staged_capture_root,
-                storage_root=storage_root,
-                expect_directory=True,
-            )
-            if robot_eval_job_request is not None:
-                run_kwargs["robot_eval_job_request"] = str(robot_eval_job_request)
-            if robot_eval_request_inbox is not None:
-                run_kwargs["robot_eval_request_inbox"] = str(robot_eval_request_inbox)
-            if robot_eval_job_request is not None or robot_eval_request_inbox is not None:
-                run_kwargs.update(
-                    {
-                        "robot_eval_job_id": handoff.robot_eval_job_id,
-                        "robot_eval_provisioner": handoff.robot_eval_provisioner
-                        or "fixture_local",
-                        "robot_eval_simulator": handoff.robot_eval_simulator
-                        or "fixture",
-                        "robot_eval_evaluation_substrate": handoff.robot_eval_evaluation_substrate,
-                        "robot_eval_budget_usd": handoff.robot_eval_budget_usd,
-                        "allow_robot_eval_gpu_provisioning": False,
-                        "allow_robot_eval_simulator_execution": False,
-                    }
-                )
-            if stage_control_plane and not website_capture:
-                failure_stage = "control_plane_staging"
-                if control_plane_manifest_path is None:
-                    raise PipelineError(
-                        "Pub/Sub handoff control-plane staging requires a manifest path."
-                    )
-                control_plane_staging = _stage_control_plane_input(
-                    handoff=handoff,
-                    capture_root=staged_capture_root,
-                    manifest_path=control_plane_manifest_path,
-                    work_dir=control_plane_work_dir,
-                    staged_inputs_path=control_plane_staged_inputs_path,
-                    overwrite=overwrite_control_plane_input,
-                )
-                failure_stage = "reconstruction_launch_enqueue"
-                reconstruction_enqueue = _enqueue_capture_reconstruction_if_configured(
-                    handoff=handoff,
-                    capture_root=staged_capture_root,
-                )
-            failure_stage = "run_e2e"
-            result = (
-                run_e2e(**run_kwargs)
-                if run_e2e_enabled or website_capture
-                else {
-                    "status": "skipped",
-                    "reason": "run_e2e_disabled_after_control_plane_staging",
-                }
-            )
-    except Exception as exc:
-        if isinstance(exc, HandoffStagingCapacityError):
-            return finish_staging_capacity_blocked(
-                capture_root=capture_root, handoff=handoff, owner=owner, token=token,
-                attempt_count=attempt_count, attempt_started_at=attempt_started_at,
-                previous_history=previous_history, failure_stage=failure_stage,
-                finish_job_lease=_finish_job_lease,
-            )
-        ending = authority_ending(exc)
-        if ending is not None:
-            # Retrying cannot revive an ended authority. Finish the job as
-            # terminal and return, so the message is acknowledged.
-            operation, code = ending
-            return _finish_terminal_authority_ending(
-                capture_root,
-                handoff=handoff,
-                owner=owner,
-                token=token,
-                operation=operation,
-                code=code,
-                error=exc,
-                stage=failure_stage,
-                attempt_count=attempt_count,
-                attempt_started_at=attempt_started_at,
-                previous_history=previous_history,
-                payload_digest=digest,
-            )
-        failed_at = utc_now_iso()
-        failure_record = {
-            "attempt_number": attempt_count,
-            "status": "failed_retryable",
-            "stage": failure_stage,
-            "started_at": attempt_started_at,
-            "failed_at": failed_at,
-            "error_type": type(exc).__name__,
-            "error": str(exc),
-        }
-        _finish_job_lease(
-            capture_root,
-            owner=owner,
-            token=token,
-            update={
-                "status": "failed_retryable",
-                "updated_at": failed_at,
-                "last_failed_at": failed_at,
-                "last_error_type": type(exc).__name__,
-                "last_error": str(exc),
-                "attempt_history": [*previous_history, failure_record],
-            },
-        )
-        raise
-
-    completed_at = utc_now_iso()
-    control_plane_staging_status = (
-        str(control_plane_staging.get("status") or "") or None
-        if control_plane_staging
-        else None
-    )
-    control_plane_staging_path = (
-        str((control_plane_staging.get("webapp_staging") or {}).get("target_path") or "")
-        or None
-        if control_plane_staging
-        else None
-    )
-    disposition, result_blockers = _handoff_result_disposition(result)
-    terminal_success = disposition == "terminal_success"
-    output_commit = (
-        _write_output_commit(
-            capture_root,
-            scene_id=handoff.scene_id,
-            capture_id=handoff.capture_id,
-            attempt_count=attempt_count,
-            result=result,
-        )
-        if terminal_success
-        else None
-    )
-    completion_record = {
-        "attempt_number": attempt_count,
-        "status": "completed" if terminal_success else "retryable_blocked",
-        "stage": "run_e2e",
-        "started_at": attempt_started_at,
-        "completed_at": completed_at,
-        "run_e2e_status": str(result.get("status") or "") or None,
-        "queue_disposition": disposition,
-        "output_commit_status": "committed" if output_commit else None,
-        "output_commit_path": JOB_OUTPUT_COMMIT_FILENAME if output_commit else None,
-        "blockers": result_blockers,
-    }
-    if control_plane_staging:
-        completion_record.update(
-            {
-                "control_plane_staging_status": control_plane_staging_status,
-                "control_plane_staging_path": control_plane_staging_path,
-            }
-        )
-    ledger_update = {
-        "schema_version": JOB_LEDGER_SCHEMA_VERSION,
-        "status": "completed" if terminal_success else "retryable_blocked",
-        "scene_id": handoff.scene_id,
-        "capture_id": handoff.capture_id,
-        "attempt_count": attempt_count,
-        "started_at": job_started_at,
-        "updated_at": completed_at,
-        "last_attempt_started_at": attempt_started_at,
-        "completed_at": completed_at,
-        "run_e2e_status": str(result.get("status") or "") or None,
-        "last_error_type": None if terminal_success else "RetryableBlockedResult",
-        "last_error": None if terminal_success else ",".join(result_blockers),
-        "retry_blockers": result_blockers,
-        "queue_disposition": disposition,
-        "output_commit_status": "committed" if output_commit else None,
-        "output_commit_path": JOB_OUTPUT_COMMIT_FILENAME if output_commit else None,
-        "output_result_sha256": output_commit.get("result_sha256")
-        if output_commit
-        else None,
-        "attempt_history": [*previous_history, completion_record],
-    }
-    if control_plane_staging:
-        ledger_update.update(
-            {
-                "control_plane_staging_status": control_plane_staging_status,
-                "control_plane_staging_path": control_plane_staging_path,
-            }
-        )
-    _finish_job_lease(
-        capture_root,
-        owner=owner,
-        token=token,
-        update=ledger_update,
-    )
-    return {
-        "schema_version": "v1",
-        "status": "processed" if terminal_success else "retryable_blocked",
-        "queue_disposition": "terminal_success" if terminal_success else "retryable",
-        "blockers": result_blockers,
-        "bucket": handoff.bucket,
-        "scene_id": handoff.scene_id,
-        "capture_id": handoff.capture_id,
-        "capture_root": str(capture_root),
-        "run_e2e": result,
-        "control_plane_staging": control_plane_staging,
-        "reconstruction_enqueue": reconstruction_enqueue,
-        "output_commit": output_commit,
-    }
+@scene_participant('storage_root')
+def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None) -> dict[str, Any]:
+    import sys
+    from .pubsub_handoff_scene_operations import _process_handoff_payload_body
+    return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest)
 
 
 class _AckDeadlineHeartbeat:
@@ -2247,164 +1742,11 @@ def _canonical_subscription_resource(subscription: str) -> str:
     return f"projects/{project}/subscriptions/{value}"
 
 
-def pull_and_process(
-    *,
-    subscription: str,
-    storage_root: Path,
-    provider: str,
-    max_messages: int,
-    run_evaluation_prep: bool = True,
-    run_e2e_enabled: bool = True,
-    stage_control_plane: bool = False,
-    control_plane_manifest_path: str | Path | None = None,
-    control_plane_work_dir: str | Path | None = None,
-    control_plane_staged_inputs_path: str | Path | None = None,
-    overwrite_control_plane_input: bool = False,
-    ack_deadline_seconds: int = DEFAULT_ACK_DEADLINE_SECONDS,
-    max_delivery_attempts: int = DEFAULT_MAX_DELIVERY_ATTEMPTS,
-) -> int:
-    from google.cloud import pubsub_v1
-
-    subscriber = pubsub_v1.SubscriberClient()
-    subscription_resource = _canonical_subscription_resource(subscription)
-    acknowledged = 0
-
-    def pulled_one_at_a_time() -> Iterator[Any]:
-        # A message's ack deadline runs from the moment it is pulled. Pulled in
-        # a batch, the later messages would wait out the earlier ones' runs and
-        # could reach their turn with expired ack IDs. So pull one message only
-        # when the previous one is finished, and stop at an empty pull.
-        for _ in range(max(1, max_messages)):
-            response = subscriber.pull(
-                request={"subscription": subscription_resource, "max_messages": 1},
-                timeout=30,
-            )
-            received_messages = list(response.received_messages)
-            if not received_messages:
-                return
-            yield from received_messages
-
-    def acknowledge(ack_id: str) -> None:
-        # One call per message, the moment it finishes, then its receipt: the
-        # receipt must never claim an acknowledgement Pub/Sub did not accept.
-        subscriber.acknowledge(request={"subscription": subscription_resource, "ack_ids": [ack_id]})
-
-    for received in pulled_one_at_a_time():
-        message = received.message
-        logger.info(
-            "pubsub_handoff.received",
-            extra={
-                "message_id": message.message_id,
-                "attributes": dict(message.attributes),
-            },
-        )
-        # Contract-invalid payloads are permanent and can be acknowledged after
-        # typed logging. Retryable work is never acknowledged: defer_retry()
-        # extends its ack deadline so Pub/Sub redelivers it later, and the
-        # subscription's dead-letter policy owns exhausted delivery routing.
-        try:
-            parse_handoff_payload(message.data)
-        except PipelineError as exc:
-            evidence_path = _write_delivery_evidence(
-                storage_root=storage_root,
-                message=message,
-                received=received,
-                disposition="permanent_invalid",
-                blockers=[str(exc)],
-            )
-            logger.error(
-                "pubsub_handoff.permanent_invalid",
-                extra={
-                    "message_id": message.message_id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "queue_disposition": "permanent_invalid_ack",
-                    "failure_evidence_path": str(evidence_path),
-                },
-            )
-            acknowledge(received.ack_id)
-            acknowledged += 1
-            continue
-        digest = payload_sha256(message.data)
-        heartbeat = _AckDeadlineHeartbeat(
-            subscriber=subscriber,
-            subscription=subscription_resource,
-            ack_id=received.ack_id,
-            ack_deadline_seconds=ack_deadline_seconds,
-        )
-        try:
-            with heartbeat:
-                result = process_handoff_payload(
-                    message.data,
-                    storage_root=storage_root,
-                    provider=provider,
-                    run_evaluation_prep=run_evaluation_prep,
-                    run_e2e_enabled=run_e2e_enabled,
-                    stage_control_plane=stage_control_plane,
-                    control_plane_manifest_path=control_plane_manifest_path,
-                    control_plane_work_dir=control_plane_work_dir,
-                    control_plane_staged_inputs_path=control_plane_staged_inputs_path,
-                    overwrite_control_plane_input=overwrite_control_plane_input,
-                    payload_digest=digest,
-                )
-        except Exception:
-            delivery_attempt = getattr(received, "delivery_attempt", None)
-            if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:
-                _write_delivery_evidence(
-                    storage_root=storage_root,
-                    message=message,
-                    received=received,
-                    disposition="retry_exhausted_pending_pubsub_dlq",
-                    blockers=["handoff_processing_exception"],
-                )
-            logger.exception(
-                "pubsub_handoff.processing_failed",
-                extra={
-                    "message_id": message.message_id,
-                    "queue_disposition": "retryable_deferred",
-                    "retry_defer_seconds": RETRY_DEFER_SECONDS,
-                    "delivery_attempt": getattr(received, "delivery_attempt", None),
-                    "max_delivery_attempts": max_delivery_attempts,
-                },
-            )
-            heartbeat.defer_retry()
-            continue
-        if result.get("queue_disposition") == "retryable" or result.get(
-            "status"
-        ) in _JOB_RETRYABLE_STATUSES:
-            delivery_attempt = getattr(received, "delivery_attempt", None)
-            if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:
-                _write_delivery_evidence(
-                    storage_root=storage_root,
-                    message=message,
-                    received=received,
-                    disposition="retry_exhausted_pending_pubsub_dlq",
-                    blockers=[str(item) for item in result.get("blockers") or []],
-                )
-            logger.warning(
-                "pubsub_handoff.retryable_result",
-                extra={
-                    "message_id": message.message_id,
-                    "status": result.get("status"),
-                    "blockers": result.get("blockers") or [],
-                    "delivery_attempt": getattr(received, "delivery_attempt", None),
-                    "max_delivery_attempts": max_delivery_attempts,
-                    "dead_letter_policy_owns_exhausted_delivery": True,
-                    "retry_defer_seconds": RETRY_DEFER_SECONDS,
-                },
-            )
-            heartbeat.defer_retry()
-            continue
-        acknowledge(received.ack_id)
-        acknowledged += 1
-        _record_acknowledgement(
-            result,
-            subscription=subscription_resource,
-            message=message,
-            received=received,
-            payload_digest=digest,
-        )
-    return acknowledged
+@scene_participant('storage_root')
+def pull_and_process(*, subscription: str, storage_root: Path, provider: str, max_messages: int, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, ack_deadline_seconds: int=DEFAULT_ACK_DEADLINE_SECONDS, max_delivery_attempts: int=DEFAULT_MAX_DELIVERY_ATTEMPTS) -> int:
+    import sys
+    from .pubsub_handoff_scene_operations import _pull_and_process_body
+    return _pull_and_process_body(sys.modules[__name__], subscription=subscription, storage_root=storage_root, provider=provider, max_messages=max_messages, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, ack_deadline_seconds=ack_deadline_seconds, max_delivery_attempts=max_delivery_attempts)
 
 
 def _record_acknowledgement(

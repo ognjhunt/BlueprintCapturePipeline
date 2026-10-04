@@ -104,7 +104,7 @@ from .control_plane_storage_references import (  # noqa: F401 - re-exported
     settlement_reference_text as _settlement_reference_text,
     settlement_reopens_beyond_retained_receipts,
 )
-from .control_plane_storage_roots import require_storage_class
+from .control_plane_storage_roots import require_storage_class, DEFAULT_MINIMUM_AGE_SECONDS
 from .control_plane_pin_proofs import activation_queue_root_of, launch_queue_root_of, preparation_queue_root_of
 from .control_plane_terminal_cache_pins import extended_pin_proofs_setting, reconcile_terminal_cache_pins
 from .decision_evidence_contracts import canonical_digest
@@ -119,7 +119,6 @@ DERIVED_RECEIPT_SCHEMA_VERSION = "control_plane_derived_directory_receipt.v1"
 DERIVED_ACK = "retire-terminal-derived-directories"
 RUN_SCHEMA_VERSION = "control_plane_storage_gc_run.v1"
 RUN_ACK = "reclaim-control-plane-storage"
-DEFAULT_MINIMUM_AGE_SECONDS = 24 * 60 * 60
 # Failed and superseded policy-canary builds can create 10+ GiB of fully
 # reproducible prepared/compiled caches in a single attempt.  Six hours keeps
 # a debugging window while ensuring the six-hourly timer reclaims terminal,
@@ -297,32 +296,47 @@ def apply_gc_manifest(
         )
     removed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    from .task_evaluation_scene_retirement_access import SceneRetirementAccessError
+    from .task_evaluation_scene_retirement_cache import remove_unused_content_for_gc
     for row in manifest.get("candidates") or []:
         root = Path(str(row.get("root") or ""))
         digest = str(row.get("digest") or "").removeprefix("sha256:")
         path = root / digest
         try:
-            stat = path.lstat()
-            safe = (
-                root.name == "sha256"
-                and path.parent == root
-                and _DIGEST_NAME.fullmatch(path.name) is not None
-                and not path.is_symlink()
-                and path.is_file()
-                and stat.st_nlink == 1
-                and stat.st_size == row.get("size_bytes")
-                and _sha256(path) == digest
+            removed_size = remove_unused_content_for_gc(
+                path,digest=digest,size_bytes=row.get("size_bytes"),
+                minimum_age_seconds=manifest["minimum_age_seconds"],
             )
-            if not safe:
-                raise OSError("candidate changed after dry run")
-            path.unlink()
+            if removed_size is None:
+                stat = path.lstat()
+                safe = (
+                    root.name == "sha256"
+                    and path.parent == root
+                    and _DIGEST_NAME.fullmatch(path.name) is not None
+                    and not path.is_symlink()
+                    and path.is_file()
+                    and stat.st_nlink == 1
+                    and stat.st_size == row.get("size_bytes")
+                    and _sha256(path) == digest
+                )
+                if not safe:
+                    raise OSError("candidate changed after dry run")
+                path.unlink()
+                removed_size = stat.st_size
+        except SceneRetirementAccessError as exc:
+            reason = (
+                "logical_reference_unproven"
+                if str(exc) == "scene_retirement_cache_reference_closure_unproven"
+                else "candidate_changed"
+            )
+            skipped.append({"digest": "sha256:" + digest, "reason": reason})
         except OSError:
             skipped.append(
                 {"digest": "sha256:" + digest, "reason": "candidate_changed"}
             )
         else:
             removed.append(
-                {"digest": "sha256:" + digest, "size_bytes": stat.st_size}
+                {"digest": "sha256:" + digest, "size_bytes": removed_size}
             )
     result: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -1340,6 +1354,13 @@ def run_storage_gc(
                                   replay_cache_shared_scratch_alert, extended_pin_proofs_alert) if alert]
     if alerts:
         report["alerts"] = alerts
+    def lifecycle_phase() -> Any:
+        from .task_evaluation_scene_retirement_cli import run_gc_phase
+        # Use the live clock for consent expiry throughout the action, never the
+        # tick's frozen observation. The fixed protected selector grants no
+        # authority without the same native engine's current proofs.
+        return run_gc_phase(apply=apply, now=now)
+    _isolated(report, "scene_lifecycle", lifecycle_phase)
     if result_residue_offload_alert:
         report.setdefault("alerts", []).append(result_residue_offload_alert)
     queue_present, _absent_queue_roots = _existing(queue_roots)

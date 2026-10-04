@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 import uuid
 
 
-def submit_owned_preparation(*, request_path, config, intent_reference):
+def submit_owned_preparation(*, request_path, config, intent_reference,
+                             attempt_reference=None, factory_reference=None):
     """Continue an already-authenticated owner intent on the same control plane.
 
     The queue operation is preparation-only. It neither creates paid authority
@@ -22,6 +23,11 @@ def submit_owned_preparation(*, request_path, config, intent_reference):
     require(request.get("scene_intent_digest") == intent["intent_digest"]
             and request["task"]["identity"]["id"] == intent["request"]["task"]["task_id"]
             and request["run_mode"] == "scene_configuration", "owned_preparation_scope_mismatch")
+    from .task_evaluation_scene_retirement_cache import publish_preparation_storage_authority
+    from .task_evaluation_public_scene_attempt_factory import record
+    publish_preparation_storage_authority(queue_root=safe_path(config["preparation_queue_root"]),
+        request=request,intent_raw_ref=intent_reference,attempt_raw_ref=attempt_reference,
+        factory_raw_ref=factory_reference,submission_request_raw_ref=record(request_path))
     receipt = stage_launch_preparation_request(value=request,
         queue_root=safe_path(config["preparation_queue_root"]),
         submitted_by="scene-progression:" + intent["intent_id"])

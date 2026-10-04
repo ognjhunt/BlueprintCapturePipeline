@@ -17,6 +17,48 @@ from tests.test_scene_inventory_history import api, event, fixture as history_fi
 COMMIT, DIGEST = "a" * 40, "sha256:" + "b" * 64
 
 
+def test_recipe_stage_cache_candidate_requires_same_selected_result_and_typed_parent():
+    from blueprint_pipeline.task_evaluation_scene_inventory_seed import _result_references
+    roots = {'preparation_input_root': '/inputs', 'content_store_root': '/cache'}
+    recipe = {'uri': 's3://inputs/recipe', 'digest': 'sha256:' + 'a' * 64, 'size_bytes': 12}
+    stage = {'uri': 's3://inputs/stage', 'digest': 'sha256:' + 'c' * 64, 'size_bytes': 13}
+    parent_row = {'contract_path': 'construction.recipe', **recipe,
+                  'materialized_path': '/inputs/prep-1/' + 'a' * 64,
+                  'content_addressed_reuse': False, 'full_byte_service_account_readback_passed': True}
+    stage_row = {'contract_path': 'construction.recipe.stage_sequence.0.configuration', **stage,
+                 'materialized_path': '/inputs/prep-1/construction-stage-configurations/' + 'c' * 64,
+                 'content_addressed_reuse': False, 'full_byte_service_account_readback_passed': True}
+    provenance = {'role': 'preparation_results', 'path': '/queue/results/prep-1.json',
+                  'sha256': 'sha256:' + 'e' * 64, 'size_bytes': 1}
+
+    def run(*, typed=True, readback=True, stage_readback=True, stage_path=True):
+        parent = {**parent_row, 'full_byte_service_account_readback_passed': readback}
+        child = {**stage_row, 'full_byte_service_account_readback_passed': stage_readback}
+        if not stage_path:
+            child['materialized_path'] = '/inputs/prep-1/unbound/' + 'c' * 64
+        context = {'typed': {'construction.recipe': recipe} if typed else {},
+                   'link': {'preparation_id': 'prep-1', 'request_digest': 'sha256:' + 'f' * 64},
+                   'sources': [provenance]}
+        budget = {'result': 0, 'members': {}, 'edges': {}, 'provenances': {}}
+        members, shared, deferred, reasons = [], {}, [], set()
+        missing = {'count': 0, 'projections': []}
+        _result_references({'references': [parent, child]}, provenance, context, roots,
+                           reasons, members, shared, deferred, budget, True, missing)
+        return shared, deferred, members
+
+    shared, deferred, members = run()
+    assert stage['digest'] in shared
+    assert shared[stage['digest']]['path'] == '/cache/' + 'c' * 64
+    assert any(row['contract_path'] == stage_row['contract_path'] and
+               row['reason'] == 'deferred_parent_reference_proof' for row in deferred)
+    assert any(row['path'] == stage_row['materialized_path'] and
+               row['binding_strength'] == 'recipe_parent_pending' for row in members)
+    assert stage['digest'] not in run(typed=False)[0]
+    assert stage['digest'] not in run(readback=False)[0]
+    assert stage['digest'] not in run(stage_readback=False)[0]
+    assert stage['digest'] not in run(stage_path=False)[0]
+
+
 def fixture(*, activation=False, configuration=False, preparation="prep-1", status="inputs_materialized_awaiting_construction_adapter",
             request_edit=None, result_edit=None, progression_edit=None, activation_edit=None):
     args = history_fixture()

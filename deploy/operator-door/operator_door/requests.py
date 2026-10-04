@@ -59,6 +59,8 @@ _SCOPES = {
     "restore-scene-workspace": "operate",
     "lane-scratch": "operate",
     "owner-census-decision": "operate",
+    "retire-scene": "operate",
+    "restore-scene": "operate",
     "legacy-owner-census": "operate",
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
@@ -141,6 +143,20 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
     required_scope(kind)
+    if kind in ("retire-scene", "restore-scene"):
+        fields = {"kind", "intent_id", "consent_id", "expected_sha256", "expected_size_bytes"}
+        if kind == "retire-scene":
+            fields.add("apply")
+        consent_id, digest, size = (body.get(key) for key in
+                                  ("consent_id", "expected_sha256", "expected_size_bytes"))
+        intent = body.get("intent_id")
+        if (set(body) != fields or not isinstance(intent, str) or not _SCENE_ID.fullmatch(intent)
+                or not isinstance(consent_id, str) or not re.fullmatch("[0-9a-f]{32}", consent_id)
+                or not isinstance(digest, str) or not _LEASE_DIGEST.fullmatch(digest)
+                or type(size) is not int or not 1 <= size <= 512 * 1024
+                or (kind == "retire-scene" and type(body["apply"]) is not bool)):
+            raise RequestRefused("scene_lifecycle_options_invalid")
+        return {key: body[key] for key in fields}
     if kind == "legacy-owner-census":
         if set(body) != {"kind"}:
             raise RequestRefused("legacy_owner_options_invalid")

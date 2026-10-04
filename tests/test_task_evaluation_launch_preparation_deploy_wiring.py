@@ -457,7 +457,7 @@ def test_storage_gc_timer_pair_is_deployed_armed_and_scoped_by_storage_class() -
     service = text("deploy/systemd/blueprint-control-plane-storage-gc.service")
     timer = text("deploy/systemd/blueprint-control-plane-storage-gc.timer")
     assert (
-        f"-m blueprint_pipeline.control_plane_storage_gc run --apply --ack {RUN_ACK}"
+        f"/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py --action-module blueprint_pipeline.control_plane_storage_gc run --apply --ack {RUN_ACK}"
     ) in service
     assert "User=root" in service and "ProtectSystem=strict" in service
     assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE" in service

@@ -254,7 +254,7 @@ def test_completed_upload_reaches_execute_only_dispatch_boundary(tmp_path, monke
     _rehearse_dispatch(tmp_path, monkeypatch, profile)
 
 
-def _preparation_runner(tmp_path, monkeypatch, *, website=False):
+def _preparation_runner(tmp_path, monkeypatch, *, website=False, construction_queue_root=None):
     """Execute the actual no-allocation graph, replacing only external I/O."""
     import hashlib
     import importlib
@@ -291,9 +291,9 @@ def _preparation_runner(tmp_path, monkeypatch, *, website=False):
                 bundle_receipt_path=arg("--scene-configuration-bundle-receipt"),
                 paid_attempt_authority_path=arg("--scene-configuration-attempt-authority"),
                 paid_resource_admission_grant=None, execute=False,
-                scene_construction_queue_root=tmp_path / "construction")
+                scene_construction_queue_root=construction_queue_root or tmp_path / "construction")
             Path(arg("--adapter-output")).write_text(json.dumps(result))
-            assert result["status"] == "dry_run_ready", result
+            assert result["status"] == "dry_run_ready", (result.get("status"), result.get("blockers"))
             return 0
         if argv[1] == "-m":
             name, args = argv[2], argv[3:]

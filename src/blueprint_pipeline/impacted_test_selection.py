@@ -131,6 +131,7 @@ def _matching_tests(
         # file (or, under src, importing this package) counts as coverage.
         tokens = {changed_path}
     module_patterns: list[str] = []
+    module_name = ""
     if changed_path.startswith("src/blueprint_pipeline/") and path.suffix == ".py":
         module = changed_path.removeprefix("src/").removesuffix(".py").replace("/", ".")
         if path.name == "__init__.py":
@@ -156,7 +157,8 @@ def _matching_tests(
         if test_path == "tests/test_impacted_test_selection.py":
             continue
         if (any(token and token in source for token in tokens)
-                or any(re.search(pattern, source) for pattern in module_patterns)):
+                or (module_name in source
+                    and any(re.search(pattern, source) for pattern in module_patterns))):
             candidates.add(test_path)
     return candidates
 

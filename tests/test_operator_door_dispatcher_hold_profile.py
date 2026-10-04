@@ -46,7 +46,7 @@ for action in ("stop", "restart"):
     try: r.validate_request({"kind":"unit","unit":"blueprint-gpu-spend-guard.timer","action":action})
     except r.RequestRefused as e: assert e.code == "unit_safety_critical"
     else: raise AssertionError("baseline safety restriction changed")
-for kind in ("retire-scene-workspace", "restore-scene-workspace", "lane-scratch", "owner-census-decision", "legacy-owner-census", "provider-output-resume"):
+for kind in ("retire-scene-workspace", "restore-scene-workspace", "retire-scene", "restore-scene", "lane-scratch", "owner-census-decision", "legacy-owner-census", "provider-output-resume"):
     for call in (lambda: r.required_scope(kind), lambda: r.validate_request({"kind":kind})):
         try: call()
         except r.RequestRefused as e: assert e.code == "kind_unknown"

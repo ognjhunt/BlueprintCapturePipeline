@@ -316,6 +316,25 @@ def test_guard_does_not_create_a_lock_directory_that_was_never_provisioned(tmp_p
     assert not base.parent.exists()
 
 
+def test_guard_reports_inaccessible_lock_parent_as_blocked(tmp_path, monkeypatch):
+    from blueprint_pipeline.production_runtime_env_guard import _check_paid_launch_lock_slots
+
+    base = tmp_path / "protected-home" / "vast_paid_launch.lock"
+    original = Path.is_dir
+
+    def denied(path):
+        if path == base.parent:
+            raise PermissionError("service sandbox denies this parent")
+        return original(path)
+
+    monkeypatch.setattr(Path, "is_dir", denied)
+    report, blockers = _check_paid_launch_lock_slots(_lock_env(base))
+    assert report["status"] == "unusable_parent"
+    assert report["created_slots"] == []
+    assert blockers == ["paid_launch_lock_parent_unusable:PermissionError"]
+    assert not base.exists()
+
+
 def test_guard_blocks_when_the_running_code_is_not_the_configured_repo(tmp_path):
     """Production regression: a stale PYTHONPATH pinned every service to an old release.
 
