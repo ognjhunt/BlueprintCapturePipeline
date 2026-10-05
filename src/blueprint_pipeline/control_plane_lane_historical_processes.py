@@ -300,12 +300,12 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
             if (info.st_dev, info.st_ino) in identities or os.fsencode(target) in os.fsencode(path):
                 channels.add('fd')
         after_names = scan.names(descriptors, 16384)
-        if after_names != names:
+        descriptor_census_changed = after_names != names
+        if descriptor_census_changed:
             # An observed reference is terminal even when descriptors churn.
             # Otherwise this incomplete observation can only start a fresh
             # full census; unreadable channels and identity changes still refuse.
             _require(not channels, 'process_reference')
-            raise _DescriptorCensusChanged('historical_generation_process_unknown')
     finally:
         os.close(descriptors)
     _require(_process_start(scan.read(directory, 'stat', 16384), pid) == started
@@ -325,6 +325,8 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
         else:
             _require((current_root.st_dev, current_root.st_ino) == observed_root,
                      'process_view_unknown')
+    if descriptor_census_changed:
+        raise _DescriptorCensusChanged('historical_generation_process_unknown')
     return channels
 
 

@@ -249,3 +249,30 @@ def test_new_reference_in_changed_fd_census_is_inspected_on_next_pass(descriptor
         run(descriptor_census)
     assert descriptor_census.inspections == ['1', '2', '1', '2']
     assert descriptor_census.fd_censuses == 4
+
+
+@pytest.mark.parametrize('change', ['start_identity', 'namespace', 'missing_stat'])
+def test_fd_churn_does_not_skip_final_process_identity_or_channel_checks(
+    descriptor_census, monkeypatch, change,
+):
+    read, namespace = processes._Scan.read, processes._namespace
+
+    def current_read(scan, directory, name, cap=1024**2):
+        if name == 'stat' and descriptor_census.fd_censuses == 2:
+            if change == 'missing_stat':
+                raise FileNotFoundError(errno.ENOENT, 'process ended')
+            if change == 'start_identity':
+                return read(scan, directory, name, cap).rsplit(b' ', 1)[0] + b' 124'
+        return read(scan, directory, name, cap)
+
+    def current_namespace(*args, **kwargs):
+        if change == 'namespace' and descriptor_census.fd_censuses == 2:
+            return ('pid:[1]', 'user:[1]', 'mnt:[2]')
+        return namespace(*args, **kwargs)
+
+    monkeypatch.setattr(processes._Scan, 'read', current_read)
+    monkeypatch.setattr(processes, '_namespace', current_namespace)
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(descriptor_census)
+    assert descriptor_census.inspections == ['1', '2']
+    assert descriptor_census.fd_censuses == 2
