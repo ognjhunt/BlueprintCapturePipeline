@@ -116,6 +116,12 @@ class FirestoreLedger:
         control = getattr(self, "leased_control", None) or self.bridge.call("control")
         return control.get("site_universe") if isinstance(control, dict) else None
 
+    def outreach_ready_control(self):
+        # Top-level company control like site_universe; the run start's leased control read is
+        # reused when there is one. Absent or disabled, the run is in shadow mode.
+        control = getattr(self, "leased_control", None) or self.bridge.call("control")
+        return control.get("outreach_ready") if isinstance(control, dict) else None
+
     def site_universe_object(self, pin):
         # Exactly the pinned generation. The bridge checks generation, size and SHA-256 within
         # its own 20 s bound, inside this pipe's 35 s deadline.

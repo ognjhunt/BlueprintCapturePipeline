@@ -737,6 +737,60 @@ for the window (the funnel counts it as `history_rows_untrusted` with
 with in-memory Firestore and a fake object store. No provider, model, session, CRM
 write or send.
 
+## Outreach-ready hypothesis direction
+
+`outreach-ready-direction.py` is the only switch for outreach-ready hypotheses in
+daily QA (ADP-010 partner discovery; owner decision 2026-10-05). Without an enabled
+direction every run is in shadow mode: the create payload, packet, QA input, review
+and publication payloads are byte-identical to a release without the feature, the
+tier is recorded only in `row.outreach_ready_shadow`, and nothing is admitted.
+
+```bash
+RELEASE=/opt/render/project/src/dist/daily-research/release
+COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/outreach-ready-direction.py"
+PYTHONPATH=$RELEASE $COMMAND show
+PYTHONPATH=$RELEASE $COMMAND set --approval-reference REF
+PYTHONPATH=$RELEASE $COMMAND set --approval-reference REF --apply
+PYTHONPATH=$RELEASE $COMMAND disable --apply
+```
+
+- `show` reads control, verifies the pinned object generation and prints what the
+  next run would freeze (`shadow`, `refused` with a code, or `enabled`). It writes
+  nothing.
+- `set` is a dry run without `--apply`. It prints the next direction: version+1,
+  superseding the current SHA-256, with scope `paths` (default `daily_qa`;
+  `daily_qa,site_screen` also names the screen admission once it ships), label
+  `hypothesis`, `--max-rows-per-batch` (1-50, default 50) and
+  `sends_authorized:false`. `--approval-reference` names the owner record and must
+  not be `PENDING`. `--expires-at` is UTC, at most 366 days (default 30 days).
+  `--expect-current SHA|none` pins the transition a dry run showed.
+- `set --apply` writes
+  `gs://blueprint-8c1ca.appspot.com/operations/research/outreach-ready/<sha256>/direction.json`
+  create-only and reads that generation back. It then takes the fenced lease only
+  for the `outreach_ready_set` compare-and-swap, which checks the pinned
+  generation's bytes and the version chain, and reads control back. A concurrent
+  change refuses with `outreach_ready_direction_conflict`. While a run or QA is
+  active it refuses with `outreach_ready_run_active_apply_after_run`;
+  `--during-active-run` overrides this.
+- A run freezes the direction under its lease at the durable intent, and the row
+  can never gain or change that record later. An enabled direction that names
+  `daily_qa` pins lead-verification result v3 for the row and asks QA for
+  `outreach_ready_keys`. An unusable, expired or screen-only direction records
+  `{state: "refused", code}` and the run stays in shadow mode.
+- Admission at the QA decision also needs the live pin. `disable --apply` is the
+  brake: it keeps the pin with `enabled=false` and applies at once, including to a
+  run in progress. A new direction can lower a running row's row limit or remove
+  its path, never widen it. Re-enable with a new `set`.
+- Admitted keys publish only through the row's existing publication path
+  (agent-owned in production), as Sheets rows with Verification `Hypothesis` and
+  Notion entries labelled "Hypothesis, not verified". Nothing authorizes a send.
+- Enable a direction only after the WebApp release that accepts result v3 and
+  `hypotheses` payloads is deployed. An older WebApp refuses every day whose
+  payload contains hypotheses, including that day's verified rows.
+
+The hermetic tests use the real bridge with in-memory Firestore and a fake object
+store. No provider, model, session, CRM write or send.
+
 ## Daily research runtime envelope
 
 The 2026-10-04 owner decision gives each daily research run 60 minutes in total:
@@ -761,6 +815,6 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python \
 ```
 
 `configure` validates the input with the installed release and replaces the
-whole control document except the lease, `cleanup_observation_required` and
-`paid_expansion` and `site_universe`. Never apply a partial document. Read the control back and run
+whole control document except the lease, `cleanup_observation_required`,
+`paid_expansion`, `site_universe` and `outreach_ready`. Never apply a partial document. Read the control back and run
 `preflight` with the same prefix before the next 07:00 run.
