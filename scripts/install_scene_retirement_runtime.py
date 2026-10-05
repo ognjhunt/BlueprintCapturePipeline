@@ -21,6 +21,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -958,7 +959,7 @@ def _sdk_wheel(package, tools):
     return sorted(choices, key=lambda item: (item[0], item[1]['url']))[0][1]
 
 
-def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_checkout=False, ssh=None):
+def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_checkout=False, ssh=None, input_data=None):
     executable = Path('/usr/bin/git')
     parent = _open(executable.parent, directory=True)
     try:
@@ -995,8 +996,17 @@ def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_chec
         environment['GIT_SSH_COMMAND'] = ssh
     _require(type(cap) is int and 0 <= cap <= _MAX_BYTES)
     invocation_deadline = min(deadline, time.monotonic()+30)
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, env=environment, start_new_session=True)
+    # A private, immediately unlinked input file avoids pipe deadlocks while
+    # keeping batch requests bounded. Output still uses the same capped reader.
+    with ExitStack() as inputs:
+        child_input = subprocess.DEVNULL
+        if input_data is not None:
+            _require(type(input_data) is bytes and len(input_data) <= 65536)
+            child_input = inputs.enter_context(tempfile.TemporaryFile())
+            child_input.write(input_data)
+            child_input.seek(0)
+        process = subprocess.Popen(command, stdin=child_input, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=environment, start_new_session=True)
     output, errors = bytearray(), bytearray()
     try:
         with selectors.DefaultSelector() as selector:
@@ -1220,6 +1230,42 @@ def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=Non
         raise ValueError(_ERROR) from exc
 
 
+def _signed_release_blobs(source, items, deadline):
+    """Acquire a small batch; authenticate each bounded blob independently."""
+    _require(0 < len(items) <= 16 and len({name for _, _, name in items}) == len(items))
+    request = b''.join(digest.encode('ascii') + b'\n' for _, digest, _ in items)
+    checked = _sdk_git_command(source, ['cat-file', '--batch-check'], deadline,
+                               cap=len(items) * 80, raw_checkout=True, input_data=request)
+    lines = checked.split(b'\n')
+    _require(len(lines) == len(items) + 1 and lines[-1] == b'')
+    headers, sizes = [], []
+    for (_, digest, name), line in zip(items, lines):
+        fields = line.split(b' ')
+        _require(len(fields) == 3 and fields[:2] == [digest.encode('ascii'), b'blob']
+                 and fields[2].isdigit())
+        size = int(fields[2])
+        limit = 16 * 1024**2 if name == 'uv.lock' else 1024 * 1024
+        _require(0 <= size <= limit and fields[2] == str(size).encode('ascii'))
+        headers.append(line + b'\n')
+        sizes.append(size)
+    cap = sum(len(header) + size + 1 for header, size in zip(headers, sizes))
+    body = _sdk_git_command(source, ['cat-file', '--batch'], deadline,
+                            cap=cap, raw_checkout=True, input_data=request)
+    offset, result = 0, {}
+    for (_, digest, name), header, size in zip(items, headers, sizes):
+        _require(time.monotonic() <= deadline and body[offset:offset+len(header)] == header)
+        offset += len(header)
+        raw = body[offset:offset+size]
+        offset += size
+        _require(len(raw) == size and body[offset:offset+1] == b'\n'
+                 and hashlib.sha1(b'blob ' + str(size).encode() + b'\0' + raw).hexdigest() == digest)
+        offset += 1
+        _require(name not in result)
+        result[name] = raw
+    _require(offset == len(body))
+    return result
+
+
 def _signed_release(source, commit, deadline):
     """Copy only authenticated Git object bytes, never mutable checkout code."""
     _require(type(commit) is str and re.fullmatch('[0-9a-f]{40}', commit))
@@ -1238,7 +1284,11 @@ def _signed_release(source, commit, deadline):
     _record(claim, selected, deadline)
     _mkdir(root)
     total, paths = 0, set()
-    for mode, digest, name in items:
+    for index, (mode, digest, name) in enumerate(items):
+        if index % 16 == 0:
+            missing = [item for item in items[index:index+16]
+                       if not (root / item[2]).exists() and not (root / item[2]).is_symlink()]
+            blobs = _signed_release_blobs(source, missing, deadline) if missing else {}
         _require(name not in paths)
         paths.add(name)
         # The lock is bounded data; source modules retain the tighter cap.
@@ -1250,10 +1300,8 @@ def _signed_release(source, commit, deadline):
             # for every already-retained source file on a bounded retry.
             body, _ = _record_bytes(target, deadline, cap=blob_cap, allow_empty=True)
         else:
-            size = _sdk_git_command(source, ['cat-file', '-s', digest], deadline, cap=32, raw_checkout=True)
-            _require(size.strip().isdigit() and int(size) <= blob_cap)
-            body = _sdk_git_command(source, ['cat-file', 'blob', digest], deadline, cap=int(size), raw_checkout=True)
-            _require(len(body) == int(size))
+            body = blobs[name]
+            _require(len(body) <= blob_cap)
         total += len(body)
         _require(total <= _MAX_BYTES
                  and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
