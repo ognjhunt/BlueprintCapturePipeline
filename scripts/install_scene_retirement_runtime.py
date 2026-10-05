@@ -80,41 +80,61 @@ def _open(path, *, directory, partial=False):
         raise
 
 
+def _read_open_file(fd, path, deadline, *, output=None):
+    """Hash an already no-follow opened leaf and verify its final path binding."""
+    before = os.fstat(fd)
+    digest = hashlib.sha256()
+    count = 0
+    while True:
+        _require(time.monotonic() <= deadline)
+        raw = os.read(fd, 1024 * 1024)
+        if not raw:
+            break
+        count += len(raw)
+        _require(count <= before.st_size <= _MAX_BYTES)
+        digest.update(raw)
+        if output is not None:
+            view = memoryview(raw)
+            while view:
+                written = os.write(output, view)
+                _require(written > 0)
+                view = view[written:]
+    _require(count == before.st_size and _identity(os.fstat(fd)) == _identity(before)
+             and _identity(path.lstat()) == _identity(before))
+    return {'size': count, 'sha256': digest.hexdigest(),
+            'mode': 0o755 if before.st_mode & 0o111 else 0o644}
+
+
 def _read(path, deadline, *, output=None):
     fd = _open(path, directory=False)
     try:
-        before = os.fstat(fd)
-        digest = hashlib.sha256()
-        count = 0
-        while True:
-            _require(time.monotonic() <= deadline)
-            raw = os.read(fd, 1024 * 1024)
-            if not raw:
-                break
-            count += len(raw)
-            _require(count <= before.st_size <= _MAX_BYTES)
-            digest.update(raw)
-            if output is not None:
-                view = memoryview(raw)
-                while view:
-                    written = os.write(output, view)
-                    _require(written > 0)
-                    view = view[written:]
-        _require(count == before.st_size and _identity(os.fstat(fd)) == _identity(before)
-                 and _identity(path.lstat()) == _identity(before))
-        return {'size': count, 'sha256': digest.hexdigest(),
-                'mode': 0o755 if before.st_mode & 0o111 else 0o644}
+        return _read_open_file(fd, path, deadline, output=output)
     finally:
         os.close(fd)
 
 
-def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None):
+def _open_tree_child(parent, name, before, *, directory):
+    """Bind one child to the retained protected parent, without following links."""
+    _protected(before, directory=directory)
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+                 | (os.O_DIRECTORY if directory else 0), dir_fd=parent)
+    try:
+        _require(_identity(os.fstat(fd)) == _identity(before))
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None, _directory_fd=None):
     _require(depth <= 32 and time.monotonic() <= deadline)
     # Carry one aggregate through descendants. Re-summing every previous
     # SDK leaf on each insertion made final verification quadratic in files.
     total = [sum(row['size'] for row in rows.values())] if _total is None else _total
     _require(total[0] <= _MAX_BYTES and time.monotonic() <= deadline)
-    fd = _open(path, directory=True)
+    # Retain the authenticated descriptor chain through the walk. Reopening
+    # every ancestry component for each SDK leaf dominated large-tree scans.
+    fd = _open(path, directory=True) if _directory_fd is None else _directory_fd
     try:
         before = os.fstat(fd)
         names = sorted(os.listdir(fd))
@@ -125,20 +145,38 @@ def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None):
             child = path / name
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
-                _protected(info, directory=True)
-                _tree(child, prefix / name, rows, sources, deadline, depth + 1, _total=total)
+                child_fd = _open_tree_child(fd, name, info, directory=True)
+                try:
+                    _tree(child, prefix / name, rows, sources, deadline, depth + 1,
+                          _total=total, _directory_fd=child_fd)
+                finally:
+                    os.close(child_fd)
             else:
                 _require(len(rows) < _MAX_FILES)
                 key = str(prefix / name)
-                row = _read(child, deadline)
+                leaf_fd = _open_tree_child(fd, name, info, directory=False)
+                try:
+                    row = _read_open_file(leaf_fd, child, deadline)
+                finally:
+                    os.close(leaf_fd)
                 total[0] += row['size'] - rows.get(key, {}).get('size', 0)
                 rows[key] = row
                 sources[key] = child
                 _require(total[0] <= _MAX_BYTES)
         _require(_identity(os.fstat(fd)) == _identity(before)
                  and _identity(path.lstat()) == _identity(before))
+        if depth == 0:
+            # Reprove the complete ancestry after the walk. A renamed root,
+            # replaced ancestor, symlink alias or newly writable ancestry may
+            # not make descriptor-bound bytes into an accepted path snapshot.
+            current = _open(path, directory=True)
+            try:
+                _require(_identity(os.fstat(current)) == _identity(before))
+            finally:
+                os.close(current)
     finally:
-        os.close(fd)
+        if _directory_fd is None:
+            os.close(fd)
 
 
 def _nearest(path):
