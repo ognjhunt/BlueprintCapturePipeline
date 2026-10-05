@@ -180,8 +180,9 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         import base64
         import hashlib
 
-        from tests.test_daily_research_site_universe import build_export, pin_for, site
-        raw = build_export([site(number) for number in range(1, 10)])
+        from tests.test_daily_research_site_universe import build_export, pin_for, site, stored_gzip
+        # Stored blocks keep the export bytes, and so every digest after them, the same on macOS and Linux.
+        raw = build_export([site(number) for number in range(1, 10)], compress=stored_gzip)
         stored = bridge.call("site_universe_object_put", sha256=hashlib.sha256(raw).hexdigest(),
                              bytes=base64.b64encode(raw).decode("ascii"))
         with ledger.lock():
@@ -1381,14 +1382,18 @@ def test_shadow_mode_matches_main_in_every_flow_row_status_store_and_payload(tmp
     document = json.loads(SHADOW_IDENTITY.read_text())
     assert document["fixture_only"] is True and len(document["source_commit"]) == 40
     assert set(document["flows"]) == set(IDENTITY_FLOWS)
+    mismatched = {}
     for name, (kwargs, agent) in IDENTITY_FLOWS.items():
         tmp = tmp_path / name
         tmp.mkdir()
         record = identity_record(tmp, kwargs, agent, variant)
-        assert identity_digests(record, tmp) == document["flows"][name], name
+        got, expected = identity_digests(record, tmp), document["flows"][name]
+        if got != expected:
+            mismatched[name] = sorted(key for key in got.keys() | expected.keys() if got.get(key) != expected.get(key))
         shadow = [path for path in record["db"] if path.endswith(DAY + "-outreach-ready-shadow.json")]
         assert len(shadow) == (record["state"] == "completed"), name
         assert "outreach_ready" not in record["row"] and "outreach_ready" not in record["status"], name
+    assert not mismatched
 
 
 def retain_page(ledger, url=PAGE_URL, text=PAGE_TEXT, cid="read_fixture_page", phase="research"):

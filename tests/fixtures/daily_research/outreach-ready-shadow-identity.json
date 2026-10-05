@@ -1,5 +1,5 @@
 {
-  "description": "Synthetic shadow-mode identity: per-artifact SHA-256 digests (identity_digests in tests/test_daily_research_consumer.py) of five end-to-end flows run on main before the outreach-ready tier existed. Shadow mode (direction absent, disabled or naming only site_screen) must reproduce every value. Never real research data.",
+  "description": "Synthetic shadow-mode identity: per-artifact SHA-256 digests (identity_digests in tests/test_daily_research_consumer.py) of five end-to-end flows run on main before the outreach-ready tier existed. Shadow mode (direction absent, disabled or naming only site_screen) must reproduce every value. The site-universe export is stored gzip blocks (stored_gzip), so the bytes and every digest are the same on every platform. Never real research data.",
   "fixture_only": true,
   "flows": {
     "agent_publication": {
@@ -43,30 +43,30 @@
     },
     "site_universe_agent": {
       "api_inputs": "607b9a529b65bafccea94d6b4fac17d30f07345d84b78d6255f5733512773020",
-      "api_payloads": "066924c1541b6e0d2059caef35bd2a934b85fe22ead21503da9d94d2f1c9d56f",
+      "api_payloads": "cff8c26a31dccf545f267d990025cc075c0d4442e5606f394c166c6ba9cfc10e",
       "crm_values": "67adbb86fe32b4507d189b6f8cfd676eff0a773ecf3dcb365abf67a105f42bc1",
-      "db": "196787f331ed12743f8183adae327f7503132a85eeedfaf9d78fbb4783c7707d",
-      "files": "1488d2b40ac7b007d5ed7748e9905ac599302e981c092babb3d98407c3040644",
-      "publication_events": "021eb191e4ed32b0fd0a10e1ec62819e2b0183c87d68961c9943f84e80bdfda9",
-      "publication_posts": "c785b44288d0316eaa7dcc0d1f7a10a273d1f5984b1afce3017f05a4da40f28b",
-      "row": "30d9f31fd6c01027d3aca929f93cd6c63e36e017c644ff8f2f32138304a25728",
-      "row_before_qa": "1d696002707743b2e9251d86de0b259fd08acecd6c28093ccfd398c5225cc738",
+      "db": "2fe1cfe6ee2edc9bee0a7857a99fba39ee85a1c13ccb21a1dad92d367daad3da",
+      "files": "bdad219cca0e9d5b448e3d617c033273a4b8cfa04ab01fc031fffe123e2013eb",
+      "publication_events": "e609c05bb57ca2c475d91f8c145efa8b7c4b29359af2953f5118341267b12369",
+      "publication_posts": "653e97c112a2ca35deb737d08e68158b824b9a375b17db13931356fcc0d3d529",
+      "row": "9df789df1d18827413a0f15e5fd5f69d569f830c2848bab68d458420b9b398ae",
+      "row_before_qa": "70573f740c74af116472d3fa8dd747f15bb76a5521710d34bbe2897dc1f408b1",
       "state": "c917c052634bd4957960be61663f0e39b200581afe863335dbb7ea599bf80f7e",
-      "status": "5a5ad4b7fc98e5b408567766fe9bcfa60409fce972f1b1dd378cae422b3130e2"
+      "status": "40e06936fe8d7f6781a2b03731a5534dd0f53a4638af6809d531108574e7d6be"
     },
     "site_universe_legacy_pub": {
       "api_inputs": "607b9a529b65bafccea94d6b4fac17d30f07345d84b78d6255f5733512773020",
-      "api_payloads": "9f5bdd9e53128fbc3fa053d9b13fe140d2b6fdd00e595a3ed3bfa3aa02e0118e",
+      "api_payloads": "cb4592039e7b548db394e39b633de0d829e741fca8c37647b48084212fb0f60e",
       "crm_values": "67adbb86fe32b4507d189b6f8cfd676eff0a773ecf3dcb365abf67a105f42bc1",
-      "db": "a3e098afe5e196b16526d2f7270b31b367fae2de70b6fd9ad26d86fa981e5b51",
-      "files": "478602b3e1959fb7ea468d303a14f5e7bbcf3bc090d37749d5ffa3a7f96033be",
+      "db": "6968b5f638508e2afb989ce16198cbe0f5063b4bde649ff7f8128c244f7b6ed8",
+      "files": "a4fb1e68880b8e1ed23f1c851976319b8ebcb15808407115e7a77e3de6f7441e",
       "publication_events": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
       "publication_posts": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-      "row": "72a62331a08cea67c0b5361dfa50dcb06dc045289533ca3bf1a9fba4eecb17a0",
-      "row_before_qa": "0c9430e80d52fb2fb35715d7decd5e32452aad9ea75ebcd73bdb7757dda1f40d",
+      "row": "872181a24a76294cad4cba30fc2105825f1b24b30f00e26c2df3b01ce178b6de",
+      "row_before_qa": "dcb4b876fc7ddbeb9706c51304964365de70bb1f74d82478ce4a8028f2f5aee0",
       "state": "7093fda846e50b267da144f7b3683ee1dd8838506939f6052b7370dd01fa2ad0",
-      "status": "4d8aa83ca5971c2c5a131750897a71cdf8da7134a1fb2724a197a5aeecc07e3b"
+      "status": "cf86ecb7b5ecf2d573807b1555200665d9a1e91dcb21108ee82fe3946af28964"
     }
   },
-  "source_commit": "dd2d404fbcd914f7c371849d31b8a86fcc8e84a2"
+  "source_commit": "f4f34676d1377cb64c60787dd933c7ef5dd8843e"
 }
