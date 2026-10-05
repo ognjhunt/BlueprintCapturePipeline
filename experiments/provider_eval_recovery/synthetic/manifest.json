@@ -1,0 +1,11 @@
+{
+  "case_count": 20,
+  "controller_model": "gpt-6.1-sol",
+  "kind": "synthetic_development_only",
+  "sha256": {
+    "fixtures/responses.json": "eb0adc218b7ad1e6bbbcef7b16ac29d5d02e18b3a7c3fc608c4b5bff9b285283",
+    "public/inputs.json": "3845e1ef4f6e0d66561916f68b48ed43bd60775c8aa642ca2b0a7d024283fe1e",
+    "reviewer/oracle.json": "7959e82ec6bed90230e18a2d40d3b7f57f097887b3be70e6696106eb0a571055",
+    "reviewer/spec.md": "19046d5186b1be539c8ef14eb2cc3d497dc2dd4ac650c8bf58240c1c869a7aa2"
+  }
+}

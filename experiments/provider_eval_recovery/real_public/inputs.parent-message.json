@@ -1,0 +1,109 @@
+{
+  "version": "blueprint-provider-eval-inputs-v1",
+  "as_of": "2026-09-30",
+  "common_prompt": "Research the question using public sources as of 2026-09-30. Use primary vendor/customer/research/repository sources. Return the exact product/version and bounded task, evidence class and dated provenance, documented availability/geography, material limits/conflicts and remaining unknowns. Distinguish vendor claims, research demos, named pilots/deployments and roadmaps. A specification is not a demonstrated task; an announcement is not current uptime. Do not infer service coverage from headquarters or qualify the hypothetical site. Use null/unknown when unsupported. Do not include individual names, personal contacts, private business data or outreach. Keep the answer at most 600 words, excluding citations.",
+  "cases": [
+    {
+      "id": "BP-EVAL-01",
+      "entity": "Chef Robotics",
+      "question": "For a hypothetical US prepared-meal line, what ingredient-portioning work does Chef Robotics offer, what exact system/module is documented, what utilities and deployment process are required, and what evidence supports commercial use? What remains to qualify this particular line?"
+    },
+    {
+      "id": "BP-EVAL-02",
+      "entity": "Weave Robotics",
+      "question": "For a hypothetical commercial laundry handling towels, garments and bed linen, assess Isaac 0's documented task scope, autonomy/assistance, space/network needs, and availability in California versus Texas. Identify material conflicts and what must be confirmed."
+    },
+    {
+      "id": "BP-EVAL-03",
+      "entity": "Agility Robotics",
+      "question": "What exactly does the GXO/SPANX Digit agreement establish about tote transfer, and what does Agility's current deployment process say about robot generation, safety separation and site qualification? Distinguish historical evidence from current availability."
+    },
+    {
+      "id": "BP-EVAL-04",
+      "entity": "Laundry Robotics",
+      "question": "For a hypothetical US commercial laundry with a standalone towel folder, what work does Robin perform, what dependencies and purchasing route are documented, and what is known versus unknown about US delivery/support and colored towels?"
+    },
+    {
+      "id": "BP-EVAL-05",
+      "entity": "Dexterity",
+      "question": "What robot/software and specific parcel-handling workflow does the July 2026 FedEx Hagerstown announcement describe? Classify the deployment evidence and identify what it does not establish for another warehouse."
+    },
+    {
+      "id": "BP-EVAL-06",
+      "entity": "GrayMatter Robotics",
+      "question": "For a hypothetical high-mix composite-part sanding cell, identify GrayMatter's relevant product and application-specific hardware/software/service. What customer evidence is available, and what must still be validated before treating the cell as suitable?"
+    },
+    {
+      "id": "BP-EVAL-07",
+      "entity": "Pickle Robot",
+      "question": "Reconstruct the Randa Fort Worth unloading evidence: publication versus reported operation dates, handled loads, human involvement and task boundaries. What can this establish about a new Texas site today?"
+    },
+    {
+      "id": "BP-EVAL-08",
+      "entity": "Bear Robotics",
+      "question": "For a hypothetical US restaurant, what does Servi Q do, where is its availability documented, and what do Bear's FAQs say about outdoor use, human work and deployment connectivity? Keep Servi-family products distinct."
+    },
+    {
+      "id": "BP-EVAL-09",
+      "entity": "Tennant Company",
+      "question": "Assess X2 ROVR SCRUB for a hypothetical high-traffic indoor facility with narrow aisles: exact model, claimed dimensions, autonomy/dock functions, orderability evidence and remaining site checks."
+    },
+    {
+      "id": "BP-EVAL-10",
+      "entity": "Figure AI",
+      "question": "At BMW Spartanburg, distinguish Figure 03's sequencing evidence from Figure 02's historical body-shop evidence. What product generation, tasks, dates, customer-reported metrics and current commercial unknowns can be supported?"
+    },
+    {
+      "id": "BP-EVAL-11",
+      "entity": "Apptronik",
+      "question": "What is Apollo 2's documented role at Austin Robot Park and partner sites, how does it differ from Apollo 3's status, and which configuration/uptime claims are supported versus unmeasured?"
+    },
+    {
+      "id": "BP-EVAL-12",
+      "entity": "Boston Dynamics",
+      "question": "Compare Stretch's DHL unloading evidence with Atlas at Hyundai's Savannah-area RMAC. State each task/commercial stage and separate achieved activity, conditional performance and planned fleet quantities."
+    },
+    {
+      "id": "BP-EVAL-13",
+      "entity": "Universal Robots",
+      "question": "For a hypothetical CNC-tending cell, compare the current UR12e-1300 specification with WST Fab's documented UR10e deployment. Identify the arm/controller generation, payload/reach/repeatability and integration work without transferring historical evidence across versions."
+    },
+    {
+      "id": "BP-EVAL-14",
+      "entity": "Brain Corp",
+      "question": "What does BrainOS Clean 2.0 provide on Tennant machines, who supplies the robot/deployment/service route, and what claims on its landing page should not be attached to a floor scrubber without separate evidence?"
+    },
+    {
+      "id": "BP-EVAL-15",
+      "entity": "Physical Intelligence",
+      "question": "Distinguish pi0.7 research, pi0.6 partner operations and the public openpi repository. Which versions/tasks/hardware have evidence, what assistance remains, and what public model access cannot be established?"
+    },
+    {
+      "id": "BP-EVAL-16",
+      "entity": "NVIDIA",
+      "question": "In the July 2026 Isaac GR00T N1.7 workflow, identify the embodiment, demonstrated task, public developer access and required adaptation. What does the example evaluation say about measured reliability?"
+    },
+    {
+      "id": "BP-EVAL-17",
+      "entity": "Intrinsic",
+      "question": "For a hypothetical CNC-tending system, distinguish Intrinsic Core/OMTS from Flowstate and the Trinity Robotics Automation cell. What is public, what hardware evidence exists, and what installation work remains?"
+    },
+    {
+      "id": "BP-EVAL-18",
+      "entity": "World Labs",
+      "question": "As of September 30, 2026, distinguish World Labs Atlas from Marble/World API and from Boston Dynamics Atlas. What is available, what robotics evidence exists, and what does the AMD announcement establish about transaction status?"
+    },
+    {
+      "id": "BP-EVAL-19",
+      "entity": "Google DeepMind",
+      "question": "Compare Gemini Robotics 2 with Gemini Robotics ER 2: access stage, output/control role and documented embodiment evidence. Which parts can a developer access publicly, and what remains necessary for safe physical task execution?"
+    },
+    {
+      "id": "BP-EVAL-20",
+      "entity": "Hugging Face / LeRobot",
+      "question": "For an evaluator considering LeRobot v0.6.0 with SO-ARM101 and an industrial UR arm, identify the learning/evaluation workflow, LeLab GUI coverage and first-party versus third-party hardware support. What does release availability not guarantee?"
+    }
+  ],
+  "case_kind": "20 real-company/capability research cases, not 20 verified customer prospects",
+  "hypothetical_site_scenarios": true
+}
