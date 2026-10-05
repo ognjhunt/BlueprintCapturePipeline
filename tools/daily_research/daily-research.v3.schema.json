@@ -235,7 +235,6 @@
           },
           "source_urls": {
             "type": "array",
-            "minItems": 1,
             "maxItems": 12,
             "items": {
               "type": "string",
@@ -254,8 +253,15 @@
               "unresolved",
               "rejected",
               "learning",
-              "duplicate"
+              "duplicate",
+              "screened"
             ]
+          },
+          "site_universe_id": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
           }
         },
         "required": [
@@ -266,7 +272,21 @@
           "source_urls",
           "evidence_gap",
           "disposition"
-        ]
+        ],
+        "if": {
+          "not": {
+            "required": [
+              "site_universe_id"
+            ]
+          }
+        },
+        "then": {
+          "properties": {
+            "source_urls": {
+              "minItems": 1
+            }
+          }
+        }
       }
     }
   },

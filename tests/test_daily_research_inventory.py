@@ -242,3 +242,48 @@ def test_forged_inventory_manifest_with_null_source_refuses_instead_of_crashing(
             return {"row": row, "files": {"repair-1-input": base64.b64encode(repair_input).decode()}}
     with pytest.raises(Refusal, match="discovery_inventory_source_binding_invalid"):
         render.export_snapshot(Bridge(), DAY, tmp_path / "export")
+
+
+SLICE_ID = "ab" * 32
+
+
+def universe_record(**changes):
+    value = {"operator": None, "site": None, "location": None, "task_hypothesis": None, "source_urls": [],
+             "evidence_gap": "Screened from the attached slice only", "disposition": "screened", "site_universe_id": SLICE_ID}
+    value.update(changes)
+    return {key: item for key, item in value.items() if item is not ...}
+
+
+@pytest.mark.parametrize(("record", "valid"), [
+    (universe_record(), True),
+    (universe_record(source_urls=["https://fixture.example/site"], disposition="unresolved"), True),
+    (universe_record(disposition="candidate", operator="Invented operator", site="Invented site",
+                     location="Test city", task_hypothesis="Invented task"), True),
+    (universe_record(site_universe_id=...), False),                       # empty source_urls needs the id
+    (universe_record(site_universe_id=..., source_urls=["https://fixture.example/site"]), True),  # screened alone
+    (universe_record(site_universe_id="AB" * 32), False),
+    (universe_record(site_universe_id="ab" * 31), False),
+    (universe_record(site_universe_id="ab" * 32 + "\n"), False),
+    (universe_record(site_universe_id=None), False),
+    (universe_record(site_universe_id=7), False),
+    (universe_record(disposition="qualified"), False),
+    (universe_record(slice_rank=1), False),
+    (universe_record(source_urls=[f"https://fixture.example/{n}" for n in range(13)]), False),
+])
+def test_site_universe_inventory_rules_and_the_v3_schema_agree(record, valid):
+    out, ctx, policy = result(1)
+    out["discovery_inventory"] = [record]
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/daily-research.v3.schema.json").read_text())
+    schema_valid = not list(Draft202012Validator(schema).iter_errors(out))
+    issues = list(discovery.inventory_issues([record]))
+    assert schema_valid == (not issues) == valid
+    if valid:
+        validate_output(out, DAY, set(), contract_version=3, knowledge_context=ctx, refresh_policy=policy, observed_at=NOW)
+    else:
+        with pytest.raises(Refusal, match="discovery_inventory_invalid"):
+            validate_output(out, DAY, set(), contract_version=3, knowledge_context=ctx, refresh_policy=policy, observed_at=NOW)
+
+
+def test_an_invalid_site_universe_id_is_located_on_its_field():
+    issues = list(discovery.inventory_issues([universe_record(site_universe_id="x", source_urls=["https://fixture.example/a"])]))
+    assert issues == [{"pointer": "/discovery_inventory/0/site_universe_id", "code": "discovery_inventory_invalid"}]
