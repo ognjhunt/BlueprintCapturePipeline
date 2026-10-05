@@ -17,14 +17,6 @@ on:
         options:
           - production_deployment_promotion
           - cross_cutting_diagnostic
-      isolated_native_case:
-        description: "Diagnose the recorded unrelated Linux failure without restarting the full suite."
-        required: true
-        default: none
-        type: choice
-        options:
-          - none
-          - reconcile_resume_absent_expiry
   schedule:
     - cron: "17 8 * * *"
 
@@ -36,64 +28,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  isolated-historical-diagnostic:
-    name: Isolated historical reconciliation diagnostic
-    if: github.event_name == 'workflow_dispatch' && inputs.isolated_native_case == 'reconcile_resume_absent_expiry'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 8
-    permissions:
-      contents: read
-    env:
-      BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
-      PYTHONDONTWRITEBYTECODE: "1"
-    steps:
-      - name: Checkout the exact diagnostic source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Bind the disposable Linux host and source
-        env:
-          EXPECTED_SOURCE: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
-          sudo -n true
-          test "$(sudo -n readlink -f /proc/1/exe)" = /usr/lib/systemd/systemd
-          test -f /sys/fs/cgroup/cgroup.controllers
-          /usr/bin/python3 -m venv "${RUNNER_TEMP}/historical-diagnostic"
-          "${RUNNER_TEMP}/historical-diagnostic/bin/python" -m pip install pytest==9.1.1
-          # Match the full lane's source installation for the root subprocess;
-          # sudo drops PYTHONPATH, so an environment-only path is insufficient.
-          "${RUNNER_TEMP}/historical-diagnostic/bin/python" - "$PWD/src" <<'PYTHON'
-          import pathlib, sys, sysconfig
-          pathlib.Path(sysconfig.get_path('purelib'), 'blueprint-diagnostic.pth').write_text(sys.argv[1] + '\n')
-          PYTHON
-      - name: Run only the recorded failing case
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/historical-evidence"
-          "${RUNNER_TEMP}/historical-diagnostic/bin/python" -m pytest --noconftest \
-            'tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption[reconcile_resume_absent_expiry]' \
-            -m 'slow or not slow' -o junit_logging=all -o junit_log_passing_tests=true \
-            --junitxml="${RUNNER_TEMP}/historical-evidence/junit.xml" -q
-          "${RUNNER_TEMP}/historical-diagnostic/bin/python" - "${RUNNER_TEMP}/historical-evidence/junit.xml" <<'PYTHON'
-          import sys, xml.etree.ElementTree as ET
-          cases = list(ET.parse(sys.argv[1]).getroot().iter('testcase'))
-          assert len(cases) == 1
-          assert cases[0].attrib['name'] == 'test_actual_connected_historical_interruption[reconcile_resume_absent_expiry]'
-          assert not any(cases[0].find(tag) is not None for tag in ('skipped', 'failure', 'error'))
-          PYTHON
-      - name: Retain the single-case diagnostic
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: isolated-historical-diagnostic-${{ github.sha }}
-          path: ${{ runner.temp }}/historical-evidence/junit.xml
-          if-no-files-found: error
-          retention-days: 7
   full-pytest-shard:
-    if: inputs.isolated_native_case != 'reconcile_resume_absent_expiry'
     name: Full pytest shard ${{ matrix.shard_index }} of 4
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -386,7 +321,7 @@ jobs:
   full-pytest:
     name: Full pytest lane on CPU runner
     needs: full-pytest-shard
-    if: always() && inputs.isolated_native_case != 'reconcile_resume_absent_expiry'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
