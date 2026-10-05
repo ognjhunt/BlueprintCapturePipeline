@@ -277,7 +277,11 @@ export class Store {
         refuse('findall_profile_invalid');
       const freshFindall=Object.keys(findall).filter(key=>!knownFindall[key]);
       // Exa and FindAll debit one combined allowance; an unknown cost holds its whole reservation.
-      const reserved=[...(exa?[exa.cap_micros]:[]),...Object.values(findall).map(claim=>claim.reserved_micros)];
+      // The Exa reservation is the immutable intent's native budget on every write, so a
+      // later rewrite of cap_micros cannot hide reserved spend from the combined check.
+      const exaReserved=exa?Math.round(Number(exa.intent?.request?.budget?.maxCostDollars)*1000000):null;
+      if(exa && (!Number.isSafeInteger(exaReserved) || exaReserved!==exa.cap_micros)) refuse('paid_expansion_claim_cap_mismatch');
+      const reserved=[...(exa?[exaReserved]:[]),...Object.values(findall).map(claim=>claim.reserved_micros)];
       const overGrant=limit=>!reserved.every(v=>Number.isSafeInteger(v) && v>0)
         || reserved.reduce((a,b)=>a+b,0)>limit;
       if(exa && !prior.data()?.exa_expansion_intent_digest) {

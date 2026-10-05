@@ -26,6 +26,7 @@ on:
       - "tests/test_daily_research_allocation.py"
       - "tests/test_daily_research_exa_transport.py"
       - "tests/test_daily_research_findall.py"
+      - "tests/test_daily_research_findall_observe.py"
       - "tests/test_parallel_findall*.py"
       - "src/blueprint_pipeline/parallel_findall*.py"
       - "src/blueprint_pipeline/paid_resource_admission.py"
@@ -61,6 +62,7 @@ on:
       - "tests/test_daily_research_allocation.py"
       - "tests/test_daily_research_exa_transport.py"
       - "tests/test_daily_research_findall.py"
+      - "tests/test_daily_research_findall_observe.py"
       - "tests/test_parallel_findall*.py"
       - "src/blueprint_pipeline/parallel_findall*.py"
       - "src/blueprint_pipeline/paid_resource_admission.py"
@@ -110,8 +112,8 @@ jobs:
           uv pip install --python "${RUNNER_TEMP}/daily-research-venv/bin/python" -r tools/daily_research/requirements.txt pytest==9.1.1 ruff==0.16.9 jsonschema==4.26.0
       - name: Verify lifecycle, SDK contracts and changed-file lint
         run: |
-          node --test tests/daily_research_store.test.mjs tests/daily_research_worker.test.mjs tests/daily_research_publisher.test.mjs tests/daily_contact_research.test.mjs
-          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_verification.py tests/test_daily_research_inventory.py tests/test_daily_research_breadth.py tests/test_daily_research_repair_gaps.py tests/test_daily_research_agent_history.py tests/test_daily_research_agent_publication.py tests/test_daily_research_unattended_cleanup.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_recovery.py tests/test_daily_research_consumer.py tests/test_daily_research_qa_retry.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tests/test_daily_research_search.py tests/test_daily_research_expansion.py tests/test_daily_research_expansion_integration.py tests/test_daily_research_allocation.py tests/test_daily_research_exa_transport.py tests/test_daily_research_findall.py tests/test_parallel_findall.py tests/test_parallel_findall_execution.py tests/test_parallel_findall_owner.py tests/test_parallel_findall_admission.py tests/test_daily_research_search_adapter.py tests/test_daily_research_operator*.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
+          node --test tests/daily_research_store.test.mjs tests/daily_research_store_exa_reservation.test.mjs tests/daily_research_worker.test.mjs tests/daily_research_publisher.test.mjs tests/daily_contact_research.test.mjs
+          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_verification.py tests/test_daily_research_inventory.py tests/test_daily_research_breadth.py tests/test_daily_research_repair_gaps.py tests/test_daily_research_agent_history.py tests/test_daily_research_agent_publication.py tests/test_daily_research_unattended_cleanup.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_recovery.py tests/test_daily_research_consumer.py tests/test_daily_research_qa_retry.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tests/test_daily_research_search.py tests/test_daily_research_expansion.py tests/test_daily_research_expansion_integration.py tests/test_daily_research_allocation.py tests/test_daily_research_exa_transport.py tests/test_daily_research_findall.py tests/test_daily_research_findall_observe.py tests/test_parallel_findall.py tests/test_parallel_findall_execution.py tests/test_parallel_findall_owner.py tests/test_parallel_findall_admission.py tests/test_daily_research_search_adapter.py tests/test_daily_research_operator*.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/findall.py src/blueprint_pipeline/parallel_findall.py src/blueprint_pipeline/parallel_findall_execution.py src/blueprint_pipeline/parallel_findall_owner.py src/blueprint_pipeline/parallel_findall_admission.py tests/test_daily_research_findall.py tests/test_parallel_findall_owner.py tests/test_parallel_findall_admission.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/allocation.py tools/daily_research/expansion.py tools/daily_research/exa_transport.py tools/daily_research/qa_retry.py tests/test_daily_research_allocation.py tests/test_daily_research_qa_retry.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/recovery.py tests/test_daily_research_recovery.py
