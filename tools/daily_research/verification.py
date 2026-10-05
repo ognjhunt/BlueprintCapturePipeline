@@ -37,8 +37,9 @@ MIN_QUOTE_WORDS = 3
 READ_TOOL, SEARCH_TOOL = "blueprint_read_source", "blueprint_search"  # search.READ and search.SEARCH
 # Publication-phase reads come after review, so they never change a recomputed tier.
 EVIDENCE_PHASES = frozenset({"research", "repair", "qa"})
-# Fixed templates, at most 3; each names the open checks it covers. Hypothesis drafts may
-# ask all of them; verified drafts keep the one-question rule.
+# Fixed templates, at most 3, asked in this order; each covers the open checks it names. {task}
+# and {site} are the candidate's task and site fields verbatim (the WebApp recomputes them).
+# Hypothesis drafts may ask all of them; verified drafts keep the one-question rule.
 QUESTIONS = (("Is {task} at {site} still done mostly by hand?", ("manual_workflow", "freshness")),
              ("Do you already use or plan automation for it?", ("existing_automation",)),
              ("Would a short look at whether a robot could take on part of it be useful?", ("fit", "interest")))
@@ -485,14 +486,7 @@ def outreach_gates(result, candidate, index, *, conflict=False):
             "identity_present": bool(result.get("identity_key")),
             "duplicate": bool(result.get("duplicate_of")) or isinstance(check, dict) and check.get("duplicate") is True,
             "conflict": conflict is True, "valid_until": assessment.get("valid_until"), "states": states, "facts": facts,
-            "task": candidate.get("task"), "site": candidate.get("site") or candidate.get("location")}
-
-
-def _template_value(value):
-    words = " ".join(value.replace("?", " ").split()).rstrip(".")
-    if not words:
-        raise ValueError("question value")
-    return words
+            "task": candidate.get("task"), "site": candidate.get("site")}
 
 
 def outreach_tier(gates, now):
@@ -528,14 +522,16 @@ def outreach_tier(gates, now):
                 blockers.append(name + "_primary_source_unusable")
             elif not facts[name]["proofs"]:
                 blockers.append(name + "_quote_unproven")
+        task, site = gates["task"], gates["site"]
+        if not text(task) or not text(site):
+            blockers.append("question_task_or_site_missing")
         if blockers:
             return {"tier": "none", "eligible_for_outreach_ready": False,
                     "outreach_ready": {**block, "blockers": list(dict.fromkeys(blockers))}}
         checks = (["manual_workflow"] if states.get("human_workflow") != "verified_fact" else []) + (
             ["freshness"] if valid_until is None else []) + ["existing_automation", "fit", "interest"]
-        task, site = _template_value(gates["task"]), _template_value(gates["site"])
-        questions = [{"question": template.format(task=task, site=site), "checks": [c for c in covers if c in checks]}
-                     for template, covers in QUESTIONS if any(c in checks for c in covers)]
+        questions = [template.format(task=task, site=site) for template, covers in QUESTIONS
+                     if any(c in checks for c in covers)]
         return {"tier": "outreach_ready", "eligible_for_outreach_ready": True,
                 "outreach_ready": {**block, "open_checks": checks, "open_questions": questions}}
     except Exception:  # noqa: BLE001 - any defect in the tier computation yields none; QA and publication continue

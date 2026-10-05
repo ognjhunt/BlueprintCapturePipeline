@@ -176,25 +176,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -380,26 +364,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow",
-                  "freshness"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -584,25 +551,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "freshness"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -967,25 +918,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -1175,25 +1110,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -1378,25 +1297,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -4205,25 +4108,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -4882,25 +4769,9 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
           }
@@ -4957,8 +4828,8 @@
       }
     },
     {
-      "name": "question_text_normalized",
-      "note": "Template values lose question marks and a final period.",
+      "name": "question_uses_raw_task_and_site",
+      "note": "Templates insert the candidate's task and site fields verbatim.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -5126,27 +4997,191 @@
               "interest"
             ],
             "open_questions": [
-              {
-                "question": "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-                "checks": [
-                  "manual_workflow"
-                ]
-              },
-              {
-                "question": "Do you already use or plan automation for it?",
-                "checks": [
-                  "existing_automation"
-                ]
-              },
-              {
-                "question": "Would a short look at whether a robot could take on part of it be useful?",
-                "checks": [
-                  "fit",
-                  "interest"
-                ]
-              }
+              "Is Manual case picking? for outbound orders. at Fixture DC 4, 100 Example Way still done mostly by hand?",
+              "Do you already use or plan automation for it?",
+              "Would a short look at whether a robot could take on part of it be useful?"
             ],
             "blockers": []
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "question_site_missing",
+      "note": "Without a site field no question can be asked: none.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "77f4eb16823dfd61666ea80845b40e349b1bc9b9f5da63b2c03c1a5304860a67",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "question_task_or_site_missing"
+            ]
           }
         }
       ],

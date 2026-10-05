@@ -358,6 +358,7 @@ def test_open_workflow_or_fit_states_stay_outreach_ready_until_contradicted(clai
     assert result["tier"] == "outreach_ready" and not result["eligible_for_qualified_promotion"]
     assert ("manual_workflow" in result["outreach_ready"]["open_checks"]) is (claim == "human_workflow")
     assert len(result["outreach_ready"]["open_questions"]) == (3 if claim == "human_workflow" else 2)
+    assert all(isinstance(question, str) for question in result["outreach_ready"]["open_questions"])
 
 
 def test_quote_levels_need_whole_words_the_same_url_and_three_words():
@@ -402,9 +403,14 @@ def test_questions_are_the_fixed_templates_and_cover_every_open_check():
                 continue
             assert 1 <= len(block["open_questions"]) <= 3 and block["blockers"] == []
             assert block["open_checks"][-3:] == ["existing_automation", "fit", "interest"]
-            assert sorted(c for q in block["open_questions"] for c in q["checks"]) == sorted(block["open_checks"])
-            assert all(q["question"].count("?") == 1 and q["question"].endswith("?") for q in block["open_questions"])
-            assert [q["question"] for q in block["open_questions"][-2:]] == [t for t, _ in verification.QUESTIONS[1:]]
+            candidate = next(c for c in case["candidates"] if c["candidate_key"] == result["candidate_key"])
+            # Template order, task and site verbatim, and every open check covered by an asked template.
+            templates = [(template.format(task=candidate["task"], site=candidate["site"]), covers)
+                         for template, covers in verification.QUESTIONS]
+            asked = [(question, covers) for question, covers in templates if question in block["open_questions"]]
+            assert [question for question, _ in asked] == block["open_questions"]
+            assert sorted(c for _, covers in asked for c in covers if c in block["open_checks"]) == sorted(block["open_checks"])
+            assert block["open_questions"][-2:] == [t for t, _ in verification.QUESTIONS[1:]]
 
 
 def evidence_row(tmp_path):
