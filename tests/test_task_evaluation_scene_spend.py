@@ -254,5 +254,29 @@ def test_publisher_reuses_large_artifact_hashes_only_within_one_pass(tmp_path, m
         result = publish_current_scene_project_spend(**args, now=now)
         assert result["scene_reservation_count"] == 2
         assert digests.digest_scope_stats() is None
-    assert [row["bytes_hashed"] for row in observations] == [robot.stat().st_size] * 4
-    assert [row["cache_hits"] for row in observations] == [0, 1, 0, 1]
+    assert [row["bytes_hashed"] for row in observations] == [robot.stat().st_size] * 12
+    assert sum(row["cache_hits"] == 0 for row in observations) == 2
+
+
+@pytest.mark.parametrize("launch_status, retained", [(None, 4.5), ("blocked", 21.26), ("completed", 24.72)])
+def test_terminal_settlement_does_not_erase_unreconciled_project_cost(tmp_path, launch_status, retained):
+    from tests.test_terminal_scene_attempt_settlement import _fixture, _settle
+    fx = _fixture(tmp_path, launch_status=launch_status)
+    _settle(fx)
+    args = dict(scene_root=fx["root"], seed_reconciliation_path=seed(tmp_path),
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    first = publish_current_scene_project_spend(**args, now=300)
+    assert first["total_cost_usd"] == pytest.approx(43.197914 + retained)
+    second = publish_current_scene_project_spend(**args, now=400)
+    assert second["total_cost_usd"] == first["total_cost_usd"]
+    assert second["pointer"]["path"] == first["pointer"]["path"]
+
+
+def test_posted_identity_does_not_erase_partially_covered_retained_cost():
+    from blueprint_pipeline.task_evaluation_scene_spend import _require_reservation_posted_coverage
+    reservation = {"authorization_digest": "sha256:attempt", "hard_attempt_spend_cap_usd": 4.5}
+    with pytest.raises(ValueError, match="partial_coverage"):
+        _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:attempt", "cost_usd": 0.5})
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:other", "cost_usd": 4.5})
+    _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:attempt", "cost_usd": 4.5})

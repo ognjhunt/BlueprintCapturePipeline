@@ -346,3 +346,37 @@ def test_retire_scene_workspace_is_an_operate_request_with_its_own_id(config: Do
     assert re.fullmatch(r"\d{8}T\d{6}Z-retire-scene-workspace-[0-9a-f]{8}", request_id)
     assert request_state(config, request_id)["request"]["scene_id"] == "s"
     assert list_requests(config)[0]["kind"] == "retire-scene-workspace"
+
+
+def test_operation_key_replays_and_conflicts_without_duplicate_spool(config):
+    request = {"kind": "deploy", "commit": SHA}
+    key = "test-lost-response-123"
+    first = enqueue(config, request, requested_by="owner", operation_key=key)
+    assert enqueue(config, request, requested_by="owner", operation_key=key) == first
+    assert len(list((Path(config.spool_root) / "pending").glob("*.json"))) == 1
+    with pytest.raises(RequestRefused, match="operation_key_conflict"):
+        enqueue(config, {**request, "commit": "f" * 40}, requested_by="owner", operation_key=key)
+    assert enqueue(config, request, requested_by="other", operation_key=key) != first
+    (Path(config.spool_root) / "pending" / f"{first}.json").unlink()
+    assert enqueue(config, request, requested_by="owner", operation_key=key) == first
+    assert not (Path(config.spool_root) / "pending" / f"{first}.json").exists()
+
+
+def test_concurrent_operation_key_has_one_identity(config):
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        ids = list(pool.map(lambda _: enqueue(config, {"kind": "deploy", "commit": SHA},
+            requested_by="owner", operation_key="concurrent-key-1234"), range(16)))
+    assert len(set(ids)) == 1
+
+
+def test_unit_completion_requires_the_same_observed_invocation():
+    from operator_door.requests import observed_unit_outcome
+    state = {"result": {"unit_observation": {"InvocationID": "bound"}},
+             "unit_state": [{"InvocationID": "bound", "ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0"}]}
+    assert observed_unit_outcome(state)["status"] == "observed_completed"
+    state["unit_state"][0]["ActiveState"] = "failed"
+    assert observed_unit_outcome(state)["status"] == "observed_failed"
+    state["unit_state"][0]["InvocationID"] = "newer"
+    assert observed_unit_outcome(state)["status"] == "unknown"
+    assert observed_unit_outcome({"result": {"status": "done"}}) is None

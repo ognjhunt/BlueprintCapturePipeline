@@ -58,6 +58,8 @@ class FakeRunner:
             unit = argv[-1]
             guard = f"ConditionPathExists=!{self.guard_root / f'{unit}.json'}"
             return CommandResult(0, f"[Unit]\n{guard}\n" if self.guarded else "[Unit]\n", "")
+        if argv[:2] == ["systemctl", "show"] and "--property=ActiveState,SubState,Result,InvocationID,ExecMainStatus,Type" in argv:
+            return CommandResult(0, "ActiveState=active\nSubState=running\nInvocationID=fixture-invocation\n", "")
         if argv[:2] == ["systemctl", "show"]:
             return CommandResult(0, self.need_daemon_reload + "\n", "")
         if argv[:2] == ["systemctl", "stop"]:
@@ -125,12 +127,12 @@ def test_failed_launch_is_recorded(config: DoorConfig) -> None:
     assert result["status"] == "failed" and result["returncode"] == 1 and "Failed" in result["stderr_tail"]
 
 
-def test_unit_actions_use_no_block_systemctl(config: DoorConfig) -> None:
+def test_unit_actions_wait_for_systemctl_and_observe_the_objective(config: DoorConfig) -> None:
     request_id = _spooled(config, {"kind": "unit", "unit": "blueprint-pubsub-handoff-listener.timer",
                                    "action": "start"})
     runner = FakeRunner()
     process_spool(config, runner=runner)
-    assert ["systemctl", "--no-block", "start", "--", "blueprint-pubsub-handoff-listener.timer"] in runner.calls
+    assert ["systemctl", "start", "--", "blueprint-pubsub-handoff-listener.timer"] in runner.calls
     assert _result(config, request_id)["status"] == "done"
 
 
@@ -295,7 +297,7 @@ def test_failed_hold_record_write_restores_a_stopped_trigger(config: DoorConfig,
 
     monkeypatch.setattr(holds, "write", no_space)
     process_spool(config, runner=runner)
-    assert _result(config, request_id)["status"] == "failed"
+    assert _result(config, request_id)["status"] == "unknown"
     assert ["systemctl", "enable", "--", "blueprint-scene-progression.timer"] in runner.calls
     assert ["systemctl", "--no-block", "start", "--", "blueprint-scene-progression.timer"] in runner.calls
     assert not (Path(config.spool_root) / "holds" / "blueprint-scene-progression.timer.json").exists()
@@ -557,7 +559,7 @@ def test_unreadable_and_late_files_are_drained(config: DoorConfig) -> None:
     arrived: list[str] = []
 
     def late_arrival(argv, timeout):
-        if argv[:2] == ["systemctl", "--no-block"] and not arrived:
+        if argv[:2] == ["systemctl", "start"] and not arrived:
             arrived.append(_spooled(config, {"kind": "unit", "unit": "blueprint-gpu-spend-guard.service",
                                               "action": "reset-failed"}))
         return FakeRunner.run(runner, argv, timeout)
@@ -570,7 +572,7 @@ def test_unreadable_and_late_files_are_drained(config: DoorConfig) -> None:
             path.chmod(0o644)
     assert not list((spool / "pending").glob("*.json"))
     assert _result(config, first)["status"] == "done"
-    assert sum(call[:3] == ["systemctl", "--no-block", "reset-failed"] for call in runner.calls) == 1
+    assert sum(call[:2] == ["systemctl", "reset-failed"] for call in runner.calls) == 1
 
 
 def test_stranded_claims_are_failed_after_an_hour(config: DoorConfig) -> None:
@@ -581,7 +583,7 @@ def test_stranded_claims_are_failed_after_an_hour(config: DoorConfig) -> None:
     process_spool(config, runner=FakeRunner())
     assert not stranded.exists()
     assert _result(config, "20260923T000000Z-deploy-0000cafe") == {
-        **_result(config, "20260923T000000Z-deploy-0000cafe"), "status": "failed", "code": "stranded"}
+        **_result(config, "20260923T000000Z-deploy-0000cafe"), "status": "unknown", "code": "stranded"}
 
 
 def test_every_launched_unit_is_a_named_service_the_door_can_inspect(config: DoorConfig) -> None:
