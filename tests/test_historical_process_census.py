@@ -6,6 +6,8 @@ The disposable systemd acceptance lane remains required for native evidence.
 # Covers: src/blueprint_pipeline/control_plane_lane_historical_processes.py
 import errno
 import os
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -276,3 +278,163 @@ def test_fd_churn_does_not_skip_final_process_identity_or_channel_checks(
         run(descriptor_census)
     assert descriptor_census.inspections == ['1', '2']
     assert descriptor_census.fd_censuses == 2
+
+
+@pytest.fixture
+def exiting_process(descriptor_census, monkeypatch):
+    """Exercise the real parser's user-process channel and retained-stat reads."""
+    state = descriptor_census
+    process = state.proc / '2'
+    (process / 'mountinfo').write_bytes(b'fixture mount view')
+    monkeypatch.setattr(processes, 'kernel_has_no_user_memory', lambda *args: False)
+
+    def filesystem_view(scan, directory, view, *args):
+        scan.views[view] = (scan.read(directory, 'mountinfo'), ())
+
+    monkeypatch.setattr(processes, '_known_filesystem_view', filesystem_view)
+    state.channel = 'environ'
+    state.channel_error = ProcessLookupError(errno.ESRCH, 'exited')
+    state.final_error = ProcessLookupError(errno.ESRCH, 'exited')
+    state.final_value = None
+    state.channel_failed = False
+    state.final_reads = 0
+    read = processes._Scan.read
+
+    def current_read(scan, directory, name, cap=1024**2):
+        if name == state.channel:
+            state.channel_failed = True
+            raise state.channel_error
+        if name == 'stat' and state.channel_failed:
+            state.channel_failed = False
+            state.final_reads += 1
+            if state.final_error is not None:
+                raise state.final_error
+            if state.final_value is not None:
+                return state.final_value
+        return read(scan, directory, name, cap)
+
+    monkeypatch.setattr(processes._Scan, 'read', current_read)
+    return state
+
+
+@pytest.mark.parametrize('channel', ['environ', 'maps'])
+@pytest.mark.parametrize('final_errno', [errno.ENOENT, errno.ESRCH])
+def test_corroborated_exit_requires_complete_new_census(exiting_process, channel, final_errno):
+    state = exiting_process
+    state.channel = channel
+    state.final_error = OSError(final_errno, 'exited')
+    state.snapshots = [['1', '2', '3', '99'], ['1', '3', '99'], ['1', '3', '99']]
+    budget = ReferenceCollectionBudget()
+    run(state, budget=budget)
+    assert state.inspections == ['1', '2', '1', '3']
+    assert state.final_reads == 1
+    assert len(state.scans) == 3 and len({id(scan) for scan in state.scans}) == 1
+    assert budget.counts['entries'] == state.scans[0].entries == 12
+    assert budget.counts['raw_bytes'] == state.scans[0].raw_bytes > 3 * len(b'observed')
+
+
+def test_perpetual_corroborated_exit_exhausts_original_three_passes(exiting_process):
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(exiting_process)
+    assert exiting_process.inspections == ['1', '2'] * 3
+    assert exiting_process.final_reads == 3
+
+
+@pytest.mark.parametrize('final', ['same_identity', 'changed_identity', 'malformed', 'permission', 'io'])
+def test_uncorroborated_exit_cannot_retry_or_skip_identity(exiting_process, final):
+    state = exiting_process
+    state.final_error = None
+    if final == 'changed_identity':
+        raw = (state.proc / '2/stat').read_bytes()
+        state.final_value = raw.rsplit(b' ', 1)[0] + b' 124'
+    elif final == 'malformed':
+        state.final_value = b'unknown'
+    elif final in ('permission', 'io'):
+        state.final_error = OSError(errno.EACCES if final == 'permission' else errno.EIO, 'unknown')
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.final_reads == 1
+    assert len(state.scans) == 1
+
+
+@pytest.mark.parametrize('error', [PermissionError(errno.EACCES, 'hidden'),
+                                 OSError(errno.EIO, 'unknown'),
+                                 ProcessLookupError(errno.EIO, 'not ESRCH')])
+def test_non_esrch_user_channel_failure_does_not_probe_or_retry(exiting_process, error):
+    exiting_process.channel_error = error
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(exiting_process)
+    assert exiting_process.inspections == ['1', '2']
+    assert exiting_process.final_reads == 0 and len(exiting_process.scans) == 1
+
+
+def test_exit_never_discards_already_observed_reference(exiting_process):
+    selected = exiting_process.proc.parent / 'selected'
+    selected.mkdir()
+    exiting_process.manifest['target_path'] = str(selected)
+    cwd = exiting_process.proc / '2/cwd'
+    cwd.unlink()
+    cwd.symlink_to(selected)
+    with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
+        run(exiting_process)
+    assert exiting_process.inspections == ['1', '2']
+    assert exiting_process.final_reads == 0 and len(exiting_process.scans) == 1
+
+
+@pytest.mark.parametrize('kind', ['entries', 'raw_bytes', 'clock'])
+def test_corroborated_exit_cannot_renew_original_scan_budget(exiting_process, monkeypatch, kind):
+    budget = ReferenceCollectionBudget()
+    now = [0.0]
+    monkeypatch.setattr(processes.time, 'monotonic', lambda: now[0])
+    read = processes._Scan.read
+
+    def current_read(scan, directory, name, cap=1024**2):
+        if name == 'stat' and exiting_process.channel_failed:
+            if kind == 'clock':
+                now[0] = 5.0
+            else:
+                budget.charge(kind, budget.limits[kind] - budget.counts[kind])
+        return read(scan, directory, name, cap)
+
+    monkeypatch.setattr(processes._Scan, 'read', current_read)
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(exiting_process, budget=budget)
+    assert exiting_process.inspections == (['1', '2', '1'] if kind == 'raw_bytes' else ['1', '2'])
+    assert exiting_process.final_reads == 1
+    if kind != 'clock':
+        assert budget.failure == 'reference_' + kind + '_limit'
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux retained proc descriptor semantics')
+def test_actual_exited_user_process_requires_whole_census_restart(monkeypatch):
+    """Real ESRCH evidence; this does not authorize a generation deletion."""
+    process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    directory = os.open('/proc/' + str(process.pid), os.O_RDONLY | os.O_DIRECTORY)
+    scan = processes._Scan(lambda: None)
+    read = scan.read
+    observed = []
+
+    def current_read(directory, name, cap=1024**2):
+        if name == 'environ':
+            process.terminate()
+            process.wait(timeout=5)
+        try:
+            return read(directory, name, cap)
+        except ProcessLookupError as error:
+            observed.append((name, error.errno))
+            raise
+
+    monkeypatch.setattr(scan, 'read', current_read)
+    monkeypatch.setattr(processes, '_known_filesystem_view', lambda *args: None)
+    root = os.stat('/')
+    try:
+        namespaces = processes._namespace(directory)
+        with pytest.raises(processes._ProcessExited):
+            inspect_process(scan, directory, str(process.pid), '/fixture/selected', {(0, 0)},
+                            namespaces, namespaces[2], (root.st_dev, root.st_ino))
+        assert observed == [('environ', errno.ESRCH), ('stat', errno.ESRCH)]
+    finally:
+        os.close(directory)
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
