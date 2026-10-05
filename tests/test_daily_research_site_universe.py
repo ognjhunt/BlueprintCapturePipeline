@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 
 import pytest
 
+from tools.daily_research import recovery
 from tools.daily_research import site_universe as su
+from tools.daily_research.consumer import qa_text
 from tools.daily_research.runner import Refusal, canonical, digest, keys
 
 DAY = "2026-10-06"
@@ -539,3 +541,20 @@ def test_refused_and_exhausted_rows_get_a_small_packet_block_and_no_text():
         assert su.status(row) == {"state": record["state"], "code": record["code"]}
     assert su.refused("free text from upstream")["code"] == "site_universe_attach_unavailable"
 
+
+def test_explain_repair_and_qa_text_gain_one_sentence_only_with_a_slice():
+    row = attached_row([site(number) for number in range(1, 8)])
+    plain = {"date": DAY, "research_contract_version": 3}
+    assert recovery.explain(plain, "discovery_inventory_invalid") + su.explain_sentence(row) == recovery.explain(
+        {**plain, "site_universe": row["site_universe"]}, "discovery_inventory_invalid")
+    assert recovery.explain({**plain, "site_universe": row["site_universe"]}, "output_schema_invalid") == recovery.explain(
+        plain, "output_schema_invalid")
+    assert su.packet_reserve(row) == su.PACKET_RESERVE
+    for sentence in (su.explain_sentence(row), su.repair_sentence(row), su.qa_sentence(row)):
+        assert sentence.strip().endswith(".") and sentence.strip()[:-1].count(". ") == 0 and "site-universe slice" in sentence
+    qa_row = {"packet": {"candidates": [], "site_universe": {"state": "attached"}}, "packet_digest": "0" * 64,
+              "web_tool_activities": 0, "discovery_profile": "adaptive-sites-v1"}
+    snapshot = {"values": crm()}
+    without = qa_text(qa_row, snapshot, "crm")
+    with_slice = qa_text({**qa_row, "site_universe": row["site_universe"]}, snapshot, "crm")
+    assert with_slice.replace(su.qa_sentence(row), "", 1) == without and su.qa_sentence(row) in with_slice

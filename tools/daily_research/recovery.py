@@ -7,7 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
-from tools.daily_research import knowledge, search
+from tools.daily_research import knowledge, search, site_universe
 from tools.daily_research.contracts import checked_day
 
 REPAIR_PATH = "/workspace/outputs/daily-research-repaired.json"
@@ -226,10 +226,11 @@ def explain(row, code):
     version = row.get("research_contract_version", 1)
     template = RULES.get(code, "Return the same research contract with supported claims and honest unknowns; do not rewrite trusted context hashes.")
     from tools.daily_research import discovery
-    return template.format(version=version, day=row.get("date"), limit=discovery.MAX_CANDIDATES if version == 3 else 3,
+    text = template.format(version=version, day=row.get("date"), limit=discovery.MAX_CANDIDATES if version == 3 else 3,
                            age_reason="refresh_due" if version == 3 else "stale", evidence_min=2 if version == 3 else 3,
                            candidate_limit="" if version == 3 else "; at most three entries",
                            summary_limit="; v2 has at most 20 items" if version == 2 else "")
+    return text + site_universe.explain_sentence(row) if code == "discovery_inventory_invalid" else text
 
 
 def validation_feedback(output, row, known, observed_at):
@@ -281,7 +282,8 @@ def validation_feedback(output, row, known, observed_at):
                 raise Refusal("research_scope_coverage_required")
         except (Refusal, ValueError, KeyError, TypeError) as error:
             issue("/coverage", str(error) if isinstance(error, (Refusal, ValueError)) else "discovery_coverage_invalid")
-    if row.get("search_provider") == search.PROFILE and isinstance(output, dict) and packet_overflow(output):
+    if (row.get("search_provider") == search.PROFILE and isinstance(output, dict)
+            and packet_overflow(output, site_universe.packet_reserve(row))):
         issue("/", "research_packet_resource_ceiling_use_inventory")
     if not issues:
         # The strict gate stays the authority; a diagnosis gap never passes silently.
@@ -495,6 +497,7 @@ class RepairLoop:
                         "dates or employer affiliation. Ordinary live operator background facts may have null evidence_level; "
                         "capability claims require a supported robot grade. Employer-hosted job boards may be valid task sources; "
                         "verify actual employer/site affiliation, never infer it from domain alone. Preserve all supported work. "
+                        + site_universe.repair_sentence(row) +
                         "Omit/quarantine unsupported optional knowledge proposals; preserve their ordinary supported facts in findings. "
                         "Copy actual checked_at source-read timestamps when precise review metadata is needed. Keep the original "
                         "checked_date and trusted snapshot/policy hashes. Missing information stays unknown. Choose your repair "
