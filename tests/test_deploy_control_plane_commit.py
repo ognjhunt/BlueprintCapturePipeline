@@ -4271,3 +4271,20 @@ def test_runtime_provision_failure_does_not_fall_back_to_old_builder(tmp_path, m
     with pytest.raises(ValueError, match='scene_configuration_target_release_provision_failed'):
         deploy._provision_scene_configuration_from_release(
             repository_root=tmp_path, source_commit='a'*40, readback_user='blueprint')
+
+
+def test_main_runtime_failure_retains_static_diagnostic_without_changing_blocker(tmp_path, monkeypatch, capsys):
+    _stub_main_break_glass_notes(monkeypatch, tmp_path)
+    def refused(**kwargs):
+        error = deploy.ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+        error.runtime_diagnostic = {"phase": "build_sdk", "reason": "deadline",
+                                    "private": "private-canary-credential"}
+        raise error
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", refused)
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 2
+    text = capsys.readouterr().out
+    blocked = json.loads(text)
+    assert blocked["blockers"] == ["deploy_scene_retirement_runtime_unproven"]
+    assert blocked["runtime_diagnostic"] == {"phase": "build_sdk", "reason": "deadline"}
+    assert blocked["provider_mutation_performed"] is False
+    assert "private-canary" not in text

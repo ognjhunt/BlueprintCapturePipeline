@@ -397,7 +397,9 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     # Service-owned checkout bytes may drift; installed root source must come
     # from the exact already-authorized Git object, not these mutable bytes.
     (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'raise RuntimeError("uncommitted mutable source")\n')
-    result = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent)
+    phases = []
+    result = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent, _progress=phases.append)
+    assert phases == ['signed_release', 'build_sdk', 'prepare', 'publish_installer']
     assert result['status'] == 'prepared'
     assert result['source_commit'] == commit
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
@@ -405,7 +407,9 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     assert (module._RUNTIME_ROOT / 'dependencies/fixture_sdk/__init__.py').read_bytes() == b'value = 1\n'
     assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
     assert result['authority_issued'] is False and result['cleanup_enabled'] is False
-    repeated = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent)
+    phases.clear()
+    repeated = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent, _progress=phases.append)
+    assert phases == ['signed_release', 'build_sdk', 'refresh', 'publish_installer']
     assert repeated['status'] == 'refreshed'
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').read_bytes() == b''
 
@@ -536,7 +540,7 @@ def _deployer_runtime_fixture(monkeypatch, tmp_path):
     import subprocess
     tree = ast.parse((SCRIPT.parent / 'deploy_control_plane_commit.py').read_bytes())
     definitions = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))
-                   and node.name in {'_prepare_scene_retirement_runtime', '_bootstrap_scene_retirement_installer'}]
+                   and node.name in {'_prepare_scene_retirement_runtime', '_bootstrap_scene_retirement_installer', '_scene_runtime_diagnostic'}]
     namespace = {'Path': Path, 'Any': object, 'os': os, 'hashlib': hashlib, 'json': json, 're': re,
                  'stat': stat, 'subprocess': subprocess, 'time': __import__('time'),
                  'ControlPlaneDeployError': ValueError,
@@ -1064,3 +1068,65 @@ def test_initial_resume_retries_interrupted_original_dependency_copy(tmp_path, m
     monkeypatch.setattr(module, '_copy', copy)
     assert module.prepare_deployment(source, source_commit=first, wheelhouse=wheel.parent)['status'] == 'refreshed'
     assert (module._BOOT_ROOT / 'installation.json').read_bytes() == original
+
+
+@pytest.mark.parametrize('timed_out', [False, True])
+def test_deploy_installer_failure_preserves_blocker_and_only_fixed_diagnostics(tmp_path, monkeypatch, timed_out):
+    import json
+    import hashlib
+    import subprocess
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    commit = 'a' * 40
+    candidate = namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'installers' / commit
+    candidate.mkdir(parents=True)
+    raw = b'# authenticated installer fixture\n'
+    (candidate / 'runtime_installer.py').write_bytes(raw)
+    (candidate / 'runtime-installer.json').write_text(json.dumps({
+        'schema': 'scene-retirement-runtime-installer.v1',
+        'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(), 'size_bytes': len(raw)}))
+    namespace['_bootstrap_scene_retirement_installer'] = lambda *args, **kwargs: None
+    private = b'private-canary-path?token=private-canary-credential'
+    stderr = (private + b'\nscene_retirement_runtime_phase:build_sdk\n'
+              b'scene_retirement_runtime_failure:validation\n'
+              b'scene_retirement_runtime_phase:' + private + b'\n')
+    def failed(command, **kwargs):
+        if timed_out:
+            raise subprocess.TimeoutExpired(command, kwargs['timeout'], output=private, stderr=stderr)
+        return subprocess.CompletedProcess(command, 2, private, stderr)
+    monkeypatch.setattr(subprocess, 'run', failed)
+    with pytest.raises(ValueError, match='^deploy_scene_retirement_runtime_unproven$') as caught:
+        namespace['_prepare_scene_retirement_runtime'](source_repo=tmp_path, source_commit=commit)
+    assert caught.value.runtime_diagnostic == {'phase': 'build_sdk', 'reason': 'deadline' if timed_out else 'validation'}
+    assert private.decode() not in str(caught.value.runtime_diagnostic)
+    assert not (namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'CURRENT.json').exists()
+
+
+@pytest.mark.parametrize('stderr', [b'private-canary', b'x' * 65537,
+    b'scene_retirement_runtime_phase:build_sdk/secret\nscene_retirement_runtime_failure:unknown',
+    b'\xffscene_retirement_runtime_phase:build_sdk'])
+def test_deploy_diagnostic_rejects_unrecognized_or_unbounded_markers(tmp_path, monkeypatch, stderr):
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    assert namespace['_scene_runtime_diagnostic'](stderr, phase='execute_installer', reason='validation') == {
+        'phase': 'execute_installer', 'reason': 'validation'}
+
+
+@pytest.mark.parametrize('reason', ['deadline', 'validation', 'io', 'unexpected'])
+def test_installer_cli_failure_emits_no_private_exception_or_traceback(tmp_path, monkeypatch, capsys, reason):
+    from types import SimpleNamespace
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, 'os', SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
+    monkeypatch.setattr(module, 'sys', SimpleNamespace(flags=SimpleNamespace(isolated=True, no_site=True),
+        stderr=sys.stderr))
+    def failed(*args, **kwargs):
+        kwargs['_progress']('resume_initial_intent')
+        error = OSError if reason == 'io' else RuntimeError if reason == 'unexpected' else ValueError
+        raise error('private-canary-path?token=private-canary-credential')
+    monkeypatch.setattr(module, 'prepare_deployment', failed)
+    options = ['--source', str(source), '--source-commit', 'a'*40, '--locked-sdk']
+    if reason == 'deadline':
+        options += ['--deadline-monotonic', '0']
+    assert module.main(options) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert captured.err == ('scene_retirement_runtime_phase:resume_initial_intent\n'
+                            'scene_retirement_runtime_failure:' + reason + '\n')
