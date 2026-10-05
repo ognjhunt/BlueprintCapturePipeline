@@ -6,9 +6,14 @@ real grant or provider call is used: every grant comes from the real canonical i
 after the real allocation admits the exact synthetic request.
 """
 import copy
+import hashlib
 import json
+import signal
 import socket
+import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,11 +21,13 @@ import pytest
 from blueprint_pipeline import parallel_findall_execution as execution
 from blueprint_pipeline import parallel_findall_owner as owner
 from blueprint_pipeline.paid_resource_admission import PaidResourceAdmissionGrant
-from tools.daily_research import allocation, capabilities, findall, search
+from tools.daily_research import allocation, capabilities, findall, render, search
 from tools.daily_research.consumer import Consumer
+from tools.daily_research.firestore import Bridge, FirestoreLedger
 from tools.daily_research.runner import (
     AGENT,
     MODEL,
+    PROJECT,
     TEMPLATE,
     Ledger,
     Refusal,
@@ -604,7 +611,11 @@ def test_a_run_still_active_at_the_deadline_is_cancelled_once(runtime):
     record = next(iter(ledger.get(DAY)[findall.SETTLEMENTS_FIELD].values()))
     assert client.cancels == [RUN_ID] and record["state"] == "terminal"
     assert record["provider_status"] == "cancelled" and record["cancel_attempts"] == 1
-    assert all(json.loads(ledger.read_bytes(ref["file"]))["findall_id"] == RUN_ID for ref in record["receipts"])
+    statuses = [ref for ref in record["receipts"] if ref != record["result_receipt"]]
+    assert all(json.loads(ledger.read_bytes(ref["file"]))["findall_id"] == RUN_ID for ref in statuses)
+    # One result read, after the cancel, keeps the matches; a second pass reads nothing more.
+    assert [kind for kind, _ in client.reads] == ["status", "status", "result"]
+    assert json.loads(ledger.read_bytes(record["result_receipt"]["file"]))["candidates"][0]["status"] == "matched"
     assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000  # Cancellation is not a refund.
     assert not findall.settlement_due(ledger.get(DAY), state["now"])
 
@@ -619,10 +630,14 @@ def test_a_completed_run_needs_no_cancel_and_an_unknown_id_stays_reserved(runtim
     ledger.put(row)
     with ledger.lock():
         api.findall_application_tools.settle(row, reason="research_ended")
-    states = {record["operation_id"].rsplit(":", 1)[-1]: record["state"]
-              for record in ledger.get(DAY)[findall.SETTLEMENTS_FIELD].values()}
+    records = {record["operation_id"].rsplit(":", 1)[-1]: record
+               for record in ledger.get(DAY)[findall.SETTLEMENTS_FIELD].values()}
+    states = {name: record["state"] for name, record in records.items()}
     assert states == {"call_create": "terminal", "call_uncertain": "provider_id_unknown"}
     assert client.cancels == []
+    # A run found terminal keeps one free result snapshot; an unknown ID has nothing to read.
+    assert client.reads.count(("result", RUN_ID)) == 1 and "result_receipt" in records["call_create"]
+    assert "result_receipt" not in records["call_uncertain"]
     assert sorted(claim["reserved_micros"] for claim in findall_claims(ledger)) == [1_000_000, 2_000_000]
 
 
@@ -638,6 +653,7 @@ def test_failed_cancels_are_bounded_and_the_reservation_stays_held(runtime):
     record = next(iter(ledger.get(DAY)[findall.SETTLEMENTS_FIELD].values()))
     assert client.cancels == [RUN_ID] * findall.MAX_CANCEL_ATTEMPTS
     assert record["state"] == "cancel_attempts_exhausted" and record["cancel_error"] == "findall_transport_failed"
+    assert ("result", RUN_ID) not in client.reads and "result_receipt" not in record  # Never cancelled or terminal.
     assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000
 
 
@@ -730,45 +746,471 @@ def test_running_row_cancels_on_fresh_paid_authority_loss(runtime, change):
     assert findall_claims(ledger)[0]["reserved_micros"] == 2_000_000
 
 
-@pytest.mark.parametrize("payload", ["x" * 550_000, "x" * (9 * 1024 * 1024), "🚀" * 100_000])
-def test_large_results_have_bounded_receipt_pages_and_lossless_export(runtime, monkeypatch, payload):
+def findall_writes(ledger, monkeypatch):
+    """Record each FindAll snapshot file written; the tool's own result event is not one."""
+    names = []
+    original = ledger.write_bytes
+
+    def write(name, raw):
+        if "-tool-findall-" in name:
+            assert len(raw) <= owner.MAX_SNAPSHOT_BYTES < 8 * 1024 * 1024  # One file below the store ceiling.
+            names.append(name)
+        return original(name, raw)
+
+    monkeypatch.setattr(ledger, "write_bytes", write)
+    return names
+
+
+@pytest.mark.parametrize("payload", ["x" * 550_000, "\U0001f680" * 100_000, "x" * 6_000_000],
+                         ids=["550kB", "four-byte", "6MB"])
+def test_large_results_are_one_file_served_in_receipt_bound_pages_with_lossless_export(runtime, monkeypatch, payload):
     _row, ledger, client, _, _api = runtime
     started(runtime)
     snapshot = {"run": {"findall_id": RUN_ID}, "candidates": [{"status": "matched", "future": payload}],
                 "future": {"citations": [{"url": "https://example.test/raw"}], "unknown": True}}
     monkeypatch.setattr(client, "result", lambda value: client.reads.append(("result", value)) or snapshot)
-    original_write = ledger.write_bytes
-
-    def bounded_write(name, raw):
-        assert len(raw) <= 8 * 1024 * 1024  # Actual Firestore artifact ceiling.
-        return original_write(name, raw)
-
-    monkeypatch.setattr(ledger, "write_bytes", bounded_write)
+    writes = findall_writes(ledger, monkeypatch)
     respond(runtime, action(findall.RESULT, "call_result", {"findall_id": RUN_ID}))
     event, first = reply(runtime)
     assert event["success"] is True and len(event["output"].encode()) < search.MAX_RESPONSE
     assert first["page"] == 0 and first["next_page"] == 1 and first["evidence_scope"] == "discovery_only"
     stored = ledger.get(DAY)
     receipt = stored[findall.READS_FIELD]["call_result"]
-    rebuilt = "".join(owner.snapshot_page(receipt, ledger.read_bytes, page)["json_fragment"]
-                      for page in range(first["page_count"]))
-    assert json.loads(rebuilt) == snapshot
+    assert writes == [receipt["file"]] and "parts" not in receipt  # ONE immutable file, one write.
+    raw = ledger.read_bytes(receipt["file"])
+    rebuilt = raw.decode("utf-8")
+    if len(raw) < 1_000_000:  # Larger files are rebuilt in the owner tests; here, spot pages below.
+        rebuilt = "".join(owner.snapshot_page(receipt, ledger.read_bytes, page)["json_fragment"]
+                          for page in range(first["page_count"]))
+    assert rebuilt.encode("utf-8") == raw and json.loads(rebuilt) == snapshot
+    assert first["json_fragment"] == rebuilt[:owner.SNAPSHOT_FRAGMENT_CHARS]
     owner.validate_snapshot(receipt, ledger.read_bytes)
     findall.validate_snapshot_exports(stored, ledger.read_bytes)
-    refs = findall.receipt_refs(stored)
-    assert all(ref in refs for ref in receipt["parts"])
+    assert {key: receipt[key] for key in ("file", "sha256", "bytes")} in findall.receipt_refs(stored)
+    size = owner.SNAPSHOT_FRAGMENT_CHARS
     for page in {1, first["page_count"] - 1}:
         respond(runtime, action(findall.RESULT, f"call_page_{page}", {
             "findall_id": RUN_ID, "receipt_sha256": first["receipt"]["sha256"], "page": page}))
         event, shown = reply(runtime)
         assert event["success"] is True and shown["page"] == page
+        assert shown["json_fragment"] == rebuilt[page * size:(page + 1) * size]
         assert len(event["output"].encode()) < search.MAX_RESPONSE
-    assert client.reads.count(("result", RUN_ID)) == 1
-    respond(runtime, action(findall.RESULT, "call_wrong_cursor", {
-        "findall_id": RUN_ID, "receipt_sha256": "0" * 64, "page": 1}))
-    assert reply(runtime)[0]["success"] is False
+    # Continuation slices the same file: no provider read and no new snapshot.
+    assert client.reads.count(("result", RUN_ID)) == 1 and writes == [receipt["file"]]
+    for cid, cursor, code in (("call_wrong_cursor", "0" * 64, "findall_snapshot_cursor_not_owned"),
+                              ("call_bad_cursor", "not-a-sha256", "findall_snapshot_cursor_not_owned"),
+                              ("call_past_end", first["receipt"]["sha256"], "findall_snapshot_page_invalid")):
+        respond(runtime, action(findall.RESULT, cid, {
+            "findall_id": RUN_ID, "receipt_sha256": cursor, "page": first["page_count"]}))
+        event, _ = reply(runtime)
+        assert event["success"] is False and json.loads(event["error"]) == {"code": code}
     original_read = ledger.read_bytes
-    last = receipt["parts"][-1]["file"]
-    monkeypatch.setattr(ledger, "read_bytes", lambda name: b"changed" if name == last else original_read(name))
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: b"changed" if name == receipt["file"] else original_read(name))
     with pytest.raises(execution.FindAllError, match="snapshot_binding_invalid"):
         findall.validate_snapshot_exports(stored, ledger.read_bytes)
+
+
+def test_a_result_above_the_retention_limit_is_refused_fast_with_no_writes_and_the_run_kept(runtime, monkeypatch):
+    _row, ledger, client, _, _ = runtime
+    started(runtime)
+    entry = copy.deepcopy(next(iter(ledger.get(DAY)[owner.SUBMISSIONS_FIELD].values())))
+    snapshot = {"run": {"findall_id": RUN_ID}, "candidates": [{"status": "unmatched", "future": "x" * (8 * 1024 * 1024)}]}
+    monkeypatch.setattr(client, "result", lambda value: client.reads.append(("result", value)) or snapshot)
+    writes = findall_writes(ledger, monkeypatch)
+    began = time.monotonic()
+    respond(runtime, action(findall.RESULT, "call_result", {"findall_id": RUN_ID}))
+    elapsed = time.monotonic() - began
+    event, output = reply(runtime)
+    assert event["success"] is False and output["reason"] == "findall_snapshot_too_large"
+    assert json.loads(event["error"]) == {"code": "findall_snapshot_too_large", "guidance": output["action"]}
+    assert "narrower or smaller request" in output["action"] and "findall_id" in output["action"]
+    assert output["findall_id"] == RUN_ID and output["snapshot_retained"] is False
+    assert output["snapshot_bytes"] > output["maximum_snapshot_bytes"] == owner.MAX_SNAPSHOT_BYTES
+    assert writes == [] and findall.READS_FIELD not in ledger.get(DAY)  # Nothing stored.
+    # The provider run stays recorded with its whole reservation, so a later recovery can read it.
+    assert next(iter(ledger.get(DAY)[owner.SUBMISSIONS_FIELD].values())) == entry
+    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000
+    assert elapsed < 10 and client.reads.count(("result", RUN_ID)) == 1
+
+
+def test_findall_tool_schemas_carry_no_pattern_keyword():
+    def keys(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield key
+                yield from keys(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from keys(item)
+
+    definitions = findall.tools()
+    assert all("pattern" not in set(keys(tool["parameters"])) for tool in definitions)
+    result = next(tool for tool in definitions if tool["name"] == findall.RESULT)
+    assert result["parameters"]["properties"]["receipt_sha256"] == {"type": "string"}
+    create = next(tool for tool in definitions if tool["name"] == findall.CREATE)
+    assert create["parameters"]["properties"]["maximum_cost_usd"] == {"type": "string"}  # Host-validated.
+
+
+def test_instructions_recommend_small_first_requests_one_read_and_receipt_paging():
+    text = findall.instructions()
+    assert "match_limit of about 50" in text and "two base requests of 150" not in text and "$4.75" not in text
+    assert "one base request of 50 matches has a listed estimate of $1.75" in text and "leaving $8.25" in text
+    assert "Poll blueprint_findall_status until the run is no longer active before reading its result" in text
+    assert "Read each completed run's result once" in text and "receipt_sha256 and page" in text
+    assert "including non-matches, so it is much larger than match_limit suggests" in text
+    assert "7 MiB retention limit is refused as findall_snapshot_too_large" in text
+    execution.prepare_submission({**SPEC, "match_limit": findall.FIRST_MATCH_LIMIT}, operation_id="synthetic",
+                                 maximum_cost_usd="1.75")  # The stated estimate is the host's own estimate.
+    with pytest.raises(execution.FindAllError, match="below_estimated_cost"):
+        execution.prepare_submission({**SPEC, "match_limit": findall.FIRST_MATCH_LIMIT}, operation_id="synthetic",
+                                     maximum_cost_usd="1.74")
+    descriptions = {tool["name"]: tool["description"] for tool in findall.tools()}
+    assert "match_limit of about 50" in descriptions[findall.CREATE]
+    assert "no longer active" in descriptions[findall.STATUS] and "once" in descriptions[findall.RESULT]
+    assert "non-matches" in descriptions[findall.CREATE] and "non-matches" in descriptions[findall.RESULT]
+
+
+# --- Read time bound: only the provider GET is alarmed ------------------------------------
+
+
+def watch(timers, label, function):
+    def wrapped(*args, **kwargs):
+        timers.append((label, signal.getitimer(signal.ITIMER_REAL)[0]))
+        return function(*args, **kwargs)
+    return wrapped
+
+
+@pytest.mark.parametrize("name", [findall.STATUS, findall.RESULT])
+def test_reads_alarm_only_the_provider_get_and_every_store_call_runs_outside_it(runtime, monkeypatch, name):
+    _row, ledger, client, _state, api = runtime
+    timers = []
+    for operation in ("get", "put", "write_bytes", "read_bytes"):
+        monkeypatch.setattr(ledger, operation, watch(timers, operation, getattr(ledger, operation)))
+    handler = api.findall_application_tools
+    monkeypatch.setattr(handler, "assert_current_lease", watch(timers, "assert_lease", handler.assert_current_lease))
+    monkeypatch.setattr(client, "_post", watch(timers, "post", client._post))
+    monkeypatch.setattr(client, name.rsplit("_", 1)[-1], watch(timers, "get_provider", getattr(client, name.rsplit("_", 1)[-1])))
+    started(runtime)
+    posts = [seconds for label, seconds in timers if label == "post"]
+    assert len(posts) == 1 and 0 < posts[0] <= findall.TOOL_BOUND_SECONDS  # A create keeps the 15 s bound.
+    timers.clear()
+    respond(runtime, action(name, "call_read", {"findall_id": RUN_ID}))
+    assert reply(runtime)[0]["success"] is True
+    gets = [seconds for label, seconds in timers if label == "get_provider"]
+    assert len(gets) == 1 and findall.TOOL_BOUND_SECONDS < gets[0] <= findall.FINDALL_READ_BOUND_SECONDS
+    stores = [(label, seconds) for label, seconds in timers if label != "get_provider"]
+    assert {label for label, _ in stores} >= {"get", "put", "write_bytes", "read_bytes", "assert_lease"}
+    assert all(seconds == 0.0 for _, seconds in stores), stores  # No store call ever runs under the alarm.
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_the_read_bound_is_the_remaining_phase_time_when_that_is_shorter(runtime, monkeypatch):
+    _row, _ledger, client, state, _api = runtime
+    started(runtime)
+    timers = []
+    monkeypatch.setattr(client, "result", watch(timers, "get_provider", client.result))
+    state["now"] = NOW + timedelta(seconds=1200 - 30)  # 30 s of research remain.
+    respond(runtime, action(findall.RESULT, "call_read", {"findall_id": RUN_ID}))
+    assert reply(runtime)[0]["success"] is True
+    assert len(timers) == 1 and 0 < timers[0][1] <= 30
+
+
+def test_a_get_that_outlives_its_bound_fails_before_any_store_write(runtime, monkeypatch):
+    _row, ledger, client, _state, _api = runtime
+    started(runtime)
+    bound, provider_result = findall.FINDALL_READ_BOUND_SECONDS, client.result
+    monkeypatch.setattr(findall, "FINDALL_READ_BOUND_SECONDS", 0.2)
+
+    def slow(value):
+        client.reads.append(("result", value))
+        time.sleep(5)  # The alarm interrupts this provider read.
+        raise AssertionError("the read bound did not fire")
+
+    monkeypatch.setattr(client, "result", slow)
+    writes = findall_writes(ledger, monkeypatch)
+    began = time.monotonic()
+    respond(runtime, action(findall.RESULT, "call_slow", {"findall_id": RUN_ID}))
+    assert time.monotonic() - began < 3
+    event, _ = reply(runtime)
+    assert event["success"] is False and json.loads(event["error"]) == {"code": "research_tool_absolute_deadline"}
+    assert writes == [] and findall.READS_FIELD not in ledger.get(DAY)
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    # The store and call journal stay usable: the next read is retained.
+    monkeypatch.setattr(findall, "FINDALL_READ_BOUND_SECONDS", bound)
+    monkeypatch.setattr(client, "result", provider_result)
+    respond(runtime, action(findall.RESULT, "call_after", {"findall_id": RUN_ID}))
+    assert reply(runtime)[0]["success"] is True and "call_after" in ledger.get(DAY)[findall.READS_FIELD]
+
+
+# --- Settlement keeps the matches that were paid for -----------------------------------------
+
+
+def test_settlement_reads_the_result_only_after_the_cancel_and_exports_it(runtime, monkeypatch):
+    row, ledger, client, state, api = runtime
+    started(runtime)
+    order = []
+    original_post, original_result = client._post, client.result
+    monkeypatch.setattr(client, "_post", lambda url, body=None: order.append("cancel") or original_post(url, body))
+    monkeypatch.setattr(client, "result", lambda value: order.append("result") or original_result(value))
+    state["now"] = NOW + timedelta(seconds=1200)
+    with ledger.lock():
+        api.findall_application_tools.settle(row, reason="original_research_deadline")
+    stored = ledger.get(DAY)
+    record = next(iter(stored[findall.SETTLEMENTS_FIELD].values()))
+    assert order == ["cancel", "result"] and record["state"] == "terminal"
+    receipt = record["result_receipt"]
+    assert receipt in record["receipts"] and "-tool-findall-settle-result-" in receipt["file"]
+    assert json.loads(ledger.read_bytes(receipt["file"])) == original_result(RUN_ID)
+    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000  # No refund semantics.
+    findall.validate_snapshot_exports(stored, ledger.read_bytes)
+    assert {key: receipt[key] for key in ("file", "sha256", "bytes")} in findall.receipt_refs(stored)
+
+
+def test_a_cancelled_run_that_still_reports_active_gets_exactly_one_result_read(runtime, monkeypatch):
+    row, ledger, client, _state, api = runtime
+    started(runtime)
+    row.update(state="awaiting_review")
+    ledger.put(row)
+    original = client._post
+
+    def accepted_but_active(url, body=None):
+        value = original(url, body)
+        client.active = True  # The provider accepted the cancel but still reports the run active.
+        return value
+
+    monkeypatch.setattr(client, "_post", accepted_but_active)
+    with ledger.lock():
+        for _ in range(findall.MAX_SETTLEMENT_PASSES + 1):
+            api.findall_application_tools.settle(row, reason="research_ended")
+    record = next(iter(ledger.get(DAY)[findall.SETTLEMENTS_FIELD].values()))
+    assert client.cancels == [RUN_ID] and record["state"] == "settlement_unconfirmed"
+    assert client.reads.count(("result", RUN_ID)) == 1 and record["result_receipt"] in record["receipts"]
+
+
+@pytest.mark.parametrize("failure", ["provider", "timeout", "too_large", "store"])
+def test_a_failed_settlement_result_read_is_recorded_and_never_blocks_the_cancel(runtime, monkeypatch, failure):
+    row, ledger, client, state, api = runtime
+    started(runtime)
+    state["now"] = NOW + timedelta(seconds=1200)
+    if failure == "provider":
+        def fail(value):
+            raise execution.FindAllError("findall_transport_failed")
+        monkeypatch.setattr(client, "result", fail)
+        code = "findall_transport_failed"
+    elif failure == "timeout":
+        monkeypatch.setattr(findall, "FINDALL_READ_BOUND_SECONDS", 0.2)
+        monkeypatch.setattr(client, "result", lambda value: time.sleep(5))
+        code = "research_tool_absolute_deadline"
+    elif failure == "too_large":
+        monkeypatch.setattr(client, "result", lambda value: {"run": {"findall_id": value},
+                                                             "candidates": [{"future": "x" * (8 * 1024 * 1024)}]})
+        code = "findall_snapshot_too_large"
+    else:
+        original = ledger.write_bytes
+
+        def refuse(name, raw):
+            if "-settle-result-" in name:
+                raise Refusal("firestore_blob_too_large")
+            return original(name, raw)
+
+        monkeypatch.setattr(ledger, "write_bytes", refuse)
+        code = "firestore_blob_too_large"
+    with ledger.lock():
+        for _ in range(3):
+            api.findall_application_tools.settle(row, reason="original_research_deadline")
+    record = next(iter(ledger.get(DAY)[findall.SETTLEMENTS_FIELD].values()))
+    assert client.cancels == [RUN_ID] and record["state"] == "terminal"  # The cancel path completed.
+    assert record["result_observation_error"] == code and "result_receipt" not in record
+    assert not any("-settle-result-" in ref["file"] for ref in record["receipts"])
+    assert (record.get("result_snapshot_bytes", 0) > owner.MAX_SNAPSHOT_BYTES) is (failure == "too_large")
+    assert findall_claims(ledger)[0]["reserved_micros"] == 1_000_000
+    assert not findall.settlement_due(ledger.get(DAY), state["now"])
+
+
+# --- The real store path: Python Bridge/FirestoreLedger and the JS Store ------------------------
+
+ROOT = Path(__file__).resolve().parents[1]
+# A Buffer-native hermetic Firestore driver with MemoryFirestore's transaction rules. The shared
+# double JSON-clones every 256 KiB Buffer chunk as a number array (seconds per MB), which would
+# measure the double instead of the Python pipe and JS Store code under test.
+BUFFER_FIRESTORE = r"""
+const clone = value => Buffer.isBuffer(value) ? Buffer.from(value) : Array.isArray(value) ? value.map(clone)
+  : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value)
+    .filter(([, item]) => item !== undefined).map(([key, item]) => [key, clone(item)])) : value;
+class Snapshot {
+  constructor(path, value) {this.ref = {path, id: path.split('/').at(-1)}; this.id = this.ref.id; this.value = value;
+    this.exists = value !== undefined;}
+  data() {return clone(this.value);}
+}
+export class BufferFirestore {
+  constructor() {this.values = new Map(); this.tail = Promise.resolve();}
+  doc(path) {return {path, id: path.split('/').at(-1), get: async () => new Snapshot(path, this.values.get(path))};}
+  collection(path) {
+    const depth = path.split('/').length + 1;
+    const query = count => ({limit: next => query(next), get: async () => ({docs: [...this.values]
+      .filter(([key]) => key.startsWith(path + '/') && key.split('/').length === depth).slice(0, count)
+      .map(([key, value]) => new Snapshot(key, value))})});
+    return query(Infinity);
+  }
+  runTransaction(fn) {
+    const run = async () => {
+      const writes = [];
+      const result = await fn({get: async ref => {
+        if (writes.length) throw new Error('read after write');
+        return ref.get();
+      }, set: (ref, value, options) => writes.push({ref, value: clone(value), merge: options?.merge})});
+      for (const {ref, value, merge} of writes)
+        this.values.set(ref.path, merge ? {...this.values.get(ref.path), ...value} : value);
+      return result;
+    };
+    const result = this.tail.then(run); this.tail = result.catch(() => {}); return result;
+  }
+}
+"""
+
+
+@pytest.fixture
+def real_store(tmp_path):
+    """The real private pipe, LeaseChannel and JS Store; only Firestore is a hermetic double (fixed clock)."""
+    driver = tmp_path / "buffer-firestore.mjs"
+    driver.write_text(BUFFER_FIRESTORE)
+    script = tmp_path / "bridge.mjs"
+    script.write_text("\n".join([
+        "import {createInterface} from 'node:readline';",
+        "import {Store, LeaseChannel} from "
+        + json.dumps((ROOT / "tools/daily_research/firestore_bridge.mjs").as_uri()) + ";",
+        "import {BufferFirestore} from " + json.dumps(driver.as_uri()) + ";",
+        f"const channel = new LeaseChannel(new Store(new BufferFirestore(), () => {int(NOW.timestamp() * 1000)}));",
+        "for await (const line of createInterface({input: process.stdin})) {",
+        "try {const value = await channel.call(JSON.parse(line)); process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
+        "catch(error) {process.stdout.write(JSON.stringify({ok:false,error:error.message})+'\\n');}}",
+        "await channel.close();",
+    ]))
+    bridge = Bridge(script=script)
+    try:
+        ledger = FirestoreLedger(bridge)
+        bridge.call("init", value={"schema_version": "blueprint.research-control.v1", "enabled": False})
+        with ledger.lock():
+            bridge.call("configure", value={"schema_version": "blueprint.research-control.v1", "enabled": True,
+                                            "project_id": PROJECT, "agent_id": AGENT, "source_commit": COMMIT})
+            bridge.call("paid_expansion_set", expected_sha256=None,
+                        value={"enabled": True, "current": owner_control()["paid_expansion"]["current"]})
+            row = pinned_row(bridge.call("control"), state="creating")
+            ledger.put(row)  # The real store admits the frozen grant at the durable intent.
+            row["state"] = "running"
+            ledger.put(row)
+        replies = []
+
+        def assert_lease():
+            bridge.call("assert_lease")
+            return True
+
+        client = Client(ledger)
+        handler = findall.FindAllApplicationTools(ledger=ledger, client=client, control=lambda: bridge.call("control"),
+                                                  assert_current_lease=assert_lease, clock=lambda: NOW)
+        api = SimpleNamespace(findall_application_tools=handler, tool_admit=lambda row, phase: None,
+                              tool_result=lambda sid, event, key: replies.append(copy.deepcopy(event)))
+        yield SimpleNamespace(row=row, ledger=ledger, client=client, replies=replies, api=api, bridge=bridge)
+    finally:
+        bridge.close()
+
+
+def respond_through(store, pending):
+    with store.ledger.lock():
+        search.respond(store.row, {"required_actions": [pending]}, store.ledger, store.api,
+                       phase="research", clock=lambda: NOW)
+    return store.replies[-1]
+
+
+def synthetic_result(megabytes):
+    """A FindAll-shaped result listing every evaluated candidate, mostly non-matches. Hex reasoning
+    compresses poorly, so the store writes many gzip chunks for the one file."""
+    candidates, size = [], 0
+    while size < megabytes * 1_000_000:
+        index = len(candidates)
+        reasoning = "".join(hashlib.sha256(f"{index}:{part}".encode()).hexdigest() for part in range(24))
+        candidate = {"candidate_id": f"candidate_{index}", "name": f"Operating site {index}",
+                     "url": f"https://operator.example/sites/{index}",
+                     "match_status": "matched" if index % 7 == 0 else "unmatched",
+                     "basis": [{"field": "task", "reasoning": reasoning, "citations": [
+                         {"url": f"https://evidence.example/{index}", "excerpts": [reasoning[:640]]}]}]}
+        candidates.append(candidate)
+        size += len(json.dumps(candidate))
+    return {"run": {"findall_id": RUN_ID, "status": {"status": "completed", "is_active": False}},
+            "candidates": candidates, "last_event_id": "event_synthetic"}
+
+
+@pytest.mark.parametrize("megabytes", [2, 6])
+def test_large_results_retain_through_the_real_store_in_one_write_within_the_bound(
+        real_store, monkeypatch, tmp_path, megabytes):
+    store = real_store
+    assert respond_through(store, action())["success"] is True
+    store.row.update(store.ledger.get(DAY))
+    snapshot = synthetic_result(megabytes)
+    monkeypatch.setattr(store.client, "result", lambda value: store.client.reads.append(("result", value)) or snapshot)
+    ops, alarmed = [], []
+    call = store.bridge.call
+
+    def counted(op, **fields):
+        began = time.monotonic()
+        try:
+            return call(op, **fields)
+        finally:
+            ops.append((op, fields.get("name"), time.monotonic() - began))
+
+    monkeypatch.setattr(store.bridge, "call", counted)
+    handler = store.api.findall_application_tools
+    provider_read = handler.provider_read
+
+    def timed(*args):
+        began = time.monotonic()
+        try:
+            return provider_read(*args)
+        finally:
+            alarmed.append(time.monotonic() - began)
+
+    monkeypatch.setattr(handler, "provider_read", timed)
+    began = time.monotonic()
+    event = respond_through(store, action(findall.RESULT, "call_result", {"findall_id": RUN_ID}))
+    elapsed, during = time.monotonic() - began, list(ops)
+    first = json.loads(event["output"])
+    receipt = store.ledger.get(DAY)[findall.READS_FIELD]["call_result"]
+    raw = store.ledger.read_bytes(receipt["file"])
+    text = raw.decode("utf-8")
+    assert event["success"] is True and first["page"] == 0 and first["page_count"] == receipt["page_count"] > 1
+    assert raw == owner._json_bytes(snapshot) and first["json_fragment"] == text[:owner.SNAPSHOT_FRAGMENT_CHARS]
+    # ONE immutable file: one write and one readback; the first page needs no further store read.
+    assert [name for op, name, _ in during if op == "file_put" and "-tool-findall-" in name] == [receipt["file"]]
+    assert [op for op, name, _ in during if name == receipt["file"]] == ["file_put", "file_get"]
+    assert len(alarmed) == 1 and alarmed[0] < elapsed < findall.FINDALL_READ_BOUND_SECONDS
+    assert store.bridge.broken is False
+    counts = dict(sorted(Counter(op for op, _, _ in during).items()))
+    print(f"\nreal store {megabytes} MB result: {len(raw)} bytes, {receipt['page_count']} pages; tool call "
+          f"{elapsed:.2f}s, alarmed GET+encode {alarmed[0]:.2f}s; {len(during)} store calls "
+          f"({sum(seconds for *_, seconds in during):.2f}s) {counts}; snapshot file_put "
+          f"{next(s for op, name, s in during if op == 'file_put' and name == receipt['file']):.2f}s")
+    ops.clear()
+    last = receipt["page_count"] - 1
+    event = respond_through(store, action(findall.RESULT, "call_last_page", {
+        "findall_id": RUN_ID, "receipt_sha256": receipt["sha256"], "page": last}))
+    shown = json.loads(event["output"])
+    assert event["success"] is True and shown["next_page"] is None
+    assert shown["json_fragment"] == text[last * owner.SNAPSHOT_FRAGMENT_CHARS:]
+    assert [op for op, name, _ in ops if name == receipt["file"]] == ["file_get"]  # Same file, no new snapshot.
+    assert store.client.reads.count(("result", RUN_ID)) == 1
+    render.export_snapshot(store.bridge, DAY, tmp_path / "export")  # The JS export and Python validation.
+    assert (tmp_path / "export" / receipt["file"]).read_bytes() == raw
+    assert not any("-part-" in path.name for path in (tmp_path / "export").iterdir())
+
+
+def test_a_get_timeout_never_breaks_the_real_store_bridge(real_store, monkeypatch):
+    store = real_store
+    assert respond_through(store, action())["success"] is True
+    store.row.update(store.ledger.get(DAY))
+    monkeypatch.setattr(findall, "FINDALL_READ_BOUND_SECONDS", 0.3)
+    monkeypatch.setattr(store.client, "result", lambda value: time.sleep(5))
+    event = respond_through(store, action(findall.RESULT, "call_slow", {"findall_id": RUN_ID}))
+    assert event["success"] is False and json.loads(event["error"]) == {"code": "research_tool_absolute_deadline"}
+    assert store.bridge.broken is False  # The alarm fired in the GET, before any store write.
+    assert findall.READS_FIELD not in store.ledger.get(DAY)
+    assert store.ledger.get(DAY)["application_tool_calls"]["call_slow"]["success"] is False

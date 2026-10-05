@@ -56,9 +56,24 @@ def _slots(row: Mapping[str, Any]) -> dict[str, Any]:
     return slots
 
 
-SNAPSHOT_SCHEMA = "blueprint.findall-snapshot-parts.v1"
+# A snapshot is ONE immutable store file: one write, one readback check and its
+# SHA-256 in the receipt. A snapshot too large for one tool output is paged at
+# read time by slicing that same file, so continuation never fetches a new one.
+SNAPSHOT_SCHEMA = "blueprint.findall-snapshot.v2"
 SNAPSHOT_FRAGMENT_CHARS = 24_000  # Escaped output remains below the 500 kB tool ceiling.
 SMALL_SNAPSHOT_BYTES = 200_000
+# The Firestore bridge stores at most 8 MiB per file (firestore_bridge.mjs MAX_BYTES,
+# checked in blobPut); 7 MiB of raw JSON keeps 1 MiB of headroom below it.
+MAX_SNAPSHOT_BYTES = 7 * 1024 * 1024
+_PAGING_FIELDS = ("schema_version", "page_chars", "page_count")
+
+
+class FindAllSnapshotTooLarge(FindAllError):
+    """A snapshot above MAX_SNAPSHOT_BYTES, refused before any store write."""
+
+    def __init__(self, snapshot_bytes: int) -> None:
+        self.snapshot_bytes = snapshot_bytes
+        super().__init__("findall_snapshot_too_large")
 
 
 def _json_bytes(value):
@@ -66,79 +81,100 @@ def _json_bytes(value):
                        ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
 
 
-def retain_snapshot(ledger, name, snapshot):
-    """Retain the whole snapshot in immutable, read-back-checked bounded artifacts."""
+def _page_count(text):
+    return -(-len(text) // SNAPSHOT_FRAGMENT_CHARS)
+
+
+def encode_snapshot(snapshot):
+    """The exact file bytes and receipt facts of one snapshot, with no store access.
+
+    Above MAX_SNAPSHOT_BYTES this raises FindAllSnapshotTooLarge, so nothing is
+    written. A snapshot too large for one tool output also fixes its page layout.
+    """
     raw = _json_bytes(snapshot)
-    # Size the small path using the tool's ASCII-escaped serialization too.
-    escaped = json.dumps(snapshot, ensure_ascii=True, allow_nan=False).encode()
-    if max(len(raw), len(escaped)) <= SMALL_SNAPSHOT_BYTES:
-        ledger.write_bytes(name, raw)
-        if ledger.read_bytes(name) != raw:
-            raise FindAllError("findall_snapshot_readback_failed")
-        return {"file": name, "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
-    snapshot_sha = hashlib.sha256(raw).hexdigest()
-    text, parts = raw.decode("utf-8"), []
-    for index, start in enumerate(range(0, len(text), SNAPSHOT_FRAGMENT_CHARS)):
-        part = {"schema_version": SNAPSHOT_SCHEMA, "snapshot_sha256": snapshot_sha,
-                "page": index, "json_fragment": text[start:start + SNAPSHOT_FRAGMENT_CHARS]}
-        value = _json_bytes(part)
-        filename = name[:-5] + f"-part-{index:05d}.json"
-        ledger.write_bytes(filename, value)
-        if ledger.read_bytes(filename) != value:
-            raise FindAllError("findall_snapshot_readback_failed")
-        parts.append({"file": filename, "sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)})
-    manifest = {"schema_version": SNAPSHOT_SCHEMA, "snapshot_sha256": snapshot_sha,
-                "snapshot_bytes": len(raw), "parts": parts}
-    value = _json_bytes(manifest)
-    ledger.write_bytes(name, value)
-    if ledger.read_bytes(name) != value:
+    if len(raw) > MAX_SNAPSHOT_BYTES:
+        raise FindAllSnapshotTooLarge(len(raw))
+    facts = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+    # Size the inline path using the tool's ASCII-escaped serialization too.
+    if (len(raw) > SMALL_SNAPSHOT_BYTES or len(json.dumps(
+            snapshot, ensure_ascii=True, allow_nan=False).encode()) > SMALL_SNAPSHOT_BYTES):
+        facts.update(schema_version=SNAPSHOT_SCHEMA, page_chars=SNAPSHOT_FRAGMENT_CHARS,
+                     page_count=_page_count(raw.decode("utf-8")))
+    return raw, facts
+
+
+def store_snapshot(ledger, name, raw, facts):
+    """Write the encoded snapshot once and check one readback; returns its receipt."""
+    ledger.write_bytes(name, raw)
+    if ledger.read_bytes(name) != raw:
         raise FindAllError("findall_snapshot_readback_failed")
-    return {"file": name, "sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value), **manifest}
+    return {"file": name, **facts}
 
 
-def snapshot_page(receipt, read_bytes, page=0):
-    """An immutable receipt-bound page; continuation never fetches a new snapshot."""
+def retain_snapshot(ledger, name, snapshot):
+    """Retain the whole snapshot as one immutable, read-back-checked file."""
+    raw, facts = encode_snapshot(snapshot)
+    return store_snapshot(ledger, name, raw, facts)
+
+
+def _page_layout(receipt):
+    """None for an inline snapshot, else its page count; other receipt shapes are refused."""
+    if (not isinstance(receipt, Mapping) or "parts" in receipt  # The retired multi-file format.
+            or not isinstance(receipt.get("file"), str) or not isinstance(receipt.get("sha256"), str)
+            or type(receipt.get("bytes")) is not int):
+        raise FindAllError("findall_snapshot_binding_invalid")
+    present = [key for key in _PAGING_FIELDS if key in receipt]
+    if not present:
+        return None
+    count = receipt.get("page_count")
+    if (len(present) != len(_PAGING_FIELDS) or receipt["schema_version"] != SNAPSHOT_SCHEMA
+            or receipt["page_chars"] != SNAPSHOT_FRAGMENT_CHARS or type(count) is not int or count < 1):
+        raise FindAllError("findall_snapshot_binding_invalid")
+    return count
+
+
+def page_view(receipt, raw, page=0):
+    """One page of these exact receipt-bound bytes, with no store access."""
     if type(page) is not int or page < 0:
         raise FindAllError("findall_snapshot_page_invalid")
-    raw = read_bytes(receipt["file"])
-    if hashlib.sha256(raw).hexdigest() != receipt["sha256"] or len(raw) != receipt["bytes"]:
+    count = _page_layout(receipt)
+    if (not isinstance(raw, bytes) or len(raw) != receipt["bytes"]
+            or hashlib.sha256(raw).hexdigest() != receipt["sha256"]):
         raise FindAllError("findall_snapshot_binding_invalid")
-    value = json.loads(raw)
     shown = {key: receipt[key] for key in ("file", "sha256", "bytes")}
-    if "parts" not in receipt:
+    if count is None:
         if page != 0:
             raise FindAllError("findall_snapshot_page_invalid")
-        return {"snapshot": value, "receipt": shown}
-    expected = {key: receipt[key] for key in ("schema_version", "snapshot_sha256", "snapshot_bytes", "parts")}
-    if value != expected or page >= len(receipt["parts"]):
+        return {"snapshot": json.loads(raw), "receipt": shown}
+    text = raw.decode("utf-8")
+    if _page_count(text) != count:
         raise FindAllError("findall_snapshot_binding_invalid")
-    ref = receipt["parts"][page]
-    part_raw = read_bytes(ref["file"])
-    if hashlib.sha256(part_raw).hexdigest() != ref["sha256"] or len(part_raw) != ref["bytes"]:
-        raise FindAllError("findall_snapshot_binding_invalid")
-    part = json.loads(part_raw)
-    if (set(part) != {"schema_version", "snapshot_sha256", "page", "json_fragment"}
-            or part["schema_version"] != SNAPSHOT_SCHEMA or part["snapshot_sha256"] != receipt["snapshot_sha256"]
-            or type(part["page"]) is not int or part["page"] != page
-            or not isinstance(part["json_fragment"], str)
-            or not 0 < len(part["json_fragment"]) <= SNAPSHOT_FRAGMENT_CHARS):
-        raise FindAllError("findall_snapshot_binding_invalid")
-    return {"json_fragment": part["json_fragment"], "encoding": "utf-8",
-            "page": page, "page_count": len(receipt["parts"]),
-            "next_page": page + 1 if page + 1 < len(receipt["parts"]) else None,
-            "snapshot_sha256": receipt["snapshot_sha256"], "snapshot_bytes": receipt["snapshot_bytes"],
+    if page >= count:
+        raise FindAllError("findall_snapshot_page_invalid")
+    start = page * SNAPSHOT_FRAGMENT_CHARS
+    return {"json_fragment": text[start:start + SNAPSHOT_FRAGMENT_CHARS], "encoding": "utf-8",
+            "page": page, "page_count": count, "next_page": page + 1 if page + 1 < count else None,
+            "snapshot_sha256": receipt["sha256"], "snapshot_bytes": receipt["bytes"],
             "receipt": shown}
 
 
+def snapshot_page(receipt, read_bytes, page=0):
+    """An immutable receipt-bound page; continuation never fetches a new snapshot.
+
+    Each page is sliced from the one retained file (one store read), whose size
+    and SHA-256 must match the receipt.
+    """
+    if type(page) is not int or page < 0:
+        raise FindAllError("findall_snapshot_page_invalid")
+    _page_layout(receipt)
+    return page_view(receipt, read_bytes(receipt["file"]), page)
+
+
 def validate_snapshot(receipt, read_bytes):
-    """Export verifies the full byte sequence, including every unknown field."""
-    first = snapshot_page(receipt, read_bytes)
-    if "parts" not in receipt:
-        return
-    raw = "".join(snapshot_page(receipt, read_bytes, page)["json_fragment"]
-                  for page in range(first["page_count"])).encode("utf-8")
-    if len(raw) != receipt["snapshot_bytes"] or hashlib.sha256(raw).hexdigest() != receipt["snapshot_sha256"]:
-        raise FindAllError("findall_snapshot_binding_invalid")
+    """Export verifies the whole file: exact bytes, page layout and complete JSON."""
+    _page_layout(receipt)
+    raw = read_bytes(receipt["file"])
+    page_view(receipt, raw)
     json.loads(raw)  # A complete JSON snapshot, not a truncation or independent partial records.
 
 

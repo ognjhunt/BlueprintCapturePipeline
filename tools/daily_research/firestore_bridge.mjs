@@ -518,18 +518,18 @@ export class Store {
       if(sha(raw)!==receipt.sha256 || raw.length!==receipt.bytes) refuse('expansion_receipt_digest_mismatch');
       files[receipt.file.slice(day.length+1,-5)]=encoded;
     }
-    // FindAll created-run, owned-read and settlement receipts (findall.receipt_refs).
+    // FindAll created-run, owned-read and settlement receipts (findall.receipt_refs). Each snapshot is
+    // ONE immutable file; a paged receipt also binds the page layout its reader slices from that file
+    // (parallel_findall_owner.page_view). The retired multi-file parts format fails closed.
     const snapshotReceipts=[
-      ...Object.values(row[FINDALL_FIELD] || {}).map(entry=>entry?.receipt),
+      ...Object.values(row[FINDALL_FIELD] || {}).map(entry=>entry?.receipt).filter(receipt=>receipt!==undefined && receipt!==null),
       ...Object.values(row.parallel_findall_reads || {}),
-      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || [])]
-      .filter(receipt=>receipt && Array.isArray(receipt.parts));
+      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || [])];
     const findallRefs=[
       ...Object.values(row[FINDALL_FIELD] || {}).filter(entry=>entry?.receipt_file)
         .map(entry=>({file:entry.receipt_file,sha256:entry.receipt_sha256})),
       ...Object.values(row.parallel_findall_reads || {}).map(read=>({file:read?.file,sha256:read?.sha256,bytes:read?.bytes})),
-      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || []),
-      ...snapshotReceipts.flatMap(receipt=>receipt.parts)];
+      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || [])];
     for(const receipt of findallRefs) {
       if(typeof receipt?.file!=='string' || !receipt.file.startsWith(`${day}-tool-findall-`) || !receipt.file.endsWith('.json'))
         refuse('findall_export_binding_invalid');
@@ -538,26 +538,19 @@ export class Store {
       files[receipt.file.slice(day.length+1,-5)]=encoded;
     }
     for(const receipt of snapshotReceipts) {
-      const artifact=name=>Buffer.from(files[name.slice(day.length+1,-5)],'base64');
-      const manifest=JSON.parse(artifact(receipt.file));
-      if(!keysAre(manifest,['schema_version','snapshot_sha256','snapshot_bytes','parts'])
-          || manifest.schema_version!=='blueprint.findall-snapshot-parts.v1'
-          || manifest.snapshot_sha256!==receipt.snapshot_sha256 || manifest.snapshot_bytes!==receipt.snapshot_bytes
-          || valueHash(manifest.parts)!==valueHash(receipt.parts) || !hexOK(manifest.snapshot_sha256)
-          || !Number.isSafeInteger(manifest.snapshot_bytes) || manifest.snapshot_bytes<=0 || !manifest.parts.length)
-        refuse('findall_snapshot_binding_invalid');
-      const fragments=manifest.parts.map((ref,index)=>{
-        const part=JSON.parse(artifact(ref.file));
-        if(!keysAre(part,['schema_version','snapshot_sha256','page','json_fragment'])
-            || part.schema_version!==manifest.schema_version || part.snapshot_sha256!==manifest.snapshot_sha256
-            || part.page!==index || typeof part.json_fragment!=='string' || !part.json_fragment.length
-            || [...part.json_fragment].length>24000) refuse('findall_snapshot_binding_invalid');
-        return part.json_fragment;
-      });
-      const raw=Buffer.from(fragments.join(''),'utf8');
-      if(raw.length!==manifest.snapshot_bytes || sha(raw)!==manifest.snapshot_sha256)
-        refuse('findall_snapshot_binding_invalid');
-      JSON.parse(raw);
+      const encoded=typeof receipt?.file==='string'?files[receipt.file.slice(day.length+1,-5)]:undefined;
+      if(typeof encoded!=='string' || Object.hasOwn(receipt,'parts')) refuse('findall_snapshot_binding_invalid');
+      const raw=Buffer.from(encoded,'base64');
+      if(sha(raw)!==receipt.sha256 || raw.length!==receipt.bytes) refuse('findall_snapshot_binding_invalid');
+      const paging=['schema_version','page_chars','page_count'].filter(key=>Object.hasOwn(receipt,key));
+      if(paging.length) {
+        // Code points, as Python slices them: every UTF-8 byte that is not a continuation byte.
+        let chars=0;for(const byte of raw) if((byte&0xc0)!==0x80) chars++;
+        if(paging.length!==3 || receipt.schema_version!=='blueprint.findall-snapshot.v2' || receipt.page_chars!==24000
+            || !Number.isSafeInteger(receipt.page_count) || receipt.page_count<1
+            || Math.ceil(chars/24000)!==receipt.page_count) refuse('findall_snapshot_binding_invalid');
+      }
+      try {JSON.parse(raw.toString('utf8'));} catch {refuse('findall_snapshot_binding_invalid');}
     }
     if (row.qa?.input_file) {
       const input = files['qa-input'] && Buffer.from(files['qa-input'], 'base64');

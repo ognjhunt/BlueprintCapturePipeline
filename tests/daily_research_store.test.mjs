@@ -778,38 +778,38 @@ test('portable snapshots carry every FindAll receipt with its digest',async()=>{
 });
 
 
-test('FindAll paged snapshots export all evidence and reject missing or mixed parts',async()=>{
+test('FindAll snapshots export as one immutable file with a bound page layout; the parts format fails closed',async()=>{
   const {store,value}=await findallFixture();
   const hash=raw=>createHash('sha256').update(raw).digest('hex');
   const encode=value=>Buffer.from(JSON.stringify(value)+'\n');
-  const schema_version='blueprint.findall-snapshot-parts.v1';
   const snapshot={run:{findall_id:'findall_synthetic'},candidates:[{status:'matched',future:'🚀'.repeat(25000)}],unknown:true};
-  const raw=encode(snapshot),text=raw.toString(),snapshot_sha256=hash(raw),parts=[];
+  const raw=encode(snapshot),page_count=Math.ceil([...raw.toString()].length/24000);
   const file=`${value.date}-tool-findall-read-${'a'.repeat(64)}.json`;
-  const chars=[...text];
-  for(let page=0;page*24000<chars.length;page++) {
-    const bytes=encode({schema_version,snapshot_sha256,page,json_fragment:chars.slice(page*24000,(page+1)*24000).join('')});
-    const name=file.slice(0,-5)+`-part-${String(page).padStart(5,'0')}.json`;
-    await store.filePut(name,bytes.toString('base64'));
-    parts.push({file:name,sha256:hash(bytes),bytes:bytes.length});
-  }
-  const manifest={schema_version,snapshot_sha256,snapshot_bytes:raw.length,parts};
-  const encoded=encode(manifest);
-  await store.filePut(file,encoded.toString('base64'));
-  const receipt={file,sha256:hash(encoded),bytes:encoded.length,...manifest};
+  await store.filePut(file,raw.toString('base64'));
+  const receipt={file,sha256:hash(raw),bytes:raw.length,schema_version:'blueprint.findall-snapshot.v2',page_chars:24000,page_count};
+  const settle=`${value.date}-tool-findall-settle-result-${hash(raw)}.json`;
+  await store.filePut(settle,raw.toString('base64'));
+  const settled={operation_id:`${value.run_key}:findall:call_a`,state:'terminal',receipts:[{...receipt,file:settle}],
+    result_receipt:{...receipt,file:settle}};
   const retained={...withClaims(value,findallEntry(value,'call_a','1')),
-    parallel_findall_reads:{call_read:{operation:'result',findall_id:'findall_synthetic',...receipt}}};
+    parallel_findall_reads:{call_read:{operation:'result',findall_id:'findall_synthetic',...receipt}},
+    parallel_findall_settlements:{[findallEntry(value,'call_a','1')[0]]:settled}};
   await store.put(retained);
   const exported=await store.snapshot(value.date);
-  assert.equal(exported.files[file.slice(value.date.length+1,-5)],encoded.toString('base64'));
-  for(const part of parts) assert.ok(exported.files[part.file.slice(value.date.length+1,-5)]);
-  await store.put({...retained,parallel_findall_reads:{call_read:{...receipt,parts:parts.slice(0,-1)}}});
+  assert.equal(exported.files[file.slice(value.date.length+1,-5)],raw.toString('base64'));
+  assert.equal(exported.files[settle.slice(value.date.length+1,-5)],raw.toString('base64'));
+  assert.ok(!Object.keys(exported.files).some(name=>name.includes('-part-')));
+  for(const change of [{page_count:page_count+1},{page_count:0},{page_chars:1000},{schema_version:'blueprint.findall-snapshot-parts.v1'},
+      {parts:[]},{bytes:raw.length-1}]) {
+    await store.put({...retained,parallel_findall_reads:{call_read:{...receipt,...change}}});
+    await assert.rejects(store.snapshot(value.date),/findall_(snapshot_binding_invalid|receipt_digest_mismatch)/);
+  }
+  const {page_chars,...partial}=receipt;
+  await store.put({...retained,parallel_findall_reads:{call_read:partial}});
   await assert.rejects(store.snapshot(value.date),/findall_snapshot_binding_invalid/);
-  const invalidFile=file.replace('a'.repeat(64),'b'.repeat(64));
-  const bad=encode({...manifest,snapshot_sha256:'0'.repeat(64)});
-  await store.filePut(invalidFile,bad.toString('base64'));
-  await store.put({...retained,parallel_findall_reads:{call_read:{...receipt,file:invalidFile,
-    sha256:hash(bad),bytes:bad.length,snapshot_sha256:'0'.repeat(64)}}});
+  const truncated=raw.subarray(0,raw.length-2),cut=file.replace('a'.repeat(64),'c'.repeat(64));
+  await store.filePut(cut,truncated.toString('base64'));
+  await store.put({...retained,parallel_findall_reads:{call_read:{...receipt,file:cut,sha256:hash(truncated),bytes:truncated.length}}});
   await assert.rejects(store.snapshot(value.date),/findall_snapshot_binding_invalid/);
 });
 

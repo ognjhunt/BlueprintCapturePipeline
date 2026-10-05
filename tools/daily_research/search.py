@@ -600,7 +600,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                 if stopped() or clock().timestamp() >= deadline:
                     raise Refusal("research_tool_stopped_or_expired")
                 try:
-                    with bounded_request(min(15, deadline - clock().timestamp())):
+                    with (findall.tool_bound(findall_handler, action["name"], deadline - clock().timestamp()) if action["name"] in findall_names else bounded_request(min(15, deadline - clock().timestamp()))):
                         if action["name"] in early_publication:
                             result = {"ok": False, "error": {"code": "publication_requires_review",
                                 "guidance": "Finish research and QA validation first. Then inspect destinations and choose publication in this same session."}}

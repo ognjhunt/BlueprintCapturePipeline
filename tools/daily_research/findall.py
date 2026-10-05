@@ -7,7 +7,12 @@ live control fences (brake, source_commit, valid_until), and then by the canonic
 ``parallel_findall`` grant for that exact request. Its durable claim reserves the
 request's whole ``maximum_cost_usd``; an uncertain create keeps that reservation.
 A run still active when research ends or reaches its original deadline is
-cancelled through the provider's cancel API (``settle``).
+cancelled through the provider's cancel API (``settle``), which then retains one
+free result snapshot of every run it cancels or finds terminal.
+
+A status or result read alarms only its provider GET, for at most
+``FINDALL_READ_BOUND_SECONDS``; every store call runs outside that alarm, so an
+expiry can never interrupt the store bridge mid-call. Creates keep the 15 s bound.
 
 The registry, instructions and binding checks are standard library only. The
 canonical FindAll closure (``blueprint_pipeline.parallel_findall*``) is imported only
@@ -21,12 +26,15 @@ import hashlib
 import json
 import os
 import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from tools.daily_research import allocation
+from tools.daily_research import allocation, search
 from tools.daily_research.runner import MAX_ADAPTIVE_RUNTIME_SECONDS, Refusal, digest, identifier
 
 CREATE = "blueprint_findall_create"
@@ -45,7 +53,12 @@ RUNTIME_DIRECTORY = "pipeline_runtime"
 CREATE_FIELDS = frozenset({"objective", "entity_type", "generator", "match_limit", "match_conditions",
                            "maximum_cost_usd"})
 CAP_PROBLEMS = frozenset({"paid_expansion_cap_exceeds_remaining", "paid_expansion_cap_exceeds_per_start_maximum"})
-CLIENT_TIMEOUT_SECONDS = 10  # Inside the 15 s application-tool bound.
+CLIENT_TIMEOUT_SECONDS = 10  # Per socket operation; inside the 15 s create bound.
+TOOL_BOUND_SECONDS = 15  # search.respond's application-tool bound, which creates keep.
+# A status/result GET returns every evaluated candidate (no pagination) and grows with
+# the run; its alarm covers only that GET and encoding, never a store call.
+FINDALL_READ_BOUND_SECONDS = 120
+FIRST_MATCH_LIMIT = 50  # The recommended first match_limit per request.
 MAX_CANCEL_ATTEMPTS = 3
 MAX_SETTLEMENT_PASSES = 5
 SETTLED = frozenset({"terminal", "provider_id_unknown", "cancel_attempts_exhausted", "settlement_unconfirmed"})
@@ -68,7 +81,9 @@ def tools():
     definitions = [{"type": "function", "name": CREATE, "defer_loading": False,
         "description": "Start one asynchronous Parallel FindAll enumeration early in research, before deep individual "
                        "verification and QA. Choose objective, entity type, positive evidence conditions, generator and "
-                       "match_limit. maximum_cost_usd is a USD string with at most two decimals that covers the "
+                       f"match_limit; start with a match_limit of about {FIRST_MATCH_LIMIT}. The result lists every "
+                       "evaluated candidate, including non-matches, so it is larger than match_limit suggests. "
+                       "maximum_cost_usd is a USD string with at most two decimals that covers the "
                        "generator's price for match_limit; the host reserves all of it from this run's owner-set "
                        "paid expansion allowance, shared with Exa, and admits at most half of that allowance per "
                        "start. A refusal names max_start_micros and remaining_micros and starts nothing. Matches "
@@ -76,16 +91,23 @@ def tools():
         "parameters": {"type": "object", "additionalProperties": False,
                        "properties": properties, "required": list(properties)}}]
     for name, description in (
-        (STATUS, "Read the status of a FindAll run that this daily run started, by its findall_id."),
-        (RESULT, ("Read a raw discovery snapshot of a FindAll run that this daily run started, "
-                  "preserving candidates, citations, basis, reasoning, status and unknown fields. Matches are not "
-                  "verified or qualified leads. Large snapshots return lossless JSON fragments; continue with the "
-                  "returned receipt sha256 and next_page. Concatenate pages in order to recover the exact snapshot.")),
+        (STATUS, ("Read the status of a FindAll run that this daily run started, by its findall_id. Poll it "
+                  "until the run is no longer active before reading its result.")),
+        (RESULT, ("Read the result of a FindAll run that this daily run started, once it is no longer active: a "
+                  "raw discovery snapshot preserving every evaluated candidate (matches and non-matches), "
+                  "citations, basis, reasoning, status and unknown fields. Matches are not verified or qualified "
+                  "leads. Read each run's result once. A large snapshot is retained whole and returned as lossless "
+                  "24,000-character JSON fragments; page through it with the returned receipt sha256 and "
+                  "next_page, which never reads a new snapshot. Concatenate pages in order to recover the exact "
+                  "snapshot. A result too large for the host to retain is refused before anything is stored; then "
+                  "start a narrower or smaller request.")),
     ):
         definitions.append({"type": "function", "name": name, "defer_loading": False,
             "description": description, "parameters": {"type": "object",
                 "additionalProperties": False, "properties": {"findall_id": {"type": "string"},
-                    **({"receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    # The host binds receipt_sha256 to an owned receipt; no pattern keyword
+                    # that a session echo could normalize away.
+                    **({"receipt_sha256": {"type": "string"},
                         "page": {"type": "integer", "minimum": 0}} if name == RESULT else {})},
                 "required": ["findall_id"]}})
     return definitions
@@ -114,9 +136,14 @@ def runtime():
 
 
 def instructions():
-    execution = runtime().execution
+    rt = runtime()
+    execution = rt.execution
     prices = "; ".join(f"{generator} ${fixed} per run plus ${per_match} per match"
                        for generator, (fixed, per_match) in execution._RATES.items())
+    # The same listed estimate prepare_submission computes for a base request of FIRST_MATCH_LIMIT.
+    base_fixed, base_per_match = execution._RATES["base"]
+    first = Decimal(base_fixed) + Decimal(base_per_match) * FIRST_MATCH_LIMIT
+    retention_mib = rt.owner.MAX_SNAPSHOT_BYTES // (1024 * 1024)
     return (" Parallel FindAll application tools (blueprint_findall_create, blueprint_findall_status and "
             "blueprint_findall_result) support asynchronous list building. For broad operating-site discovery, "
             "prefer usable operator location lists and other sourced bulk inputs first; use FindAll early "
@@ -128,13 +155,16 @@ def instructions():
             "do not require verified manual workflow, robot fit, hiring, contacts or buying interest to retain "
             "a raw possibility. Keep missing facts explicitly unknown for later verification. Choose the objective, "
             "entity type, simple positive match conditions, generator and match_limit yourself; preview allows 5 to "
-            f"10 matches. Versioned prices ({execution.PRICING_VERSION}): {prices}, times match_limit. "
+            f"10 matches. Start with a match_limit of about {FIRST_MATCH_LIMIT} per request, and raise it only when "
+            "a completed result shows that a segment needs more. "
+            f"Versioned prices ({execution.PRICING_VERSION}): {prices}, times match_limit. "
             "maximum_cost_usd is a USD string with at most two decimals and at least that estimate; the host "
             "reserves all of it until the run's actual cost is known, so a larger value only uses more allowance. "
-            "At a $10 combined allowance, two base requests of 150 matches each have a listed estimate of "
-            "$4.75 each, reserving $9.50 total; these are requested limits, not promised or qualified matches. "
+            f"At a $10 combined allowance, one base request of {FIRST_MATCH_LIMIT} matches has a listed estimate "
+            f"of ${first} (${base_fixed} per run plus {FIRST_MATCH_LIMIT} matches at ${base_per_match}) and "
+            f"reserves ${first}, leaving ${Decimal('10.00') - first} for further distinct requests or an Exa "
+            "start; these are requested limits, not promised or qualified matches. "
             "Use distinct useful segments and deduplicate sites; do not spend two requests on the same list. "
-            "This choice leaves too little for an Exa start, so choose the allocation tradeoff from evidence. "
             "The general admission rule, current prices and actual remaining allowance decide every request; "
             "the example is not extra authority or a required provider quota. "
             "FindAll draws on this run's separate host-reserved paid expansion allowance, shared with Exa and frozen "
@@ -143,11 +173,18 @@ def instructions():
             "remains; a refusal names max_start_micros and remaining_micros and starts nothing. Creates are refused "
             "after research output, in QA or repair, after the original deadline, under the owner's brake or when "
             "the owner's direction omits FindAll; retain that actionable skip and continue ordinary research. "
-            "Retain each returned findall_id and poll status or result within the original deadline; the host "
-            "cancels any run still active when research ends. An uncertain start must never be restarted. A result "
-            "larger than the tool output ceiling is retained in immutable bounded parts, never truncated. Read the "
-            "next page with its receipt_sha256 and page; these pages use the same snapshot without a new provider read. "
-            "Concatenate json_fragment values in page order for the complete raw JSON. Preserve all raw candidates, provider status, basis, reasoning, citations and "
+            "Retain each returned findall_id. Poll blueprint_findall_status until the run is no longer active "
+            "before reading its result, within the original deadline; when research ends the host cancels any "
+            "run still active and retains one result snapshot of it. An uncertain start must never be restarted. "
+            "A result lists every candidate the run evaluated, including non-matches, so it is much larger than "
+            "match_limit suggests. Read each completed run's result once; every read retains a new immutable "
+            "snapshot. A result larger than the tool output ceiling is retained whole as one immutable file and "
+            "returned in 24,000-character json_fragment pages, never truncated. Page through it with its "
+            "receipt_sha256 and page; these pages slice the same snapshot without a new provider read. "
+            "Concatenate json_fragment values in page order for the complete raw JSON. A result above the host's "
+            f"{retention_mib} MiB retention limit is refused as findall_snapshot_too_large before anything is "
+            "stored; its findall_id stays recorded, so start a narrower or smaller request instead of reading it "
+            "again. Preserve all raw candidates, provider status, basis, reasoning, citations and "
             "unknowns for independent qualification. Provider matches are discovery only, never verified or "
             "CRM-ready leads.")
 
@@ -217,7 +254,10 @@ def status(row):
 
 
 def receipt_refs(row):
-    """Every immutable FindAll receipt this row binds: created runs, owned reads and settlement reads."""
+    """Every immutable FindAll file this row binds: created runs, owned reads and settlement reads.
+
+    Each snapshot is one file; its pages are slices of that file, never separate files.
+    """
     refs = [{"file": entry.get("receipt_file"), "sha256": entry.get("receipt_sha256")}
             for entry in (row.get(SUBMISSIONS_FIELD) or {}).values()
             if isinstance(entry, dict) and entry.get("receipt_file")]
@@ -225,24 +265,35 @@ def receipt_refs(row):
              for read in (row.get(READS_FIELD) or {}).values() if isinstance(read, dict)]
     refs += [dict(ref) for record in (row.get(SETTLEMENTS_FIELD) or {}).values() if isinstance(record, dict)
              for ref in record.get("receipts", []) if isinstance(ref, dict)]
-    receipts = [entry.get("receipt") for entry in (row.get(SUBMISSIONS_FIELD) or {}).values()
-                if isinstance(entry, dict)]
-    receipts += [read for read in (row.get(READS_FIELD) or {}).values() if isinstance(read, dict)]
-    receipts += [ref for record in (row.get(SETTLEMENTS_FIELD) or {}).values() if isinstance(record, dict)
-                 for ref in record.get("receipts", []) if isinstance(ref, dict)]
-    refs += [dict(part) for receipt in receipts if isinstance(receipt, dict) for part in receipt.get("parts", [])]
     return refs
 
 
 def validate_snapshot_exports(row, read_bytes):
-    receipts = [entry.get("receipt") for entry in (row.get(SUBMISSIONS_FIELD) or {}).values()
-                if isinstance(entry, dict)]
+    """Every snapshot receipt binds its whole file: exact bytes, page layout and complete JSON."""
+    receipts = [entry["receipt"] for entry in (row.get(SUBMISSIONS_FIELD) or {}).values()
+                if isinstance(entry, dict) and entry.get("receipt") is not None]
     receipts += [read for read in (row.get(READS_FIELD) or {}).values() if isinstance(read, dict)]
     receipts += [ref for record in (row.get(SETTLEMENTS_FIELD) or {}).values() if isinstance(record, dict)
                  for ref in record.get("receipts", []) if isinstance(ref, dict)]
     for receipt in receipts:
-        if isinstance(receipt, dict) and "parts" in receipt:
-            runtime().owner.validate_snapshot(receipt, read_bytes)
+        runtime().owner.validate_snapshot(receipt, read_bytes)
+
+
+def tool_bound(handler, name, seconds):
+    """search.respond's wall-time bound for one FindAll call, given the phase's remaining seconds.
+
+    A create, or a call without a handler, keeps the 15 s application-tool alarm around
+    the whole call. A status or result read arms no alarm here: its handler alarms only
+    the provider GET, for min(FINDALL_READ_BOUND_SECONDS, seconds), and stores outside it.
+    """
+    if name != CREATE and isinstance(handler, FindAllApplicationTools):
+        return handler.read_window(seconds)
+    return search.bounded_request(min(TOOL_BOUND_SECONDS, seconds))
+
+
+def _failure_code(exc, stable):
+    """A fixed, secret-free code: FindAll, tool-watchdog and store refusals already carry one."""
+    return str(exc) if isinstance(exc, (search.ToolFailure, Refusal, *stable)) else "findall_result_observation_failed"
 
 
 def unavailable(name):
@@ -317,6 +368,31 @@ class FindAllApplicationTools:
         self.assert_current_lease = assert_current_lease
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.stopped = stopped or (lambda: False)
+        self._read_until = None  # Monotonic end of search.respond's current read window.
+
+    @contextmanager
+    def read_window(self, seconds):
+        """search.respond's bound for one status/result call: no alarm, only the phase's remaining time."""
+        if seconds <= 0:
+            raise search.ToolFailure("research_tool_absolute_deadline")
+        self._read_until = time.monotonic() + seconds
+        try:
+            yield
+        finally:
+            self._read_until = None
+
+    def provider_read(self, read, findall_id):
+        """One free provider GET and its encoding, alarmed for min(FINDALL_READ_BOUND_SECONDS, remaining).
+
+        Nothing is stored inside this alarm, so its expiry (research_tool_absolute_deadline)
+        always comes before any store write and never interrupts a store call. A snapshot
+        above the retention limit is refused here (FindAllSnapshotTooLarge), before any write.
+        """
+        seconds = FINDALL_READ_BOUND_SECONDS
+        if self._read_until is not None:
+            seconds = min(seconds, self._read_until - time.monotonic())
+        with search.bounded_request(seconds):
+            return self.rt.owner.encode_snapshot(read(findall_id))
 
     def assert_fresh_caller(self, row):
         """Refuse stale journal/call rows before the caller can overwrite them."""
@@ -531,17 +607,29 @@ class FindAllApplicationTools:
             if not matches:
                 raise FindAllError("findall_snapshot_cursor_not_owned")
             receipt = matches[0]
+            # One store read of the same immutable file; no provider read.
             shown = self.rt.owner.snapshot_page(receipt, ledger.read_bytes, args["page"])
         else:
-            snapshot = (self.client.status(args["findall_id"]) if name == STATUS
-                        else self.client.result(args["findall_id"]))
+            try:
+                raw, facts = self.provider_read(self.client.status if name == STATUS else self.client.result,
+                                                args["findall_id"])
+            except self.rt.owner.FindAllSnapshotTooLarge as exc:
+                return {"ok": False, "state": "snapshot_too_large", "reason": str(exc), "provider": "parallel_findall",
+                        "findall_id": args["findall_id"], "snapshot_bytes": exc.snapshot_bytes,
+                        "maximum_snapshot_bytes": self.rt.owner.MAX_SNAPSHOT_BYTES, "snapshot_retained": False,
+                        "action": "This FindAll snapshot is larger than the host can retain, so nothing was stored. "
+                                  "The run, its findall_id and its whole reservation stay recorded, so a later "
+                                  "recovery can still read it; reading it again returns this same refusal. Run a "
+                                  "narrower or smaller request (tighter match conditions or a lower match_limit) "
+                                  "within the remaining allowance, or continue ordinary research."}
+            # Outside the GET alarm: one write and one readback of one immutable file.
             filename = row["date"] + "-tool-findall-read-" + digest(binding) + ".json"
-            receipt = self.rt.owner.retain_snapshot(ledger, filename, snapshot)
+            receipt = self.rt.owner.store_snapshot(ledger, filename, raw, facts)
             owner.setdefault(READS_FIELD, {})[cid] = {
                 **read_scope, **receipt, "checked_at": self.clock().isoformat(),
             }
             ledger.put(owner)
-            shown = self.rt.owner.snapshot_page(receipt, ledger.read_bytes)
+            shown = self.rt.owner.page_view(receipt, raw)  # The read-back-checked bytes; no second read.
         return {"ok": True, "provider": "parallel_findall", "evidence_scope": "discovery_only", **shown}
 
     def _observe(self, row, findall_id, record):
@@ -552,9 +640,9 @@ class FindAllApplicationTools:
         except FindAllError as exc:
             record["observation_error"] = str(exc)
             return None
-        raw = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-        name = f"{row['date']}-tool-findall-settle-{hashlib.sha256(raw).hexdigest()}.json"
-        receipt = self.rt.owner.retain_snapshot(self.ledger, name, snapshot)
+        raw, facts = self.rt.owner.encode_snapshot(snapshot)
+        name = f"{row['date']}-tool-findall-settle-{facts['sha256']}.json"
+        receipt = self.rt.owner.store_snapshot(self.ledger, name, raw, facts)
         if receipt not in record["receipts"]:
             record["receipts"].append(receipt)
         status = snapshot.get("status") if isinstance(snapshot, dict) else None
@@ -564,13 +652,35 @@ class FindAllApplicationTools:
         record.pop("observation_error", None)
         return active if type(active) is bool else None  # Unknown activity is treated as still active.
 
+    def _observe_result(self, row, findall_id, record):
+        """ONE free, bounded result read once settlement cancels a run or finds it terminal.
+
+        It runs after the cancel and its durable outcome, so it never blocks the cancel
+        path. The snapshot, with the matches already paid for, is retained as one
+        immutable file. A failure records result_observation_error and settlement
+        continues; the claim keeps its whole reservation either way.
+        """
+        try:
+            raw, facts = self.provider_read(self.client.result, findall_id)
+            receipt = self.rt.owner.store_snapshot(
+                self.ledger, f"{row['date']}-tool-findall-settle-result-{facts['sha256']}.json", raw, facts)
+        except Exception as exc:  # noqa: BLE001 - a stable code only; settlement continues
+            record["result_observation_error"] = _failure_code(exc, stable_errors())
+            if isinstance(exc, self.rt.owner.FindAllSnapshotTooLarge):
+                record["result_snapshot_bytes"] = exc.snapshot_bytes
+            return
+        if receipt not in record["receipts"]:
+            record["receipts"].append(receipt)
+        record.update(result_receipt=receipt, result_observed_at=self.clock().isoformat())
+
     def settle(self, row, *, reason):
         """Cancel each run of this row that may still be active once research ended or its deadline passed.
 
         The claims keep their whole reservations (allocation.claims); only provider
         truth is recorded. A run whose findall_id is unknown cannot be cancelled and
         stays an unknown cost. A cancel is claimed durably before its POST and tried
-        at most MAX_CANCEL_ATTEMPTS times; cancellation is not a refund.
+        at most MAX_CANCEL_ATTEMPTS times; cancellation is not a refund. Once a run is
+        cancelled or terminal, one free result read retains its paid-for matches.
         """
         FindAllError = self.rt.api.FindAllError
         if self.assert_current_lease() is not True:
@@ -606,6 +716,7 @@ class FindAllApplicationTools:
                 except FindAllError as exc:
                     record.update(state="cancel_outcome_unknown", cancel_error=str(exc))
                 active = self._observe(row, findall_id, record)
+            ended = active is False or record["state"] == "cancel_accepted"
             if active is False:
                 record["state"] = "terminal"
             elif record["state"] != "cancel_accepted" and record["cancel_attempts"] >= MAX_CANCEL_ATTEMPTS:
@@ -613,7 +724,10 @@ class FindAllApplicationTools:
             elif record["passes"] >= MAX_SETTLEMENT_PASSES:
                 record["state"] = "settlement_unconfirmed"
             records[key] = record
-            self.ledger.put(row)
+            self.ledger.put(row)  # The cancel outcome is durable before any result read.
+            if ended and "result_receipt" not in record and "result_observation_error" not in record:
+                self._observe_result(row, findall_id, record)
+                self.ledger.put(row)
 
 
 def owner_handler(provider):

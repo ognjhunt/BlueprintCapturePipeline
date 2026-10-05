@@ -1,11 +1,14 @@
 """Owner-ledger wiring using synthetic grants/HTTP and temporary existing stores."""
 
 import copy
+import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -391,3 +394,107 @@ def test_raw_receipt_obeys_actual_firestore_artifact_contract(monkeypatch, ledge
         env={"PATH": os.defpath}, text=True, capture_output=True, timeout=15, check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+# --- One immutable snapshot file, paged at read time -----------------------------------------
+
+SNAPSHOT_FILE = DAY + "-tool-findall-read-" + "a" * 64 + ".json"
+OTHER_FILE = DAY + "-tool-findall-read-" + "b" * 64 + ".json"
+
+
+class CountingLedger:
+    """The real sqlite Ledger, recording every file write and read."""
+
+    def __init__(self, ledger):
+        self.ledger, self.writes, self.reads = ledger, [], []
+
+    def write_bytes(self, name, value):
+        self.writes.append(name)
+        self.ledger.write_bytes(name, value)
+
+    def read_bytes(self, name):
+        self.reads.append(name)
+        return self.ledger.read_bytes(name)
+
+
+def snapshot_of(text):
+    return {"run": {"findall_id": RUN_ID}, "candidates": [{"status": "unmatched", "future": text}],
+            "unknown": {"kept": True}}
+
+
+OVERHEAD = len(owner._json_bytes(snapshot_of("")))
+
+
+@pytest.mark.parametrize("text", [
+    "inline", "x" * 2_000_000, "é" * 300_000, "中" * 300_000, "\U0001f680" * 300_000,
+    "y" * (owner.SNAPSHOT_FRAGMENT_CHARS * 9 - OVERHEAD),  # Ends exactly on a page boundary.
+], ids=["inline", "ascii-2MB", "two-byte", "three-byte", "four-byte", "page-boundary"])
+def test_one_snapshot_is_one_file_and_its_pages_rebuild_the_exact_bytes(ledger, text):
+    counted = CountingLedger(ledger)
+    snapshot = snapshot_of(text)
+    receipt = owner.retain_snapshot(counted, SNAPSHOT_FILE, snapshot)
+    assert counted.writes == [SNAPSHOT_FILE] and counted.reads == [SNAPSHOT_FILE]  # One write, one readback.
+    raw = ledger.read_bytes(SNAPSHOT_FILE)
+    assert raw == owner._json_bytes(snapshot)
+    assert (receipt["file"], receipt["sha256"], receipt["bytes"]) == (
+        SNAPSHOT_FILE, hashlib.sha256(raw).hexdigest(), len(raw))
+    first = owner.snapshot_page(receipt, ledger.read_bytes)
+    if text == "inline":
+        assert first == {"snapshot": snapshot, "receipt": receipt} and "page_count" not in receipt
+        return
+    assert (receipt["schema_version"], receipt["page_chars"]) == (owner.SNAPSHOT_SCHEMA, owner.SNAPSHOT_FRAGMENT_CHARS)
+    pages = [owner.snapshot_page(receipt, ledger.read_bytes, page) for page in range(first["page_count"])]
+    assert "".join(page["json_fragment"] for page in pages).encode("utf-8") == raw
+    assert all(0 < len(page["json_fragment"]) <= owner.SNAPSHOT_FRAGMENT_CHARS for page in pages)
+    assert receipt["page_count"] == len(pages) == -(-len(raw.decode()) // owner.SNAPSHOT_FRAGMENT_CHARS)
+    assert [page["next_page"] for page in pages] == [*range(1, len(pages)), None]
+    assert {(page["snapshot_sha256"], page["snapshot_bytes"]) for page in pages} == {(receipt["sha256"], receipt["bytes"])}
+    assert all(page["receipt"] == {key: receipt[key] for key in ("file", "sha256", "bytes")} for page in pages)
+    assert owner.page_view(receipt, raw, len(pages) - 1) == pages[-1]  # Same slice from the verified bytes.
+    owner.validate_snapshot(receipt, ledger.read_bytes)
+
+
+def test_retention_limit_sits_below_the_bridge_file_limit_and_refuses_before_any_write(ledger):
+    source = (Path(__file__).resolve().parents[1] / "tools/daily_research/firestore_bridge.mjs").read_text()
+    bridge_max = int(re.search(r"const MAX_BYTES = (\d+) \* 1024 \* 1024", source).group(1)) * 1024 * 1024
+    assert owner.MAX_SNAPSHOT_BYTES == 7 * 1024 * 1024 <= bridge_max - 1024 * 1024
+    counted = CountingLedger(ledger)
+    exact = snapshot_of("x" * (owner.MAX_SNAPSHOT_BYTES - OVERHEAD))
+    assert owner.retain_snapshot(counted, SNAPSHOT_FILE, exact)["bytes"] == owner.MAX_SNAPSHOT_BYTES
+    assert counted.writes == [SNAPSHOT_FILE]
+    counted.writes.clear()
+    counted.reads.clear()
+    for size in (owner.MAX_SNAPSHOT_BYTES + 1, bridge_max):
+        started = time.monotonic()
+        with pytest.raises(owner.FindAllSnapshotTooLarge, match="^findall_snapshot_too_large$") as caught:
+            owner.retain_snapshot(counted, OTHER_FILE, snapshot_of("x" * (size - OVERHEAD)))
+        assert caught.value.snapshot_bytes == size and time.monotonic() - started < 5
+        assert isinstance(caught.value, execution.FindAllError)  # A stable code the agent receives.
+    assert counted.writes == [] and counted.reads == []
+    assert not (ledger.root / OTHER_FILE).exists()
+
+
+def test_pages_stay_receipt_bound_and_the_retired_parts_format_fails_closed(ledger):
+    receipt = owner.retain_snapshot(ledger, SNAPSHOT_FILE, snapshot_of("z" * 100_000 + "\U0001f680" * 30_000))
+    count = receipt["page_count"]
+    for page in (-1, count, True, "1", 1.0):
+        with pytest.raises(execution.FindAllError, match="^findall_snapshot_page_invalid$"):
+            owner.snapshot_page(receipt, ledger.read_bytes, page)
+    changes = [{"page_count": count + 1}, {"page_count": 0}, {"page_chars": 1000}, {"sha256": "0" * 64},
+               {"bytes": receipt["bytes"] - 1}, {"schema_version": "blueprint.findall-snapshot-parts.v1"},
+               {"parts": [{"file": OTHER_FILE, "sha256": "0" * 64, "bytes": 1}]}]
+    for change in changes:
+        with pytest.raises(execution.FindAllError, match="^findall_snapshot_binding_invalid$"):
+            owner.snapshot_page({**receipt, **change}, ledger.read_bytes, 0)
+    with pytest.raises(execution.FindAllError, match="^findall_snapshot_binding_invalid$"):
+        owner.snapshot_page({key: value for key, value in receipt.items() if key != "page_chars"},
+                            ledger.read_bytes, 0)
+    raw = ledger.read_bytes(SNAPSHOT_FILE)
+    for changed in (raw[:-2] + b"]\n", raw + b" ", b"changed"):
+        with pytest.raises(execution.FindAllError, match="^findall_snapshot_binding_invalid$"):
+            owner.snapshot_page(receipt, lambda name, value=changed: value, 1)
+        with pytest.raises(execution.FindAllError, match="^findall_snapshot_binding_invalid$"):
+            owner.validate_snapshot(receipt, lambda name, value=changed: value)
+    inline = owner.retain_snapshot(ledger, OTHER_FILE, snapshot_of("inline"))
+    with pytest.raises(execution.FindAllError, match="^findall_snapshot_page_invalid$"):
+        owner.snapshot_page(inline, ledger.read_bytes, 1)
