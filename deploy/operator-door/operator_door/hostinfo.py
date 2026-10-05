@@ -29,6 +29,7 @@ SHOW_PROPERTIES = (
     "Id", "Description", "ActiveState", "SubState", "Result", "ExecMainStatus",
     "ExecMainStartTimestamp", "ActiveEnterTimestamp", "InactiveEnterTimestamp",
     "UnitFileState", "NextElapseUSecRealtime", "LastTriggerUSec",
+    "InvocationID", "Type",
 )
 
 
