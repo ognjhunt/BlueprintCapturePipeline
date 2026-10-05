@@ -380,7 +380,10 @@ class PageText(HTMLParser):
             self.text.append(data.strip())
 
 
-def source(arguments):
+def source(arguments, *, blocked_domains=()):
+    """Read one public static page. ``blocked_domains`` is a caller option, never an agent argument: a
+    host equal to one of those lower-case domains, or a subdomain of one, is refused before any DNS
+    lookup or connection, on the first request and on every redirect."""
     if not isinstance(arguments, dict) or set(arguments) != {"url"}:
         raise ToolFailure("source_arguments_invalid")
     url = arguments["url"]
@@ -398,6 +401,8 @@ def source(arguments):
         if (value.scheme != "https" or value.username or value.password or port not in (None, 443)
                 or not re.fullmatch(r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,63}", host)):
             raise ToolFailure("source_destination_invalid")
+        if any(host == domain or host.endswith("." + domain) for domain in blocked_domains):  # hostname is lower case
+            raise ToolFailure("source_destination_not_allowed")
         path = value.path or "/"
         if value.query:
             path += "?" + value.query
