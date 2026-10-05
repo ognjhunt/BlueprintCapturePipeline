@@ -637,9 +637,10 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
   per-match price times `match_limit` (pricing version in
   `src/blueprint_pipeline/parallel_findall_execution.py`). The limit holds at
   Parallel's list price with Parallel enforcing `match_limit`. Exa's
-  `budget.maxCostDollars` is a provider-enforced cap. With both sources at $10, two
-  FindAll requests can use about $9.50, which leaves no room for an Exa start,
-  so set `--per-run-usd 20.00` when both should run every day.
+  `budget.maxCostDollars` is a provider-enforced cap. The FindAll instructions
+  start with base requests of about 50 matches ($1.75 each). Larger or repeated
+  requests can use most of a $10 allowance and leave no room for an Exa start, so
+  set `--per-run-usd 20.00` when both sources should run every day.
 - `show` and `set` report `source_readiness`: for each source, its credential
   binding name (`EXA_API_KEY` or `PARALLEL_API_KEY`), whether that binding is
   present in this worker process (presence only; no value is read or printed)

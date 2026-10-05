@@ -56,17 +56,20 @@ changed source commit, expiry or lowered allowance. Cancellation attempts are
 durably claimed and bounded; unknown IDs and unconfirmed outcomes remain visible
 with their reservations held.
 
-Small status/result snapshots return the complete raw object. Large snapshots
-retain the complete UTF-8 JSON as immutable bounded parts plus a hashed manifest.
-The first response returns `json_fragment`, `page`, `page_count`, `next_page`, the
-whole-snapshot SHA256 and a manifest receipt. Continue with the same `findall_id`,
-`receipt_sha256` (the manifest receipt's SHA256) and `page`. Continuations read that
-retained snapshot without a new provider request. Concatenating fragments in page
-order reconstructs the exact JSON, including unknown fields and large individual
-candidate fields. Each response stays under the existing tool-output ceiling;
-the existing total tool-evidence budget still bounds what a session can consume.
-Export retains every page and verifies their hashes, ordering, complete byte
-count and whole-snapshot hash. Missing, altered or mixed pages fail closed.
+Every status/result snapshot is retained as ONE immutable file
+(`blueprint.findall-snapshot.v2`): one write and one readback, with its SHA-256
+recorded. A snapshot above 7 MiB is refused before any write with
+`findall_snapshot_too_large`; the run and its reservation stay recorded. Only the
+provider GET and its encoding run under the 120 s read alarm; store calls never run
+under an alarm, so a timeout cannot break the store connection. Small snapshots
+return the complete raw object. Large ones are served as 24,000-character pages
+sliced from the retained file: the response returns `json_fragment`, `page`,
+`page_count`, `next_page`, the whole-snapshot SHA256 and the receipt. Continue with
+the same `findall_id`, `receipt_sha256` and `page`. Continuations re-read that file
+without a new provider request. Concatenating fragments in page order reconstructs
+the exact JSON. Each response stays under the tool-output ceiling, and the session's
+tool budget bounds how many pages a run can read. Export verifies the file's hash
+and byte count. An old multi-part receipt is refused.
 
 Raw candidates, duplicate/conditional rows, citations, basis, reasoning, provider
 status and unknown fields remain discovery evidence. `matched` does not imply a
