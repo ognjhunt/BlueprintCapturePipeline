@@ -1172,8 +1172,11 @@ def test_site_universe_flag_on_freezes_one_slice_and_recovery_never_reads_it_aga
     expected = without_payload_digest(plain)
     expected["environment"]["files"].append(slice_file)
     expected["metadata"]["site_universe_slice_digest"] = record["slice_sha256"]
-    expected["input"] = expected["input"].replace(anchor, anchor + site_universe.paragraph(record), 1)
+    expected["input"] = expected["input"].replace(anchor, anchor + site_universe.paragraph(record), 1).replace(
+        site_universe.DISPOSITIONS_TODAY, site_universe.DISPOSITIONS_WITH_SLICE, 1)
     assert without_payload_digest(payload) == expected
+    assert payload["input"].count(site_universe.DISPOSITIONS_WITH_SLICE) == 1
+    assert site_universe.DISPOSITIONS_TODAY not in payload["input"] and site_universe.DISPOSITIONS_TODAY in plain["input"]
     assert payload["metadata"]["payload_digest"] == digest(without_payload_digest(payload))
     assert payload["agent"] == plain["agent"]  # No new tool; the session's tool schemas are unchanged.
     # Collection reads only the frozen row: control and the bucket are never read again.

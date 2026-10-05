@@ -664,8 +664,10 @@ CRM write or send.
 `site-universe-backlog.py` pins one reviewed site universe export as optional
 prioritization for the daily run (ADP-010 partner discovery). It is off until the
 owner pins an export; with `control.site_universe` absent or `enabled=false` the
-run reads nothing more and its create payload, metadata, instructions and row are
-byte-identical to a release without this feature. The export stays internal
+create payload, metadata, instructions and row are byte-identical to a release
+without this feature. The pin comes from the control read the run start already
+makes when the history profile is on; otherwise the run makes one extra control
+read and nothing else. The export stays internal
 (ODbL): the slice goes into the hosted sandbox for processing, never into
 findings or publication.
 
@@ -685,7 +687,8 @@ PYTHONPATH=$RELEASE $COMMAND funnel --days 7
   shows counts, SHA-256s, generations and site ids, never site names.
 - `publish` validates the local file with the runtime loader
   (`site_universe.load_export`: canonical bytes, `rows_sha256`, at most 2 MiB gzip,
-  6 MiB raw and 5,000 rows) and prints the URI and SHA-256. `--apply` writes
+  6 MiB raw and 5,000 rows, and only the reviewed licenses `ODbL-1.0`,
+  `US-Gov-Work` and `US-PD`) and prints the URI and SHA-256. `--apply` writes
   `gs://blueprint-8c1ca.appspot.com/operations/research/site-universe/<sha256>/backlog.v1.json.gz`
   create-only through the existing bridge identity, reads it back and prints the
   object generation. A published export grants nothing until it is pinned.
@@ -725,7 +728,10 @@ state and code. Any slice failure (`site_universe_pin_invalid`,
 `site_universe_attach_unavailable`) records `{state: "refused", code}` and research
 continues exactly as without the slice; an empty selection records `exhausted`.
 Near the intent ceiling the record shrinks to `{state, code}` or is dropped, so a
-pinned run never fails where an unpinned one would succeed. A lost store or lease
+pinned run never fails where an unpinned one would succeed. A damaged prior row is
+skipped and the sites it names stay out for the window (the funnel counts it as
+`history_rows_untrusted` with `history_codes`); only one that names no readable
+site refuses with `site_universe_history_binding_invalid`. A lost store or lease
 still stops the run. The hermetic tests use the real bridge
 with in-memory Firestore and a fake object store. No provider, model, session, CRM
 write or send.

@@ -52,7 +52,7 @@ def manifest(rows, **changes):
              "ranker_sha256": sha("ranker"), "taxonomy_sha256": sha("taxonomy"),
              "exclusion_counts": {"input:synthetic_crm": 2, "synthetic_rule": 2}, "lead_capability_counts": leads,
              "capability_weights": dict(WEIGHTS), "selection_policy": {"seed_capabilities": list(SEEDS)},
-             "license_union": ["synthetic-license-a", "synthetic-license-b"],
+             "license_union": ["ODbL-1.0", "US-Gov-Work"],
              "attribution": ["Synthetic data contributors"], "distribution": "internal_only",
              "approval_reference": "owner-synthetic-ranking-review", "rows_sha256": su.rows_digest(rows),
              "previous_snapshot_id": None, "new_sites": None}
@@ -236,6 +236,13 @@ def test_loader_corruption_fails_closed(raw):
         su.load_export(raw)
 
 
+@pytest.mark.parametrize("licenses", [["CC-BY-NC-4.0"], ["ODbL-1.0", "proprietary"], ["synthetic-license-a"], ["odbl-1.0"]])
+def test_loader_fails_closed_on_a_license_outside_the_producer_allowlist(licenses):
+    with pytest.raises(su.SiteUniverseError, match="^site_universe_export_invalid$"):
+        su.load_export(build_export([site(1)], license_union=licenses))
+    assert su.load_export(build_export([site(1)], license_union=["ODbL-1.0", "US-Gov-Work", "US-PD"]))["rows"]
+
+
 def test_loader_size_bounds_fail_closed():
     with pytest.raises(su.SiteUniverseError, match="^site_universe_object_too_large$"):
         su.load_export(b"\x1f\x8b" + b"\0" * su.MAX_OBJECT_BYTES)
@@ -293,21 +300,53 @@ def test_history_outcomes_are_removed_inside_the_reoffer_window_only():
                prior(DAY, [outcome(5)]), prior("2026-10-07", [outcome(6)])]  # Not prior to the run date.
     ranks, selection = chosen(rows, slice_size=8, history=history)
     assert ranks == [2, 4, 5, 6, 7, 8]
-    assert selection["removed"] == {"reoffer_window": 2, "crm": 0, "prior_candidate": 0}
+    assert selection["removed"] == {"reoffer_window": 2, "untrusted_history": 0, "crm": 0, "prior_candidate": 0}
     assert selection["history_outcome_rows"] == 1 and selection["eligible"] == 6
     export = su.load_export(build_export(rows))
     sites, _ = su.select(export, history=history, crm_values=crm(), run_date=DAY, slice_size=8, reoffer_after_days=91)
     assert [s["rank"] for s in sites] == [2, 5, 6, 7, 8]
 
 
-def test_a_rebound_history_packet_refuses_the_slice():
+def damaged(day, *, block=..., record=None, outcomes=()):
+    """A prior row whose packet no longer matches its packet_digest."""
+    value = prior(day, outcomes, tamper=True)
+    if block is not ...:
+        value["packet"]["site_universe"] = block
+    if record is not None:
+        value["site_universe"] = record
+    return value
+
+
+def test_a_damaged_history_row_is_skipped_and_every_site_it_names_stays_out_for_the_window():
+    rows = [site(number) for number in range(1, 9)]
+    record = {"state": "attached", "site_ids": [sha("synthetic-site-2"), sha("synthetic-site-3")]}
+    history = [damaged("2026-10-01", record=record, outcomes=[outcome(1), outcome(2, "untouched")])]
+    ranks, selection = chosen(rows, slice_size=8, history=history)
+    assert ranks == [4, 5, 6, 7, 8]  # 1 from its untrusted outcomes, 2 and 3 from the slice it offered.
+    assert selection["removed"] == {"reoffer_window": 0, "untrusted_history": 3, "crm": 0, "prior_candidate": 0}
+    assert selection["history_rows_untrusted"] == 1 and selection["history_outcome_rows"] == 0
+    assert selection["history_codes"] == ["site_universe_history_binding_invalid"]
+    # A bound row whose outcomes were unavailable is untrusted the same way, with its own code.
+    unavailable = prior("2026-10-01")
+    unavailable["packet"]["site_universe"] = {"schema_version": su.OUTCOMES, "state": "unavailable",
+                                              "code": "site_universe_frozen_slice_binding_invalid"}
+    unavailable.update(packet_digest=digest(unavailable["packet"]), site_universe=record)
+    ranks, selection = chosen(rows, slice_size=8, history=[unavailable])
+    assert ranks == [1, 4, 5, 6, 7, 8] and selection["history_codes"] == ["site_universe_frozen_slice_binding_invalid"]
+    # A damaged row that attached no slice offered nothing, and one outside the window is ignored.
+    assert chosen(rows, slice_size=8, history=[damaged("2026-10-01", record={"state": "refused", "code": "x"})])[0] == list(range(1, 9))
+    assert chosen(rows, slice_size=8, history=[damaged("2026-07-08", block="garbage")])[1]["history_rows_untrusted"] == 0
+
+
+@pytest.mark.parametrize("value", [
+    lambda: damaged("2026-10-01", block="garbage"),
+    lambda: damaged("2026-10-01", outcomes=[{"site_id": "x", "outcome": "screened"}]),
+    lambda: damaged("2026-10-01", record={"state": "attached", "site_ids": "not-a-list"}),
+    lambda: {**prior("2026-10-01", [{"site_id": "x", "outcome": "screened"}])},  # bound but malformed
+])
+def test_a_damaged_row_that_names_no_readable_site_refuses_the_slice(value):
     with pytest.raises(su.SiteUniverseError, match="^site_universe_history_binding_invalid$"):
-        chosen([site(1)], history=[prior("2026-10-01", [outcome(1)], tamper=True)])
-    # A row outside the window no longer affects selection, so it cannot refuse every later slice.
-    assert chosen([site(1)], history=[prior("2026-07-08", [outcome(1)], tamper=True)])[0] == [1]
-    bad = prior("2026-10-01", [{"site_id": "x", "outcome": "screened"}])
-    with pytest.raises(su.SiteUniverseError, match="^site_universe_history_binding_invalid$"):
-        chosen([site(1)], history=[bad])
+        chosen([site(1)], history=[value()])
 
 
 def test_crm_and_prior_candidates_are_prefiltered_by_organization_words_and_place():
@@ -322,7 +361,7 @@ def test_crm_and_prior_candidates_are_prefiltered_by_organization_words_and_plac
     candidates = [{"organization": "Synthetic Operator 7", "site": "Synthetic site", "location": "Fixture City, TX"}]
     ranks, selection = chosen(rows, slice_size=8, values=values, history=[prior("2026-10-01", candidates=candidates)])
     assert ranks == [4, 5, 6, 8]
-    assert selection["removed"] == {"reoffer_window": 0, "crm": 3, "prior_candidate": 1}
+    assert selection["removed"] == {"reoffer_window": 0, "untrusted_history": 0, "crm": 3, "prior_candidate": 1}
     assert selection["crm_identities"] == 6 and selection["prior_candidates"] == 1
 
 
@@ -388,7 +427,7 @@ def test_profile_window_history_and_exhaustion_are_recorded_codes():
     store, _, _ = store_for(rows)
     assert attach(store, supported=False)[0]["code"] == "site_universe_profile_unsupported" and store.reads == ["control"]
     assert attach(store_for(rows)[0], research_seconds=449)[0]["code"] == "site_universe_slice_exceeds_research_window"
-    history = [prior("2026-10-01", [outcome(1)], tamper=True)]
+    history = [damaged("2026-10-01", block="garbage")]  # A damaged row that names no readable site.
     assert attach(store_for(rows)[0], history=history)[0]["code"] == "site_universe_history_binding_invalid"
     record, raw = attach(store_for(rows)[0], values=crm(("Synthetic", "Plant", "Fixture City")))
     assert raw is None and record["state"] == "exhausted" and record["code"] == "site_universe_slice_empty"
@@ -413,7 +452,8 @@ def attached_row(rows, *, slice_size=5, history=()):
     store, _, _ = store_for(rows, slice_size=slice_size)
     record, raw = attach(store, history=history)
     body = {"environment": {"files": [{"type": "inline", "path": "/workspace/other.json", "data": ""}]},
-            "metadata": {"run_key": "blueprint-researcher:" + DAY}, "input": "Lead text. " + ANCHOR + "Rest."}
+            "metadata": {"run_key": "blueprint-researcher:" + DAY},
+            "input": "Lead text. " + ANCHOR + "Rest. Each record has " + su.DISPOSITIONS_TODAY + "."}
     su.bind(body, record, raw, ANCHOR)
     return {"date": DAY, "run_key": "blueprint-researcher:" + DAY, "started_at": STARTED.isoformat(),
             "remote_completed_at": int(STARTED.timestamp()) + 1500, "site_universe": record, "create_payload": body,
@@ -425,7 +465,11 @@ def test_bind_adds_the_file_digest_and_one_paragraph_after_the_crm_prefix():
     body, record = row["create_payload"], row["site_universe"]
     assert body["environment"]["files"][-1]["path"] == su.SLICE_PATH
     assert body["metadata"]["site_universe_slice_digest"] == record["slice_sha256"]
-    assert body["input"] == "Lead text. " + ANCHOR + su.paragraph(record) + "Rest."
+    assert body["input"] == ("Lead text. " + ANCHOR + su.paragraph(record) + "Rest. Each record has "
+                             + su.DISPOSITIONS_WITH_SLICE + ".")
+    assert "screened" not in su.DISPOSITIONS_TODAY and su.DISPOSITIONS_WITH_SLICE.endswith("duplicate or screened)")
+    assert su.frozen_ids(row) == frozenset(record["site_ids"])
+    assert su.frozen_ids({"site_universe": su.refused("site_universe_object_missing")}) is None and su.frozen_ids({}) is None
     text = su.paragraph(record)
     assert su.SLICE_PATH in text and record["slice_sha256"] in text and "untrusted data" in text
     assert "never copy it" in text and "live evidence" in text and len(text.encode()) < 1500
@@ -558,6 +602,39 @@ def test_explain_repair_and_qa_text_gain_one_sentence_only_with_a_slice():
     without = qa_text(qa_row, snapshot, "crm")
     with_slice = qa_text({**qa_row, "site_universe": row["site_universe"]}, snapshot, "crm")
     assert with_slice.replace(su.qa_sentence(row), "", 1) == without and su.qa_sentence(row) in with_slice
+
+
+def test_publication_text_gains_one_sentence_only_with_a_slice():
+    row = attached_row([site(number) for number in range(1, 8)])
+    sentence = su.publication_sentence(row)
+    assert sentence.strip().endswith(".") and "never copy" in sentence and "site-universe slice" in sentence
+    assert su.publication_sentence({"site_universe": su.refused("site_universe_object_missing")}) == ""
+    assert su.publication_sentence({}) == ""
+
+
+class CountingBridge:
+    def __init__(self, control):
+        self.control, self.calls = control, []
+
+    def call(self, op, **fields):
+        self.calls.append(op)
+        return deepcopy(self.control) if op == "control" else True
+
+
+def test_the_pin_reuses_the_control_read_the_run_start_already_made_in_the_same_lease():
+    from tools.daily_research.firestore import FirestoreLedger
+    bridge = CountingBridge({"learning": {"enabled": True}, "site_universe": {"enabled": False}})
+    ledger = FirestoreLedger(bridge)
+    with ledger.lock():
+        assert ledger.company_history_binding() == {"enabled": True}
+        assert ledger.site_universe_control() == {"enabled": False}
+    assert bridge.calls == ["acquire", "control", "release"]
+    with ledger.lock():
+        assert ledger.site_universe_control() == {"enabled": False}  # A new lease never reuses an older read.
+    assert bridge.calls[3:] == ["acquire", "control", "release"]
+    ledger.company_history_binding()
+    ledger.site_universe_control()  # Outside a lease nothing is reused.
+    assert bridge.calls[6:] == ["control", "control"]
 
 
 def test_frozen_ids_and_the_short_record_near_the_intent_ceiling():

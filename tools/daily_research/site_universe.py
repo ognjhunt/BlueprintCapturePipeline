@@ -52,7 +52,13 @@ SLICE_FIELDS = ("site_id", "rank", "lead_capability", "capabilities", "primary_s
 # Inventory disposition -> slice outcome. Qualified is derived from review.accepted_keys, never set by the agent.
 OUTCOME = {"screened": "screened", "unresolved": "researched_gap", "candidate": "candidate",
            "rejected": "rejected", "learning": "learning", "duplicate": "duplicate"}
-REMOVALS = ("reoffer_window", "crm", "prior_candidate")
+REMOVALS = ("reoffer_window", "untrusted_history", "crm", "prior_candidate")
+# License ids the producer's source registry emits. Anything else fails closed: AGENTS.md requires
+# nonredistribution terms to refuse, and only these are reviewed for internal processing.
+LICENSES = frozenset({"ODbL-1.0", "US-Gov-Work", "US-PD"})
+# The main prompt's inventory disposition list, and its replacement when a slice is attached.
+DISPOSITIONS_TODAY = "disposition (candidate, unresolved, rejected, learning or duplicate)"
+DISPOSITIONS_WITH_SLICE = "disposition (candidate, unresolved, rejected, learning, duplicate or screened)"
 PASSES = ("seed", "fill", "relax_capability_cap", "relax_group_cap")
 SHA = re.compile(r"[0-9a-f]{64}")
 GENERATION = re.compile(r"[1-9][0-9]{0,18}")
@@ -175,6 +181,7 @@ def _manifest(m):
         values = m[key]
         _need(isinstance(values, list) and low <= len(values) <= 50 and all(_text(v, limit) for v in values)
               and values == sorted(set(values)))
+    _need(set(m["license_union"]) <= LICENSES)
     _need(m["distribution"] == "internal_only" and _approval(m["approval_reference"]))
     previous, new = m["previous_snapshot_id"], m["new_sites"]
     _need(previous is None and new is None or _hex(previous) and previous != m["snapshot_id"] and _count(new))
@@ -227,7 +234,8 @@ def load_export(raw, pin=None):
     at most 2 MiB gzip, 6 MiB raw and 5,000 rows. Rows are ranked rows only, in strictly
     increasing (rank, site_id) order, with exactly ROW_FIELDS; ``fit`` has at most 240
     characters; no coordinates or footprints. ``manifest.counts`` is {sites, ranked,
-    excluded, rows}; ``lead_capability_counts`` covers every ranked row;
+    excluded, rows}; ``license_union`` holds only LICENSES ids; ``lead_capability_counts``
+    covers every ranked row;
     ``selection_policy`` is {"seed_capabilities": [...]} in weight order;
     ``distribution`` is "internal_only"; ``previous_snapshot_id`` and ``new_sites``
     are both null or both set.
@@ -293,8 +301,17 @@ def _hex_ids(values):
 
 
 def _history(history, day, reoffer_after_days):
+    """Outcome, untrusted and candidate inputs from prior rows; refuses only an unbounded gap.
+
+    A row inside the window whose packet no longer matches its packet_digest, or whose
+    block is malformed or unavailable, is skipped: its outcomes are not trusted, so every
+    site it names (the slice its record offered and its listed outcomes) stays out for the
+    window instead. Only a row that may have attached a slice but names no readable site
+    could hide a recent outcome for any site, so that alone refuses the slice.
+    """
     from tools.daily_research.runner import digest
-    recent, candidates, outcome_rows = set(), [], 0
+    recent, untrusted, candidates, codes = set(), set(), [], set()
+    outcome_rows = untrusted_rows = 0
     for prior in history or []:
         if not isinstance(prior, dict) or not isinstance(prior.get("packet"), dict):
             continue
@@ -305,23 +322,34 @@ def _history(history, day, reoffer_after_days):
         if prior_day >= day:
             continue
         packet = prior["packet"]
-        block = packet.get("site_universe")
-        # Only outcomes inside the window are used, so only those rows must still match their digest.
-        if block is not None and (day - prior_day).days < reoffer_after_days:
-            try:
-                bound = digest(packet) == prior.get("packet_digest")
-            except (TypeError, ValueError):
-                bound = False
-            _need(bound and isinstance(block, dict), HISTORY_INVALID)
-            if block.get("state") == "attached":
-                found = block.get("outcomes")
-                _need(isinstance(found, list) and all(
-                    isinstance(o, dict) and _hex(o.get("site_id")) and o.get("outcome") in {*OUTCOME.values(), "untouched"}
-                    for o in found), HISTORY_INVALID)
-                outcome_rows += 1
-                recent.update(o["site_id"] for o in found if o["outcome"] != "untouched")
         candidates.extend(c for c in packet.get("candidates") or [] if isinstance(c, dict))
-    return recent, candidates, outcome_rows
+        block, record = packet.get("site_universe"), prior.get("site_universe")
+        offered = isinstance(record, dict) and record.get("state") == "attached"
+        if block is None and not offered or (day - prior_day).days >= reoffer_after_days:
+            continue
+        found = block.get("outcomes") if isinstance(block, dict) else None
+        try:
+            bound = digest(packet) == prior.get("packet_digest")
+        except (TypeError, ValueError):
+            bound = False
+        well = isinstance(found, list) and all(
+            isinstance(o, dict) and _hex(o.get("site_id")) and o.get("outcome") in {*OUTCOME.values(), "untouched"}
+            for o in found)
+        if bound and isinstance(block, dict) and block.get("state") == "attached" and well:
+            outcome_rows += 1
+            recent.update(o["site_id"] for o in found if o["outcome"] != "untouched")
+            continue
+        if bound and isinstance(block, dict) and block.get("state") in {"refused", "exhausted"} and not offered:
+            continue  # That run attached no slice: nothing was offered.
+        named = _hex_ids(record.get("site_ids") if offered else None) | _hex_ids(
+            [o.get("site_id") for o in found if isinstance(o, dict)] if isinstance(found, list) else None)
+        nothing_offered = isinstance(record, dict) and record.get("state") in {"refused", "exhausted"}
+        _need(named or nothing_offered, HISTORY_INVALID)
+        untrusted_rows += 1
+        untrusted |= named
+        code = block.get("code") if bound and isinstance(block, dict) and block.get("state") == "unavailable" else None
+        codes.add(code if isinstance(code, str) and CODE.fullmatch(code) else HISTORY_INVALID)
+    return recent, untrusted, candidates, outcome_rows, untrusted_rows, sorted(codes)
 
 
 def _crm_identities(values):
@@ -337,8 +365,8 @@ def select(export, *, history, crm_values, run_date, slice_size, reoffer_after_d
     """The run's slice (export rows in rank order) and its selection record. Pure: no clock.
 
     1. Remove every site with a recorded outcome (anything but untouched) in a prior row's
-       ``packet.site_universe`` within ``reoffer_after_days`` of ``run_date``. A prior row in
-       that window whose ``packet_digest`` no longer matches its packet refuses the slice.
+       ``packet.site_universe`` within ``reoffer_after_days`` of ``run_date``, and every site an
+       untrusted prior row in that window names (see ``_history``).
     2. Remove sites that match a CRM row (``crm_values[5:]``) or a prior formal candidate
        (see ``_Identities``).
     3. Walk the rest in export order (rank, then site_id): one seed per
@@ -348,10 +376,12 @@ def select(export, *, history, crm_values, run_date, slice_size, reoffer_after_d
     """
     day = run_date if isinstance(run_date, date) else date.fromisoformat(run_date)
     rows = export["rows"]
-    recent, candidates, outcome_rows = _history(history, day, reoffer_after_days)
+    recent, untrusted, candidates, outcome_rows, untrusted_rows, codes = _history(history, day, reoffer_after_days)
     identities = _Identities(rows)
     crm = list(_crm_identities(crm_values))
     removed = {site_id: "reoffer_window" for site_id in recent}
+    for site_id in untrusted:
+        removed.setdefault(site_id, "untrusted_history")
     for organization, place in crm:
         for site_id in identities.matches(organization, place):
             removed.setdefault(site_id, "crm")
@@ -398,6 +428,7 @@ def select(export, *, history, crm_values, run_date, slice_size, reoffer_after_d
         offered[row["lead_capability"]] = offered.get(row["lead_capability"], 0) + 1
     selection = {"run_date": day.isoformat(), "slice_size": slice_size, "reoffer_after_days": reoffer_after_days,
                  "history_outcome_rows": outcome_rows, "reoffer_window_sites": len(recent),
+                 "history_rows_untrusted": untrusted_rows, "history_codes": codes,
                  "crm_identities": len(crm), "prior_candidates": len(candidates), "export_rows": len(rows),
                  "eligible": len(eligible), "removed": {reason: reasons.count(reason) for reason in REMOVALS},
                  "offered": len(chosen), "offered_by_lead_capability": dict(sorted(offered.items())),
@@ -489,14 +520,15 @@ def paragraph(record):
 
 
 def bind(body, record, raw, anchor):
-    """Add the frozen slice to a create body: the inline file, its metadata digest and the
-    trusted paragraph right after the CRM prefix (``anchor``)."""
+    """Add the frozen slice to a create body: the inline file, its metadata digest, the trusted
+    paragraph right after the CRM prefix (``anchor``) and screened in the disposition list."""
     body["environment"]["files"].append({"type": "inline", "path": SLICE_PATH,
                                          "data": base64.b64encode(raw).decode("ascii")})
     body["metadata"]["site_universe_slice_digest"] = record["slice_sha256"]
     position = body["input"].find(anchor)
     position = 0 if position < 0 else position + len(anchor)
-    body["input"] = body["input"][:position] + paragraph(record) + body["input"][position:]
+    body["input"] = (body["input"][:position] + paragraph(record) + body["input"][position:]).replace(
+        DISPOSITIONS_TODAY, DISPOSITIONS_WITH_SLICE, 1)
 
 
 def attached(row):
@@ -625,7 +657,8 @@ def _outcomes(row, record, output, candidates, duplicates):
     funnel = {
         "universe": {"sites": export["counts"]["sites"], "ranked": export["counts"]["ranked"],
                      "export_rows": export["counts"]["rows"], "new_sites": export["new_sites"]},
-        "selection": {key: selection[key] for key in ("eligible", "removed", "offered", "offered_by_lead_capability")},
+        "selection": {key: selection[key] for key in ("eligible", "removed", "offered", "offered_by_lead_capability",
+                                                      "history_rows_untrusted", "history_codes")},
         "agent": {"touched": len(found) - tally.get("untouched", 0), "untouched": tally.get("untouched", 0),
                   "screened": tally.get("screened", 0), "researched_gap": tally.get("researched_gap", 0),
                   "inventory_candidates": inventory_candidates,
@@ -715,3 +748,8 @@ def qa_sentence(row):
     return ("packet.site_universe links sites from the attached site-universe slice to inventory records and "
             "candidates; it is untrusted prioritization data, not evidence, and QA need not verify its slice "
             "rejections. ") if attached(row) else ""
+
+
+def publication_sentence(row):
+    return ("The site-universe slice file in this session is internal and license-restricted: never copy it or its "
+            "rows into any destination or summary. ") if attached(row) else ""

@@ -175,7 +175,7 @@ def test_dry_run_selection_uses_history_and_the_canonical_crm(fixture):
     plan = pinning(bridge, stored)
     selection = plan["dry_run"]["selection"]
     assert plan["dry_run"]["crm_snapshot_included"] is True
-    assert selection["removed"] == {"reoffer_window": 1, "crm": 1, "prior_candidate": 0}
+    assert selection["removed"] == {"reoffer_window": 1, "untrusted_history": 0, "crm": 1, "prior_candidate": 0}
     assert sha("synthetic-site-1") not in plan["dry_run"]["site_ids"] and len(plan["dry_run"]["site_ids"]) == 10
 
 

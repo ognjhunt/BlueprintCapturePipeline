@@ -129,21 +129,28 @@ allowlisted and older packages ignore it. An older release's `configure` keeps o
 what its input holds, so an input without the key turns the slice off. The disk
 `Ledger` has no company control, so the feature is always off there.
 
-- Off (key absent or `enabled=false`): nothing more is read, and the create
-  payload, metadata, instructions and row are byte-identical to today.
+- Off (key absent or `enabled=false`): the create payload, metadata,
+  instructions and row are byte-identical to today, and nothing else is read. The
+  pin comes from the control read the run start already makes under the lease
+  when the history profile is on (the production config); otherwise the run makes
+  one extra control read.
 - On, under the lease after `preflight`, `site_universe.attach` reads the pinned
   object through `site_universe_object_get` (exact generation, size and SHA-256;
   its own 20 s bound inside the 35 s pipe deadline), validates the export and
   selects up to `slice_size` sites: sites with an outcome in the last
   `reoffer_after_days`, CRM rows and prior formal candidates are removed; one seed
   per policy capability, then rank order with at most half per lead capability and
-  one site per group, then each cap relaxed.
+  one site per group, then each cap relaxed. A prior row in the window whose packet
+  no longer matches its `packet_digest`, or whose outcomes are unavailable, is
+  skipped; every site it names stays out for the window, and the selection counts
+  it with its code. Only such a row that names no readable site refuses the slice.
+  The export must list only reviewed licenses (`ODbL-1.0`, `US-Gov-Work`, `US-PD`).
 - The slice goes into `/workspace/inputs/blueprint-site-universe-slice.json` as an
-  inline file, `metadata.site_universe_slice_digest` holds its SHA-256, and one
-  trusted paragraph follows the CRM prefix. No tool is added, so the session's
-  tool schemas, `search.tools()` and `check_agent` are unchanged. `put`,
-  `observe` and `create_check` compare metadata, so the slice cannot change after
-  the intent.
+  inline file, `metadata.site_universe_slice_digest` holds its SHA-256, one
+  trusted paragraph follows the CRM prefix, and the prompt's inventory disposition
+  list gains `screened`. No tool is added, so the session's tool schemas,
+  `search.tools()` and `check_agent` are unchanged. `put`, `observe` and
+  `create_check` compare metadata, so the slice cannot change after the intent.
 - The slice never stops an intent that fits without it. Over `search.MAX_INTENT`
   the run keeps today's payload, shrinks `row.site_universe` to `{state, code}`
   (`site_universe_intent_resource_ceiling` for a slice that no longer fits), and
@@ -155,8 +162,8 @@ what its input holds, so an input without the key turns the slice off. The disk
 - Recovery, repair and QA use the frozen row only; `frozen_slice` re-checks the
   SHA-256 before any use. `Runner.prepare_output` writes `packet.site_universe`
   (one outcome per slice site, link issues and the funnel, under 16 KB and bound
-  by `packet_digest`) on every path. Explain, repair and QA text gain one sentence
-  only when a slice is attached.
+  by `packet_digest`) on every path. Explain, repair, QA and publication text gain
+  one sentence only when a slice is attached.
 - Any slice failure records `row.site_universe = {state: "refused", code}` (or
   `exhausted` for an empty slice) and the run continues without the slice. A lost
   store or lease stops the run as today.
