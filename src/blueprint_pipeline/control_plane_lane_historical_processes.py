@@ -2,7 +2,7 @@
 
 This bounded scan cannot replace the owner decision, future-writer fence or
 queue/pin/release checks. Every unreadable, changing or unknown process view refuses.
-Transient PID-census churn requires a fresh complete pass within the original budget.
+Transient PID/FD census churn requires a fresh complete pass within the original budget.
 The invoking worker's held descriptors are skipped only for its actual PID.
 """
 from __future__ import annotations
@@ -20,6 +20,10 @@ from .control_plane_kernel_process import kernel_has_no_user_memory
 
 class HistoricalProcessError(ValueError):
     """Fixed refusal without foreign process contents."""
+
+
+class _DescriptorCensusChanged(HistoricalProcessError):
+    """Incomplete FD membership observation, never permission to skip a PID."""
 
 
 def _require(value, code='process_unknown'):
@@ -296,7 +300,12 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
             if (info.st_dev, info.st_ino) in identities or os.fsencode(target) in os.fsencode(path):
                 channels.add('fd')
         after_names = scan.names(descriptors, 16384)
-        _require(after_names == names)
+        if after_names != names:
+            # An observed reference is terminal even when descriptors churn.
+            # Otherwise this incomplete observation can only start a fresh
+            # full census; unreadable channels and identity changes still refuse.
+            _require(not channels, 'process_reference')
+            raise _DescriptorCensusChanged('historical_generation_process_unknown')
     finally:
         os.close(descriptors)
     _require(_process_start(scan.read(directory, 'stat', 16384), pid) == started
@@ -343,7 +352,8 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
         finally:
             os.close(host)
             os.close(own)
-        # A process can exit between the census and open, or after inspection.
+        # A process can exit between the census and open, or after inspection;
+        # its descriptor membership can also change during an otherwise readable view.
         # Discard that incomplete pass, never the process: only a fresh complete
         # stable census may clear references. Keep the same clock, counters,
         # mount observations and shared budget across all bounded attempts.
@@ -363,6 +373,8 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
                     channels = _inspect_process(scan, directory, pid, target, identities, namespaces,
                                                 host_namespace[2], root_identity)
                     _require(not channels, 'process_reference')
+                except _DescriptorCensusChanged:
+                    break
                 finally:
                     os.close(directory)
             else:
