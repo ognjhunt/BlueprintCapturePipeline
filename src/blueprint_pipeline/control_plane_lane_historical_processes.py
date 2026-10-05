@@ -26,6 +26,10 @@ class _DescriptorCensusChanged(HistoricalProcessError):
     """Incomplete FD membership observation, never permission to skip a PID."""
 
 
+class _UserMemoryReadUnavailable(HistoricalProcessError):
+    """ESRCH is unknown until the held census proves the PID pathname absent."""
+
+
 def _require(value, code='process_unknown'):
     if not value:
         raise HistoricalProcessError('historical_generation_' + code)
@@ -281,6 +285,12 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
         try:
             raw = scan.read(directory, name)
         except ProcessLookupError:
+            if not kernel and name in ('environ', 'maps'):
+                # Never discard a reference observed before this failed read.
+                # The caller must prove disappearance through its held /proc
+                # before a fresh complete census can replace this partial pass.
+                _require(not channels, 'process_reference')
+                raise _UserMemoryReadUnavailable('historical_generation_process_unknown') from None
             _require(name in ('environ', 'maps') and kernel
                 and kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid))
             raw = b''
@@ -377,6 +387,20 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
                     _require(not channels, 'process_reference')
                 except _DescriptorCensusChanged:
                     break
+                except _UserMemoryReadUnavailable:
+                    scan.tick()
+                    try:
+                        current = os.open(pid, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                          dir_fd=proc)
+                    except FileNotFoundError:
+                        # The old view has disappeared. Do not skip it or
+                        # accept an empty channel: restart every PID within
+                        # the same three-pass clock and cumulative budget.
+                        break
+                    else:
+                        os.close(current)
+                        # Live or reused PID: ESRCH supplied no exit proof.
+                        _require(False)
                 finally:
                     os.close(directory)
             else:

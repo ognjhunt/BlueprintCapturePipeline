@@ -276,3 +276,165 @@ def test_fd_churn_does_not_skip_final_process_identity_or_channel_checks(
         run(descriptor_census)
     assert descriptor_census.inspections == ['1', '2']
     assert descriptor_census.fd_censuses == 2
+
+
+@pytest.fixture
+def user_memory_exit(descriptor_census, monkeypatch):
+    """Real parser/held directory seam; no assertion of native clearance."""
+    state = descriptor_census
+    process = state.proc / '2'
+    (process / 'mountinfo').write_bytes(b'fixture mount view')
+    monkeypatch.setattr(processes, 'kernel_has_no_user_memory', lambda *args: False)
+
+    def known_view(scan, directory, view, *args):
+        scan.views[view] = (b'fixture mount view', ())
+
+    monkeypatch.setattr(processes, '_known_filesystem_view', known_view)
+    read = processes._Scan.read
+    state.exit_mode, state.failed_channel, state.failures = 'gone', 'environ', 0
+    state.read_error = ProcessLookupError(errno.ESRCH, 'process ended during read')
+    state.before_failure = lambda scan: None
+    process_identity = process.stat().st_ino
+
+    def current_read(scan, directory, name, cap=1024**2):
+        if os.fstat(directory).st_ino == process_identity and name == state.failed_channel:
+            scan.tick()
+            state.failures += 1
+            state.before_failure(scan)
+            if state.exit_mode != 'live':
+                process.rename(state.proc.parent / 'exited-process')
+            if state.exit_mode == 'reused':
+                process.mkdir()
+            raise state.read_error
+        return read(scan, directory, name, cap)
+
+    monkeypatch.setattr(processes._Scan, 'read', current_read)
+    return state
+
+
+@pytest.mark.parametrize('channel', ['environ', 'maps'])
+def test_proven_user_memory_exit_restarts_every_pid_with_same_budget(user_memory_exit, channel):
+    state = user_memory_exit
+    state.failed_channel = channel
+    budget = ReferenceCollectionBudget()
+    run(state, budget=budget)
+    assert state.inspections == ['1', '2', '1', '3']
+    assert state.opens == ['2', '2', '3']  # second open proves real pathname absence
+    assert state.failures == 1 and len(state.scans) == 3
+    assert len({id(scan) for scan in state.scans}) == 1
+    scan = state.scans[0]
+    assert budget.counts['entries'] == scan.entries > 4
+    assert budget.counts['raw_bytes'] == scan.raw_bytes > 3 * len(b'observed')
+
+
+@pytest.mark.parametrize('mode', ['live', 'reused'])
+def test_esrch_with_live_or_reused_pid_remains_unknown(user_memory_exit, mode):
+    state = user_memory_exit
+    state.exit_mode = mode
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and len(state.scans) == 1
+    assert state.opens == ['2', '2'] and state.failures == 1
+
+
+@pytest.mark.parametrize('channel', ['cwd', 'cmdline'])
+def test_proven_exit_cannot_discard_a_previously_observed_reference(user_memory_exit, channel):
+    state = user_memory_exit
+    process = state.proc / '2'
+    selected = state.proc.parent / 'selected'
+    selected.mkdir()
+    state.manifest['target_path'] = str(selected)
+    if channel == 'cwd':
+        (process / channel).unlink()
+        (process / channel).symlink_to(selected)
+    else:
+        (process / channel).write_bytes(os.fsencode(selected))
+    with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.opens == ['2']
+    assert state.failures == 1 and len(state.scans) == 1
+
+
+@pytest.mark.parametrize('error', [PermissionError(errno.EACCES, 'hidden'),
+                                 OSError(errno.EIO, 'unreadable'),
+                                 FileNotFoundError(errno.ENOENT, 'missing channel')])
+def test_non_esrch_memory_errors_remain_unknown_even_when_pid_disappears(user_memory_exit, error):
+    state = user_memory_exit
+    state.read_error = error
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.opens == ['2']
+    assert state.failures == 1 and len(state.scans) == 1
+
+
+def test_cmdline_esrch_remains_unknown_even_when_pid_disappears(user_memory_exit):
+    state = user_memory_exit
+    state.failed_channel = 'cmdline'
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.opens == ['2']
+    assert state.failures == 1 and len(state.scans) == 1
+
+
+def test_proven_exit_cannot_renew_original_scan_clock(user_memory_exit, monkeypatch):
+    state = user_memory_exit
+    now = [0.0]
+    monkeypatch.setattr(processes.time, 'monotonic', lambda: now[0])
+    state.before_failure = lambda scan: now.__setitem__(0, 5.0)
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.opens == ['2']
+    assert state.failures == 1 and len(state.scans) == 1
+
+
+@pytest.mark.parametrize('kind', ['entries', 'raw_bytes'])
+def test_proven_exit_cannot_renew_shared_reference_allowance(user_memory_exit, kind):
+    state = user_memory_exit
+    budget = ReferenceCollectionBudget()
+    state.before_failure = lambda scan: budget.charge(kind, budget.limits[kind] - budget.counts[kind])
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state, budget=budget)
+    assert budget.failure == 'reference_' + kind + '_limit'
+    assert state.inspections == (['1', '2'] if kind == 'entries' else ['1', '2', '1'])
+    assert state.opens == ['2', '2']
+    assert state.failures == 1
+
+
+def test_proven_exit_requires_reinspection_of_surviving_references(user_memory_exit, monkeypatch):
+    state = user_memory_exit
+    inspect = processes._inspect_process
+
+    def current_inspect(scan, directory, pid, *args):
+        channels = inspect(scan, directory, pid, *args)
+        return {'fd'} if pid == '3' else channels
+
+    monkeypatch.setattr(processes, '_inspect_process', current_inspect)
+    with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
+        run(state)
+    assert state.inspections == ['1', '2', '1', '3']
+    assert state.failures == 1 and len(state.scans) == 2
+
+
+def test_repeated_proven_exits_refuse_after_original_three_passes(census, monkeypatch):
+    names = processes._Scan.names
+
+    def current_names(scan, directory, limit):
+        process = census.proc / '2'
+        if not process.exists():
+            process.mkdir()
+        return names(scan, directory, limit)
+
+    def ended(scan, directory, pid, *args):
+        census.inspections.append(pid)
+        if pid == '2':
+            (census.proc / pid).rename(census.proc.parent / ('exited-' + str(len(census.scans))))
+            raise processes._UserMemoryReadUnavailable('historical_generation_process_unknown')
+        return set()
+
+    monkeypatch.setattr(processes._Scan, 'names', current_names)
+    monkeypatch.setattr(processes, '_inspect_process', ended)
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(census)
+    assert census.inspections == ['1', '2'] * 3
+    assert census.opens == ['2', '2'] * 3
+    assert len(census.scans) == 3 and len({id(scan) for scan in census.scans}) == 1
