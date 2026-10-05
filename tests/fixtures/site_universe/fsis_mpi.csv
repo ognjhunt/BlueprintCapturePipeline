@@ -1,0 +1,5 @@
+EstNumber,Company,Street,City,State,Zip,Phone,GrantDate,Activities,DBAs
+M1234+P1234,Lone Pine Foods Inc,2200 Farm to Market Road 1960 West,Houston,TX,77090,(281) 555-0100,01/02/2001,Meat Processing; Poultry Slaughter,Lone Pine Poultry
+M5678,"Garcia, Maria L",12 County Road 101,Larkstone,TX,77167,(512) 555-0123,03/04/2010,Meat Processing,
+M9012,"Doe, Jane",88 Main St,Fernmoor,TX,77166,(830) 555-0177,05/06/2015,Meat Slaughter; Meat Processing,Thistlemoor Custom Meats
+P4321,Okie Poultry Co,3 Farm Rd,Ada,OK,74820,(580) 555-0100,07/08/2012,Poultry Slaughter,
