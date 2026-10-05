@@ -625,6 +625,9 @@ def test_run_level_time_and_post_review_counts():
     assert status["funnel"]["qa"] == {"eligible_for_promotion": {"slice": 1, "run": 2}, "accepted": {"slice": 1, "run": 2}}
     assert status["state"] == "attached" and status["offered"] == 5 and status["packet_state"] == "attached"
     assert "site_ids" not in status and "Synthetic" not in canonical(status)
+    # A review that admitted outreach-ready hypotheses counts them too; others keep the shape above.
+    row["review"]["outreach_ready_keys"] = ["k2"]
+    assert su.status(row)["funnel"]["qa"]["outreach_ready"] == {"slice": 1, "run": 1}
 
 
 def test_packet_block_stays_inside_its_reserve_at_the_slice_cap():

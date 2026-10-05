@@ -179,3 +179,64 @@ def admission(row, control, now, path="daily_qa"):
         return 0, "outreach_ready_direction_invalid"
     return min(frozen["max_rows_per_batch"], direction["scope"]["max_rows_per_batch"]), None
 
+
+
+SHADOW_MAX_BYTES = 64 * 1024
+SHADOW_RESERVE_BYTES = 500_000  # Publication bookkeeping after review: plans, receipts and tool records.
+
+
+def shadow(row, result, decision, known, evidence, now):
+    """Shadow-mode record of the tier each candidate would get, outside every digest-bound artifact.
+
+    Recomputes result v3 over the QA checks with the retained evidence. QA was not asked to list
+    keys, so nothing is admitted; would_admit counts promotable, CRM-new, unaccepted candidates
+    the rule rates outreach_ready. Never raises.
+    """
+    try:
+        packet, checks = row["packet"], result["checks"]
+        value = verification.cohort(
+            verification.packet_candidates(packet), {c["candidate_key"]: c.get("lead_verification") for c in checks}, now,
+            duplicate_checks={c["candidate_key"]: {"duplicate": c["duplicate"], "duplicate_of": c.get("duplicate_of"),
+                                                   "reason": c["reason"]} for c in checks},
+            result_version=verification.OUTREACH_RESULT_VERSION, evidence=evidence)
+        promotable = {c["candidate_key"]: c for c in packet["candidates"]}
+        accepted = {key for key in decision["accepted_keys"] if isinstance(key, str)}
+        would = [r["candidate_key"] for r in value["results"] if r["eligible_for_outreach_ready"] is True
+                 and r["candidate_key"] in promotable and r["candidate_key"] not in accepted
+                 and not set(promotable[r["candidate_key"]]["identity_keys"]) & known]
+        frozen = row.get("outreach_ready") or {}
+        return {"schema_version": SHADOW, "state": "recorded", "rule_version": verification.OUTREACH_RULE_VERSION,
+                "evaluated_at": now.isoformat(), "direction_state": frozen.get("state", "absent"),
+                "direction_code": frozen.get("code"), "tier_evidence": value["tier_evidence"],
+                "tiers": {tier: sum(r["tier"] == tier for r in value["results"]) for tier in ("verified", "outreach_ready", "none")},
+                "would_admit_count": len(would), "would_admit": would, "admitted": [],
+                "results": [{"candidate_key": r["candidate_key"], "tier": r["tier"],
+                             "blockers": r["outreach_ready"]["blockers"], "open_checks": r["outreach_ready"]["open_checks"],
+                             "proof_levels": {p["claim"]: p["level"] for p in r["outreach_ready"]["proving_sources"]}}
+                            for r in value["results"]]}
+    except Exception:  # noqa: BLE001 - shadow measurement never blocks QA or publication
+        return {"schema_version": SHADOW, "state": "unavailable", "code": "outreach_ready_shadow_unavailable", "admitted": []}
+
+
+def bounded_shadow(row, record, ceiling):
+    """The record, its counts alone, or None: a shadow record never costs the row headroom it needs.
+
+    Call after QA bound its decision. It reserves room for what review and publication add later
+    (the review copy of the decision, delivery payloads, a sheet plan holding the CRM values and
+    publication bookkeeping); each form must also stay under SHADOW_MAX_BYTES.
+    """
+    try:
+        decision = row["qa"]["decision"]
+        selected = [c for c in row["packet"]["candidates"] if c["candidate_key"] in decision["accepted_keys"]]
+        size = len(canonical(row).encode())
+        reserve = (2 * len(canonical(decision).encode()) + 8 * len(canonical(selected).encode())
+                   + 4 * len(canonical(decision.get("summary")).encode()) + len(canonical(row.get("crm_snapshot")).encode())
+                   + SHADOW_RESERVE_BYTES)
+        counts = {key: value for key, value in record.items() if key not in {"results", "would_admit"}}
+        for candidate in (record, counts):
+            raw = len(canonical(candidate).encode())
+            if raw <= SHADOW_MAX_BYTES and size + raw + reserve <= ceiling:
+                return candidate
+    except Exception:  # noqa: BLE001 - an unmeasurable row records nothing rather than risk its ceiling
+        return None
+    return None

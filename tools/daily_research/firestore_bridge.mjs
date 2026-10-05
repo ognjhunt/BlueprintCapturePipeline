@@ -1409,6 +1409,8 @@ export class Store {
         || typeof request.publication_authority_reference!=='string') refuse('terminal_sheets_recovery_request_invalid');
     const source=JSON.parse(Buffer.from(await this.blobGet(request.source_row_blob),'base64').toString('utf8'));
     const p=source.publication,d=source.delivery?.sheets,review=source.review,qa=source.qa;
+    // This recovery re-derives only the verified Sheets payload; a row with hypotheses is never recovered here.
+    if(d?.payload?.hypotheses!==undefined || review?.outreach_ready_keys?.length) refuse('terminal_sheets_recovery_hypotheses_unsupported');
     if(source.date!==request.day || source.run_key!==`blueprint-researcher:${request.day}` || source.canary
         || source.state!=='reviewed' || source.publication_profile!=='agent-owned-v1'
         || !source.session_id || !source.turn_id || qa?.state!=='validated' || !qa.turn_id

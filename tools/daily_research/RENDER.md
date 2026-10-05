@@ -107,7 +107,7 @@ config on every scheduler tick (`approved_envelope_mismatch`).
 
    `configure` checks the root bindings and `config` with the installed release.
    It does not check the other sections. It replaces the whole document except
-   the lease, `cleanup_observation_required`, `paid_expansion` and `site_universe`, so a partial
+   the lease, `cleanup_observation_required`, `paid_expansion`, `site_universe` and `outreach_ready`, so a partial
    file silently removes sections. For example, a missing `workflow` stops QA
    and publication. A held lease refuses with `runner_overlap`; try again after
    the worker releases it.
@@ -174,6 +174,50 @@ what its input holds, so an input without the key turns the slice off. The disk
 Deploy a release with this module only while the worker is idle, with the key
 absent, and confirm that the next create payload is unchanged before pinning. The
 owner commands are in [operators/README.md](operators/README.md#site-universe-backlog-slice).
+
+## Outreach-ready tier
+
+ADP-010 partner discovery, owner decision 2026-10-05; shadow mode by default.
+`verification.outreach_tier(gates, now)` and `quote_level()` are the one rule
+(`blueprint.outreach-ready-rule.v1`) over the existing lead-verification gates:
+`verified` is the unchanged full-proof path; `outreach_ready` needs operator,
+physical site and site task as `verified_fact` from usable primary sources, each
+with a quote found whole in digest-checked retained text for the same URL
+(`blueprint_read_source` page text, or a `blueprint_search` snippet or Parallel
+citation excerpt), a valid unexpired assessment, no duplicate or conflict and
+nothing contradicted; anything else, including any defect in the computation, is
+`none`. The shared golden file is
+`tests/fixtures/daily_research/lead-verification-tier.json`.
+
+- Shadow mode (`control.outreach_ready` absent or disabled, or a direction that
+  does not name `daily_qa`): the create payload, packet, QA input, review and
+  publication payloads are byte-identical to the release before the tier
+  (`tests/fixtures/daily_research/outreach-ready-shadow-identity.json` holds
+  main's digests). After QA the run records each candidate's tier only in
+  `row.outreach_ready_shadow`, size-bounded so it never costs the review or
+  publication headroom, and admits nothing.
+- Enabled: the run freezes the direction at its durable intent
+  (`row.outreach_ready`; the bridge binds its digest, so a row never gains or
+  changes it) and pins `blueprint.lead-verification-result.v3` (v2 plus `tier`,
+  `eligible_for_outreach_ready` and the `outreach_ready` block). QA is asked for
+  `outreach_ready_keys`; `qa_decision` admits a listed key only when the
+  recomputed tier is `outreach_ready`, it is promotable, unaccepted and new to the
+  CRM, and the live direction still allows it. `Runner.review` recomputes the tier
+  against the same evidence state and refuses any other list. Sheets and Notion
+  payloads gain `hypotheses` only when non-empty; the publisher writes them in the
+  existing 19 columns after the verified rows (G `Hypothesis`, Q `Outreach-ready:
+  operator, site, task proven`, M `First email asks: ` plus the questions joined
+  by one space, a newline and the marker) and labels each Notion entry
+  "Hypothesis, not verified". Questions are the fixed templates in order, with the
+  candidate's `task` and `site` verbatim. Hypotheses need QA's day-level
+  `source_support_verified`, like accepted keys. These cells and fields are the
+  contract Blueprint-WebApp #854 recomputes. `accepted_keys`, `eligible_for_qualified_promotion`
+  and verified rows are unchanged. Nothing authorizes a send.
+- Enable only after the WebApp release that accepts result v3 and `hypotheses`
+  payloads is deployed; an older WebApp refuses every day whose payload carries
+  hypotheses, including its verified rows. Terminal Sheets recovery refuses a row
+  with hypotheses. The owner command is in
+  [operators/README.md](operators/README.md#outreach-ready-hypothesis-direction).
 
 ## Stable private consumer contract
 
@@ -367,8 +411,10 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
    use `configure --input /PRIVATE/control.json` for a validated update.
    `configure` keeps the top-level `paid_expansion` owner direction, which only
    `operators/paid-expansion-direction.py` changes ([SEARCH.md](SEARCH.md#owner-directed-paid-expansion-allowance)),
-   and the `site_universe` pin, which only `operators/site-universe-backlog.py` changes
-   (see [Site universe slice](#site-universe-slice)).
+   the `site_universe` pin, which only `operators/site-universe-backlog.py` changes
+   (see [Site universe slice](#site-universe-slice)), and the `outreach_ready`
+   direction, which only `operators/outreach-ready-direction.py` changes (see
+   [Outreach-ready tier](#outreach-ready-tier)).
    Deploy a release that changes a session tool schema only while the worker is
    idle. The 2026-10-04 release raises the Exa `max_cost_micros` maximum from
    5,000,000 to 50,000,000, and an in-flight session's tool check would refuse it.

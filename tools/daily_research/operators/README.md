@@ -782,7 +782,7 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
   run in progress. A new direction can lower a running row's row limit or remove
   its path, never widen it. Re-enable with a new `set`.
 - Admitted keys publish only through the row's existing publication path
-  (agent-owned in production), as Sheets rows with Verification `Hypothesis` and
+  (agent-owned in production): Sheets rows with Verification `Hypothesis` and
   Notion entries labelled "Hypothesis, not verified". Nothing authorizes a send.
 - Enable a direction only after the WebApp release that accepts result v3 and
   `hypotheses` payloads is deployed. An older WebApp refuses every day whose

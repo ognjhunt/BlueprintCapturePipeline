@@ -14,6 +14,11 @@ const rich = text => [{type:'text', text:{content:text}}];
 const normalized = x => String(x || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 const identity = x => [x.organization,x.site||x.location,x.location||x.site,x.task].map(normalized).join('\n');
 const NOTION_PARENT_PAGE_LIMIT = 100, NOTION_READ_BUDGET_MS = 25000;
+// Outreach-ready hypotheses (verification.py result v3, outreach_ready.py). Labelled rows, never verified ones.
+const OUTREACH_RESULT='blueprint.lead-verification-result.v3', OUTREACH_RULE='blueprint.outreach-ready-rule.v1';
+// The WebApp recomputes these cells (Blueprint-WebApp #854): Sheets column G and Q; each Notion entry heading.
+export const HYPOTHESIS_LABEL='Hypothesis', HYPOTHESIS_MATURITY='Outreach-ready: operator, site, task proven';
+export const HYPOTHESIS_HEADING='Hypothesis, not verified';
 const NOTION_BATCH_BLOCKS = 90, NOTION_REQUEST_BYTES = 450000;
 const paragraph = content=>({object:'block',type:'paragraph',paragraph:{rich_text:rich(content)}});
 const createBody = (title,children)=>({parent:{type:'page_id',page_id:NOTION},
@@ -42,6 +47,47 @@ function crmRows(snapshot) {
   return used;
 }
 
+// The v2/v3 rule: a version or schema_version alias is present and every present one is v1.
+const aliasInvalid=assessment=>(!Object.hasOwn(assessment,'version') && !Object.hasOwn(assessment,'schema_version'))
+  || ['version','schema_version'].some(key=>Object.hasOwn(assessment,key) && assessment[key]!=='blueprint.lead-verification.v1');
+
+// A hypothesis payload entry is exactly what Runner.review bound: an enabled daily_qa direction
+// frozen on the row, the review's outreach_ready_keys in order, and a current v3 outreach_ready
+// result whose open checks and questions it repeats. It never overlaps a verified candidate.
+function hypothesisReasons(row,candidates,hypotheses,now) {
+  const keys=row.review?.outreach_ready_keys,frozen=row.outreach_ready;
+  if(!Array.isArray(hypotheses) || !hypotheses.length || !Array.isArray(keys) || row.review?.source_support_verified!==true
+      || row.packet?.lead_verification_result_version!==OUTREACH_RESULT || frozen?.state!=='enabled'
+      || frozen.sends_authorized!==false || !Array.isArray(frozen.paths) || !frozen.paths.includes('daily_qa')
+      || !Number.isSafeInteger(frozen.max_rows_per_batch) || hypotheses.length>frozen.max_rows_per_batch
+      || !isDeepStrictEqual(hypotheses.map(h=>h?.candidate?.candidate_key),keys))
+    return ['Hypotheses publish only from an enabled daily_qa outreach-ready direction and the protected review that listed them.'];
+  const verified=new Set(candidates.map(c=>c?.candidate_key)),seen=new Set(),reasons=[];
+  for(const h of hypotheses) {
+    if(!h || typeof h!=='object' || Array.isArray(h)) {reasons.push('hypothesis: retain the exact entry the protected review bound.');continue;}
+    const c=h.candidate,key=c?.candidate_key;
+    const results=row.review?.lead_verification?.results?.filter(r=>r.candidate_key===key) || [];
+    const result=results.length===1 ? results[0] : null,outreach=result?.outreach_ready;
+    let bound=false;
+    try {bound=!!result?.assessment && result.candidate_digest===verificationDigest(c)
+      && result.assessment_digest===verificationDigest(result.assessment)
+      && result.assessment.candidate_digest===result.candidate_digest && !aliasInvalid(result.assessment);}catch {}
+    if(!key || seen.has(key) || verified.has(key) || !bound
+        || Object.keys(h).sort().join(',')!=='candidate,open_checks,open_questions'
+        || !row.packet.candidates?.some(p=>isDeepStrictEqual(p,c))
+        || result.version!==OUTREACH_RESULT || result.tier!=='outreach_ready' || result.eligible_for_outreach_ready!==true
+        || result.eligible_for_qualified_promotion!==false || result.duplicate_of || outreach?.rule_version!==OUTREACH_RULE
+        || !isDeepStrictEqual(h.open_checks,outreach.open_checks) || !isDeepStrictEqual(h.open_questions,outreach.open_questions)
+        || !Array.isArray(h.open_questions) || h.open_questions.length<1 || h.open_questions.length>3
+        || h.open_questions.some(q=>typeof q!=='string' || !q.trim())
+        || !(Date.parse(result.assessment.assessed_at)<=now
+          && (result.assessment.valid_until===null || now<Date.parse(result.assessment.valid_until))))
+      reasons.push(`${key || 'hypothesis'}: retain a current outreach-ready assessment bound by the protected review; a hypothesis is never verified and never sent.`);
+    seen.add(key);
+  }
+  return reasons;
+}
+
 // Protected Runner.review writes these derived receipts. Rebind exact raw
 // candidates and assessments at every fresh sink claim and mutation. This is
 // evidence eligibility only; the separate commercial/rights/readiness gates stay open.
@@ -49,6 +95,8 @@ export function publicationVerification(row,destination,now=Date.now()) {
   const candidates=row.delivery?.[destination]?.payload?.candidates;
   if(!Array.isArray(candidates)) return {eligible:false,reasons:['Retain an exact canonical publication candidate payload.']};
   const reasons=[];
+  const hypotheses=row.delivery[destination].payload.hypotheses;
+  if(hypotheses!==undefined) reasons.push(...hypothesisReasons(row,candidates,hypotheses,now));
   for(const candidate of candidates) {
     const results=row.review?.lead_verification?.results?.filter(r=>r.candidate_key===candidate.candidate_key) || [];
     const result=results.length===1 ? results[0] : null;
@@ -58,7 +106,7 @@ export function publicationVerification(row,destination,now=Date.now()) {
       && result.assessment.candidate_digest===result.candidate_digest;}catch {}
     if(row.review?.source_support_verified!==true || result?.status!=='verified'
         || result.eligible_for_qualified_promotion!==true || result.duplicate_of || !bound
-        || (result.version==='blueprint.lead-verification-result.v2'
+        || (['blueprint.lead-verification-result.v2',OUTREACH_RESULT].includes(result.version)
           ? (!Object.hasOwn(result.assessment,'version') && !Object.hasOwn(result.assessment,'schema_version'))
             || ['version','schema_version'].some(key=>Object.hasOwn(result.assessment,key) && result.assessment[key]!=='blueprint.lead-verification.v1')
           : result.assessment.version!=='blueprint.lead-verification.v1')
@@ -85,7 +133,8 @@ function bind(row, destination, now=Date.now()) {
   if (destination === 'sheets' && (delivery.payload.sheet_id !== SHEET || delivery.payload.tab !== 'Prospects'))
     fail('publication_destination_invalid');
   if (destination === 'notion' && delivery.payload.parent_id !== NOTION) fail('publication_destination_invalid');
-  if (!Array.isArray(delivery.payload.candidates) || Buffer.byteLength(delivery.payload_json)>2000000)
+  if (!Array.isArray(delivery.payload.candidates) || Buffer.byteLength(delivery.payload_json)>2000000
+      || delivery.payload.hypotheses!==undefined && !Array.isArray(delivery.payload.hypotheses))
     fail('publication_candidates_invalid');
   // GET-only reconciliation proves an existing exact effect. Legacy or expired
   // assessments cannot authorize a new claim, but cannot erase its readback.
@@ -108,20 +157,25 @@ export function planSheets(row, snapshot, now=Date.now()) {
   const used = crmRows(snapshot);
   const ids = used.map(r => r[0]);
   const existing = new Set(used.map(r => identity({organization:r[1],site:r[3],location:r[17],task:r[14]})));
-  if (d.payload.candidates.some(c => existing.has(identity(c)) || used.some(r=>!normalized(r[17])
+  const hypotheses = d.payload.hypotheses || [];
+  if ([...d.payload.candidates,...hypotheses.map(h=>h.candidate)].some(c => existing.has(identity(c)) || used.some(r=>!normalized(r[17])
       && normalized(r[1])===normalized(c.organization) && normalized(r[3])===normalized(c.site)
       && normalized(r[14])===normalized(c.task)))) fail('publication_crm_duplicate_changed');
   let sequence = Math.max(0, ...ids.map(id => Number(id.slice(3))));
   const marker = `[${d.key};${d.payload_digest}]`;
-  const rows = d.payload.candidates.map(c => {
+  // The existing 19 columns: verified rows are unchanged; a hypothesis changes only G, M and Q, after them.
+  const sheetRow = (c, verification, nextAction, maturity) => {
     if (++sequence > 999999) fail('publication_crm_id_capacity');
     const task = c.evidence.find(e => e.role === 'task'), capability = c.evidence.find(e => e.role === 'capability');
     if (!task || !capability && c.potential_robot_match!=='unknown' || !['unqualified','needs_review'].includes(c.qualification_status))
       fail('publication_candidate_scope_invalid');
     return [`BP-${String(sequence).padStart(6,'0')}`,c.organization,'Facility / site',c.site,'','',
-      'Needs recheck','',c.potential_robot_match,task.url,'Research','',c.proposed_next_action+'\n'+marker,'',c.task,
-      capability?.url || '','Unverified',c.location,row.date];
-  });
+      verification,'',c.potential_robot_match,task.url,'Research','',nextAction+'\n'+marker,'',c.task,
+      capability?.url || '',maturity,c.location,row.date];
+  };
+  const rows = [...d.payload.candidates.map(c => sheetRow(c,'Needs recheck',c.proposed_next_action,'Unverified')),
+    ...hypotheses.map(h => sheetRow(h.candidate,HYPOTHESIS_LABEL,
+      'First email asks: '+h.open_questions.join(' '),HYPOTHESIS_MATURITY))];
   const body = JSON.stringify({majorDimension:'ROWS',values:rows});
   return {destination:'sheets',key:d.key,payload_digest:d.payload_digest,body_json:body,request_digest:sha(body),
     marker,crm_values:values,sheet_rows:rows};
@@ -129,10 +183,14 @@ export function planSheets(row, snapshot, now=Date.now()) {
 
 export function planNotion(row,{legacy=false,now=Date.now()}={}) {
   const d = bind(row,'notion',now), marker = `${d.key};${d.payload_digest}`;
+  const evidence = c => c.evidence.map(e => `${e.claim_kind}/${e.classification}: ${e.claim}\n${e.url}\nChecked: ${e.checked_date}`).join('\n');
   const text = `Blueprint research ${row.date}\n${d.payload.summary}\n\n`+
-    d.payload.candidates.map(c => `${c.organization} — ${c.site}\nTask: ${c.task}\nStatus: ${c.qualification_status}\n`+
-      `Unknowns: ${c.unknowns.join('; ')}\nNext proposed action: ${c.proposed_next_action}\n`+
-      c.evidence.map(e => `${e.claim_kind}/${e.classification}: ${e.claim}\n${e.url}\nChecked: ${e.checked_date}`).join('\n')).join('\n\n');
+    [...d.payload.candidates.map(c => `${c.organization} — ${c.site}\nTask: ${c.task}\nStatus: ${c.qualification_status}\n`+
+      `Unknowns: ${c.unknowns.join('; ')}\nNext proposed action: ${c.proposed_next_action}\n`+evidence(c)),
+    ...(d.payload.hypotheses || []).map(({candidate:c,open_checks:checks,open_questions:questions}) =>
+      `${HYPOTHESIS_HEADING}: ${c.organization} — ${c.site}\nTask: ${c.task}\nOpen checks: ${checks.join('; ')}\n`+
+      `First email asks: ${questions.join(' ')}\nDraft only; no send is authorized.\n`+
+      `Unknowns: ${c.unknowns.join('; ')}\n`+evidence(c))].join('\n\n');
   const title = `Blueprint research ${row.date} ${d.payload_digest.slice(0,12)}`;
   const oldParagraphs=[marker,...Array.from({length:Math.ceil(text.length/1800)},(_,i)=>text.slice(i*1800,(i+1)*1800))];
   const oldBody=JSON.stringify(createBody(title,oldParagraphs.map(paragraph)));

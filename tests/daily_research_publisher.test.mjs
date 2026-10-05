@@ -1091,3 +1091,112 @@ test('retains more than100 source-supported candidates through Sheets planning w
   const plan=planSheets(r,snapshot);assert.equal(plan.sheet_rows.length,125);
   assert.equal(plan.sheet_rows[124][3],'Invented site 124');
 });
+
+// Outreach-ready hypotheses (synthetic): one verified row plus one hypothesis bound by a v3 review.
+const RESULT_V3='blueprint.lead-verification-result.v3', RULE_V1='blueprint.outreach-ready-rule.v1';
+// The fixed templates with the candidate's task and site verbatim (Blueprint-WebApp #854 recomputes them).
+const QUESTIONS=['Is Depositing at South still done mostly by hand?','Do you already use or plan automation for it?',
+  'Would a short look at whether a robot could take on part of it be useful?'];
+function rebind(r) {
+  for(const d of Object.values(r.delivery)) {d.payload_json=JSON.stringify(d.payload);d.payload_digest=sha(d.payload_json);}
+  return r;
+}
+function hypothesisRow({validUntil='2030-01-01T00:00:00Z'}={}) {
+  const r=row([candidate(),{...candidate(),site:'South',candidate_key:'synthetic-h'}]);
+  const [verified,hypothesis]=r.packet.candidates,[first,second]=r.review.lead_verification.results;
+  r.packet.lead_verification_result_version=RESULT_V3;
+  for(const result of [first,second]) Object.assign(result,{version:RESULT_V3,tier:'verified',eligible_for_outreach_ready:false,
+    outreach_ready:{rule_version:RULE_V1,proving_sources:[],open_checks:[],open_questions:[],blockers:[]}});
+  second.assessment.claims.human_workflow.status='unresolved';second.assessment.valid_until=validUntil;
+  second.assessment_digest=verificationDigest(second.assessment);
+  Object.assign(second,{status:'unresolved',eligible_for_qualified_promotion:false,tier:'outreach_ready',eligible_for_outreach_ready:true,
+    outreach_ready:{...second.outreach_ready,open_checks:['manual_workflow','existing_automation','fit','interest'],open_questions:QUESTIONS}});
+  r.review.outreach_ready_keys=['synthetic-h'];
+  r.outreach_ready={schema_version:'blueprint.outreach-ready-admission.v1',state:'enabled',paths:['daily_qa'],label:'hypothesis',
+    max_rows_per_batch:50,sends_authorized:false};
+  const entry={candidate:hypothesis,open_checks:second.outreach_ready.open_checks,open_questions:QUESTIONS};
+  for(const name of ['sheets','notion']) r.delivery[name].payload={...r.delivery[name].payload,candidates:[verified],hypotheses:[entry]};
+  return rebind(r);
+}
+
+test('hypotheses add labelled rows in the existing 19 columns and verified cells stay byte-identical',()=>{
+  const r=hypothesisRow(),plain=row([candidate()]),snapshot={sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers]};
+  assert.equal(publicationVerification(r,'sheets').eligible,true);assert.equal(publicationVerification(r,'notion').eligible,true);
+  const only=hypothesisRow();for(const d of Object.values(only.delivery)) d.payload.candidates=[];rebind(only);
+  assert.equal(publicationVerification(only,'sheets').eligible,true);  // A day may publish hypotheses only.
+  assert.deepEqual(planSheets(only,snapshot).sheet_rows.map(cells=>cells[6]),['Hypothesis']);
+  const plan=planSheets(r,snapshot),base=planSheets(plain,snapshot);
+  assert.equal(plan.sheet_rows.length,2);assert.ok(plan.sheet_rows.every(cells=>cells.length===19));
+  // Every verified cell is unchanged; only the marker, which binds this payload, differs in M.
+  assert.deepEqual(plan.sheet_rows[0],base.sheet_rows[0].map(cell=>cell.replace(base.marker,plan.marker)));
+  const hypothesis=plan.sheet_rows[1];
+  assert.equal(hypothesis[0],'BP-000002');assert.equal(hypothesis[6],'Hypothesis');
+  assert.equal(hypothesis[16],'Outreach-ready: operator, site, task proven');
+  assert.equal(hypothesis[12],'First email asks: '+QUESTIONS.join(' ')+'\n'+plan.marker);
+  // Apart from its own ID and site, a hypothesis row differs from a verified row only in G, M and Q.
+  const expected=[...base.sheet_rows[0]];expected[0]='BP-000002';expected[3]='South';
+  for(const column of [6,12,16]) expected[column]=hypothesis[column];
+  assert.deepEqual(hypothesis,expected);
+  const text=planNotion(r).paragraphs.slice(1).join(''),plainText=planNotion(plain).paragraphs.slice(1).join('');
+  const verifiedEntry=plainText.slice(plainText.indexOf('Example Plant — North'));
+  assert.ok(text.includes(verifiedEntry+'\n\nHypothesis, not verified: Example Plant — South\nTask: Depositing\n'));
+  assert.ok(text.includes('Open checks: manual_workflow; existing_automation; fit; interest\n'));
+  assert.ok(text.includes('First email asks: '+QUESTIONS.join(' ')+'\nDraft only; no send is authorized.\n'));
+});
+
+for(const change of ['tier','eligible','promotion','version','rule','checks','questions','order','direction','refused','support',
+  'sends','path','limit','overlap','expired','empty','extra','unbound','assessment','duplicate','nonobject'])
+  test(`a malformed hypothesis (${change}) refuses the destination before any claim or write`,async()=>{
+    const r=hypothesisRow(),result=r.review.lead_verification.results[1],entry=r.delivery.sheets.payload.hypotheses[0];
+    const both=fn=>{for(const name of ['sheets','notion']) fn(r.delivery[name].payload.hypotheses);};
+    if(change==='tier') result.tier='none';
+    if(change==='eligible') result.eligible_for_outreach_ready=false;
+    if(change==='promotion') result.eligible_for_qualified_promotion=true;
+    if(change==='version') result.version='blueprint.lead-verification-result.v2';
+    if(change==='rule') result.outreach_ready.rule_version='other';
+    if(change==='checks') both(h=>{h[0]={...entry,open_checks:['interest']};});
+    if(change==='questions') both(h=>{h[0]={...entry,open_questions:[...QUESTIONS,'Fourth?']};});
+    if(change==='order') r.review.outreach_ready_keys=['synthetic-0'];
+    if(change==='direction') delete r.outreach_ready;
+    if(change==='refused') r.outreach_ready.state='refused';
+    // A hypothesis-only day, so only the hypothesis check can refuse it.
+    if(change==='support') {r.review.source_support_verified=false;for(const d of Object.values(r.delivery)) d.payload.candidates=[];}
+    if(change==='sends') r.outreach_ready.sends_authorized=true;
+    if(change==='path') r.outreach_ready.paths=['site_screen'];
+    if(change==='limit') r.outreach_ready.max_rows_per_batch=0;
+    if(change==='overlap') both(h=>{h[0]={...entry,candidate:r.packet.candidates[0]};});
+    if(change==='expired') {result.assessment.valid_until=new Date(Date.now()-1000).toISOString();result.assessment_digest=verificationDigest(result.assessment);}
+    if(change==='empty') {both(h=>{h.length=0;});r.review.outreach_ready_keys=[];}
+    if(change==='extra') both(h=>{h[0]={...entry,verified:true};});
+    if(change==='unbound') both(h=>{h[0]={...entry,candidate:{...entry.candidate,task:'Changed task'}};});
+    if(change==='assessment') result.assessment.claims.operator.reason='Changed original evidence';
+    if(change==='duplicate') result.duplicate_of='synthetic-0';
+    if(change==='nonobject') both(h=>{h[0]=null;});
+    rebind(r);
+    assert.equal(publicationVerification(r,'sheets').eligible,false);
+    const f=await fixture(r);
+    await assert.rejects(f.store.publish(r.date),/publication_lead_verification_required/);
+    assert.equal(f.writes.length,0);assert.deepEqual(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_claimed,{});
+  });
+
+test('store publication writes the hypothesis row once beside the verified row and reads both back',async()=>{
+  const f=await fixture(hypothesisRow());
+  assert.equal((await f.store.publish(f.r.date)).destination,'notion');
+  const saved=await f.store.get(f.r.date);saved.delivery.notion.state='acknowledged';await f.store.put(saved);
+  const receipt=await f.store.publish(f.r.date);
+  assert.equal(receipt.reference,`sheets:${SHEET}:Prospects:BP-000001,BP-000002`);assert.equal(receipt.readback_verified,true);
+  assert.deepEqual(f.writes.map(w=>w.destination),['notion','sheets']);
+  assert.deepEqual(f.values.slice(5).map(r=>r[6]),['Needs recheck','Hypothesis']);
+  assert.ok(JSON.stringify(f.pages[0].body).includes('Hypothesis, not verified: Example Plant'));
+});
+
+test('terminal Sheets recovery refuses a row with hypotheses before any append',async()=>{
+  for(const mutate of [r=>{r.review.outreach_ready_keys=['candidate-one'];},
+    r=>{r.delivery.sheets.payload.hypotheses=[];rebind(r);r.delivery.notion.receipt.payload_digest=r.delivery.notion.payload_digest;}]) {
+    const f=await stoppedTerminalSheetsFixture(),r=await f.store.get(f.r.date);
+    mutate(r);await f.store.put(r);
+    f.request.source_row_blob=f.db.values.get(`${ROOT}/runs/${r.date}`).blob;f.request.payload_digest=r.delivery.sheets.payload_digest;
+    await assert.rejects(f.store.dispatch(f.request),/terminal_sheets_recovery_hypotheses_unsupported/);
+    assert.equal(f.writes.length,0);
+  }
+});

@@ -1,0 +1,88 @@
+{
+  "description": "Digests of every digest-bound daily research artifact from two synthetic end-to-end flows (tests/test_daily_research_consumer.py shadow_identity_artifacts), computed on main before the outreach-ready tier existed. With control.outreach_ready absent, disabled or not directing daily_qa, this release must reproduce every value exactly.",
+  "fixture_only": true,
+  "flows": {
+    "agent_publication": {
+      "create_payload": "494ba6fab3261a25a1f69065a07ac2d203a112f1ff0d7717ece8c424d54015be",
+      "crm_after_publication": "d7879e4b400c8a06db98fbccddb0f479cdf9d521d4b0eb312009e3a18b5ceaac",
+      "decision_equals_review": true,
+      "lead_verification_result_version": "blueprint.lead-verification-result.v2",
+      "metadata": "9e67f6cc0e90acf92364a4fa7659a9c5d07417e573fd7634df56e98fdad0f536",
+      "notion": {
+        "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
+        "payload_json": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
+        "plan": "01421e148ca1a90430c873572699a54ecb9085d12ec152a9325f130e35297b7b",
+        "receipt": {
+          "destination": "notion",
+          "key": "blueprint-researcher:2026-09-30:notion",
+          "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
+          "readback_verified": true,
+          "reference": "notion:page-result"
+        },
+        "state": "acknowledged"
+      },
+      "packet": "e1c53f9d5c44bf8c4146450ce96a0c724ac5f515709222d9a7bdab06da20529d",
+      "packet_recomputed": "e1c53f9d5c44bf8c4146450ce96a0c724ac5f515709222d9a7bdab06da20529d",
+      "publication_input": "dfc3eed0cfd631ec8fec91d5f788b00f2bf06c997eb9918b5c47358798706837",
+      "qa_artifact": "dd7672a16d92d4c39b82e7adac2adfed95b55b3777a49d3333cde46d77c83802",
+      "qa_decision": "03b46f7b1be9dae4645c40ec9b4cf62333ddbf299fb41847988439dae0150402",
+      "qa_input": "8cdbdd588b6abb9e451ae3b9773cad474859fe7a842038b29c04991f5a5c3e32",
+      "review": "03b46f7b1be9dae4645c40ec9b4cf62333ddbf299fb41847988439dae0150402",
+      "review_file": "1752e81205096d91866fbc564bf4950e0549dda0cf1cfe18569cc432698a2254",
+      "sheets": {
+        "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
+        "payload_json": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
+        "plan": "f11eb12cb0d1d60a7a080963b6703431b2ebb4ddae8ecd597a894518bd1627a1",
+        "receipt": {
+          "destination": "sheets",
+          "key": "blueprint-researcher:2026-09-30:sheets",
+          "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
+          "readback_verified": true,
+          "reference": "sheets:1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY:Prospects:BP-000001"
+        },
+        "state": "acknowledged"
+      }
+    },
+    "legacy": {
+      "create_payload": "25a519c896d201d7e192a1df7bceeb788ff8d2779ff8b27587f9160dfd0b4131",
+      "crm_after_publication": "d7879e4b400c8a06db98fbccddb0f479cdf9d521d4b0eb312009e3a18b5ceaac",
+      "decision_equals_review": true,
+      "lead_verification_result_version": "blueprint.lead-verification-result.v2",
+      "metadata": "645bfb12b645ac115489c8873ceab70d64b208d96b2cce46ab7bb469d03bb032",
+      "notion": {
+        "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
+        "payload_json": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
+        "plan": "01421e148ca1a90430c873572699a54ecb9085d12ec152a9325f130e35297b7b",
+        "receipt": {
+          "destination": "notion",
+          "key": "blueprint-researcher:2026-09-30:notion",
+          "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
+          "readback_verified": true,
+          "reference": "notion:page-result"
+        },
+        "state": "acknowledged"
+      },
+      "packet": "f7eb4439be5ac261121ca3faf3a18817c2f386faa5b2ad816b720e5860a533ba",
+      "packet_recomputed": "f7eb4439be5ac261121ca3faf3a18817c2f386faa5b2ad816b720e5860a533ba",
+      "qa_artifact": "4117be499f482cc386112b4dc318c66e7a2d3e020ff5829c47e1eccae73b98d4",
+      "qa_decision": "5b536ff286179235e31d2059e9f9a135d0b5851a65bab0238881bc7418bd0936",
+      "qa_input": "84263b9752feb71ef0e1cccd9874759e119e8777eec7aadfaa2e1213fe2232be",
+      "review": "5b536ff286179235e31d2059e9f9a135d0b5851a65bab0238881bc7418bd0936",
+      "review_file": "224b638f9e1425030ec5c0b96608a4aaa3289cdd7fae2a291696e7fb7e63030b",
+      "sheets": {
+        "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
+        "payload_json": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
+        "plan": "f11eb12cb0d1d60a7a080963b6703431b2ebb4ddae8ecd597a894518bd1627a1",
+        "receipt": {
+          "destination": "sheets",
+          "key": "blueprint-researcher:2026-09-30:sheets",
+          "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
+          "readback_verified": true,
+          "reference": "sheets:1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY:Prospects:BP-000001"
+        },
+        "state": "acknowledged"
+      }
+    }
+  },
+  "source_commit": "dd2d404fbcd914f7c371849d31b8a86fcc8e84a2"
+}

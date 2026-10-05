@@ -1,4 +1,5 @@
 """Actual durable QA adapter with fake provider; no credentials or inference."""
+import hashlib
 import json
 import os
 import subprocess
@@ -16,7 +17,7 @@ from tests.test_daily_research_runner import AGENT, DAY, NOW, SHEET, FakeAPI
 from tools.daily_research import render, verification
 from tools.daily_research.consumer import QA_PATH, Consumer, qa_decision, qa_text
 from tools.daily_research.firestore import Bridge, FencedProvider, FirestoreLedger
-from tools.daily_research.runner import Refusal, Runner, canonical, digest, save_json
+from tools.daily_research.runner import PROJECT, Refusal, Runner, canonical, digest, save_json
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADERS = ["Prospect ID", "Organization", "Prospect type", "Site / team", "Contact name",
@@ -75,12 +76,15 @@ class QAAPI(FakeAPI):
 
 
 def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False, mcp=False,
-                   envelope=None, site_universe=None):
+                   envelope=None, site_universe=None, outreach=None, outreach_rows=50):
     """``envelope=(total, qa_reserved)`` admits an adaptive row with that pinned runtime.
 
     ``site_universe={"slice_size": n, "inventory": output -> records}`` publishes a synthetic
     export to a fake object store, pins it and admits a search-profile row that attaches it.
+    ``outreach`` ("enabled", "disabled" or "screen_only") pins a synthetic outreach-ready
+    direction through the owner command before the run starts.
     """
+    bucket = site_universe is not None or outreach is not None
     crm = tmp_path / "crm.json"
     save_json(crm, {"sheet_id": SHEET, "complete": True, "captured_at": NOW.isoformat(),
                     "values": [["CRM"], [], [], [], HEADERS]})
@@ -91,7 +95,7 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         "import {Publisher} from " + json.dumps((ROOT / "tools/daily_research/publisher.mjs").as_uri()) + ";",
         "import {MemoryFirestore} from " + json.dumps((ROOT / "tests/fixtures/daily_research/firestore-memory.mjs").as_uri()) + ";",
         *(["import {FakeBucket} from " + json.dumps((ROOT / "tests/fixtures/daily_research/fake-bucket.mjs").as_uri()) + ";",
-           "const bucket=new FakeBucket(" + json.dumps(str(tmp_path / "bucket.json")) + ");"] if site_universe is not None else []),
+           "const bucket=new FakeBucket(" + json.dumps(str(tmp_path / "bucket.json")) + ");"] if bucket else []),
         "const db=new MemoryFirestore(" + json.dumps(str(tmp_path / "db.json")) + ");",
         "const crmReader=async()=>JSON.parse(readFileSync(" + json.dumps(str(crm)) + ",'utf8'));",
         "const pages=[]; const google=async(method,path,body)=>{if(method==='GET')return {sheets:[]}; const crm=await crmReader();crm.values.push(...body.values);await import('node:fs').then(fs=>fs.writeFileSync(" + json.dumps(str(crm)) + ",JSON.stringify(crm)));return {};};",
@@ -100,7 +104,7 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
         "const publisher=new Publisher({crmReader,google,notion,clock:()=>testNow});",
         "const historyLog=" + json.dumps(str(tmp_path / "history-requests.json")) + ";let requests=[];const learning=async(request,binding)=>{requests.push({request,binding});await import('node:fs').then(fs=>fs.writeFileSync(historyLog,JSON.stringify(requests)));if(request.op==='history_search')return {ok:true,rows:[{record_id:request.cursor?'record_b':'record_a',title:'Retained task evidence'}],next_cursor:request.cursor?null:'page-2',coverage:{complete:true},semantic:{status:'unavailable',error:'offline_fixture'}};if(request.op==='history_fetch')return request.record_id==='record_a'?{ok:true,record:{record_id:'record_a',content:'Complete original evidence — '.repeat(400),source:'synthetic-company-record',created_at:'2026-09-29T08:00:00Z'}}:{ok:false,error:{code:'company_history_record_not_found',issues:[{field:'record_id',expected:'existing authorized exact ID'}]}};throw new Error('company_history_unexpected_frozen_preload');};",
         "let testNow=" + str(int(NOW.timestamp()*1000)) + ";const channel=new LeaseChannel(new Store(db,()=>testNow,undefined,crmReader,publisher,learning"
-        + (",undefined,undefined,bucket" if site_universe is not None else "") + "));",
+        + (",undefined,undefined,bucket" if bucket else "") + "));",
         "for await (const line of createInterface({input:process.stdin})) {try {const r=JSON.parse(line);if(r.op==='test_clock'){testNow=r.now;process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}"
         + ("if(r.op==='test_bucket_clear'){bucket.objects.clear();bucket.persist();process.stdout.write(JSON.stringify({ok:true,value:true})+'\\n');continue;}" if site_universe is not None else "")
         + "const value=await channel.call(r);process.stdout.write(JSON.stringify({ok:true,value})+'\\n');}",
@@ -181,6 +185,17 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
             bridge.call("site_universe_set", expected_sha256=None,
                         value=pin_for(raw, slice_size=site_universe.get("slice_size", 6), generation=stored["generation"]))
         output["discovery_inventory"] = site_universe.get("inventory", lambda _: [])(output)
+    if outreach is not None:
+        from tests.test_daily_research_operator_outreach_ready import operator as owner
+        with ledger.lock():
+            control = {key: value for key, value in bridge.call("control").items() if key != "lease"}
+            bridge.call("configure", value={**control, "project_id": PROJECT, "agent_id": AGENT})
+        owner.set_direction(bridge, owner.BridgeObjects(bridge), apply=True, during_active_run=True, sleep=lambda _: None,
+                            now=NOW - timedelta(hours=1), paths="site_screen" if outreach == "screen_only" else "daily_qa",
+                            max_rows_per_batch=outreach_rows, approval_reference="owner-synthetic-outreach-direction",
+                            approved_by="owner", reason="Synthetic outreach-ready direction")
+        if outreach == "disabled":
+            owner.disable(bridge, apply=True, sleep=lambda _: None)
     api.raw = canonical(output).encode()
     if research_running:
         api.turn_status = "in_progress"
@@ -1220,3 +1235,320 @@ def test_qa_receives_the_frozen_site_universe_block_and_one_sentence(tmp_path):
         assert qa["accepted"] == {"slice": int(linked in accepted), "run": len(accepted)}
     finally:
         generator.close()
+
+
+SHADOW_IDENTITY = ROOT / "tests/fixtures/daily_research/outreach-ready-shadow-identity.json"
+PAGE_URL = "https://fixture.example/site-task"
+PAGE_TEXT = "Operations\nSynthetic operator runs this exact physical site where humans perform this task.\nCareers"
+
+
+def shadow_identity_artifacts(ledger, row, crm_path, *, search):
+    """Digests of every digest-bound artifact; the fixture holds main's values for the same flows."""
+    sha = lambda raw: hashlib.sha256(raw).hexdigest()
+    value = {"create_payload": digest(row["create_payload"]), "metadata": digest(row["metadata"]),
+             "packet": row["packet_digest"], "packet_recomputed": digest(row["packet"]),
+             "review_file": sha(ledger.read_bytes(DAY + "-review.json")),
+             "qa_input": sha(ledger.read_bytes(DAY + "-qa-input.json")) if search else digest(row["qa"]["event"]),
+             "qa_artifact": row["qa"]["artifact_digest"], "qa_decision": digest(row["qa"]["decision"]),
+             "review": digest(row["review"]), "decision_equals_review": row["qa"]["decision"] == row["review"],
+             "lead_verification_result_version": row["packet"].get("lead_verification_result_version"),
+             "crm_after_publication": digest(json.loads(Path(crm_path).read_text())["values"])}
+    for name, delivery in sorted(row["delivery"].items()):
+        value[name] = {"payload_digest": delivery["payload_digest"], "payload_json": sha(delivery["payload_json"].encode()),
+                       "plan": digest(delivery.get("plan")), "receipt": delivery.get("receipt"), "state": delivery["state"]}
+    if search:
+        value["publication_input"] = sha(ledger.read_bytes(DAY + "-publication-input.json"))
+    return value
+
+
+def finish(consumer, ledger):
+    for _ in range(20):
+        if ledger.get(DAY)["state"] == "completed":
+            break
+        consumer.step()
+    return ledger.get(DAY)
+
+
+def publish_as_agent(consumer, api, ledger):
+    """Drive the agent-owned publication session: inspect, then full Notion and Sheets claims to readback."""
+    from tools.daily_research import publication
+    posts, events, actions = [], [], []
+    listing, get = api.listing, api.get
+
+    def values(resource, sid=None):
+        result = listing(resource, sid)
+        if resource == "turns" and posts:
+            result.append({"id": "turn_publication", "session_id": "sess_1", "agent_id": AGENT, "status": "in_progress",
+                           "subagent_id": None, "completed_at": int((NOW + timedelta(seconds=40)).timestamp())})
+        return result
+
+    def session(resource, rid):
+        result = get(resource, rid)
+        if resource == "session":
+            result["required_actions"] = deepcopy(actions)
+        return result
+
+    api.listing, api.get = values, session
+    provider = object.__new__(FencedProvider)
+    provider.ledger, provider.get, provider.listing, provider.clock = ledger, api.get, api.listing, consumer.clock
+    provider.api = SimpleNamespace(sessions=SimpleNamespace(events=SimpleNamespace(create=lambda sid, **kw: posts.append((sid, kw)))))
+    api.publication_input, api.tool_admit = provider.publication_input, provider.tool_admit
+    api.tool_result = lambda sid, event, key: events.append((sid, deepcopy(event), key))
+    assert consumer.step()["state"] == "publication_running"
+
+    def ask(cid, name, arguments):
+        actions[:] = [{"type": "function_call", "turn_id": "turn_publication", "call_id": cid, "name": name, "arguments": arguments}]
+        consumer.step()
+        return json.loads(events[-1][1]["output"])
+
+    assert ask("inspect", publication.INSPECT, {})["success"] is True
+    for destination in ("notion", "sheets"):
+        for attempt in range(6):
+            reply = ask(f"{destination}_{attempt}", publication.PUBLISH, {"destination": destination, "strategy": "full"})
+            if reply.get("output", {}).get("status") == "acknowledged":
+                break
+    return ledger.get(DAY)
+
+
+@pytest.mark.parametrize("variant", [None, "disabled", "screen_only"])
+def test_shadow_mode_artifacts_are_byte_identical_to_main(tmp_path, variant):
+    """Absent, disabled or not directing daily_qa: create payload, packet, QA input, review and
+    publication payloads, plans and Sheets rows equal main's from before the tier existed."""
+    document = json.loads(SHADOW_IDENTITY.read_text())
+    assert document["fixture_only"] is True and len(document["source_commit"]) == 40
+    for name, agent in (("legacy", False), ("agent_publication", True)):
+        (tmp_path / name).mkdir()
+        generator = consumer_setup(tmp_path / name, publication=agent, outreach=variant)
+        consumer, api, ledger, _, _ = next(generator)
+        try:
+            if agent:
+                assert consumer.step()["state"] == "reviewed"
+                row = publish_as_agent(consumer, api, ledger)
+            else:
+                row = finish(consumer, ledger)
+            assert shadow_identity_artifacts(ledger, row, consumer.config["crm_snapshot"], search=agent) == document["flows"][name]
+            assert all(delivery["state"] == "acknowledged" for delivery in row["delivery"].values())
+            assert "outreach_ready_keys" not in row["review"] and "hypotheses" not in row["delivery"]["sheets"]["payload"]
+            frozen = row.get("outreach_ready")
+            assert (frozen or {}).get("code") == ("outreach_ready_daily_qa_not_directed" if variant == "screen_only" else None)
+            assert (frozen is None) is (variant != "screen_only")
+            shadow = row["outreach_ready_shadow"]  # The tier is recorded only here, outside every digest.
+            assert shadow["state"] == "recorded" and shadow["admitted"] == [] and sum(shadow["tiers"].values()) == 1
+            assert shadow["direction_state"] == ("refused" if variant == "screen_only" else "absent")
+        finally:
+            next(generator, None)
+
+
+def retain_page(ledger, url=PAGE_URL, text=PAGE_TEXT, cid="read_fixture_page", phase="research"):
+    """One synthetic blueprint_read_source result, retained exactly as search.respond records it."""
+    with ledger.lock():
+        row = ledger.get(DAY)
+        output = {"requested_url": url, "url": url, "checked_at": NOW.isoformat(), "content_type": "text/html",
+                  "last_modified": None, "raw_sha256": "0" * 64, "text": text, "links": [], "metadata": [], "redirects": [],
+                  "truncated": False, "evidence_scope": "complete_static_extracted_text_not_javascript_rendered"}
+        event = {"type": "agent.session.input.tool_result", "turn_id": row["turn_id"], "call_id": cid, "success": True,
+                 "output": canonical(output)}
+        raw = (canonical(event) + "\n").encode()
+        ledger.write_bytes(f"{DAY}-tool-{cid}.json", raw)
+        request = {"turn_id": row["turn_id"], "call_id": cid, "name": "blueprint_read_source", "arguments": {"url": url}}
+        row.setdefault("application_tool_calls", {})[cid] = {
+            "request_digest": digest(request), "request": request, "phase": phase, "attempted": True,
+            "result_file": f"{DAY}-tool-{cid}.json", "result_sha256": hashlib.sha256(raw).hexdigest(), "result_bytes": len(raw),
+            "result_digest": digest(event), "success": True, "result_acknowledged": True}
+        ledger.put(row)
+
+
+def hypothesis_qa(api, *, listed=True):
+    """QA attests the day's source support, leaves human workflow unresolved, accepts nothing and lists
+    every candidate as outreach-ready (the WebApp #854 day shape)."""
+    original = api.artifact
+
+    def artifact(sid, aid):
+        if aid == "artifact_qa":
+            api.qa_result.update(accepted_keys=[], source_support_verified=True)
+            for check in api.qa_result["checks"]:
+                check["source_support_verified"] = False
+                check["lead_verification"]["claims"]["human_workflow"]["status"] = "unresolved"
+            if listed:
+                api.qa_result["outreach_ready_keys"] = [c["candidate_key"] for c in api.qa_result["checks"]]
+        return original(sid, aid)
+
+    api.artifact = artifact
+
+
+@pytest.fixture
+def enabled(tmp_path):
+    yield from consumer_setup(tmp_path, outreach="enabled")
+
+
+def test_enabled_direction_publishes_rule_proven_keys_only_as_labelled_hypotheses(enabled):
+    consumer, api, ledger, _, _ = enabled
+    row = ledger.get(DAY)
+    assert row["outreach_ready"]["state"] == "enabled" and row["outreach_ready"]["sends_authorized"] is False
+    assert row["packet"]["lead_verification_result_version"] == verification.OUTREACH_RESULT_VERSION
+    retain_page(ledger)
+    hypothesis_qa(api)
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    text = row["qa"]["event"]["input"][0]["content"][0]["text"]
+    assert "admits outreach-ready hypotheses" in text and '"outreach_ready_keys":[]' in text
+    key = row["packet"]["candidates"][0]["candidate_key"]
+    assert row["review"] == row["qa"]["decision"] and row["review"]["accepted_keys"] == []
+    assert row["review"]["outreach_ready_keys"] == [key] and "outreach_ready_shadow" not in row
+    result = row["review"]["lead_verification"]["results"][0]
+    assert result["tier"] == "outreach_ready" and result["status"] == "unresolved"
+    assert result["eligible_for_qualified_promotion"] is False
+    assert [p["level"] for p in result["outreach_ready"]["proving_sources"]] == ["verified_on_page"] * 3
+    hypotheses = row["delivery"]["sheets"]["payload"]["hypotheses"]
+    assert hypotheses == row["delivery"]["notion"]["payload"]["hypotheses"] and len(hypotheses) == 1
+    assert hypotheses[0]["candidate"]["candidate_key"] == key and row["delivery"]["sheets"]["payload"]["candidates"] == []
+    candidate = row["packet"]["candidates"][0]
+    assert hypotheses[0]["open_checks"] == ["manual_workflow", "existing_automation", "fit", "interest"]
+    assert hypotheses[0]["open_questions"] == [  # The fixed templates, with task and site verbatim.
+        f"Is {candidate['task']} at {candidate['site']} still done mostly by hand?",
+        "Do you already use or plan automation for it?",
+        "Would a short look at whether a robot could take on part of it be useful?"]
+    assert key in json.loads(ledger.read_bytes(DAY + "-qa.json"))["outreach_ready_keys"]
+    row = finish(consumer, ledger)
+    assert row["state"] == "completed"
+    written = json.loads(Path(consumer.config["crm_snapshot"]).read_text())["values"][5:]
+    marker = row["delivery"]["sheets"]["plan"]["marker"]
+    assert len(written) == 1 and written[0][6] == "Hypothesis" and written[0][16] == "Outreach-ready: operator, site, task proven"
+    assert written[0][12] == "First email asks: " + " ".join(hypotheses[0]["open_questions"]) + "\n" + marker
+    assert row["delivery"]["sheets"]["receipt"]["reference"].endswith(":" + written[0][0])
+    from tools.daily_research.runner import status_summary
+    status = status_summary(row)
+    assert status["outreach_ready"]["admitted"] == 1 and status["discovery_funnel"]["hypotheses_for_crm"] == 1
+
+
+def test_the_brake_after_the_run_started_admits_nothing_and_verified_flow_continues(enabled):
+    consumer, api, ledger, bridge, _ = enabled
+    from tests.test_daily_research_operator_outreach_ready import operator as owner
+    retain_page(ledger)
+    hypothesis_qa(api)
+    owner.disable(bridge, apply=True, sleep=lambda _: None)
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["outreach_ready_keys"] == [] and "hypotheses" not in row["delivery"]["sheets"]["payload"]
+    assert row["review"]["lead_verification"]["results"][0]["tier"] == "outreach_ready"  # Rated, not admitted.
+    assert finish(consumer, ledger)["state"] == "completed"
+
+
+@pytest.mark.parametrize("change", ["paraphrase", "unlisted", "known_in_crm"])
+def test_only_qa_listed_rule_proven_crm_new_keys_are_admitted(enabled, change):
+    consumer, api, ledger, _, _ = enabled
+    retain_page(ledger, text="A page that says something else entirely." if change == "paraphrase" else PAGE_TEXT)
+    hypothesis_qa(api, listed=change != "unlisted")
+    if change == "known_in_crm":
+        original_refresh = consumer.refresh_crm
+        def refresh():
+            snapshot, known = original_refresh()
+            return snapshot, known | set(ledger.get(DAY)["packet"]["candidates"][0]["identity_keys"])
+        consumer.refresh_crm = refresh
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["outreach_ready_keys"] == [] and "hypotheses" not in row["delivery"]["notion"]["payload"]
+    tier = row["review"]["lead_verification"]["results"][0]["tier"]
+    assert tier == ("none" if change == "paraphrase" else "outreach_ready")
+
+
+def test_a_key_also_accepted_gets_deferrable_same_session_feedback_first(enabled):
+    consumer, api, ledger, _, _ = enabled
+    retain_page(ledger)
+    hypothesis_qa(api)
+    original = api.artifact
+
+    def overlap(sid, aid):
+        raw = original(sid, aid)
+        if aid == "artifact_qa":
+            api.qa_result.update(accepted_keys=list(api.qa_result["outreach_ready_keys"]), source_support_verified=True)
+            for check in api.qa_result["checks"]:
+                check["source_support_verified"] = True
+            return canonical(api.qa_result).encode()
+        return raw
+
+    api.artifact = overlap
+    assert consumer.step()["state"] == "qa_correction_input_unresolved"
+    feedback = ledger.get(DAY)["qa"]["validation_feedback"]
+    assert [item["reason"] for item in feedback] == ["agent_qa_assessment_outreach_ready_key_accepted"]
+
+
+def test_any_tier_exception_or_unreadable_evidence_never_stops_qa_or_publication(enabled, monkeypatch):
+    consumer, api, ledger, _, _ = enabled
+    retain_page(ledger)
+    hypothesis_qa(api)
+    monkeypatch.setattr(verification, "outreach_gates", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("synthetic")))
+    original_read = ledger.read_bytes
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: (_ for _ in ()).throw(OSError("store unavailable"))
+                        if "-tool-" in name else original_read(name))
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["lead_verification"]["tier_evidence"] == verification.UNAVAILABLE
+    assert row["review"]["outreach_ready_keys"] == [] and row["qa"]["state"] == "validated"
+    assert row["review"]["lead_verification"]["results"][0]["tier"] == "none"
+    assert finish(consumer, ledger)["state"] == "completed"
+
+
+def test_outreach_key_feedback_is_deferrable_and_only_for_an_enabled_row(fixture):
+    _, _, ledger, _, _ = fixture
+    row = ledger.get(DAY)
+    key = row["packet"]["candidates"][0]["candidate_key"]
+    qa = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+          "source_support_verified": True, "accepted_keys": [key], "summary": "Synthetic review",
+          "checks": [{"candidate_key": key, "source_support_verified": True, "duplicate": True, "reason": "Synthetic",
+                      "lead_verification": assessment(row["packet"]["candidates"][0], NOW)}]}
+    row["qa"] = {"crm_digest": "crm"}
+    from tools.daily_research.consumer import deferrable_assessment_issue, qa_validation_feedback
+    for value in ([key, key, "unknown", 7], "not a list", [key] * 3):
+        assert not [i for i in qa_validation_feedback(row, {**qa, "outreach_ready_keys": value}) if "outreach" in i["path"]]
+    row["outreach_ready"] = {"state": "enabled", "sends_authorized": False, "paths": ["daily_qa"], "max_rows_per_batch": 2,
+                             "direction_sha256": "a" * 64}
+    issues = [i for i in qa_validation_feedback(row, {**qa, "outreach_ready_keys": [key, key, "unknown", 7]}) if "outreach" in i["path"]]
+    assert [i["reason"].removeprefix("agent_qa_assessment_") for i in issues] == [
+        "outreach_ready_keys_over_limit", "outreach_ready_key_accepted", "outreach_ready_key_duplicate",
+        "outreach_ready_key_invalid", "outreach_ready_key_invalid", "outreach_ready_key_invalid"]
+    assert all(deferrable_assessment_issue(issue) for issue in issues)
+    assert qa_validation_feedback(row, {**qa, "outreach_ready_keys": "x"})[-1]["path"] == "/outreach_ready_keys"
+
+
+def test_qa_decision_caps_at_the_live_row_limit_and_admits_nothing_without_admission():
+    from tools.daily_research.consumer import outreach_keys
+    packet = {"candidates": [{"candidate_key": k, "identity_keys": ["id-" + k]} for k in "abcd"]}
+    row = {"packet": packet}
+    cohort = {"results": [{"candidate_key": k, "eligible_for_outreach_ready": k != "d"} for k in "abcd"]}
+    result = {"source_support_verified": True, "accepted_keys": ["c"],
+              "outreach_ready_keys": ["a", "a", "b", "c", "d", "x", ["list"], "b"]}
+    assert outreach_keys(row, result, cohort, [], set(), (5, None)) == ["a", "b"]
+    assert outreach_keys(row, result, cohort, [], set(), (1, None)) == ["a"]
+    assert outreach_keys(row, result, cohort, [], {"id-a"}, (5, None)) == ["b"]
+    assert outreach_keys(row, result, cohort, ["b"], set(), (5, None)) == ["a"]
+    assert outreach_keys(row, result, cohort, [], set(), (5, "outreach_ready_disabled")) == []
+    assert outreach_keys(row, {**result, "outreach_ready_keys": "a"}, cohort, [], set(), (5, None)) == []
+    assert outreach_keys(row, result, None, [], set(), (5, None)) == []
+    assert outreach_keys(row, {**result, "source_support_verified": False}, cohort, [], set(), (5, None)) == []
+
+
+def test_after_exhausted_corrections_bad_outreach_keys_are_dropped_and_never_block_the_decision(enabled):
+    consumer, _, ledger, _, _ = enabled
+    retain_page(ledger)
+    row = ledger.get(DAY)
+    candidate = row["packet"]["candidates"][0]
+    key = candidate["candidate_key"]
+    row["qa"] = {"turn_id": "turn_qa", "artifact_digest": "a" * 64, "crm_digest": "crm"}
+    value = assessment(candidate, NOW)
+    value["claims"]["human_workflow"]["status"] = "unresolved"
+    result = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
+              "source_support_verified": True, "accepted_keys": [], "summary": "Synthetic unresolved review",
+              "checks": [{"candidate_key": key, "source_support_verified": False, "duplicate": False,
+                          "reason": "Synthetic", "lead_verification": value}],
+              "outreach_ready_keys": [key, key, "unknown"]}
+    evidence, later = consumer.outreach_evidence(row), NOW + timedelta(seconds=30)
+    with pytest.raises(Refusal, match="^agent_qa_assessment_outreach_ready_key_invalid$"):
+        qa_decision(row, result, set(), later, evidence=evidence, admission=(50, None))
+    decision = qa_decision(row, result, set(), later, defer_assessment_issues=True, evidence=evidence, admission=(50, None))
+    assert decision["outreach_ready_keys"] == [key] and decision["accepted_keys"] == []
+    assert decision["lead_verification"]["tier_evidence"]["state"] == "retained"
+    assert qa_decision(row, result, set(), later, defer_assessment_issues=True, evidence=evidence)["outreach_ready_keys"] == []
+    unsupported = {**result, "source_support_verified": False}
+    assert qa_decision(row, unsupported, set(), later, defer_assessment_issues=True, evidence=evidence,
+                       admission=(50, None))["outreach_ready_keys"] == []
