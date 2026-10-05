@@ -3268,12 +3268,27 @@ def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str,
         os.close(lock)
 
 
+def _scene_runtime_diagnostic(stderr: bytes | str | None, *, phase: str, reason: str) -> dict[str, str]:
+    """Admit only bounded fixed markers; child output is never forwarded."""
+    phases = {"signed_release", "build_sdk", "resume_initial_intent", "refresh", "prepare", "publish_installer"}
+    reasons = {"deadline", "validation", "io", "unexpected"}
+    if isinstance(stderr, (bytes, str)) and len(stderr) <= 65536:
+        text = stderr.decode("ascii", errors="replace") if isinstance(stderr, bytes) else stderr
+        for line in text.splitlines():
+            if line.startswith("scene_retirement_runtime_phase:") and line.split(":", 1)[1] in phases:
+                phase = line.split(":", 1)[1]
+            if line.startswith("scene_retirement_runtime_failure:") and line.split(":", 1)[1] in reasons:
+                reason = line.split(":", 1)[1]
+    return {"phase": phase, "reason": reason}
+
+
 def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) -> dict[str, Any]:
     """Authenticate the selected release installer before exposing new units."""
     deadline = time.monotonic() + 300
     root = _SCENE_RUNTIME_BOOT_ROOT
     helper = root / "runtime_installer.py"
     error = "deploy_scene_retirement_runtime_unproven"
+    phase = "retained_installer"
     held: list[int] = []
     def identity(info: os.stat_result) -> tuple[int, ...]:
         return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
@@ -3316,6 +3331,7 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) 
         if any(path.exists() or path.is_symlink() for path in retained):
             verified_installer(root)
         candidate = root / "installers" / source_commit
+        phase = "authenticate_installer"
         _bootstrap_scene_retirement_installer(
             source_repo, source_commit, deadline=deadline, destination=candidate,
         )
@@ -3324,11 +3340,15 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) 
         command = ["/usr/bin/python3", "-I", "-S", f"/proc/self/fd/{fd}",
                    "--source", str(source_repo), "--source-commit", source_commit, "--locked-sdk",
                    "--deadline-monotonic", str(deadline)]
+        phase = "execute_installer"
         result = subprocess.run(command, pass_fds=(fd,), stdin=subprocess.DEVNULL,
                                 capture_output=True, timeout=max(.001, deadline-time.monotonic()), check=False,
                                 env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C"})
         if result.returncode != 0 or len(result.stdout) > 65536 or len(result.stderr) > 65536:
-            raise ControlPlaneDeployError(error)
+            failure = ControlPlaneDeployError(error)
+            setattr(failure, "runtime_diagnostic", _scene_runtime_diagnostic(result.stderr, phase=phase, reason="validation"))
+            raise failure
+        phase = "verify_result"
         value = json.loads(result.stdout)
         if (type(value) is not dict or value.get("status") not in {"prepared", "refreshed"}
                 or value.get("source_commit") != source_commit
@@ -3336,7 +3356,18 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) 
             raise ControlPlaneDeployError(error)
         return value
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        raise ControlPlaneDeployError(error) from exc
+        failure = ControlPlaneDeployError(error)
+        diagnostic = getattr(exc, "runtime_diagnostic", None)
+        if diagnostic is None:
+            timed_out = isinstance(exc, subprocess.TimeoutExpired)
+            diagnostic = _scene_runtime_diagnostic(
+                exc.stderr if isinstance(exc, subprocess.TimeoutExpired) else None, phase=phase,
+                reason="deadline" if timed_out else "io" if isinstance(exc, OSError) else "validation",
+            )
+            if timed_out:
+                diagnostic["reason"] = "deadline"
+        setattr(failure, "runtime_diagnostic", diagnostic)
+        raise failure from exc
     finally:
         for fd in reversed(held):
             os.close(fd)
@@ -4230,6 +4261,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
         if isinstance(exc, UntrustedDeploySourceError):
             blocked["remedy"] = exc.remedy
+        diagnostic = getattr(exc, "runtime_diagnostic", None)
+        if (str(exc) == "deploy_scene_retirement_runtime_unproven" and isinstance(diagnostic, dict)
+                and diagnostic.get("phase") in {"retained_installer", "authenticate_installer", "execute_installer", "verify_result",
+                    "signed_release", "build_sdk", "resume_initial_intent", "refresh", "prepare", "publish_installer"}
+                and diagnostic.get("reason") in {"deadline", "validation", "io", "unexpected"}):
+            blocked["runtime_diagnostic"] = {key: diagnostic[key] for key in ("phase", "reason")}
         print(json.dumps(blocked, indent=1, sort_keys=True))
         return 2
 

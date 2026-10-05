@@ -18,9 +18,11 @@ Read first (repo-root-relative):
 
 Key rules (full text and precedents in `AGENTS.md`):
 
-- Arm Decision Proof v1 is the sole active program: one partner, site, fixed
-  arm, rigid-object task, and two real frozen candidates, prospectively sealed
-  and physically adjudicated.
+- Arm Decision Proof v1 is the first evaluation-proof track and the sole active
+  evaluation build-out program: one partner, site, fixed arm, rigid-object
+  task, and two real frozen candidates, prospectively sealed and physically
+  adjudicated. That envelope is the current default build target, not a ban on
+  other robot forms.
 - Every task must name the ADP backlog item and day gate it unblocks. Existing
   captures/scenes may exercise downstream seams only as `development_only`.
 - ADP-008 is observed complete. Complete ADP-009 with **artifixer3D+ with
@@ -34,8 +36,17 @@ Key rules (full text and precedents in `AGENTS.md`):
   challenger. Their lanes, bundles, and allocator branches stay in the tree; no
   launch profile will be built for them and no further rights work is required.
   See `docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md`.
-- Humanoid, deformable, five-policy/general-ranking, world-model, provider
-  bakeoff, post-training, multi-site, and unrelated product work is frozen.
+- Demand discovery is open (owner decision 2026-10-05,
+  `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`):
+  prospecting, screening, outreach, and partner discovery span every robot form
+  (fixed arm, humanoid, wheeled, bimanual, others) and task family, deformables
+  included; this work names ADP-010 and the partner-phase day-7 gate. Building
+  evaluation support for a new form or task family needs a recorded owner
+  focus decision based on demand evidence; until then the fixed-arm,
+  rigid-object envelope is the default build target. Spend stays inside
+  approved allowances; sending and automatic first contact stay off.
+  Five-policy/general-ranking, world-model, provider bakeoff, post-training,
+  multi-site, and unrelated product work stays frozen.
 - Keep world-model backends swappable behind stable contracts.
 - Protect provenance, rights, privacy, and raw capture truth.
 - Optimize for the single customer-facing Task Evaluation Run. Treat the
