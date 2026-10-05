@@ -486,6 +486,8 @@ def observed_unit_outcome(state: dict[str, Any]) -> dict[str, str] | None:
     if not invocation or len(units) != 1:
         return None
     unit = units[0]
+    if result.get("unit") and unit.get("Id") != result["unit"]:
+        return {"status": "unknown", "reason": "unit_identity_changed"}
     if unit.get("InvocationID") != invocation:
         return {"status": "unknown", "reason": "unit_invocation_changed"}
     if unit.get("ActiveState") == "failed":
