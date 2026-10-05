@@ -35,13 +35,24 @@ _FREE_FLOOR = 5 * 1024**3
 _ERROR = 'scene_retirement_runtime_unproven'
 _MAX_FILES = 32768
 _MAX_BYTES = 4 * 1024**3
-_MAX_SECONDS = 300
+# Installation includes authenticated source, SDK hashing and durable copies of
+# up to 32,768 leaves. This availability bound is not a retirement/action lease.
+_MAX_SECONDS = 900
 _SKIP = frozenset(('__pycache__', '.git'))
 
 
 def _require(value):
     if not value:
         raise ValueError(_ERROR)
+
+
+def _installation_deadline(supplied=None):
+    started = time.monotonic()
+    _require(type(started) is float and math.isfinite(started))
+    _require(supplied is None or type(supplied) is float and math.isfinite(supplied))
+    deadline = started + _MAX_SECONDS if supplied is None else min(started + _MAX_SECONDS, supplied)
+    _require(started <= deadline)
+    return deadline
 
 
 def _identity(info):
@@ -380,7 +391,7 @@ def prepare(source, dependencies, *, _deadline=None):
     """Copy exact protected inputs; no policy, consent, generation or flag writes."""
     try:
         source, dependencies = Path(source), Path(dependencies)
-        deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
+        deadline = _installation_deadline(_deadline)
         rows, sources = {}, {}
         _tree(source / 'src/blueprint_pipeline', Path('src/blueprint_pipeline'), rows, sources, deadline)
         _tree(source / 'deploy/systemd', Path('deploy/systemd'), rows, sources, deadline)
@@ -558,7 +569,7 @@ def refresh(source, dependencies, *, expected_current, _deadline=None):
                  and type(expected_current['sha256']) is str
                  and re.fullmatch(r'sha256:[0-9a-f]{64}', expected_current['sha256'])
                  and type(expected_current['size_bytes']) is int and 0 < expected_current['size_bytes'] <= 16 * 1024**2)
-        deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
+        deadline = _installation_deadline(_deadline)
         source, dependencies = Path(source), Path(dependencies)
         rows, sources, sdk_rows, sdk_sources = _refresh_inputs(source, dependencies, deadline)
         boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
@@ -1185,7 +1196,7 @@ def _sdk_toml(raw, wheelhouse, deadline):
 
 def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=None):
     """Build the locked base production closure for this system ABI, no setup.py."""
-    deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
+    deadline = _installation_deadline(_deadline)
     try:
         source = Path(source)
         raw, _ = _record_bytes(source / 'uv.lock', deadline)
@@ -1420,8 +1431,7 @@ def _resume_initial_intent(dependencies, deadline):
 
 def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None, _progress=None):
     """Complete root snapshot and ABI SDK before callers expose service units."""
-    deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
-    _require(type(deadline) is float and math.isfinite(deadline) and time.monotonic() <= deadline)
+    deadline = _installation_deadline(_deadline)
     def phase(name):
         if _progress is not None:
             _progress(name)
@@ -1469,15 +1479,16 @@ def main(argv=None):
     def report_phase(name):
         print('scene_retirement_runtime_phase:' + name, file=sys.stderr, flush=True)
     try:
+        deadline = _installation_deadline(arguments.deadline_monotonic)
         if arguments.locked_sdk:
             _require(arguments.source_commit is not None)
             result = prepare_deployment(arguments.source, source_commit=arguments.source_commit,
                 wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout,
-                _deadline=arguments.deadline_monotonic, _progress=report_phase)
+                _deadline=deadline, _progress=report_phase)
         else:
             report_phase('prepare')
             dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
-            result = prepare(arguments.source, dependencies)
+            result = prepare(arguments.source, dependencies, _deadline=deadline)
     except Exception as exc:
         # Never forward exception text or traceback from protected paths or SDK
         # acquisition. These fixed markers are diagnostic only, never proof.

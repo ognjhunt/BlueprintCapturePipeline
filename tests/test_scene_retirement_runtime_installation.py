@@ -50,6 +50,35 @@ def fixture(tmp_path, monkeypatch):
     return module, source, deps
 
 
+@pytest.mark.parametrize('supplied', [0.0, float('nan'), float('inf'), -float('inf')])
+@pytest.mark.parametrize('entry', ['prepare', 'refresh', 'build_sdk', 'prepare_deployment'])
+def test_installation_rejects_expired_or_nonfinite_caller_deadline(tmp_path, monkeypatch, supplied, entry):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    arguments = {'_deadline': supplied}
+    if entry == 'refresh':
+        arguments['expected_current'] = module._selector(b'{}')
+    if entry == 'prepare_deployment':
+        arguments['source_commit'] = '0' * 40
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        getattr(module, entry)(source, *([deps] if entry in {'prepare', 'refresh'} else []), **arguments)
+    assert not module._BOOT_ROOT.exists() and not module._RUNTIME_ROOT.exists()
+
+
+def test_installation_deadline_is_finite_clamped_and_never_renewed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    now = [100.0]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    assert module._MAX_SECONDS == 900
+    assert module._installation_deadline() == module._installation_deadline(2000.0) == 1000.0
+    original = module._installation_deadline(175.0)
+    now[0] = 150.0
+    assert module._installation_deadline(original) == 175.0
+    now[0] = 176.0
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._installation_deadline(original)
+
+
 def test_preparation_installs_real_protected_source_dependencies_and_units(tmp_path, monkeypatch):
     module, source, deps = fixture(tmp_path, monkeypatch)
     result = module.prepare(source, deps)
@@ -649,6 +678,10 @@ def _deployer_runtime_fixture(monkeypatch, tmp_path):
                  'stat': stat, 'subprocess': subprocess, 'time': __import__('time'),
                  'ControlPlaneDeployError': ValueError,
                  '_SCENE_RUNTIME_BOOT_ROOT': tmp_path / 'root-runtime', '_SCENE_RUNTIME_OWNER': os.getuid()}
+    allowance = next(node for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == '_SCENE_RUNTIME_INSTALL_SECONDS'
+                             for target in node.targets))
+    namespace['_SCENE_RUNTIME_INSTALL_SECONDS'] = ast.literal_eval(allowance.value)
     exec(compile(ast.Module(body=definitions, type_ignores=[]), str(SCRIPT), 'exec'), namespace)
     return namespace
 
@@ -669,10 +702,15 @@ def test_first_upgrade_authenticates_installer_data_from_service_owned_release_b
     # source must be authenticated Git DATA; root protection applies to output.
     source.chmod(0o777)
     namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    from types import SimpleNamespace
+    namespace['time'] = SimpleNamespace(monotonic=lambda: 100.0)
+    assert namespace['_SCENE_RUNTIME_INSTALL_SECONDS'] == module._MAX_SECONDS == 900
     actual_run = subprocess.run
     executed = []
     def record_root_execution(command, **kwargs):
         if command[:3] == ['/usr/bin/python3', '-I', '-S']:
+            assert float(command[command.index('--deadline-monotonic') + 1]) == 1000.0
+            assert kwargs['timeout'] == 900.0
             fd = int(command[3].rsplit('/', 1)[1])
             raw = os.pread(fd, 1024 * 1024, 0)
             assert raw == signed
@@ -1256,5 +1294,51 @@ def test_installer_cli_failure_emits_no_private_exception_or_traceback(tmp_path,
     assert module.main(options) == 2
     captured = capsys.readouterr()
     assert captured.out == ''
-    assert captured.err == ('scene_retirement_runtime_phase:resume_initial_intent\n'
-                            'scene_retirement_runtime_failure:' + reason + '\n')
+    assert captured.err == (('' if reason == 'deadline' else 'scene_retirement_runtime_phase:resume_initial_intent\n')
+                            + 'scene_retirement_runtime_failure:' + reason + '\n')
+
+
+@pytest.mark.parametrize('supplied', [None, 250.0])
+def test_connected_installation_keeps_one_deadline_through_resume_and_refresh(tmp_path, monkeypatch, supplied):
+    from types import SimpleNamespace
+    module, source, wheel, commit, _ = _interrupted_connected_install(tmp_path, monkeypatch)
+    original_intent = (module._BOOT_ROOT / 'installation.json').read_bytes()
+    now = [100.0]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    deadline = 1000.0 if supplied is None else supplied
+    phases = []
+    def phase(name):
+        phases.append(name)
+        now[0] = {'signed_release': 100.0, 'build_sdk': 100.0+(deadline-100.0)/3,
+                  'resume_initial_intent': 100.0+2*(deadline-100.0)/3,
+                  'refresh': deadline+1}[name]
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent,
+                                  _deadline=supplied, _progress=phase)
+    assert phases == ['signed_release', 'build_sdk', 'resume_initial_intent', 'refresh']
+    assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
+    assert (module._BOOT_ROOT / 'installation.json').read_bytes() == original_intent
+    assert not (module._BOOT_ROOT / 'CURRENT.json').exists()
+
+
+@pytest.mark.parametrize('selection', ['--dependencies', '--venv', '--locked-sdk'])
+def test_installer_cli_retains_earlier_caller_deadline_for_every_mode(tmp_path, monkeypatch, selection):
+    from types import SimpleNamespace
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, 'os', SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
+    monkeypatch.setattr(module, 'sys', SimpleNamespace(flags=SimpleNamespace(isolated=True, no_site=True), stderr=sys.stderr))
+    now, observed = [100.0], []
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    def resolve(venv):
+        now[0] = 120.0  # Dependency discovery consumes the original allowance.
+        return deps
+    monkeypatch.setattr(module, 'dependency_root', resolve)
+    def prepare(*args, **kwargs):
+        observed.append(kwargs['_deadline'])
+        return {'status': 'prepared'}
+    monkeypatch.setattr(module, 'prepare', prepare)
+    monkeypatch.setattr(module, 'prepare_deployment', prepare)
+    options = ['--source', str(source), '--deadline-monotonic', '150', selection]
+    options += ['--source-commit', 'a'*40] if selection == '--locked-sdk' else [str(deps)]
+    assert module.main(options) == 0
+    assert observed == [150.0]

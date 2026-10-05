@@ -263,7 +263,8 @@ def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str,
         publish(root/"runtime-installer.json",value)
     finally:
         os.close(lock)
-deadline = time.monotonic() + 300
+# Same finite installation-only allowance as the normal deploy wrapper.
+deadline = time.monotonic() + 900
 source = pathlib.Path(sys.argv[1])
 root = pathlib.Path('/usr/lib/blueprint/scene-retirement-runtime')
 helper = root / 'runtime_installer.py'
