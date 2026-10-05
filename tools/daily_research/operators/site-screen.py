@@ -1,11 +1,12 @@
 """Owner command for the per-site research line (site screen) and its contact stage.
 
 plan reads only the input file. run and contact are dry runs unless --apply; with --apply they create
-Parallel Task runs, each admitted first against the out dir's append-only ledger, --ceiling-usd and
---max-runs. collect reads run status and results (reads are not billed), verify reads the cited public
-pages and summary reads the out dir. The out dir must be outside every repository. Output is counts and
-stable codes only, never site names, people or addresses. The key comes from PARALLEL_API_KEY, or from
---key-file (KEY=VALUE lines); it is never printed or written. No CRM write, draft or send.
+Parallel Task runs, each admitted first over both stages against the owner ceiling the first --apply
+pins, the spend journal and the ledgers. collect reads run status and results (reads are not billed),
+verify reads the cited public pages and summary reads the out dir. The out dir must be on durable storage
+outside every repository and outside /tmp. run and contact refuse on the daily worker. Output is counts
+and stable codes only, never site names, people or addresses. The key comes from PARALLEL_API_KEY, or
+from --key-file (KEY=VALUE lines); it is never printed or written. No CRM write, draft or send.
 """
 import argparse
 import os
@@ -50,9 +51,13 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
         spender = commands.add_parser(name, help=text + "; a dry run unless --apply")
         if name == "run":
             spender.add_argument("--input", required=True, type=Path)
-        spender.add_argument("--out", required=True, type=Path, help="Private directory outside every repository")
-        spender.add_argument("--ceiling-usd", required=True, help="Spend ceiling for this stage in this out dir")
-        spender.add_argument("--max-runs", required=True, type=int, help="Run ceiling for this stage in this out dir")
+        spender.add_argument("--out", required=True, type=Path,
+                             help="Private durable directory outside every repository and outside /tmp")
+        spender.add_argument("--owner-reference", required=True, help="The owner decision the first --apply pins")
+        spender.add_argument("--ceiling-usd", required=True,
+                             help="Spend ceiling for all stages in this out dir; never above the pin")
+        spender.add_argument("--max-runs", required=True, type=int,
+                             help="Run limit for all stages in this out dir; never above the pin")
         spender.add_argument("--processor", default=site_screen.DEFAULT_PROCESSOR)
         spender.add_argument("--key-file", type=Path, help="KEY=VALUE file holding PARALLEL_API_KEY")
         spender.add_argument("--apply", action="store_true")
@@ -69,6 +74,8 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
         key = api_key(args.key_file, environ)
         return site_screen.TaskClient(key, **({"transport": transport} if transport is not None else {}))
 
+    if args.command in ("run", "contact"):
+        site_screen.refuse_on_worker()  # Before any file is made or the key is read.
     if args.command == "plan":
         result = site_screen.plan(site_screen.read_input(args.input), processor=args.processor)
     elif args.command == "run":
@@ -76,12 +83,13 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
         site_screen.guard_out_dir(args.out)
         task_client, raw = client(), site_screen.read_input(args.input)
         result = site_screen.run(raw, site_screen.Workspace(args.out, create=True), client=task_client,
-                                 ceiling_usd=args.ceiling_usd, max_runs=args.max_runs, processor=args.processor,
-                                 apply=args.apply)
+                                 owner_reference=args.owner_reference, ceiling_usd=args.ceiling_usd,
+                                 max_runs=args.max_runs, processor=args.processor, apply=args.apply)
     elif args.command == "contact":
         workspace = site_screen.Workspace(args.out)
-        result = site_screen.contact(workspace, client=client(), ceiling_usd=args.ceiling_usd,
-                                     max_runs=args.max_runs, processor=args.processor, apply=args.apply)
+        result = site_screen.contact(workspace, client=client(), owner_reference=args.owner_reference,
+                                     ceiling_usd=args.ceiling_usd, max_runs=args.max_runs, processor=args.processor,
+                                     apply=args.apply)
     elif args.command == "collect":
         workspace = site_screen.Workspace(args.out)
         result = site_screen.collect(workspace, client=client(), wait_seconds=args.wait_seconds,

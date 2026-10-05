@@ -753,20 +753,24 @@ standalone release ships it. Nothing sends, drafts or writes a CRM.
 ```bash
 RELEASE=/opt/render/project/src/dist/daily-research/release
 COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/site-screen.py"
-OUT=/PRIVATE/site-screen-20261005
+OUT=/Users/Shared/blueprint-private/site-screen-20261005  # Durable, outside every Git work tree, never /tmp.
+SPEND="--owner-reference REF --ceiling-usd 15 --max-runs 700"
 PYTHONPATH=$RELEASE $COMMAND plan --input /PRIVATE/backlog.v1.json.gz
-PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT --ceiling-usd 1.25 --max-runs 50
-PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT --ceiling-usd 1.25 --max-runs 50 --apply
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT $SPEND
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT $SPEND --apply
 PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
 PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
-PYTHONPATH=$RELEASE $COMMAND contact --out $OUT --ceiling-usd 0.50 --max-runs 20 --apply
+PYTHONPATH=$RELEASE $COMMAND contact --out $OUT $SPEND --apply
 PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
 PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
 PYTHONPATH=$RELEASE $COMMAND summary --out $OUT
 ```
 
-From a checkout, run `PYTHONPATH=. python tools/daily_research/operators/site-screen.py`
-from the repository root, with `--key-file` set to a private env file.
+These are manual, owner-approved runs on the owner's machine; `run` and `contact`
+refuse on the daily worker (see the spend gate below). From a checkout, run
+`PYTHONPATH=. python tools/daily_research/operators/site-screen.py` from the
+repository root, with `--key-file` set to a private env file. Start with
+`--max-runs 1`.
 
 - `--input` is a site universe export (`backlog.v1.json.gz`, checked by
   `site_universe.load_export`), a discovery inventory page
@@ -784,20 +788,40 @@ from the repository root, with `--key-file` set to a private env file.
   does not record which source supplied each field (an OpenStreetMap record can
   supply the name), so `source_ids` lists every source of the row.
 - `run` and `contact` are dry runs unless `--apply`. A dry run makes the same
-  admission and calls nothing. Each stage has its own append-only ledger,
-  `<stage>/runs.jsonl`. An `intent` line is fsynced before each create. Then
-  `created` (with the run id), `refused` (no run exists; a later run tries the site
-  again) or `uncertain` (the outcome is unknown) follows. A site with a run id, or
-  with an unknown outcome, is never submitted again. An interrupted create counts as
-  an unknown outcome.
-- Before each create, the price of each run that may be billed (completed, in
-  flight, cancelled or of unknown outcome), plus the new run, must be at most
-  `--ceiling-usd` (above 0, at most $100). The stage's runs must be at most
-  `--max-runs` (1–5,000). Otherwise the create is refused with
+  admission, writes nothing and calls nothing.
+- The first `--apply` (of either stage) pins `--ceiling-usd`, `--max-runs` and
+  `--owner-reference` in `owner_ceiling.json` (`ceiling_usd`, `max_runs`,
+  `created_at`, `owner_reference`), which is created once. A later invocation of
+  either stage must give the same owner reference and the same or a lower ceiling
+  and run limit; otherwise it refuses with `site_screen_owner_reference_mismatch`,
+  `site_screen_ceiling_above_pin` or `site_screen_max_runs_above_pin`.
+- Every event is fsynced first to the out dir's spend journal, `spend.jsonl` (its
+  first line is the pin), then to the stage's ledger, `<stage>/runs.jsonl`. An
+  `intent` line precedes each create. Then `created` (with the run id), `refused` (no
+  run exists; a later run tries the site again) or `uncertain` (the outcome is
+  unknown) follows. A site with a run id, or with an unknown outcome, is never
+  submitted again. An interrupted create counts as an unknown outcome.
+- Each command first checks that the pin, the journal and the ledgers agree. A
+  deleted or edited file refuses (`site_screen_spend_journal_missing`,
+  `site_screen_spend_journal_mismatch`, `site_screen_owner_ceiling_missing`,
+  `site_screen_owner_ceiling_mismatch`), so it never resets spend. The only repairs
+  are the two crash windows: a pin file whose journal line was written, and a
+  ledger's last event whose journal copy was written; both are completed from the
+  journal.
+- Before each create, the price of each run in either stage that may be billed
+  (completed, in flight, cancelled or of unknown outcome), plus the new run, must be
+  at most the ceiling (above 0, at most $100). All runs of both stages must be at
+  most the run limit (1–5,000). Otherwise the create is refused with
   `site_screen_spend_ceiling_reached` or `site_screen_max_runs_reached`. Both bound
-  the stage's total in that out dir, not one invocation. Only a run observed
-  `failed` frees its price, and it still counts as a run. `--processor` accepts only
-  a processor with a reviewed price (`core`).
+  the out dir's total, not one invocation. Only a run observed `failed` frees its
+  price, and it still counts as a run. `--processor` accepts only a processor with a
+  reviewed price (`core`).
+- One out dir holds one owner allowance. A new out dir starts again from zero, so keep
+  the whole campaign in one out dir on durable storage outside every Git work tree,
+  for example `/Users/Shared/blueprint-private/...`. An out dir under `/tmp`,
+  `/private/tmp`, `/var/tmp` or `/var/folders` is refused
+  (`site_screen_out_dir_volatile`): the system prunes them, and a lost ledger means
+  paying again.
 - A create answered 401, 402, 403 or 429, a redirect, or an unreachable provider
   stops the run (`site_screen_provider_*`, `site_screen_processor_refused`). Other
   4xx answers refuse that site only (`site_screen_create_rejected`). A 5xx answer, a
@@ -851,6 +875,15 @@ from the repository root, with `--key-file` set to a private env file.
   be outside this repository and outside any Git work tree
   (`site_screen_out_dir_inside_repository`). A new out dir gets mode 0700, and every
   file 0600. Only one command at a time can use an out dir (`site_screen_out_dir_busy`).
+- Spend gate. The pinned ceiling and the journal hold for one out dir on one machine.
+  Scheduled use needs the shared `paid_resource_admission` seam first: a
+  `parallel_task` resource class in `PAID_RESOURCE_CLASSES`, an issuer in `src/` (the
+  FindAll `admit_exact_request` pattern), a grant before each create,
+  `scripts/verify_paid_resource_allocator.py` extended to scan
+  `tools/daily_research/`, and ceilings taken from the owner-pinned direction under
+  the worker lease, with one allowance across stages, out dirs and hosts. Until then,
+  `run` and `contact` refuse whenever `BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED` is
+  set, to any value (`site_screen_worker_needs_paid_admission`).
   Output is counts and stable `site_screen_*` codes only, never site names, people
   or addresses. The hermetic tests use a fake Task API transport and a fake page
   reader with synthetic sites.

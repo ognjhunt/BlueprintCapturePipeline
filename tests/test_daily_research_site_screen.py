@@ -4,14 +4,17 @@ import hashlib
 import importlib.util
 import json
 import math
+import secrets
 import sys
 from contextlib import contextmanager
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from tests.daily_research_site_screen_fixture import (
     KEY,
+    OWNER,
     SITE_STRINGS,
     TODAY,
     Clock,
@@ -36,6 +39,15 @@ spec.loader.exec_module(operator)
 PILOT_FIELDS = {"website", "operating_now", "target_task", "target_task_found", "manual_today", "existing_automation",
                 "notes", *(stem + suffix for stem in ("operating_now", "target_task", "manual_today", "existing_automation")
                            for suffix in ("_url", "_quote", "_date"))}
+
+REAL_VOLATILE_ROOTS = getattr(ss, "VOLATILE_ROOTS", None)
+
+
+@pytest.fixture(autouse=True)
+def hermetic(monkeypatch):
+    """pytest's tmp_path is on storage the out-dir guard refuses, and a shell may set the worker flag."""
+    monkeypatch.setattr(ss, "VOLATILE_ROOTS", (), raising=False)
+    monkeypatch.delenv("BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED", raising=False)
 
 
 def workspace_and_client(tmp_path, provider=None):
@@ -157,24 +169,26 @@ def test_plan_counts_sites_refusals_and_cost_without_any_call():
 
 
 # --- spend: idempotency, ceiling and max_runs -----------------------------------------------
-def test_a_dry_run_admits_like_apply_and_sends_nothing(tmp_path):
+def test_a_dry_run_admits_like_apply_and_pins_nothing(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
     raw = raw_input([inventory_record(number) for number in range(1, 6)])
-    result = ss.run(raw, workspace, client=client, ceiling_usd="0.075", max_runs=10)
+    result = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="0.075", max_runs=10)
     assert result["state"] == "stopped" and result["stop"] == "site_screen_spend_ceiling_reached"
     assert result["would_create"] == 3 and result["created"] == 0 and result["committed_usd"] == "0.075"
+    assert result["pin"] == {"state": "would_create", "ceiling_usd": "0.075", "max_runs": 10, "owner_reference": OWNER}
     assert provider.calls == [] and not (workspace.root / "screen").exists()
+    assert not (workspace.root / "owner_ceiling.json").exists() and not (workspace.root / "spend.jsonl").exists()
 
 
 def test_each_site_is_created_once_and_a_rerun_creates_nothing(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
     raw = raw_input([inventory_record(1), universe_row(2)])
     sites, _ = ss.load_sites(raw)
-    first = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    first = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert (first["state"], first["created"], first["runs"], first["committed_usd"]) == ("complete", 2, 2, "0.050")
     assert provider.creates() == [ss.create_body("screen", site, "core") for site in sites]
     assert {call["headers"]["x-api-key"] for call in provider.calls} == {KEY}
-    second = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    second = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert (second["created"], second["already_created"]) == (0, 2) and len(provider.creates()) == 2
     assert kinds(workspace) == ["intent", "created", "intent", "created"]
     intent = workspace.ledger("screen").events()[0]
@@ -191,11 +205,11 @@ def test_a_create_that_may_exist_is_never_submitted_again(tmp_path, answer):
     workspace, provider, client = workspace_and_client(tmp_path)
     provider.create_answers = [answer]
     raw = raw_input([inventory_record(1), inventory_record(2)])
-    first = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    first = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     # The first unknown outcome stops the run, and its price stays committed.
     assert first["state"] == "stopped" and first["stop"].startswith("site_screen_create_")
     assert (first["outcome_unknown"], first["created"], first["committed_usd"]) == (1, 0, "0.025")
-    second = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    second = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert (second["outcome_unknown_kept_out"], second["created"]) == (1, 1)
     assert [body["metadata"]["site_key"] for body in provider.creates()] == [
         site["site_key"] for site in ss.load_sites(raw)[0]]
@@ -210,9 +224,9 @@ def test_an_interrupted_create_counts_as_unknown_and_is_never_submitted_again(tm
     provider.create_answers = [Interrupted()]
     raw = raw_input([inventory_record(1), inventory_record(2)])
     with pytest.raises(Interrupted):
-        ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+        ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert kinds(workspace) == ["intent"]
-    again = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    again = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert (again["outcome_unknown_kept_out"], again["created"], again["committed_usd"]) == (1, 1, "0.050")
     assert len(provider.creates()) == 2
 
@@ -221,10 +235,10 @@ def test_a_refused_create_costs_nothing_and_is_tried_again_later(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
     provider.create_answers = [(422, b'{"detail": "validation"}')]
     raw = raw_input([inventory_record(1)])
-    first = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    first = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert (first["state"], first["refused"], first["runs"], first["committed_usd"]) == (
         "complete", {"site_screen_create_rejected": 1}, 0, "0")
-    second = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    second = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert second["created"] == 1 and kinds(workspace) == ["intent", "refused", "intent", "created"]
     assert workspace.ledger("screen").events()[1]["http_status"] == 422
 
@@ -239,49 +253,50 @@ def test_a_refusal_every_later_create_would_meet_stops_the_run(tmp_path, answer,
     workspace, provider, client = workspace_and_client(tmp_path)
     provider.create_answers = [answer]
     result = ss.run(raw_input([inventory_record(number) for number in (1, 2, 3)]), workspace, client=client,
-                    ceiling_usd="1", max_runs=10, apply=True)
+                    owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     assert (result["state"], result["stop"], result["refused"], result["created"]) == ("stopped", code, {code: 1}, 0)
     assert len(provider.calls) == 1 and result["committed_usd"] == "0"
 
 
 def test_the_ceiling_and_max_runs_refuse_before_any_create(tmp_path):
-    workspace, provider, client = workspace_and_client(tmp_path)
     raw = raw_input([inventory_record(number) for number in (1, 2, 3)])
-    below = ss.run(raw, workspace, client=client, ceiling_usd="0.02", max_runs=10, apply=True)
-    assert (below["stop"], below["created"]) == ("site_screen_spend_ceiling_reached", 0)
+    workspace, provider, client = workspace_and_client(tmp_path / "below")
+    below = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="0.02", max_runs=10, apply=True)
+    assert (below["created"], below["stop"]) == (0, "site_screen_spend_ceiling_reached")
     assert provider.calls == [] and not workspace.ledger("screen").path.exists()
-    one = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=1, apply=True)
+    workspace, provider, client = workspace_and_client(tmp_path / "limit")
+    one = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=True)
     assert (one["created"], one["stop"]) == (1, "site_screen_max_runs_reached")
-    again = ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=1, apply=True)
+    again = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=True)
     assert (again["created"], again["already_created"], again["stop"]) == (0, 1, "site_screen_max_runs_reached")
     assert len(provider.creates()) == 1
-    exact = ss.run(raw, workspace, client=client, ceiling_usd="0.075", max_runs=10, apply=True)
-    assert (exact["created"], exact["state"], exact["committed_usd"]) == (2, "complete", "0.075")
+    workspace, provider, client = workspace_and_client(tmp_path / "exact")
+    exact = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="0.075", max_runs=10, apply=True)
+    assert (exact["created"], exact["state"], exact["committed_usd"]) == (3, "complete", "0.075")
 
 
 def test_the_ceiling_counts_runs_in_flight_and_frees_only_failed_ones(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
     raw = raw_input([inventory_record(number) for number in (1, 2, 3)])
     sites, _ = ss.load_sites(raw)
-    first = ss.run(raw, workspace, client=client, ceiling_usd="0.05", max_runs=10, apply=True)
+    options = {"client": client, "owner_reference": OWNER, "ceiling_usd": "0.05", "max_runs": 3, "apply": True}
+    first = ss.run(raw, workspace, **options)
     assert (first["created"], first["stop"]) == (2, "site_screen_spend_ceiling_reached")
     provider.final[sites[0]["site_key"]] = "failed"
     provider.final[sites[1]["site_key"]] = "cancelled"  # Not known to be free, so its price stays committed.
     provider.outputs[sites[1]["site_key"]] = {"content": {}, "basis": []}
     ss.collect(workspace, client=client, wait_seconds=0)
-    second = ss.run(raw, workspace, client=client, ceiling_usd="0.05", max_runs=10, apply=True)
+    second = ss.run(raw, workspace, **options)
     assert (second["created"], second["committed_usd"]) == (1, "0.050")
     # A failed run is free but still a run: max_runs counts it.
-    capped = ss.run(raw_input([inventory_record(4)]), workspace, client=client, ceiling_usd="1", max_runs=3,
-                    apply=True)
-    assert capped["stop"] == "site_screen_max_runs_reached"
+    assert ss.run(raw_input([inventory_record(4)]), workspace, **options)["stop"] == "site_screen_max_runs_reached"
 
 
 @pytest.mark.parametrize("ceiling", ["0", "-1", "nan", "inf", "100.01", "a dollar", ""])
 def test_a_ceiling_outside_the_reviewed_bound_is_refused(tmp_path, ceiling):
     workspace, provider, client = workspace_and_client(tmp_path)
     with pytest.raises(ss.ScreenError, match="^site_screen_ceiling_invalid$"):
-        ss.run(raw_input([inventory_record(1)]), workspace, client=client, ceiling_usd=ceiling, max_runs=1, apply=True)
+        ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd=ceiling, max_runs=1, apply=True)
     assert provider.calls == []
 
 
@@ -289,7 +304,7 @@ def test_a_ceiling_outside_the_reviewed_bound_is_refused(tmp_path, ceiling):
 def test_max_runs_outside_the_reviewed_bound_is_refused(tmp_path, max_runs):
     workspace, provider, client = workspace_and_client(tmp_path)
     with pytest.raises(ss.ScreenError, match="^site_screen_max_runs_invalid$"):
-        ss.run(raw_input([inventory_record(1)]), workspace, client=client, ceiling_usd="1", max_runs=max_runs,
+        ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=max_runs,
                apply=True)
     assert provider.calls == []
 
@@ -298,24 +313,201 @@ def test_a_second_command_on_the_same_out_dir_refuses(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
     with workspace.lock():
         with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_busy$"):
-            ss.run(raw_input([inventory_record(1)]), workspace, client=client, ceiling_usd="1", max_runs=1, apply=True)
+            ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=True)
     assert provider.calls == []
 
 
 def test_a_torn_final_ledger_line_is_sealed_and_other_damage_refuses(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
-    ss.run(raw_input([inventory_record(1)]), workspace, client=client, ceiling_usd="1", max_runs=5, apply=True)
+    ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=5, apply=True)
     ledger = workspace.ledger("screen")
     with open(ledger.path, "ab") as handle:  # A crash in the middle of a write.
         handle.write(b'{"schema_version":"blueprint.site-screen.led')
     assert kinds(workspace) == ["intent", "created"]
-    ss.run(raw_input([inventory_record(2)]), workspace, client=client, ceiling_usd="1", max_runs=5, apply=True)
+    ss.run(raw_input([inventory_record(2)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=5, apply=True)
     assert kinds(workspace) == ["intent", "created", "intent", "created"]
     assert ledger.path.read_bytes().count(b'"event":"sealed"') == 1
     ledger.path.write_bytes(ledger.path.read_bytes().replace(b'"event":"created"', b'"event":"made"', 1))
     with pytest.raises(ss.ScreenError, match="^site_screen_ledger_invalid$"):
-        ss.run(raw_input([inventory_record(3)]), workspace, client=client, ceiling_usd="1", max_runs=5, apply=True)
+        ss.run(raw_input([inventory_record(3)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=5, apply=True)
     assert len(provider.creates()) == 2
+
+
+def test_the_first_apply_pins_the_owner_ceiling_once(tmp_path):
+    workspace, provider, client = workspace_and_client(tmp_path)
+    ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="0.50",
+           max_runs=7, apply=True)
+    path = workspace.root / "owner_ceiling.json"
+    pin = json.loads(path.read_text())
+    assert set(pin) == {"schema_version", "ceiling_usd", "max_runs", "created_at", "owner_reference"}
+    assert (pin["schema_version"], pin["ceiling_usd"], pin["max_runs"], pin["owner_reference"]) == (
+        ss.OWNER_CEILING, "0.50", 7, OWNER)
+    assert path.stat().st_mode & 0o777 == 0o600
+    journal = workspace.journal().events()
+    assert journal[0]["event"] == "pinned" and journal[0]["pin"] == pin
+    assert [event["event"] for event in journal[1:]] == ["intent", "created"]
+    # A lower ceiling binds one invocation and leaves the pin as it was.
+    lower = ss.run(raw_input([inventory_record(number) for number in (2, 3)]), workspace, client=client,
+                   owner_reference=OWNER, ceiling_usd="0.05", max_runs=7, apply=True)
+    assert (lower["created"], lower["stop"], lower["pin"]["state"]) == (1, "site_screen_spend_ceiling_reached", "pinned")
+    assert json.loads(path.read_text()) == pin
+
+
+@pytest.mark.parametrize("changes, code", [
+    ({"ceiling_usd": "0.11"}, "site_screen_ceiling_above_pin"),
+    ({"ceiling_usd": "100"}, "site_screen_ceiling_above_pin"),
+    ({"max_runs": 5}, "site_screen_max_runs_above_pin"),
+    ({"max_runs": 5000}, "site_screen_max_runs_above_pin"),
+    ({"owner_reference": "owner-decision-synthetic-other"}, "site_screen_owner_reference_mismatch"),
+])
+def test_review_s2_a_later_invocation_can_never_raise_the_pin(tmp_path, changes, code):
+    workspace, provider, client = workspace_and_client(tmp_path)
+    raw = raw_input([inventory_record(number) for number in range(1, 11)])
+    first = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="0.10", max_runs=4, apply=True)
+    assert (first["created"], first["stop"]) == (4, "site_screen_max_runs_reached")
+    options = {"owner_reference": OWNER, "ceiling_usd": "0.10", "max_runs": 4, **changes}
+    for apply in (False, True):
+        with pytest.raises(ss.ScreenError, match=f"^{code}$"):
+            ss.run(raw, workspace, client=client, apply=apply, **options)
+        with pytest.raises(ss.ScreenError, match=f"^{code}$"):
+            ss.contact(workspace, client=client, apply=apply, **options)
+    assert len(provider.creates()) == 4
+
+
+@pytest.mark.parametrize("ceiling, max_runs, contact_created, stop", [
+    ("0.25", 20, 2, "site_screen_spend_ceiling_reached"),  # $0.20 screen + 2 x $0.025 contact.
+    ("15", 9, 1, "site_screen_max_runs_reached"),  # 8 screen runs + 1 contact run.
+])
+def test_review_s1_both_stages_share_one_ceiling_and_run_limit(tmp_path, ceiling, max_runs, contact_created, stop):
+    records = [inventory_record(number) for number in range(1, 9)]
+    answers = [screen_answers(number) for number in range(1, 9)]
+    pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
+    workspace, provider, client = workspace_and_client(tmp_path)
+    for site, content in zip(ss.load_sites(raw_input(records))[0], answers):
+        provider.outputs[site["site_key"]] = {"content": content, "basis": []}
+        provider.contacts[site["site_key"]] = {"content": {}, "basis": []}
+    options = {"client": client, "owner_reference": OWNER, "ceiling_usd": ceiling, "max_runs": max_runs, "apply": True}
+    assert ss.run(raw_input(records), workspace, **options)["created"] == 8
+    ss.collect(workspace, client=client, wait_seconds=0)
+    ss.verify(workspace, reader=FakePages(pages), today=TODAY)
+    contact = ss.contact(workspace, **options)
+    assert (contact["sites"], contact["created"], contact["stop"]) == (8, contact_created, stop)
+    report = ss.summary(workspace)
+    assert len(provider.creates()) == 8 + contact_created <= max_runs
+    assert Decimal(report["committed_usd"]) == Decimal("0.025") * (8 + contact_created) <= Decimal(ceiling)
+
+
+def test_review_s3_a_deleted_or_altered_record_never_resets_spend(tmp_path):
+    workspace, provider, client = workspace_and_client(tmp_path)
+    raw = raw_input([inventory_record(number) for number in range(1, 4)])
+    options = {"client": client, "owner_reference": OWNER, "ceiling_usd": "1", "max_runs": 10, "apply": True}
+    ss.run(raw, workspace, **options)
+    files = {name: workspace.root / name for name in ("screen/runs.jsonl", "spend.jsonl", "owner_ceiling.json")}
+    saved = {name: path.read_bytes() for name, path in files.items()}
+    damage = [("screen/runs.jsonl", None, "site_screen_spend_journal_mismatch"),
+              ("spend.jsonl", None, "site_screen_spend_journal_missing"),
+              ("owner_ceiling.json", None, "site_screen_owner_ceiling_missing"),
+              ("owner_ceiling.json", saved["owner_ceiling.json"].replace(b'"1"', b'"100"'),
+               "site_screen_owner_ceiling_mismatch")]
+    for name, content, code in damage:
+        files[name].unlink()
+        if content is not None:
+            files[name].write_bytes(content)
+        for command in (lambda: ss.run(raw, workspace, **options), lambda: ss.contact(workspace, **options),
+                        lambda: ss.collect(workspace, client=client, wait_seconds=0),
+                        lambda: ss.verify(workspace, reader=FakePages({}), today=TODAY), lambda: ss.summary(workspace)):
+            with pytest.raises(ss.ScreenError, match=f"^{code}$"):
+                command()
+        files[name].write_bytes(saved[name])
+    assert len(provider.creates()) == 3
+    assert ss.run(raw, workspace, **options)["already_created"] == 3 and len(provider.creates()) == 3
+
+
+def test_a_used_out_dir_without_its_journal_refuses(tmp_path):
+    workspace, provider, client = workspace_and_client(tmp_path)
+    raw = raw_input([inventory_record(1)])
+    options = {"client": client, "owner_reference": OWNER, "ceiling_usd": "1", "max_runs": 10, "apply": True}
+    ss.run(raw, workspace, **options)
+    provider.outputs[ss.load_sites(raw)[0][0]["site_key"]] = {"content": screen_answers(1), "basis": []}
+    ss.collect(workspace, client=client, wait_seconds=0)
+    for name in ("spend.jsonl", "owner_ceiling.json", "screen/runs.jsonl"):
+        (workspace.root / name).unlink()
+    # The stored result shows this out dir has spent before, so it cannot start again from zero.
+    with pytest.raises(ss.ScreenError, match="^site_screen_spend_journal_missing$"):
+        ss.run(raw, workspace, **options)
+    assert len(provider.creates()) == 1
+
+
+def test_a_crash_between_the_journal_and_the_ledger_is_completed_from_the_journal(tmp_path, monkeypatch):
+    class Interrupted(BaseException):
+        pass
+
+    workspace, provider, client = workspace_and_client(tmp_path)
+    raw = raw_input([inventory_record(1), inventory_record(2)])
+    options = {"client": client, "owner_reference": OWNER, "ceiling_usd": "1", "max_runs": 10, "apply": True}
+    second = ss.load_sites(raw)[0][1]["site_key"]
+    append = ss.Ledger.append
+
+    def interrupted(ledger, event):
+        if ledger.stage == "screen" and event["event"] == "intent" and event["site_key"] == second:
+            raise Interrupted  # The journal copy is on disk; the ledger copy is not.
+        return append(ledger, event)
+
+    monkeypatch.setattr(ss.Ledger, "append", interrupted)
+    with pytest.raises(Interrupted):
+        ss.run(raw, workspace, **options)
+    monkeypatch.setattr(ss.Ledger, "append", append)
+    again = ss.run(raw, workspace, **options)
+    assert (again["created"], again["already_created"], again["outcome_unknown_kept_out"]) == (0, 1, 1)
+    assert kinds(workspace) == ["intent", "created", "intent"] and len(provider.creates()) == 1
+    assert again["committed_usd"] == "0.050"
+
+
+def test_a_crash_after_the_journal_pin_completes_the_pin_file(tmp_path, monkeypatch):
+    class Interrupted(BaseException):
+        pass
+
+    workspace, provider, client = workspace_and_client(tmp_path)
+    options = {"client": client, "owner_reference": OWNER, "ceiling_usd": "1", "max_runs": 10, "apply": True}
+    write_once = ss._write_once
+    monkeypatch.setattr(ss, "_write_once", lambda path, data: (_ for _ in ()).throw(Interrupted())
+                        if path.name == "owner_ceiling.json" else write_once(path, data))
+    with pytest.raises(Interrupted):
+        ss.run(raw_input([inventory_record(1)]), workspace, **options)
+    monkeypatch.setattr(ss, "_write_once", write_once)
+    assert not (workspace.root / "owner_ceiling.json").exists() and provider.calls == []
+    assert ss.run(raw_input([inventory_record(1)]), workspace, **options)["created"] == 1
+    pin = json.loads((workspace.root / "owner_ceiling.json").read_text())
+    assert pin == workspace.journal().events()[0]["pin"]
+
+
+@pytest.mark.parametrize("value", ["true", "false", ""])
+def test_run_and_contact_refuse_on_the_worker_until_paid_admission_exists(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED", value)
+    workspace, provider, client = workspace_and_client(tmp_path)
+    raw = raw_input([inventory_record(1)])
+    for apply in (False, True):
+        with pytest.raises(ss.ScreenError, match="^site_screen_worker_needs_paid_admission$"):
+            ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=apply)
+        with pytest.raises(ss.ScreenError, match="^site_screen_worker_needs_paid_admission$"):
+            ss.contact(workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=apply)
+    source = tmp_path / "sites.json"
+    source.write_bytes(raw)
+    with pytest.raises(ss.ScreenError, match="^site_screen_worker_needs_paid_admission$"):
+        operator.main(["run", "--input", str(source), "--out", str(tmp_path / "cli"), "--owner-reference", OWNER,
+                       "--ceiling-usd", "1", "--max-runs", "1", "--apply"], environ={"PARALLEL_API_KEY": KEY},
+                      transport=provider)
+    assert provider.calls == [] and not (workspace.root / "owner_ceiling.json").exists()
+
+
+@pytest.mark.parametrize("root", ["/tmp", "/private/tmp", "/var/tmp", "/var/folders/zz"])
+def test_an_out_dir_on_storage_the_system_prunes_is_refused(monkeypatch, root):
+    monkeypatch.setattr(ss, "VOLATILE_ROOTS", REAL_VOLATILE_ROOTS)
+    path = Path(root) / f"site-screen-synthetic-{secrets.token_hex(6)}"
+    with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_volatile$"):
+        ss.Workspace(path, create=True)
+    assert not path.exists()
+    assert ss.guard_out_dir("/Users/Shared/blueprint-private/site-screen-synthetic").name == "site-screen-synthetic"
 
 
 # --- client: status, result and failed runs -------------------------------------------------
@@ -328,7 +520,7 @@ def test_collect_stores_each_terminal_response_once_and_observes_it(tmp_path):
         provider.outputs[key] = {"content": screen_answers(1), "basis": []}
     provider.progress[keys[1]] = ["queued", "running"]
     provider.final[keys[2]] = "failed"
-    ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     clock = Clock()
     result = ss.collect(workspace, client=client, wait_seconds=60, poll_seconds=15, monotonic=clock.monotonic,
                         sleep=clock.sleep)
@@ -349,7 +541,7 @@ def test_collect_waits_within_its_bound_and_reports_runs_still_in_flight(tmp_pat
     raw = raw_input([inventory_record(1)])
     key = ss.load_sites(raw)[0][0]["site_key"]
     provider.progress[key] = ["running"] * 10
-    ss.run(raw, workspace, client=client, ceiling_usd="1", max_runs=1, apply=True)
+    ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=True)
     clock = Clock()
     result = ss.collect(workspace, client=client, wait_seconds=30, poll_seconds=15, monotonic=clock.monotonic,
                         sleep=clock.sleep)
@@ -360,7 +552,7 @@ def test_collect_waits_within_its_bound_and_reports_runs_still_in_flight(tmp_pat
 
 def test_collect_stops_on_an_auth_refusal_and_counts_other_read_errors(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
-    ss.run(raw_input([inventory_record(1)]), workspace, client=client, ceiling_usd="1", max_runs=1, apply=True)
+    ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=True)
     provider.read_answers = [(500, b"upstream"), ss.TransportError("site_screen_provider_unreachable", sent=False)]
     clock = Clock()
     result = ss.collect(workspace, client=client, wait_seconds=15, poll_seconds=15, monotonic=clock.monotonic,
@@ -582,7 +774,7 @@ def test_an_out_dir_inside_a_repository_is_refused(tmp_path, capsys):
     source.write_bytes(raw_input([inventory_record(1)]))
     with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_inside_repository$"):
         operator.main(["run", "--input", str(source), "--out", str(ROOT / "output" / "site-screen-synthetic"),
-                       "--ceiling-usd", "1", "--max-runs", "1", "--apply"], environ={"PARALLEL_API_KEY": KEY},
+                       "--owner-reference", OWNER, "--ceiling-usd", "1", "--max-runs", "1", "--apply"], environ={"PARALLEL_API_KEY": KEY},
                       transport=FakeProvider())
     assert not (ROOT / "output" / "site-screen-synthetic").exists() and not (checkout / "private").exists()
     assert ss.Workspace(tmp_path / "private" / "out", create=True).root.is_dir()
@@ -606,7 +798,7 @@ def test_the_key_comes_from_the_environment_or_a_key_file(tmp_path):
     source = tmp_path / "sites.json"
     source.write_bytes(raw_input([inventory_record(1)]))
     with pytest.raises(ss.ScreenError, match="^site_screen_api_key_missing$"):
-        operator.main(["run", "--input", str(source), "--out", str(tmp_path / "out"), "--ceiling-usd", "1",
+        operator.main(["run", "--input", str(source), "--out", str(tmp_path / "out"), "--owner-reference", OWNER, "--ceiling-usd", "1",
                        "--max-runs", "1"], environ={})
     assert not (tmp_path / "out").exists()
 
@@ -620,7 +812,7 @@ def test_the_command_prints_counts_only_and_the_key_never_leaves_the_client(tmp_
     for site, content in zip(ss.load_sites(raw_input(records))[0], answers):
         provider.outputs[site["site_key"]] = {"content": content, "basis": []}
     environ = {"PARALLEL_API_KEY": KEY}
-    spend = ["--out", str(out), "--ceiling-usd", "0.05", "--max-runs", "2"]
+    spend = ["--out", str(out), "--owner-reference", OWNER, "--ceiling-usd", "0.05", "--max-runs", "2"]
     assert operator.main(["plan", "--input", str(source)])["sites"] == 2
     assert operator.main(["run", "--input", str(source), *spend], environ=environ, transport=provider)["state"] == "planned"
     assert provider.calls == []

@@ -12,6 +12,7 @@ from tools.daily_research import site_screen as ss
 from tools.daily_research.search import ToolFailure
 
 KEY = "synthetic-parallel-key-7f3a9c41"  # Never a real key; the tests check it never leaves the client.
+OWNER = "owner-decision-synthetic-20261005"  # The owner reference the first --apply pins.
 TODAY = date(2026, 10, 5)
 PERSON = "Avery Placeholder"
 OTHER_PERSON = "Jordan Fixture"
@@ -171,7 +172,8 @@ def screen(tmp_path, records, answers, pages, *, provider=None, reader=None, bas
     for site, content in zip(sites, answers):
         provider.outputs[site["site_key"]] = {"content": content, "basis": (basis or {}).get(site["site_key"], [])}
     client = ss.TaskClient(KEY, transport=provider)
-    ss.run(raw_input(records), workspace, client=client, ceiling_usd="5", max_runs=100, apply=True)
+    ss.run(raw_input(records), workspace, client=client, owner_reference=OWNER, ceiling_usd="5", max_runs=100,
+           apply=True)
     ss.collect(workspace, client=client, wait_seconds=0)
     reader = reader or FakePages(pages)
     ss.verify(workspace, reader=reader, today=TODAY)

@@ -8,6 +8,7 @@ import pytest
 from tests import daily_research_site_screen_fixture as fixture
 from tests.daily_research_site_screen_fixture import (
     KEY,
+    OWNER,
     OTHER_PERSON,
     PERSON,
     SITE_STRINGS,
@@ -30,6 +31,13 @@ NO_LINKEDIN = ("Do not use LinkedIn as the source; a LinkedIn profile may only p
 LONG = "For plant tours, supplier visits, quality audits and shipping questions, write to {}"
 
 
+@pytest.fixture(autouse=True)
+def hermetic(monkeypatch):
+    """pytest's tmp_path is on storage the out-dir guard refuses, and a shell may set the worker flag."""
+    monkeypatch.setattr(ss, "VOLATILE_ROOTS", (), raising=False)
+    monkeypatch.delenv("BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED", raising=False)
+
+
 def screened_sites(tmp_path, count, *, unproven=()):
     """Screen ``count`` web-found sites. The site numbers in ``unproven`` keep their task page unpublished, so
     they stay screened."""
@@ -47,7 +55,7 @@ def contacted(tmp_path, answers, pages, *, basis=None):
     for key, content in zip(keys, answers):
         provider.contacts[key] = {"content": content, "basis": (basis or {}).get(key, [])}
     client = ss.TaskClient(KEY, transport=provider)
-    result = ss.contact(workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    result = ss.contact(workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
     ss.collect(workspace, client=client, wait_seconds=0)
     reader = FakePages(pages)
     ss.verify(workspace, reader=reader, today=TODAY)
@@ -79,7 +87,7 @@ def test_contact_runs_only_for_outreach_ready_sites_in_screen_order(tmp_path):
     workspace, provider, keys = screened_sites(tmp_path, 3, unproven=(2,))
     tiers = {record["site_key"]: record["tier"] for record in workspace.records("screen")}
     assert [tiers[key] for key in keys] == ["outreach_ready", "screened", "outreach_ready"]
-    result = ss.contact(workspace, client=ss.TaskClient(KEY, transport=provider), ceiling_usd="1", max_runs=10,
+    result = ss.contact(workspace, client=ss.TaskClient(KEY, transport=provider), owner_reference=OWNER, ceiling_usd="1", max_runs=10,
                         apply=True)
     assert (result["command"], result["form"], result["sites"], result["created"]) == ("contact", ss.CONTACT, 2, 2)
     bodies = provider.creates(ss.CONTACT)
@@ -89,26 +97,27 @@ def test_contact_runs_only_for_outreach_ready_sites_in_screen_order(tmp_path):
                                   "target_task": "CNC machine tending", "website": "https://operator-1.example"}
 
 
-def test_contact_runs_are_idempotent_and_bounded_by_their_own_ceiling(tmp_path):
-    workspace, provider, keys = screened_sites(tmp_path, 3)
+def test_contact_runs_are_idempotent_and_share_the_screen_ceiling(tmp_path):
+    workspace, provider, keys = screened_sites(tmp_path, 3)  # The screen committed $0.075 under a $5 pin.
     client = ss.TaskClient(KEY, transport=provider)
-    dry = ss.contact(workspace, client=client, ceiling_usd="0.05", max_runs=10)
+    options = {"client": client, "owner_reference": OWNER}
+    dry = ss.contact(workspace, **options, ceiling_usd="0.125", max_runs=10)
     assert (dry["state"], dry["would_create"], dry["stop"]) == ("stopped", 2, "site_screen_spend_ceiling_reached")
     assert provider.creates(ss.CONTACT) == []
-    # The screen stage's three runs ($0.075) do not count against the contact stage's ceiling.
-    first = ss.contact(workspace, client=client, ceiling_usd="0.05", max_runs=10, apply=True)
-    assert (first["created"], first["committed_usd"], first["stop"]) == (2, "0.050", "site_screen_spend_ceiling_reached")
-    capped = ss.contact(workspace, client=client, ceiling_usd="1", max_runs=2, apply=True)
+    first = ss.contact(workspace, **options, ceiling_usd="0.125", max_runs=10, apply=True)
+    assert (first["created"], first["committed_usd"], first["stop"]) == (2, "0.125", "site_screen_spend_ceiling_reached")
+    assert (first["runs"], first["stage_runs"], first["stage_committed_usd"]) == (5, 2, "0.050")
+    capped = ss.contact(workspace, **options, ceiling_usd="1", max_runs=5, apply=True)
     assert (capped["created"], capped["already_created"], capped["stop"]) == (0, 2, "site_screen_max_runs_reached")
-    rest = ss.contact(workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    rest = ss.contact(workspace, **options, ceiling_usd="1", max_runs=10, apply=True)
     assert (rest["created"], rest["already_created"], rest["state"]) == (1, 2, "complete")
-    again = ss.contact(workspace, client=client, ceiling_usd="1", max_runs=10, apply=True)
+    again = ss.contact(workspace, **options, ceiling_usd="1", max_runs=10, apply=True)
     assert (again["created"], again["already_created"]) == (0, 3)
     assert [body["metadata"]["site_key"] for body in provider.creates(ss.CONTACT)] == keys
     assert [event["event"] for event in workspace.ledger("contact").events()].count("intent") == 3
     fresh, other_provider, _ = screened_sites(tmp_path / "fresh", 1)
-    below = ss.contact(fresh, client=ss.TaskClient(KEY, transport=other_provider), ceiling_usd="0.02", max_runs=10,
-                       apply=True)
+    below = ss.contact(fresh, client=ss.TaskClient(KEY, transport=other_provider), owner_reference=OWNER,
+                       ceiling_usd="0.04", max_runs=10, apply=True)
     assert (below["created"], below["stop"]) == (0, "site_screen_spend_ceiling_reached")
     assert other_provider.creates(ss.CONTACT) == []
 
@@ -282,7 +291,7 @@ def test_the_contact_command_prints_counts_only(tmp_path, capsys):
     for key, content in zip(keys, answers):
         provider.contacts[key] = {"content": content, "basis": []}
     environ, out = {"PARALLEL_API_KEY": KEY}, str(workspace.root)
-    spend = ["contact", "--out", out, "--ceiling-usd", "1", "--max-runs", "5"]
+    spend = ["contact", "--out", out, "--owner-reference", OWNER, "--ceiling-usd", "1", "--max-runs", "5"]
     assert operator.main(spend, environ=environ, transport=provider)["would_create"] == 2
     assert operator.main([*spend, "--apply"], environ=environ, transport=provider)["created"] == 2
     operator.main(["collect", "--out", out, "--wait-seconds", "0"], environ=environ, transport=provider)
