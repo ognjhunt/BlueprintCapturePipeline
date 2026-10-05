@@ -37,8 +37,9 @@
           }
         ]
       },
-      "approval_inherited_from_existing_policy": true,
-      "new_legal_acceptance": false
+      "approval_inherited_from_existing_policy": false,
+      "new_legal_acceptance": false,
+      "exact_version_review_required": true
     },
     {
       "previous_component": "urllib3==2.7.0",
@@ -75,8 +76,9 @@
           }
         ]
       },
-      "approval_inherited_from_existing_policy": true,
-      "new_legal_acceptance": false
+      "approval_inherited_from_existing_policy": false,
+      "new_legal_acceptance": false,
+      "exact_version_review_required": true
     },
     {
       "previous_component": "pyjwt==2.13.0",
@@ -123,8 +125,9 @@
           }
         ]
       },
-      "approval_inherited_from_existing_policy": true,
-      "new_legal_acceptance": false
+      "approval_inherited_from_existing_policy": false,
+      "new_legal_acceptance": false,
+      "exact_version_review_required": true
     },
     {
       "previous_component": "google-auth==2.55.2",
@@ -161,8 +164,9 @@
           }
         ]
       },
-      "approval_inherited_from_existing_policy": true,
-      "new_legal_acceptance": false
+      "approval_inherited_from_existing_policy": false,
+      "new_legal_acceptance": false,
+      "exact_version_review_required": true
     }
   ],
   "unapproved_component": {

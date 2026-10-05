@@ -11,7 +11,7 @@ started.
 This is an ADP-009D day-14 rehearsal delivery-safety dependency, not a new
 program or proof claim. The existing frozen graph could not pass the security
 gate. The smallest change is three targeted lock updates, their two canonical
-exports, and measured continuity evidence for already accepted license terms.
+exports, and measured continuity evidence for previously reviewed license terms.
 No runtime configuration, dependency constraints, gate implementation, advisory
 waiver, model, provider, credential, paid resource, or deployment was changed.
 
@@ -35,18 +35,28 @@ regression reproduces caller-options mutation on installed 2.13.0 and passes
 on 2.15.0. A second regression reproduces silently accepted malformed signature
 bytes on 2.13.0 and verifies rejection on 2.15.0.
 
-## License continuity and remaining release blocker
+## License continuity and remaining release blockers
 
 The previous and current published wheel bytes were downloaded from the exact
 PyPI metadata URLs and checked against the published SHA-256 digests. Their
 embedded license files are byte-identical for all three updated packages and
 for `google-auth` 2.55.2 → the already locked 2.58.0. The existing MIT/Apache
-approval owner, review date, and expiration are retained. No new human review
-or legal acceptance is asserted. `license-continuity.json` records both exact
+license policy is unchanged from the base commit: identical license bytes do
+not transfer an owner approval to a new exact name/version. No new human review,
+inherited approval, or legal acceptance is asserted. `license-continuity.json` records both exact
 wheel identities and the comparison; copies of the measured license bytes are
 retained here.
 
-**The supply-chain gate remains blocked for `meta-sam-parser==0.0.5`.** Its
+**The supply-chain gate remains blocked for five missing exact-version reviews:**
+`anyio==4.14.2`, `urllib3==2.8.0`, `pyjwt==2.15.0`, the already locked
+`google-auth==2.58.0`, and `meta-sam-parser==0.0.5`. The policy also retains
+three obsolete exact-version records (`anyio==4.14.1`, `pyjwt==2.13.0`, and
+`google-auth==2.55.2`), which the gate reports as orphaned. Those historical
+records were not rewritten to manufacture current approval. The unchanged
+permissive-license bytes are evidence for the required owner review, not a
+replacement for it.
+
+The `meta-sam-parser==0.0.5`
 embedded custom SAM License has SHA-256
 `4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be`, matching
 the terms documented in
@@ -70,14 +80,17 @@ still required before the supply-chain gate can pass.
 - Regression control using the original installed packages: the two new JWT
   regressions fail as expected; the streaming/cancellation checks pass.
 - Wheel and source distribution built; distribution metadata verification passed.
-- Actual CycloneDX/SPDX/provenance builder: 95 components, blocked only by
-  `license_review_missing:meta-sam-parser==0.0.5`. Google Auth's missing/orphan
-  review errors are resolved. No signature or deployed-image claim is made.
+- Actual CycloneDX/SPDX/provenance builder: 95 components, blocked by the five
+  missing exact-version reviews and three orphaned reviews listed above.
+  No signature or deployed-image claim is made.
 - Changed-file Ruff and `git diff --check`: passed.
 
-The retained candidate reports were generated from the changed worktree based
-on the main SHA above, before committing; their `repository_sha` is that base
-SHA. The candidate lock is bound by SHA-256
+The retained security report was generated from the changed worktree based on
+the main SHA above, before committing; its `repository_sha` is that base SHA.
+The supply-chain report was regenerated while correcting the approval records
+on candidate `310c0373042f41c3a7e4da70a7da54fe79286ea6`; that is its recorded
+source SHA, not a claim that the pre-correction candidate preserved authority.
+The candidate lock is bound by SHA-256
 `7d177694b52ec7a3d3567d3fd2d7fdca524f967c41bed10b820c535796567eb4`.
 They are candidate evidence, not proof that the original main commit was green.
 
