@@ -1361,11 +1361,16 @@ def _resume_initial_intent(dependencies, deadline):
     prepare(original_source, original_sdk, _deadline=deadline)
 
 
-def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None):
+def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None, _progress=None):
     """Complete root snapshot and ABI SDK before callers expose service units."""
     deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
     _require(type(deadline) is float and math.isfinite(deadline) and time.monotonic() <= deadline)
+    def phase(name):
+        if _progress is not None:
+            _progress(name)
+    phase('signed_release')
     protected_source = _signed_release(source, source_commit, deadline)
+    phase('build_sdk')
     sdk = build_sdk(protected_source, wheelhouse=wheelhouse, contracts_checkout=contracts_checkout, _deadline=deadline)
     _require(time.monotonic() <= deadline)
     current = _BOOT_ROOT / 'CURRENT.json'
@@ -1374,14 +1379,18 @@ def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_chec
     if (not current.exists() and not current.is_symlink()
             and not boot.exists() and not boot.is_symlink()
             and (installed.exists() or installed.is_symlink())):
+        phase('resume_initial_intent')
         _resume_initial_intent(Path(sdk['dependencies_root']), deadline)
     if current.exists() or current.is_symlink() or installed.exists() or installed.is_symlink():
         selected = current if current.exists() or current.is_symlink() else installed
         raw, _ = _record_bytes(selected, deadline)
+        phase('refresh')
         result = refresh(protected_source, Path(sdk['dependencies_root']), expected_current=_selector(raw), _deadline=deadline)
     else:
+        phase('prepare')
         result = prepare(protected_source, Path(sdk['dependencies_root']), _deadline=deadline)
     _require(time.monotonic() <= deadline)
+    phase('publish_installer')
     _publish_installer(protected_source, deadline)
     return result | {'source_commit': source_commit, 'sdk_packages': sdk['packages'],
                      'system_python_abi': sdk['system_python_abi']}
@@ -1399,13 +1408,28 @@ def main(argv=None):
     sdk.add_argument('--venv', type=Path)
     sdk.add_argument('--locked-sdk', action='store_true')
     arguments = parser.parse_args(argv)
-    if arguments.locked_sdk:
-        _require(arguments.source_commit is not None)
-        result = prepare_deployment(arguments.source, source_commit=arguments.source_commit,
-            wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout, _deadline=arguments.deadline_monotonic)
-    else:
-        dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
-        result = prepare(arguments.source, dependencies)
+    started = time.monotonic()
+    def report_phase(name):
+        print('scene_retirement_runtime_phase:' + name, file=sys.stderr, flush=True)
+    try:
+        if arguments.locked_sdk:
+            _require(arguments.source_commit is not None)
+            result = prepare_deployment(arguments.source, source_commit=arguments.source_commit,
+                wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout,
+                _deadline=arguments.deadline_monotonic, _progress=report_phase)
+        else:
+            report_phase('prepare')
+            dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
+            result = prepare(arguments.source, dependencies)
+    except Exception as exc:
+        # Never forward exception text or traceback from protected paths or SDK
+        # acquisition. These fixed markers are diagnostic only, never proof.
+        deadline = min(started + _MAX_SECONDS, arguments.deadline_monotonic) if arguments.deadline_monotonic is not None else started + _MAX_SECONDS
+        reason = ('deadline' if time.monotonic() >= deadline else
+                  'io' if isinstance(exc, OSError) else
+                  'validation' if isinstance(exc, (ValueError, KeyError, TypeError)) else 'unexpected')
+        print('scene_retirement_runtime_failure:' + reason, file=sys.stderr, flush=True)
+        return 2
     print(json.dumps(result, sort_keys=True))
     return 0
 

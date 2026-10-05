@@ -40,8 +40,9 @@ ADP-001 focus lock
 ```
 
 Partner discovery and protocol conversations may run in parallel as a small
-human lane, but engineering does not wait for partner capture. ADP-008 is
-observed complete. The 2026-08-06
+human lane, but engineering does not wait for partner capture. Partner discovery
+is open across robot forms and task families under the 2026-10-05 owner decision
+(see ADP-010). ADP-008 is observed complete. The 2026-08-06
 [public-scene transition decision](ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md)
 accepts the bounded Aura/SAGE/SimReady construction rehearsal while preserving
 the historical ten-role index at `7/10`. The active engineering item is the
@@ -370,6 +371,20 @@ Use [`PARTNER_SELECTION_PACKET.md`](PARTNER_SELECTION_PACKET.md). Do not code fo
 a hypothetical robot before admission. This human lane may proceed while the
 public-reference harness is being completed, but it does not redirect harness
 engineering.
+
+Demand discovery feeds this item. Under the 2026-10-05 owner decision
+(`gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`),
+prospecting, screening, outreach, and partner discovery are open across robot
+forms (fixed arm, humanoid, wheeled, bimanual, and others) and task families,
+deformables included. Record demand by behavior on both sides: site replies,
+interest, and submitted videos by task family, and robot teams seeking sites or
+evaluations by form and task. The packet's fixed-arm, rigid-object profile
+governs admission to this track, the current default build target. Keep a
+prospect outside that profile as demand evidence and defer it; do not drop it
+from discovery. Building evaluation support for another form or task family
+needs a recorded owner focus decision based on that evidence. Spend stays
+inside approved allowances. Sending and automatic first contact stay off, and a
+draft is not permission to send.
 
 Acceptance: score at least `20/24`, no zero in a required row, and obtain durable
 authority for capture, protocol, holdout, outcome use, and bounded case study.

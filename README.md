@@ -1,12 +1,14 @@
 # BlueprintCapturePipeline
 
+> Current owner direction (2026-10-05, recorded in AGENTS.md; owner record `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`): **demand discovery is open.** Prospecting, screening, outreach, and partner discovery span every robot form (fixed arm, humanoid, wheeled, bimanual, and others) and task family, deformables included. Arm Decision Proof v1 stays as the first evaluation-proof track; its fixed-arm, rigid-object envelope is the current default build target, not a ban on other forms. Building evaluation support for a new form or task family needs a recorded owner focus decision based on demand evidence. Spend stays inside approved allowances; sending and automatic first contact stay off.
+
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md).
 
 
 ## Sole Active Program: Arm Decision Proof v1
 
-Blueprint's only active objective is to produce one prospectively physically
-validated, site-specific fixed-arm decision.
+Blueprint's only active build objective is to produce one prospectively
+physically validated, site-specific fixed-arm decision.
 
 > Qualify the reusable service on exact public datasets first—including one
 > metric 3DGS/collision object removal, released-code inpainting, and exact
@@ -45,10 +47,13 @@ Blueprint has one customer-facing product: a **Task Evaluation Run**.
 | SiteBench | Optional name for the bounded case study, not a second product |
 
 The first envelope is one partner, one site, one fixed arm, one bounded
-rigid-object pick-and-place task, and two genuine frozen candidates. Humanoids,
-deformables, five-policy campaigns, universal runtime support, general ranking,
-provider bakeoffs, world-model expansion, post-training products, and multi-site
-generalization are frozen.
+rigid-object pick-and-place task, and two genuine frozen candidates. It is the
+current default build target, not a ban on other robot forms or task families:
+demand discovery is open across them (see the 2026-10-05 note above), and
+building evaluation support for another form or task family needs a recorded
+owner focus decision. Five-policy campaigns, universal runtime support, general
+ranking, provider bakeoffs, world-model expansion, post-training products, and
+multi-site generalization stay frozen.
 
 ## Public Datasets, Inpainting, And SimReady Replacement
 
