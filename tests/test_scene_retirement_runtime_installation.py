@@ -226,6 +226,41 @@ def test_sdk_tree_closes_child_descriptors_when_deadline_expires(tmp_path, monke
     assert not opened and not module._BOOT_ROOT.exists()
 
 
+@pytest.mark.parametrize('kind', ['directory', 'leaf'])
+@pytest.mark.parametrize('restore_mode', [False, True])
+def test_sdk_tree_refuses_changed_identity_at_descriptor_handoff(tmp_path, monkeypatch, kind, restore_mode):
+    import time
+    module, _, deps = fixture(tmp_path, monkeypatch)
+    nested = deps / 'package'
+    nested.mkdir()
+    leaf = nested / 'leaf.py'
+    leaf.write_bytes(b'# protected SDK\n')
+    target = nested if kind == 'directory' else leaf
+    original = module._open_tree_child
+    mutated = []
+    def changed(parent, name, before, *, directory):
+        fd = original(parent, name, before, directory=directory)
+        if not mutated and name == target.name and directory == (kind == 'directory'):
+            mutated.append(True)
+            target.chmod(0o777 if directory else 0o666)
+            if restore_mode:
+                if directory:
+                    (target / 'injected.py').write_bytes(b'# not admitted at open\n')
+                else:
+                    target.write_bytes(b'# changed after open\n')
+                target.chmod(0o755 if directory else 0o644)
+        return fd
+    monkeypatch.setattr(module, '_open_tree_child', changed)
+    rows = {}
+    try:
+        with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+            module._tree(deps, Path('.'), rows, {}, time.monotonic() + 10)
+    finally:
+        target.chmod(0o755 if kind == 'directory' else 0o644)
+    assert mutated and 'package/leaf.py' not in rows
+    assert not module._BOOT_ROOT.exists()
+
+
 @pytest.mark.parametrize('change', ['unknown-directory', 'prefix-collision', 'symlink', 'changed-prefix'])
 def test_partial_sdk_directory_index_preserves_refusals(tmp_path, monkeypatch, change):
     import time

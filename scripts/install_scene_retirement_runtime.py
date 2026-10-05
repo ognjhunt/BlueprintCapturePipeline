@@ -80,9 +80,12 @@ def _open(path, *, directory, partial=False):
         raise
 
 
-def _read_open_file(fd, path, deadline, *, output=None):
+def _read_open_file(fd, path, deadline, *, output=None, _expected=None):
     """Hash an already no-follow opened leaf and verify its final path binding."""
     before = os.fstat(fd)
+    _protected(before, directory=False)
+    if _expected is not None:
+        _require(_identity(before) == _identity(_expected))
     digest = hashlib.sha256()
     count = 0
     while True:
@@ -126,7 +129,8 @@ def _open_tree_child(parent, name, before, *, directory):
         raise
 
 
-def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None, _directory_fd=None):
+def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None,
+          _directory_fd=None, _directory_before=None):
     _require(depth <= 32 and time.monotonic() <= deadline)
     # Carry one aggregate through descendants. Re-summing every previous
     # SDK leaf on each insertion made final verification quadratic in files.
@@ -137,6 +141,9 @@ def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None, _director
     fd = _open(path, directory=True) if _directory_fd is None else _directory_fd
     try:
         before = os.fstat(fd)
+        _protected(before, directory=True)
+        if _directory_before is not None:
+            _require(_identity(before) == _identity(_directory_before))
         names = sorted(os.listdir(fd))
         _require(len(names) <= _MAX_FILES)
         for name in names:
@@ -148,7 +155,7 @@ def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None, _director
                 child_fd = _open_tree_child(fd, name, info, directory=True)
                 try:
                     _tree(child, prefix / name, rows, sources, deadline, depth + 1,
-                          _total=total, _directory_fd=child_fd)
+                          _total=total, _directory_fd=child_fd, _directory_before=info)
                 finally:
                     os.close(child_fd)
             else:
@@ -156,7 +163,7 @@ def _tree(path, prefix, rows, sources, deadline, depth=0, _total=None, _director
                 key = str(prefix / name)
                 leaf_fd = _open_tree_child(fd, name, info, directory=False)
                 try:
-                    row = _read_open_file(leaf_fd, child, deadline)
+                    row = _read_open_file(leaf_fd, child, deadline, _expected=info)
                 finally:
                     os.close(leaf_fd)
                 total[0] += row['size'] - rows.get(key, {}).get('size', 0)
