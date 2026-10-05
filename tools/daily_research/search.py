@@ -50,6 +50,17 @@ MAX_CALL_RECORDS = 1_000_000  # Leave room for packet, QA and delivery plans.
 MAX_INTENT = 1_000_000
 MAX_PACKET = 500_000
 MAX_CALLS = 500  # Resource ceiling, never a quality quota; shared research+QA.
+# Research stops short of a share reserved for QA's source verification, so a long
+# research phase cannot starve QA. At its budget a tool call gets a fixed reply that
+# tells the agent to finish its output; the session is not cancelled. A hard refusal
+# remains after BUDGET_GRACE_CALLS such replies.
+QA_RESERVED_CALLS = 50
+QA_RESERVED_EVIDENCE = 1_000_000
+BUDGET_GRACE_CALLS = 20
+BUDGET_EXHAUSTED = {"code": "research_tool_budget_exhausted",
+                    "guidance": "This run's tool budget for this phase is used up. Do not call more tools. "
+                                "Write the final output now from the evidence already retained, and record "
+                                "the remaining promising branches as unresolved for the next run."}
 
 
 class ToolFailure(ValueError):
@@ -550,9 +561,17 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             raise Refusal("research_tool_call_identity_conflict")
         if not prior:
             used = sum(c.get("result_bytes", 0) for c in calls.values())
-            if len(calls) >= MAX_CALLS or used >= MAX_EVIDENCE - MAX_RESPONSE - 20000:
+            reserve_calls, reserve_bytes = (QA_RESERVED_CALLS, QA_RESERVED_EVIDENCE) if phase == "research" else (0, 0)
+            # Fail-soft replies are bounded separately and never use a real call's share.
+            executed = sum(c.get("budget_exhausted") is not True for c in calls.values())
+            exhausted = (executed >= MAX_CALLS - reserve_calls
+                         or used >= MAX_EVIDENCE - reserve_bytes - MAX_RESPONSE - 20000)
+            if exhausted and (sum(c.get("budget_exhausted") is True for c in calls.values()) >= BUDGET_GRACE_CALLS
+                              or used >= MAX_EVIDENCE - 20000):
                 raise Refusal("research_tool_evidence_resource_ceiling")
             prior = {"request_digest": digest(binding), "request": binding, "phase": phase, "attempted": False}
+            if exhausted:
+                prior["budget_exhausted"] = True
             calls[cid] = prior
             if (len(canonical(binding).encode()) > 10000 or len(canonical(calls).encode()) > MAX_CALL_RECORDS
                     or len(canonical(row).encode()) > MAX_RECORD):
@@ -566,10 +585,15 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             raise Refusal("research_tool_stopped_or_expired")
         if "result_file" not in prior:
             outcome = {"success": False, "error": "research_tool_reply_unresolved_no_replay"}
+            if prior.get("budget_exhausted") is True:
+                # No provider call: a small fixed reply that asks the agent to finish.
+                # It is recorded like any result, so a replay returns the same bytes.
+                outcome = {"success": False, "error": canonical(BUDGET_EXHAUSTED),
+                           "output": canonical({"ok": False, "error": BUDGET_EXHAUSTED})}
             # Expansion's whole-run claim, rather than a model call ID, owns
             # the paid start. Re-entering it can only recover the original ACK
             # or read that same run; it never repeats an uncertain submission.
-            if not prior["attempted"] or action["name"] in expansion_names:
+            elif not prior["attempted"] or action["name"] in expansion_names:
                 prior["attempted"] = True
                 ledger.put(row)  # No paid POST is replayed after a lost reply/crash.
                 api.tool_admit(row, phase)
