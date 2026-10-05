@@ -471,15 +471,71 @@ def test_signed_release_copies_real_lockfile_size_with_exact_git_bytes(tmp_path,
     # tiny relative to the runtime budget while crossing the old 1 MiB cap.
     lock = b'lock\n' + b'x' * (1_165_102 - len(b'lock\n'))
     (source / 'uv.lock').write_bytes(lock)
+    for index in range(33):
+        (source / 'src/blueprint_pipeline' / f'binary_{index}.data').write_bytes(bytes([index]) + b'\0\n')
     subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture',
         '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'bounded signed lock'], check=True)
     commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
 
+    calls = []
+    command = module._sdk_git_command
+    def observed(checkout, arguments, deadline, **kwargs):
+        calls.append(arguments)
+        return command(checkout, arguments, deadline, **kwargs)
+    monkeypatch.setattr(module, '_sdk_git_command', observed)
     copied = module._signed_release(source, commit, time.monotonic() + 30)
     assert (copied / 'uv.lock').read_bytes() == lock
+    for index in range(33):
+        assert (copied / 'src/blueprint_pipeline' / f'binary_{index}.data').read_bytes() == bytes([index]) + b'\0\n'
+    batches = calls.count(['cat-file', '--batch'])
+    assert batches == calls.count(['cat-file', '--batch-check']) == 3
+    assert not any(arguments[:2] in (['cat-file', '-s'], ['cat-file', 'blob']) for arguments in calls)
     assert module._signed_release(source, commit, time.monotonic() + 30) == copied
+    assert calls.count(['cat-file', '--batch']) == batches
+
+
+@pytest.mark.parametrize('change', ['size-limit', 'wrong-type', 'wrong-id', 'missing', 'extra-header',
+                                  'truncated', 'trailing', 'mutated-blob', 'body-header'])
+def test_signed_blob_batch_refuses_unproven_headers_and_bytes(tmp_path, monkeypatch, change):
+    import hashlib
+    import time
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    raw = b'protected\0\nbytes'
+    digest = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+    header = digest.encode() + b' blob ' + str(len(raw)).encode() + b'\n'
+    checked, body = header, header + raw + b'\n'
+    if change == 'size-limit':
+        checked = digest.encode() + b' blob 1048577\n'
+    elif change == 'wrong-type':
+        checked = header.replace(b' blob ', b' tree ')
+    elif change == 'wrong-id':
+        checked = b'0' * 40 + header[40:]
+    elif change == 'missing':
+        checked = digest.encode() + b' missing\n'
+    elif change == 'extra-header':
+        checked += header
+    elif change == 'truncated':
+        body = body[:-1]
+    elif change == 'trailing':
+        body += b'foreign'
+    elif change == 'mutated-blob':
+        body = header + b'X' + raw[1:] + b'\n'
+    else:
+        body = header.replace(b' blob ', b' tree ') + raw + b'\n'
+    calls = []
+    def command(checkout, arguments, deadline, **kwargs):
+        assert kwargs['input_data'] == digest.encode() + b'\n'
+        assert kwargs['raw_checkout'] is True
+        calls.append(arguments)
+        return checked if arguments == ['cat-file', '--batch-check'] else body
+    monkeypatch.setattr(module, '_sdk_git_command', command)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._signed_release_blobs(source, [('100644', digest, 'src/blueprint_pipeline/fixture.py')], time.monotonic()+5)
+    if change in {'size-limit', 'wrong-type', 'wrong-id', 'missing', 'extra-header'}:
+        assert calls == [['cat-file', '--batch-check']]
+    assert not module._BOOT_ROOT.exists() and not module._RUNTIME_ROOT.exists()
 
 
 def test_live_installer_prepares_immutable_runtime_before_service_ownership_and_units():
@@ -745,7 +801,8 @@ def test_orphan_retained_installer_receipt_refuses_before_candidate_staging(tmp_
     assert marker.read_bytes() == b'{}' and not (root / 'installers').exists()
 
 
-def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monkeypatch):
+@pytest.mark.parametrize('batch', [False, True])
+def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monkeypatch, batch):
     import stat
     import subprocess
     import time
@@ -763,7 +820,9 @@ def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monk
         return raw
     monkeypatch.setattr(module.os, 'read', counted_read)
     with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
-        module._sdk_git_command(checkout, ['cat-file', 'blob', blob], time.monotonic() + 5, cap=4)
+        module._sdk_git_command(checkout, ['cat-file', '--batch'] if batch else ['cat-file', 'blob', blob],
+                                time.monotonic() + 5, cap=4,
+                                input_data=blob.encode() + b'\n' if batch else None)
     assert sum(native_bytes) <= 5, 'native stdout cap must apply before an oversized read/append, not after communicate allocated output'
 
 
@@ -774,6 +833,26 @@ def test_native_git_zero_byte_blob_remains_supported_with_zero_output_allowance(
     checkout, _ = _pinned_contracts_checkout(tmp_path)
     blob = subprocess.check_output(['/usr/bin/git', '-C', str(checkout), 'hash-object', '-w', '--stdin'], input=b'').decode().strip()
     assert module._sdk_git_command(checkout, ['cat-file', 'blob', blob], time.monotonic() + 5, cap=0) == b''
+
+
+def test_native_git_batch_deadline_kills_and_reaps_owned_child(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    checkout, _ = _pinned_contracts_checkout(tmp_path)
+    popen, children = subprocess.Popen, []
+    def stalled(command, **kwargs):
+        assert command[-2:] == ['cat-file', '--batch']
+        child = popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(30)'], **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(subprocess, 'Popen', stalled)
+    started = time.monotonic()
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_git_command(checkout, ['cat-file', '--batch'], started + .05,
+                                input_data=b'0' * 40 + b'\n')
+    assert len(children) == 1 and children[0].poll() is not None
+    assert time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize('phase', ['download', 'extraction'])
@@ -1064,7 +1143,8 @@ def test_signed_release_retry_authenticates_retained_git_blob_without_reacquirin
     module, source, _, first, _ = _interrupted_connected_install(tmp_path, monkeypatch)
     git = module._sdk_git_command
     def existing(checkout, arguments, deadline, **kwargs):
-        assert arguments[:2] not in (['cat-file', 'blob'], ['cat-file', '-s'])
+        assert arguments[:2] not in (['cat-file', 'blob'], ['cat-file', '-s'],
+                                     ['cat-file', '--batch'], ['cat-file', '--batch-check'])
         return git(checkout, arguments, deadline, **kwargs)
     monkeypatch.setattr(module, '_sdk_git_command', existing)
     root = module._signed_release(source, first, time.monotonic()+10)
