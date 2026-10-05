@@ -24,6 +24,7 @@ from .config import DoorConfig
 from .fsview import FileView, FsRefused
 from .hostinfo import HostInfo, HostRefused, validate_unit
 from .requests import RequestRefused, enqueue, list_requests, request_state, required_scope, validate_request
+from .requests import observed_unit_outcome
 from .status import build_status
 
 _REQUEST_ROUTE = re.compile(r"^/requests/([^/]+)$")
@@ -208,6 +209,7 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
                         state["unit_state"] = app.host.unit_properties([unit])
                     except HostRefused:
                         state["unit_state"] = None
+                state["observed_outcome"] = observed_unit_outcome(state)
                 self._send_json(200, state)
             else:
                 self._send_json(404, {"error": "not_found"})
@@ -256,6 +258,7 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise _BadRequest(400, "body_not_json") from error
             try:
+                operation_key = body.pop("operation_key", None) if isinstance(body, dict) else None
                 normalized = validate_request(body)
             except RequestRefused as refusal:
                 raise _BadRequest(400, refusal.code) from refusal
@@ -264,8 +267,12 @@ def make_handler(app: DoorApp) -> type[BaseHTTPRequestHandler]:
                 raise _Denied(f"scope_missing:{scope}")
             if normalized["kind"] in {"owner-census-decision", "legacy-owner-census"} and app.config.owner_census_decisions_enabled != 1:
                 raise _Denied("owner_consent_disabled")
-            request_id = enqueue(app.config, normalized, requested_by=identity.name)
-            self._send_json(202, {"id": request_id, "state": "pending"})
+            try:
+                request_id = enqueue(app.config, normalized, requested_by=identity.name, operation_key=operation_key)
+            except RequestRefused as refusal:
+                raise _BadRequest(409 if refusal.code == "operation_key_conflict" else 400, refusal.code) from refusal
+            self._send_json(202, {"id": request_id, "state": request_state(app.config, request_id)["state"],
+                                  "operation_key": operation_key})
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib naming
             self._dispatch("GET")

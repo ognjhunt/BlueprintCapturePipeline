@@ -650,7 +650,11 @@ def poll_once(
                 current_run = client.get_run(str(row["run_id"]))
                 launch_allowed = (current_run.get("state") == "requested"
                     and current_run.get("money_resolved") is not True
-                    and current_run.get("cancellation_requested") is not True)
+                    and current_run.get("cancellation_requested") is not True
+                    and bool(journal.get("pipeline_run_id"))
+                    and _mapping(current_run.get("dispatch")).get("pipeline_run_id") == journal["pipeline_run_id"]
+                    and bool(row.get("execution_admission_digest"))
+                    and current_run.get("execution_admission_digest") == row["execution_admission_digest"])
             except (OSError, ValueError, urllib.error.URLError):
                 launch_allowed = False
         if routes_controlled_request(canonical) and launch_allowed:

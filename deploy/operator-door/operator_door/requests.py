@@ -28,6 +28,8 @@ as the service user: promotion, the gated cleanup, the absence proof and, with
 from __future__ import annotations
 
 import datetime as _dt
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -311,9 +313,9 @@ def validate_request_id(request_id: str) -> str:
     return request_id
 
 
-def enqueue(config: DoorConfig, request: dict[str, Any], *, requested_by: str) -> str:
+def _enqueue(config: DoorConfig, request: dict[str, Any], *, requested_by: str, request_id: str | None = None) -> str:
     normalized = validate_request(request)
-    request_id = new_request_id(normalized["kind"])
+    request_id = request_id or new_request_id(normalized["kind"])
     document = {
         "schema": SCHEMA,
         "id": request_id,
@@ -326,12 +328,76 @@ def enqueue(config: DoorConfig, request: dict[str, Any], *, requested_by: str) -
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             json.dump(document, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, pending / f"{request_id}.json")
+        _sync_directory(pending)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
     return request_id
+
+
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def enqueue(config: DoorConfig, request: dict[str, Any], *, requested_by: str,
+            operation_key: str | None = None) -> str:
+    """Retain operation identity beyond spool retention; retry cannot relaunch it."""
+    normalized = validate_request(request)
+    if operation_key is None:
+        return _enqueue(config, normalized, requested_by=requested_by)
+    if not isinstance(operation_key, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{16,128}", operation_key):
+        raise RequestRefused("operation_key_invalid")
+    root = Path(config.spool_root) / "pending" / ".operations"
+    root.mkdir(mode=0o750, exist_ok=True)
+    if root.is_symlink():
+        raise RequestRefused("operation_store_unsafe")
+    identity = hashlib.sha256((requested_by + "\0" + operation_key).encode()).hexdigest()
+    path = root / f"{identity}.json"
+    lock = os.open(root / f"{identity}.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o640)
+    try:
+        if not stat.S_ISREG(os.fstat(lock).st_mode):
+            raise RequestRefused("operation_store_unsafe")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists():
+            operation = load_request_file(path)
+            if operation.get("requested_by") != requested_by or operation.get("request") != normalized:
+                raise RequestRefused("operation_key_conflict")
+            if operation.get("published"):
+                return validate_request_id(operation["id"])
+        else:
+            operation = {"id": new_request_id(normalized["kind"]), "request": normalized,
+                         "requested_by": requested_by, "published": False}
+            _write_operation(path, operation)
+        request_id = validate_request_id(operation["id"])
+        # A crash after publication but before the marker is repaired with the
+        # same id. The runner also refuses an already-completed id.
+        if not any((Path(config.spool_root) / state / f"{request_id}.json").exists() for state in STATES):
+            _enqueue(config, normalized, requested_by=requested_by, request_id=request_id)
+        _write_operation(path, {**operation, "published": True})
+        return request_id
+    finally:
+        os.close(lock)
+
+
+def _write_operation(path: Path, value: dict[str, Any]) -> None:
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".operation-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        _sync_directory(path.parent)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def _open_regular(path: Path) -> tuple[int, os.stat_result]:
@@ -408,6 +474,25 @@ def request_state(config: DoorConfig, request_id: str) -> dict[str, Any]:
         "outcome": _json_or_none(results / f"{request_id}.outcome.json"),
         "log_tail": _tail(results / f"{request_id}.log"),
     }
+
+
+def observed_unit_outcome(state: dict[str, Any]) -> dict[str, str] | None:
+    """Observe only the recorded invocation. A later restart proves nothing
+    about this operation, and historical acceptance is never promoted."""
+    result = state.get("result") or {}
+    bound = result.get("unit_observation") or {}
+    invocation = bound.get("InvocationID")
+    units = state.get("unit_state") or []
+    if not invocation or len(units) != 1:
+        return None
+    unit = units[0]
+    if unit.get("InvocationID") != invocation:
+        return {"status": "unknown", "reason": "unit_invocation_changed"}
+    if unit.get("ActiveState") == "failed":
+        return {"status": "observed_failed", "invocation_id": invocation}
+    if unit.get("ActiveState") == "inactive" and unit.get("Result") == "success" and unit.get("ExecMainStatus") == "0":
+        return {"status": "observed_completed", "invocation_id": invocation}
+    return None
 
 
 def list_requests(config: DoorConfig, limit: int = 20) -> list[dict[str, Any]]:
