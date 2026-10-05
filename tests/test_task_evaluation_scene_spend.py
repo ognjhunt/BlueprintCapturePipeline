@@ -61,15 +61,15 @@ def test_terminal_settlement_retains_executed_exposure(tmp_path, launch_status, 
     assert publish_current_scene_project_spend(**args, now=400)["total_cost_usd"] == first["total_cost_usd"]
 
 
-@pytest.mark.parametrize("matching_authority", [True, False])
-def test_posted_charge_replaces_exact_reservation_once(tmp_path, matching_authority):
+@pytest.mark.parametrize("matching_authority,posted_amount", [(True, 2), (False, .025), (True, .025)])
+def test_posted_charge_replaces_exact_reservation_once(tmp_path, matching_authority, posted_amount):
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from tests.test_same_goal_spend_reconciliation import _fixture, _materialize
 
     root = tmp_path / "intents"
     intent = stage(root)
     reserved = attempt(root, intent)
-    billing = _fixture(tmp_path / "billing")
+    billing = _fixture(tmp_path / "billing", amount=posted_amount)
     terminal = json.loads(billing["result"].read_text())
     if matching_authority:
         terminal["authorization_consumption"]["authorization_digest"] = reserved["attempt_digest"]
@@ -84,13 +84,22 @@ def test_posted_charge_replaces_exact_reservation_once(tmp_path, matching_author
         authorized_on="2026-10-05", output_path=prior)
     args = dict(scene_root=root, seed_reconciliation_path=prior,
                 output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    if matching_authority and posted_amount < 2:
+        # A compute-only bill cannot erase the rest of the retained exposure.
+        (tmp_path / "opening").mkdir()
+        publish_current_scene_project_spend(**{**args, "seed_reconciliation_path": seed(tmp_path / "opening")})
+        before = (tmp_path / "current.json").read_bytes()
+        with pytest.raises(ValueError, match="scene_spend_posted_reservation_partial_coverage"):
+            publish_current_scene_project_spend(**args)
+        assert (tmp_path / "current.json").read_bytes() == before
+        return
     first = publish_current_scene_project_spend(**args)
     retained = 0 if matching_authority else 2
-    assert first["total_cost_usd"] == pytest.approx(43.197914 + .025 + retained)
+    assert first["total_cost_usd"] == pytest.approx(43.197914 + posted_amount + retained)
     assert first["scene_reservation_count"] == (0 if matching_authority else 1)
     assert publish_current_scene_project_spend(**args)["total_cost_usd"] == first["total_cost_usd"]
     attempt(root, intent, "a2")
-    assert publish_current_scene_project_spend(**args)["total_cost_usd"] == pytest.approx(43.197914 + .025 + retained + 2)
+    assert publish_current_scene_project_spend(**args)["total_cost_usd"] == pytest.approx(43.197914 + posted_amount + retained + 2)
 
 
 def test_revocation_never_implies_a_zero_bill_and_corruption_does_not_refresh(tmp_path):
@@ -299,5 +308,29 @@ def test_publisher_reuses_large_artifact_hashes_only_within_one_pass(tmp_path, m
         result = publish_current_scene_project_spend(**args, now=now)
         assert result["scene_reservation_count"] == 2
         assert digests.digest_scope_stats() is None
-    assert [row["bytes_hashed"] for row in observations] == [robot.stat().st_size] * 4
-    assert [row["cache_hits"] for row in observations] == [0, 1, 0, 1]
+    assert [row["bytes_hashed"] for row in observations] == [robot.stat().st_size] * 12
+    assert sum(row["cache_hits"] == 0 for row in observations) == 2
+
+
+@pytest.mark.parametrize("launch_status, retained", [(None, 4.5), ("blocked", 21.26), ("completed", 24.72)])
+def test_terminal_settlement_does_not_erase_unreconciled_project_cost(tmp_path, launch_status, retained):
+    from tests.test_terminal_scene_attempt_settlement import _fixture, _settle
+    fx = _fixture(tmp_path, launch_status=launch_status)
+    _settle(fx)
+    args = dict(scene_root=fx["root"], seed_reconciliation_path=seed(tmp_path),
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    first = publish_current_scene_project_spend(**args, now=300)
+    assert first["total_cost_usd"] == pytest.approx(43.197914 + retained)
+    second = publish_current_scene_project_spend(**args, now=400)
+    assert second["total_cost_usd"] == first["total_cost_usd"]
+    assert second["pointer"]["path"] == first["pointer"]["path"]
+
+
+def test_posted_identity_does_not_erase_partially_covered_retained_cost():
+    from blueprint_pipeline.task_evaluation_scene_spend import _require_reservation_posted_coverage
+    reservation = {"authorization_digest": "sha256:attempt", "hard_attempt_spend_cap_usd": 4.5}
+    with pytest.raises(ValueError, match="partial_coverage"):
+        _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:attempt", "cost_usd": 0.5})
+    with pytest.raises(ValueError, match="identity_mismatch"):
+        _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:other", "cost_usd": 4.5})
+    _require_reservation_posted_coverage(reservation, {"authority_digest": "sha256:attempt", "cost_usd": 4.5})

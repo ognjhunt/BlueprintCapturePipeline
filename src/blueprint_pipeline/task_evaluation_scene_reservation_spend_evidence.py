@@ -30,7 +30,16 @@ def scene_reservation_spend_record(path: Path) -> tuple[dict[str, Any], dict[str
             or attempt.get("provider") not in intent["request"]["execution"]["allowed_providers"]
             or isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap <= 0):
         raise ValueError("scene_spend_reservation_invalid")
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
+    from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
+    cancellation = validated_cancellation(path.parent.parent, attempt)
+    settlement = {}
+    if cancellation is not None:
+        cap = (budget_retained_hold(cancellation)["retained_spend_usd"]
+               if cancellation.get("schema_version") == "task_evaluation_terminal_scene_attempt_settlement.v1"
+               else 0.0)
+        settlement = {"settlement_digest": cancellation["receipt_digest"]}
     return {**attempt, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap}, {
         **record, "authorization_digest": attempt["attempt_digest"], "hard_attempt_spend_cap_usd": cap,
-        "accounting_kind": "persistent_scene_reservation", "owner_intent": intent_record,
+        "accounting_kind": "persistent_scene_reservation", "owner_intent": intent_record, **settlement,
     }

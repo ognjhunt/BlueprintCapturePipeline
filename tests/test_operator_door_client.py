@@ -358,3 +358,9 @@ def test_client_submits_one_canary_attempt_s_provider_output_resume(door: dict[s
 def test_a_retirement_needs_the_operate_scope(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("retire-scene-workspace", "site-capture-1")[0] == 3
+
+
+def test_historical_unit_acceptance_is_not_objective_completion():
+    assert client._terminal({"request": {"kind": "unit"}, "result": {"status": "done"}}) is None
+    assert client._terminal({"observed_outcome": {"status": "observed_completed"}}) is True
+    assert client._terminal({"observed_outcome": {"status": "observed_failed"}}) is False

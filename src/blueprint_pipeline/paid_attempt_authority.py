@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .vast_evidence_contracts import valid_vast_provider_zero_api_call
+from .paid_provider_zero_evidence import (
+    ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION as ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION,
+    valid_adp_paid_provider_zero as valid_adp_paid_provider_zero,
+)
 
 
 ALLOWLIST_GROUPS = ("external_provider_owned", "same_goal_concurrent")
@@ -25,7 +28,6 @@ ZERO_CHARGE_ABSENCE_EVIDENCE_KIND = (
 )
 NO_PROVIDER_ALLOCATION_EVIDENCE_KIND = "provider_zero_no_allocation"
 ZERO_CHARGE_BILLING_GRACE = timedelta(minutes=10)
-ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION = "adp_paid_provider_zero.v1"
 JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA = (
     "joint_agent_same_goal_spend_lineage.v1"
 )
@@ -85,24 +87,6 @@ def _finite(value: Any) -> bool:
         and isinstance(value, (int, float))
         and math.isfinite(float(value))
         and float(value) >= 0
-    )
-
-
-def valid_adp_paid_provider_zero(value: Mapping[str, Any]) -> bool:
-    """Validate the canonical Vast-only provider-zero receipt."""
-
-    return bool(
-        value.get("schema_version") == ADP_PAID_PROVIDER_ZERO_SCHEMA_VERSION
-        and value.get("provider") == "vast"
-        and value.get("api_confirmed") is True
-        and value.get("provider_zero") is True
-        and value.get("global_live_resource_count") == 0
-        and value.get("inventory") == []
-        and valid_vast_provider_zero_api_call(value.get("api_command"))
-        and isinstance(value.get("stderr_present"), bool)
-        and value.get("raw_secret_values_recorded") is False
-        and value.get("provider_zero_digest")
-        == canonical_digest(value, digest_field="provider_zero_digest")
     )
 
 

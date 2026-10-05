@@ -502,9 +502,27 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
                 return {"status": "refused", "code": "notifier_repair_deploy_in_progress"}
             return _launch(config, runner, request_id, request)
         result = runner.run(
-            ["systemctl", "--no-block", request["action"], "--", request["unit"]], timeout=30
+            ["systemctl", request["action"], "--", request["unit"]], timeout=30
         )
-        return {"status": "done" if result.returncode == 0 else "failed", "unit_action": request,
+        if result.returncode == 0:
+            observation = runner.run(["systemctl", "show", "--no-pager",
+                "--property=ActiveState,SubState,Result,InvocationID,ExecMainStatus,Type", "--", request["unit"]], timeout=10)
+            properties = dict(line.split("=", 1) for line in observation.stdout.splitlines() if "=" in line)
+            success = observation.returncode == 0 and (
+                (request["action"] in {"start", "restart"} and properties.get("ActiveState") == "active"
+                 and (not request["unit"].endswith(".service") or properties.get("Type") != "oneshot"))
+                or (request["action"] == "reset-failed" and properties.get("ActiveState") in {"active", "inactive"})
+                or (request["action"] == "stop" and properties.get("ActiveState") == "inactive")
+                or (request["action"] == "start" and properties.get("ActiveState") == "inactive"
+                    and properties.get("Result") == "success" and properties.get("ExecMainStatus") == "0"
+                    and bool(properties.get("InvocationID"))))
+            failure = properties.get("ActiveState") == "failed" and bool(properties.get("InvocationID"))
+            running = properties.get("ActiveState") in {"activating", "active"} and properties.get("Type") == "oneshot" and bool(properties.get("InvocationID"))
+            return {"status": "done" if success else "failed" if failure else "running" if running else "unknown", "unit_action": request,
+                    "unit": request["unit"],
+                    "unit_observation": properties, "returncode": result.returncode}
+
+        return {"status": "accepted" if result.returncode == 0 else "failed", "unit_action": request,
                 "returncode": result.returncode, "stderr_tail": result.stderr[-2000:]}
     if request["kind"] == "hold":
         return _act_hold(config, runner, request_id, request, requested_by)
@@ -522,6 +540,9 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
 def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, request_id: str) -> None:
     spool = Path(config.spool_root)
     results = spool / "results"
+    if (spool / "completed" / claimed.name).exists():
+        claimed.unlink()
+        return
     try:
         document = load_request_file(claimed)
         if document.get("schema") != SCHEMA:
@@ -540,7 +561,7 @@ def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, reque
     try:
         outcome = _act(config, runner, request_id, request, document["requested_by"])
     except Exception as error:  # noqa: BLE001 - record, never crash the oneshot
-        outcome = {"status": "failed", "code": f"runner_error:{type(error).__name__}"}
+        outcome = {"status": "unknown", "code": f"runner_error:{type(error).__name__}"}
     _write_result(results, request_id, outcome)
 
 
@@ -573,7 +594,7 @@ def _prune(spool: Path, retention_days: int) -> None:
             if path.lstat().st_mtime < now - 3600:
                 request_id = validate_request_id(path.stem)
                 os.replace(path, spool / "completed" / path.name)
-                _write_result(spool / "results", request_id, {"status": "failed", "code": "stranded"})
+                _write_result(spool / "results", request_id, {"status": "unknown", "code": "stranded"})
         except (OSError, RequestRefused):
             _quarantine(spool, path)
     for path in (spool / "pending").glob(".*.tmp"):

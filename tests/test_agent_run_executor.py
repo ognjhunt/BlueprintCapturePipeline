@@ -599,6 +599,11 @@ def test_native_credential_request_uses_confirmed_journal_owner_on_restart(
     monkeypatch.setattr(abstention, "collect_vast_provider_zero_receipt", lambda: {"provider_zero": True})
 
     class OwnerClient(FakeClient):
+        def get_run(self, run_id):
+            current_owner = self.claims[-1][1] if self.claims else owner
+            return {**super().get_run(run_id), "dispatch": {"pipeline_run_id": current_owner},
+                    "execution_admission_digest": row["execution_admission_digest"]}
+
         def report_blocked(self, _row, pipeline_run_id, reason):
             self.blocked.append((pipeline_run_id, reason))
 

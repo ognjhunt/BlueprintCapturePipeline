@@ -28,6 +28,20 @@ from .validation_file_digests import file_digest_scope
 MONITOR_MANAGED_BY = "blueprint_pipeline.task_evaluation_scene_preparation_installation"
 
 
+def _require_reservation_posted_coverage(record: dict[str, Any], entry: dict[str, Any]) -> None:
+    """A compute-only/zero-provider bill cannot erase retained authoring cost.
+
+    Until coverage of the whole retained exposure is proven, fail closed and
+    preserve the previous conservative pointer instead of publishing a lower
+    total. Matching a digest alone is necessary but insufficient.
+    """
+    retained = float(record["hard_attempt_spend_cap_usd"])
+    if entry.get("authority_digest") != record["authorization_digest"]:
+        raise ValueError("scene_spend_posted_reservation_identity_mismatch")
+    if float(entry["cost_usd"]) + 1e-9 < retained:
+        raise ValueError("scene_spend_posted_reservation_partial_coverage")
+
+
 
 
 
@@ -47,35 +61,29 @@ def _publish_current_scene_project_spend_locked(*, scene_root: str | Path, seed_
         raise ValueError("scene_spend_root_unsafe")
     records = []
     cancelled = []
-    posted_reservations = []
-    posted_digests = {row.get("authority_digest") for row in seed["posted_entries"]
-                      if row.get("authority_digest")}
-    from .task_evaluation_retained_controls_evidence import validated_cancellation
-    from .task_evaluation_terminal_scene_attempt_settlement import SCHEMA, retained_hold
+    posted = {str(row.get("authority_digest")): row for row in seed["posted_entries"]
+              if row.get("authority_digest")}
+    covered = []
     for path in sorted(root.glob("scene-*/attempts/*.json")):
-        attempt = read_scene(path, "attempt_digest")
-        cancellation = validated_cancellation(path.parent.parent, attempt)
-        if cancellation is not None:
-            if cancellation.get("schema_version") != SCHEMA or retained_hold(cancellation)["retained_spend_usd"] == 0:
-                cancelled.append({"attempt": _record(path), "cancellation_digest": cancellation["receipt_digest"]})
-                continue
-        _, reservation = scene_reservation_spend_record(path)
-        # The seed has already reopened and validated official billing. Match
-        # the immutable authority, never a reusable/display attempt name.
-        if attempt["attempt_digest"] in posted_digests:
-            posted_reservations.append(reservation)
-            continue
-        # Keep the full cap for ambiguous/executed terminal work until billing
-        # replaces it. Do not turn a teardown or cancellation into a refund.
-        records.append(reservation)
+        _, record = scene_reservation_spend_record(path)
+        digest = record["authorization_digest"]
+        if digest in posted:
+            _require_reservation_posted_coverage(record, posted[digest])
+            # Only exact authority identity in the already validated official
+            # seed replaces this hold. Matching an attempt name is insufficient.
+            covered.append({"attempt": record, "posted_attempt_id": posted[digest]["attempt_id"]})
+        elif record["hard_attempt_spend_cap_usd"] == 0:
+            cancelled.append({"attempt": record, "cancellation_digest": record["settlement_digest"]})
+        else:
+            records.append(record)
     # Recompute holds from the enrollment store, never add a prior snapshot's
     # same reservation a second time. Official seed increments are unchanged.
     legacy = [r for r in seed["unposted_authorities"] if r.get("accounting_kind") != "persistent_scene_reservation"]
     coverage = sorted({str(row["attempt_id"]) for row in seed["posted_entries"]}
                       | {str(row["authorization_digest"]) for row in [*legacy, *records]})
     inventory = {"seed": seed_record, "scene_reservations": records, "legacy_unposted": legacy,
-                 "posted_scene_reservations": posted_reservations,
                  "cancelled_before_controls_eligibility": cancelled,
+                 "reservations_covered_by_posted_seed": covered,
                  "expected_coverage_ids": coverage}
     snapshot_digest = canonical_digest(inventory)
     destination = Path(output_root) / snapshot_digest[7:]

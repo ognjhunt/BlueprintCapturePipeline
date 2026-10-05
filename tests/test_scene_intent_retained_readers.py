@@ -108,6 +108,7 @@ def test_pure_reader_static_closure_excludes_intake_mutation_and_execution():
         'task_evaluation_scene_execution_window_evidence', 'task_evaluation_scene_owner_authority'))
     assert 'decision_evidence_contracts' in reachable
     forbidden = HOT_LANE_MODULES | {'task_evaluation_scene_intake',
+        'paid_attempt_authority',
         'task_evaluation_scene_execution_budget', 'task_evaluation_scene_execution_window',
         'task_evaluation_scene_recovery', 'source_calibration_finalization_reuse',
         'task_evaluation_stage_replay', 'task_evaluation_sam31_preparation_execution'}
@@ -125,6 +126,7 @@ socket.socket.connect_ex = refuse_network
 import blueprint_pipeline.task_evaluation_scene_owner_authority
 import blueprint_pipeline.task_evaluation_scene_execution_budget_evidence
 import blueprint_pipeline.task_evaluation_scene_execution_window_evidence
+assert 'blueprint_pipeline.paid_attempt_authority' not in sys.modules
 assert 'blueprint_pipeline.task_evaluation_scene_intake' not in sys.modules
 assert 'blueprint_pipeline.task_evaluation_scene_execution_budget' not in sys.modules
 assert 'blueprint_pipeline.task_evaluation_scene_execution_window' not in sys.modules
