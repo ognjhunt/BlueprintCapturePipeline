@@ -455,7 +455,8 @@ On the installed, source-pinned worker, the owner can change total duration with
 building another package:
 
 ```bash
-python -m tools.daily_research.render set-runtime --minutes 120
+cd /opt/render/project/src
+PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m tools.daily_research.render set-runtime --minutes 120
 ```
 
 Use `--minutes 60`, `120`, `180`, `240`, or another whole-minute value from 2 to 240.
@@ -464,7 +465,7 @@ For example, with 15 minutes reserved for QA, 120 minutes means 105 minutes of
 research plus 15 minutes of QA. Set both explicitly when needed:
 
 ```bash
-python -m tools.daily_research.render set-runtime --minutes 120 --qa-minutes 20
+PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m tools.daily_research.render set-runtime --minutes 120 --qa-minutes 20
 ```
 
 The operation asserts the installed/control source pin, holds
@@ -473,4 +474,4 @@ publication rows. It compare-and-swaps the current configuration and source.
 Only the next run's duration and QA reserve change; existing rows keep their
 original deadlines. It neither starts a provider nor changes the paid expansion
 allowance, model/search budget, schedule, credentials or sending settings. The
-current intended release setting is60 minutes total with 15 minutes reserved for QA.
+current intended release setting is 60 minutes total with 15 minutes reserved for QA.

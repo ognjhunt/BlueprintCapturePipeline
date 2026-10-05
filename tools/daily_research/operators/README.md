@@ -628,8 +628,16 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
   or `exa,findall`. Without it, `set` admits every supported source. A start of
   a source that the current direction does not name is refused with
   `paid_expansion_source_not_directed`, and research continues. Switching
-  sources is the same `set` command with another `--sources` value; it applies
-  from the next run, like an amount change. With both sources at $10, two
+  sources is the same `set` command with another `--sources` value. Adding a
+  source applies from the next run, like a higher amount. Removing a source, like
+  a lower amount or the brake, applies at once: new starts of that source are
+  refused, and active FindAll runs are cancelled at the next observation.
+- FindAll has no provider-side dollar cap. Its create request carries
+  `match_limit`, and the host reserves the generator's listed fixed price plus
+  per-match price times `match_limit` (pricing version in
+  `src/blueprint_pipeline/parallel_findall_execution.py`). The limit holds at
+  Parallel's list price with Parallel enforcing `match_limit`. Exa's
+  `budget.maxCostDollars` is a provider-enforced cap. With both sources at $10, two
   FindAll requests can use about $9.50, which leaves no room for an Exa start,
   so set `--per-run-usd 20.00` when both should run every day.
 - `show` and `set` report `source_readiness`: for each source, its credential
