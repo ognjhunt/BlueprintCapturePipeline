@@ -101,6 +101,19 @@ class FirestoreLedger:
         control = self.bridge.call("control")
         return control if isinstance(control, dict) else None
 
+    def site_universe_control(self):
+        # Top-level company control like paid_expansion: config keys stay allowlisted and older
+        # packages ignore control.site_universe. Absent or disabled, the runner reads nothing more.
+        control = self.bridge.call("control")
+        return control.get("site_universe") if isinstance(control, dict) else None
+
+    def site_universe_object(self, pin):
+        # Exactly the pinned generation. The bridge checks generation, size and SHA-256 within
+        # its own 20 s bound, inside this pipe's 35 s deadline.
+        value = self.bridge.call("site_universe_object_get", sha256=pin["sha256"], generation=pin["generation"],
+                                 size=pin["bytes"])
+        return base64.b64decode(value["data"], validate=True)
+
     def contact_research_context(self, day):
         return self.bridge.call("contact_research_context", day=day)
 

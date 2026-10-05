@@ -7,6 +7,8 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {Store, ROOT, LeaseChannel, ADAPTIVE_TEST} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
+import {FakeBucket as GenerationBucket} from './fixtures/daily_research/fake-bucket.mjs';
+import {gzipSync} from 'node:zlib';
 
 async function fixture(now=Date.now()) {
   const db = new MemoryFirestore(), time = {now};
@@ -888,4 +890,112 @@ test(`runtime adjustment atomically refuses active ${Object.keys(active)[0]}`,as
   await assert.rejects(store.dispatch({op:'runtime_set',total_seconds:7200,qa_seconds:900,
     expected_config:config,expected_source_commit:source}),/runtime_active_research_qa_repair_or_publication/);
   assert.deepEqual(db.values.get(ROOT),before);
+});
+
+// Owner-pinned site universe export (tools/daily_research/site_universe.py mirror).
+const SU_PREFIX='operations/research/site-universe/';
+const suExport=(rows=[{site_id:'1'.repeat(64)}],changes={})=>gzipSync(Buffer.from(JSON.stringify({
+  schema_version:'blueprint.site_universe.backlog.v1',manifest:{distribution:'internal_only'},rows,...changes})));
+const suSha=raw=>createHash('sha256').update(raw).digest('hex');
+function suPin(raw,generation,changes={}) {
+  const sha=suSha(raw);
+  return {enabled:true,uri:`gs://blueprint-8c1ca.appspot.com/${SU_PREFIX}${sha}/backlog.v1.json.gz`,generation:String(generation),
+    sha256:sha,bytes:raw.length,snapshot_id:'a'.repeat(64),rank_config_sha256:'b'.repeat(64),slice_size:20,
+    reoffer_after_days:90,approval_reference:'owner-synthetic-pin',...changes};
+}
+async function suFixture() {
+  const value=await fixture(),bucket=new GenerationBucket();
+  value.store.archiveBucket=bucket;
+  return {...value,bucket,operator:new Store(value.db,()=>value.time.now,'operator',null,null,null,null,false,bucket)};
+}
+const suGet=(store,raw,generation,size=raw.length,hash=suSha(raw))=>store.dispatch({op:'site_universe_object_get',sha256:hash,generation:String(generation),size});
+
+test('site universe exports are content-addressed, create-only and bounded without a lease',async()=>{
+  const {db,bucket,operator}=await suFixture(),raw=suExport();
+  const put=(bytes,hash=suSha(bytes))=>operator.dispatch({op:'site_universe_object_put',sha256:hash,bytes:bytes.toString('base64')});
+  const stored=await put(raw);
+  assert.deepEqual(stored,{uri:suPin(raw,stored.generation).uri,sha256:suSha(raw),generation:stored.generation,size:raw.length});
+  assert.deepEqual(await put(raw),stored);
+  const object=bucket.objects.get(`${SU_PREFIX}${suSha(raw)}/backlog.v1.json.gz`);
+  assert.equal(bucket.objects.size,1);assert.equal(object.metadata.contentType,'application/gzip');
+  assert.equal(object.metadata.contentEncoding,undefined);  // Never transcoded: readers get the exact gzip bytes.
+  await assert.rejects(put(raw,'0'.repeat(64)),/^Error: site_universe_object_digest_mismatch$/);
+  await assert.rejects(put(randomBytes(2*1024*1024+1)),/^Error: site_universe_object_too_large$/);
+  for(const bytes of [Buffer.from('{"not":"gzip"}'),suExport([],{}),suExport(undefined,{schema_version:'other'}),
+    suExport(undefined,{manifest:{distribution:'public'}}),gzipSync(Buffer.alloc(6*1024*1024+1,32))])
+    await assert.rejects(put(bytes),/^Error: site_universe_export_invalid$/);
+  await assert.rejects(new Store(db).dispatch({op:'site_universe_object_put',sha256:suSha(raw),bytes:raw.toString('base64')}),
+    /^Error: site_universe_object_unavailable$/);
+  assert.equal(db.values.get(ROOT).site_universe,undefined);
+});
+
+test('site universe reads exactly the pinned generation, size and SHA-256 within their own bound',async()=>{
+  const {db,bucket,operator}=await suFixture(),raw=suExport();
+  const {generation}=await operator.dispatch({op:'site_universe_object_put',sha256:suSha(raw),bytes:raw.toString('base64')});
+  const read=await suGet(operator,raw,generation);
+  assert.deepEqual(Buffer.from(read.data,'base64'),raw);assert.equal(read.generation,generation);
+  assert.deepEqual(await suGet(operator,raw,generation,null),read);  // The owner command learns the size.
+  await assert.rejects(suGet(operator,raw,Number(generation)+1),/^Error: site_universe_object_missing$/);
+  await assert.rejects(suGet(operator,raw,generation,raw.length+1),/^Error: site_universe_object_digest_mismatch$/);
+  await assert.rejects(suGet(operator,raw,generation,raw.length,'c'.repeat(64)),/^Error: site_universe_object_missing$/);
+  for(const [request,code] of [[{generation:'0123'},'pin_invalid'],[{generation:1001},'pin_invalid'],
+    [{sha256:'../x'},'pin_invalid'],[{size:2*1024*1024+1},'pin_invalid'],[{size:0},'pin_invalid']])
+    await assert.rejects(operator.dispatch({op:'site_universe_object_get',sha256:suSha(raw),generation,size:raw.length,...request}),
+      new RegExp(`^Error: site_universe_${code}$`));
+  const object=bucket.objects.get(`${SU_PREFIX}${suSha(raw)}/backlog.v1.json.gz`);
+  object.raw=Buffer.from(object.raw).fill(7,10,11);
+  await assert.rejects(suGet(operator,raw,generation),/^Error: site_universe_object_digest_mismatch$/);
+  object.size=2*1024*1024+1;
+  await assert.rejects(suGet(operator,raw,generation),/^Error: site_universe_object_too_large$/);
+  delete object.size;bucket.failure=503;
+  await assert.rejects(suGet(operator,raw,generation),/^Error: site_universe_object_unavailable$/);
+  bucket.failure=null;bucket.hang=true;operator.siteUniverseReadMs=30;
+  const started=Date.now();
+  await assert.rejects(suGet(operator,raw,generation),/^Error: site_universe_object_unavailable$/);
+  assert.ok(Date.now()-started<2000);
+  assert.equal(new Store(db).siteUniverseReadMs,20000);  // Inside firestore.py's 35 s pipe deadline.
+  await assert.rejects(new Store(db).dispatch({op:'site_universe_object_get',sha256:suSha(raw),generation,size:raw.length}),
+    /^Error: site_universe_object_unavailable$/);
+});
+
+test('site_universe_set is a fenced compare-and-swap that pins a valid export or brakes the current pin',async()=>{
+  const {db,store,time}=await suFixture(),raw=suExport(),pin=suPin(raw,1001);
+  const set=(expected,value)=>store.dispatch({op:'site_universe_set',expected_sha256:expected,value});
+  assert.deepEqual(await set(null,pin),{enabled:true,sha256:pin.sha256,generation:'1001'});
+  assert.deepEqual(db.values.get(ROOT).site_universe,pin);
+  await assert.rejects(set(null,pin),/^Error: site_universe_control_conflict$/);
+  for(const changes of [{slice_size:31},{slice_size:4},{reoffer_after_days:366},{approval_reference:'PENDING-owner'},
+    {approval_reference:'café'},{uri:'gs://other/x'},{generation:'01'},{bytes:2*1024*1024+1},{enabled:'true'},{extra:1}])
+    await assert.rejects(set(pin.sha256,{...pin,...changes}),/^Error: site_universe_pin_invalid$/);
+  await assert.rejects(set(pin.sha256,{...pin,enabled:false,slice_size:5}),/^Error: site_universe_pin_invalid$/);
+  assert.deepEqual(await set(pin.sha256,{...pin,enabled:false}),{enabled:false,sha256:pin.sha256,generation:'1001'});
+  assert.deepEqual(db.values.get(ROOT).site_universe,{...pin,enabled:false});
+  const next=suPin(suExport([{site_id:'2'.repeat(64)}]),1002,{slice_size:25});
+  await set(pin.sha256,next);
+  assert.deepEqual(db.values.get(ROOT).site_universe,next);
+  await assert.rejects(store.dispatch({op:'site_universe_set',value:next}),/^Error: site_universe_pin_invalid$/);
+  time.now+=180001;
+  await assert.rejects(set(next.sha256,{...next,enabled:false}),/firestore_lease_lost/);
+  assert.deepEqual(db.values.get(ROOT).site_universe,next);
+});
+
+test('configure keeps the site universe pin and neither configure nor init can write one',async()=>{
+  const {db,store}=await suFixture(),pin=suPin(suExport(),1001);
+  await store.dispatch({op:'site_universe_set',expected_sha256:null,value:pin});
+  const replacement={schema_version:'blueprint.research-control.v1',enabled:true,config:{x:1}};
+  await store.dispatch({op:'configure',value:replacement});
+  assert.deepEqual(db.values.get(ROOT).site_universe,pin);assert.deepEqual(db.values.get(ROOT).config,{x:1});
+  await store.dispatch({op:'configure',value:{...replacement,site_universe:pin}});
+  for(const value of [{...pin,enabled:false},null,{...pin,slice_size:5}])
+    await assert.rejects(store.dispatch({op:'configure',value:{...replacement,site_universe:value}}),
+      /^Error: site_universe_requires_pin_operation$/);
+  assert.deepEqual(db.values.get(ROOT).site_universe,pin);
+  // Without a pin, configure writes exactly what it wrote before.
+  const {db:plainDb,store:plain}=await fixture();
+  await plain.dispatch({op:'configure',value:replacement});
+  assert.equal(Object.hasOwn(plainDb.values.get(ROOT),'site_universe'),false);
+  const fresh=new MemoryFirestore(),other=new Store(fresh,()=>Date.now(),'other');
+  await assert.rejects(other.dispatch({op:'init',value:{schema_version:'blueprint.research-control.v1',enabled:false,
+    site_universe:pin}}),/^Error: site_universe_requires_pin_operation$/);
+  assert.equal(fresh.values.has(ROOT),false);
 });
