@@ -50,10 +50,10 @@ MAX_CALL_RECORDS = 1_000_000  # Leave room for packet, QA and delivery plans.
 MAX_INTENT = 1_000_000
 MAX_PACKET = 500_000
 MAX_CALLS = 500  # Resource ceiling, never a quality quota; shared research+QA.
-# Research stops short of a share reserved for QA's source verification, so a long
-# research phase cannot starve QA. At its budget a tool call gets a fixed reply that
-# tells the agent to finish its output; the session is not cancelled. A hard refusal
-# remains after BUDGET_GRACE_CALLS such replies.
+# Research and its validation repair stop short of a share reserved for QA's source
+# verification, so a long research phase cannot starve QA. At its budget a tool call
+# gets a fixed reply that tells the agent to finish its output; the session is not
+# cancelled. A hard refusal remains after BUDGET_GRACE_CALLS such replies in a phase.
 QA_RESERVED_CALLS = 50
 QA_RESERVED_EVIDENCE = 1_000_000
 BUDGET_GRACE_CALLS = 20
@@ -561,13 +561,18 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             raise Refusal("research_tool_call_identity_conflict")
         if not prior:
             used = sum(c.get("result_bytes", 0) for c in calls.values())
-            reserve_calls, reserve_bytes = (QA_RESERVED_CALLS, QA_RESERVED_EVIDENCE) if phase == "research" else (0, 0)
+            # A recorded event escapes its JSON output again, so one result can reach about
+            # twice MAX_RESPONSE. Phases before QA stop that far short of QA's share.
+            before_qa = phase in {"research", "repair"}
+            reserve_calls = QA_RESERVED_CALLS if before_qa else 0
+            reserve_bytes = QA_RESERVED_EVIDENCE + MAX_RESPONSE if before_qa else 0
             # Fail-soft replies are bounded separately and never use a real call's share.
             executed = sum(c.get("budget_exhausted") is not True for c in calls.values())
             exhausted = (executed >= MAX_CALLS - reserve_calls
                          or used >= MAX_EVIDENCE - reserve_bytes - MAX_RESPONSE - 20000)
-            if exhausted and (sum(c.get("budget_exhausted") is True for c in calls.values()) >= BUDGET_GRACE_CALLS
-                              or used >= MAX_EVIDENCE - 20000):
+            # Each phase has its own grace replies, so research cannot use up QA's.
+            grace = sum(c.get("budget_exhausted") is True and c.get("phase") == phase for c in calls.values())
+            if exhausted and (grace >= BUDGET_GRACE_CALLS or used >= MAX_EVIDENCE - 20000):
                 raise Refusal("research_tool_evidence_resource_ceiling")
             prior = {"request_digest": digest(binding), "request": binding, "phase": phase, "attempted": False}
             if exhausted:

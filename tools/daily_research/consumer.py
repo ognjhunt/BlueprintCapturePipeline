@@ -439,7 +439,11 @@ class Consumer:
         return {"date": row["date"], "state": result["state"]}
 
     def qa(self, row):
-        search.assert_findall_caller(row, self.ledger, self.api)
+        # The stale-caller fence stays at entry. The FindAll registry is checked
+        # inside the observation try (observe and check_session), where a release
+        # that changed tool text routes a running QA session to cancel instead of
+        # raising on every tick.
+        search.assert_findall_caller(row, self.ledger, self.api, registry=False)
         deadline = qa_deadline(row, self.config)
         if not row.get("qa"):
             if self.clock() >= deadline:

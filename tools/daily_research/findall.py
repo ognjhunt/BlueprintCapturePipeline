@@ -92,7 +92,8 @@ def tools():
                        "properties": properties, "required": list(properties)}}]
     for name, description in (
         (STATUS, ("Read the status of a FindAll run that this daily run started, by its findall_id. Poll it "
-                  "until the run is no longer active before reading its result.")),
+                  "until the run is no longer active before reading its result. Each check uses one of this "
+                  "run's tool calls, so keep researching between checks and check about every one to two minutes.")),
         (RESULT, ("Read the result of a FindAll run that this daily run started, once it is no longer active: a "
                   "raw discovery snapshot preserving every evaluated candidate (matches and non-matches), "
                   "citations, basis, reasoning, status and unknown fields. Matches are not verified or qualified "
@@ -175,7 +176,9 @@ def instructions():
             "the owner's direction omits FindAll; retain that actionable skip and continue ordinary research. "
             "Retain each returned findall_id. Poll blueprint_findall_status until the run is no longer active "
             "before reading its result, within the original deadline; when research ends the host cancels any "
-            "run still active and retains one result snapshot of it. An uncertain start must never be restarted. "
+            "run still active and retains one result snapshot of it. Each status check uses one of this run's tool "
+            "calls, so keep researching between checks and check about every one to two minutes. "
+            "An uncertain start must never be restarted. "
             "A result lists every candidate the run evaluated, including non-matches, so it is much larger than "
             "match_limit suggests. Read each completed run's result once; every read retains a new immutable "
             "snapshot. A result larger than the tool output ceiling is retained whole as one immutable file and "

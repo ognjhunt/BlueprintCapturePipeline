@@ -867,6 +867,9 @@ def test_instructions_recommend_small_first_requests_one_read_and_receipt_paging
     descriptions = {tool["name"]: tool["description"] for tool in findall.tools()}
     assert "match_limit of about 50" in descriptions[findall.CREATE]
     assert "no longer active" in descriptions[findall.STATUS] and "once" in descriptions[findall.RESULT]
+    # Each status check uses one of the run's tool calls, so the agent researches between checks.
+    for guidance in (descriptions[findall.STATUS], text):
+        assert "keep researching between checks" in guidance and "every one to two minutes" in guidance
     assert "non-matches" in descriptions[findall.CREATE] and "non-matches" in descriptions[findall.RESULT]
 
 
