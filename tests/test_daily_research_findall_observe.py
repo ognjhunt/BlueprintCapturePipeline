@@ -4,6 +4,7 @@ observe() asserts the stale-caller fence before its try block. The registry chec
 inside the try, where a changed registry routes to the existing cancel path.
 """
 import copy
+import base64
 import hashlib
 from datetime import timedelta
 from types import SimpleNamespace
@@ -261,3 +262,44 @@ def test_render_exposes_prestart_repair_block_as_terminal(runtime, monkeypatch, 
     assert outcomes[0]["feedback"] == ledger.get(DAY)["original_validation_failure"]["feedback"]
     assert reads.count("session") == 1 and actions == []
     assert ledger.read_bytes(DAY + "-artifact.json") == raw
+
+
+def blocked_repair_snapshot(runtime, monkeypatch):
+    raw, _reads, _actions = prestart_fixture(runtime, monkeypatch, failed=True)
+    _row, ledger, _client, _state, api = runtime
+    edit_registry(monkeypatch)
+    row = recovery.RepairLoop(ledger, {}, api, clock=lambda: NOW).step(DAY)
+    return {"row": row, "files": {"artifact": base64.b64encode(raw).decode()},
+            "missing_files": []}
+
+
+def test_unstarted_repair_exports_without_fabricated_input(runtime, monkeypatch, tmp_path):
+    snapshot = blocked_repair_snapshot(runtime, monkeypatch)
+    bridge = SimpleNamespace(call=lambda *args, **kwargs: copy.deepcopy(snapshot))
+    result = render.export_snapshot(bridge, DAY, tmp_path / "export")
+    assert result["missing_files"] == []
+    assert (tmp_path / "export" / (DAY + "-artifact.json")).read_bytes() == runtime[1].read_bytes(DAY + "-artifact.json")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("state", "running"), ("error", "other_refusal"), ("input_attempted", True),
+    ("input_attempted", None), ("input_attempted", 0), ("number", True),
+    ("turn_id", "turn_sent"), ("request_digest", "0" * 64),
+    ("turn_id", None), ("cancel_attempted", False), ("artifact_digest", "0" * 64),
+    ("input_file", DAY + "-repair-1-input.json"), ("deadline_ms", 0),
+    ("input_error_receipt", {"stage": "provider_submission", "code": "findall_tool_registry_binding_changed"}),
+])
+def test_unstarted_repair_export_cannot_skip_submitted_input_bindings(runtime, monkeypatch, tmp_path, field, value):
+    snapshot = blocked_repair_snapshot(runtime, monkeypatch)
+    snapshot["row"]["validation_repairs"][0][field] = value
+    bridge = SimpleNamespace(call=lambda *args, **kwargs: copy.deepcopy(snapshot))
+    with pytest.raises(Refusal, match="^validation_repair_export_binding_mismatch$"):
+        render.export_snapshot(bridge, DAY, tmp_path / "export")
+
+
+def test_unstarted_repair_export_rejects_retained_input_bytes(runtime, monkeypatch, tmp_path):
+    snapshot = blocked_repair_snapshot(runtime, monkeypatch)
+    snapshot["files"]["repair-1-input"] = base64.b64encode(b'{}').decode()
+    bridge = SimpleNamespace(call=lambda *args, **kwargs: copy.deepcopy(snapshot))
+    with pytest.raises(Refusal, match="^validation_repair_export_binding_mismatch$"):
+        render.export_snapshot(bridge, DAY, tmp_path / "export")

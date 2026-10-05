@@ -362,6 +362,22 @@ def export_snapshot(bridge, day, destination):
             raise Refusal("output_recovery_export_binding_mismatch")
     for number, revision in enumerate(row.get("validation_repairs", []), 1):
         input_kind, artifact_kind = f"repair-{number}-input", f"repair-{number}-artifact"
+        if revision.get("input_attempted") is False:
+            from tools.daily_research.recovery import repair_deadline, repair_error_receipt
+            code = "findall_tool_registry_binding_changed"
+            # Only this exact unsubmitted precondition receipt has no input.
+            # Submitted, uncertain and legacy revisions keep the original gate.
+            if (set(revision) != {"number", "state", "error", "feedback", "input_attempted",
+                                  "deadline_ms", "input_error_receipt"}
+                    or type(revision["number"]) is not int or revision["number"] != number
+                    or revision["state"] != "no_progress" or revision["error"] != code
+                    or not isinstance(revision["feedback"], list)
+                    or type(revision["deadline_ms"]) is not int
+                    or revision["deadline_ms"] != int(repair_deadline(row).timestamp() * 1000)
+                    or revision["input_error_receipt"] != repair_error_receipt(Refusal(code), "preconditions")
+                    or input_kind in files or artifact_kind in files):
+                raise Refusal("validation_repair_export_binding_mismatch")
+            continue
         if (revision.get("number") != number or revision.get("input_file") != day + "-" + input_kind + ".json"
                 or input_kind not in files or digest(json.loads(files[input_kind])) != revision.get("request_digest")):
             raise Refusal("validation_repair_export_binding_mismatch")

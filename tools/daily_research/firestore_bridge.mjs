@@ -453,7 +453,13 @@ export class Store {
     const row=JSON.parse(source_row_json);
     if(row.date!==day || row.run_key!==`blueprint-researcher:${day}` || !same(row.metadata,metadata.metadata))
       refuse('firestore_row_binding_invalid');
+    for(const revision of row.validation_repairs || []) {
+      if(revision.input_attempted===false && Object.hasOwn(metadata.repair_claims || {},revision.number))
+        refuse('validation_repair_export_binding_mismatch');
+    }
     const files = {}, missing = [];
+    const unsubmittedInputs=new Set((row.validation_repairs || []).filter(r=>r.input_attempted===false)
+      .map(r=>`repair-${r.number}-input`));
     for (const kind of ['artifact', 'evidence', 'output', 'review', ...(row.output_recovery ? ['recovery'] : []), ...(row.qa ? ['qa','qa-evidence'] : []),
       ...(row.qa?.input_file ? ['qa-input'] : []),
       ...(row.publication?.input_file ? ['publication-input'] : []),
@@ -471,6 +477,7 @@ export class Store {
       catch (error) {
         if (!(error instanceof Refusal) || error.message !== 'firestore_file_missing') throw error;
         if (kind === 'artifact' && row.artifact_downloaded) refuse('artifact_not_downloaded_or_digest_mismatch');
+        if (unsubmittedInputs.has(kind)) continue; // No input exists; retain any unexpected bytes if present.
         missing.push(kind);
       }
     }
