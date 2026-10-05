@@ -124,7 +124,7 @@ def screen_answers(number, **changes):
         "operating_now": "yes", "operating_now_url": f"{site}/news",
         "operating_now_quote": "The plant added a second shift this spring.", "operating_now_date": "2026-05-01",
         "target_task": "CNC machine tending", "target_task_found": "yes", "target_task_url": f"{site}/careers/lathe",
-        "target_task_quote": "Operators at our Fixture City plant load and unload twelve CNC lathes on every shift.",
+        "target_task_quote": "Operators at our Fixture City, TX plant load and unload twelve CNC lathes on every shift.",
         "target_task_date": "2026-04-02",
         "manual_today": "yes", "manual_today_url": f"{site}/careers",
         "manual_today_quote": "Machine operators load bar stock and unload finished parts by hand.",

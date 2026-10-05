@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import secrets
+import subprocess
 import sys
 from contextlib import contextmanager
 from decimal import Decimal
@@ -40,13 +41,17 @@ PILOT_FIELDS = {"website", "operating_now", "target_task", "target_task_found", 
                            for suffix in ("_url", "_quote", "_date"))}
 
 REAL_VOLATILE_ROOTS = getattr(ss, "VOLATILE_ROOTS", None)
+REAL_CODE_STATE = getattr(ss, "code_state", None)
 
 
 @pytest.fixture(autouse=True)
 def hermetic(monkeypatch):
-    """pytest's tmp_path is on storage the out-dir guard refuses, and a shell may set the worker flag."""
+    """pytest's tmp_path is on storage the out-dir guard refuses, a shell may set the worker flag, and Git is slow."""
     monkeypatch.setattr(ss, "VOLATILE_ROOTS", (), raising=False)
     monkeypatch.delenv("BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED", raising=False)
+    # Each --apply asks Git for the commit; one test below runs the real code_state.
+    monkeypatch.setattr(ss, "code_state", lambda root=None: {"commit": "0" * 40, "dirty": False, "source": "git"},
+                        raising=False)
 
 
 def workspace_and_client(tmp_path, provider=None):
@@ -99,30 +104,62 @@ def test_an_inventory_record_is_a_web_found_site_with_a_stable_key():
     ("12 Main St, Springfield, IL 62701", {"street": "12 Main St", "city": "Springfield", "state": "IL"}),
     ("Fixture City, TX", {"city": "Fixture City", "state": "TX"}),
     ("Fixture City, Texas, USA", {"city": "Fixture City", "state": "TX"}),
+    ("Fixture City, TX, United States", {"city": "Fixture City", "state": "TX"}),
+    ("Port Fixture, New York, United States", {"city": "Port Fixture", "state": "NY"}),
+    ("12 Example Road, Fixture City, TX, US", {"street": "12 Example Road", "city": "Fixture City", "state": "TX"}),
     ("Suite 4, 9 Mill Rd, Fixture City, tx 78701-1234", {"street": "Suite 4, 9 Mill Rd", "city": "Fixture City",
                                                           "state": "TX"}),
-    ("Texas", {}), ("Fixture City", {}), ("Fixture City, Narnia", {}),
+    # The backlog's form when the state is unknown: the city is kept, and the site name stays in the input.
+    ("Fixture City, United States; state not individually established", {"city": "Fixture City"}),
+    ("Texas Junction, United States; state not individually established", {"city": "Texas Junction"}),
+    ("Fixture City", {"city": "Fixture City"}), ("Texas", {"state": "TX"}), ("United States", {}), ("", {}),
 ])
-def test_a_free_text_location_gives_street_city_and_state_only_when_it_names_a_state(location, address):
+def test_a_free_text_location_gives_whatever_street_city_and_state_it_holds(location, address):
     assert ss.parse_location(location) == address
 
 
-@pytest.mark.parametrize("changes, code", [
-    ({"disposition": "rejected"}, "site_screen_input_rejected"),
-    ({"disposition": "learning"}, "site_screen_input_learning"),
-    ({"disposition": "duplicate"}, "site_screen_input_duplicate"),
-    ({"operator": None, "site": None}, "site_screen_input_identity_missing"),
-    ({"location": "  "}, "site_screen_input_location_missing"),
-    ({"source_urls": ["ftp://operator-1.example/plant"]}, "site_screen_input_source_urls_invalid"),
-    ({"source_urls": "https://operator-1.example/plant"}, "site_screen_input_source_urls_invalid"),
-    ({"operator": 7}, "site_screen_input_record_invalid"),
-    ({"location": ...}, "site_screen_input_record_invalid"),
+def anchors_for(location, site="Synthetic Works 1"):
+    return ss.site_anchors(ss.from_inventory(inventory_record(1, location=location, site=site)))
+
+
+@pytest.mark.parametrize("text, kind", [
+    ("Our plant is at 1 Example Rd in the north end of town.", "street"),  # USPS suffixes match their full words.
+    ("Visit the plant in Fixture City, TX for a tour.", "city_state"),
+    ("Visit the plant in Fixture City, Texas for a tour.", "city_state"),
+    ("Synthetic Works 1 in Fixture City makes parts.", "site_name_city"),
+    ("Visit the plant in Fixture City for a tour today.", None),  # A city alone never counts.
+    ("Fixture City is a long way from Texas by road.", None),  # The state must follow the city.
+    ("Synthetic Works 1 makes parts. Fixture City is far away.", None),  # Not in one sentence.
+    ("Our plant is at 10 Example Road in the north end.", None),
+    ("visit the plant in fixture city, tx today.", None),  # A place name is capitalized.
 ])
-def test_inventory_records_that_cannot_be_screened_are_refused(changes, code):
-    record = inventory_record(1, **changes)
-    record = {key: value for key, value in record.items() if value is not ...}
-    with pytest.raises(ss.ScreenError, match=f"^{code}$"):
-        ss.from_inventory(record)
+def test_a_text_names_the_site_by_street_or_city_and_state_or_site_name_and_city(text, kind):
+    assert ss.names_site(text, anchors_for("1 Example Road, Fixture City, TX")) == kind
+
+
+@pytest.mark.parametrize("location, text", [
+    ("Mission, TX", "Our mission is precision for every customer in Texas."),
+    ("Mission, TX", "We live our mission. TX customers come first."),
+    ("Commerce, CA", "We grew our e-commerce, CA sales and our e-commerce team."),
+    ("Commerce, CA", "Our e-commerce business serves every Commerce customer."),
+    ("Fixture City, IN", "Fixture City in the north has a plant."),  # Lower-case 'in' is not Indiana.
+])
+def test_review_a_common_word_city_alone_never_ties_a_text_to_the_site(location, text):
+    assert ss.names_site(text, anchors_for(location)) is None
+
+
+def test_a_common_word_city_still_counts_with_its_state():
+    assert ss.names_site("The Mission, TX plant runs two shifts.", anchors_for("Mission, TX")) == "city_state"
+    assert ss.names_site("Synthetic Works 1 opened in Mission last year.", anchors_for("Mission, TX")) == "site_name_city"
+
+
+def test_the_backlog_form_without_a_state_anchors_on_the_site_name_and_city():
+    anchors = anchors_for("Fixture City, United States; state not individually established")
+    assert [anchor["kind"] for anchor in anchors] == ["site_name_city"]
+    assert ss.names_site("Synthetic Works 1 in Fixture City hires lathe operators.", anchors) == "site_name_city"
+    assert ss.names_site("Our Fixture City plant hires lathe operators.", anchors) is None
+    # A generic site name is no anchor, and neither is a street without a house number.
+    assert anchors_for("Main St, Fixture City, United States", site="Main Plant") == []
 
 
 def test_a_site_universe_row_takes_only_the_site_address_from_its_government_record():
@@ -176,6 +213,7 @@ def test_plan_counts_sites_refusals_and_cost_without_any_call():
     assert ss.plan(raw) == {
         "command": "plan", "state": "planned", "form": ss.SCREEN, "sites": 3,
         "by_origin": {"discovery_inventory": 2, "site_universe": 1}, "government_record": {"physical_site": 1},
+        "site_anchors": {"usable": 3, "none": 0, "street": 1, "city_state": 3, "site_name_city": 3},
         "input_refused": {"site_screen_input_location_missing": 1}, "processor": "core", "price_usd": "0.025",
         "batch": {"size": 3, "calibration": 0, "seed": None}, "estimated_cost_usd": "0.075", "provider_calls": 0}
     with pytest.raises(ss.ScreenError, match="^site_screen_processor_price_unknown$"):
@@ -475,6 +513,39 @@ def test_review_s3_a_deleted_or_altered_record_never_resets_spend(tmp_path):
     assert ss.run(raw, workspace, **options)["already_created"] == 3 and len(provider.creates()) == 3
 
 
+def test_review_s4b_kept_results_whose_ledger_entries_are_gone_refuse(tmp_path):
+    workspace, provider, client = workspace_and_client(tmp_path)
+    raw = raw_input([inventory_record(number) for number in range(1, 4)])
+    for site in ss.load_sites(raw)[0]:
+        provider.outputs[site["site_key"]] = {"content": screen_answers(1), "basis": []}
+    options = {"client": client, "owner_reference": OWNER, "ceiling_usd": "1", "max_runs": 10, "apply": True}
+    ss.run(raw, workspace, **options)
+    ss.collect(workspace, client=client, wait_seconds=0)
+    journal = workspace.root / "spend.jsonl"
+    journal.write_bytes(journal.read_bytes().split(b"\n")[0] + b"\n")  # Only the pin is left.
+    (workspace.root / "screen" / "runs.jsonl").unlink()
+    with pytest.raises(ss.ScreenError, match="^site_screen_spend_journal_mismatch$"):
+        ss.run(raw, workspace, **options)
+    assert len(provider.creates()) == 3
+
+
+def test_each_intent_records_the_code_commit_and_whether_the_tree_was_dirty(tmp_path, monkeypatch):
+    monkeypatch.setattr(ss, "code_state", REAL_CODE_STATE)
+    workspace, provider, client = workspace_and_client(tmp_path)
+    result = ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1",
+                    max_runs=1, apply=True)
+    intent = workspace.ledger("screen").events()[0]
+    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    assert intent["code"]["commit"] == head and intent["code"]["source"] == "git"
+    assert type(intent["code"]["dirty"]) is bool and result["code"] == intent["code"]
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "manifest.json").write_text(json.dumps({"source_commit": "a" * 40}))
+    assert ss.code_state(release) == {"commit": "a" * 40, "dirty": None, "source": "release_manifest"}
+    assert ss.code_state(tmp_path / "nothing") == {"commit": None, "dirty": None, "source": "unknown"}
+
+
 def test_a_used_out_dir_without_its_journal_refuses(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
     raw = raw_input([inventory_record(1)])
@@ -741,26 +812,31 @@ def test_review_p2_each_quote_must_name_its_answer(tmp_path):
                                site_identity_url="https://operator-1.example/news")
     record = screened(tmp_path / "unrelated", unrelated, pages=pages_for(screen_answers(1)))
     assert record["verification"]["operator_identity"]["level"] == "verified_on_page"  # Found, but it names nobody.
-    assert record["gates"]["states"]["operator"] == record["gates"]["states"]["physical_site"] == "unresolved"
-    assert record["tier"] == "screened"
+    assert record["gates"]["states"]["physical_site"] == "unresolved" and record["tier"] == "screened"
+    assert record["gates"]["states"]["operator"] == "contradicted" and "operator_mismatch" in record["blockers"]
     no_task_word = screen_answers(1, target_task="Kitting",
-                                  target_task_quote="Operators at our Fixture City plant work on every single shift.")
+                                  target_task_quote="Operators at our Fixture City, TX plant work on every single shift.")
     assert screened(tmp_path / "task", no_task_word)["gates"]["states"]["site_task"] == "unresolved"
     # A legal form never has to be quoted; every other word of the name does.
     assert ss.names_operator("Synthetic Operator 1 runs the plant", "Synthetic Operator 1, Inc.")
     assert not ss.names_operator("Synthetic runs the plant at the end of the road", "Synthetic Operator 1")
 
 
-@pytest.mark.parametrize("quote, named", [
-    ("Our plant is at 1 Example Rd in the north end of town.", True),  # USPS suffixes match their full words.
-    ("Visit the plant in Fixture City, TX for a tour.", True),
-    ("Visit the plant in Fixture City, Texas for a tour.", True),
-    ("Visit the plant in Fixture City for a tour today.", False),  # A city needs its state.
-    ("Fixture City is a long way from Texas by road.", False),  # The state must follow the city.
-    ("Our plant is at 10 Example Road in the north end.", False),
-])
-def test_the_site_quote_names_the_input_street_or_city_and_state(quote, named):
-    assert ss.names_address(quote, {"street": "1 Example Road", "city": "Fixture City", "state": "TX"}) is named
+def test_a_provider_found_address_that_the_site_quote_proves_anchors_the_site(tmp_path):
+    record = inventory_record(1, location="Fixture City, United States; state not individually established")
+    found = screen_answers(1, site_identity="44 Mill Road, Fixture City, TX 78701",
+                           site_identity_quote="Our plant at 44 Mill Road in Fixture City runs two shifts.",
+                           target_task_quote="Operators at 44 Mill Rd load and unload twelve CNC lathes every shift.")
+    proven = screened(tmp_path / "found", found, record=record)
+    assert proven["gates"]["facts"]["physical_site"]["proofs"][0]["source_id"] == "site_identity"
+    assert (proven["task_scope"], proven["tier"]) == ("site", "outreach_ready")
+    # The address must be in the quote itself, and in the input's city.
+    unquoted = screen_answers(1, site_identity="44 Mill Road, Fixture City, TX 78701",
+                              site_identity_quote="Our plant in Fixture City runs two shifts every day.")
+    elsewhere = screen_answers(1, site_identity="44 Mill Road, Elsewhere, TX 78701",
+                               site_identity_quote="Our plant at 44 Mill Road in Elsewhere runs two shifts.")
+    for name, answers in (("unquoted", unquoted), ("elsewhere", elsewhere)):
+        assert screened(tmp_path / name, answers, record=record)["gates"]["states"]["physical_site"] == "unresolved"
 
 
 def test_the_government_record_proves_only_the_site_address(tmp_path):
@@ -775,17 +851,34 @@ def test_the_government_record_proves_only_the_site_address(tmp_path):
     assert mapped["gates"]["states"]["physical_site"] == "unresolved" and mapped["tier"] == "screened"
 
 
+def test_review_p2b_an_operator_the_input_does_not_name_never_qualifies(tmp_path):
+    other = screen_answers(1, operator_identity="Unrelated Holdings LLC", operator_identity_url="https://unrelated.example/about",
+                           operator_identity_quote="Unrelated Holdings LLC makes precision parts for many industries.")
+    record = screened(tmp_path / "other", other)
+    assert record["verification"]["operator_identity"]["level"] == "verified_on_page"
+    assert record["gates"]["states"]["operator"] == "contradicted" and record["tier"] == "screened"
+    assert "operator_mismatch" in record["blockers"]
+    # A legal form, or the input's distinctive words inside a longer name, still match.
+    for name in ("Synthetic Operator 1, Inc.", "Synthetic Operator 1 Holdings"):
+        same = screen_answers(1, operator_identity=name, operator_identity_quote=(
+            f"{name} runs the machining plant on 1 Example Road."))
+        assert screened(tmp_path / name[-4:].strip(" ,."), same)["tier"] == "outreach_ready"
+    # An input without an operator names no one to compare with.
+    unnamed = screened(tmp_path / "unnamed", other, record=inventory_record(1, operator=None))
+    assert "operator_mismatch" not in unnamed["blockers"] and unnamed["tier"] == "outreach_ready"
+
+
 def test_a_company_level_task_never_qualifies_and_asks_the_site_question(tmp_path):
     company = screen_answers(1, target_task_quote="Our team loads and unloads CNC lathes for every customer order.")
     record = screened(tmp_path / "company", company)
     assert (record["task_scope"], record["tier"], record["question_template"]) == ("company", "screened", "S")
     assert "company_level_task" in record["blockers"]
     assert record["question"] == "Is CNC machine tending done at your Fixture City site, or somewhere else in the company?"
-    # The page or a same-URL excerpt naming the city or street ties the same quote to the site.
-    page = {company["target_task_url"]: "Fixture City plant careers. " + company["target_task_quote"]}
+    # The page or a same-URL excerpt naming the city with its state, or the street, ties the quote to the site.
+    page = {company["target_task_url"]: "Fixture City, TX plant careers. " + company["target_task_quote"]}
     assert screened(tmp_path / "page", company, pages={**pages_for(company), **page})["task_scope"] == "site"
     basis = [{"field": "target_task_quote", "citations": [{"url": company["target_task_url"], "excerpts": [
-        "Lathe operator, Fixture City. " + company["target_task_quote"]]}]}]
+        "Lathe operator, Fixture City, TX. " + company["target_task_quote"]]}]}]
     assert screened(tmp_path / "excerpt", company, basis=basis)["task_scope"] == "site"
     # A site universe row also has a street, which ties the task as well as the city does.
     street = {company["target_task_url"]: "Lathe operator at 1 Example Rd. " + company["target_task_quote"]}

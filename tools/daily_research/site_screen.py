@@ -15,10 +15,12 @@ exact site address only. The operator, and the site of a web-found input, need t
 Spend. The first ``--apply`` pins the owner's ceiling, run limit and owner reference in
 ``owner_ceiling.json``, which is created once; a later invocation may only lower them. Every event is
 fsynced to the out dir's spend journal (``spend.jsonl``) and then to its stage's ledger, and an
-``intent`` precedes every create. Each command first checks that the pin, the journal and the ledgers
-agree and refuses otherwise, so a deleted or edited file never resets spend. A site with a stored run
-id, or with a create whose outcome is unknown (an ambiguous answer, or an interruption after the
-intent), is never submitted again. Before every create, the price of every run in any stage that may be
+``intent`` (with the code's commit and whether its tree was dirty) precedes every create. Each command
+first checks that the pin, the journal and the ledgers agree, and that every kept result and page read
+has its run in the ledger, and refuses otherwise. That catches damage to any one of those files at a
+time; matching edits to two of them, or the loss of a whole out dir, can still reset spend, so the out
+dir must be durable and never edited by hand. A site with a stored run id, or with a create whose
+outcome is unknown (an ambiguous answer, or an interruption after the intent), is never submitted again. Before every create, the price of every run in any stage that may be
 billed (completed, in flight, cancelled or of unknown outcome) plus the new one must stay at or below
 the ceiling, and all runs at or below ``max_runs``; otherwise the create is refused with a stable code.
 Only a run observed ``failed`` frees its price. On the daily worker, ``run`` and ``contact`` refuse
@@ -30,9 +32,11 @@ including one inside an archive or redirect wrapper. A quote of at least five wo
 ``verified_on_page`` when our read of its own URL holds every word of it, in order and as whole words
 (case, spacing and punctuation may differ); else ``in_citation_excerpt`` when a provider excerpt cited
 for that same URL does; else ``unverified``, or ``unverified_page_unreachable`` when our read failed.
-A proven quote must also name its answer: the operator's name, the input site's street or its city and
-state, and a word of the task. The task quote, or its page, must name the site's city or street;
-otherwise the task is only ``company_level_task``.
+A proven quote must also name its answer: the operator's name (which must match the input's operator),
+a site anchor (``site_anchors``: the street, the city followed by its state, or the site name with the
+city; a city alone never counts) or a provider-found address in the input's city, and a word of the task.
+The task quote, its page or a same-URL excerpt must name a site anchor; otherwise the task is only
+``company_level_task``. A contact email's domain comes only from the page that proved the operator.
 
 A contact email counts only when our own read of its cited page holds its quote and the whole address, on
 the operator's own domain and never free mail; the recipient kind comes from the address itself. Every
@@ -52,6 +56,7 @@ import os
 import re
 import secrets
 import ssl
+import subprocess
 import threading
 import time
 import unicodedata
@@ -129,6 +134,28 @@ CLAIMS = ("operator", "physical_site", "site_task", "human_workflow", "plausible
 PROVEN_FACTS = ("operator", "physical_site", "site_task")
 LEGAL_WORDS = frozenset({"inc", "incorporated", "llc", "llp", "lp", "ltd", "limited", "co", "corp", "corporation",
                          "company", "plc", "pllc", "the", "and", "of"})
+# Words a company or site name shares with many others (distinctive, site_anchors).
+GENERIC_COMPANY_WORDS = frozenset({"manufacturing", "mfg", "industries", "industrial", "holdings", "group",
+                                   "international", "intl", "usa", "america", "enterprises", "products", "systems",
+                                   "solutions", "services", "technologies", "technology", "global", "worldwide"})
+GENERIC_SITE_WORDS = frozenset({"plant", "site", "facility", "factory", "warehouse", "main", "location", "campus",
+                                "building", "center", "centre", "distribution", "dc", "office", "headquarters", "hq"})
+ABBREVIATIONS = frozenset({"st", "ft", "mt", "pt", "dr", "rd", "ave", "blvd", "hwy", "pkwy", "ln", "ct", "ste", "inc",
+                           "co", "corp", "ltd", "llc", "no", "jr", "sr", "mr", "mrs", "ms", "dept", "vs", "etc"})
+# Hosts whose pages never give the operator's own domain: directories, data brokers, job boards and applicant
+# tracking hosts, social networks, maps and encyclopedias (government hosts are refused by suffix).
+NOT_OPERATOR_DOMAINS = frozenset({
+    "indeed.com", "glassdoor.com", "ziprecruiter.com", "monster.com", "careerbuilder.com", "simplyhired.com",
+    "snagajob.com", "myworkdayjobs.com", "workday.com", "icims.com", "taleo.net", "greenhouse.io", "lever.co",
+    "smartrecruiters.com", "jobvite.com", "bamboohr.com", "ultipro.com", "paylocity.com", "adp.com",
+    "applytojob.com", "workable.com", "recruitee.com", "breezy.hr", "jazzhr.com", "yelp.com", "yellowpages.com",
+    "superpages.com", "manta.com", "dnb.com", "zoominfo.com", "bbb.org", "bizapedia.com", "buzzfile.com",
+    "opencorporates.com", "crunchbase.com", "thomasnet.com", "kompass.com", "chamberofcommerce.com",
+    "rocketreach.co", "apollo.io", "signalhire.com", "lusha.com", "owler.com", "craft.co", "pitchbook.com",
+    "bloomberg.com", "globalspec.com", "industrynet.com", "iqsdirectory.com", "macraesbluebook.com",
+    "mapquest.com", "google.com", "bing.com", "facebook.com", "instagram.com", "twitter.com", "x.com",
+    "youtube.com", "tiktok.com", "pinterest.com", "reddit.com", "medium.com", "wikipedia.org",
+    "prnewswire.com", "businesswire.com", "globenewswire.com", "accesswire.com", "einpresswire.com"})
 TASK_STOPWORDS = frozenset({"a", "an", "and", "or", "of", "the", "to", "for", "in", "on", "at", "by", "with", "from"})
 # USPS street suffixes, directions and ordinals (tools/site_universe/normalize.py), and city abbreviations.
 STREET_WORDS = {"street": "st", "road": "rd", "avenue": "ave", "av": "ave", "drive": "dr", "boulevard": "blvd",
@@ -152,6 +179,7 @@ STATE_NAMES = {
     "WI": "wisconsin", "WY": "wyoming"}
 STATE_CODES = {name: code for code, name in STATE_NAMES.items()}
 SHA = re.compile(r"[0-9a-f]{64}")
+COMMIT = re.compile(r"[0-9a-f]{40}")
 ATTEMPT = re.compile(r"[0-9a-f]{16}")
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 API_KEY = re.compile(r"[\x21-\x7e]{8,512}")
@@ -198,7 +226,8 @@ SCREEN_SCHEMA = _form(
     {"website": _s("The operator's official website URL, or empty."),
      "operator_identity": _s("The name of the company that runs the physical work at this exact site, as a primary "
                              "source states it, or empty. " + PRIMARY),
-     "operator_identity_url": _s("The primary source URL that names this operator at this site, or empty."),
+     "operator_identity_url": _s("The primary source URL that names this operator at this site, preferably a page "
+                                 "on the operator's own website, or empty."),
      "operator_identity_quote": _s("An exact sentence of at least five words copied verbatim from that source that "
                                    "names the operator, or empty."),
      "site_identity": _s("The exact street address of this physical site (not a headquarters elsewhere), as a "
@@ -472,17 +501,21 @@ def _public_url(value):
 
 
 def parse_location(text):
-    """Street, city and state from a free-text US location such as '12 Main St, Springfield, IL 62701'; empty
-    when the last part names no state."""
-    parts = [part.strip() for part in (text or "").split(",") if part.strip()]
-    if parts and normalized(parts[-1]) in {"us", "usa", "united states", "united states of america"}:
-        parts = parts[:-1]
-    match = re.fullmatch(r"([A-Za-z .]+?)(?:\s+\d{5}(?:-\d{4})?)?", parts[-1]) if len(parts) >= 2 else None
+    """The street, city and state a free-text US location gives, whichever are present, as in
+    '12 Main St, Springfield, IL 62701' or the backlog's 'Springfield, United States; state not individually
+    established' (city only). A trailing country is dropped; a note after a semicolon is ignored."""
+    parts = [part.strip() for part in (text or "").split(";")[0].split(",") if part.strip()]
+    while parts and normalized(parts[-1]) in {"us", "usa", "united states", "united states of america"}:
+        parts.pop()
+    if not parts:
+        return {}
+    match = re.fullmatch(r"([A-Za-z .]+?)(?:\s+\d{5}(?:-\d{4})?)?", parts[-1])
     name = match.group(1).strip() if match else ""
     state = name.upper() if name.upper() in STATE_NAMES else STATE_CODES.get(normalized(name))
-    if not state:
-        return {}
-    return _compact({"street": ", ".join(parts[:-2]) or None, "city": parts[-2], "state": state})
+    if state:
+        parts.pop()
+    city = parts.pop() if parts else None
+    return _compact({"street": ", ".join(parts) or None, "city": city, "state": state})
 
 
 def from_inventory(record, *, calibration=False):
@@ -630,6 +663,13 @@ def price_of(processor):
     return PRICES_USD[processor]
 
 
+def anchor_counts(sites):
+    """How many sites have each kind of input site anchor, and how many have at least one (usable) or none."""
+    kinds = [{anchor["kind"] for anchor in site_anchors(site)} for site in sites]
+    return {"usable": sum(bool(kind) for kind in kinds), "none": sum(not kind for kind in kinds),
+            **{name: sum(name in kind for kind in kinds) for name in ("street", "city_state", "site_name_city")}}
+
+
 def plan(raw, *, processor=DEFAULT_PROCESSOR, batch_size=None, seed=DEFAULT_SEED):
     """What one input file holds, the batch ``batch_size`` would screen, and its cost. Reads nothing else."""
     sites, refused = load_sites(raw)
@@ -638,6 +678,7 @@ def plan(raw, *, processor=DEFAULT_PROCESSOR, batch_size=None, seed=DEFAULT_SEED
     return {"command": "plan", "state": "planned", "form": SCREEN, "sites": len(sites),
             "by_origin": dict(Counter(site["origin"] for site in sites)),
             "government_record": {"physical_site": sum("physical_site" in site["identity"] for site in sites)},
+            "site_anchors": anchor_counts(sites),
             "input_refused": dict(refused), "processor": processor, "price_usd": str(price),
             "batch": {"size": len(batch), "calibration": sum(site["calibration"] for site in batch),
                       "seed": seed if batch_size is not None else None},
@@ -657,6 +698,28 @@ def guard_out_dir(path, code_root=CODE_ROOT):
         if resolved == volatile or volatile in resolved.parents:
             raise ScreenError("site_screen_out_dir_volatile")
     return resolved
+
+
+def code_state(root=CODE_ROOT):
+    """The code a run uses, kept in every intent: the Git commit and whether tracked files differ from it, else a
+    release's manifest commit (the installer checks its files), else unknown."""
+    root = Path(root)
+    try:
+        if (root / ".git").exists():
+            git = ["git", "-C", str(root)]
+            commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10,
+                                    check=True).stdout.strip()
+            dirty = subprocess.run([*git, "status", "--porcelain", "--untracked-files=no"], capture_output=True,
+                                   text=True, timeout=10, check=True).stdout.strip()
+            if COMMIT.fullmatch(commit):
+                return {"commit": commit, "dirty": bool(dirty), "source": "git"}
+        manifest = _json((root / "manifest.json").read_bytes()) if (root / "manifest.json").is_file() else None
+        if isinstance(manifest, dict) and isinstance(manifest.get("source_commit"), str) and COMMIT.fullmatch(
+                manifest["source_commit"]):
+            return {"commit": manifest["source_commit"], "dirty": None, "source": "release_manifest"}
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"commit": None, "dirty": None, "source": "unknown"}
 
 
 def refuse_on_worker(environ=None):
@@ -974,7 +1037,13 @@ class Workspace:
                 ledgers[stage] = mine
                 continue
             raise ScreenError("site_screen_spend_journal_mismatch")
-        return {stage: fold(ledgers[stage]) for stage in STAGES}, pin
+        states = {stage: fold(ledgers[stage]) for stage in STAGES}
+        for stage in STAGES:  # A kept result or page read needs its created run, or spend was reset around it.
+            for kind in ("results", "evidence"):
+                for path in sorted((self.root / stage / kind).glob("*.json")):
+                    if states[stage].get(path.stem, {}).get("state") != "created":
+                        raise ScreenError("site_screen_spend_journal_mismatch")
+        return states, pin
 
     @contextmanager
     def lock(self):
@@ -1000,6 +1069,7 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
     if apply and client is None:
         raise ScreenError("site_screen_client_missing")
     pinned = "pinned" if pin is not None else "created" if apply else "would_create"
+    code = code_state() if apply else None
     if apply and pin is None:
         pin = workspace.create_pin(ceiling, limit, reference)
     shown = pin or {"ceiling_usd": str(ceiling), "max_runs": limit, "owner_reference": reference}
@@ -1025,7 +1095,8 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
         attempt = secrets.token_hex(8)
         workspace.append(stage, _event(stage, "intent", key, attempt=attempt, processor=processor,
                                        price_usd=str(price), ceiling_usd=str(ceiling), max_runs=limit,
-                                       form_sha256=FORMS[stage]["sha256"], input=site, input_sha256=input_sha256))
+                                       form_sha256=FORMS[stage]["sha256"], input=site, input_sha256=input_sha256,
+                                       code=code))
         state[key] = {"state": "unknown", "price_usd": str(price)}
         try:
             run = client.create(create_body(stage, site, processor))
@@ -1054,7 +1125,7 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
             "runs": sum(run_count(sites) for sites in every),
             "committed_usd": str(sum((committed_usd(sites) for sites in every), Decimal("0"))),
             "stage_runs": run_count(state), "stage_committed_usd": str(committed_usd(state)),
-            "ceiling_usd": str(ceiling), "max_runs": limit, "processor": processor, "price_usd": str(price),
+            "ceiling_usd": str(ceiling), "max_runs": limit, "processor": processor, "price_usd": str(price), "code": code,
             "pin": {"state": pinned, **{name: shown[name] for name in ("ceiling_usd", "max_runs", "owner_reference")}}}
 
 
@@ -1078,12 +1149,14 @@ def run(raw, workspace, *, client, owner_reference, ceiling_usd, max_runs, proce
 
 
 def contact_input(record):
-    """What a contact run is told: the proven operator and site, the task and the website."""
+    """What a contact run is told: the proven operator and site, the task, and the website of the domain whose
+    page proved the operator (never the bare website answer)."""
     identity, answers, given = record["identity"], record["answers"], record["input"]
     address = (identity.get("physical_site") or {}).get("answer") or answers.get("site_identity")
+    domains = record.get("operator_domains") or []
     return _compact({"operator": answers.get("operator_identity") or given.get("operator"),
                      "site_name": given.get("site_name"), "site_address": address, "location": given.get("location"),
-                     "target_task": answers.get("target_task"), "website": answers.get("website")})
+                     "target_task": answers.get("target_task"), "website": f"https://{domains[0]}" if domains else None})
 
 
 def contact_sites(workspace, states):
@@ -1092,7 +1165,7 @@ def contact_sites(workspace, states):
     records = stage_records(workspace, states, "screen")
     return [{"schema_version": INPUT, "site_key": key, "origin": records[key]["origin"],
              "calibration": records[key]["calibration"], "identity": {}, "address": records[key]["address"],
-             "task_input": contact_input(records[key])}
+             "operator_domains": records[key]["operator_domains"], "task_input": contact_input(records[key])}
             for key in states["screen"] if key in records and records[key]["tier"] == "outreach_ready"]
 
 
@@ -1390,9 +1463,16 @@ def names_operator(quote, operator):
     return bool(tokens) and all(token in found for token in tokens)
 
 
+def distinctive(name):
+    """A company name's distinctive words: its significant words without generic ones (Manufacturing, Holdings),
+    or all of its significant words when nothing else is left."""
+    tokens = significant(name)
+    return [token for token in tokens if token not in GENERIC_COMPANY_WORDS] or tokens
+
+
 def same_operator(first, second):
-    """True when the significant words of one name are all in the other."""
-    one, other = set(significant(first)), set(significant(second))
+    """True when the distinctive words of one name are all in the other."""
+    one, other = set(distinctive(first)), set(distinctive(second))
     return bool(one and other) and (one <= other or other <= one)
 
 
@@ -1405,21 +1485,120 @@ def _canon(text, table):
     return " ".join(table.get(word, word) for word in words(text).split())
 
 
-def names_address(text, address):
-    """True when the text holds the input street, or the input city followed by its state code or name."""
-    street, city, state = address.get("street"), address.get("city"), address.get("state")
-    if street and has_phrase(_canon(street, STREET_WORDS), _canon(text, STREET_WORDS)):
-        return True
-    place = _canon(text, CITY_WORDS)
-    return bool(city and state) and any(has_phrase(_canon(city, CITY_WORDS) + " " + form, place)
-                                        for form in (state.lower(), STATE_NAMES.get(state, "")) if form)
+def sentences(text):
+    """A text's sentences and lines. A period after an abbreviation (St., Inc., Rd.) or an initial ends none."""
+    text = unicodedata.normalize("NFKC", text if isinstance(text, str) else "")
+    pieces, start = [], 0
+    for match in re.finditer(r"\n|[.!?;](?=\s)", text):
+        before = re.search(r"([A-Za-z]+)$", text[start:match.start()])
+        if match.group(0) == "." and before and (len(before.group(1)) == 1 or before.group(1).lower() in ABBREVIATIONS):
+            continue
+        pieces.append(text[start:match.end()])
+        start = match.end()
+    pieces.append(text[start:])
+    return [piece for piece in pieces if piece.strip()]
 
 
-def names_place(text, address):
-    """True when the text holds the input street or the input city: what ties a task to this site."""
-    street, city = address.get("street"), address.get("city")
-    return bool(street and has_phrase(_canon(street, STREET_WORDS), _canon(text, STREET_WORDS))
-                or city and has_phrase(_canon(city, CITY_WORDS), _canon(text, CITY_WORDS)))
+def _proper(word):
+    """A pattern for one word of a place name: capitalized in the text (case-free after the first letter)."""
+    return re.escape(word[:1].upper()) + "(?i:" + re.escape(word[1:]) + ")" if word[:1].isalpha() else re.escape(word)
+
+
+def city_pattern(city):
+    """A place-name pattern for the city: each word capitalized, abbreviations allowed (Ft. for Fort), and not
+    glued by a hyphen or letters to its neighbours, so 'e-commerce' and 'our mission' never match."""
+    tokens = []
+    for word in _canon(city, CITY_WORDS).split():
+        forms = [word, *(short for short, full in CITY_WORDS.items() if full == word)]
+        tokens.append("(?:" + "|".join(_proper(form) + (r"\.?" if form != word else "") for form in forms) + ")")
+    return r"(?<![\w-])" + r"[^\w\n]+".join(tokens) + r"(?![\w-])" if tokens else None
+
+
+def state_pattern(state):
+    """The state's code in capitals (IN, never 'in') or its name capitalized."""
+    name = r"[^\w\n]+".join(_proper(word) for word in STATE_NAMES.get(state, "").split())
+    return "(?:" + re.escape(state) + (f"|{name}" if name else "") + r")(?![\w-])"
+
+
+def street_anchor(street):
+    """The part of a street that names one building: the comma part that starts with a house number."""
+    for part in (street or "").split(","):
+        if re.match(r"\s*\d+[A-Za-z]?\s+\S", part):
+            return part.strip()
+    return None
+
+
+def site_anchors(site, found=None):
+    """What ties a text to this site: a street with a house number, a city followed by its state, and the site
+    name with the city in one sentence; from the input address and, when given, from a provider-found address
+    that the site quote proved. A city alone never does: it may be a common word."""
+    anchors = []
+    for address in (site.get("address") or {}, found or {}):
+        street, city, state = street_anchor(address.get("street")), address.get("city"), address.get("state")
+        if street:
+            anchors.append({"kind": "street", "street": street})
+        if city and state:
+            anchors.append({"kind": "city_state", "city": city, "state": state})
+    city = (site.get("address") or {}).get("city")
+    place = set(_canon(city, CITY_WORDS).split()) if city else set()
+    name = [word for word in significant(site["task_input"].get("site_name") or "")
+            if word not in GENERIC_SITE_WORDS and CITY_WORDS.get(word, word) not in place]
+    if city and name:
+        anchors.append({"kind": "site_name_city", "name": name, "city": city})
+    return [anchor for number, anchor in enumerate(anchors) if anchor not in anchors[:number]]
+
+
+def names_site(text, anchors):
+    """The kind of the first anchor the text holds, or None."""
+    for anchor in anchors:
+        if anchor["kind"] == "street":
+            if has_phrase(_canon(anchor["street"], STREET_WORDS), _canon(text, STREET_WORDS)):
+                return "street"
+        elif anchor["kind"] == "city_state":
+            pattern = city_pattern(anchor["city"]) + r"[ \t]*,?[ \t]*" + state_pattern(anchor["state"])
+            if any(re.search(pattern, sentence) for sentence in sentences(text)):
+                return "city_state"
+        elif any(set(anchor["name"]) <= set(words(sentence).split()) and re.search(city_pattern(anchor["city"]), sentence)
+                 for sentence in sentences(text)):
+            return "site_name_city"
+    return None
+
+
+def found_address(site, answers, verification):
+    """The provider-found site address, when the proven site quote itself holds its street and it lies in the
+    input's city and state; never when the input has its own street. None otherwise."""
+    given = site.get("address") or {}
+    if street_anchor(given.get("street")) or verification["site_identity"]["level"] not in PROVEN:
+        return None
+    found = parse_location(answers["site_identity"])
+    street = street_anchor(found.get("street"))
+    if not street or not has_phrase(_canon(street, STREET_WORDS), _canon(answers["site_identity_quote"], STREET_WORDS)):
+        return None
+    if given.get("city") and _canon(given["city"], CITY_WORDS) != _canon(found.get("city") or "", CITY_WORDS):
+        return None
+    if given.get("state") and found.get("state") and given["state"] != found["state"]:
+        return None
+    return found
+
+
+def government_host(host):
+    return host.endswith((".gov", ".mil", ".fed.us")) or bool(re.search(r"\.(?:gov|mil)\.[a-z]{2}$|\.state\.[a-z]{2}\.us$",
+                                                                       host))
+
+
+def operator_domains(answers, verification):
+    """The domain whose page proves the operator: the operator quote's page, when that quote is proven and names
+    the operator. Never the bare website answer, and never a directory, aggregator, job board, social, free-mail
+    or government host, or LinkedIn."""
+    url = answers["operator_identity_url"]
+    if verification["operator_identity"]["level"] not in PROVEN or not names_operator(
+            answers["operator_identity_quote"], answers["operator_identity"]):
+        return []
+    domain, host = site_domain(url), _host(url) or ""
+    if (not domain or never_fetch(url) or domain in NOT_OPERATOR_DOMAINS or domain in FREE_MAIL
+            or government_host(host)):
+        return []
+    return [domain]
 
 
 def site_label(site):
@@ -1433,13 +1612,15 @@ def site_label(site):
 def screen_gates(site, answers, choices, verification, index, *, valid):
     """The inputs of the tier, in the shape of the in-flight verification.outreach_gates, from one screen.
 
-    A fact is verified_fact only when its quote is proven at its own URL and names its answer: every
-    significant word of the operator's name; the input street, or city and state (or, for the site address,
-    an OSHA ITA or EPA FRS record); and a task word, with the site's city or street in the task quote, its
-    page or a same-URL excerpt (else the task is company level). A closed site, a proven office or mailing
-    address, a proven contractor or tenant site that the input attributes to another operator, a proven
-    manual 'no', and this task proven fully automated are contradictions."""
-    address, given = site.get("address") or {}, site["task_input"]
+    A fact is verified_fact only when its quote is proven at its own URL and names its answer. The operator
+    quote holds every significant word of the operator's name, and that name matches the input's operator
+    when the input has one. The site quote names a site anchor (site_anchors), or holds the street of a
+    provider-found address in the input's city (found_address); an OSHA ITA or EPA FRS record also proves
+    the address. The task quote holds a task word, and it, its page or a same-URL excerpt names a site anchor
+    or the found address; else the task is company level. A closed site, a proven office or mailing address,
+    an operator the input does not name, a proven contractor or tenant site the input attributes to another
+    operator, a proven manual 'no', and this task proven fully automated are contradictions."""
+    given = site["task_input"]
 
     def proven(name):
         return verification[name]["level"] in PROVEN
@@ -1452,6 +1633,8 @@ def screen_gates(site, answers, choices, verification, index, *, valid):
     operator = bool(answers["operator_identity"]) and proven("operator_identity") and names_operator(
         answers["operator_identity_quote"], answers["operator_identity"])
     record = site["identity"].get("physical_site")
+    found = found_address(site, answers, verification) if answers["site_identity"] else None
+    anchors = site_anchors(site, found)
     if record:
         place = [{"claim": "physical_site", "source_id": "government_record", "url": None, "quote_sha256": None,
                   "level": "government_record", "tool_result_sha256": None, "source_ids": record["source_ids"],
@@ -1459,19 +1642,21 @@ def screen_gates(site, answers, choices, verification, index, *, valid):
     else:
         place = proofs("physical_site", "site_identity") if (
             answers["site_identity"] and proven("site_identity")
-            and names_address(answers["site_identity_quote"], address)) else []
+            and (found or names_site(answers["site_identity_quote"], site_anchors(site)))) else []
     task = (bool(answers["target_task"]) and choices["target_task"] == "yes" and proven("target_task")
             and names_task(answers["target_task_quote"], answers["target_task"]))
     key = url_key(answers["target_task_url"])
-    texts = [words(answers["target_task_quote"])] + [
-        entry[0] for kind in ("pages", "excerpts") for entry in index[kind].get(key, ())]
-    scope = ("site" if any(names_place(text, address) for text in texts) else "company") if task else None
+    texts = [answers["target_task_quote"]] + [entry[2] for kind in ("pages", "excerpts") for entry in index[kind].get(key, ())]
+    scope = ("site" if any(names_site(text, anchors) for text in texts) else "company") if task else None
     attributed = given.get("operator") or (given.get("site_name") if site["origin"] == "site_universe" else None)
+    named = bool(given.get("operator") and answers["operator_identity"]) and not same_operator(
+        given["operator"], answers["operator_identity"])
     flags = {"closed": choices["operating_now"] in ("no", "other"),
              "office_or_mailing": choices["facility_type"] in ("office", "mailing") and proven("facility_type"),
-             "operator_mismatch": (choices["facility_operator"] in ("contractor", "tenant")
-                                   and proven("facility_operator") and bool(attributed)
-                                   and not same_operator(attributed, answers["operator_identity"]))}
+             "operator_mismatch": named or (choices["facility_operator"] in ("contractor", "tenant")
+                                            and proven("facility_operator") and bool(attributed)
+                                            and not same_operator(attributed, answers["operator_identity"])),
+             "found_address": bool(found)}
     manual = choices["manual_today"] if proven("manual_today") else None
     automation = choices["existing_automation"] if proven("existing_automation") else None
     states = {"operator": "contradicted" if flags["operator_mismatch"] else "verified_fact" if operator else "unresolved",
@@ -1509,6 +1694,7 @@ def outreach_tier(gates):
                              (gates["identity_present"] is not True, "identity_missing"),
                              (gates["duplicate"] is not False, "duplicate"),
                              (gates["conflict"] is not False, "duplicate_conflict"),
+                             (gates["flags"]["operator_mismatch"] is True, "operator_mismatch"),
                              (gates["site_task_scope"] == "company", "company_level_task")):
             if failed:
                 blockers.append(code)
@@ -1566,7 +1752,9 @@ def screen_record(site, run_id, result_raw, evidence_raw):
             "gates": gates, "tier": "outreach_ready" if outcome["tier"] == "outreach_ready" else "screened",
             "blockers": block["blockers"], "proving_sources": block["proving_sources"],
             "open_checks": block["open_checks"], "question": block["question"],
-            "question_template": block["question_template"]}
+            "question_template": block["question_template"],
+            "operator_domains": operator_domains(answers, verification) if gates["states"]["operator"] == "verified_fact"
+            else []}
 
 
 def _person(text, index, evidence, today):
@@ -1598,13 +1786,14 @@ def site_domain(url):
 def email_check(text, site, index, evidence):
     """The contact's published business address, proven only on our own read of its cited page.
 
-    It must parse as one address on the operator's own domain (the screen's website) or a subdomain of it, never
-    a free-mail domain; its quote must hold the exact address and stand whole-word on that page, where the
-    address must also stand as a whole token. A provider excerpt never counts, and LinkedIn never does."""
+    It must parse as one address on the operator's own domain, the one whose page proved the operator in the
+    screen (operator_domains), or a subdomain of it, never a free-mail domain; its quote must hold the exact
+    address and stand whole-word on that page, where the address must also stand as a whole token. A provider
+    excerpt never counts, and LinkedIn never does."""
     raw, url, quote = text["email"], text["email_url"], text["email_quote"]
     if not raw:
         return {"verified": False, "level": "no_email", "discarded": False}
-    address, operator = email_address(raw), site_domain(site["task_input"].get("website") or "")
+    address, operators = email_address(raw), site.get("operator_domains") or []
     domain = address.rpartition("@")[2] if address else ""
     if address is None:
         level, code = "unverified", "site_screen_email_invalid"
@@ -1612,7 +1801,9 @@ def email_check(text, site, index, evidence):
         level, code = "person_source_not_allowed", None
     elif domain in FREE_MAIL or site_domain("https://" + domain) in FREE_MAIL:
         level, code = "unverified", "site_screen_email_free_mail"
-    elif not operator or not (domain == operator or domain.endswith("." + operator)):
+    elif not operators:
+        level, code = "unverified", "site_screen_operator_domain_unproven"
+    elif not any(domain == operator or domain.endswith("." + operator) for operator in operators):
         level, code = "unverified", "site_screen_email_off_operator_domain"
     elif not _string(quote):
         level, code = "unverified", "site_screen_quote_missing"

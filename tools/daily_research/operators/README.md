@@ -807,17 +807,21 @@ repository root, with `--key-file` set to a private env file. Start with
   `site_screen_ceiling_above_pin` or `site_screen_max_runs_above_pin`.
 - Every event is fsynced first to the out dir's spend journal, `spend.jsonl` (its
   first line is the pin), then to the stage's ledger, `<stage>/runs.jsonl`. An
-  `intent` line precedes each create. Then `created` (with the run id), `refused` (no
-  run exists; a later run tries the site again) or `uncertain` (the outcome is
-  unknown) follows. A site with a run id, or with an unknown outcome, is never
-  submitted again. An interrupted create counts as an unknown outcome.
-- Each command first checks that the pin, the journal and the ledgers agree. A
-  deleted or edited file refuses (`site_screen_spend_journal_missing`,
+  `intent` line precedes each create; it records the code's Git commit and whether
+  tracked files were dirty (or a release's manifest commit), and `run` prints the same.
+  Then `created` (with the run id), `refused` (no run exists; a later run tries the
+  site again) or `uncertain` (the outcome is unknown) follows. A site with a run id,
+  or with an unknown outcome, is never submitted again. An interrupted create counts
+  as an unknown outcome.
+- Each command first checks that the pin, the journal and the ledgers agree, and that
+  every kept result and page read has its created run in the ledger. Damage to any
+  one of those files at a time refuses (`site_screen_spend_journal_missing`,
   `site_screen_spend_journal_mismatch`, `site_screen_owner_ceiling_missing`,
-  `site_screen_owner_ceiling_mismatch`), so it never resets spend. The only repairs
-  are the two crash windows: a pin file whose journal line was written, and a
-  ledger's last event whose journal copy was written; both are completed from the
-  journal.
+  `site_screen_owner_ceiling_mismatch`). Matching edits to two of them, or the loss
+  of a whole out dir before any result is kept, are not caught and can reset spend:
+  keep the out dir durable and never edit it by hand. The only repairs are the two
+  crash windows: a pin file whose journal line was written, and a ledger's last
+  event whose journal copy was written; both are completed from the journal.
 - Before each create, the price of each run in either stage that may be billed
   (completed, in flight, cancelled or of unknown outcome), plus the new run, must be
   at most the ceiling (above 0, at most $100). All runs of both stages must be at
@@ -856,15 +860,29 @@ repository root, with `--key-file` set to a private env file. Start with
   redirect wrapper), is refused before any connection, on the first request and on
   every redirect, and its excerpts are ignored. Both forms send
   `source_policy: {exclude_domains: ["linkedin.com", "lnkd.in"]}`.
+- The input location gives whatever it holds: street, city and state, as in
+  "12 Main St, Springfield, IL 62701", or only the city for the backlog's
+  "Springfield, United States; state not individually established". Its site anchors
+  (`site_anchors`) are a street with a house number; the city followed directly by
+  its state code in capitals or its name, on one line ("Mission, TX"); and the
+  site's distinctive name words with the city as a capitalized place name in one
+  sentence. A city alone never counts, so "our mission" or "e-commerce" never tie a
+  text to Mission, TX or Commerce, CA. `plan` counts the sites with each anchor kind
+  and with none.
 - A proven quote must also name its answer: every significant word of the operator's
-  name (legal forms aside); the input street, or the input city followed by its
-  state code or name (USPS suffixes such as Road and Rd match); and a word of the
-  task phrase. The task quote, its page or a same-URL excerpt must name the site's
-  city or street; otherwise the task is `company_level_task` and does not qualify.
+  name (legal forms aside), and that name must match the input's operator (one name's
+  distinctive words, without words such as Manufacturing or Holdings, all in the
+  other), else `operator_mismatch`; for the site, a site anchor, or the street of the
+  provider's own address when that quote holds it and it lies in the input's city
+  and state (only when the input has no street); and a word of the task phrase. The
+  task quote, its page or a same-URL excerpt must name a site anchor (or the proven
+  provider address); otherwise the task is `company_level_task` and does not
+  qualify.
 - `outreach_ready` (rule `blueprint.site-screen-rule.v2`, design v1.1) needs the
   operator, the exact site and the site task each proven that way, and nothing
-  contradicted: the site shown closed (`operating_now` `no`, or an answer that is
-  not yes, no or unknown), and, each with a proven quote, an `office` or `mailing`
+  contradicted: an operator the input does not name (`operator_mismatch`), the site
+  shown closed (`operating_now` `no`, or an answer that is not yes, no or unknown),
+  and, each with a proven quote, an `office` or `mailing`
   facility, a `contractor` or `tenant` site the input attributes to another operator,
   `manual_today` `no`, or `existing_automation` `full` (this task at this site fully
   automated). Partial automation, or automation of other tasks or sites, keeps the
@@ -891,10 +909,14 @@ repository root, with `--key-file` set to a private env file. Start with
   and stands whole-word on our read of the person's page or in a provider excerpt
   cited for that same URL.
 - An email counts only when all of these hold (rule `blueprint.site-contact-rule.v2`):
-  it is one plain address on the operator's own domain (from the screen's website) or
-  a subdomain of it, never a free-mail domain; its quote holds the exact address; and
-  our own read of the cited page holds the quote and the whole address. A provider
-  excerpt alone never counts. The codes are `site_screen_email_free_mail`,
+  it is one plain address on the operator's own domain or a subdomain of it, never a
+  free-mail domain; its quote holds the exact address; and our own read of the cited
+  page holds the quote and the whole address. A provider excerpt alone never counts.
+  The operator's domain is that of the page whose proven quote names the operator in
+  the screen (the operator quote's URL), never the bare `website` answer, and never a
+  directory, data broker, job board or applicant tracking, social, map, newswire,
+  government, free-mail or LinkedIn host; the provider is told only that website. The
+  codes are `site_screen_email_free_mail`, `site_screen_operator_domain_unproven`,
   `site_screen_email_off_operator_domain`, `site_screen_quote_lacks_address` and
   `site_screen_address_not_on_source`.
 - `collect` checks a completed contact result's email on our own read of its page

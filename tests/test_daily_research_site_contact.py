@@ -34,26 +34,29 @@ LONG = "For plant tours, supplier visits, quality audits and shipping questions,
 
 @pytest.fixture(autouse=True)
 def hermetic(monkeypatch):
-    """pytest's tmp_path is on storage the out-dir guard refuses, and a shell may set the worker flag."""
+    """pytest's tmp_path is on storage the out-dir guard refuses, a shell may set the worker flag, and Git is slow."""
     monkeypatch.setattr(ss, "VOLATILE_ROOTS", (), raising=False)
     monkeypatch.delenv("BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED", raising=False)
+    # Each --apply asks Git for the commit; one test below runs the real code_state.
+    monkeypatch.setattr(ss, "code_state", lambda root=None: {"commit": "0" * 40, "dirty": False, "source": "git"},
+                        raising=False)
 
 
-def screened_sites(tmp_path, count, *, unproven=()):
-    """Screen ``count`` web-found sites. The site numbers in ``unproven`` keep their task page unpublished, so
-    they stay screened."""
+def screened_sites(tmp_path, count, *, unproven=(), changes=None):
+    """Screen ``count`` web-found sites, with ``changes`` to every screen answer. The site numbers in
+    ``unproven`` keep their task page unpublished, so they stay screened."""
     records = [inventory_record(number) for number in range(1, count + 1)]
-    answers = [screen_answers(number) for number in range(1, count + 1)]
+    answers = [screen_answers(number, **(changes or {})) for number in range(1, count + 1)]
     pages = {url: text for number, answer in enumerate(answers, 1) for url, text in pages_for(
         answer, [stem for stem in ss.SCREEN_PROOFS if not (number in unproven and stem == "target_task")]).items()}
     workspace, provider, _, _ = screen(tmp_path, records, answers, pages)
     return workspace, provider, [ss.from_inventory(record)["site_key"] for record in records]
 
 
-def contacted(tmp_path, answers, pages, *, basis=None):
+def contacted(tmp_path, answers, pages, *, basis=None, screen_changes=None):
     """Screen one site per contact answer, then run, collect and verify the contact stage with the fakes. The
     contact pages are read when a result is collected, so its email is checked before anything is stored."""
-    workspace, provider, keys = screened_sites(tmp_path, len(answers))
+    workspace, provider, keys = screened_sites(tmp_path, len(answers), changes=screen_changes)
     for key, content in zip(keys, answers):
         provider.contacts[key] = {"content": content, "basis": (basis or {}).get(key, [])}
     client = ss.TaskClient(KEY, transport=provider)
@@ -170,6 +173,34 @@ def test_review_c2_an_email_must_be_on_the_operator_domain_and_never_free_mail(t
     workspace, _, (record,), _ = contacted(tmp_path, [answers], pages)
     assert record["email"] == {"verified": False, "level": "unverified", "discarded": True, "reason": reason}
     assert record["recipient"]["kind"] == "none" and email.encode() not in stored(workspace, record["site_key"])
+
+
+def test_review_c6_the_bare_website_answer_never_sets_the_email_domain(tmp_path):
+    directory = "https://www.bigdirectory.example/profile/synthetic-operator-1"
+    mail = "sales@bigdirectory.example"
+    answers = contact_answers(1, email=mail, email_url="https://www.bigdirectory.example/profile/x",
+                              email_quote=f"For quotes write to {mail} any business day.")
+    pages = {**pages_for(answers, ["person"]), answers["email_url"]: f"Listing. For quotes write to {mail} any business day."}
+    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages, screen_changes={"website": directory})
+    assert record["email"] == {"verified": False, "level": "unverified", "discarded": True,
+                               "reason": "site_screen_email_off_operator_domain"}
+    assert mail.encode() not in stored(workspace, record["site_key"])
+    # The operator's domain is the one whose page proves the operator, and the provider is told that one.
+    contact_input = [event["input"] for event in workspace.ledger("contact").events() if event["event"] == "intent"][0]
+    assert contact_input["operator_domains"] == ["operator-1.example"]
+    assert contact_input["task_input"]["website"] == "https://operator-1.example"
+
+
+@pytest.mark.parametrize("operator_url", ["https://www.bigdirectory.example/profile/synthetic-operator-1",
+                                          "https://records.synthetic.gov/facility/1"])
+def test_a_directory_or_government_page_never_gives_the_operator_domain(tmp_path, monkeypatch, operator_url):
+    monkeypatch.setattr(ss, "NOT_OPERATOR_DOMAINS", ss.NOT_OPERATOR_DOMAINS | {"bigdirectory.example"})
+    host = operator_url.split("/")[2]
+    mail = f"plant.team@{host.removeprefix('www.')}"
+    answers = contact_answers(1, email=mail, email_url=operator_url, email_quote=f"Write to {mail} for plant questions.")
+    pages = {**pages_for(answers, ["person"]), operator_url: f"Profile. Write to {mail} for plant questions."}
+    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages, screen_changes={"operator_identity_url": operator_url})
+    assert record["email"]["reason"] == "site_screen_operator_domain_unproven" and record["recipient"]["kind"] == "none"
 
 
 def test_an_address_on_a_subdomain_of_the_operator_is_accepted(tmp_path):
