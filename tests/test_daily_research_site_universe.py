@@ -240,7 +240,8 @@ def test_loader_corruption_fails_closed(raw):
 def test_loader_fails_closed_on_a_license_outside_the_producer_allowlist(licenses):
     with pytest.raises(su.SiteUniverseError, match="^site_universe_export_invalid$"):
         su.load_export(build_export([site(1)], license_union=licenses))
-    assert su.load_export(build_export([site(1)], license_union=["ODbL-1.0", "US-Gov-Work", "US-PD"]))["rows"]
+    # Every license id the producer's reviewed source registry records loads, including FSIS's CC0-1.0.
+    assert su.load_export(build_export([site(1)], license_union=["CC0-1.0", "ODbL-1.0", "US-Gov-Work", "US-PD"]))["rows"]
 
 
 def test_loader_size_bounds_fail_closed():

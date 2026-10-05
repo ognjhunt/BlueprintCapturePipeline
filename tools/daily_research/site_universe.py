@@ -53,9 +53,10 @@ SLICE_FIELDS = ("site_id", "rank", "lead_capability", "capabilities", "primary_s
 OUTCOME = {"screened": "screened", "unresolved": "researched_gap", "candidate": "candidate",
            "rejected": "rejected", "learning": "learning", "duplicate": "duplicate"}
 REMOVALS = ("reoffer_window", "untrusted_history", "crm", "prior_candidate")
-# License ids the producer's source registry emits. Anything else fails closed: AGENTS.md requires
-# nonredistribution terms to refuse, and only these are reviewed for internal processing.
-LICENSES = frozenset({"ODbL-1.0", "US-Gov-Work", "US-PD"})
+# License ids the producer's reviewed source registry records (tools/site_universe/sources.py):
+# OSHA ITA US-Gov-Work, EPA FRS US-PD, OpenStreetMap ODbL-1.0 and FSIS CC0-1.0. Anything else
+# fails closed: AGENTS.md requires nonredistribution terms to refuse.
+LICENSES = frozenset({"CC0-1.0", "ODbL-1.0", "US-Gov-Work", "US-PD"})
 # The main prompt's inventory disposition list, and its replacement when a slice is attached.
 DISPOSITIONS_TODAY = "disposition (candidate, unresolved, rejected, learning or duplicate)"
 DISPOSITIONS_WITH_SLICE = "disposition (candidate, unresolved, rejected, learning, duplicate or screened)"

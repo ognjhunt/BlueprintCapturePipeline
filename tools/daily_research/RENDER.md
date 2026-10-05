@@ -144,7 +144,7 @@ what its input holds, so an input without the key turns the slice off. The disk
   no longer matches its `packet_digest`, or whose outcomes are unavailable, is
   skipped; every site it names stays out for the window, and the selection counts
   it with its code. Only such a row that names no readable site refuses the slice.
-  The export must list only reviewed licenses (`ODbL-1.0`, `US-Gov-Work`, `US-PD`).
+  The export must list only reviewed licenses (`CC0-1.0`, `ODbL-1.0`, `US-Gov-Work`, `US-PD`).
 - The slice goes into `/workspace/inputs/blueprint-site-universe-slice.json` as an
   inline file, `metadata.site_universe_slice_digest` holds its SHA-256, one
   trusted paragraph follows the CRM prefix, and the prompt's inventory disposition

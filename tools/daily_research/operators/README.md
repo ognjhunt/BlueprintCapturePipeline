@@ -687,8 +687,8 @@ PYTHONPATH=$RELEASE $COMMAND funnel --days 7
   shows counts, SHA-256s, generations and site ids, never site names.
 - `publish` validates the local file with the runtime loader
   (`site_universe.load_export`: canonical bytes, `rows_sha256`, at most 2 MiB gzip,
-  6 MiB raw and 5,000 rows, and only the reviewed licenses `ODbL-1.0`,
-  `US-Gov-Work` and `US-PD`) and prints the URI and SHA-256. `--apply` writes
+  6 MiB raw and 5,000 rows, and only the reviewed licenses `CC0-1.0`,
+  `ODbL-1.0`, `US-Gov-Work` and `US-PD`) and prints the URI and SHA-256. `--apply` writes
   `gs://blueprint-8c1ca.appspot.com/operations/research/site-universe/<sha256>/backlog.v1.json.gz`
   create-only through the existing bridge identity, reads it back and prints the
   object generation. A published export grants nothing until it is pinned.
