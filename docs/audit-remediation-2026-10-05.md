@@ -1,0 +1,59 @@
+# Audit remediation and release evidence — 2026-10-05
+
+This change addresses the uploaded 23-row audit. This is a source implementation and verification record, not a claim that all 23 production outcomes are complete. Several audit rows explicitly describe already-existing automation or require live, physical, billing or access evidence.
+
+Program: Arm Decision Proof v1. These changes support day-14 immutable capture and the audit's ADP-081 day-42 accounting/reliability prerequisites. The user explicitly requested all audit findings, including the narrowly scoped supplementary-capture and owner-clarification work. Existing qualification, consent, paid-resource and founder-hold boundaries remain authoritative.
+
+## Finding-by-finding status
+
+| # | Finding | Source implementation / evidence | Remaining closure requirement |
+|---|---|---|---|
+| 1 | Native upload recovery | Existing persisted plan and retry path preserved; supplementary flow extends recovery. | Xcode/device interruption and relaunch verification required. |
+| 2 | Bundle completion | Existing create-only bundle and marker-last behavior preserved; durable coverage intent precedes completion. | Production marker and identity readback required. |
+| 3 | Capture bridge | Existing bridge retained; linked parent digest/manifest/marker validation added for supplements. | Bound live handoff and downstream intake receipt required. |
+| 4 | Supplementary native capture | Server issues deterministic scoped child tokens; raw manifest links immutable parent; app opens child capture; original link follows verified descendants. | iOS build/device test and deployment required. Captures retain independent coordinate frames. |
+| 5 | Coverage review | Durable source-and-brief-bound intent, delayed-prerequisite wakeup, retained model result reuse, bounded attempts and explicit unresolved state. | Worker deployment and crash/restart observation required. |
+| 6 | Footage proposals | Existing footage reviewer produces revision-bound proposals; delayed brief replay supported; confirmed owner facts preserved. | Deploy and inspect a real proposal; owner attestation remains necessary. |
+| 7 | Owner clarification | Owner-bound written response UI/API, immutable revision-bound evidence and existing reviewer adjudication. Unchanged marginal values still require authorized review. | Deploy and exercise owner/reviewer round trip. |
+| 8 | Preparation/evaluation continuation | Existing checkpoint-driven continuation retained. No duplicate scheduler or agent introduced. | Live continuation receipts required; paid-dispatch hold remains. |
+| 9 | Episode interpretation | Existing evidence-bound interpretation and abstention retained. | Actual episode evidence and interpretation receipt required. |
+| 10 | Customer artifacts/readback | Existing exporters, signed ingest and customer result surfaces preserved. | Retrieve current authorized customer artifacts and verify revision/access. |
+| 11 | Immutable usage sync | Merged #2597 included in Pipeline base; exact retained usage replay retained. | Production release and one bound downstream acknowledgement required. |
+| 12 | Cancellation/project exposure | Terminal retained debit remains in admission; exact posted coverage avoids duplicate debit; partial or wrong-identity coverage fails closed. | Deploy and reconcile authorized real settlement/posted receipts. |
+| 13 | Cohort preparation costs | Signed usage and terminal launch publications feed immutable allocation-keyed receipts. Shared preparation and incremental policy costs separate; estimates/unknowns prevent a settled contribution claim. | Actual provider/human billing settlement feed is not established; supplied settled receipts supported by ledger API. Unmapped costs retained for allocation. Full financial closure remains open. |
+| 14 | Decision classification | Strict authored standalone approval; negation, conditions and quoted-only approvals cannot grant authority. | Deploy; legacy ambiguous replies require a new explicit decision. |
+| 15 | Decision authority/durable resume | Mailbox SENT readback or signed Slack identity, intended principal, action digest, decision revision, expiry and latest-event checks; transactional execution claim; durable replay and objective ledger reconciliation. | Deploy; legacy threads without decision expiry must be reissued. Non-ledger ambiguous outcomes remain unknown until objective resolution. |
+| 16 | Operator request identity/completion | Stable caller operation keys, conflict rejection, durable tombstones and duplicate-run protection; observed unit invocation/result distinguishes completion from acceptance. | Install compatible Door server/runner/client; old requests without observation remain unknown. |
+| 17 | Failure investigation/recovery | Existing bounded investigation and stage-recovery paths retained. | Current retained failure/recovery receipts required for a live outcome claim. |
+| 18 | Research/contact/drafts | Existing merged research-to-contact/draft work preserved. | Current retained QA/contact/draft evidence required; no outreach sent during this work. |
+| 19 | Stale fact refresh | Bounded consumer retains fetched evidence or explicit unresolved reason; source revision protected, no invented freshness or automatic send. | Deploy; replacement factual claims still pass existing research QA. |
+| 20 | Result notification enqueue | Result and notification intent saved atomically; cursor-based projector retries missing outbox creation and backfills on identical result replay. | Deploy and observe crash recovery. Historical missing intents without replay require a deliberate inventory/backfill. |
+| 21 | Outbox/unknown result email | Existing at-least-once outbox preserved. Exact result/owner/provider-ack observer reconciles unknown explicit retries without resending. Post-send projection failure cannot become retryable failure. | Provider acknowledgement is not recipient delivery; unmatched unknowns remain unknown. |
+| 22 | Release/installed versions | Reviewable source changes and compatibility/install instructions prepared. Live status and failed deployment receipt inspected read-only. | BLOCKED: deploy_scene_retirement_runtime_unproven. Active Pipeline release f157750e991aa576187c20b9b1ba92eafc934108; protected runtime installation and release required. |
+| 23 | Physical outcomes/rights/access | No software bypass added for rights, physical verification, partner evidence or external access. | EXTERNAL: real capture/robot outcomes, rights attestation and Atlas access cannot be fabricated or completed by local source edits. |
+
+## Verification
+
+- WebApp: TypeScript full check passed. 405 focused cross-workflow tests plus 2 forwarded-source authentication tests passed. They cover approval authority, concurrent/replayed decisions, changed actions, unknown sends, coverage prerequisites/source drift, linked supplements, clarification revisions, receipt deduplication, notification intent recovery, exact provider acknowledgements and stale-fact refresh. The main test command used the 35 selected workflow suites; the additional endpoint suite passed separately.
+- Pipeline: 702 focused Operator Door, scene-spend, terminal-settlement and immutable-usage tests passed. Required impacted selection: 618 passed, 5 skipped, 4 failed and 46 errors. The broader failures involve absent torch, forbidden test temporary directories under the real home, and protected-runtime UID/context assumptions. Representative protected-context failures reproduce on unchanged main. These are unresolved validation limitations, not waived passing checks.
+- Capture bridge: TypeScript build and 10 test files passed. Swift/Xcode and camera/device checks are unavailable on this Linux host; native source is not certified built or device-tested.
+- WebApp architecture graph pilot completed using an isolated graphify environment. Existing missing PolicyCanaryReportOverview source reference was reported. Shared-doctrine checks passed against each repository's committed lock; generated doctrine was not edited.
+- No paid jobs, customer messages, robot trials, production data writes, merges or deployments were performed by this remediation session. The observed failed deployment belongs to another existing Operator Door request.
+
+## Release and compatibility
+
+1. Review and merge the three companion changes with repository CI, including iOS compile/tests. Deploy the WebApp supplement endpoint and bridge parent validator before distributing the native app. Unknown fields are additive; non-supplement bundle identity is unchanged.
+2. Keep `BLUEPRINT_SITE_VIDEO_EVIDENCE_ENABLED` under the current rollout policy. Coverage reconciliation uses the existing worker/pump and must be running after deployment. Do not start a second vision agent. New durable collections are server-admin only; existing client rules must continue to deny unscoped access.
+3. Human replies now require authenticated source readback, a current decision/action binding and an expiry. Reissue legacy packets lacking those fields. Use an exact standalone `Approved` reply. Forwarded internal email intake reopens the canonical Gmail message; Slack must enter through the signed Events endpoint. Do not convert old text or mailbox headers into new approval authority.
+4. Install Door server/runner and its protected policy/runtime through the established installer. Use the same operation key to recover a lost POST acknowledgement. Preserve `.operations` tombstones with spool backup/retention; deleting them reopens duplicate-operation risk. A historical `done` without invocation evidence is not new proof of successful execution.
+5. Resolve `deploy_scene_retirement_runtime_unproven` through the protected-runtime owner/installer, then deploy reviewed main commits through Operator Door. Verify installed commit and unit receipts. Do not remove the guard to force release. Preserve the explicit founder paid-dispatch hold; release requires its stated explicit authorization.
+6. Read back one authorized chain: immutable capture → privacy decision → completion/handoff → brief-bound coverage/proposals → qualified preparation/evaluation → retained result → accessible customer artifacts → source-bound notification acknowledgement. Use existing no-cost retained evidence when possible; paid execution remains separately governed.
+7. Reconcile actual provider/preparation invoices into settled cohort allocations. Estimated API prices and unknown human/provider costs are not final contribution. The new automated feed records uncertainty; it does not manufacture settlement. Policy cost receipts remain separate from episode-unit-cost inputs and must not be silently counted twice in a downstream financial report.
+
+## Migration and rollback
+
+No bulk production migration was executed. Retain pending intents, immutable receipts, clarification history, linked capture records and operation tombstones during rollback. Redeploying old code can remove replay/authority protections, so pause affected consumers before rollback and keep external effects held. Do not delete unknown actions or rewrite them to failed to force retry. Resume from objective receipts or an explicitly reviewed new action. Inventory historical results lacking notification intents before any notification backfill, because historical email delivery is a side effect.
+
+## Live evidence
+
+Read-only Operator Door status observed on 2026-10-05: active release `f157750e991aa576187c20b9b1ba92eafc934108`. Request `20261005T172601Z-deploy-27199c46` attempted another commit and finished with `deploy_tool_exit_2`; its retained receipt states `blocked`, `deploy_scene_retirement_runtime_unproven`, and `provider_mutation_performed: false`. This is a release blocker, not evidence that this remediation has been deployed.

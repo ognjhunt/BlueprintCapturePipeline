@@ -50,6 +50,35 @@ def fixture(tmp_path, monkeypatch):
     return module, source, deps
 
 
+@pytest.mark.parametrize('supplied', [0.0, float('nan'), float('inf'), -float('inf')])
+@pytest.mark.parametrize('entry', ['prepare', 'refresh', 'build_sdk', 'prepare_deployment'])
+def test_installation_rejects_expired_or_nonfinite_caller_deadline(tmp_path, monkeypatch, supplied, entry):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    arguments = {'_deadline': supplied}
+    if entry == 'refresh':
+        arguments['expected_current'] = module._selector(b'{}')
+    if entry == 'prepare_deployment':
+        arguments['source_commit'] = '0' * 40
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        getattr(module, entry)(source, *([deps] if entry in {'prepare', 'refresh'} else []), **arguments)
+    assert not module._BOOT_ROOT.exists() and not module._RUNTIME_ROOT.exists()
+
+
+def test_installation_deadline_is_finite_clamped_and_never_renewed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    now = [100.0]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    assert module._MAX_SECONDS == 900
+    assert module._installation_deadline() == module._installation_deadline(2000.0) == 1000.0
+    original = module._installation_deadline(175.0)
+    now[0] = 150.0
+    assert module._installation_deadline(original) == 175.0
+    now[0] = 176.0
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._installation_deadline(original)
+
+
 def test_preparation_installs_real_protected_source_dependencies_and_units(tmp_path, monkeypatch):
     module, source, deps = fixture(tmp_path, monkeypatch)
     result = module.prepare(source, deps)
@@ -618,15 +647,71 @@ def test_signed_release_copies_real_lockfile_size_with_exact_git_bytes(tmp_path,
     # tiny relative to the runtime budget while crossing the old 1 MiB cap.
     lock = b'lock\n' + b'x' * (1_165_102 - len(b'lock\n'))
     (source / 'uv.lock').write_bytes(lock)
+    for index in range(33):
+        (source / 'src/blueprint_pipeline' / f'binary_{index}.data').write_bytes(bytes([index]) + b'\0\n')
     subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture',
         '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'bounded signed lock'], check=True)
     commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
 
+    calls = []
+    command = module._sdk_git_command
+    def observed(checkout, arguments, deadline, **kwargs):
+        calls.append(arguments)
+        return command(checkout, arguments, deadline, **kwargs)
+    monkeypatch.setattr(module, '_sdk_git_command', observed)
     copied = module._signed_release(source, commit, time.monotonic() + 30)
     assert (copied / 'uv.lock').read_bytes() == lock
+    for index in range(33):
+        assert (copied / 'src/blueprint_pipeline' / f'binary_{index}.data').read_bytes() == bytes([index]) + b'\0\n'
+    batches = calls.count(['cat-file', '--batch'])
+    assert batches == calls.count(['cat-file', '--batch-check']) == 3
+    assert not any(arguments[:2] in (['cat-file', '-s'], ['cat-file', 'blob']) for arguments in calls)
     assert module._signed_release(source, commit, time.monotonic() + 30) == copied
+    assert calls.count(['cat-file', '--batch']) == batches
+
+
+@pytest.mark.parametrize('change', ['size-limit', 'wrong-type', 'wrong-id', 'missing', 'extra-header',
+                                  'truncated', 'trailing', 'mutated-blob', 'body-header'])
+def test_signed_blob_batch_refuses_unproven_headers_and_bytes(tmp_path, monkeypatch, change):
+    import hashlib
+    import time
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    raw = b'protected\0\nbytes'
+    digest = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+    header = digest.encode() + b' blob ' + str(len(raw)).encode() + b'\n'
+    checked, body = header, header + raw + b'\n'
+    if change == 'size-limit':
+        checked = digest.encode() + b' blob 1048577\n'
+    elif change == 'wrong-type':
+        checked = header.replace(b' blob ', b' tree ')
+    elif change == 'wrong-id':
+        checked = b'0' * 40 + header[40:]
+    elif change == 'missing':
+        checked = digest.encode() + b' missing\n'
+    elif change == 'extra-header':
+        checked += header
+    elif change == 'truncated':
+        body = body[:-1]
+    elif change == 'trailing':
+        body += b'foreign'
+    elif change == 'mutated-blob':
+        body = header + b'X' + raw[1:] + b'\n'
+    else:
+        body = header.replace(b' blob ', b' tree ') + raw + b'\n'
+    calls = []
+    def command(checkout, arguments, deadline, **kwargs):
+        assert kwargs['input_data'] == digest.encode() + b'\n'
+        assert kwargs['raw_checkout'] is True
+        calls.append(arguments)
+        return checked if arguments == ['cat-file', '--batch-check'] else body
+    monkeypatch.setattr(module, '_sdk_git_command', command)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._signed_release_blobs(source, [('100644', digest, 'src/blueprint_pipeline/fixture.py')], time.monotonic()+5)
+    if change in {'size-limit', 'wrong-type', 'wrong-id', 'missing', 'extra-header'}:
+        assert calls == [['cat-file', '--batch-check']]
+    assert not module._BOOT_ROOT.exists() and not module._RUNTIME_ROOT.exists()
 
 
 def test_live_installer_prepares_immutable_runtime_before_service_ownership_and_units():
@@ -740,6 +825,10 @@ def _deployer_runtime_fixture(monkeypatch, tmp_path):
                  'stat': stat, 'subprocess': subprocess, 'time': __import__('time'),
                  'ControlPlaneDeployError': ValueError,
                  '_SCENE_RUNTIME_BOOT_ROOT': tmp_path / 'root-runtime', '_SCENE_RUNTIME_OWNER': os.getuid()}
+    allowance = next(node for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == '_SCENE_RUNTIME_INSTALL_SECONDS'
+                             for target in node.targets))
+    namespace['_SCENE_RUNTIME_INSTALL_SECONDS'] = ast.literal_eval(allowance.value)
     exec(compile(ast.Module(body=definitions, type_ignores=[]), str(SCRIPT), 'exec'), namespace)
     return namespace
 
@@ -760,10 +849,15 @@ def test_first_upgrade_authenticates_installer_data_from_service_owned_release_b
     # source must be authenticated Git DATA; root protection applies to output.
     source.chmod(0o777)
     namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    from types import SimpleNamespace
+    namespace['time'] = SimpleNamespace(monotonic=lambda: 100.0)
+    assert namespace['_SCENE_RUNTIME_INSTALL_SECONDS'] == module._MAX_SECONDS == 900
     actual_run = subprocess.run
     executed = []
     def record_root_execution(command, **kwargs):
         if command[:3] == ['/usr/bin/python3', '-I', '-S']:
+            assert float(command[command.index('--deadline-monotonic') + 1]) == 1000.0
+            assert kwargs['timeout'] == 900.0
             fd = int(command[3].rsplit('/', 1)[1])
             raw = os.pread(fd, 1024 * 1024, 0)
             assert raw == signed
@@ -892,7 +986,8 @@ def test_orphan_retained_installer_receipt_refuses_before_candidate_staging(tmp_
     assert marker.read_bytes() == b'{}' and not (root / 'installers').exists()
 
 
-def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monkeypatch):
+@pytest.mark.parametrize('batch', [False, True])
+def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monkeypatch, batch):
     import stat
     import subprocess
     import time
@@ -910,7 +1005,9 @@ def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monk
         return raw
     monkeypatch.setattr(module.os, 'read', counted_read)
     with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
-        module._sdk_git_command(checkout, ['cat-file', 'blob', blob], time.monotonic() + 5, cap=4)
+        module._sdk_git_command(checkout, ['cat-file', '--batch'] if batch else ['cat-file', 'blob', blob],
+                                time.monotonic() + 5, cap=4,
+                                input_data=blob.encode() + b'\n' if batch else None)
     assert sum(native_bytes) <= 5, 'native stdout cap must apply before an oversized read/append, not after communicate allocated output'
 
 
@@ -921,6 +1018,26 @@ def test_native_git_zero_byte_blob_remains_supported_with_zero_output_allowance(
     checkout, _ = _pinned_contracts_checkout(tmp_path)
     blob = subprocess.check_output(['/usr/bin/git', '-C', str(checkout), 'hash-object', '-w', '--stdin'], input=b'').decode().strip()
     assert module._sdk_git_command(checkout, ['cat-file', 'blob', blob], time.monotonic() + 5, cap=0) == b''
+
+
+def test_native_git_batch_deadline_kills_and_reaps_owned_child(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    checkout, _ = _pinned_contracts_checkout(tmp_path)
+    popen, children = subprocess.Popen, []
+    def stalled(command, **kwargs):
+        assert command[-2:] == ['cat-file', '--batch']
+        child = popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(30)'], **kwargs)
+        children.append(child)
+        return child
+    monkeypatch.setattr(subprocess, 'Popen', stalled)
+    started = time.monotonic()
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_git_command(checkout, ['cat-file', '--batch'], started + .05,
+                                input_data=b'0' * 40 + b'\n')
+    assert len(children) == 1 and children[0].poll() is not None
+    assert time.monotonic() - started < 5
 
 
 @pytest.mark.parametrize('phase', ['download', 'extraction'])
@@ -1211,7 +1328,8 @@ def test_signed_release_retry_authenticates_retained_git_blob_without_reacquirin
     module, source, _, first, _ = _interrupted_connected_install(tmp_path, monkeypatch)
     git = module._sdk_git_command
     def existing(checkout, arguments, deadline, **kwargs):
-        assert arguments[:2] not in (['cat-file', 'blob'], ['cat-file', '-s'])
+        assert arguments[:2] not in (['cat-file', 'blob'], ['cat-file', '-s'],
+                                     ['cat-file', '--batch'], ['cat-file', '--batch-check'])
         return git(checkout, arguments, deadline, **kwargs)
     monkeypatch.setattr(module, '_sdk_git_command', existing)
     root = module._signed_release(source, first, time.monotonic()+10)
@@ -1323,5 +1441,51 @@ def test_installer_cli_failure_emits_no_private_exception_or_traceback(tmp_path,
     assert module.main(options) == 2
     captured = capsys.readouterr()
     assert captured.out == ''
-    assert captured.err == ('scene_retirement_runtime_phase:resume_initial_intent\n'
-                            'scene_retirement_runtime_failure:' + reason + '\n')
+    assert captured.err == (('' if reason == 'deadline' else 'scene_retirement_runtime_phase:resume_initial_intent\n')
+                            + 'scene_retirement_runtime_failure:' + reason + '\n')
+
+
+@pytest.mark.parametrize('supplied', [None, 250.0])
+def test_connected_installation_keeps_one_deadline_through_resume_and_refresh(tmp_path, monkeypatch, supplied):
+    from types import SimpleNamespace
+    module, source, wheel, commit, _ = _interrupted_connected_install(tmp_path, monkeypatch)
+    original_intent = (module._BOOT_ROOT / 'installation.json').read_bytes()
+    now = [100.0]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    deadline = 1000.0 if supplied is None else supplied
+    phases = []
+    def phase(name):
+        phases.append(name)
+        now[0] = {'signed_release': 100.0, 'build_sdk': 100.0+(deadline-100.0)/3,
+                  'resume_initial_intent': 100.0+2*(deadline-100.0)/3,
+                  'refresh': deadline+1}[name]
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent,
+                                  _deadline=supplied, _progress=phase)
+    assert phases == ['signed_release', 'build_sdk', 'resume_initial_intent', 'refresh']
+    assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
+    assert (module._BOOT_ROOT / 'installation.json').read_bytes() == original_intent
+    assert not (module._BOOT_ROOT / 'CURRENT.json').exists()
+
+
+@pytest.mark.parametrize('selection', ['--dependencies', '--venv', '--locked-sdk'])
+def test_installer_cli_retains_earlier_caller_deadline_for_every_mode(tmp_path, monkeypatch, selection):
+    from types import SimpleNamespace
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, 'os', SimpleNamespace(getuid=lambda: 0, geteuid=lambda: 0))
+    monkeypatch.setattr(module, 'sys', SimpleNamespace(flags=SimpleNamespace(isolated=True, no_site=True), stderr=sys.stderr))
+    now, observed = [100.0], []
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    def resolve(venv):
+        now[0] = 120.0  # Dependency discovery consumes the original allowance.
+        return deps
+    monkeypatch.setattr(module, 'dependency_root', resolve)
+    def prepare(*args, **kwargs):
+        observed.append(kwargs['_deadline'])
+        return {'status': 'prepared'}
+    monkeypatch.setattr(module, 'prepare', prepare)
+    monkeypatch.setattr(module, 'prepare_deployment', prepare)
+    options = ['--source', str(source), '--deadline-monotonic', '150', selection]
+    options += ['--source-commit', 'a'*40] if selection == '--locked-sdk' else [str(deps)]
+    assert module.main(options) == 0
+    assert observed == [150.0]

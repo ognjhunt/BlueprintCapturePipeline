@@ -779,17 +779,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Set up canonical Python for static systemd validation
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
       - name: Enforce systemd security baseline
         run: |
           set -euo pipefail
           mkdir -p "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources"
-          {
-            systemd-analyze verify deploy/systemd/blueprint-*.service
-            for unit in deploy/systemd/blueprint-*.service; do
-              systemd-analyze security --offline=yes --no-pager \
-                --threshold=40 "${unit}"
-            done
-          } > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/systemd-security.log" 2>&1
+          uv run --no-project --python 3.12 python scripts/verify_systemd_ci.py \
+            > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/systemd-security.log" 2>&1
           printf '%s\n' 'systemd-security-ok' \
             > "${{ runner.temp }}/blueprint-ci/container-production/container-production-sources/systemd-security.ok"
 

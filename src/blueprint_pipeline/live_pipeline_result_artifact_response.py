@@ -1,5 +1,6 @@
 """Serve verified local or remotely retained result bytes with bounded lifetime."""
 
+import logging
 from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
@@ -12,6 +13,8 @@ from .live_pipeline_result_artifact_resolution import (
     TaskEvaluationResultDeliveryError,
     resolve_live_pipeline_result_artifact,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ResultArtifactFileResponse(FileResponse):
@@ -52,6 +55,16 @@ async def result_artifact_response(
         ControlPlaneDiskBudgetError,
         OSError,
     ) as exc:
+        # Keep the customer response stable while making the failing boundary
+        # visible through the operator journal. Exception text/tracebacks can
+        # contain private paths, signed URLs or storage credentials.
+        if isinstance(exc, TaskEvaluationConfiguredSceneObjectStoreError):
+            reason = "object_store"
+        elif isinstance(exc, ControlPlaneDiskBudgetError):
+            reason = "disk_budget"
+        else:
+            reason = "filesystem"
+        logger.warning("result_artifact_remote_unavailable reason=%s", reason)
         raise HTTPException(status_code=503, detail="result_artifact_remote_unavailable") from exc
     disposition = "inline" if record.get("content_type") == "video/mp4" else "attachment"
     return ResultArtifactFileResponse(

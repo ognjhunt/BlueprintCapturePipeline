@@ -1,4 +1,5 @@
 """Evidence gate and complete-cohort scoring without network or paid jobs."""
+import hashlib
 import json
 from copy import deepcopy
 from datetime import timedelta
@@ -290,3 +291,301 @@ def test_non_string_source_url_is_unresolved_not_a_stuck_qa_crash(version, url):
     value["sources"][0]["url"] = url
     result = verification.evaluate(c, value, NOW, result_version=version)
     assert result["status"] == "unresolved" and not result["eligible_for_qualified_promotion"]
+
+
+TIER_FIXTURE = Path(__file__).parent / "fixtures/daily_research/lead-verification-tier.json"
+TIER_FIELDS = ("version", "tier", "eligible_for_outreach_ready", "outreach_ready")
+
+
+def tier_cases():
+    return json.loads(TIER_FIXTURE.read_text())["cases"]
+
+
+def case_evidence(case):
+    """A case's evidence; one with raw retained tool results derives it with retained_evidence."""
+    if "retained" not in case:
+        return case["evidence"]
+    files = case["retained"]["files"]
+    return verification.retained_evidence(case["retained"], lambda name: files[name].encode())
+
+
+def tiered(case, version=verification.OUTREACH_RESULT_VERSION):
+    return verification.cohort(case["candidates"], case["assessments"], verification.moment(case["now"]),
+                               duplicate_checks=case["duplicate_checks"] or None, result_version=version,
+                               evidence=case_evidence(case))
+
+
+def webapp_open_checks(assessment):
+    """Blueprint-WebApp #855 hypothesisEntries derives the open checks from the assessment alone."""
+    claims = assessment["claims"]
+    return (["site_link"] if claims["site_task"]["status"] != "verified_fact" else []) + (
+        ["manual_workflow"] if claims["human_workflow"]["status"] != "verified_fact" else []) + (
+        ["freshness"] if assessment["valid_until"] is None else []) + ["existing_automation", "fit", "interest"]
+
+
+WEBAPP_TEMPLATES = {  # Blueprint-WebApp #855 OUTREACH_READY_QUESTION_TEMPLATES, word for word.
+    "S": "Is {task} done at your {site} site, or somewhere else in the company?",
+    "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
+    "A": "What has kept the remaining {task} work at {site} from being automated so far?"}
+
+
+def test_shared_outreach_tier_golden_file_is_recomputed_exactly():
+    """The WebApp reads the same contract; Python must reproduce every expected result."""
+    document = json.loads(TIER_FIXTURE.read_text())
+    assert document["fixture_only"] is True and document["rule_version"] == verification.OUTREACH_RULE_VERSION
+    assert document["result_version"] == verification.OUTREACH_RESULT_VERSION
+    assert document["min_quote_words"] == verification.MIN_QUOTE_WORDS
+    assert document["question_templates"] == verification.QUESTION_TEMPLATES == WEBAPP_TEMPLATES
+    assert document["open_checks"] == list(verification.OPEN_CHECKS)
+    names = set()
+    for case in document["cases"]:
+        result = tiered(case)
+        assert [{key: r[key] for key in case["expected"][0]} for r in result["results"]] == case["expected"], case["name"]
+        assert result["tier_evidence"] == case["expected_tier_evidence"], case["name"]
+        if "retained" in case:
+            assert sorted({page["url"] for page in case_evidence(case)["pages"]}) == case["expected_credited_urls"], case["name"]
+        names.add(case["name"])
+    assert {"closed_site", "vendor_only_automation_evidence", "expired_assessment", "findall_citation_excerpt",
+            "paraphrased_task_quote", "conflicting_duplicates", "verified_full_proof_path", "company_level_task_inference",
+            "company_level_task_marked_verified", "task_page_names_the_city", "job_post_at_another_site",
+            "automation_elsewhere_manual_verified", "task_fully_automated_at_site", "office_or_mailing_only_facility",
+            "office_claim_unproven", "contractor_operated_site", "facility_field_invalid", "cross_host_redirect",
+            "same_host_redirect", "two_words_after_punctuation", "missing_identity", "assessed_at_in_the_future",
+            "question_mark_in_task"} <= names
+    templates = {question: name for case in document["cases"] for r in case["expected"]
+                 for question in r["outreach_ready"]["open_questions"] for name in "SMA"
+                 if question.startswith(WEBAPP_TEMPLATES[name].split("{")[0])}
+    assert set(templates.values()) == {"S", "M", "A"}  # Every template is exercised.
+
+
+def test_v3_keeps_the_v2_result_and_verified_path_byte_for_byte():
+    for case in tier_cases():
+        v2, v3 = tiered(case, verification.DIAGNOSTIC_RESULT_VERSION), tiered(case)
+        assert verification.without_tier(v3) == v2, case["name"]
+        assert v3.pop("result_version") == verification.OUTREACH_RESULT_VERSION
+        assert v3.pop("outreach_rule_version") == verification.OUTREACH_RULE_VERSION
+        assert v3.pop("outreach_ready_count") == sum(r["eligible_for_outreach_ready"] for r in v3["results"])
+        v3.pop("tier_evidence")
+        assert v2.pop("result_version") == verification.DIAGNOSTIC_RESULT_VERSION
+        stripped = [{key: value for key, value in r.items() if key not in TIER_FIELDS} for r in v3.pop("results")]
+        assert stripped == [{key: value for key, value in r.items() if key != "version"} for r in v2.pop("results")]
+        assert v3 == v2, case["name"]
+    assert verification.without_tier({"result_version": verification.DIAGNOSTIC_RESULT_VERSION}) == {
+        "result_version": verification.DIAGNOSTIC_RESULT_VERSION}
+
+
+@pytest.mark.parametrize("fact", verification.PROVEN_FACTS)
+@pytest.mark.parametrize("state", sorted(verification.STATES - {"verified_fact"}))
+def test_every_other_state_of_a_proven_fact_gives_none(fact, state):
+    case = tier_cases()[0]
+    case["assessments"]["golden-1"]["claims"][fact]["status"] = state
+    result = tiered(case)["results"][0]
+    if fact == "site_task" and state == "inference":
+        # Company-level task evidence: outreach-ready with the site link open, asked with template S.
+        assert result["tier"] == "outreach_ready" and result["outreach_ready"]["open_checks"][0] == "site_link"
+        assert result["outreach_ready"]["open_questions"][0].startswith("Is Manual case picking for outbound orders done at your")
+        return
+    assert result["tier"] == "none" and result["eligible_for_outreach_ready"] is False
+    blocker = fact + ("_contradicted" if state == "contradicted" else
+                      "_not_verified_fact_or_inference" if fact == "site_task" else "_not_verified_fact")
+    assert blocker in result["outreach_ready"]["blockers"] and result["outreach_ready"]["open_questions"] == []
+
+
+@pytest.mark.parametrize("claim", ["human_workflow", "plausible_fit"])
+@pytest.mark.parametrize("state", ["inference", "unresolved", "stale", "unreachable"])
+def test_open_workflow_or_fit_states_stay_outreach_ready_until_contradicted(claim, state):
+    case = tier_cases()[0]
+    claims = case["assessments"]["golden-1"]["claims"]
+    claims["human_workflow"].update(status="verified_fact", source_refs=["S2"])
+    claims[claim].update(status=state, source_refs=[])
+    result = tiered(case)["results"][0]
+    assert result["tier"] == "outreach_ready" and not result["eligible_for_qualified_promotion"]
+    block = result["outreach_ready"]
+    assert ("manual_workflow" in block["open_checks"]) is (claim == "human_workflow")
+    template = "M" if claim == "human_workflow" else "A"
+    assert block["open_questions"] == [WEBAPP_TEMPLATES[template].format(task="Manual case picking for outbound orders",
+                                                                         site="Fixture DC 4, 100 Example Way")]
+
+
+def test_a_contradicted_counterevidence_changes_the_question_not_the_eligibility():
+    case = tier_cases()[0]
+    case["assessments"]["golden-1"]["counterevidence"].update(status="contradicted", reason="Synthetic partial automation elsewhere")
+    result = tiered(case)["results"][0]
+    assert result["tier"] == "outreach_ready" and result["outreach_ready"]["blockers"] == []
+    case["assessments"]["golden-1"]["claims"]["human_workflow"]["status"] = "contradicted"
+    assert tiered(case)["results"][0]["outreach_ready"]["blockers"] == ["human_workflow_contradicted"]
+
+
+def test_quote_levels_need_whole_words_the_same_url_and_three_words():
+    page = {"url": "https://site.example/a", "text": "Café workers hand-pack 40 trays each shift for U.S. Foods.",
+            "tool_result_sha256": "a" * 64}
+    snippet = {"url": "https://site.example/b", "text": "Workers hand pack trays", "tool_result_sha256": "b" * 64}
+    index = verification.evidence_index({"state": "retained", "pages": [page], "excerpts": [snippet]})
+    level = verification.quote_level
+    assert level("CAFÉ WORKERS hand pack", "https://www.site.example/a/", index) == ("verified_on_page", "a" * 64)
+    assert level("workers hand pack trays", "https://site.example/b", index) == ("in_citation_excerpt", "b" * 64)
+    assert level("workers hand pack trays", "https://other.example/b", index) == (None, None)
+    assert level("orkers hand pack", "https://site.example/a", index) == (None, None)
+    assert level("hand pack", "https://site.example/a", index) == (None, None)
+    # Words are whitespace tokens with punctuation stripped: matching still uses the normalized text.
+    assert verification.quote_words("U.S. Foods") == ["U.S.", "Foods"] and verification.quote_words("a — b") == ["a", "b"]
+    assert level("U.S. Foods", "https://site.example/a", index) == (None, None)
+    assert level("hand-pack 40", "https://site.example/a", index) == (None, None)
+    assert level("for U.S. Foods", "https://site.example/a", index) == ("verified_on_page", "a" * 64)
+    for quote, url in ((None, "https://site.example/a"), ("workers hand pack", None), ("workers hand pack", "ftp://site.example/a"),
+                       ("workers hand pack", "https://user:secret@site.example/a"), (["workers"], "https://site.example/a")):
+        assert level(quote, url, index) == (None, None)
+    assert verification.evidence_index({"state": "unavailable", "pages": [page]}) == {"pages": {}, "excerpts": {}}
+    assert verification.evidence_index({"state": "retained", "pages": [{"url": 1}, "x", {**page, "text": None}]})["pages"] == {}
+
+
+@pytest.mark.parametrize("kind", ["pages", "excerpts"])
+def test_quote_proof_keeps_nondefault_ports_and_refuses_invalid_ports(kind):
+    record = {"url": "https://site.example:8443/a", "text": "Workers hand pack trays", "tool_result_sha256": "a" * 64}
+    index = verification.evidence_index({"state": "retained", kind: [record]})
+    level = "verified_on_page" if kind == "pages" else "in_citation_excerpt"
+    assert verification.quote_level(record["text"], record["url"], index) == (level, "a" * 64)
+    for url in ("https://site.example/a", "https://site.example:443/a", "https://site.example:9443/a",
+                "https://site.example:invalid/a", "https://site.example:65536/a"):
+        assert verification.quote_level(record["text"], url, index) == (None, None)
+    for scheme, port in (("https", 443), ("http", 80)):
+        assert verification.url_key(f"{scheme}://site.example:{port}/a") == verification.url_key(f"{scheme}://site.example/a")
+    assert verification.url_key("https://[2001:db8::1]:8443/a") != verification.url_key("https://[2001:db8::1]/a")
+    assert verification.url_key("https://site.example:invalid/a") is None
+
+
+def test_site_link_needs_the_city_street_or_a_job_post_at_this_site():
+    candidate = {"site": "North plant, 123 Main St", "location": "Chicago, Illinois, US"}
+    places, names = verification.site_terms(candidate)
+    assert places == {"123 main st", "chicago"} and names == places | {"north plant"}
+    assert verification.site_terms({"site": "Plant", "location": "Illinois"}) == (frozenset(), frozenset({"plant"}))
+    for url in ("https://operator.example/careers/1", "https://jobs.operator.example/x", "https://boards.greenhouse.io/op/1"):
+        assert verification.job_post(url)
+    assert not verification.job_post("https://operator.example/capabilities") and not verification.job_post(7)
+    page = {"url": "https://operator.example/careers/1", "text": "Picker, North plant. Pick trays.", "tool_result_sha256": "a" * 64}
+    index = verification.evidence_index({"state": "retained", "pages": [page], "excerpts": []})
+    source = {"url": page["url"], "quote": "Pick trays by hand"}
+    assert verification.names_site(source, index, places, names)  # A job post naming the site.
+    other = {"url": "https://operator.example/about", "quote": "Pick trays by hand"}
+    assert not verification.names_site(other, index, places, names)
+    assert verification.names_site({**other, "quote": "Chicago staff pick trays by hand"}, index, places, names)
+    assert not verification.names_site({"url": None, "quote": None}, index, places, names)
+
+
+def test_any_defect_in_the_tier_computation_yields_none(monkeypatch):
+    case = tier_cases()[0]
+    for gates in ({}, {"facts": None}, {**verification.outreach_gates({}, {}, {}), "valid_until": "not a time"},
+                  {**verification.outreach_gates({}, {}, {}), "states": None},
+                  {**verification.outreach_gates({}, {}, {}), "facility": None}):
+        result = verification.outreach_tier(gates, NOW)
+        assert result["tier"] == "none" and result["eligible_for_outreach_ready"] is False
+    def broken(*args, **kwargs):
+        raise RuntimeError("synthetic tier defect")
+    monkeypatch.setattr(verification, "outreach_gates", broken)
+    result = tiered(case)
+    assert result["results"][0]["tier"] == "none" and result["results"][0]["status"] == "unresolved"
+    assert result["results"][0]["outreach_ready"]["blockers"] == ["tier_computation_unavailable"]
+    assert result["outreach_ready_count"] == 0
+
+
+def test_exactly_one_question_by_precedence_with_open_checks_the_webapp_derives():
+    for case in tier_cases():
+        for result in tiered(case)["results"]:
+            block = result["outreach_ready"]
+            if result["tier"] != "outreach_ready":
+                assert block["open_checks"] == block["open_questions"] == []
+                assert (block["blockers"] == []) is (result["tier"] == "verified")
+                continue
+            assert block["blockers"] == [] and block["open_checks"] == webapp_open_checks(result["assessment"])
+            candidate = next(c for c in case["candidates"] if c["candidate_key"] == result["candidate_key"])
+            template = "S" if "site_link" in block["open_checks"] else "M" if "manual_workflow" in block["open_checks"] else "A"
+            assert template == verification.question_template(block["open_checks"])
+            assert block["open_questions"] == [WEBAPP_TEMPLATES[template].format(task=candidate["task"], site=candidate["site"])]
+            assert block["open_questions"][0].count("?") == 1 and block["open_questions"][0].endswith("?")
+
+
+def evidence_row(tmp_path, extra=()):
+    files, calls = {}, {}
+
+    def call(cid, name, output, phase="research", success=True, url="https://site.example/a"):
+        event = {"type": "agent.session.input.tool_result", "turn_id": "turn_1", "call_id": cid,
+                 "success": success, "output": json.dumps(output)}
+        raw = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        files[cid + ".json"] = raw
+        calls[cid] = {"request": {"turn_id": "turn_1", "call_id": cid, "name": name, "arguments": {"url": url}},
+                      "phase": phase, "attempted": True, "result_file": cid + ".json", "success": success,
+                      "result_sha256": hashlib.sha256(raw).hexdigest(), "result_digest": verification._json_digest(event)}
+
+    page = {"requested_url": "https://site.example/a", "url": "https://site.example/final",
+            "redirects": [{"url": "https://site.example/a", "status": 301, "location": "https://site.example/final"}],
+            "text": "Workers hand pack trays at the north site."}
+    call("read_ok", verification.READ_TOOL, page)
+    call("search_ok", verification.SEARCH_TOOL, {"response": {"results": [{"url": "https://site.example/b", "title": "B",
+                                                                            "snippet": "Snippet text here"}]}})
+    call("publication_read", verification.READ_TOOL, page, phase="publication")
+    call("failed_read", verification.READ_TOOL, page, success=False)
+    call("tampered", verification.READ_TOOL, page)
+    files["tampered.json"] = files["tampered.json"].replace(b"north", b"south")
+    call("not_a_page", verification.READ_TOOL, {"text": None, "url": "https://site.example/c", "requested_url": "x"})
+    call("other_tool", "blueprint_history_search", {"rows": []})
+    snapshot = json.dumps({"candidates": [{"basis": [{"citations": [{"url": "https://site.example/c",
+                                                                      "excerpts": ["Citation excerpt text", 7]}]}]}]}).encode()
+    files["snapshot.json"] = snapshot
+    call("findall_read", "blueprint_findall_result", {"ok": True})
+    reads = {"findall_read": {"operation": "result", "file": "snapshot.json", "sha256": hashlib.sha256(snapshot).hexdigest(),
+                              "bytes": len(snapshot)},
+             "findall_bad": {"operation": "result", "file": "snapshot.json", "sha256": "0" * 64, "bytes": len(snapshot)}}
+    calls["findall_bad"] = {**calls["findall_read"]}
+    for args in extra:
+        call(*args)
+    return {"application_tool_calls": calls, "parallel_findall_reads": reads}, files
+
+
+def test_retained_evidence_reads_only_digest_checked_research_and_qa_results(tmp_path):
+    row, files = evidence_row(tmp_path)
+    reads = []
+    evidence = verification.retained_evidence(row, lambda name: reads.append(name) or files[name])
+    assert "publication_read.json" not in reads and "failed_read.json" not in reads and "other_tool.json" not in reads
+    assert sorted({page["url"] for page in evidence["pages"]}) == ["https://site.example/a", "https://site.example/final"]
+    assert {(e["url"], e["kind"], e["text"]) for e in evidence["excerpts"]} == {
+        ("https://site.example/b", "search_snippet", "Snippet text here"),
+        ("https://site.example/c", "citation_excerpt", "Citation excerpt text")}
+    assert evidence["refused"] == 3  # tampered bytes, a page without text and a snapshot whose digest differs
+    summary = verification.evidence_summary(evidence)
+    assert summary["state"] == "retained" and (summary["pages"], summary["excerpts"], summary["refused"]) == (2, 2, 3)
+    assert verification.evidence_summary(None) == verification.evidence_summary({"state": "other"}) == verification.UNAVAILABLE
+    assert verification.retained_evidence({}, lambda name: pytest.fail("nothing to read"))["pages"] == []
+    with pytest.raises(OSError):
+        verification.retained_evidence(row, lambda name: (_ for _ in ()).throw(OSError("store unavailable")))
+
+
+def test_retained_evidence_credits_only_same_host_redirects_counts_a_missing_file_and_keeps_a_budget(tmp_path):
+    cross = {"requested_url": "https://site.example/x", "url": "https://elsewhere.example/x",
+             "redirects": [{"url": "https://site.example/x", "status": 302, "location": "https://elsewhere.example/x"}],
+             "text": "Text that another host served for this request."}
+    hops = {"requested_url": "http://site.example/y", "url": "https://www.site.example/z",
+            "redirects": [{"url": "http://site.example/y", "status": 301, "location": "https://www.site.example/z"}],
+            "text": "Same host text across an http, www and path redirect."}
+    row, files = evidence_row(tmp_path, extra=[("read_cross", verification.READ_TOOL, cross),
+                                               ("read_hops", verification.READ_TOOL, hops)])
+    evidence = verification.retained_evidence(row, files.__getitem__)
+    urls = sorted({page["url"] for page in evidence["pages"]})
+    assert urls == ["http://site.example/y", "https://site.example/a", "https://site.example/final", "https://www.site.example/z"]
+    assert evidence["refused"] == 3  # A cross-host redirect is not credited, and it is not a refusal either.
+    # One missing file is counted as refused; every other result is still used.
+    del files["read_ok.json"]
+    partial = verification.retained_evidence(row, lambda name: files[name] if name in files else (_ for _ in ()).throw(
+        FileNotFoundError(name)))
+    assert partial["refused"] == 4 and {e["url"] for e in partial["excerpts"]} == {"https://site.example/b", "https://site.example/c"}
+    assert sorted({page["url"] for page in partial["pages"]}) == ["http://site.example/y", "https://www.site.example/z"]
+    # The budget is taken before each read; spent, retained_evidence stops with EvidenceBudgetExhausted.
+    reads = []
+    with pytest.raises(verification.EvidenceBudgetExhausted):
+        verification.retained_evidence(row, lambda name: reads.append(name) or files.get(name, b""),
+                                       budget=verification.ReadBudget(2, 60))
+    assert len(reads) == 2
+    ticks = iter([0, 0, 61])
+    with pytest.raises(verification.EvidenceBudgetExhausted):
+        verification.retained_evidence(row, files.get, budget=verification.ReadBudget(100, 60, clock=lambda: next(ticks)))
+    assert verification.retained_evidence(row, lambda name: files.get(name) or (_ for _ in ()).throw(FileNotFoundError(name)),
+                                          budget=verification.ReadBudget(100, 60))["refused"] == 4

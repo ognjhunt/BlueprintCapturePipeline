@@ -21,6 +21,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -34,13 +35,24 @@ _FREE_FLOOR = 5 * 1024**3
 _ERROR = 'scene_retirement_runtime_unproven'
 _MAX_FILES = 32768
 _MAX_BYTES = 4 * 1024**3
-_MAX_SECONDS = 300
+# Installation includes authenticated source, SDK hashing and durable copies of
+# up to 32,768 leaves. This availability bound is not a retirement/action lease.
+_MAX_SECONDS = 900
 _SKIP = frozenset(('__pycache__', '.git'))
 
 
 def _require(value):
     if not value:
         raise ValueError(_ERROR)
+
+
+def _installation_deadline(supplied=None):
+    started = time.monotonic()
+    _require(type(started) is float and math.isfinite(started))
+    _require(supplied is None or type(supplied) is float and math.isfinite(supplied))
+    deadline = started + _MAX_SECONDS if supplied is None else min(started + _MAX_SECONDS, supplied)
+    _require(started <= deadline)
+    return deadline
 
 
 def _identity(info):
@@ -424,7 +436,7 @@ def prepare(source, dependencies, *, _deadline=None):
     """Copy exact protected inputs; no policy, consent, generation or flag writes."""
     try:
         source, dependencies = Path(source), Path(dependencies)
-        deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
+        deadline = _installation_deadline(_deadline)
         rows, sources = {}, {}
         _tree(source / 'src/blueprint_pipeline', Path('src/blueprint_pipeline'), rows, sources, deadline)
         _tree(source / 'deploy/systemd', Path('deploy/systemd'), rows, sources, deadline)
@@ -602,7 +614,7 @@ def refresh(source, dependencies, *, expected_current, _deadline=None):
                  and type(expected_current['sha256']) is str
                  and re.fullmatch(r'sha256:[0-9a-f]{64}', expected_current['sha256'])
                  and type(expected_current['size_bytes']) is int and 0 < expected_current['size_bytes'] <= 16 * 1024**2)
-        deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
+        deadline = _installation_deadline(_deadline)
         source, dependencies = Path(source), Path(dependencies)
         rows, sources, sdk_rows, sdk_sources = _refresh_inputs(source, dependencies, deadline)
         boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
@@ -1003,7 +1015,7 @@ def _sdk_wheel(package, tools):
     return sorted(choices, key=lambda item: (item[0], item[1]['url']))[0][1]
 
 
-def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_checkout=False, ssh=None):
+def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_checkout=False, ssh=None, input_data=None):
     executable = Path('/usr/bin/git')
     parent = _open(executable.parent, directory=True)
     try:
@@ -1040,8 +1052,17 @@ def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_chec
         environment['GIT_SSH_COMMAND'] = ssh
     _require(type(cap) is int and 0 <= cap <= _MAX_BYTES)
     invocation_deadline = min(deadline, time.monotonic()+30)
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, env=environment, start_new_session=True)
+    # A private, immediately unlinked input file avoids pipe deadlocks while
+    # keeping batch requests bounded. Output still uses the same capped reader.
+    with ExitStack() as inputs:
+        child_input = subprocess.DEVNULL
+        if input_data is not None:
+            _require(type(input_data) is bytes and len(input_data) <= 65536)
+            child_input = inputs.enter_context(tempfile.TemporaryFile())
+            child_input.write(input_data)
+            child_input.seek(0)
+        process = subprocess.Popen(command, stdin=child_input, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=environment, start_new_session=True)
     output, errors = bytearray(), bytearray()
     try:
         with selectors.DefaultSelector() as selector:
@@ -1220,7 +1241,7 @@ def _sdk_toml(raw, wheelhouse, deadline):
 
 def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=None):
     """Build the locked base production closure for this system ABI, no setup.py."""
-    deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
+    deadline = _installation_deadline(_deadline)
     try:
         source = Path(source)
         raw, _ = _record_bytes(source / 'uv.lock', deadline)
@@ -1265,6 +1286,42 @@ def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=Non
         raise ValueError(_ERROR) from exc
 
 
+def _signed_release_blobs(source, items, deadline):
+    """Acquire a small batch; authenticate each bounded blob independently."""
+    _require(0 < len(items) <= 16 and len({name for _, _, name in items}) == len(items))
+    request = b''.join(digest.encode('ascii') + b'\n' for _, digest, _ in items)
+    checked = _sdk_git_command(source, ['cat-file', '--batch-check'], deadline,
+                               cap=len(items) * 80, raw_checkout=True, input_data=request)
+    lines = checked.split(b'\n')
+    _require(len(lines) == len(items) + 1 and lines[-1] == b'')
+    headers, sizes = [], []
+    for (_, digest, name), line in zip(items, lines):
+        fields = line.split(b' ')
+        _require(len(fields) == 3 and fields[:2] == [digest.encode('ascii'), b'blob']
+                 and fields[2].isdigit())
+        size = int(fields[2])
+        limit = 16 * 1024**2 if name == 'uv.lock' else 1024 * 1024
+        _require(0 <= size <= limit and fields[2] == str(size).encode('ascii'))
+        headers.append(line + b'\n')
+        sizes.append(size)
+    cap = sum(len(header) + size + 1 for header, size in zip(headers, sizes))
+    body = _sdk_git_command(source, ['cat-file', '--batch'], deadline,
+                            cap=cap, raw_checkout=True, input_data=request)
+    offset, result = 0, {}
+    for (_, digest, name), header, size in zip(items, headers, sizes):
+        _require(time.monotonic() <= deadline and body[offset:offset+len(header)] == header)
+        offset += len(header)
+        raw = body[offset:offset+size]
+        offset += size
+        _require(len(raw) == size and body[offset:offset+1] == b'\n'
+                 and hashlib.sha1(b'blob ' + str(size).encode() + b'\0' + raw).hexdigest() == digest)
+        offset += 1
+        _require(name not in result)
+        result[name] = raw
+    _require(offset == len(body))
+    return result
+
+
 def _signed_release(source, commit, deadline):
     """Copy only authenticated Git object bytes, never mutable checkout code."""
     _require(type(commit) is str and re.fullmatch('[0-9a-f]{40}', commit))
@@ -1283,7 +1340,11 @@ def _signed_release(source, commit, deadline):
     _record(claim, selected, deadline)
     _mkdir(root)
     total, paths = 0, set()
-    for mode, digest, name in items:
+    for index, (mode, digest, name) in enumerate(items):
+        if index % 16 == 0:
+            missing = [item for item in items[index:index+16]
+                       if not (root / item[2]).exists() and not (root / item[2]).is_symlink()]
+            blobs = _signed_release_blobs(source, missing, deadline) if missing else {}
         _require(name not in paths)
         paths.add(name)
         # The lock is bounded data; source modules retain the tighter cap.
@@ -1295,10 +1356,8 @@ def _signed_release(source, commit, deadline):
             # for every already-retained source file on a bounded retry.
             body, _ = _record_bytes(target, deadline, cap=blob_cap, allow_empty=True)
         else:
-            size = _sdk_git_command(source, ['cat-file', '-s', digest], deadline, cap=32, raw_checkout=True)
-            _require(size.strip().isdigit() and int(size) <= blob_cap)
-            body = _sdk_git_command(source, ['cat-file', 'blob', digest], deadline, cap=int(size), raw_checkout=True)
-            _require(len(body) == int(size))
+            body = blobs[name]
+            _require(len(body) <= blob_cap)
         total += len(body)
         _require(total <= _MAX_BYTES
                  and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
@@ -1417,8 +1476,7 @@ def _resume_initial_intent(dependencies, deadline):
 
 def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None, _progress=None):
     """Complete root snapshot and ABI SDK before callers expose service units."""
-    deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
-    _require(type(deadline) is float and math.isfinite(deadline) and time.monotonic() <= deadline)
+    deadline = _installation_deadline(_deadline)
     def phase(name):
         if _progress is not None:
             _progress(name)
@@ -1466,15 +1524,16 @@ def main(argv=None):
     def report_phase(name):
         print('scene_retirement_runtime_phase:' + name, file=sys.stderr, flush=True)
     try:
+        deadline = _installation_deadline(arguments.deadline_monotonic)
         if arguments.locked_sdk:
             _require(arguments.source_commit is not None)
             result = prepare_deployment(arguments.source, source_commit=arguments.source_commit,
                 wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout,
-                _deadline=arguments.deadline_monotonic, _progress=report_phase)
+                _deadline=deadline, _progress=report_phase)
         else:
             report_phase('prepare')
             dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
-            result = prepare(arguments.source, dependencies)
+            result = prepare(arguments.source, dependencies, _deadline=deadline)
     except Exception as exc:
         # Never forward exception text or traceback from protected paths or SDK
         # acquisition. These fixed markers are diagnostic only, never proof.

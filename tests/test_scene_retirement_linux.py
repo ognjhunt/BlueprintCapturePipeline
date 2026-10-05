@@ -281,7 +281,8 @@ def _enabled_sdk_native_phase():
         assert prepared['status'] == 'prepared' and prepared['source_commit'] == commit
         assert prepared['authority_issued'] is False and prepared['cleanup_enabled'] is False
         # A second genuine deployment invocation exercises the atomic rolling
-        # source/SDK cohort. Each invocation retains its original 300s origin.
+        # source/SDK cohort. Each invocation shares one 900s installation ceiling;
+        # this bounded native fixture retains its stricter 310s test watchdog.
         refreshed = json.loads(_native(['/usr/bin/python3','-I','-S',str(_BOOT/'runtime_installer.py'),
             *command[4:]],timeout=310))
         assert refreshed['status'] == 'refreshed' and refreshed['source_commit'] == commit

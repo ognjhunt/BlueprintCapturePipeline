@@ -735,8 +735,12 @@ def qa_counts(row, block):
     eligible = {r.get("candidate_key") for r in results if isinstance(r, dict) and r.get("eligible_for_qualified_promotion") is True}
     accepted = set(review.get("accepted_keys") or [])
     linked = {item["candidate_key"] for item in block["outcomes"] if item.get("candidate_key")}
-    return {"eligible_for_promotion": {"slice": len(eligible & linked), "run": len(eligible)},
-            "accepted": {"slice": len(accepted & linked), "run": len(accepted)}}
+    counts = {"eligible_for_promotion": {"slice": len(eligible & linked), "run": len(eligible)},
+              "accepted": {"slice": len(accepted & linked), "run": len(accepted)}}
+    if "outreach_ready_keys" in review:
+        outreach = set(review.get("outreach_ready_keys") or [])
+        counts["outreach_ready"] = {"slice": len(outreach & linked), "run": len(outreach)}
+    return counts
 
 
 def status(row):

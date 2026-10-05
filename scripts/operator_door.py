@@ -363,10 +363,15 @@ def _terminal(state: dict[str, Any]) -> bool | None:
 
     result = state.get("result") or {}
     outcome = state.get("outcome") or {}
+    observed = state.get("observed_outcome") or {}
+    if observed.get("status") in {"observed_completed", "observed_failed"}:
+        return observed["status"] == "observed_completed"
     if outcome:
         return outcome.get("status") in _TERMINAL_OK
     status = result.get("status")
     if status == "done":
+        if (state.get("request") or {}).get("kind") == "unit" and not result.get("unit_observation"):
+            return None
         return True
     if status in {"refused", "failed"}:
         return False
@@ -395,6 +400,10 @@ def _wait(request_id: str, *, timeout: float, poll: float) -> int:
 
 
 def _submit(body: dict[str, Any], args: argparse.Namespace) -> int:
+    import uuid
+    operation_key = getattr(args, "operation_key", None) or str(uuid.uuid4())
+    print(f"operation key: {operation_key} (reuse --operation-key after a lost response)", file=sys.stderr)
+    body = {**body, "operation_key": operation_key}
     accepted = _json("POST", "/requests", body=body)
     if not getattr(args, "wait", False):
         _print(accepted)
@@ -484,6 +493,7 @@ def _print_usage(status: dict[str, Any]) -> int:
 
 
 def _add_wait(parser: argparse.ArgumentParser, timeout: float) -> None:
+    parser.add_argument("--operation-key", help="stable key for safe retry after a lost response")
     parser.add_argument("--wait", action="store_true", help="poll until the request finishes")
     parser.add_argument("--timeout", type=float, default=timeout)
     parser.add_argument("--poll", type=float, default=15.0)

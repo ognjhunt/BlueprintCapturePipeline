@@ -107,7 +107,7 @@ config on every scheduler tick (`approved_envelope_mismatch`).
 
    `configure` checks the root bindings and `config` with the installed release.
    It does not check the other sections. It replaces the whole document except
-   the lease, `cleanup_observation_required`, `paid_expansion` and `site_universe`, so a partial
+   the lease, `cleanup_observation_required`, `paid_expansion`, `site_universe` and `outreach_ready`, so a partial
    file silently removes sections. For example, a missing `workflow` stops QA
    and publication. A held lease refuses with `runner_overlap`; try again after
    the worker releases it.
@@ -175,6 +175,107 @@ Deploy a release with this module only while the worker is idle, with the key
 absent, and confirm that the next create payload is unchanged before pinning. The
 owner commands are in [operators/README.md](operators/README.md#site-universe-backlog-slice).
 
+## Outreach-ready tier
+
+ADP-010 partner discovery, owner decision 2026-10-05 and design v1.1; shadow mode by
+default. `verification.outreach_tier(gates, now)` and `quote_level()` are the one rule
+(`blueprint.outreach-ready-rule.v1.1`) over the existing lead-verification gates. The
+shared golden file is `tests/fixtures/daily_research/lead-verification-tier.json`.
+
+- `verified` is the unchanged full-proof path. `outreach_ready` needs operator and
+  physical site as `verified_fact`, and site task as `verified_fact` or `inference`,
+  each from usable primary sources with a quote found whole in digest-checked
+  retained text for the same URL (`blueprint_read_source` page text, or a
+  `blueprint_search` snippet or Parallel citation excerpt). Anything else, including
+  any defect in the computation, is `none`.
+- A quote needs at least 3 words: whitespace-separated tokens with punctuation
+  stripped, so "U.S. Foods" is 2 words. Page text is credited to the requested URL
+  and its redirect hops only while every hop stays on the requested host; a
+  cross-host redirect gets no credit. A missing or digest-mismatched result file is
+  counted as refused and the other results are still used.
+- Site link: a `verified_fact` site task must be tied to this facility. The quote or
+  its retained page names the site's city or street, or it is a job post that names
+  the site. Company-wide capability text makes the site task `inference`; a
+  `verified_fact` site task without that tie gives `site_task_company_level`.
+- Blocks: a contradicted claim (a closed site is a contradicted physical site), a
+  contradicted fit, an invalid, expired, duplicate or conflicting assessment, and a
+  proven office or mailing-only address or contractor- or tenant-run site (the
+  optional `facility_type` and `facility_operator` assessment fields; proven means a
+  cited usable non-vendor source whose quote is in retained text). Automation is a
+  block only when the exact task at this site is shown fully automated (a
+  contradicted human workflow). Other automation evidence, including a contradicted
+  counterevidence, changes the question and not the eligibility.
+- Open checks, in order: `site_link` (site task not `verified_fact`),
+  `manual_workflow` (human workflow not `verified_fact`), `freshness` (`valid_until`
+  null), then `existing_automation`, `fit` and `interest`. Exactly one question, by
+  precedence S (site link open), M (manual workflow open), then A, word for word:
+  - S: "Is <task> done at your <site> site, or somewhere else in the company?"
+  - M: "Which parts of <task> at <site> still need people, and what has kept them
+    from being automated?"
+  - A: "What has kept the remaining <task> work at <site> from being automated so
+    far?"
+
+  `<task>` and `<site>` are the candidate's fields verbatim; a field that adds a
+  second question mark gives `question_not_single`. Blueprint-WebApp #855 derives
+  the same open checks and question from the same assessment.
+
+**Shadow mode** (`control.outreach_ready` absent or disabled, or a direction that
+names only `site_screen`): the row, create payload, packet, QA input, review,
+publication payloads, plans, receipts, CRM rows, bridge manifest and status output
+equal the release before the tier. `tests/fixtures/daily_research/outreach-ready-shadow-identity.json`
+holds main's digests for five end-to-end flows. A screen-only direction freezes
+nothing on the row. After publication completes, and outside the QA-to-publication
+window, the consumer records each candidate's tier in the ledger file
+`<date>-outreach-ready-shadow.json`, never in the row. It reads at most 600 results
+within 60 s, and it records only a skip code when less than 120 s remain before the
+run's deadline, when the budget runs out or when the store fails. A store failure
+there, including a bridge deadline, never raises into QA or publication.
+
+**Enabled** (a `daily_qa` direction): the run freezes the direction at its durable
+intent (`row.outreach_ready`) and pins `blueprint.lead-verification-result.v3` (v2
+plus `tier`, `eligible_for_outreach_ready` and the `outreach_ready` block). A failed
+control read freezes `outreach_ready_control_unavailable`, and a record too large
+for the intent freezes `outreach_ready_record_too_large`; both keep shadow mode.
+
+- QA is asked for `outreach_ready_keys`. `qa_decision` reads the retained evidence
+  once, within the same budget, and admits a listed key only when all hold: the
+  recomputed tier is `outreach_ready`; the key is promotable, unaccepted and new to
+  the CRM; its one QA check is source-verified and not a duplicate; QA attests
+  day-level `source_support_verified`; its `valid_until` is null, or a timestamp in
+  the form #855 records (`YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z` or
+  `±HH:MM`) later than the run's deadline (`consumer.qa_deadline`, which also bounds
+  publication); and the live direction still allows it.
+- `Runner.review` reuses that read in the same step; a retried review reads once.
+  Hypotheses are checked against the decision's own bound evaluation, so a
+  hypothesis that has expired since never refuses the review or its verified rows.
+  When the review cannot reproduce the recorded evidence, it still binds the
+  decision (the verified part exactly), leaves the hypotheses out of the payloads
+  and records `row.outreach_ready_withheld`.
+- Sheets and Notion payloads gain `hypotheses` only when non-empty. The publisher
+  gives each hypothesis its own eligibility list
+  (`publicationVerification(...).hypotheses`); a malformed or no-longer-current
+  hypothesis is left out of the plan and never blocks the day's verified rows. A
+  plan records `hypothesis_keys` and replays them at write and readback. Hypothesis
+  rows use the existing 19 columns after the verified rows (G `Hypothesis`, Q
+  `Outreach-ready: operator, site, task proven`, M `First email asks: ` plus the one
+  question, a newline and the marker); each Notion entry reads "Hypothesis, not
+  verified". `accepted_keys`, `eligible_for_qualified_promotion` and verified rows
+  are unchanged. Nothing authorizes a send.
+- The bridge binds the frozen record's digest at the durable intent. A row whose
+  manifest an older bridge rewrote without that digest (a rollback) is never
+  stranded: like `paid_expansion_grant_unbound`, it binds the record it carries from
+  then on, stays `outreach_ready_unbound`, and publishes no hypothesis.
+  An unclaimed saved plan is rebuilt with verified rows only. A claimed plan keeps
+  its exact GET-only readback; no further Notion batch is claimed while unbound.
+- Terminal Sheets recovery still recovers the verified rows on a day with
+  hypotheses. It withholds every hypothesis, because their QA listing and protected
+  review are not part of what the recovery proves.
+- The brake (`disable --apply`) stops admission at once. It does not stop hypotheses
+  that review already bound into the publication payloads.
+- Enable only after the WebApp release that accepts result v3 and v1.1 `hypotheses`
+  payloads (#855) is deployed. The owner command is in
+  [operators/README.md](operators/README.md#outreach-ready-hypothesis-direction).
+
 ## Stable private consumer contract
 
 Contract `blueprint.research-snapshot.v1`, root
@@ -185,6 +286,7 @@ Contract `blueprint.research-snapshot.v1`, root
 | `runs/YYYY-MM-DD` | Immutable row blob pointer, date/state, metadata binding, cleanup guard, actual session/turn/environment IDs, one-use create claim |
 | `blobs/SHA256` + `chunks/N` | Exact uncompressed SHA256/length, gzip metadata, immutable chunks at most 256 KiB each; read verifies all bytes |
 | `files/YYYY-MM-DD-{artifact,evidence,output,review,qa,qa-evidence}.json` | Blob pointers; downloaded raw artifact is immutable once bound |
+| `files/YYYY-MM-DD-outreach-ready-shadow.json` | Shadow-mode outreach-ready tiers, written once after publication completes; never read by consumers |
 | `files/{crm,knowledge,refresh-policy}.json` | Private checked input pointers, not public prospects |
 | `workItems/YYYY-MM-DD` | `owner=blueprint-research-qa-publication-agent`, `stage=validation_repair_pending`, `agent_qa_pending` or `publication_pending`, run key, row blob, packet digest, `observer_receipt_required=false`, no-outreach scope; repeated nonprogress becomes `validation_repair_blocked` |
 
@@ -367,8 +469,10 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
    use `configure --input /PRIVATE/control.json` for a validated update.
    `configure` keeps the top-level `paid_expansion` owner direction, which only
    `operators/paid-expansion-direction.py` changes ([SEARCH.md](SEARCH.md#owner-directed-paid-expansion-allowance)),
-   and the `site_universe` pin, which only `operators/site-universe-backlog.py` changes
-   (see [Site universe slice](#site-universe-slice)).
+   the `site_universe` pin, which only `operators/site-universe-backlog.py` changes
+   (see [Site universe slice](#site-universe-slice)), and the `outreach_ready`
+   direction, which only `operators/outreach-ready-direction.py` changes (see
+   [Outreach-ready tier](#outreach-ready-tier)).
    Deploy a release that changes a session tool schema only while the worker is
    idle. The 2026-10-04 release raises the Exa `max_cost_micros` maximum from
    5,000,000 to 50,000,000, and an in-flight session's tool check would refuse it.

@@ -4,6 +4,8 @@ import gzip
 import hashlib
 import json
 import random
+import struct
+import zlib
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -61,10 +63,19 @@ def manifest(rows, **changes):
     return value
 
 
-def build_export(rows, *, serialize=su.canonical_json, document=None, **changes):
+def stored_gzip(data):
+    """One gzip member of stored deflate blocks: the same bytes on every platform. gzip.compress lets
+    the platform's zlib choose the header OS byte (19 on macOS, 3 on Linux) and the deflate bytes."""
+    blocks = [data[start:start + 0xFFFF] for start in range(0, len(data), 0xFFFF)] or [b""]
+    body = b"".join(bytes([index == len(blocks) - 1]) + struct.pack("<HH", len(block), len(block) ^ 0xFFFF) + block
+                    for index, block in enumerate(blocks))
+    return b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff" + body + struct.pack("<II", zlib.crc32(data), len(data) & 0xFFFFFFFF)
+
+
+def build_export(rows, *, serialize=su.canonical_json, document=None, compress=lambda data: gzip.compress(data, mtime=0), **changes):
     rows = sorted(deepcopy(rows), key=lambda row: (row["rank"], row["site_id"]))
     value = document or {"schema_version": su.EXPORT, "manifest": manifest(rows, **changes), "rows": rows}
-    return gzip.compress(serialize(value).encode(), mtime=0)
+    return compress(serialize(value).encode())
 
 
 def pin_for(raw, *, slice_size=5, reoffer_after_days=90, generation="1001"):
@@ -625,6 +636,9 @@ def test_run_level_time_and_post_review_counts():
     assert status["funnel"]["qa"] == {"eligible_for_promotion": {"slice": 1, "run": 2}, "accepted": {"slice": 1, "run": 2}}
     assert status["state"] == "attached" and status["offered"] == 5 and status["packet_state"] == "attached"
     assert "site_ids" not in status and "Synthetic" not in canonical(status)
+    # A review that admitted outreach-ready hypotheses counts them too; others keep the shape above.
+    row["review"]["outreach_ready_keys"] = ["k2"]
+    assert su.status(row)["funnel"]["qa"]["outreach_ready"] == {"slice": 1, "run": 1}
 
 
 def test_packet_block_stays_inside_its_reserve_at_the_slice_cap():

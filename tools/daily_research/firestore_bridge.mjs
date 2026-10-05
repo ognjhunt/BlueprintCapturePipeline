@@ -39,7 +39,7 @@ const claimUpdate=(run,row,name,digest,batches=null)=>{
     publication_source_bindings:{...run.publication_source_bindings,[name]:sourceBinding(d)},
     ...(batches?{publication_batches:{...run.publication_batches,[name]:batches}}:{})};
 };
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|outreach-ready-shadow|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 // Owner-directed paid expansion allowance; mirrors tools/daily_research/allocation.py.
 const PAID_DIRECTION='blueprint.research-paid-expansion-direction.v1', PAID_GRANT='blueprint.research-paid-expansion-grant.v1';
 const PAID_PREFIX='operations/research/paid-expansion/', PAID_SOURCES=['exa','findall']; // Mirrors allocation.SOURCES.
@@ -117,6 +117,37 @@ async function suBounded(fn,ms) {
   catch(error) {throw error instanceof Refusal && suCode(error.message)?error:new Refusal('site_universe_object_unavailable');}
   finally {clearTimeout(timer);}
 }
+// Owner direction for outreach-ready hypotheses; mirrors tools/daily_research/outreach_ready.py.
+const OR_DIRECTION='blueprint.outreach-ready-direction.v1', OR_RULE='blueprint.outreach-ready-rule.v1.1';
+const OR_PREFIX='operations/research/outreach-ready/', OR_PATHS=['daily_qa','site_screen'], OR_MAX_OBJECT=16*1024;
+const OR_FIELDS=['approval_reference','approved_by','binding','effective_from','expires_at','issued_at','reason',
+  'rule_version','schema_version','scope','supersedes','version'];
+const orUri=hash=>`gs://${CLEANUP_BUCKET}/${OR_PREFIX}${hash}/direction.json`;
+const orCode=x=>typeof x==='string' && /^outreach_ready_[a-z_]{1,80}$/.test(x);
+function orDirectionProblem(d,control) {
+  if(!keysAre(d,OR_FIELDS) || d.schema_version!==OR_DIRECTION || d.rule_version!==OR_RULE) return 'outreach_ready_direction_invalid';
+  const b=d.binding,s=d.scope,[issued,start,end]=['issued_at','effective_from','expires_at'].map(k=>paidStamp(d[k]));
+  if(!keysAre(b,['agent_id','firestore_root','project_id','run_key_prefix','timezone'])
+      || b.project_id!==control?.project_id || b.agent_id!==control?.agent_id || b.firestore_root!==ROOT
+      || b.run_key_prefix!=='blueprint-researcher:' || b.timezone!=='America/Chicago') return 'outreach_ready_binding_mismatch';
+  if(!keysAre(s,['label','max_rows_per_batch','paths','sends_authorized']) || s.label!=='hypothesis' || s.sends_authorized!==false
+      || !Number.isSafeInteger(s.max_rows_per_batch) || s.max_rows_per_batch<1 || s.max_rows_per_batch>50
+      || !Array.isArray(s.paths) || !s.paths.length || !s.paths.every((p,i)=>OR_PATHS.includes(p) && (i===0 || s.paths[i-1]<p)))
+    return 'outreach_ready_scope_invalid';
+  if(!Number.isSafeInteger(d.version) || d.version<1 || d.version>1000000 || (d.version===1)!==(d.supersedes===null)
+      || d.supersedes!==null && !hexOK(d.supersedes) || !['approval_reference','approved_by','reason'].every(k=>paidText(d[k]))
+      || /^PENDING/i.test(d.approval_reference.trim())
+      || ![issued,start,end].every(Number.isFinite) || !(issued<=start && start<end) || end-issued>366*86400000)
+    return 'outreach_ready_direction_invalid';
+  return null;
+}
+async function orBounded(fn,ms) {
+  let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Refusal('outreach_ready_object_unavailable')),ms);});
+  try {return await Promise.race([fn(),deadline]);}
+  catch(error) {throw error instanceof Refusal && orCode(error.message)?error:new Refusal('outreach_ready_object_unavailable');}
+  finally {clearTimeout(timer);}
+}
 function paidDirectionProblem(d,control) {
   if(!keysAre(d,PAID_FIELDS) || d.schema_version!==PAID_DIRECTION) return 'paid_expansion_direction_invalid';
   if(paidMicros(d.per_run_limit_usd)===null) return 'paid_expansion_limit_invalid';
@@ -145,6 +176,7 @@ export class Store {
     this.schedulerStopped = schedulerStopped;
     this.archiveBucket = archiveBucket;
     this.siteUniverseReadMs = 20000; this.siteUniverseWriteMs = 30000;
+    this.outreachReadyReadMs = 20000; this.outreachReadyWriteMs = 30000;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -325,6 +357,16 @@ export class Store {
         if(freshFindall.some(key=>findall[key].reserved_micros>paidPerStart(liveLimit)) || overGrant(liveLimit))
           refuse('paid_expansion_reservation_exceeds_grant');
       }
+      const outreach=row.outreach_ready,outreachDigest=outreach===undefined || outreach===null?null:valueHash(outreach);
+      // One frozen outreach-ready record per row, bound at the durable intent: never added, replaced or
+      // dropped while bound. A shadow-mode row has no record and no field, exactly like an older manifest,
+      // so a record whose manifest an older bridge rewrote (a rollback dropped the digest) cannot be
+      // told apart from a record added later. Like paid_expansion_grant_unbound, that row is never
+      // stranded: it binds the record it carries from then on, stays unbound, and publishes no hypothesis.
+      const priorOutreach=prior.data()?.outreach_ready_digest;
+      const outreachUnbound=prior.exists && (prior.data().outreach_ready_unbound===true
+        || priorOutreach===undefined && outreachDigest!==null);
+      if(prior.exists && priorOutreach!==undefined && priorOutreach!==outreachDigest) refuse('outreach_ready_already_bound');
       if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
         refuse('research_mcp_profile_changed');
       if(row.mcp_profile && (!['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'].includes(row.mcp_profile)
@@ -389,6 +431,7 @@ export class Store {
         exa_expansion_run_id:exa?.run_id || null,
         exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
         paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
+        ...(outreachDigest?{outreach_ready_digest:outreachDigest}:{}),...(outreachUnbound?{outreach_ready_unbound:true}:{}),
         findall_claims:findall,findall_unbound:findallUnbound,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
         cleanup_binding_digest: cleanupBinding,
@@ -650,6 +693,7 @@ export class Store {
         exa_expansion_run_id:row.exa_expansion?.run_id || null,
         exa_expansion_terminal_receipt:row.exa_expansion?.terminal_receipt || null,
         paid_expansion_grant_digest:row.paid_expansion_grant?valueHash(row.paid_expansion_grant):null,
+        ...(row.outreach_ready?{outreach_ready_digest:valueHash(row.outreach_ready)}:{}),
         // An imported row keeps its claims and never admits a new one.
         findall_claims:findallClaims(row),findall_unbound:true,
         environment_id: row.environment_id || null});
@@ -1007,6 +1051,81 @@ export class Store {
       return {enabled:value.enabled,sha256:value.sha256 ?? null,generation:value.generation ?? null};
     });
   }
+  orFile(hash,generation=null) {
+    if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('outreach_ready_object_unavailable');
+    return this.archiveBucket.file(`${OR_PREFIX}${hash}/direction.json`,generation===null?undefined:{generation});
+  }
+  async orRead(hash,generation) {
+    // Exactly the pinned generation: generation, size and SHA-256 before any use.
+    const missing=error=>Number(error?.code)===404?'outreach_ready_object_missing':'outreach_ready_object_unavailable';
+    const file=this.orFile(hash,generation);let meta,raw;
+    try {[meta]=await file.getMetadata();} catch(error) {refuse(missing(error));}
+    if(String(meta?.generation)!==generation) refuse('outreach_ready_object_generation_mismatch');
+    const stored=Number(meta?.size);
+    if(!Number.isSafeInteger(stored) || stored<1 || stored>OR_MAX_OBJECT) refuse('outreach_ready_object_too_large');
+    try {[raw]=await file.download();} catch(error) {refuse(missing(error));}
+    if(!Buffer.isBuffer(raw) || raw.length!==stored || sha(raw)!==hash) refuse('outreach_ready_object_digest_mismatch');
+    return {uri:orUri(hash),sha256:hash,generation,bytes:raw.toString('base64')};
+  }
+  async outreachReadyObjectGet(hash,generation) {
+    if(!hexOK(hash) || !suGeneration(generation)) refuse('outreach_ready_pin_invalid');
+    return orBounded(()=>this.orRead(hash,generation),this.outreachReadyReadMs);
+  }
+  async outreachReadyObjectPut(hash,encoded) {
+    // Content-addressed and create-only. A direction grants nothing until outreach_ready_set
+    // pins its generation, so it needs no lease; the worker never reads it.
+    if(!hexOK(hash) || typeof encoded!=='string') refuse('outreach_ready_pin_invalid');
+    const raw=Buffer.from(encoded,'base64');
+    if(!raw.length || raw.length>OR_MAX_OBJECT) refuse('outreach_ready_object_too_large');
+    let direction;try {direction=JSON.parse(raw.toString('utf8'));} catch {refuse('outreach_ready_direction_invalid');}
+    const problem=orDirectionProblem(direction,(await this.control.get()).data());
+    if(problem) refuse(problem);
+    if(sha(raw)!==hash || pythonHash(direction)!==hash) refuse('outreach_ready_direction_digest_mismatch');
+    return orBounded(async()=>{
+      const file=this.orFile(hash);
+      try {await file.save(raw,{resumable:false,preconditionOpts:{ifGenerationMatch:0},
+        metadata:{contentType:'application/json',metadata:{sha256:hash}}});}
+      catch(error) {if(Number(error?.code)!==412) refuse('outreach_ready_object_unavailable');}
+      let meta;try {[meta]=await file.getMetadata();} catch {refuse('outreach_ready_object_unavailable');}
+      const stored=await this.orRead(hash,String(meta?.generation));
+      return {uri:stored.uri,sha256:hash,generation:stored.generation,size:raw.length};
+    },this.outreachReadyWriteMs);
+  }
+  async outreachReadySet(expected,value) {
+    // The only writer of control.outreach_ready: a compare-and-swap under the fenced lease. A new
+    // direction must be exactly the bytes of its pinned, immutable generation and continue the
+    // version chain; the same direction may only be braked (enabled=false), and only a new owner
+    // direction re-enables it. Live admission rereads this pin, so the brake applies at once.
+    if(!(expected===null || hexOK(expected)) || !keysAre(value,['current','enabled']) || typeof value.enabled!=='boolean'
+        || !keysAre(value.current,['direction','generation','sha256','uri','version'])) refuse('outreach_ready_request_invalid');
+    const entry=value.current,fresh=expected===null || entry.sha256!==expected;
+    if(fresh) {
+      const problem=orDirectionProblem(entry.direction,(await this.control.get()).data());
+      if(problem) refuse(problem);
+      if(!hexOK(entry.sha256) || pythonHash(entry.direction)!==entry.sha256 || entry.version!==entry.direction.version
+          || entry.uri!==orUri(entry.sha256) || !suGeneration(entry.generation)) refuse('outreach_ready_direction_digest_mismatch');
+      await this.outreachReadyObjectGet(entry.sha256,entry.generation);  // Its SHA-256 is the direction's canonical bytes.
+    }
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(); this.fence(control);
+      const pin=control.outreach_ready,prior=pin?.current || null;
+      if((prior?.sha256 ?? null)!==expected) refuse('outreach_ready_direction_conflict');
+      if(!fresh) {
+        if(valueHash(entry)!==valueHash(prior)) refuse('outreach_ready_direction_conflict');
+        if(value.enabled && pin.enabled!==true) refuse('outreach_ready_reenable_requires_new_direction');
+        if(pin.enabled!==value.enabled) tx.set(this.control,{...control,outreach_ready:{enabled:value.enabled,current:prior}});
+        return {enabled:value.enabled,sha256:prior.sha256,generation:prior.generation,version:prior.version};
+      }
+      const problem=orDirectionProblem(entry.direction,control);
+      if(problem) refuse(problem);
+      if(prior && (!hexOK(prior.sha256) || !Number.isSafeInteger(prior.version) || prior.version<1))
+        refuse('outreach_ready_current_unverified');
+      if(!value.enabled || entry.direction.supersedes!==(prior?.sha256 ?? null) || entry.version!==(prior?prior.version+1:1))
+        refuse('outreach_ready_direction_chain_invalid');
+      tx.set(this.control,{...control,outreach_ready:{enabled:true,current:entry}});
+      return {enabled:true,sha256:entry.sha256,generation:entry.generation,version:entry.version};
+    });
+  }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
     const groups=await Promise.all(['validation_repair_pending','agent_qa_pending','publication_pending']
@@ -1178,7 +1297,8 @@ export class Store {
           allowed_repair:'Call blueprint_inspect_publication with an empty object.'}]);
         return {success:true,output:{validated_research:row.qa.decision || null,packet:row.packet,
           lead_verification:row.review?.lead_verification || null,
-          verification_eligibility:Object.fromEntries(Object.keys(row.delivery || {}).map(name=>[name,publicationVerification(row,name,this.clock())])),
+          verification_eligibility:Object.fromEntries(Object.keys(row.delivery || {}).map(name=>[name,publicationVerification(row,name,this.clock(),
+            {withheld:this.outreachUnbound(run,row)?'outreach_ready_unbound':null})])),
           destinations:Object.fromEntries(Object.entries(row.delivery || {}).map(([name,d])=>[name,{
             key:d.key,payload:d.payload,payload_digest:d.payload_digest,presentation:d.presentation || null,
             state:d.state,receipt:d.receipt || null,plan:d.plan || null,
@@ -1297,6 +1417,9 @@ export class Store {
         || typeof request.publication_authority_reference!=='string') refuse('terminal_sheets_recovery_request_invalid');
     const source=JSON.parse(Buffer.from(await this.blobGet(request.source_row_blob),'base64').toString('utf8'));
     const p=source.publication,d=source.delivery?.sheets,review=source.review,qa=source.qa;
+    // This recovery re-derives only the verified Sheets payload. On a day with hypotheses it still
+    // recovers the verified rows and withholds every hypothesis (publish passes the reason to the plan):
+    // their QA listing and protected review are not part of what the recovery proves.
     if(source.date!==request.day || source.run_key!==`blueprint-researcher:${request.day}` || source.canary
         || source.state!=='reviewed' || source.publication_profile!=='agent-owned-v1'
         || !source.session_id || !source.turn_id || qa?.state!=='validated' || !qa.turn_id
@@ -1409,10 +1532,20 @@ export class Store {
     try {
       if(terminalRecovery && attemptState((await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row,destination).claimed && !d.plan)
         refuse('terminal_sheets_recovery_claim_plan_missing');
-      if (!d.plan) {
+      const withheld=terminalRecovery || d.payload?.hypotheses?.length
+        ? await this.hypothesesWithheld(day,terminalRecovery,row) : null;
+      const replan=withheld && d.plan?.hypothesis_keys?.length;
+      if(replan) {
+        const run=(await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),state=attemptState(run,row,destination);
+        // A consumed plan may already have an external effect. Preserve its exact readback,
+        // but do not append any more batches after rollback loses hypothesis authority.
+        if(state.claimed || Object.keys(state.batches || {}).length || d.receipt || d.state==='acknowledged')
+          return await this.publisher.reconcile(row,destination,d.plan);
+      }
+      if (!d.plan || replan) {
         requirePublicationVerification(row,destination,this.clock());
         const expected_blob=terminalRecovery?sha(JSON.stringify(row)):null;
-        d.plan=await this.publisher.prepare(row,destination);
+        d.plan=await this.publisher.prepare(row,destination,{withheld});
         await this.put(row,terminalRecovery?{expected_blob,context:terminalRecovery}:null);
       }
       if(terminalRecovery) await this.transaction(async tx=>{
@@ -1437,6 +1570,7 @@ export class Store {
         if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || attemptState(run,row,destination).claimed) refuse('publication_attempt_not_admitted');
+        this.hypothesisPlanGate(run,row,d.plan);
         if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
         requirePublicationVerification(row,destination,this.clock());
         tx.set(ref,claimUpdate(run,row,destination,d.plan.request_digest),{merge:true});
@@ -1457,8 +1591,10 @@ export class Store {
       requirePublicationVerification(row,destination,this.clock());
       await this.publisher.write(row,destination,d.plan,{beforeWrite:async()=>{
         requirePublicationVerification(row,destination,this.clock());
+        if(!terminalRecovery && !d.plan.hypothesis_keys?.length) return;
+        const latest=(await ref.get()).data();this.hypothesisPlanGate(latest,row,d.plan);
         if(!terminalRecovery) return;
-        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        const control=(await this.control.get()).data();
         this.terminalSheetsGate(control,row,terminalRecovery);
         if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
           refuse('publication_authority_or_plan_changed');
@@ -1471,6 +1607,22 @@ export class Store {
       if(error.provider_response) wrapped.provider_response=error.provider_response;
       throw wrapped;
     }
+  }
+  // Why every hypothesis on this row stays out of a fresh plan, or null: an unbound outreach record
+  // (an older bridge dropped its digest) or a verified-rows-only terminal Sheets recovery.
+  async hypothesesWithheld(day,terminalRecovery=null,row=null) {
+    if(terminalRecovery) return 'terminal_sheets_recovery_verified_rows_only';
+    const run=(await this.db.doc(`${ROOT}/runs/${day}`).get()).data();
+    return this.outreachUnbound(run,row || await this.get(day)) ? 'outreach_ready_unbound' : null;
+  }
+  outreachUnbound(run,row) {
+    // Publication may resume directly after rollback, before put projects the sticky flag.
+    return run?.outreach_ready_unbound===true || row?.outreach_ready!=null
+      && run?.outreach_ready_digest!==valueHash(row.outreach_ready);
+  }
+  hypothesisPlanGate(run,row,plan) {
+    if(this.outreachUnbound(run,row) && plan.hypothesis_keys?.length)
+      refuse('publication_hypotheses_withheld');
   }
   async publishNotionBatch(row,plan,authority,collectionAuthority,proof,agentContext=null) {
     const ref=this.db.doc(`${ROOT}/runs/${row.date}`),before=await ref.get();
@@ -1496,11 +1648,13 @@ export class Store {
       const snap=await tx.get(ref),run=snap.data();
       if(run.blob!==before.data().blob || attemptState(run,row,'notion').batches?.[step.number])
         refuse('publication_attempt_not_admitted');
+      this.hypothesisPlanGate(run,row,plan);
       tx.set(ref,claimUpdate(run,row,'notion',plan.request_digest,{...claims,[step.number]:claim}),{merge:true});
     });
     // Reads and the claim can be slow. Check current authority and lease immediately before mutation.
     if(this.publisher.beforeNotionStep) await this.publisher.beforeNotionStep(row,plan,step);
     const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+    this.hypothesisPlanGate(latest,row,plan);
     this.fence(control);
     this.workflowGate(control,!!proof);
     if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
@@ -1612,6 +1766,7 @@ export class Store {
         if (value?.enabled !== false || value?.schema_version !== 'blueprint.research-control.v1') refuse('firestore_init_not_disabled');
         if (Object.hasOwn(value, 'paid_expansion')) refuse('paid_expansion_requires_direction_operation');
         if (Object.hasOwn(value, 'site_universe')) refuse('site_universe_requires_pin_operation');
+        if (Object.hasOwn(value, 'outreach_ready')) refuse('outreach_ready_requires_direction_operation');
         return this.transaction(async tx => {
           const snap = await tx.get(this.control);
           if (snap.exists) refuse('firestore_control_already_exists');
@@ -1648,15 +1803,19 @@ export class Store {
           refuse('firestore_control_binding_invalid');
         return this.transaction(async tx => {
           const control = (await tx.get(this.control)).data(); this.fence(control);
-          // Only paid_expansion_set and site_universe_set write their owner sections; a full replace keeps them.
+          // Only paid_expansion_set, site_universe_set and outreach_ready_set write their owner sections;
+          // a full replace keeps them.
           if (Object.hasOwn(value, 'paid_expansion') && valueHash(value.paid_expansion ?? null) !== valueHash(control.paid_expansion ?? null))
             refuse('paid_expansion_requires_direction_operation');
           if (Object.hasOwn(value, 'site_universe') && valueHash(value.site_universe ?? null) !== valueHash(control.site_universe ?? null))
             refuse('site_universe_requires_pin_operation');
-          const replacement = {...value}; delete replacement.paid_expansion; delete replacement.site_universe;
+          if (Object.hasOwn(value, 'outreach_ready') && valueHash(value.outreach_ready ?? null) !== valueHash(control.outreach_ready ?? null))
+            refuse('outreach_ready_requires_direction_operation');
+          const replacement = {...value}; delete replacement.paid_expansion; delete replacement.site_universe; delete replacement.outreach_ready;
           tx.set(this.control, {...replacement, cleanup_observation_required:control.cleanup_observation_required===true,
             lease: control.lease, ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {}),
-            ...(control.site_universe ? {site_universe: control.site_universe} : {})}); return true;
+            ...(control.site_universe ? {site_universe: control.site_universe} : {}),
+            ...(control.outreach_ready ? {outreach_ready: control.outreach_ready} : {})}); return true;
         });
       }
       case 'acquire': return this.acquire();
@@ -1760,6 +1919,12 @@ export class Store {
       case 'site_universe_set': {
         if (!Object.hasOwn(request, 'expected_sha256')) refuse('site_universe_pin_invalid');
         return this.siteUniverseSet(request.expected_sha256, request.value);
+      }
+      case 'outreach_ready_object_get': return this.outreachReadyObjectGet(request.sha256,request.generation);
+      case 'outreach_ready_object_put': return this.outreachReadyObjectPut(request.sha256,request.bytes);
+      case 'outreach_ready_set': {
+        if (!Object.hasOwn(request, 'expected_sha256')) refuse('outreach_ready_request_invalid');
+        return this.outreachReadySet(request.expected_sha256, request.value);
       }
       default: refuse('firestore_operation_invalid');
     }

@@ -3128,6 +3128,7 @@ def _report_break_glass_notes(
 
 _SCENE_RUNTIME_BOOT_ROOT = Path("/usr/lib/blueprint/scene-retirement-runtime")
 _SCENE_RUNTIME_OWNER = 0
+_SCENE_RUNTIME_INSTALL_SECONDS = 900
 
 
 def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str, *, deadline: float,
@@ -3284,7 +3285,8 @@ def _scene_runtime_diagnostic(stderr: bytes | str | None, *, phase: str, reason:
 
 def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) -> dict[str, Any]:
     """Authenticate the selected release installer before exposing new units."""
-    deadline = time.monotonic() + 300
+    # One installation-only origin covers authentication, SDK and durable copy.
+    deadline = time.monotonic() + _SCENE_RUNTIME_INSTALL_SECONDS
     root = _SCENE_RUNTIME_BOOT_ROOT
     helper = root / "runtime_installer.py"
     error = "deploy_scene_retirement_runtime_unproven"

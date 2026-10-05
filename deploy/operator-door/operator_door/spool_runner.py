@@ -37,6 +37,7 @@ from .requests import (
 
 RESULT_SCHEMA = "blueprint_operator_door_result.v1"
 _ACTIVE_STATES = "active,activating,deactivating,reloading"
+_UNIT_OBSERVATION_PROPERTIES = "ActiveState,SubState,Result,InvocationID,ExecMainStatus,Type"
 
 
 def _now() -> str:
@@ -491,6 +492,14 @@ def _act_release_hold(
                                            "released_by": requested_by, "released_at": pending["released_at"]}}
 
 
+def _observe_unit(runner: CommandRunner, unit: str) -> dict[str, str]:
+    observation = runner.run(["systemctl", "show", "--no-pager",
+        "--property=" + _UNIT_OBSERVATION_PROPERTIES, "--", unit], timeout=10)
+    if observation.returncode != 0:
+        return {}
+    return dict(line.split("=", 1) for line in observation.stdout.splitlines() if "=" in line)
+
+
 def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
          requested_by: str = "") -> dict[str, Any]:
     if request["kind"] in {"owner-census-decision", "legacy-owner-census"} and config.owner_census_decisions_enabled != 1:
@@ -501,10 +510,39 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
             if busy is not None:
                 return {"status": "refused", "code": "notifier_repair_deploy_in_progress"}
             return _launch(config, runner, request_id, request)
+        prior = _observe_unit(runner, request["unit"])
         result = runner.run(
-            ["systemctl", "--no-block", request["action"], "--", request["unit"]], timeout=30
+            ["systemctl", request["action"], "--", request["unit"]], timeout=30
         )
-        return {"status": "done" if result.returncode == 0 else "failed", "unit_action": request,
+        if result.returncode == 124:
+            properties = _observe_unit(runner, request["unit"])
+            # systemctl's caller timed out, but its submitted job can continue.
+            # Bind only a newly observed invocation: an old success receipt must
+            # not complete this operation while a new job is still queued.
+            if (not prior or not properties.get("InvocationID")
+                    or properties.get("InvocationID") == prior.get("InvocationID")):
+                properties.pop("InvocationID", None)
+            return {"status": "unknown", "code": "unit_action_timed_out",
+                    "unit_action": request, "unit": request["unit"],
+                    "prior_unit_observation": prior, "unit_observation": properties,
+                    "returncode": result.returncode, "stderr_tail": result.stderr[-2000:]}
+        if result.returncode == 0:
+            properties = _observe_unit(runner, request["unit"])
+            success = bool(properties) and (
+                (request["action"] in {"start", "restart"} and properties.get("ActiveState") == "active"
+                 and (not request["unit"].endswith(".service") or properties.get("Type") != "oneshot"))
+                or (request["action"] == "reset-failed" and properties.get("ActiveState") in {"active", "inactive"})
+                or (request["action"] == "stop" and properties.get("ActiveState") == "inactive")
+                or (request["action"] == "start" and properties.get("ActiveState") == "inactive"
+                    and properties.get("Result") == "success" and properties.get("ExecMainStatus") == "0"
+                    and bool(properties.get("InvocationID"))))
+            failure = properties.get("ActiveState") == "failed" and bool(properties.get("InvocationID"))
+            running = properties.get("ActiveState") in {"activating", "active"} and properties.get("Type") == "oneshot" and bool(properties.get("InvocationID"))
+            return {"status": "done" if success else "failed" if failure else "running" if running else "unknown", "unit_action": request,
+                    "unit": request["unit"],
+                    "unit_observation": properties, "returncode": result.returncode}
+
+        return {"status": "accepted" if result.returncode == 0 else "failed", "unit_action": request,
                 "returncode": result.returncode, "stderr_tail": result.stderr[-2000:]}
     if request["kind"] == "hold":
         return _act_hold(config, runner, request_id, request, requested_by)
@@ -522,6 +560,9 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
 def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, request_id: str) -> None:
     spool = Path(config.spool_root)
     results = spool / "results"
+    if (spool / "completed" / claimed.name).exists():
+        claimed.unlink()
+        return
     try:
         document = load_request_file(claimed)
         if document.get("schema") != SCHEMA:
@@ -536,12 +577,15 @@ def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, reque
         _write_result(results, request_id, {"status": "refused", "code": refusal.code})
         return
     os.replace(claimed, spool / "completed" / claimed.name)
-    _write_result(results, request_id, {"status": "accepted"})
+    unit_identity = ({"unit": request["unit"], "unit_action": request}
+                     if request["kind"] == "unit" and request["action"] != "repair-notifier-binding"
+                     else {})
+    _write_result(results, request_id, {"status": "accepted", **unit_identity})
     try:
         outcome = _act(config, runner, request_id, request, document["requested_by"])
     except Exception as error:  # noqa: BLE001 - record, never crash the oneshot
-        outcome = {"status": "failed", "code": f"runner_error:{type(error).__name__}"}
-    _write_result(results, request_id, outcome)
+        outcome = {"status": "unknown", "code": f"runner_error:{type(error).__name__}"}
+    _write_result(results, request_id, {**unit_identity, **outcome})
 
 
 def _quarantine(spool: Path, path: Path) -> None:
@@ -573,7 +617,7 @@ def _prune(spool: Path, retention_days: int) -> None:
             if path.lstat().st_mtime < now - 3600:
                 request_id = validate_request_id(path.stem)
                 os.replace(path, spool / "completed" / path.name)
-                _write_result(spool / "results", request_id, {"status": "failed", "code": "stranded"})
+                _write_result(spool / "results", request_id, {"status": "unknown", "code": "stranded"})
         except (OSError, RequestRefused):
             _quarantine(spool, path)
     for path in (spool / "pending").glob(".*.tmp"):
