@@ -1,0 +1,184 @@
+{
+  "schema_version": "blueprint.dependency_license_continuity.v1",
+  "observed_at": "2026-10-05",
+  "migrations": [
+    {
+      "previous_component": "anyio==4.14.1",
+      "current_component": "anyio==4.14.2",
+      "license_expression": "MIT",
+      "license_bytes_unchanged": true,
+      "previous": {
+        "package": "anyio",
+        "version": "4.14.1",
+        "pypi_source": "https://pypi.org/pypi/anyio/4.14.1/json",
+        "wheel": "anyio-4.14.1-py3-none-any.whl",
+        "wheel_sha256": "4e5533c5b8ff0a24f5d7a176cbe6877129cd183893f66b537f8f227d10527d72",
+        "license_expression": "MIT",
+        "licenses": [
+          {
+            "path": "anyio-4.14.1.dist-info/licenses/LICENSE",
+            "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+            "local_file": "anyio-4.14.1-LICENSE"
+          }
+        ]
+      },
+      "current": {
+        "package": "anyio",
+        "version": "4.14.2",
+        "pypi_source": "https://pypi.org/pypi/anyio/4.14.2/json",
+        "wheel": "anyio-4.14.2-py3-none-any.whl",
+        "wheel_sha256": "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+        "license_expression": "MIT",
+        "licenses": [
+          {
+            "path": "anyio-4.14.2.dist-info/licenses/LICENSE",
+            "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+            "local_file": "anyio-4.14.2-LICENSE"
+          }
+        ]
+      },
+      "approval_inherited_from_existing_policy": true,
+      "new_legal_acceptance": false
+    },
+    {
+      "previous_component": "urllib3==2.7.0",
+      "current_component": "urllib3==2.8.0",
+      "license_expression": "MIT",
+      "license_bytes_unchanged": true,
+      "previous": {
+        "package": "urllib3",
+        "version": "2.7.0",
+        "pypi_source": "https://pypi.org/pypi/urllib3/2.7.0/json",
+        "wheel": "urllib3-2.7.0-py3-none-any.whl",
+        "wheel_sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+        "license_expression": "MIT",
+        "licenses": [
+          {
+            "path": "urllib3-2.7.0.dist-info/licenses/LICENSE.txt",
+            "sha256": "130e3a64d5fdd5d096a752694634a7d9df284469de86e5732100268041e3d686",
+            "local_file": "urllib3-2.7.0-LICENSE.txt"
+          }
+        ]
+      },
+      "current": {
+        "package": "urllib3",
+        "version": "2.8.0",
+        "pypi_source": "https://pypi.org/pypi/urllib3/2.8.0/json",
+        "wheel": "urllib3-2.8.0-py3-none-any.whl",
+        "wheel_sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3",
+        "license_expression": "MIT",
+        "licenses": [
+          {
+            "path": "urllib3-2.8.0.dist-info/licenses/LICENSE.txt",
+            "sha256": "130e3a64d5fdd5d096a752694634a7d9df284469de86e5732100268041e3d686",
+            "local_file": "urllib3-2.8.0-LICENSE.txt"
+          }
+        ]
+      },
+      "approval_inherited_from_existing_policy": true,
+      "new_legal_acceptance": false
+    },
+    {
+      "previous_component": "pyjwt==2.13.0",
+      "current_component": "pyjwt==2.15.0",
+      "license_expression": "MIT",
+      "license_bytes_unchanged": true,
+      "previous": {
+        "package": "pyjwt",
+        "version": "2.13.0",
+        "pypi_source": "https://pypi.org/pypi/pyjwt/2.13.0/json",
+        "wheel": "pyjwt-2.13.0-py3-none-any.whl",
+        "wheel_sha256": "66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728",
+        "license_expression": "MIT",
+        "licenses": [
+          {
+            "path": "pyjwt-2.13.0.dist-info/licenses/AUTHORS.rst",
+            "sha256": "925ce43461029eedbf558ec0b7cf7fc4b045def5120ebb97937c70814071cf07",
+            "local_file": "pyjwt-2.13.0-AUTHORS.rst"
+          },
+          {
+            "path": "pyjwt-2.13.0.dist-info/licenses/LICENSE",
+            "sha256": "797a7a20231d4c433e9f1911db1731d06b5828b98f499819a034f7c0f56f5ce5",
+            "local_file": "pyjwt-2.13.0-LICENSE"
+          }
+        ]
+      },
+      "current": {
+        "package": "pyjwt",
+        "version": "2.15.0",
+        "pypi_source": "https://pypi.org/pypi/pyjwt/2.15.0/json",
+        "wheel": "pyjwt-2.15.0-py3-none-any.whl",
+        "wheel_sha256": "7a3742debf6b879e912dbb9819ceec1594be812452b78c5f2e2dfc56564954f8",
+        "license_expression": "MIT",
+        "licenses": [
+          {
+            "path": "pyjwt-2.15.0.dist-info/licenses/AUTHORS.rst",
+            "sha256": "925ce43461029eedbf558ec0b7cf7fc4b045def5120ebb97937c70814071cf07",
+            "local_file": "pyjwt-2.15.0-AUTHORS.rst"
+          },
+          {
+            "path": "pyjwt-2.15.0.dist-info/licenses/LICENSE",
+            "sha256": "797a7a20231d4c433e9f1911db1731d06b5828b98f499819a034f7c0f56f5ce5",
+            "local_file": "pyjwt-2.15.0-LICENSE"
+          }
+        ]
+      },
+      "approval_inherited_from_existing_policy": true,
+      "new_legal_acceptance": false
+    },
+    {
+      "previous_component": "google-auth==2.55.2",
+      "current_component": "google-auth==2.58.0",
+      "license_expression": "Apache-2.0",
+      "license_bytes_unchanged": true,
+      "previous": {
+        "package": "google-auth",
+        "version": "2.55.2",
+        "pypi_source": "https://pypi.org/pypi/google-auth/2.55.2/json",
+        "wheel": "google_auth-2.55.2-py3-none-any.whl",
+        "wheel_sha256": "d715f265f2cafc6a5f1bf0dc19870d20e3119f6f6682785a250bce3d03d38a3b",
+        "license_expression": null,
+        "licenses": [
+          {
+            "path": "google_auth-2.55.2.dist-info/licenses/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "local_file": "google-auth-2.55.2-LICENSE"
+          }
+        ]
+      },
+      "current": {
+        "package": "google-auth",
+        "version": "2.58.0",
+        "pypi_source": "https://pypi.org/pypi/google-auth/2.58.0/json",
+        "wheel": "google_auth-2.58.0-py3-none-any.whl",
+        "wheel_sha256": "8a9c4645bb4c8e91668fb1934b95ae6a8687084232753639220ba9bf04a1610d",
+        "license_expression": null,
+        "licenses": [
+          {
+            "path": "google_auth-2.58.0.dist-info/licenses/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+            "local_file": "google-auth-2.58.0-LICENSE"
+          }
+        ]
+      },
+      "approval_inherited_from_existing_policy": true,
+      "new_legal_acceptance": false
+    }
+  ],
+  "unapproved_component": {
+    "package": "meta-sam-parser",
+    "version": "0.0.5",
+    "pypi_source": "https://pypi.org/pypi/meta-sam-parser/0.0.5/json",
+    "wheel": "meta_sam_parser-0.0.5-py3-none-any.whl",
+    "wheel_sha256": "a5c6552b8854e5481940212f8b5a6ff12653904ae37a17b7d0f395c7949e276f",
+    "license_expression": null,
+    "licenses": [
+      {
+        "path": "meta_sam_parser-0.0.5.dist-info/licenses/LICENSE",
+        "sha256": "4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be",
+        "local_file": "meta-sam-parser-0.0.5-LICENSE"
+      }
+    ],
+    "reason": "Custom SAM License requires exact use authorization; no package approval is asserted by this technical review."
+  }
+}

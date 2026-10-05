@@ -1,0 +1,191 @@
+{
+  "audit_stderr": "Found 19 known vulnerabilities in 3 packages",
+  "blockers": [
+    "known_runtime_vulnerability:anyio:PYSEC-2026-4025",
+    "known_runtime_vulnerability:anyio:PYSEC-2026-4023",
+    "known_runtime_vulnerability:anyio:PYSEC-2026-4024",
+    "known_runtime_vulnerability:urllib3:PYSEC-2026-4177",
+    "known_runtime_vulnerability:urllib3:PYSEC-2026-4176",
+    "known_runtime_vulnerability:urllib3:PYSEC-2026-4175",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4145",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4146",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4149",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4152",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4144",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4143",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4148",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4140",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4141",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4147",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4151",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4150",
+    "known_runtime_vulnerability:pyjwt:PYSEC-2026-4142"
+  ],
+  "claim_boundary": {
+    "absence_of_known_advisories_is_not_absence_of_vulnerabilities": true,
+    "container_image_scan_included": false,
+    "runtime_python_dependency_scan_only": true,
+    "sbom_digest_match_proven": false
+  },
+  "dependencies_audited": 86,
+  "generated_at": "2026-10-05T19:04:46.493281+00:00",
+  "known_vulnerability_count": 19,
+  "pip_audit_version": "pip-audit 2.10.1",
+  "repository_sha": "f4f34676d1377cb64c60787dd933c7ef5dd8843e",
+  "requirements_export_source": "uv.lock runtime graph excluding local project and pinned BlueprintContracts VCS source",
+  "schema_version": "blueprint_dependency_security_gate.v1",
+  "status": "blocked",
+  "uv_lock_sha256": "c76c7e9ec46bdc7b26e7d0836438bc6637aa7c6e17c837ba3a7896434ae2c680",
+  "vulnerabilities": [
+    {
+      "dependency": "anyio",
+      "fix_versions": [
+        "4.14.2"
+      ],
+      "id": "PYSEC-2026-4025",
+      "version": "4.14.1"
+    },
+    {
+      "dependency": "anyio",
+      "fix_versions": [
+        "4.14.2"
+      ],
+      "id": "PYSEC-2026-4023",
+      "version": "4.14.1"
+    },
+    {
+      "dependency": "anyio",
+      "fix_versions": [
+        "4.14.2"
+      ],
+      "id": "PYSEC-2026-4024",
+      "version": "4.14.1"
+    },
+    {
+      "dependency": "urllib3",
+      "fix_versions": [
+        "2.8.0"
+      ],
+      "id": "PYSEC-2026-4177",
+      "version": "2.7.0"
+    },
+    {
+      "dependency": "urllib3",
+      "fix_versions": [
+        "2.8.0"
+      ],
+      "id": "PYSEC-2026-4176",
+      "version": "2.7.0"
+    },
+    {
+      "dependency": "urllib3",
+      "fix_versions": [
+        "2.8.0"
+      ],
+      "id": "PYSEC-2026-4175",
+      "version": "2.7.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4145",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [],
+      "id": "PYSEC-2026-4146",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4149",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4152",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4144",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4143",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4148",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4140",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.15.0"
+      ],
+      "id": "PYSEC-2026-4141",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4147",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4151",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4150",
+      "version": "2.13.0"
+    },
+    {
+      "dependency": "pyjwt",
+      "fix_versions": [
+        "2.14.0"
+      ],
+      "id": "PYSEC-2026-4142",
+      "version": "2.13.0"
+    }
+  ]
+}

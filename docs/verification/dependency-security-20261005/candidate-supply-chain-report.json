@@ -1,0 +1,20 @@
+{
+  "artifact_subject_count": 2,
+  "blockers": [
+    "license_review_missing:meta-sam-parser==0.0.5"
+  ],
+  "claim_boundary": {
+    "container_signature_not_verified_by_this_command": true,
+    "deployed_digest_signature_and_sbom_match_require_live_release_evidence": true,
+    "provenance_is_unsigned_until_external_attestation": true,
+    "sbom_and_provenance_generated": false
+  },
+  "component_count": 95,
+  "generated_at": "2026-10-05T19:38:01.973971+00:00",
+  "image_digest": null,
+  "license_review_count": 95,
+  "repository_sha": "f4f34676d1377cb64c60787dd933c7ef5dd8843e",
+  "schema_version": "blueprint.supply_chain_evidence.v1",
+  "signature_status": "external_signature_not_verified",
+  "status": "blocked"
+}
