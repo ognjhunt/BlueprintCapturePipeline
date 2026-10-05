@@ -1173,6 +1173,13 @@ def _gc_sandbox_main(selected):
     else:
         assert chosen['decision'] == 'kept'
         assert chosen['removed_logical_bytes'] == chosen['removed_allocated_bytes'] == 0
+        if cloud.objects or cloud.bodies:
+            # Keep the actual refusal before the fixture's stricter archive
+            # assertion; upload can precede a later destructive-boundary KEEP.
+            print(json.dumps({'fixture_kept_gc_refusal': chosen,
+                'preserved_object_count': len(cloud.objects),
+                'closed_response_count': sum(body.closed for body in cloud.bodies),
+                'response_count': len(cloud.bodies)}), flush=True)
         assert not cloud.objects and not cloud.bodies
     result = dict(report={'registered_experiments': report['registered_experiments']},
         native_limit_failures=native_limit_failures,
