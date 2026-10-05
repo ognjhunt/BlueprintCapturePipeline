@@ -109,3 +109,9 @@ wam_provider_output.json
 
 # Splat render tool (node deps installed locally)
 tools/splat_render/node_modules/
+
+# Site universe outputs hold real site records and ODbL data: never commit them.
+# The producer also refuses an output directory inside the repository.
+sites.jsonl.gz
+ranked.jsonl.gz
+review-top.md

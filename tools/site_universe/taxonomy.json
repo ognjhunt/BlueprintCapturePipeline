@@ -1,0 +1,1619 @@
+{
+  "schema": "blueprint.site_universe.taxonomy.v1",
+  "version": "2026-10-04.1",
+  "updated_at": "2026-10-04",
+  "description": "Robot capabilities that teams demonstrate or deploy now, mapped to task families, site types and per-source selectors. The builder enumerates the union of site types of active rows. Adding a row or a site type is a data change.",
+  "selector_rules": {
+    "naics": "A code matches the site type with the longest matching prefix, unless an exclude prefix matches. OSHA ITA and EPA FRS use naics_prefixes.",
+    "sic": "Same longest-prefix rule for 1987 SIC codes. EPA FRS uses sic_prefixes only for a facility that has no NAICS code.",
+    "osm": "Each selector is a tag map; a value list means any of the values. Every Overpass query also requires a name tag. A generic site type applies only when no other site type matched. A match on an exclusion site type drops the OpenStreetMap feature. name_excludes drops OpenStreetMap features of that site type whose normalized name contains one of the phrases.",
+    "fsis_mpi": "all_establishments: every establishment in the FSIS Meat, Poultry and Egg Product Inspection Directory."
+  },
+  "categories": {
+    "warehousing_storage": {
+      "label": "Warehousing and storage (NAICS 4931)"
+    },
+    "distribution_wholesale": {
+      "label": "Wholesale distribution (NAICS 42)"
+    },
+    "parcel_logistics": {
+      "label": "Parcel, courier and postal sortation (NAICS 491, 492)"
+    },
+    "manufacturing": {
+      "label": "Manufacturing plants (NAICS 31-33, except food and beverage)"
+    },
+    "food_processing": {
+      "label": "Food and beverage processing (NAICS 311, 3121; FSIS establishments)"
+    },
+    "industrial_general": {
+      "label": "Industrial building or area of unknown use (OpenStreetMap only)"
+    },
+    "retail_grocery": {
+      "label": "Grocery and convenience retail (NAICS 4451)"
+    },
+    "retail_general": {
+      "label": "General merchandise, warehouse club and home improvement retail (NAICS 4441, 452, 455)"
+    },
+    "healthcare_hospital": {
+      "label": "Hospitals (NAICS 622)"
+    },
+    "industrial_laundry": {
+      "label": "Industrial launderers, linen supply and laundry services (NAICS 8123)"
+    },
+    "recycling_waste": {
+      "label": "Recycling, materials recovery and scrap (NAICS 562920, 42393)"
+    },
+    "laboratory": {
+      "label": "Laboratories (NAICS 5417, 621511)"
+    },
+    "hospitality": {
+      "label": "Hotels (NAICS 72111)"
+    },
+    "food_service": {
+      "label": "Commercial and institutional kitchens (NAICS 7223)"
+    },
+    "agriculture_greenhouse": {
+      "label": "Greenhouse and indoor farming (NAICS 1114)"
+    },
+    "transport_terminal": {
+      "label": "Airport terminals (NAICS 48811)"
+    }
+  },
+  "site_types": [
+    {
+      "id": "warehouse_cold_storage",
+      "category": "warehousing_storage",
+      "label": "Refrigerated warehouse or cold storage",
+      "selectors": {
+        "naics_prefixes": [
+          "49312"
+        ],
+        "sic_prefixes": [
+          "4222"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "warehouse_general",
+      "category": "warehousing_storage",
+      "label": "Warehouse or distribution center",
+      "selectors": {
+        "naics_prefixes": [
+          "4931"
+        ],
+        "sic_prefixes": [
+          "422"
+        ],
+        "osm": [
+          {
+            "building": "warehouse"
+          },
+          {
+            "industrial": [
+              "warehouse",
+              "logistics"
+            ]
+          }
+        ],
+        "name_excludes": [
+          "SELF STORAGE",
+          "MINI STORAGE",
+          "STORAGE UNITS",
+          "RV STORAGE",
+          "BOAT STORAGE",
+          "U HAUL",
+          "UHAUL",
+          "PUBLIC STORAGE",
+          "EXTRA SPACE",
+          "CUBESMART",
+          "LIFE STORAGE"
+        ]
+      }
+    },
+    {
+      "id": "wholesale_grocery_food",
+      "category": "distribution_wholesale",
+      "label": "Grocery, food and beverage wholesale distribution",
+      "selectors": {
+        "naics_prefixes": [
+          "4244",
+          "4248"
+        ],
+        "sic_prefixes": [
+          "514",
+          "5181",
+          "5182"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "wholesale_distribution",
+      "category": "distribution_wholesale",
+      "label": "Wholesale distribution (durable and nondurable goods)",
+      "selectors": {
+        "naics_prefixes": [
+          "42"
+        ],
+        "naics_exclude_prefixes": [
+          "4245",
+          "4247",
+          "425"
+        ],
+        "sic_prefixes": [
+          "50",
+          "51"
+        ],
+        "sic_exclude_prefixes": [
+          "515",
+          "517"
+        ],
+        "osm": [
+          {
+            "industrial": "distributor"
+          }
+        ]
+      }
+    },
+    {
+      "id": "parcel_hub",
+      "category": "parcel_logistics",
+      "label": "Parcel hub, courier station or mail processing center",
+      "selectors": {
+        "naics_prefixes": [
+          "4921",
+          "4922",
+          "49111"
+        ],
+        "sic_prefixes": [
+          "4215",
+          "4311",
+          "4513"
+        ],
+        "osm": [
+          {
+            "amenity": "post_depot"
+          }
+        ]
+      }
+    },
+    {
+      "id": "plant_meat_poultry_egg",
+      "category": "food_processing",
+      "label": "Meat, poultry or egg products plant",
+      "selectors": {
+        "naics_prefixes": [
+          "3116"
+        ],
+        "sic_prefixes": [
+          "201"
+        ],
+        "osm": [
+          {
+            "industrial": "slaughterhouse"
+          }
+        ],
+        "fsis_mpi": "all_establishments"
+      }
+    },
+    {
+      "id": "plant_food",
+      "category": "food_processing",
+      "label": "Food manufacturing plant",
+      "selectors": {
+        "naics_prefixes": [
+          "311"
+        ],
+        "sic_prefixes": [
+          "20"
+        ],
+        "osm": [
+          {
+            "industrial": [
+              "food_industry",
+              "bakery"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "plant_beverage",
+      "category": "food_processing",
+      "label": "Beverage plant (soft drinks, water, brewery, winery, distillery)",
+      "selectors": {
+        "naics_prefixes": [
+          "3121"
+        ],
+        "sic_prefixes": [
+          "208"
+        ],
+        "osm": [
+          {
+            "industrial": "brewery"
+          }
+        ]
+      }
+    },
+    {
+      "id": "plant_paper_wood_printing",
+      "category": "manufacturing",
+      "label": "Wood, paper, packaging or printing plant",
+      "selectors": {
+        "naics_prefixes": [
+          "321",
+          "322",
+          "323"
+        ],
+        "sic_prefixes": [
+          "24",
+          "26",
+          "27"
+        ],
+        "sic_exclude_prefixes": [
+          "2411"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_chemical_pharma",
+      "category": "manufacturing",
+      "label": "Chemical or pharmaceutical plant",
+      "selectors": {
+        "naics_prefixes": [
+          "325"
+        ],
+        "sic_prefixes": [
+          "28"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_plastics_rubber",
+      "category": "manufacturing",
+      "label": "Plastics or rubber products plant",
+      "selectors": {
+        "naics_prefixes": [
+          "326"
+        ],
+        "sic_prefixes": [
+          "30"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_primary_metal",
+      "category": "manufacturing",
+      "label": "Primary metal plant or foundry",
+      "selectors": {
+        "naics_prefixes": [
+          "331"
+        ],
+        "sic_prefixes": [
+          "33"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_fabricated_metal",
+      "category": "manufacturing",
+      "label": "Fabricated metal plant or machine shop",
+      "selectors": {
+        "naics_prefixes": [
+          "332"
+        ],
+        "sic_prefixes": [
+          "34"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_machinery",
+      "category": "manufacturing",
+      "label": "Machinery plant",
+      "selectors": {
+        "naics_prefixes": [
+          "333"
+        ],
+        "sic_prefixes": [
+          "35"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_electronics_electrical",
+      "category": "manufacturing",
+      "label": "Computer, electronic or electrical equipment plant",
+      "selectors": {
+        "naics_prefixes": [
+          "334",
+          "335"
+        ],
+        "sic_prefixes": [
+          "36",
+          "38"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_transportation_equipment",
+      "category": "manufacturing",
+      "label": "Vehicle, parts, aerospace or other transportation equipment plant",
+      "selectors": {
+        "naics_prefixes": [
+          "336"
+        ],
+        "sic_prefixes": [
+          "37"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_furniture",
+      "category": "manufacturing",
+      "label": "Furniture plant",
+      "selectors": {
+        "naics_prefixes": [
+          "337"
+        ],
+        "sic_prefixes": [
+          "25"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_misc_medical",
+      "category": "manufacturing",
+      "label": "Medical device and other miscellaneous manufacturing plant",
+      "selectors": {
+        "naics_prefixes": [
+          "339"
+        ],
+        "sic_prefixes": [
+          "384",
+          "39"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "plant_general",
+      "category": "manufacturing",
+      "label": "Manufacturing plant of unknown subsector (OpenStreetMap)",
+      "selectors": {
+        "naics_prefixes": [],
+        "sic_prefixes": [],
+        "osm": [
+          {
+            "man_made": "works"
+          },
+          {
+            "building": [
+              "manufacture",
+              "factory"
+            ]
+          },
+          {
+            "industrial": [
+              "factory",
+              "manufacturing",
+              "machine_shop",
+              "metal_processing"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "industrial_general",
+      "category": "industrial_general",
+      "label": "Named industrial building or area of unknown use (OpenStreetMap)",
+      "selectors": {
+        "naics_prefixes": [],
+        "sic_prefixes": [],
+        "osm": [
+          {
+            "building": "industrial"
+          },
+          {
+            "landuse": "industrial"
+          }
+        ],
+        "name_excludes": [
+          "SUBSTATION",
+          "COMPRESSOR STATION",
+          "COMPRESSOR",
+          "TANK FARM",
+          "TANK BATTERY",
+          "PUMP STATION",
+          "PUMPING STATION",
+          "LIFT STATION",
+          "WATER TREATMENT",
+          "WASTEWATER",
+          "WATER PLANT",
+          "GAS PLANT",
+          "GAS PROCESSING",
+          "SALT WATER DISPOSAL",
+          "SWD",
+          "LANDFILL",
+          "OIL FIELD",
+          "OILFIELD",
+          "WELL PAD",
+          "WELLSITE",
+          "TERMINAL",
+          "POWER PLANT",
+          "GENERATING STATION",
+          "ENERGY CENTER",
+          "SOLAR",
+          "WIND FARM",
+          "REFINERY",
+          "QUARRY",
+          "PIT",
+          "CEMETERY",
+          "SCHOOL",
+          "CHURCH",
+          "PARK AND RIDE",
+          "STORAGE UNITS",
+          "SELF STORAGE",
+          "MINI STORAGE",
+          "RV STORAGE",
+          "BOAT STORAGE",
+          "PUMP",
+          "WATER TOWER",
+          "COOLING TOWER",
+          "SEWAGE",
+          "COTTON GIN",
+          "GIN",
+          "COTTON COMPRESS",
+          "COMPRESS",
+          "GRAIN ELEVATOR",
+          "ELEVATOR",
+          "WELL",
+          "WELLS",
+          "RESERVOIR",
+          "COOLING",
+          "PRECINCT",
+          "BARN",
+          "FIREARMS",
+          "BARGE",
+          "DOCK"
+        ]
+      },
+      "generic": true
+    },
+    {
+      "id": "industrial_non_target",
+      "category": "industrial_general",
+      "exclusion": true,
+      "label": "Industrial use outside current robot targets: oil and gas, mining, utilities, telecom, ports, depots, mineral products",
+      "selectors": {
+        "naics_prefixes": [],
+        "sic_prefixes": [],
+        "osm": [
+          {
+            "industrial": [
+              "oil",
+              "wellsite",
+              "well_cluster",
+              "gas",
+              "natural_gas",
+              "fracking",
+              "mine",
+              "communication",
+              "telecommunication",
+              "power",
+              "water",
+              "water_works",
+              "electrical",
+              "heating_station",
+              "cooling",
+              "refinery",
+              "port",
+              "shipyard",
+              "depot",
+              "concrete_plant",
+              "brickyard",
+              "asphalt",
+              "quarry",
+              "salt",
+              "oil_mill"
+            ]
+          },
+          {
+            "power": [
+              "plant",
+              "substation",
+              "generator",
+              "switch"
+            ]
+          },
+          {
+            "man_made": [
+              "wastewater_plant",
+              "water_works",
+              "petroleum_well",
+              "storage_tank",
+              "pumping_station",
+              "reservoir_covered",
+              "pipeline",
+              "cooling",
+              "water_tower",
+              "silo",
+              "chimney"
+            ]
+          },
+          {
+            "landuse": [
+              "quarry",
+              "landfill"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "grocery_store",
+      "category": "retail_grocery",
+      "label": "Supermarket or grocery store",
+      "selectors": {
+        "naics_prefixes": [
+          "44511"
+        ],
+        "sic_prefixes": [
+          "5411"
+        ],
+        "osm": [
+          {
+            "shop": "supermarket"
+          }
+        ]
+      }
+    },
+    {
+      "id": "convenience_store",
+      "category": "retail_grocery",
+      "label": "Convenience store",
+      "selectors": {
+        "naics_prefixes": [
+          "44512",
+          "445131"
+        ],
+        "sic_prefixes": [],
+        "osm": [
+          {
+            "shop": "convenience"
+          }
+        ]
+      }
+    },
+    {
+      "id": "warehouse_club",
+      "category": "retail_general",
+      "label": "Warehouse club or supercenter",
+      "selectors": {
+        "naics_prefixes": [
+          "452311",
+          "455211"
+        ],
+        "sic_prefixes": [],
+        "osm": [
+          {
+            "shop": "wholesale"
+          }
+        ]
+      }
+    },
+    {
+      "id": "general_merchandise_store",
+      "category": "retail_general",
+      "label": "Department or general merchandise store",
+      "selectors": {
+        "naics_prefixes": [
+          "452",
+          "455"
+        ],
+        "sic_prefixes": [
+          "53"
+        ],
+        "osm": [
+          {
+            "shop": "department_store"
+          }
+        ]
+      }
+    },
+    {
+      "id": "home_improvement_store",
+      "category": "retail_general",
+      "label": "Home improvement or building material store",
+      "selectors": {
+        "naics_prefixes": [
+          "4441"
+        ],
+        "sic_prefixes": [
+          "521"
+        ],
+        "osm": [
+          {
+            "shop": "doityourself"
+          }
+        ]
+      }
+    },
+    {
+      "id": "hospital",
+      "category": "healthcare_hospital",
+      "label": "Hospital",
+      "selectors": {
+        "naics_prefixes": [
+          "622"
+        ],
+        "sic_prefixes": [
+          "806"
+        ],
+        "osm": [
+          {
+            "amenity": "hospital"
+          },
+          {
+            "healthcare": "hospital"
+          }
+        ]
+      }
+    },
+    {
+      "id": "industrial_laundry",
+      "category": "industrial_laundry",
+      "label": "Industrial launderer or linen supply plant",
+      "selectors": {
+        "naics_prefixes": [
+          "812331",
+          "812332"
+        ],
+        "sic_prefixes": [
+          "7213",
+          "7218"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "drycleaning_laundry_service",
+      "category": "industrial_laundry",
+      "label": "Drycleaning and laundry service (except coin-operated)",
+      "selectors": {
+        "naics_prefixes": [
+          "812320"
+        ],
+        "sic_prefixes": [
+          "7211",
+          "7216"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "recycling_mrf",
+      "category": "recycling_waste",
+      "label": "Materials recovery facility (MRF)",
+      "selectors": {
+        "naics_prefixes": [
+          "562920"
+        ],
+        "sic_prefixes": [],
+        "osm": []
+      }
+    },
+    {
+      "id": "scrap_recycling_yard",
+      "category": "recycling_waste",
+      "label": "Recyclable material wholesaler or scrap yard",
+      "selectors": {
+        "naics_prefixes": [
+          "42393"
+        ],
+        "sic_prefixes": [
+          "5093"
+        ],
+        "osm": [
+          {
+            "industrial": "scrap_yard"
+          }
+        ]
+      }
+    },
+    {
+      "id": "lab_medical_diagnostic",
+      "category": "laboratory",
+      "label": "Medical or diagnostic laboratory",
+      "selectors": {
+        "naics_prefixes": [
+          "621511"
+        ],
+        "sic_prefixes": [
+          "8071"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "lab_research_development",
+      "category": "laboratory",
+      "label": "Research and development laboratory",
+      "selectors": {
+        "naics_prefixes": [
+          "5417"
+        ],
+        "sic_prefixes": [
+          "873"
+        ],
+        "osm": []
+      }
+    },
+    {
+      "id": "hotel",
+      "category": "hospitality",
+      "label": "Hotel",
+      "selectors": {
+        "naics_prefixes": [
+          "72111"
+        ],
+        "sic_prefixes": [
+          "7011"
+        ],
+        "osm": [
+          {
+            "tourism": "hotel"
+          }
+        ]
+      }
+    },
+    {
+      "id": "commercial_kitchen",
+      "category": "food_service",
+      "label": "Food service contractor, caterer or institutional kitchen",
+      "selectors": {
+        "naics_prefixes": [
+          "7223"
+        ],
+        "sic_prefixes": [],
+        "osm": []
+      }
+    },
+    {
+      "id": "greenhouse_farm",
+      "category": "agriculture_greenhouse",
+      "label": "Greenhouse or indoor farm",
+      "selectors": {
+        "naics_prefixes": [
+          "1114"
+        ],
+        "sic_prefixes": [
+          "0181",
+          "0182"
+        ],
+        "osm": [
+          {
+            "landuse": "greenhouse_horticulture"
+          }
+        ]
+      }
+    },
+    {
+      "id": "airport_terminal",
+      "category": "transport_terminal",
+      "label": "Airport terminal",
+      "selectors": {
+        "naics_prefixes": [
+          "48811"
+        ],
+        "sic_prefixes": [
+          "4581"
+        ],
+        "osm": [
+          {
+            "aeroway": "terminal"
+          }
+        ]
+      }
+    }
+  ],
+  "rows": [
+    {
+      "row_id": "fixed_arm_machine_tending",
+      "capability": "fixed_arm_machine_tending",
+      "label": "Fixed-arm CNC and molding machine tending",
+      "task_families": [
+        "cnc_machine_load_unload",
+        "injection_molding_part_removal",
+        "press_tending",
+        "inspection_station_handoff"
+      ],
+      "site_types": [
+        "plant_fabricated_metal",
+        "plant_machinery",
+        "plant_plastics_rubber",
+        "plant_primary_metal",
+        "plant_transportation_equipment",
+        "plant_electronics_electrical",
+        "plant_misc_medical",
+        "plant_general",
+        "industrial_general"
+      ],
+      "evidence": [
+        {
+          "claim": "Formic installed a Formic Tend cell with a 6-axis FANUC arm to load and unload injection molding machines at ICON Injection Molding in Phoenix, Arizona, and reported a 20% production increase.",
+          "published": "2023-06-26",
+          "publisher": "Formic",
+          "url": "https://formic.co/resources/customer-stories/icon-injection-molding-deploys-formic-tend-to-boost-production-by-20-with-automation-partnership-that-is-too-good-to-be-true",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Tool Gauge in Tacoma, Washington uses Universal Robots cobots for CNC machine tending and glue dispensing.",
+          "published": null,
+          "publisher": "Universal Robots",
+          "url": "https://www.universal-robots.com/case-stories/tool-gauge/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Whippany Actuation Systems, an aerospace manufacturer in New Jersey, uses a UR10 cobot to tend CNC machines during unattended overnight shifts.",
+          "published": null,
+          "publisher": "Universal Robots",
+          "url": "https://www.universal-robots.com/case-stories/whippany-actuations-systems/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Integrator AEC built a FANUC CRX cell on a Vention 7th axis that tends CNC machine tools, a CMM and part marking for a cast-parts maker in Greer, South Carolina.",
+          "published": null,
+          "publisher": "Vention",
+          "url": "https://vention.com/customer-stories/aec-machine-tending-robots-163",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "kitting_assembly",
+      "capability": "kitting_assembly",
+      "label": "Part kitting, sequencing and fixture loading",
+      "task_families": [
+        "part_sequencing",
+        "kit_building",
+        "fixture_loading",
+        "line_side_delivery"
+      ],
+      "site_types": [
+        "plant_transportation_equipment",
+        "plant_electronics_electrical",
+        "plant_machinery",
+        "plant_misc_medical",
+        "plant_furniture",
+        "plant_general",
+        "industrial_general"
+      ],
+      "evidence": [
+        {
+          "claim": "Figure says its F.02 humanoids loaded more than 90,000 sheet-metal parts onto welding fixtures on an active BMW Spartanburg line over an 11-month deployment.",
+          "published": "2025-11-19",
+          "publisher": "Figure AI",
+          "url": "https://www.figure.ai/news/production-at-bmw",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Figure says F.03 started parts sequencing in Hall 52 at BMW Plant Spartanburg, placing parts that arrive in different orientations into the correct slots for the line.",
+          "published": "2026-06-30",
+          "publisher": "Figure AI",
+          "url": "https://www.figure.ai/news/f-03-at-bmw",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Apptronik's commercial agreement with Mercedes-Benz covers a pilot of Apollo delivering assembly kits to the line and delivering totes of kitted parts.",
+          "published": "2024-03-15",
+          "publisher": "Apptronik",
+          "url": "https://apptronik.com/news-collection/apptronik-and-mercedes-benz-enter-commercial-agreement",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Boston Dynamics opened a training center at Hyundai Motor Group Metaplant America near Savannah, Georgia, where Atlas is trained to sequence automotive parts before assembly.",
+          "published": "2026-09-21",
+          "publisher": "Boston Dynamics",
+          "url": "https://bostondynamics.com/news/boston-dynamics-opens-robotics-metaplant-application-center-to-train-humanoid-robots-for-manufacturing-tasks/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "mobile_manipulator_case_picking",
+      "capability": "mobile_manipulator_case_picking",
+      "label": "Case, tote and each picking in warehouses",
+      "task_families": [
+        "tote_handling",
+        "case_picking",
+        "each_picking",
+        "goods_to_conveyor"
+      ],
+      "site_types": [
+        "warehouse_general",
+        "warehouse_cold_storage",
+        "wholesale_distribution",
+        "wholesale_grocery_food"
+      ],
+      "evidence": [
+        {
+          "claim": "Agility says Digit has moved more than 100,000 totes at GXO's Flowery Branch, Georgia facility, moving totes between AMRs and conveyors.",
+          "published": "2025-11-20",
+          "publisher": "Agility Robotics",
+          "url": "https://www.agilityrobotics.com/content/digit-moves-over-100k-totes",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Agility and Mercado Libre agreed to deploy Digit for commerce fulfillment tasks at Mercado Libre's facility in San Antonio, Texas.",
+          "published": "2025-12-11",
+          "publisher": "Robotics 24/7",
+          "url": "https://www.robotics247.com/article/agility_robotics_announces_digit_humanoid_robot_deployment_at_mercado_libre",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "The Feed installed 48 Brightpick Autopickers at its Colorado facility; the robots take storage totes from shelving and pick items into order totes.",
+          "published": "2024-01-30",
+          "publisher": "Brightpick",
+          "url": "https://brightpick.ai/the-feed-is-installing-brightpick/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Brightpick reports 103 Autopickers running around the clock at an e-commerce DC near Denver, Colorado.",
+          "published": "2026-09-12",
+          "publisher": "Brightpick",
+          "url": "https://brightpick.ai/resources/humanoids-and-beyond-the-state-of-mobile-manipulators-in-2025/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "truck_trailer_unloading",
+      "capability": "truck_trailer_unloading",
+      "label": "Truck and trailer unloading",
+      "task_families": [
+        "floor_loaded_trailer_unloading",
+        "container_unloading",
+        "truck_loading"
+      ],
+      "site_types": [
+        "warehouse_general",
+        "warehouse_cold_storage",
+        "wholesale_distribution",
+        "wholesale_grocery_food",
+        "parcel_hub"
+      ],
+      "evidence": [
+        {
+          "claim": "DHL signed an MoU for more than 1,000 additional Boston Dynamics Stretch robots by 2030; Stretch unloads containers and trailers in DHL's North American operations.",
+          "published": "2025-05-13",
+          "publisher": "The Robot Report",
+          "url": "https://www.therobotreport.com/dhl-buying-1000-stretch-robots-from-boston-dynamics/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "UPS plans to spend about $120 million on 400 Pickle Robot truck-unloading robots across multiple facilities from the second half of 2026.",
+          "published": "2025-12-15",
+          "publisher": "Transport Topics",
+          "url": "https://www.ttnews.com/articles/ups-robots-unload-trucks",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "FedEx and Berkshire Grey unveiled Scoop, an autonomous trailer unloader in pilot, with the first systems expected later in 2026.",
+          "published": "2026-02-07",
+          "publisher": "Robotics 24/7",
+          "url": "https://www.robotics247.com/article/fedex-launches-berkshire-greys-fully-autonomous-robotic-trailer-unloader",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "palletizing_depalletizing",
+      "capability": "palletizing_depalletizing",
+      "label": "Mixed-case palletizing and depalletizing",
+      "task_families": [
+        "mixed_case_palletizing",
+        "depalletizing",
+        "end_of_line_palletizing"
+      ],
+      "site_types": [
+        "warehouse_general",
+        "warehouse_cold_storage",
+        "wholesale_distribution",
+        "wholesale_grocery_food",
+        "parcel_hub",
+        "plant_food",
+        "plant_beverage",
+        "plant_meat_poultry_egg",
+        "plant_chemical_pharma",
+        "plant_paper_wood_printing",
+        "plant_plastics_rubber",
+        "plant_general",
+        "industrial_general"
+      ],
+      "evidence": [
+        {
+          "claim": "After a pilot in Brooksville, Florida, Walmart agreed to install Symbotic's system, which includes palletizing robots, in 25 more regional DCs.",
+          "published": "2021-07-15",
+          "publisher": "The Robot Report",
+          "url": "https://www.therobotreport.com/walmart-and-symbotic-work-together-to-implement-high-tech-automation-system-into-distribution-network/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Plus One Robotics put mixed-case depalletizing systems into service at a FedEx facility in Reno, Nevada.",
+          "published": "2023-05-10",
+          "publisher": "Modern Materials Handling",
+          "url": "https://www.mmh.com/article/plus_one_robotics_with_yaskawa_expands_use_of_ai_robotic_parcel_handling_solutions_at_fedex",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Jacobi Robotics and Delta Technology commissioned a FANUC cell that does random mixed-case palletizing for a manufacturer's parcel fulfillment.",
+          "published": "2026-01-13",
+          "publisher": "Jacobi Robotics",
+          "url": "https://jacobirobotics.com/case-study/deployment-with-delta-tech",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Napco Brands, a coffee packer in the Chicago area, runs two Universal Robots cobot palletizing cells at the end of its packing lines.",
+          "published": null,
+          "publisher": "Universal Robots",
+          "url": "https://www.universal-robots.com/case-stories/napco-brands/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04",
+      "notes": "No verified mixed-case palletizing deployment in a food or beverage plant; the food-plant evidence is single-SKU end-of-line palletizing."
+    },
+    {
+      "row_id": "sorting_pick_and_place",
+      "capability": "sorting_pick_and_place",
+      "label": "Parcel sorting, induction and piece picking",
+      "task_families": [
+        "parcel_singulation",
+        "sorter_induction",
+        "label_orientation",
+        "piece_picking"
+      ],
+      "site_types": [
+        "parcel_hub",
+        "warehouse_general",
+        "wholesale_distribution"
+      ],
+      "evidence": [
+        {
+          "claim": "Figure showed Helix-controlled humanoids moving packages between conveyors and turning them so the label faces the scanner.",
+          "published": "2025-02-26",
+          "publisher": "Figure AI",
+          "url": "https://www.figure.ai/news/helix-logistics",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "OSM Worldwide deployed AmbiSort systems that sort mixed parcels into mailsacks at its Atlanta, Chicago and Las Vegas warehouses.",
+          "published": "2023-03-14",
+          "publisher": "Ambi Robotics",
+          "url": "https://www.ambirobotics.com/media/osm-worldwide-ambi-robotics-partnership-announcement",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "After a pilot at its Bloomington, California hub, Pitney Bowes said it would deploy Ambi parcel-sorting robots across its US e-commerce hubs.",
+          "published": "2021-06-24",
+          "publisher": "Pitney Bowes",
+          "url": "https://investorrelations.pitneybowes.com/news-events/press-releases/detail/269/pitney-bowes-to-deploy-ambi-robotics-ai-powered-robots-in-us-to-support-global-ecommerce-network",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "FedEx installed Plus One and Yaskawa robotic arms at its Memphis World Hub to induct small parcels into high-speed sorters.",
+          "published": null,
+          "publisher": "Plus One Robotics",
+          "url": "https://www.plusonerobotics.com/case-studies/fedex-automation-success",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "recycling_sorting.mrf",
+      "capability": "recycling_sorting",
+      "label": "AI robotic sorting at materials recovery facilities",
+      "task_families": [
+        "recyclable_stream_sorting",
+        "residue_line_recovery",
+        "quality_control_picking"
+      ],
+      "site_types": [
+        "recycling_mrf"
+      ],
+      "evidence": [
+        {
+          "claim": "The Kent County, Michigan Recycling & Education Center runs three AMP AI robots that sort plastics on its lines.",
+          "published": null,
+          "publisher": "AMP",
+          "url": "https://ampsortation.com/case-studies/kent-county-michigan",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Waste Connections agreed to deploy 24 AMP AI-guided sorting robots on container, fiber and residue lines across its MRFs.",
+          "published": "2020-11-16",
+          "publisher": "AMP",
+          "url": "https://ampsortation.com/articles/deal-demonstrates-proliferation-of-ai-driven-recyc",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Glacier announced a fleet of AI sorting robots at Recology's King County MRF in Seattle.",
+          "published": "2025-04-28",
+          "publisher": "The Robot Report",
+          "url": "https://www.therobotreport.com/glacier-brings-in-16m-and-announces-new-recology-king-deployment/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Lakeshore Recycling Systems installed an EverestLabs robot on the residue line of a Chicago MRF to recover aluminum cans.",
+          "published": "2024-05-17",
+          "publisher": "Recycling Product News",
+          "url": "https://www.recyclingproductnews.com/article/41845/lrs-installs-everestlabs-robot-on-last-chance-line-at-chicago-mrf",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "recycling_sorting.scrap_yards",
+      "capability": "recycling_sorting",
+      "label": "Sorting at scrap and recyclable material yards",
+      "task_families": [
+        "scrap_metal_sorting"
+      ],
+      "site_types": [
+        "scrap_recycling_yard"
+      ],
+      "evidence": [],
+      "status": "candidate",
+      "added_at": "2026-10-04",
+      "notes": "No verified robot deployment at a scrap yard or recyclable material wholesaler yet."
+    },
+    {
+      "row_id": "bimanual_folding.laundry_plants",
+      "capability": "bimanual_folding",
+      "label": "Bimanual towel, linen and garment folding",
+      "task_families": [
+        "towel_folding",
+        "linen_folding",
+        "garment_folding",
+        "napkin_folding"
+      ],
+      "site_types": [
+        "industrial_laundry",
+        "drycleaning_laundry_service"
+      ],
+      "evidence": [
+        {
+          "claim": "Figure showed a Helix-controlled humanoid autonomously folding towels picked from a mixed pile.",
+          "published": "2025-08-12",
+          "publisher": "Figure AI",
+          "url": "https://www.figure.ai/news/helix-learns-to-fold-laundry",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Dyna Robotics reported that DYNA-1 folded more than 800 napkins in a continuous 24-hour autonomous run.",
+          "published": "2025-04-30",
+          "publisher": "Robotics Tomorrow",
+          "url": "https://www.roboticstomorrow.com/news/2025/04/30/dyna-robotics-unveils-dyna-1-the-first-commercial-ready-robot-foundation-model-offering-fully-autonomous-round-the-clock-dexterity/24675/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Monster Laundry in Sacramento, California runs a Dyna Robotics folding system that folds towels, linens and clothing.",
+          "published": null,
+          "publisher": "Monster Laundry",
+          "url": "https://www.monsterlaundry.com/robotic-folding-laundromat/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "In a San Francisco laundry room, a Weave Robotics robot folds part of the items for Tumble's wash-and-fold service.",
+          "published": "2025-10-12",
+          "publisher": "The San Francisco Standard",
+          "url": "https://sfstandard.com/2025/10/12/weave-robotics-tumble-laundry-folding-robot/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04",
+      "notes": "Verified deployments are laundromat and wash-and-fold sites plus lab demos; no verified US industrial linen-plant deployment yet. NAICS 812320 also includes small retail dry cleaners."
+    },
+    {
+      "row_id": "food_prep_manipulation.food_plants",
+      "capability": "food_prep_manipulation",
+      "label": "Food assembly and handling on production lines",
+      "task_families": [
+        "meal_assembly",
+        "ingredient_depositing",
+        "tray_loading",
+        "food_packing"
+      ],
+      "site_types": [
+        "plant_food",
+        "plant_meat_poultry_egg"
+      ],
+      "evidence": [
+        {
+          "claim": "Chef Robotics robots put ingredients into frozen-meal bowls on Amy's Kitchen production lines.",
+          "published": null,
+          "publisher": "Chef Robotics",
+          "url": "https://www.chefrobotics.ai/case-studies/amys-kitchen",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Chef Robotics' AI arms place ingredients into trays on meal-assembly lines for food manufacturers including Amy's Kitchen and Sunbasket.",
+          "published": "2025-03-31",
+          "publisher": "AgFunderNews",
+          "url": "https://agfundernews.com/breaking-chef-robotics-raises-43m-series-a-to-scale-ai-enabled-robotics-in-meal-assembly",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "food_prep_manipulation.commercial_kitchens",
+      "capability": "food_prep_manipulation",
+      "label": "Food preparation in commercial kitchens",
+      "task_families": [
+        "fry_station",
+        "food_assembly"
+      ],
+      "site_types": [
+        "commercial_kitchen"
+      ],
+      "evidence": [
+        {
+          "claim": "White Castle agreed to install Miso Robotics' Flippy 2 fry-station robot at 100 restaurants.",
+          "published": "2022-02-15",
+          "publisher": "The Robot Report",
+          "url": "https://www.therobotreport.com/white-castle-installing-flippy-2-frying-robots-100-locations/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Miso began piloting its next-generation Flippy Fry Station at White Castle in late 2024 and scheduled rollouts to other brands.",
+          "published": "2025-01-28",
+          "publisher": "The Robot Report",
+          "url": "https://www.therobotreport.com/miso-robotics-refines-flippy-fry-station-with-ai-partners/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "candidate",
+      "added_at": "2026-10-04",
+      "notes": "Verified evidence is restaurant fry stations; NAICS 7223 covers contractors and caterers, not restaurants."
+    },
+    {
+      "row_id": "shelf_restocking",
+      "capability": "shelf_restocking",
+      "label": "Store shelf restocking and backroom replenishment",
+      "task_families": [
+        "shelf_restocking",
+        "cooler_restocking",
+        "backroom_replenishment"
+      ],
+      "site_types": [
+        "grocery_store",
+        "general_merchandise_store",
+        "warehouse_club",
+        "home_improvement_store"
+      ],
+      "evidence": [
+        {
+          "claim": "Telexistence announced deployment of TX SCARA robots that restock refrigerated beverage shelves in 300 FamilyMart stores in Japan and said it plans to expand to US convenience stores.",
+          "published": "2022-08-10",
+          "publisher": "Telexistence",
+          "url": "https://tx-inc.com/en/blog/2022/08/10/11712/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Telexistence is piloting its TX Ghost beverage-restocking robot in the chilled backrooms of selected 7-Eleven stores in Tokyo.",
+          "published": "2025-09-26",
+          "publisher": "Telexistence",
+          "url": "https://tx-inc.com/en/blog/2025/09/26/12519/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Brain Corp showed Project Brawn, a prototype mobile manipulator for picking and stocking in stores; no named deployment.",
+          "published": "2025-04-15",
+          "publisher": "Brain Corp",
+          "url": "https://www.braincorp.com/resources/project-brawn-by-brain-corp-part-2-ai-powered-robotic-stocking-for-retailers",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Context only: Harmons rolled out Simbe's Tally shelf-scanning robot to 17 Utah grocery stores; it scans shelves and does not restock.",
+          "published": "2025-10-29",
+          "publisher": "Simbe",
+          "url": "https://www.simberobotics.com/about/newsroom/harmons-deploys-simbe-s-tally-inventory-robot-in-stores-following-pilot-success",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04",
+      "notes": "Active for the first build by owner direction. No verified US restocking deployment yet; verified deployments are Japanese convenience stores and a US prototype."
+    },
+    {
+      "row_id": "shelf_restocking.convenience_stores",
+      "capability": "shelf_restocking",
+      "label": "Cooler restocking in convenience stores",
+      "task_families": [
+        "cooler_restocking"
+      ],
+      "site_types": [
+        "convenience_store"
+      ],
+      "evidence": [
+        {
+          "claim": "Telexistence announced deployment of TX SCARA robots that restock refrigerated beverage shelves in 300 FamilyMart stores in Japan and said it plans to expand to US convenience stores.",
+          "published": "2022-08-10",
+          "publisher": "Telexistence",
+          "url": "https://tx-inc.com/en/blog/2022/08/10/11712/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Telexistence is piloting its TX Ghost beverage-restocking robot in the chilled backrooms of selected 7-Eleven stores in Tokyo.",
+          "published": "2025-09-26",
+          "publisher": "Telexistence",
+          "url": "https://tx-inc.com/en/blog/2025/09/26/12519/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "candidate",
+      "added_at": "2026-10-04",
+      "notes": "Left out of v1 to keep the first snapshot on large-format stores."
+    },
+    {
+      "row_id": "hospital_logistics",
+      "capability": "hospital_logistics",
+      "label": "Hospital delivery of supplies, specimens and medications",
+      "task_families": [
+        "supply_delivery",
+        "specimen_transport",
+        "pharmacy_delivery"
+      ],
+      "site_types": [
+        "hospital"
+      ],
+      "evidence": [
+        {
+          "claim": "Diligent Robotics said its Moxi fleet passed 1 million hospital deliveries of supplies, specimens and medications across US health systems.",
+          "published": "2025-02",
+          "publisher": "Diligent Robotics",
+          "url": "https://www.diligentrobots.com/blog/not-a-pilot-not-a-prototypediligent-robotics-hits-1-million-humanoid-deliveriesnbspacross-fleetnbspsupportingnbsphealthcare-customers",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Diligent began rolling out Moxi 2.0 to US health systems; Moxi works in more than 25 US hospitals.",
+          "published": "2026-08-17",
+          "publisher": "Diligent Robotics",
+          "url": "https://www.diligentrobots.com/blog/diligent-robotics-a-serve-robotics-company-begins-rolling-out-moxi-20",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "BayCare added Relay robots at two Winter Haven, Florida hospitals to carry lab specimens, pharmacy orders and supplies.",
+          "published": "2026-06-03",
+          "publisher": "Relay Robotics",
+          "url": "https://relayrobotics.com/blog/baycare-expands-autonomous-hospital-delivery-with-new-relay-robots-at-winter-haven-hospitals",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Upstate Medical University in Syracuse, New York runs 14 Aethon TUG robots that deliver medicines, supplies, linens and meals.",
+          "published": "2022-06-14",
+          "publisher": "Aethon",
+          "url": "https://aethon.com/upstate-medical-university-installs-14-tug-robots/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "active",
+      "added_at": "2026-10-04"
+    },
+    {
+      "row_id": "autonomous_cleaning",
+      "capability": "autonomous_cleaning",
+      "label": "Autonomous floor cleaning",
+      "task_families": [
+        "floor_scrubbing",
+        "sweeping"
+      ],
+      "site_types": [
+        "grocery_store",
+        "general_merchandise_store",
+        "warehouse_club",
+        "warehouse_general",
+        "hospital",
+        "airport_terminal"
+      ],
+      "evidence": [
+        {
+          "claim": "Sam's Club put BrainOS-powered autonomous floor scrubbers in all of its roughly 600 US clubs.",
+          "published": "2020-10-20",
+          "publisher": "Brain Corp",
+          "url": "https://www.braincorp.com/resources/sams-club-expands-autonomous-floor-sweeping-robots-to-all-u-s-stores-b2ac8",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Cincinnati/Northern Kentucky International Airport deployed Avidbots Neo autonomous floor scrubbers.",
+          "published": "2020-04-06",
+          "publisher": "Avidbots",
+          "url": "https://avidbots.com/news/avidbots-news-cvg-airport-becomes-first-in-u-s-to-deploy-avidbots-neo-floor-scrubbing-robots/",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Brain Corp reported more than 37,000 BrainOS robots, with the fastest growth in warehouse and industrial sites.",
+          "published": "2024-11-12",
+          "publisher": "Brain Corp",
+          "url": "https://www.braincorp.com/resources/brain-corps-autonomous-robot-fleet-hits-250-billion-square-feet-milestone-leads-global-surge-in-robotic-automation",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Tennant launched the X16 Sweep, an autonomous sweeper for warehouses, logistics centers and light manufacturing.",
+          "published": "2026-04-10",
+          "publisher": "Robotics & Automation News",
+          "url": "https://roboticsandautomationnews.com/2026/04/10/tennant-unveils-new-industrial-sweeping-machine-for-autonomous-round-the-clock-work/100492/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "candidate",
+      "added_at": "2026-10-04",
+      "notes": "Mature navigation-only category; it is not yet a Blueprint manipulation evaluation target."
+    },
+    {
+      "row_id": "lab_sample_handling",
+      "capability": "lab_sample_handling",
+      "label": "Sample and labware handling in laboratories",
+      "task_families": [
+        "sample_container_loading",
+        "labware_transfer",
+        "instrument_tending"
+      ],
+      "site_types": [
+        "lab_medical_diagnostic",
+        "lab_research_development"
+      ],
+      "evidence": [
+        {
+          "claim": "PNNL's EMSL chose Ginkgo Automation to build an automated anaerobic phenotyping workcell on its modular cart system.",
+          "published": "2025-07-30",
+          "publisher": "Ginkgo Bioworks (PR Newswire)",
+          "url": "https://www.prnewswire.com/news-releases/ginkgo-to-deploy-modular-automation-technology-to-the-environmental-molecular-sciences-laboratory-emsl-at-pacific-northwest-national-labs-pnnl-to-accelerate-microbial-research-for-the-bioeconomy-302517319.html",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "PNNL commissioned an autonomous lab where robots fill and load sample containers and move them between lab locations.",
+          "published": "2025-12-04",
+          "publisher": "Pacific Northwest National Laboratory",
+          "url": "https://www.pnnl.gov/news-media/department-energy-pnnl-partner-power-nations-bioeconomy",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Medra raised a Series A for general-purpose robots that run lab experiments autonomously.",
+          "published": "2025-12-11",
+          "publisher": "Medra",
+          "url": "https://www.medra.ai/series-a",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Automata raised $45M to scale its modular lab-robotics platform for pharma customers.",
+          "published": "2026-02-10",
+          "publisher": "R&D World",
+          "url": "https://www.rdworldonline.com/automata-raises-45m-to-scale-lab-automation-platform-adds-danaher-as-strategic-investor/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "candidate",
+      "added_at": "2026-10-04",
+      "notes": "Verified evidence is research and pharma labs; no hospital clinical-lab deployment verified."
+    },
+    {
+      "row_id": "harvesting_greenhouse",
+      "capability": "harvesting_greenhouse",
+      "label": "Harvesting in greenhouses and indoor farms",
+      "task_families": [
+        "tomato_harvesting",
+        "strawberry_harvesting",
+        "crop_inspection"
+      ],
+      "site_types": [
+        "greenhouse_farm"
+      ],
+      "evidence": [
+        {
+          "claim": "Oishii bought Tortuga AgTech's harvesting-robot IP and team; Oishii's indoor farm runs about 50 robots that check strawberry ripeness before picking.",
+          "published": "2025-03-24",
+          "publisher": "AgFunderNews",
+          "url": "https://agfundernews.com/oishii-acquires-tortuga-agtechs-ip-assets-and-engineering-team-to-supercharge-its-vertical-farms",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Four Growers robots harvest tomatoes in Nature Fresh Farms' greenhouse in Leamington, Ontario.",
+          "published": "2023-12-14",
+          "publisher": "FANUC America",
+          "url": "https://www.fanucamerica.com/case-studies/robotic-automation-ai-harvests-tomatoes",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Westburg Greenhouse in the Netherlands runs a fleet of Four Growers tomato-harvesting robots.",
+          "published": "2025-10-27",
+          "publisher": "FANUC America",
+          "url": "https://www.fanucamerica.com/case-studies/automating-agriculture-greenhouse-turns-to-robots-for-tomato-harvesting",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Four Growers, based in Pittsburgh, says its greenhouse harvesting robots work with five customers.",
+          "published": "2024-11-20",
+          "publisher": "TechCrunch",
+          "url": "https://techcrunch.com/2024/11/20/yc-backed-four-growers-builds-robots-to-help-solve-greenhouse-labor-shortages",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "candidate",
+      "added_at": "2026-10-04",
+      "notes": "Verified deployments are in Canada, the Netherlands and one US indoor farm."
+    },
+    {
+      "row_id": "hotel_delivery",
+      "capability": "hotel_delivery",
+      "label": "Hotel delivery and housekeeping transport",
+      "task_families": [
+        "room_delivery",
+        "linen_transport"
+      ],
+      "site_types": [
+        "hotel"
+      ],
+      "evidence": [
+        {
+          "claim": "Dream Hollywood in Los Angeles runs two Relay delivery robots that bring food, amenities and towels to guests.",
+          "published": "2022-03-22",
+          "publisher": "Relay Robotics",
+          "url": "https://relayrobotics.com/blog/hotel-delivery-robot-deployed-in-los-angeles-california",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Relay says its robots carry food and housekeeping supplies in hotels including Embassy Suites LAX North.",
+          "published": "2023-05-15",
+          "publisher": "Relay Robotics",
+          "url": "https://relayrobotics.com/blog/hotel-industry-executives-turn-to-delivery-robots",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "Luma Hotel in Times Square used Relay 2 robots to deliver linens, towels and food.",
+          "published": "2023-06-06",
+          "publisher": "FOX 5 New York",
+          "url": "https://www.fox5ny.com/news/next-gen-room-service-how-relay-2-robots-are-revolutionizing-the-hotel-experience",
+          "verified_at": "2026-10-04"
+        },
+        {
+          "claim": "TechForce Robotics' TIM-E robot moves linen and waste bins for housekeeping at Homewood Suites in Del Mar, California.",
+          "published": "2026-02-25",
+          "publisher": "Hotel Dive",
+          "url": "https://www.hoteldive.com/news/hotel-robot-labor-efficiency/813064/",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "status": "candidate",
+      "added_at": "2026-10-04"
+    }
+  ]
+}

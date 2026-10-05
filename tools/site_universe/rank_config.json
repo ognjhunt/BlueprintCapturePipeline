@@ -1,0 +1,508 @@
+{
+  "schema": "blueprint.site_universe.rank_config.v1",
+  "version": "2026-10-04.1",
+  "updated_at": "2026-10-04",
+  "description": "Ranking v1 for the site universe. Data only: the owner tunes weights, curves and exclusion rules here, with no code change. A score adds weighted fit evidence; it never measures buying interest. Each component value is in [-1, 1] and the weights are points that sum to 100.",
+  "score_meaning": "Points of fit evidence for an Arm Decision Proof design partner (a site with a rigid-object task for a fixed arm first). A score is not a measure of buying interest.",
+  "weights": {
+    "capability_fit": 25,
+    "task_evidence": 10,
+    "size_fit": 22,
+    "category_fit": 10,
+    "operator_scale": 13,
+    "activity_evidence": 8,
+    "ownership": 6,
+    "source_corroboration": 4,
+    "location_quality": 2
+  },
+  "capability_weights": {
+    "fixed_arm_machine_tending": {
+      "weight": 1.0,
+      "note": "First target of the Arm Decision Proof: one fixed arm and a rigid part at a machine."
+    },
+    "kitting_assembly": {
+      "weight": 0.85,
+      "note": "Rigid parts into kits or fixtures; a fixed arm can do it."
+    },
+    "palletizing_depalletizing": {
+      "weight": 0.85,
+      "note": "Rigid cases at the end of a line; a fixed arm can do it."
+    },
+    "sorting_pick_and_place": {
+      "weight": 0.75,
+      "note": "A fixed arm at induction or a sorter; polybags are deformable."
+    },
+    "mobile_manipulator_case_picking": {
+      "weight": 0.6,
+      "note": "Mobile manipulation is in scope; totes and cases are rigid."
+    },
+    "truck_trailer_unloading": {
+      "weight": 0.55,
+      "note": "Rigid boxes, but a mobile base and high mix."
+    },
+    "food_prep_manipulation": {
+      "weight": 0.5,
+      "note": "A fixed arm over a line, but most food items are deformable and hygiene rules apply."
+    },
+    "recycling_sorting": {
+      "weight": 0.5,
+      "note": "A fixed arm over a conveyor; the objects are crushed and mixed."
+    },
+    "lab_sample_handling": {
+      "weight": 0.5,
+      "note": "Candidate row (no sites until activated): rigid labware with a fixed arm."
+    },
+    "shelf_restocking": {
+      "weight": 0.4,
+      "note": "Mobile manipulation in stores; taxonomy notes no verified US restocking deployment."
+    },
+    "hospital_logistics": {
+      "weight": 0.25,
+      "note": "Mostly navigation and delivery, with little manipulation."
+    },
+    "harvesting_greenhouse": {
+      "weight": 0.2,
+      "note": "Candidate row (no sites until activated): deformable produce."
+    },
+    "bimanual_folding": {
+      "weight": 0.1,
+      "note": "Deformable textiles. Deformable work is frozen under the Arm Decision Proof (AGENTS.md)."
+    },
+    "hotel_delivery": {
+      "weight": 0.1,
+      "note": "Candidate row (no sites until activated): navigation only."
+    },
+    "autonomous_cleaning": {
+      "weight": 0.05,
+      "note": "Candidate row (no sites until activated): navigation only, not a manipulation target."
+    }
+  },
+  "category_weights": {
+    "manufacturing": 1.0,
+    "warehousing_storage": 0.8,
+    "food_processing": 0.75,
+    "distribution_wholesale": 0.7,
+    "recycling_waste": 0.6,
+    "laboratory": 0.6,
+    "parcel_logistics": 0.55,
+    "agriculture_greenhouse": 0.4,
+    "retail_general": 0.35,
+    "retail_grocery": 0.35,
+    "food_service": 0.3,
+    "healthcare_hospital": 0.3,
+    "industrial_laundry": 0.3,
+    "industrial_general": 0.3,
+    "hospitality": 0.2,
+    "transport_terminal": 0.2
+  },
+  "site_type_weights": {
+    "plant_general": 0.6,
+    "plant_chemical_pharma": 0.6,
+    "plant_primary_metal": 0.8,
+    "drycleaning_laundry_service": 0.1
+  },
+  "site_type_weight_notes": {
+    "plant_general": "OpenStreetMap plant of unknown subsector.",
+    "plant_chemical_pharma": "Process plants handle bulk material; robot tasks are mostly packaging at the end of the line.",
+    "plant_primary_metal": "Mills and foundries are hot and heavy; casting finishing is the robot task.",
+    "drycleaning_laundry_service": "NAICS 812320 is mostly small storefront dry cleaners."
+  },
+  "capability_scope": {
+    "note": "A site's capabilities come from its site types. OpenStreetMap types of unknown use add capabilities only when the site has no specific site type. A capability that only a secondary site type supports (for example a warehouse code on a plant) is multiplied by the factor.",
+    "unspecific_site_types": ["industrial_general", "plant_general"],
+    "secondary_site_type_factor": 0.7
+  },
+  "size": {
+    "note": "Peak at 100-1,000 annual average employees (OSHA ITA). Values below 50 and above 2,500 employees are penalties. Interpolation is linear in log10 of the x value and clamped at both ends.",
+    "interpolation": "log10",
+    "employees_curve": [
+      [5, -0.5],
+      [20, -0.25],
+      [50, 0.0],
+      [100, 1.0],
+      [1000, 1.0],
+      [2500, 0.0],
+      [5000, -0.5],
+      [10000, -1.0]
+    ],
+    "building_area_m2_curve": [
+      [500, -0.25],
+      [2000, 0.0],
+      [5000, 1.0],
+      [60000, 1.0],
+      [150000, 0.0],
+      [300000, -0.5]
+    ],
+    "building_area_confidence": 0.5,
+    "unknown": 0.0
+  },
+  "task_evidence": {
+    "note": "NAICS codes that name the task of a capability. The longest matching prefix of the site's own NAICS codes wins; a capability without a match gets the default. Values below the default are evidence against the task.",
+    "default": 0.5,
+    "naics_by_capability": {
+      "fixed_arm_machine_tending": [
+        {"prefix": "332710", "value": 1.0, "label": "Machine shops"},
+        {"prefix": "33272", "value": 0.9, "label": "Turned products, screws, nuts and bolts"},
+        {"prefix": "326199", "value": 0.9, "label": "Other plastics products (mostly injection molding)"},
+        {"prefix": "326160", "value": 0.8, "label": "Plastic bottles (blow molding)"},
+        {"prefix": "32611", "value": 0.3, "label": "Plastic film, sheet and bags (continuous extrusion)"},
+        {"prefix": "32612", "value": 0.4, "label": "Plastic pipe and profile shapes (continuous extrusion)"},
+        {"prefix": "3261", "value": 0.7, "label": "Other plastics products"},
+        {"prefix": "33351", "value": 0.9, "label": "Metalworking machinery: molds, dies, tools and machine tools"},
+        {"prefix": "33211", "value": 0.8, "label": "Forging and stamping (press tending)"},
+        {"prefix": "3363", "value": 0.7, "label": "Motor vehicle parts"},
+        {"prefix": "336412", "value": 0.7, "label": "Aircraft engines and engine parts"},
+        {"prefix": "336413", "value": 0.7, "label": "Other aircraft parts and equipment"},
+        {"prefix": "3391", "value": 0.7, "label": "Medical equipment and supplies"},
+        {"prefix": "3262", "value": 0.6, "label": "Rubber products"},
+        {"prefix": "3336", "value": 0.6, "label": "Engines, turbines and power transmission equipment"},
+        {"prefix": "3344", "value": 0.3, "label": "Semiconductors and electronic components (tools already automated)"},
+        {"prefix": "3323", "value": 0.2, "label": "Architectural and structural metals (welding fabrication)"},
+        {"prefix": "3324", "value": 0.2, "label": "Boilers, tanks and shipping containers"},
+        {"prefix": "3311", "value": 0.2, "label": "Iron and steel mills"}
+      ],
+      "kitting_assembly": [
+        {"prefix": "334418", "value": 0.9, "label": "Printed circuit assembly"},
+        {"prefix": "3363", "value": 0.8, "label": "Motor vehicle parts"},
+        {"prefix": "3391", "value": 0.8, "label": "Medical equipment and supplies"},
+        {"prefix": "3353", "value": 0.7, "label": "Electrical equipment"},
+        {"prefix": "3359", "value": 0.7, "label": "Other electrical equipment and components"},
+        {"prefix": "3342", "value": 0.6, "label": "Communications equipment"},
+        {"prefix": "3371", "value": 0.6, "label": "Household and institutional furniture"}
+      ],
+      "palletizing_depalletizing": [
+        {"prefix": "3121", "value": 0.9, "label": "Beverages"},
+        {"prefix": "3118", "value": 0.8, "label": "Bakeries and tortillas"},
+        {"prefix": "3119", "value": 0.8, "label": "Other food: snacks, coffee, spices"},
+        {"prefix": "3114", "value": 0.8, "label": "Fruit and vegetable preserving"},
+        {"prefix": "3222", "value": 0.8, "label": "Converted paper: boxes and bags"},
+        {"prefix": "3256", "value": 0.8, "label": "Soap and cleaning compounds"},
+        {"prefix": "32616", "value": 0.8, "label": "Plastic bottles"},
+        {"prefix": "3115", "value": 0.7, "label": "Dairy products"},
+        {"prefix": "4244", "value": 0.7, "label": "Grocery and related wholesale"}
+      ]
+    }
+  },
+  "operator_scale": {
+    "note": "Sites in the snapshot that share the operator's key (normalized operator or name tokens). One site suggests a local decision maker; a large chain decides centrally. Interpolation is linear in log10 of the site count.",
+    "interpolation": "log10",
+    "site_count_curve": [
+      [1, 1.0],
+      [3, 0.85],
+      [5, 0.6],
+      [10, 0.3],
+      [25, 0.0],
+      [60, -0.5],
+      [150, -1.0]
+    ],
+    "unknown": 0.5,
+    "numbered_unit_assumed_sites": 25,
+    "numbered_unit_note": "A name that carries a unit number (a leading 3-6 digit number that is not an address: no thoroughfare word follows it and it is not the site's own house number; a number sign with two or more digits; or 'Store' with a number) is a unit of a chain, so the site count is at least this number."
+  },
+  "activity_evidence": {
+    "note": "The strongest available evidence that the site operates now.",
+    "osha_filing_year_at_least": 2024,
+    "values": {
+      "osha_recent_filing": 1.0,
+      "fsis_listed": 0.9,
+      "frs_active": 0.8,
+      "frs_unknown": 0.4,
+      "frs_inactive": 0.0,
+      "none": 0.3
+    }
+  },
+  "ownership": {
+    "note": "Public-sector sites (federal, state, county and city) buy through procurement and decide slowly.",
+    "values": {"private": 1.0, "public": -1.0, "unknown": 0.5},
+    "public_naics_prefixes": ["491110", "92"],
+    "phrase_fields": ["name", "names", "operator"],
+    "public_phrases": [
+      "POSTAL SERVICE", "USPS", "POST OFFICE", "US ARMY", "U S ARMY", "ARMY DEPOT", "AIR FORCE",
+      "DEPARTMENT OF", "HOSPITAL DISTRICT", "CITY OF", "COUNTY OF", "VETERANS AFFAIRS",
+      "VETERANS HEALTH", "TDCJ", "ISD", "INDEPENDENT SCHOOL DISTRICT"
+    ]
+  },
+  "source_corroboration": {
+    "note": "Independent public sources that list the site.",
+    "values_by_source_count": {"1": 0.0, "2": 0.7, "3": 1.0}
+  },
+  "location_quality": {
+    "street_address": 0.5,
+    "precise_coordinates": 0.5,
+    "other_coordinates": 0.25
+  },
+  "exclusions": [
+    {
+      "id": "in_house_robotics",
+      "label": "Operator with an in-house robotics program",
+      "reason": "The operator builds its own robots for these tasks, so it is unlikely to need an outside design partner.",
+      "evidence": [
+        {
+          "url": "https://en.wikipedia.org/wiki/Amazon_Robotics",
+          "note": "Amazon Robotics (formerly Kiva Systems) builds Amazon's warehouse robots in house.",
+          "verified_at": null
+        }
+      ],
+      "match": {
+        "phrases": {
+          "fields": ["name", "names", "operator"],
+          "entries": [
+            {
+              "label": "Amazon",
+              "phrases": ["AMAZON"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Amazon_Robotics",
+              "verified_at": null
+            },
+            {
+              "label": "Whole Foods Market (Amazon subsidiary)",
+              "phrases": ["WHOLE FOODS"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Whole_Foods_Market",
+              "verified_at": null
+            },
+            {
+              "label": "Tesla (Optimus humanoid program)",
+              "phrases": ["TESLA"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Optimus_(robot)",
+              "verified_at": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "known_robot_deployment",
+      "label": "Operator with a known fleet-scale robot deployment for these tasks",
+      "reason": "The operator already deploys robots for these tasks at scale with a named vendor, so a new design partnership is unlikely.",
+      "evidence": [
+        {
+          "url": "https://www.therobotreport.com/dhl-buying-1000-stretch-robots-from-boston-dynamics/",
+          "note": "Taxonomy evidence: DHL signed for more than 1,000 more Boston Dynamics Stretch robots.",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "match": {
+        "phrases": {
+          "fields": ["name", "names", "operator"],
+          "entries": [
+            {
+              "label": "UPS (Pickle truck-unloading robots)",
+              "phrases": ["UNITED PARCEL", "UNITED PARCELS"],
+              "acronyms": ["UPS"],
+              "evidence_url": "https://www.ttnews.com/articles/ups-robots-unload-trucks",
+              "verified_at": "2026-10-04"
+            },
+            {
+              "label": "FedEx (Berkshire Grey and Plus One robots)",
+              "phrases": ["FEDEX", "FEDERAL EXPRESS"],
+              "evidence_url": "https://www.robotics247.com/article/fedex-launches-berkshire-greys-fully-autonomous-robotic-trailer-unloader",
+              "verified_at": "2026-10-04"
+            },
+            {
+              "label": "DHL (Boston Dynamics Stretch robots)",
+              "phrases": ["DHL EXPRESS", "DHL SUPPLY CHAIN", "CARE OF DHL"],
+              "acronyms": ["DHL"],
+              "evidence_url": "https://www.therobotreport.com/dhl-buying-1000-stretch-robots-from-boston-dynamics/",
+              "verified_at": "2026-10-04"
+            },
+            {
+              "label": "GXO (Agility Digit humanoids)",
+              "phrases": ["GXO LOGISTICS", "GXO WAREHOUSE"],
+              "acronyms": ["GXO"],
+              "evidence_url": "https://www.agilityrobotics.com/content/digit-moves-over-100k-totes",
+              "verified_at": "2026-10-04"
+            },
+            {
+              "label": "Walmart (Symbotic palletizing systems in regional DCs)",
+              "phrases": ["WALMART", "WAL MART"],
+              "evidence_url": "https://www.therobotreport.com/walmart-and-symbotic-work-together-to-implement-high-tech-automation-system-into-distribution-network/",
+              "verified_at": "2026-10-04"
+            },
+            {
+              "label": "Sam's Club (Walmart; BrainOS robots in every US club)",
+              "phrases": ["SAM S CLUB", "SAMS CLUB", "SAMS EAST"],
+              "evidence_url": "https://www.braincorp.com/resources/sams-club-expands-autonomous-floor-sweeping-robots-to-all-u-s-stores-b2ac8",
+              "verified_at": "2026-10-04"
+            },
+            {
+              "label": "Mercado Libre (Agility Digit in San Antonio)",
+              "phrases": ["MERCADO LIBRE"],
+              "evidence_url": "https://www.robotics247.com/article/agility_robotics_announces_digit_humanoid_robot_deployment_at_mercado_libre",
+              "verified_at": "2026-10-04"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "defense_itar",
+      "label": "Defense or ITAR-heavy prime or site",
+      "reason": "ITAR controls and site security restrict outside capture, data handling and robot evaluation, so the site cannot be a first design partner.",
+      "evidence": [
+        {
+          "url": "https://www.ecfr.gov/current/title-22/chapter-I/subchapter-M",
+          "note": "International Traffic in Arms Regulations (22 CFR 120-130).",
+          "verified_at": null
+        },
+        {
+          "url": "https://www.pmddtc.state.gov/",
+          "note": "Directorate of Defense Trade Controls, which administers ITAR registration.",
+          "verified_at": null
+        }
+      ],
+      "match": {
+        "naics": {
+          "scope": "any",
+          "prefixes": ["336411", "336414", "336415", "336419", "336992", "332992", "332993", "332994"],
+          "note": "Aircraft (336411; this also covers civil aircraft makers), guided missiles and space vehicles (336414, 336415, 336419), military armored vehicles (336992) and ammunition and ordnance (332992-332994)."
+        },
+        "phrases": {
+          "fields": ["name", "names", "operator"],
+          "entries": [
+            {
+              "label": "Lockheed Martin",
+              "phrases": ["LOCKHEED"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Lockheed_Martin",
+              "verified_at": null
+            },
+            {
+              "label": "RTX (Raytheon)",
+              "phrases": ["RAYTHEON"],
+              "acronyms": ["RTX"],
+              "evidence_url": "https://en.wikipedia.org/wiki/RTX_Corporation",
+              "verified_at": null
+            },
+            {
+              "label": "Pratt & Whitney (RTX)",
+              "phrases": ["PRATT WHITNEY"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Pratt_%26_Whitney",
+              "verified_at": null
+            },
+            {
+              "label": "Collins Aerospace (RTX)",
+              "phrases": ["COLLINS AEROSPACE"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Collins_Aerospace",
+              "verified_at": null
+            },
+            {
+              "label": "Boeing",
+              "phrases": ["BOEING"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Boeing",
+              "verified_at": null
+            },
+            {
+              "label": "L3Harris",
+              "phrases": ["L3HARRIS", "L3 HARRIS", "L 3 HARRIS"],
+              "evidence_url": "https://en.wikipedia.org/wiki/L3Harris",
+              "verified_at": null
+            },
+            {
+              "label": "General Dynamics",
+              "phrases": ["GENERAL DYNAMICS"],
+              "evidence_url": "https://en.wikipedia.org/wiki/General_Dynamics",
+              "verified_at": null
+            },
+            {
+              "label": "Northrop Grumman",
+              "phrases": ["NORTHROP GRUMMAN", "NORTHROP WORLDWIDE"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Northrop_Grumman",
+              "verified_at": null
+            },
+            {
+              "label": "BAE Systems",
+              "phrases": ["BAE SYSTEMS"],
+              "evidence_url": "https://en.wikipedia.org/wiki/BAE_Systems",
+              "verified_at": null
+            },
+            {
+              "label": "Bell Textron",
+              "phrases": ["BELL TEXTRON", "BELL HELICOPTER", "TEXTRON"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Bell_Textron",
+              "verified_at": null
+            },
+            {
+              "label": "Elbit Systems",
+              "phrases": ["ELBIT"],
+              "evidence_url": "https://en.wikipedia.org/wiki/Elbit_Systems",
+              "verified_at": null
+            },
+            {
+              "label": "SpaceX",
+              "phrases": ["SPACEX", "SPACE EXPLORATION TECHNOLOGIES"],
+              "evidence_url": "https://en.wikipedia.org/wiki/SpaceX",
+              "verified_at": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "office_headquarters",
+      "label": "Office or headquarters",
+      "reason": "An office or headquarters has no physical robot task on site; the operating sites are elsewhere.",
+      "evidence": [
+        {
+          "url": "https://www.census.gov/naics/?input=551114&year=2022&details=551114",
+          "note": "NAICS 551114: corporate, subsidiary and regional managing offices.",
+          "verified_at": null
+        }
+      ],
+      "match": {
+        "naics": {
+          "scope": "primary",
+          "prefixes": ["551114"],
+          "note": "Primary codes only: a plant often lists 551114 as a secondary code for its on-site offices."
+        },
+        "phrases": {
+          "fields": ["name"],
+          "entries": [
+            {
+              "label": "office or headquarters words",
+              "phrases": ["OFFICE", "OFFICES", "HEADQUARTERS", "HQ", "CORPORATE", "SUPPORT CENTER", "SUPPORT OFFICE"]
+            }
+          ],
+          "unless_phrases": [
+            "WAREHOUSE", "WAREHOUSES", "PLANT", "FACTORY", "MILL", "PRODUCTION", "MANUFACTURING", "MFG",
+            "FULFILLMENT", "DISTRIBUTION CENTER", "DC", "RETAIL SUPPORT CENTER", "POST OFFICE",
+            "OFFICE FURNITURE", "OFFICE SUPPLY", "OFFICE SUPPLIES", "OFFICE PRODUCTS", "OFFICE DEPOT",
+            "OFFICEMAX", "OFFICE MAX", "CLEANERS", "LAUNDRY"
+          ],
+          "note": "Only the primary site name. A name that also names a physical operation (an office and warehouse, a retail support center, which is a distribution center) is kept."
+        }
+      }
+    },
+    {
+      "id": "frs_inactive",
+      "label": "Inactive in EPA FRS",
+      "reason": "Every EPA FRS program record for the site is closed, so the site may no longer operate. An OSHA ITA filing for 2024 or later, or a listing in the USDA FSIS inspection directory, overrides this: the establishment reported workers that year or is under inspection now.",
+      "evidence": [
+        {
+          "url": "https://www.epa.gov/frs/epa-state-combined-csv-download-files",
+          "note": "The FRS environmental interest file gives each program record an ACTIVE_STATUS; the snapshot marks a site inactive when every status is terminated, expired, inactive or closed.",
+          "verified_at": "2026-10-04"
+        }
+      ],
+      "match": {
+        "frs_activity_status": {
+          "values": ["inactive"],
+          "unless_osha_filing_year_at_least": 2024,
+          "unless_fsis_listed": true
+        }
+      }
+    },
+    {
+      "id": "no_location",
+      "label": "No street address and no coordinates",
+      "reason": "A site without a street address or coordinates cannot be found for a capture visit.",
+      "evidence": [
+        {
+          "url": "https://github.com/ognjhunt/BlueprintCapturePipeline/pull/2592",
+          "note": "Site universe design v1: each candidate must be a locatable physical site.",
+          "verified_at": null
+        }
+      ],
+      "match": {
+        "missing_street_and_coordinates": true
+      }
+    }
+  ]
+}
