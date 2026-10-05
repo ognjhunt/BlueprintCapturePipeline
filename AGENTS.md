@@ -8,15 +8,22 @@ drifts from this guide, this guide wins; if docs disagree with each other, use
 
 ## Mission
 
-`BlueprintCapturePipeline` has one active mission: deliver **Arm Decision Proof
-v1** (`arm-decision-proof-v1`). Qualify the reusable service first on exact,
-rights-cleared public datasets—including one metric 3DGS/collision object
-removal, released-code inpainting, and exact SimReady USD replacement—then take
-one fresh capture of one previously unseen fixed-arm workcell. Blueprint must
-prospectively choose or eliminate one of exactly two frozen policy/configuration
-candidates for the next scarce physical-test budget, or explicitly abstain, then
-adjudicate that decision and one predicted failure boundary with held-out
-physical trials.
+`BlueprintCapturePipeline` has one active build mission: deliver **Arm Decision
+Proof v1** (`arm-decision-proof-v1`), the first evaluation-proof track. Qualify
+the reusable service first on exact, rights-cleared public datasets—including
+one metric 3DGS/collision object removal, released-code inpainting, and exact
+SimReady USD replacement—then take one fresh capture of one previously unseen
+fixed-arm workcell. Blueprint must prospectively choose or eliminate one of
+exactly two frozen policy/configuration candidates for the next scarce
+physical-test budget, or explicitly abstain, then adjudicate that decision and
+one predicted failure boundary with held-out physical trials.
+
+Owner decision 2026-10-05
+(`gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`)
+opens a demand-discovery phase across robot forms and task families; the rule is
+under Product Rules. Until the owner records a focus decision from that demand
+evidence, the fixed-arm, rigid-object envelope above is the current default
+build target, not a ban on other forms.
 
 The one customer-facing product remains a **Task Evaluation Run**. The maintained
 Site-Task Testbed is its reusable substrate; the candidate Minimum Sufficient
@@ -50,10 +57,10 @@ dependent step as blocked instead of guessing.
 
 ## Product Rules
 
-- Treat `arm-decision-proof-v1` as the sole active program. Historical docs,
-  schemas, providers, evaluators, and runtime lanes are compatibility or paused
-  material unless a recorded Arm Decision Proof blocker requires the smallest
-  possible dependency.
+- Treat `arm-decision-proof-v1` as the sole active evaluation build-out
+  program. Historical docs, schemas, providers, evaluators, and runtime lanes
+  are compatibility or paused material unless a recorded Arm Decision Proof
+  blocker requires the smallest possible dependency.
 - Before accepting work, name the ADP backlog item and day-7/day-14/day-21/day-28,
   day-35, or day-42 gate it unblocks, the observed completion artifact, why existing
   infrastructure is insufficient, and the smallest reversible change. Missing
@@ -91,11 +98,24 @@ dependent step as blocked instead of guessing.
   candidates enter the matrix; a Cosmos reasoner/world model remains a
   separately labeled auxiliary. Then use the existing Raw V3.2 path for one
   fresh clean-background/object-present workcell capture.
-- Do not start or expand humanoid/G1, locomotion, deformables, insertion/force
-  tasks, five-policy/general-ranking campaigns, world-model/evaluator research,
-  reconstruction/provider bakeoffs, universal runtimes, dynamic-scene research,
-  post-training products, multi-site generalization, or unrelated WebApp/growth
-  work without an observed ADP blocker and explicit scope change.
+- **Demand discovery (owner decision 2026-10-05,
+  `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`,
+  which supersedes the same-day humanoid tote-handling record).** Prospecting,
+  screening, outreach, and partner discovery are open across robot forms (fixed
+  arm, humanoid, wheeled, bimanual, and others) and task families, deformables
+  included. Name ADP-010 and the partner-phase day-7 gate for this work. Measure
+  demand by behavior on both sides: site replies, interest, and submitted videos
+  by task family, and robot teams seeking sites or evaluations by form and task.
+  Building evaluation support for a new form or task family needs a recorded
+  owner focus decision based on that demand evidence; the same decision sets
+  the focus for the first case studies. Until one is recorded, the fixed-arm,
+  rigid-object envelope is the default build target. Spend stays inside
+  approved allowances. Sending and automatic first contact stay off; a draft is
+  not permission to send. Five-policy/general-ranking campaigns,
+  world-model/evaluator research, reconstruction/provider bakeoffs, universal
+  runtimes, dynamic-scene research, post-training products, multi-site
+  generalization, and unrelated WebApp/growth work still need an observed ADP
+  blocker and an explicit scope change.
 
 ## Repo Map
 
@@ -107,7 +127,7 @@ dependent step as blocked instead of guessing.
   - legacy robot-evaluation, WAM, humanoid, and provider modules: compatibility
     unless an active-program blocker explicitly requires them
 - `tests/`: pipeline, synthesis, runtime, and contract coverage
-- `docs/arm_decision_proof_v1/`: sole active program, partner packet, backlog, and master goal
+- `docs/arm_decision_proof_v1/`: the first evaluation-proof track, its partner packet, backlog, and master goal
 - `docs/`: stable dependency contracts, compatibility docs, and historical evidence
 - `scripts/`: environment setup and runtime launch helpers
 - `skillpacks/`: reusable operational skill content

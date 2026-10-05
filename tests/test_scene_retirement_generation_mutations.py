@@ -72,7 +72,8 @@ def test_generation_publisher_never_mutates_reused_foreign_descriptor(tmp_path, 
 
 
 def test_generation_metadata_publication_preserves_installed_store_owner_before_link(tmp_path,monkeypatch):
-    store=tmp_path/'service-generations';store.mkdir(mode=0o700)
+    store=tmp_path/'service-generations'
+    store.mkdir(mode=0o700)
     calls=[]
     real_chown,real_link=os.fchown,os.link
     def chown(fd,uid,gid):
