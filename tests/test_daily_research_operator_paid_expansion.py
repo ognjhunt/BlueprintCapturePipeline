@@ -85,7 +85,7 @@ def test_set_dry_run_is_read_only_and_names_the_exact_next_direction(fixture):
     assert plan["state"] == "planned" and plan["firestore_writes"] == plan["object_writes"] == plan["provider_calls"] == 0
     direction = plan["direction"]
     assert direction == {"schema_version": allocation.DIRECTION, "version": 1, "supersedes": None,
-                         "per_run_limit_usd": "20.00", "sources": ["exa"], "scope": allocation.SCOPE,
+                         "per_run_limit_usd": "20.00", "sources": list(allocation.SOURCES), "scope": allocation.SCOPE,
                          "effective_from": "2026-10-04T18:30:15+00:00", "expires_at": "2027-01-02T18:30:15+00:00",
                          "approval_reference": "owner-decision-2026-10-04", "approved_by": "owner",
                          "issued_at": "2026-10-04T18:30:15+00:00", "reason": "Owner per-run paid expansion allowance"}
@@ -244,7 +244,7 @@ def test_show_reports_unset_and_verifies_the_audit_chain(fixture):
     assert shown["state"] == "unset" and shown["audit_chain"] == [] and shown["audit_chain_verified"] is True
     setting(bridge, objects)
     assert operator.show(bridge, Objects())["object_verified"] is False
-    assert operator.show(bridge, objects)["sources"] == ["exa"]
+    assert operator.show(bridge, objects)["sources"] == list(allocation.SOURCES) == ["exa", "findall"]
     assert allocation.SCOPE["project_id"] == PROJECT and allocation.SCOPE["agent_id"] == AGENT
 
 
