@@ -3130,7 +3130,8 @@ _SCENE_RUNTIME_BOOT_ROOT = Path("/usr/lib/blueprint/scene-retirement-runtime")
 _SCENE_RUNTIME_OWNER = 0
 
 
-def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str, *, deadline: float) -> None:
+def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str, *, deadline: float,
+                                         destination: Path | None = None) -> None:
     """Authenticate installer Git data before the first privileged execution."""
     import fcntl
     import selectors
@@ -3195,7 +3196,7 @@ def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str,
         require(mode in ({b"40000"} if name == "scripts" else {b"100644",b"100755"}))
     body = object_bytes("blob", digest, 1024*1024)
     require(body)
-    root = _SCENE_RUNTIME_BOOT_ROOT
+    root = destination if destination is not None else _SCENE_RUNTIME_BOOT_ROOT
     def protected_directory(path):
         if not path.exists() and not path.is_symlink():
             protected_directory(path.parent)
@@ -3268,12 +3269,10 @@ def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str,
 
 
 def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) -> dict[str, Any]:
-    """Execute retained root installer bytes before exposing the new units."""
+    """Authenticate the selected release installer before exposing new units."""
     deadline = time.monotonic() + 300
     root = _SCENE_RUNTIME_BOOT_ROOT
     helper = root / "runtime_installer.py"
-    if not helper.exists() and not helper.is_symlink():
-        _bootstrap_scene_retirement_installer(source_repo, source_commit, deadline=deadline)
     error = "deploy_scene_retirement_runtime_unproven"
     held: list[int] = []
     def identity(info: os.stat_result) -> tuple[int, ...]:
@@ -3293,12 +3292,12 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) 
         if len(raw) != first.st_size or identity(os.fstat(fd)) != identity(first) or identity(path.lstat()) != identity(first):
             raise ControlPlaneDeployError(error)
         return raw, fd
-    try:
-        raw, fd = read(helper, 1024 * 1024)
+    def verified_installer(directory: Path) -> int:
+        raw, fd = read(directory / "runtime_installer.py", 1024 * 1024)
         selected = {"sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw)}
         matched = False
         for name in ("runtime-installer.json", "runtime-installer-pending.json"):
-            path = root / name
+            path = directory / name
             if path.exists() or path.is_symlink():
                 body, _ = read(path, 4096)
                 value = json.loads(body)
@@ -3308,6 +3307,19 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) 
                     matched = True
         if not matched or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
             raise ControlPlaneDeployError(error)
+        return fd
+    try:
+        # Unknown retained state still refuses before staging or execution. A
+        # valid old helper must not prevent a reviewed installer repair from
+        # running: stage authenticated Git bytes separately and preserve it.
+        retained = (helper, root / "runtime-installer.json", root / "runtime-installer-pending.json")
+        if any(path.exists() or path.is_symlink() for path in retained):
+            verified_installer(root)
+        candidate = root / "installers" / source_commit
+        _bootstrap_scene_retirement_installer(
+            source_repo, source_commit, deadline=deadline, destination=candidate,
+        )
+        fd = verified_installer(candidate)
         os.lseek(fd, 0, os.SEEK_SET)
         command = ["/usr/bin/python3", "-I", "-S", f"/proc/self/fd/{fd}",
                    "--source", str(source_repo), "--source-commit", source_commit, "--locked-sdk",

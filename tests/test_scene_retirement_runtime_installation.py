@@ -560,7 +560,7 @@ def test_first_upgrade_authenticates_installer_data_from_service_owned_release_b
             fd = int(command[3].rsplit('/', 1)[1])
             raw = os.pread(fd, 1024 * 1024, 0)
             assert raw == signed
-            protected = namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'runtime_installer.py'
+            protected = namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'installers' / commit / 'runtime_installer.py'
             assert protected.read_bytes() == signed
             assert not protected.stat().st_mode & 0o022
             receipt = json.loads((protected.parent / 'runtime-installer.json').read_bytes())
@@ -586,6 +586,103 @@ def test_first_upgrade_unknown_fixed_installer_refuses_without_overwriting_or_ex
     with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
         namespace['_prepare_scene_retirement_runtime'](source_repo=tmp_path, source_commit='1' * 40)
     assert helper.read_bytes() == b'unknown prior root helper' and helper.stat().st_ino == before.st_ino
+
+
+def test_public_contracts_fetch_uses_fixed_https_and_verifies_real_git_objects(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    repository = tmp_path / 'contracts'
+    (repository / 'src/blueprint_contracts').mkdir(parents=True)
+    (repository / 'src/blueprint_contracts/__init__.py').write_text('VALUE = 1\n')
+    subprocess.run(['/usr/bin/git', '-C', str(repository), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(repository), 'add', '.'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(repository), '-c', 'user.name=fixture',
+                    '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'contracts'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(repository), 'rev-parse', 'HEAD']).decode().strip()
+    actual_popen = subprocess.Popen
+    fetched = []
+
+    def local_transport(command, **kwargs):
+        if 'fetch' in command:
+            expected = 'https://github.com/ognjhunt/BlueprintContracts.git'
+            assert expected in command and command[-1] == commit
+            assert 'GIT_SSH_COMMAND' not in kwargs['env']
+            assert kwargs['env']['GIT_CONFIG_GLOBAL'] == '/dev/null'
+            assert kwargs['env']['GIT_TERMINAL_PROMPT'] == '0'
+            assert 'credential.helper=' in command
+            fetched.append(command.copy())
+            command = [str(repository) if arg == expected else arg for arg in command]
+        return actual_popen(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'Popen', local_transport)
+    package = {'name': 'blueprint-contracts', 'source': {
+        'git': f'https://github.com/ognjhunt/BlueprintContracts.git?rev={commit}#{commit}'}}
+    rows = module._sdk_git_rows(package, None, time.monotonic() + 30)
+    assert len(fetched) == 1
+    assert Path(rows['blueprint_contracts/__init__.py']['source']).read_text() == 'VALUE = 1\n'
+
+
+def test_upgrade_executes_authenticated_candidate_instead_of_valid_obsolete_helper(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    import subprocess
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    root = namespace['_SCENE_RUNTIME_BOOT_ROOT']
+    root.mkdir()
+    old = b'raise RuntimeError("obsolete fetch path")\n'
+    (root / 'runtime_installer.py').write_bytes(old)
+    (root / 'runtime-installer.json').write_text(json.dumps({
+        'schema': 'scene-retirement-runtime-installer.v1',
+        'sha256': 'sha256:' + hashlib.sha256(old).hexdigest(), 'size_bytes': len(old)}))
+    source = tmp_path / 'candidate'
+    (source / 'scripts').mkdir(parents=True)
+    candidate = b'# reviewed new installer\n'
+    (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(candidate)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', '.'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture',
+                    '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'candidate'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
+    (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(b'raise RuntimeError("mutable")\n')
+    actual_run = subprocess.run
+    executed = []
+
+    def execute(command, **kwargs):
+        if command[:3] == ['/usr/bin/python3', '-I', '-S']:
+            raw = os.pread(int(command[3].rsplit('/', 1)[1]), 1024 * 1024, 0)
+            assert raw == candidate
+            assert (root / 'runtime_installer.py').read_bytes() == old
+            executed.append(raw)
+            return subprocess.CompletedProcess(command, 0, json.dumps({
+                'status': 'refreshed', 'source_commit': commit,
+                'authority_issued': False, 'cleanup_enabled': False}).encode(), b'')
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', execute)
+    for _ in range(2):
+        namespace['_prepare_scene_retirement_runtime'](source_repo=source, source_commit=commit)
+    assert executed == [candidate, candidate]
+    selected = root / 'installers' / commit / 'runtime_installer.py'
+    selected.write_bytes(b'changed candidate')
+    with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
+        namespace['_prepare_scene_retirement_runtime'](source_repo=source, source_commit=commit)
+    assert executed == [candidate, candidate]
+
+
+@pytest.mark.parametrize('receipt', ['runtime-installer.json', 'runtime-installer-pending.json'])
+def test_orphan_retained_installer_receipt_refuses_before_candidate_staging(tmp_path, monkeypatch, receipt):
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    root = namespace['_SCENE_RUNTIME_BOOT_ROOT']
+    root.mkdir()
+    marker = root / receipt
+    marker.write_bytes(b'{}')
+    def unexpected(*args, **kwargs):
+        pytest.fail('orphan installer receipt must refuse before candidate staging')
+    namespace['_bootstrap_scene_retirement_installer'] = unexpected
+    with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
+        namespace['_prepare_scene_retirement_runtime'](source_repo=tmp_path, source_commit='1' * 40)
+    assert marker.read_bytes() == b'{}' and not (root / 'installers').exists()
 
 
 def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monkeypatch):
