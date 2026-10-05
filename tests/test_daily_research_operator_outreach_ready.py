@@ -122,7 +122,9 @@ def test_the_bridge_refuses_a_pin_that_is_not_its_generation_bytes_or_chain(fixt
     raw = canonical(entry["direction"]).encode()
     generation = objects.create(entry["sha256"], raw)
     assert objects.create(entry["sha256"], raw) == generation  # Same bytes, same object.
-    set_ = lambda value, expected=None: bridge.call("outreach_ready_set", expected_sha256=expected, value=value)
+    def set_(value, expected=None):
+        return bridge.call("outreach_ready_set", expected_sha256=expected, value=value)
+
     bridge.call("acquire")
     try:
         for changes, code in (({"generation": "999999"}, "outreach_ready_object_missing"),
@@ -328,7 +330,9 @@ def test_a_row_cannot_gain_or_change_its_frozen_record_after_the_durable_intent(
             row = {**base, "state": "running", **({"outreach_ready": changed} if changed else {})}
             with pytest.raises(Refusal, match="^outreach_ready_already_bound$"):
                 ledger.put(row)
-        manifests = lambda: dict(json.loads((tmp_path / "firestore.json").read_text()))
+        def manifests():
+            return dict(json.loads((tmp_path / "firestore.json").read_text()))
+
         bound = manifests()["blueprintDailyResearch/sites-first/runs/2026-10-05"]
         assert bound["outreach_ready_digest"] and "outreach_ready_unbound" not in bound
         ledger.put(plain)
