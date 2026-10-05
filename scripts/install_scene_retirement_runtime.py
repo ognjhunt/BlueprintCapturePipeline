@@ -7,7 +7,7 @@ its exact protected copy intent. Unknown or changed bytes are preserved and refu
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
 import json
@@ -773,6 +773,25 @@ def _wheel_entries(path, deadline):
         os.close(fd)
 
 
+@contextmanager
+def _sdk_archive_reader():
+    """Retain one directory index, bound to the independently reopened wheel."""
+    with ExitStack() as retained:
+        selected, identity, archive = None, None, None
+
+        def read(path, fd, before):
+            nonlocal selected, identity, archive
+            if selected != path:
+                retained.close()
+                body = retained.enter_context(os.fdopen(os.dup(fd), 'rb'))
+                archive = retained.enter_context(zipfile.ZipFile(body))
+                selected, identity = path, _identity(before)
+            _require(_identity(before) == identity)
+            return archive
+
+        yield read
+
+
 def _sdk_extract(root, rows, deadline):
     _require(len(rows) <= _MAX_FILES and sum(row['size'] for row in rows.values()) <= _MAX_BYTES)
     required = 0
@@ -782,23 +801,24 @@ def _sdk_extract(root, rows, deadline):
         required += row['size'] - _sdk_existing_size(partial, row['size'])
     _sdk_space(root.parent, required, deadline)
     _mkdir(root)
-    for name, row in sorted(rows.items()):
-        _require(time.monotonic() <= deadline)
-        target = root / name
-        _mkdir(target.parent)
-        expected = {key: row[key] for key in ('size', 'sha256', 'mode')}
-        if 'source' in row:
-            _copy(Path(row['source']), target, expected, deadline)
-            continue
-        if target.exists() or target.is_symlink():
-            _require(_read(target, deadline) == expected)
-            continue
-        _require('archive' in row)
-        fd = _open(Path(row['archive']), directory=False)
-        output = None
-        try:
-            before = os.fstat(fd)
-            with os.fdopen(os.dup(fd), 'rb') as retained, zipfile.ZipFile(retained) as archive:
+    with _sdk_archive_reader() as archive_reader:
+        for name, row in sorted(rows.items()):
+            _require(time.monotonic() <= deadline)
+            target = root / name
+            _mkdir(target.parent)
+            expected = {key: row[key] for key in ('size', 'sha256', 'mode')}
+            if 'source' in row:
+                _copy(Path(row['source']), target, expected, deadline)
+                continue
+            if target.exists() or target.is_symlink():
+                _require(_read(target, deadline) == expected)
+                continue
+            _require('archive' in row)
+            fd = _open(Path(row['archive']), directory=False)
+            output = None
+            try:
+                before = os.fstat(fd)
+                archive = archive_reader(row['archive'], fd, before)
                 temporary = target.with_name(target.name + '.pending')
                 output, original = _sdk_partial(temporary, row['size'])
                 count, digest = 0, hashlib.sha256()
@@ -821,10 +841,10 @@ def _sdk_extract(root, rows, deadline):
                 _require(not target.exists() and not target.is_symlink())
                 os.rename(temporary, target)
                 _require(_read(target, deadline) == expected)
-        finally:
-            if output is not None:
-                os.close(output)
-            os.close(fd)
+            finally:
+                if output is not None:
+                    os.close(output)
+                os.close(fd)
 
 
 def _sdk_marker_tools(packages, wheelhouse, deadline):

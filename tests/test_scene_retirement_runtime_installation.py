@@ -820,3 +820,96 @@ def test_actual_locked_sdk_includes_cpu_control_plane_runtime_imports_without_gp
     # These are the root runtime's CPU import dependencies. No model/GPU
     # operator is invoked by this administrative protected-runtime install.
     assert not {'ultralytics', 'torch', 'nvidia-cuda-runtime-cu12'} & names
+
+
+def test_many_member_wheel_parses_directory_once_for_consecutive_payloads(tmp_path, monkeypatch):
+    import time
+    import zipfile
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    wheel = tmp_path / 'many.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        for index in range(5620):
+            archive.writestr(f'package/file{index:05}.py', f'value = {index}\n')
+    rows = module._wheel_entries(wheel, time.monotonic()+30)
+    # A bounded sample still carries the real, large central directory. Count
+    # parsing work rather than asserting a machine-dependent wall clock.
+    sample = dict(list(rows.items())[:128])
+    real_zip = zipfile.ZipFile
+    opened = []
+    def observed(*args, **kwargs):
+        archive = real_zip(*args, **kwargs)
+        opened.append(archive)
+        return archive
+    monkeypatch.setattr(module.zipfile, 'ZipFile', observed)
+    destination = tmp_path / 'extracted'
+    module._sdk_extract(destination, sample, time.monotonic()+60)
+    assert len(opened) == 1
+    assert all(archive.fp is None for archive in opened)
+    for index in range(128):
+        assert (destination / f'package/file{index:05}.py').read_text() == f'value = {index}\n'
+    module._sdk_extract(destination, sample, time.monotonic()+30)
+    assert len(opened) == 1  # Complete retained files are validated, not re-extracted.
+
+
+@pytest.mark.parametrize('change', ['replace', 'writable'])
+def test_cached_archive_refuses_identity_change_between_members(tmp_path, monkeypatch, change):
+    import time
+    import zipfile
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    wheel = tmp_path / 'source.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('a.py', 'a = 1\n')
+        archive.writestr('b.py', 'b = 2\n')
+    rows = module._wheel_entries(wheel, time.monotonic()+10)
+    destination = tmp_path / 'extracted'
+    real_read = module._read
+    real_zip = zipfile.ZipFile
+    opened = []
+    def observed(*args, **kwargs):
+        archive = real_zip(*args, **kwargs)
+        opened.append(archive)
+        return archive
+    def mutate(path, deadline, **kwargs):
+        result = real_read(path, deadline, **kwargs)
+        if path == destination / 'a.py':
+            if change == 'replace':
+                replacement = tmp_path / 'replacement.whl'
+                replacement.write_bytes(wheel.read_bytes())
+                replacement.replace(wheel)
+            else:
+                wheel.chmod(0o666)
+        return result
+    monkeypatch.setattr(module, '_read', mutate)
+    monkeypatch.setattr(module.zipfile, 'ZipFile', observed)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_extract(destination, rows, time.monotonic()+10)
+    assert (destination / 'a.py').read_text() == 'a = 1\n'
+    assert not (destination / 'b.py').exists()
+    assert len(opened) == 1 and opened[0].fp is None
+
+
+def test_cached_archive_switch_and_interruption_resume_preserve_exact_bytes(tmp_path, monkeypatch):
+    import time
+    import zipfile
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    rows = {}
+    for index, names in enumerate([['a.py', 'c.py'], ['b.py']]):
+        wheel = tmp_path / f'source{index}.whl'
+        with zipfile.ZipFile(wheel, 'w') as archive:
+            for name in names:
+                archive.writestr(name, name.encode()*100)
+        rows.update(module._wheel_entries(wheel, time.monotonic()+10))
+    destination = tmp_path / 'extracted'
+    append = module._sdk_append_chunk
+    def interrupt(output, original, raw, offset, deadline):
+        append(output, original, raw[:10], offset, deadline)
+        raise ValueError(module._ERROR)
+    monkeypatch.setattr(module, '_sdk_append_chunk', interrupt)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_extract(destination, rows, time.monotonic()+10)
+    assert (destination / 'a.py.pending').read_bytes() == (b'a.py'*100)[:10]
+    monkeypatch.setattr(module, '_sdk_append_chunk', append)
+    module._sdk_extract(destination, rows, time.monotonic()+10)
+    for name in rows:
+        assert (destination / name).read_bytes() == name.encode()*100
+    assert not list(destination.glob('*.pending'))
