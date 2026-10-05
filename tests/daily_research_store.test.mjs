@@ -17,6 +17,38 @@ async function fixture(now=Date.now()) {
 const row = () => ({date: '2026-09-30', run_key: 'blueprint-researcher:2026-09-30', metadata: {run_key: 'day', payload_digest: 'hash'},
   state: 'creating', cleanup_required: true});
 
+test('unstarted repair snapshot retains raw evidence without inventing an input',async()=>{
+  const {db,store}=await fixture(),raw=Buffer.from('{"candidates":null}');
+  const code='findall_tool_registry_binding_changed';
+  const revision={number:1,state:'no_progress',error:code,feedback:[],input_attempted:false,deadline_ms:1,
+    input_error_receipt:{stage:'preconditions',class:'Refusal',code,http_status:null,request_id:null}};
+  const value={...row(),state:'failed',artifact_downloaded:true,
+    raw_output_digest:createHash('sha256').update(raw).digest('hex'),validation_repairs:[revision]};
+  await store.put(row());
+  await store.filePut(`${value.date}-artifact.json`,raw.toString('base64'));
+  await store.put(value);
+  const snapshot=await store.snapshot(value.date);
+  assert.deepEqual(Buffer.from(snapshot.files.artifact,'base64'),raw);
+  assert.ok(!snapshot.missing_files.includes('repair-1-input'));
+  assert.equal(snapshot.files['repair-1-input'],undefined);
+  assert.deepEqual(snapshot.row.validation_repairs,[revision]);
+  // Unexpected input bytes remain visible for the portable export validator.
+  await store.filePut(`${value.date}-repair-1-input.json`,Buffer.from('{}').toString('base64'));
+  assert.equal(Buffer.from((await store.snapshot(value.date)).files['repair-1-input'],'base64').toString(),'{}');
+  // Native submission claims cannot be concealed by a no-input row receipt.
+  db.values.get(`${ROOT}/runs/${value.date}`).repair_claims={'1':'claimed-digest'};
+  await assert.rejects(store.snapshot(value.date),/validation_repair_export_binding_mismatch/);
+});
+
+for(const attempted of [true,undefined,null,0])
+test(`submitted or legacy repair snapshot still requires input (${attempted})`,async()=>{
+  const {store}=await fixture(),revision={number:1,state:'no_progress'};
+  if(attempted!==undefined) revision.input_attempted=attempted;
+  const value={...row(),validation_repairs:[revision]};
+  await store.put(value);
+  assert.ok((await store.snapshot(value.date)).missing_files.includes('repair-1-input'));
+});
+
 for (const profile of ['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'])
 test(`owner MCP creation requires frozen binding and exact current ${profile}`,async()=>{
   const {db,store}=await fixture(),binding=[{server_label:'synthetic-owner-connection'}];

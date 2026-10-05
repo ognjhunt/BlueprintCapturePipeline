@@ -455,7 +455,18 @@ class Consumer:
             # later saved-agent changes apply only to a newly admitted create.
             snapshot, _ = self.refresh_crm()
             session = self.api.get("session", row["session_id"])
-            self.check_session(row, session)
+            try:
+                self.check_session(row, session)
+            except Refusal as error:
+                if str(error) != "findall_tool_registry_binding_changed":
+                    raise
+                # No QA input exists yet. Retain a terminal precondition failure
+                # rather than cancelling or retrying an unstarted QA turn.
+                row["qa"] = {"state": "qa_blocked", "error": str(error),
+                    "deadline_ms": int(deadline.timestamp() * 1000), "cancel_attempted": False,
+                    "input_error_receipt": recovery.repair_error_receipt(error, "preconditions")}
+                self.ledger.put(row)
+                return None
             if row.get("qa_continuation") and (session.get("status") != "idle" or session.get("required_actions")):
                 raise Refusal("recovered_qa_session_not_idle")
             turns = self.api.listing("turns", row["session_id"])

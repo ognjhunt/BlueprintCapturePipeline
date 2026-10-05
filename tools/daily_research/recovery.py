@@ -65,7 +65,7 @@ def repair_error_receipt(error, stage):
         "research_tool_budget_authority_not_pinned", "research_tool_budget_authority_changed",
         "research_tool_record_resource_ceiling", "recovered_qa_session_not_idle",
         "recovered_qa_session_or_turn_changed", "recovered_qa_stopped_disabled_or_expired",
-        "canary_stopped_disabled_or_expired_before_qa"}
+        "canary_stopped_disabled_or_expired_before_qa", "findall_tool_registry_binding_changed"}
     local_codes.update({"qa_correction_input_not_admitted", "qa_correction_source_artifact_changed",
                         "qa_correction_session_scope_changed", "qa_correction_stopped_disabled_expired_or_authority_changed"})
     local_codes.update({"qa_retry_input_not_admitted", "qa_retry_saved_work_changed",
@@ -403,6 +403,9 @@ class RepairLoop:
         )
         with self.ledger.lock():
             row = self.ledger.get(day)
+            if row:
+                # Check ownership before any lifecycle or error persistence.
+                search.assert_findall_caller(row, self.ledger, self.api, registry=False)
             if not row or not row.get("artifact_downloaded") or row.get("turn_status") != "completed":
                 raise Refusal("validation_repair_completed_artifact_required")
             if (digest(row.get("knowledge_context")) != row.get("knowledge_context_digest")
@@ -449,7 +452,20 @@ class RepairLoop:
                     "state": row["state"], "error": row.get("error"),
                     "raw_output_sha256": row["raw_output_digest"], "feedback": deepcopy(feedback)})
                 session = self.api.get("session", row["session_id"])
-                Consumer.check_session(row, session)
+                try:
+                    Consumer.check_session(row, session)
+                except Refusal as error:
+                    if str(error) != "findall_tool_registry_binding_changed":
+                        raise
+                    # This revision never submitted input. Preserve the source
+                    # failure and let the existing no-progress finalizer retain
+                    # admissible work or expose validation_repair_blocked.
+                    revisions.append({"number": len(revisions) + 1, "state": "no_progress",
+                        "error": str(error), "feedback": deepcopy(feedback), "input_attempted": False,
+                        "deadline_ms": int(deadline.timestamp() * 1000),
+                        "input_error_receipt": repair_error_receipt(error, "preconditions")})
+                    self.ledger.put(row)
+                    return self.finalize(row)
                 turns = self.api.listing("turns", row["session_id"])
                 expected_turns = {row["turn_id"], *(r["turn_id"] for r in revisions if r.get("turn_id"))}
                 if ({t["id"] for t in turns} != expected_turns
