@@ -1857,7 +1857,9 @@ def test_a_bridge_deadline_while_recording_the_shadow_never_raises_into_publicat
     consumer, _, ledger, _, _ = fixture
     retain_page(ledger)
     assert consumer.step()["state"] == "reviewed"
-    deadline = lambda *args, **kwargs: (_ for _ in ()).throw(Refusal("firestore_bridge_deadline"))
+    def deadline(*args, **kwargs):
+        raise Refusal("firestore_bridge_deadline")
+
     original_put = ledger.put
     if failure == "read":
         monkeypatch.setattr(ledger, "read_bytes", deadline)
