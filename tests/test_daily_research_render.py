@@ -288,3 +288,30 @@ def test_real_private_pipe_adjusts_runtime_without_provider_start(fixture,adjust
     assert result["existing_rows_changed"] is False and result["paid_allowance_changed"] is False
     assert bridge.call("control")["config"]["max_runtime_seconds"] ==14400
     assert api.payloads ==[]
+
+
+def test_invoke_wires_the_stop_signal_into_the_provider_for_findall(monkeypatch, tmp_path):
+    """The FindAll handler reads provider.stopped, so a SIGTERM must reach it before a create POST."""
+    seen = {}
+
+    class Provider:
+        pass
+
+    class FakeRunner:
+        def __init__(self, ledger, cfg, api):
+            seen["api"] = api
+
+        def start_or_resume(self, *, allow_create):
+            return {"state": "completed"}
+
+    class FakeBridge:
+        def call(self, op, **_kwargs):
+            return None if op == "active_qa" else {}
+
+    def stopped():
+        return True
+
+    monkeypatch.setattr(render, "configured", lambda *_args: {"enabled": False})
+    monkeypatch.setattr(render, "Runner", FakeRunner)
+    render.invoke("reconcile", FakeBridge(), tmp_path, stopped=stopped, api_factory=lambda *_args: Provider())
+    assert seen["api"].stopped is stopped

@@ -124,6 +124,9 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
                 bridge.call("refresh_crm")
             save_bytes(cache / "crm.json", ledger.read_bytes("crm.json"))
     api = None if command in {"review", "receipt"} else api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    if api is not None:
+        # The FindAll handler reads provider.stopped, so SIGTERM stops a create before its POST.
+        api.stopped = stopped
     runner = Runner(ledger, cfg, api)
     runner.stop_requested = stopped
     runner.required_history = True
