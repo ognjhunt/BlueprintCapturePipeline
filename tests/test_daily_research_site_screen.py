@@ -214,6 +214,7 @@ def test_plan_counts_sites_refusals_and_cost_without_any_call():
         "command": "plan", "state": "planned", "form": ss.SCREEN, "sites": 3,
         "by_origin": {"discovery_inventory": 2, "site_universe": 1}, "government_record": {"physical_site": 1},
         "site_anchors": {"usable": 3, "none": 0, "street": 1, "city_state": 3, "site_name_city": 3},
+        "task_focus": None, "by_focus": {},
         "input_refused": {"site_screen_input_location_missing": 1}, "processor": "core", "price_usd": "0.025",
         "batch": {"size": 3, "calibration": 0, "seed": None}, "estimated_cost_usd": "0.075", "provider_calls": 0}
     with pytest.raises(ss.ScreenError, match="^site_screen_processor_price_unknown$"):
@@ -1119,3 +1120,51 @@ def test_the_default_page_reader_is_the_daily_reader_under_its_alarm(monkeypatch
     assert read("https://operator-1.example/plant") == {"text": "Synthetic page."}
     assert seen == [({"url": "https://operator-1.example/plant"}, {"blocked_domains": ss.NEVER_FETCH})]
     assert alarms == [ss.PAGE_READ_SECONDS]
+
+
+def test_a_task_focus_keeps_rows_with_that_capability_and_names_the_task():
+    focused = universe_row(1, lead_capability="palletizing_depalletizing",
+                           capabilities=["palletizing_depalletizing", "sorting_pick_and_place"])
+    other = universe_row(2, lead_capability="palletizing_depalletizing", capabilities=["palletizing_depalletizing"])
+    sites, refused = ss.load_sites(json.dumps([focused, other]).encode(), focus="sorting_pick_and_place")
+    assert [site["site_key"] for site in sites] == [focused["site_id"]]
+    assert refused == {"site_screen_input_outside_focus": 1}
+    assert sites[0]["task_focus"] == "sorting_pick_and_place"
+    assert sites[0]["task_input"]["task_hint"] == ss.FOCUS_HINTS["sorting_pick_and_place"]
+    # Without a focus the lead capability stays the hint, and the site record is unchanged.
+    (plain,), _ = ss.load_sites(json.dumps([focused]).encode())
+    assert plain["task_input"]["task_hint"] == "palletizing depalletizing" and "task_focus" not in plain
+
+
+def test_a_row_may_carry_its_own_focus_for_a_stratified_batch():
+    tote = universe_row(1, capabilities=["sorting_pick_and_place", "palletizing_depalletizing"],
+                        screen_focus="sorting_pick_and_place")
+    folding = universe_row(2, capabilities=["bimanual_folding"], screen_focus="bimanual_folding")
+    wrong = universe_row(3, capabilities=["palletizing_depalletizing"], screen_focus="hospital_logistics")
+    sites, refused = ss.load_sites(json.dumps([tote, folding, wrong]).encode())
+    assert [site["task_focus"] for site in sites] == ["sorting_pick_and_place", "bimanual_folding"]
+    assert sites[1]["task_input"]["task_hint"] == ss.FOCUS_HINTS["bimanual_folding"]
+    assert refused == {"site_screen_input_outside_focus": 1}
+    plan = ss.plan(json.dumps([tote, folding]).encode())
+    assert plan["by_focus"] == {"sorting_pick_and_place": 1, "bimanual_folding": 1}
+
+
+def test_a_task_focus_refuses_inventory_records_and_a_malformed_focus():
+    raw = json.dumps([inventory_record(1)]).encode()
+    sites, refused = ss.load_sites(raw, focus="sorting_pick_and_place")
+    assert sites == [] and refused == {"site_screen_input_focus_needs_site_universe": 1}
+    for focus in ("", "Sorting", "sorting-pick", "x" * 65, 3):
+        with pytest.raises(ss.ScreenError, match="^site_screen_task_focus_invalid$"):
+            ss.load_sites(raw, focus=focus)
+    bad_row = universe_row(4, capabilities=["sorting_pick_and_place"], screen_focus="Sorting Pick")
+    assert ss.load_sites(json.dumps([bad_row]).encode())[1] == {"site_screen_task_focus_invalid": 1}
+
+
+def test_run_sends_the_focus_hint_to_the_provider(tmp_path):
+    workspace, _provider, client = workspace_and_client(tmp_path)
+    row = universe_row(1, capabilities=["sorting_pick_and_place"])
+    ss.run(json.dumps([row]).encode(), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1,
+           apply=True, focus="sorting_pick_and_place")
+    created = [event for event in workspace.ledger("screen").events() if event["event"] == "intent"]
+    assert created and created[0]["input"]["task_input"]["task_hint"] == ss.FOCUS_HINTS["sorting_pick_and_place"]
+    assert created[0]["input"]["task_focus"] == "sorting_pick_and_place"

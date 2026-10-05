@@ -518,9 +518,37 @@ def parse_location(text):
     return _compact({"street": ", ".join(parts) or None, "city": city, "state": state})
 
 
-def from_inventory(record, *, calibration=False):
+# Demand discovery (owner decision 2026-10-05): a batch may aim each site's question at one of its
+# capabilities. The hint tells the provider which task to look for at the site.
+FOCUS = re.compile(r"[a-z][a-z_]{2,63}")
+FOCUS_HINTS = {
+    "fixed_arm_machine_tending": "loading and unloading parts at machines such as CNC machines, lathes or molding presses",
+    "kitting_assembly": "picking parts into kits or doing simple assembly steps",
+    "palletizing_depalletizing": "stacking or unstacking cases or bags on pallets",
+    "sorting_pick_and_place": ("picking items from totes or bins and placing them, such as tote-to-tote transfer, "
+                               "order picking at a pick station or sorter induction"),
+    "mobile_manipulator_case_picking": "moving totes or cases between conveyors, carts, shelves and racks, or picking cases for orders",
+    "truck_trailer_unloading": "unloading or loading boxes from trucks and trailers",
+    "shelf_restocking": "restocking shelves or moving stock between the backroom and the sales floor",
+    "hospital_logistics": "moving supplies, linens, meals or specimens between hospital departments",
+    "food_prep_manipulation": "handling food items in preparation or packing steps",
+    "bimanual_folding": "folding towels, linens or garments",
+    "recycling_sorting": "sorting recyclable materials on a line",
+}
+
+
+def task_focus(value):
+    """A valid capability id for a task focus, or the stable refusal."""
+    if not isinstance(value, str) or not FOCUS.fullmatch(value):
+        raise ScreenError("site_screen_task_focus_invalid")
+    return value
+
+
+def from_inventory(record, *, calibration=False, focus=None):
     """A web-found site from one daily-run discovery inventory record. Its operator and exact site must
     still be proven by the screen's own quotes."""
+    if focus is not None:
+        raise ScreenError("site_screen_input_focus_needs_site_universe")
     if not isinstance(record, dict) or not set(INVENTORY_FIELDS) <= set(record):
         raise ScreenError("site_screen_input_record_invalid")
     disposition = record.get("disposition")
@@ -545,7 +573,7 @@ def from_inventory(record, *, calibration=False):
                                     "task_hint": task, "known_source_urls": list(urls)})}
 
 
-def from_site_universe(row, *, calibration=False):
+def from_site_universe(row, *, calibration=False, focus=None):
     """A site from one site universe export row. With an OSHA ITA or EPA FRS source and a street, city and
     state, that government record is the primary source for the exact site address. The operator still needs
     a quote: the export does not say which source gave the name or operator."""
@@ -566,18 +594,30 @@ def from_site_universe(row, *, calibration=False):
     if GOVERNMENT_SOURCES & set(sources) and street and city and state:
         identity["physical_site"] = {"source": "government_record", "source_ids": sorted(set(sources)),
                                      "site_id": row["site_id"], "answer": address}
-    return {"schema_version": INPUT, "site_key": row["site_id"], "origin": "site_universe", "calibration": calibration,
+    focus = row.get("screen_focus", focus)
+    hint = lead.replace("_", " ") if lead else None
+    if focus is not None:
+        capabilities = row.get("capabilities")
+        if task_focus(focus) not in (capabilities if isinstance(capabilities, list) else []):
+            raise ScreenError("site_screen_input_outside_focus")
+        hint = FOCUS_HINTS.get(focus, focus.replace("_", " "))
+    site = {"schema_version": INPUT, "site_key": row["site_id"], "origin": "site_universe", "calibration": calibration,
             "identity": identity, "address": _compact({"street": street, "city": city, "state": state}),
             "task_input": _compact({"site_name": name, "operator": operator, "location": address,
-                                    "task_hint": lead.replace("_", " ") if lead else None, "naics": naics})}
+                                    "task_hint": hint, "naics": naics})}
+    if focus is not None:
+        site["task_focus"] = focus
+    return site
 
 
-def load_sites(raw):
+def load_sites(raw, focus=None):
     """The site inputs of one input file, in file order, and refusal counts by code.
 
     The file is a site universe export (``backlog.v1.json.gz``, checked by its runtime loader), a
     discovery inventory page, or a JSON list of inventory records and export rows. A site listed twice
     is refused the second time."""
+    if focus is not None:
+        task_focus(focus)
     if not isinstance(raw, (bytes, bytearray)) or not raw:
         raise ScreenError("site_screen_input_invalid")
     if len(raw) > MAX_INPUT_BYTES:
@@ -602,7 +642,7 @@ def load_sites(raw):
     sites, refused, seen = [], Counter(), set()
     for build, record in records:
         try:
-            site = build(record)
+            site = build(record, focus=focus)
         except ScreenError as error:
             refused[str(error)] += 1
             continue
@@ -670,15 +710,16 @@ def anchor_counts(sites):
             **{name: sum(name in kind for kind in kinds) for name in ("street", "city_state", "site_name_city")}}
 
 
-def plan(raw, *, processor=DEFAULT_PROCESSOR, batch_size=None, seed=DEFAULT_SEED):
+def plan(raw, *, processor=DEFAULT_PROCESSOR, batch_size=None, seed=DEFAULT_SEED, focus=None):
     """What one input file holds, the batch ``batch_size`` would screen, and its cost. Reads nothing else."""
-    sites, refused = load_sites(raw)
+    sites, refused = load_sites(raw, focus)
     price = price_of(processor)
     batch = select_batch(sites, batch_size, seed) if batch_size is not None else sites
     return {"command": "plan", "state": "planned", "form": SCREEN, "sites": len(sites),
             "by_origin": dict(Counter(site["origin"] for site in sites)),
             "government_record": {"physical_site": sum("physical_site" in site["identity"] for site in sites)},
-            "site_anchors": anchor_counts(sites),
+            "site_anchors": anchor_counts(sites), "task_focus": focus,
+            "by_focus": dict(Counter(site["task_focus"] for site in sites if "task_focus" in site)),
             "input_refused": dict(refused), "processor": processor, "price_usd": str(price),
             "batch": {"size": len(batch), "calibration": sum(site["calibration"] for site in batch),
                       "seed": seed if batch_size is not None else None},
@@ -1130,11 +1171,11 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
 
 
 def run(raw, workspace, *, client, owner_reference, ceiling_usd, max_runs, processor=DEFAULT_PROCESSOR, apply=False,
-        batch_size=None, seed=DEFAULT_SEED, environ=None):
+        batch_size=None, seed=DEFAULT_SEED, environ=None, focus=None):
     """Screen each site of one input file, or of its ``batch_size`` batch (``select_batch``), that has no run
     yet, within the pinned ceiling and ``max_runs``. A batch never exceeds ``max_runs``."""
     refuse_on_worker(environ)
-    sites, refused = load_sites(raw)
+    sites, refused = load_sites(raw, focus)
     if batch_size is not None:
         if parse_batch_size(batch_size) > parse_max_runs(max_runs):
             raise ScreenError("site_screen_batch_exceeds_max_runs")

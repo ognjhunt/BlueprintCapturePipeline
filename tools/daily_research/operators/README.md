@@ -790,6 +790,15 @@ repository root, with `--key-file` set to a private env file. Start with
   fits, there is no cut and no calibration site, so choose N below the eligible count
   that `plan` shows. The flag is never sent to the provider; `summary` counts tiers
   for ranked and calibration sites separately.
+- `--task-focus CAPABILITY` (on `plan` and `run`) aims every site's question at one capability. Only
+  site universe rows that list it are screened; other rows are refused with
+  `site_screen_input_outside_focus`, and inventory records with
+  `site_screen_input_focus_needs_site_universe`. The provider's task hint becomes that capability's
+  plain description (`FOCUS_HINTS`). A row in a JSON input list may carry its own `screen_focus`,
+  which wins, so one batch can be stratified across task families for demand discovery (owner
+  decision 2026-10-05, company GCS
+  `operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`).
+  `plan` counts the sites `by_focus`, and each run intent records its `task_focus`.
 - On a site universe row with an `osha_ita` or `epa_frs` source and a street, city
   and state, that government record is the primary source for the exact site
   address, kept as `{source: "government_record", source_ids, site_id, answer}`.
