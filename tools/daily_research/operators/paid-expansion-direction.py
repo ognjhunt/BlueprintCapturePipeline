@@ -8,6 +8,7 @@ change, redeploy or package. No provider, model, session, CRM or send.
 """
 import argparse
 import base64
+import os
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -73,6 +74,26 @@ def amount(value):
     return text
 
 
+# Presence only: the operator never reads or prints a credential value.
+CREDENTIAL_BINDINGS = {"exa": "EXA_API_KEY", "findall": "PARALLEL_API_KEY"}
+
+
+def source_list(value):
+    """Owner input such as "findall" or "exa,findall": known, nonempty and unrepeated, in canonical order."""
+    names = [part.strip() for part in value.split(",")] if isinstance(value, str) else []
+    if not names or any(name not in allocation.SOURCES for name in names) or len(set(names)) != len(names):
+        raise Refusal("paid_expansion_sources_invalid")
+    return sorted(names)
+
+
+def readiness(entry=None, enabled=False):
+    """Which sources this worker could run now: credential presence and the current direction."""
+    directed = set(entry["direction"]["sources"]) if enabled and isinstance(entry, dict) else set()
+    return {source: {"credential_binding_name": CREDENTIAL_BINDINGS[source],
+                     "credential_binding_present": CREDENTIAL_BINDINGS[source] in os.environ,
+                     "directed": source in directed} for source in allocation.SOURCES}
+
+
 def described(entry, enabled):
     direction = entry["direction"]
     limit = allocation.micros(direction["per_run_limit_usd"])
@@ -114,12 +135,13 @@ def show(bridge, objects=None):
                                   "per_run_limit_usd", "supersedes", "issued_at", "expires_at", "approval_reference",
                                   "approved_by", "reason")} for record in audit if isinstance(record, dict)],
               "source_commit": control.get("source_commit"), "firestore_writes": 0, "object_writes": 0,
-              "provider_calls": 0}
+              "provider_calls": 0, "source_readiness": readiness()}
     if entry is not None:
         code = allocation.entry_problem(entry)
         if code:
             return {**result, "state": "unverified", "current_problem": code}
-        result.update(described(entry, paid.get("enabled") is True))
+        result.update(described(entry, paid.get("enabled") is True),
+                      source_readiness=readiness(entry, paid.get("enabled") is True))
         if objects is not None:
             try:
                 result["object_verified"] = objects.read(entry["uri"]) == canonical(entry["direction"]).encode()
@@ -145,7 +167,7 @@ def parent_of(control, audit):
 
 
 def next_entry(control, *, per_run_usd, approval_reference, approved_by, reason, now, expires_at=None, expect=None,
-               audit=None):
+               audit=None, sources=None):
     """The next owner direction: version+1, superseding the current one (or the audit head)."""
     paid = control.get("paid_expansion") if isinstance(control, dict) else None
     current = paid.get("current") if isinstance(paid, dict) else None
@@ -156,7 +178,7 @@ def next_entry(control, *, per_run_usd, approval_reference, approved_by, reason,
     issued = utc(now)
     direction = {"schema_version": allocation.DIRECTION, "version": prior["version"] + 1 if prior else 1,
                  "supersedes": prior["sha256"] if prior else None, "per_run_limit_usd": amount(per_run_usd),
-                 "sources": list(allocation.SOURCES),
+                 "sources": list(allocation.SOURCES) if sources is None else source_list(sources),
                  "scope": dict(allocation.SCOPE), "effective_from": issued,
                  "expires_at": utc(expires_at) if expires_at else utc(now + TERM),
                  "approval_reference": approval_reference, "approved_by": approved_by, "issued_at": issued, "reason": reason}
@@ -173,9 +195,14 @@ def set_direction(bridge, objects, *, apply=False, during_active_run=False, slee
     observed, entry = next_entry(control, now=now or datetime.now(timezone.utc),
                                  audit=bridge.call("paid_expansion_audit"), **direction)
     current = ((control or {}).get("paid_expansion") or {}).get("current")
+    ready = readiness(entry, True)
     result = {"schema_version": SCHEMA, "command": "set", "expected_sha256": observed, "next": described(entry, True),
               "direction": entry["direction"], "apply": apply, "provider_calls": 0,
-              "current_problem": allocation.entry_problem(current) if current is not None else None}
+              "current_problem": allocation.entry_problem(current) if current is not None else None,
+              "source_readiness": ready,
+              # A directed source without its key is skipped by every run until the key exists.
+              "warnings": [f"paid_expansion_source_binding_missing:{source}" for source, state in ready.items()
+                           if state["directed"] and not state["credential_binding_present"]]}
     if not apply:
         return {**result, "state": "planned", "firestore_writes": 0, "object_writes": 0}
     if not during_active_run and (bridge.call("summary").get("unfinished") or bridge.call("active_qa")):
@@ -224,6 +251,8 @@ def main(argv=None, *, bridge_factory=Bridge, objects_factory=BridgeObjects, clo
     setter.add_argument("--approved-by", default="owner")
     setter.add_argument("--reason", default="Owner per-run paid expansion allowance")
     setter.add_argument("--expires-at", type=datetime.fromisoformat, help="UTC ISO time; default 90 days")
+    setter.add_argument("--sources", help="Comma-separated paid sources to run, from: " + ", ".join(allocation.SOURCES)
+                        + " (for example findall, exa or exa,findall). Default: all of them")
     setter.add_argument("--expect-current", help="Current direction sha256 from show, or none")
     setter.add_argument("--during-active-run", action="store_true")
     setter.add_argument("--apply", action="store_true")
@@ -240,7 +269,8 @@ def main(argv=None, *, bridge_factory=Bridge, objects_factory=BridgeObjects, clo
             result = set_direction(bridge, objects_factory(bridge), apply=args.apply, during_active_run=args.during_active_run,
                                    sleep=sleep, monotonic=monotonic, now=clock(), per_run_usd=args.per_run_usd,
                                    approval_reference=args.approval_reference, approved_by=args.approved_by,
-                                   reason=args.reason, expires_at=args.expires_at, expect=args.expect_current)
+                                   reason=args.reason, expires_at=args.expires_at, expect=args.expect_current,
+                                   sources=args.sources)
         else:
             result = disable(bridge, apply=args.apply, sleep=sleep, monotonic=monotonic)
         print(canonical(result))

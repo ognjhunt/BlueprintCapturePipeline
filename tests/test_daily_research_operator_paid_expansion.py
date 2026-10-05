@@ -337,3 +337,61 @@ def test_set_replaces_a_current_direction_this_package_cannot_verify(fixture, tm
         assert reopened.call("control")["paid_expansion"]["enabled"] is True
     finally:
         reopened.close()
+
+
+@pytest.mark.parametrize("value,expected", [("findall", ["findall"]), ("exa", ["exa"]),
+                                            ("findall,exa", ["exa", "findall"]), (" exa , findall ", ["exa", "findall"])])
+def test_set_admits_only_the_sources_the_owner_names(fixture, value, expected):
+    bridge, objects, _ = fixture
+    plan = setting(bridge, objects, "10.00", apply=False, sources=value)
+    assert plan["direction"]["sources"] == expected == plan["next"]["sources"]
+
+
+@pytest.mark.parametrize("value", ["", ",", "bing", "findall,findall", "exa,,findall", "FindAll"])
+def test_set_refuses_unknown_empty_or_repeated_sources(fixture, value):
+    bridge, objects, _ = fixture
+    with pytest.raises(Refusal, match="^paid_expansion_sources_invalid$"):
+        setting(bridge, objects, "10.00", apply=False, sources=value)
+
+
+def test_default_sources_stay_every_supported_source(fixture):
+    bridge, objects, _ = fixture
+    assert setting(bridge, objects, "10.00", apply=False)["direction"]["sources"] == list(allocation.SOURCES)
+
+
+def test_a_findall_only_direction_refuses_exa_and_admits_findall(fixture):
+    bridge, objects, _ = fixture
+    applied = setting(bridge, objects, "10.00", sources="findall")
+    control = bridge.call("control")
+    now = datetime(2026, 10, 5, 12, 5, tzinfo=timezone.utc)
+    row = {"run_key": "blueprint-researcher:2026-10-05", "started_at": "2026-10-05T12:00:00+00:00",
+           "research_runtime_seconds": 2700}
+    grant = allocation.grant({**control, "source_commit": "a" * 40}, row, now)
+    assert grant["state"] == "granted" and grant["sources"] == ["findall"]
+    live = {**control, "source_commit": "a" * 40}
+    assert allocation.standing(grant, live, now, source="exa") == "paid_expansion_source_not_directed"
+    assert allocation.standing(grant, live, now, source="findall") is None
+    assert applied["next"]["sources"] == ["findall"]
+
+
+def test_readiness_reports_key_presence_by_name_only(fixture, monkeypatch):
+    bridge, objects, _ = fixture
+    monkeypatch.setenv("PARALLEL_API_KEY", "synthetic-secret-value")
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    shown = operator.show(bridge, objects)
+    assert shown["source_readiness"] == {
+        "exa": {"credential_binding_name": "EXA_API_KEY", "credential_binding_present": False, "directed": False},
+        "findall": {"credential_binding_name": "PARALLEL_API_KEY", "credential_binding_present": True, "directed": False}}
+    plan = setting(bridge, objects, "10.00", apply=False, sources="exa,findall")
+    assert plan["warnings"] == ["paid_expansion_source_binding_missing:exa"]
+    assert "synthetic-secret-value" not in canonical(shown) + canonical(plan)
+    assert setting(bridge, objects, "10.00", apply=False, sources="findall")["warnings"] == []
+
+
+def test_cli_sources_flag_reaches_the_direction(fixture):
+    _, objects, open_bridge = fixture
+    result = operator.main(["set", "--per-run-usd", "10.00", "--sources", "findall",
+                            "--approval-reference", "owner-decision-2026-10-04"],
+                           bridge_factory=open_bridge, objects_factory=lambda _bridge: objects,
+                           clock=lambda: datetime(2026, 10, 4, 18, 30, 15, tzinfo=timezone.utc))
+    assert result["state"] == "planned" and result["direction"]["sources"] == ["findall"]

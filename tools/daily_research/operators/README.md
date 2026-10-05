@@ -602,6 +602,8 @@ COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/to
 PYTHONPATH=$RELEASE $COMMAND show
 PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 20.00 --approval-reference REF
 PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 20.00 --approval-reference REF --apply
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 10.00 --sources findall --approval-reference REF --apply
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 10.00 --sources exa --approval-reference REF --apply
 PYTHONPATH=$RELEASE $COMMAND disable --apply
 ```
 
@@ -622,6 +624,20 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
   in progress). The new direction supersedes control's current one, or the audit
   head if a rollback dropped control's copy. A current direction this package
   cannot verify is reported as `current_problem` and can still be replaced.
+- `--sources` chooses which paid sources the direction admits: `findall`, `exa`
+  or `exa,findall`. Without it, `set` admits every supported source. A start of
+  a source that the current direction does not name is refused with
+  `paid_expansion_source_not_directed`, and research continues. Switching
+  sources is the same `set` command with another `--sources` value; it applies
+  from the next run, like an amount change. With both sources at $10, two
+  FindAll requests can use about $9.50, which leaves no room for an Exa start,
+  so set `--per-run-usd 20.00` when both should run every day.
+- `show` and `set` report `source_readiness`: for each source, its credential
+  binding name (`EXA_API_KEY` or `PARALLEL_API_KEY`), whether that binding is
+  present in this worker process (presence only; no value is read or printed)
+  and whether the current direction names it. `set` adds the warning
+  `paid_expansion_source_binding_missing:<source>` when it names a source whose
+  binding is missing, because every run skips that source until the key exists.
 - `disable --apply` is the emergency brake. It stops new paid starts at once,
   including in an active run, and needs no object write. Re-enable with a new
   `set`; to correct a mistaken amount mid-run, brake and then `set` the lower
