@@ -7,7 +7,7 @@ its exact protected copy intent. Unknown or changed bytes are preserved and refu
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
 import json
@@ -773,6 +773,25 @@ def _wheel_entries(path, deadline):
         os.close(fd)
 
 
+@contextmanager
+def _sdk_archive_reader():
+    """Retain one directory index, bound to the independently reopened wheel."""
+    with ExitStack() as retained:
+        selected, identity, archive = None, None, None
+
+        def read(path, fd, before):
+            nonlocal selected, identity, archive
+            if selected != path:
+                retained.close()
+                body = retained.enter_context(os.fdopen(os.dup(fd), 'rb'))
+                archive = retained.enter_context(zipfile.ZipFile(body))
+                selected, identity = path, _identity(before)
+            _require(_identity(before) == identity)
+            return archive
+
+        yield read
+
+
 def _sdk_extract(root, rows, deadline):
     _require(len(rows) <= _MAX_FILES and sum(row['size'] for row in rows.values()) <= _MAX_BYTES)
     required = 0
@@ -782,23 +801,24 @@ def _sdk_extract(root, rows, deadline):
         required += row['size'] - _sdk_existing_size(partial, row['size'])
     _sdk_space(root.parent, required, deadline)
     _mkdir(root)
-    for name, row in sorted(rows.items()):
-        _require(time.monotonic() <= deadline)
-        target = root / name
-        _mkdir(target.parent)
-        expected = {key: row[key] for key in ('size', 'sha256', 'mode')}
-        if 'source' in row:
-            _copy(Path(row['source']), target, expected, deadline)
-            continue
-        if target.exists() or target.is_symlink():
-            _require(_read(target, deadline) == expected)
-            continue
-        _require('archive' in row)
-        fd = _open(Path(row['archive']), directory=False)
-        output = None
-        try:
-            before = os.fstat(fd)
-            with os.fdopen(os.dup(fd), 'rb') as retained, zipfile.ZipFile(retained) as archive:
+    with _sdk_archive_reader() as archive_reader:
+        for name, row in sorted(rows.items()):
+            _require(time.monotonic() <= deadline)
+            target = root / name
+            _mkdir(target.parent)
+            expected = {key: row[key] for key in ('size', 'sha256', 'mode')}
+            if 'source' in row:
+                _copy(Path(row['source']), target, expected, deadline)
+                continue
+            if target.exists() or target.is_symlink():
+                _require(_read(target, deadline) == expected)
+                continue
+            _require('archive' in row)
+            fd = _open(Path(row['archive']), directory=False)
+            output = None
+            try:
+                before = os.fstat(fd)
+                archive = archive_reader(row['archive'], fd, before)
                 temporary = target.with_name(target.name + '.pending')
                 output, original = _sdk_partial(temporary, row['size'])
                 count, digest = 0, hashlib.sha256()
@@ -821,10 +841,10 @@ def _sdk_extract(root, rows, deadline):
                 _require(not target.exists() and not target.is_symlink())
                 os.rename(temporary, target)
                 _require(_read(target, deadline) == expected)
-        finally:
-            if output is not None:
-                os.close(output)
-            os.close(fd)
+            finally:
+                if output is not None:
+                    os.close(output)
+                os.close(fd)
 
 
 def _sdk_marker_tools(packages, wheelhouse, deadline):
@@ -1212,17 +1232,22 @@ def _signed_release(source, commit, deadline):
     for mode, digest, name in items:
         _require(name not in paths)
         paths.add(name)
-        size = _sdk_git_command(source, ['cat-file', '-s', digest], deadline, cap=32, raw_checkout=True)
-        # The pinned lock is data, not executable source. Its real Git blob is
-        # larger than 1 MiB; keep a separate finite cap consistent with the
-        # immutable-record writer while source modules retain the tighter cap.
+        # The lock is bounded data; source modules retain the tighter cap.
         blob_cap = 16 * 1024**2 if name == 'uv.lock' else 1024 * 1024
-        _require(size.strip().isdigit() and int(size) <= blob_cap)
-        total += int(size)
-        _require(total <= _MAX_BYTES)
-        body = _sdk_git_command(source, ['cat-file', 'blob', digest], deadline, cap=int(size), raw_checkout=True)
-        _require(len(body) == int(size) and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
         target = root / name
+        if target.exists() or target.is_symlink():
+            # The authenticated tree supplies the expected Git blob ID. Prove
+            # retained bytes against it instead of spawning two Git processes
+            # for every already-retained source file on a bounded retry.
+            body, _ = _record_bytes(target, deadline, cap=blob_cap, allow_empty=True)
+        else:
+            size = _sdk_git_command(source, ['cat-file', '-s', digest], deadline, cap=32, raw_checkout=True)
+            _require(size.strip().isdigit() and int(size) <= blob_cap)
+            body = _sdk_git_command(source, ['cat-file', 'blob', digest], deadline, cap=int(size), raw_checkout=True)
+            _require(len(body) == int(size))
+        total += len(body)
+        _require(total <= _MAX_BYTES
+                 and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
         _mkdir(target.parent)
         _record(target, body, deadline, allow_empty=True)
         if mode == '100755':
@@ -1264,6 +1289,78 @@ def _publish_installer(source, deadline):
     _require(_record_bytes(target, deadline)[0] == raw and _record_bytes(record, deadline)[0] == value)
 
 
+def _resume_initial_intent(dependencies, deadline):
+    """Finish the original protected copy plan; historical source is only data."""
+    raw, _ = _record_bytes(_BOOT_ROOT / 'installation.json', deadline)
+    plan = json.loads(raw)
+    _require(type(plan) is dict and set(plan) == {'schema', 'runtime', 'rows', 'bootstrap'}
+             and plan['schema'] == 'scene-retirement-runtime-install.v1'
+             and plan['runtime'] == str(_RUNTIME_ROOT) and type(plan['rows']) is dict
+             and all(type(name) is str for name in plan['rows']) and _encoded(plan) == raw)
+    source_rows = {name: row for name, row in plan['rows'].items() if not name.startswith('dependencies/')}
+    sdk_rows = {name.removeprefix('dependencies/'): row for name, row in plan['rows'].items()
+                if name.startswith('dependencies/')}
+    helper = 'scripts/install_scene_retirement_runtime.py'
+    _require(helper in source_rows)
+    inputs = _sdk_root()
+    source_parent = inputs / 'release-inputs'
+    fd = _open(source_parent, directory=True)
+    try:
+        names = sorted(os.listdir(fd))
+        _require(len(names) <= _MAX_FILES)
+    finally:
+        os.close(fd)
+    original_source = None
+    for name in names:
+        _require(time.monotonic() <= deadline)
+        if not re.fullmatch('[0-9a-f]{40}', name):
+            continue
+        candidate = source_parent / name
+        try:
+            if _read(candidate / helper, deadline) != source_rows[helper]:
+                continue
+            observed = {}
+            for directory in ('src/blueprint_pipeline', 'deploy/systemd', 'scripts'):
+                _tree(candidate / directory, Path(directory), observed, {}, deadline)
+            if (observed == source_rows
+                    and _read(candidate / 'scripts/scene_retirement_continuous_bootstrap.py', deadline) == plan['bootstrap']):
+                original_source = candidate
+                break
+        except FileNotFoundError:
+            # An unrelated retained source snapshot may itself be incomplete.
+            continue
+    _require(original_source is not None)
+
+    # Prefer the current SDK. Discover older ones only by protected manifests
+    # under the fixed input root, never by arbitrary external paths.
+    preferred_name = 'sdk-input-' + Path(dependencies).name + '.json'
+    manifest_parent = inputs / 'manifests'
+    fd = _open(manifest_parent, directory=True)
+    try:
+        names = sorted(os.listdir(fd))
+        _require(len(names) <= _MAX_FILES)
+    finally:
+        os.close(fd)
+    names.sort(key=lambda name: name != preferred_name)
+    original_sdk = None
+    for name in names:
+        _require(time.monotonic() <= deadline)
+        match = re.fullmatch('sdk-input-([0-9a-f]{64})[.]json', name)
+        if not match:
+            continue
+        body, _ = _record_bytes(manifest_parent / name, deadline)
+        _require(hashlib.sha256(body).hexdigest() == match[1])
+        manifest = json.loads(body)
+        _require(type(manifest) is dict and manifest.get('schema') == 'scene-retirement-sdk.v1')
+        if manifest.get('rows') == sdk_rows:
+            original_sdk = inputs / 'sdk-inputs' / match[1]
+            break
+    _require(original_sdk is not None)
+    # prepare hashes the entire source/SDK/bootstrap set and compares canonical
+    # intent bytes under its lock before validating/appending any partial file.
+    prepare(original_source, original_sdk, _deadline=deadline)
+
+
 def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None):
     """Complete root snapshot and ABI SDK before callers expose service units."""
     deadline = min(time.monotonic() + _MAX_SECONDS, _deadline) if _deadline is not None else time.monotonic() + _MAX_SECONDS
@@ -1273,6 +1370,11 @@ def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_chec
     _require(time.monotonic() <= deadline)
     current = _BOOT_ROOT / 'CURRENT.json'
     installed = _BOOT_ROOT / 'installation.json'
+    boot = _BOOT_ROOT / 'continuous_bootstrap.py'
+    if (not current.exists() and not current.is_symlink()
+            and not boot.exists() and not boot.is_symlink()
+            and (installed.exists() or installed.is_symlink())):
+        _resume_initial_intent(Path(sdk['dependencies_root']), deadline)
     if current.exists() or current.is_symlink() or installed.exists() or installed.is_symlink():
         selected = current if current.exists() or current.is_symlink() else installed
         raw, _ = _record_bytes(selected, deadline)
