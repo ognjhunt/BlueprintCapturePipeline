@@ -7,6 +7,7 @@ The invoking worker's held descriptors are skipped only for its actual PID.
 """
 from __future__ import annotations
 
+import errno
 import os
 import re
 import stat
@@ -26,8 +27,8 @@ class _DescriptorCensusChanged(HistoricalProcessError):
     """Incomplete FD membership observation, never permission to skip a PID."""
 
 
-class _UserMemoryReadUnavailable(HistoricalProcessError):
-    """ESRCH is unknown until the held census proves the PID pathname absent."""
+class _ProcessExited(HistoricalProcessError):
+    """Channel ESRCH corroborated by disappearance on the retained PID descriptor."""
 
 
 def _require(value, code='process_unknown'):
@@ -284,13 +285,19 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
     for name in ('cmdline', 'environ', 'maps'):
         try:
             raw = scan.read(directory, name)
-        except ProcessLookupError:
-            if not kernel and name in ('environ', 'maps'):
-                # Never discard a reference observed before this failed read.
-                # The caller must prove disappearance through its held /proc
-                # before a fresh complete census can replace this partial pass.
+        except ProcessLookupError as error:
+            if not kernel and name in ('environ', 'maps') and error.errno == errno.ESRCH:
+                # ESRCH alone cannot clear an unreadable user-memory channel.
+                # Only a second disappearance observation on this same retained
+                # process descriptor permits discarding the entire census pass.
                 _require(not channels, 'process_reference')
-                raise _UserMemoryReadUnavailable('historical_generation_process_unknown') from None
+                try:
+                    final_stat = scan.read(directory, 'stat', 16384)
+                except (FileNotFoundError, ProcessLookupError) as final_error:
+                    _require(final_error.errno in (errno.ENOENT, errno.ESRCH))
+                    raise _ProcessExited('historical_generation_process_unknown') from None
+                _require(_process_start(final_stat, pid) == started)
+                _require(False)
             _require(name in ('environ', 'maps') and kernel
                 and kernel_has_no_user_memory(lambda name, cap: scan.read(directory, name, cap), pid))
             raw = b''
@@ -385,22 +392,8 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
                     channels = _inspect_process(scan, directory, pid, target, identities, namespaces,
                                                 host_namespace[2], root_identity)
                     _require(not channels, 'process_reference')
-                except _DescriptorCensusChanged:
+                except (_DescriptorCensusChanged, _ProcessExited):
                     break
-                except _UserMemoryReadUnavailable:
-                    scan.tick()
-                    try:
-                        current = os.open(pid, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                          dir_fd=proc)
-                    except FileNotFoundError:
-                        # The old view has disappeared. Do not skip it or
-                        # accept an empty channel: restart every PID within
-                        # the same three-pass clock and cumulative budget.
-                        break
-                    else:
-                        os.close(current)
-                        # Live or reused PID: ESRCH supplied no exit proof.
-                        _require(False)
                 finally:
                     os.close(directory)
             else:
