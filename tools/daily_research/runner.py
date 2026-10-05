@@ -1277,8 +1277,11 @@ class Runner:
 
     def observe(self, row):
         # A stale row must not reach either the first lifecycle write or an
-        # error handler that persists/cancels that same stale row.
-        search.assert_findall_caller(row, self.ledger, self.api)
+        # error handler that persists/cancels that same stale row. The FindAll
+        # registry is checked inside the try (findall.check_binding), where a
+        # release that changed tool text routes the row to cancel instead of
+        # raising on every tick.
+        search.assert_findall_caller(row, self.ledger, self.api, registry=False)
         try:
             if row["state"] in {"creating", "creation_unresolved"}:
                 matches = [s for s in self.api.listing("sessions") if s.get("metadata") == row["metadata"]]
