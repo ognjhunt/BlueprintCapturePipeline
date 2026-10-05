@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from tools.daily_research import allocation as a
+from tools.daily_research.runner import MAX_ADAPTIVE_RUNTIME_SECONDS
 
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
 COMMIT = "c" * 40
@@ -67,9 +68,9 @@ def test_grant_for_a_sixty_minute_row_lasts_its_forty_five_minute_research_windo
     # After the old 1200-second research window the grant still admits a start.
     assert a.problem(grant, [], 5_000_000, NOW + timedelta(seconds=1201), control=owner) is None
     assert a.problem(grant, [], 5_000_000, NOW + timedelta(seconds=2700), control=owner) == "paid_expansion_expired"
-    # The owner-approved 3600-second envelope bounds every research window.
+    # The shared adaptive envelope (MAX_ADAPTIVE_RUNTIME_SECONDS) bounds every research window.
     assert a.grant(owner, row(research_runtime_seconds=3600), NOW)["state"] == "granted"
-    refused = a.grant(owner, row(research_runtime_seconds=3601), NOW)
+    refused = a.grant(owner, row(research_runtime_seconds=MAX_ADAPTIVE_RUNTIME_SECONDS + 1), NOW)
     assert refused["state"] == "refused" and refused["code"] == "paid_expansion_run_context_invalid"
 
 

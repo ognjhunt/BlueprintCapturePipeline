@@ -18,7 +18,13 @@ from tests.test_daily_research_search import SearchAPI
 from tests.test_daily_research_search import fixture as search_fixture
 from tools.daily_research import discovery, recovery, search, verification
 from tools.daily_research.consumer import qa_text
-from tools.daily_research.runner import canonical, preflight, prompt, validate_output
+from tools.daily_research.runner import (
+    canonical,
+    preflight,
+    prompt,
+    status_summary,
+    validate_output,
+)
 
 SCHEMA = Path(__file__).resolve().parents[1] / "tools/daily_research/daily-research.v3.schema.json"
 FAMILIES = ("machine tending", "picking", "inspection")
@@ -45,16 +51,17 @@ def scoped(count=1):
     return out, ctx, policy
 
 
-def test_broad_inventory_survives_collection_and_qa_without_admitting_backlog_leads(fixture):
+@pytest.mark.parametrize("count", [24,300])
+def test_broad_inventory_survives_collection_and_qa_without_admitting_backlog_leads(fixture,count):
     runner, api, ledger = fixture
     out = scoped(1)[0]
-    out["discovery_inventory"] = backlog()
+    out["discovery_inventory"] = backlog(count)
     Draft202012Validator(json.loads(SCHEMA.read_text())).validate(out)
     api.raw, api.turn_status = canonical(out).encode(), "completed"
     row = runner.start_or_resume()
     assert row["state"] == "awaiting_review", row.get("error")
     manifest = row["packet"]["discovery_inventory_manifest"]
-    assert manifest["record_count"] == 24 and manifest["complete_retention"] is True
+    assert manifest["record_count"] ==count and manifest["complete_retention"] is True
     assert manifest["eligibility"] == "discovery_only_no_promotion"
     cursor, retained = 0, []
     while cursor is not None:
@@ -70,7 +77,10 @@ def test_broad_inventory_survives_collection_and_qa_without_admitting_backlog_le
     reviewed = runner.review(DAY, decision(row))
     assert len(reviewed["delivery"]["sheets"]["payload"]["candidates"]) == 1
     assert "Sourced operator" not in canonical(reviewed["delivery"])
-    assert len(api.payloads) == 1
+    assert len(api.payloads) ==1
+    funnel = status_summary(reviewed)["discovery_funnel"]
+    assert funnel["raw_inventory_records"] ==count and funnel["formal_candidates"] ==1
+    assert funnel["accepted_for_crm"] ==1 and funnel["counts_are_not_interchangeable"] is True
 
 
 @pytest.mark.parametrize("field,value,pointer", [
@@ -113,3 +123,13 @@ def test_breadth_guidance_reaches_only_new_adaptive_sessions_and_matches_the_too
     assert search.search_body({"query": "q", "max_results": 20})["max_results"] == 20
     with pytest.raises(search.ToolFailure, match="search_arguments_invalid"):
         search.search_body({"query": "q", "max_results": 21})
+
+
+def test_enumeration_precedes_deep_qualification_and_keeps_unknown_tasks():
+    text=discovery.instructions(5)
+    assert "first stage broad enumeration" in text and "on the order of hundreds" in text
+    assert "Set unsupported fields to null" in text and "prioritize a bounded subset" in text
+    inventory=[{"operator":"Sourced operator","site":"Named warehouse","location":"US location",
+        "task_hypothesis":None,"source_urls":["https://operator.example/locations"],
+        "evidence_gap":"Exact manual workflow has not been researched","disposition":"unresolved"}]
+    assert list(discovery.inventory_issues(inventory)) ==[]

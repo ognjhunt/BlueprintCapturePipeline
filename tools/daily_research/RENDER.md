@@ -447,3 +447,30 @@ submission. Restart follows that same receipt and claim; it cannot renew the
 window, resend the expired correction, create another session or delete one.
 Use the existing exact `timeout --signal=TERM --kill-after=60s 1860s` process
 watchdog and the installed/overlay archive, source and file-hash arguments.
+
+
+## Adjust the next run's duration
+
+On the installed, source-pinned worker, the owner can change total duration without
+building another package:
+
+```bash
+python -m tools.daily_research.render set-runtime --minutes 120
+```
+
+Use `--minutes 60`, `120`, `180`, `240`, or another whole-minute value from 2 to 240.
+The command requires the adaptive profile and preserves the current QA reserve.
+For example, with 15 minutes reserved for QA, 120 minutes means 105 minutes of
+research plus 15 minutes of QA. Set both explicitly when needed:
+
+```bash
+python -m tools.daily_research.render set-runtime --minutes 120 --qa-minutes 20
+```
+
+The operation asserts the installed/control source pin, holds
+the existing lease, and atomically requires no active research, QA, repair or
+publication rows. It compare-and-swaps the current configuration and source.
+Only the next run's duration and QA reserve change; existing rows keep their
+original deadlines. It neither starts a provider nor changes the paid expansion
+allowance, model/search budget, schedule, credentials or sending settings. The
+current intended release setting is60 minutes total with 15 minutes reserved for QA.

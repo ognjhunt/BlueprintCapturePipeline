@@ -111,13 +111,16 @@ def test_new_daily_example_is_disabled_and_cannot_adopt_test_budget():
 
 def test_owner_approved_adaptive_envelope_is_the_single_runtime_bound():
     cfg = json.loads((ROOT / "tools/daily_research/adaptive-daily.config.example.json").read_text())
-    assert runner_module.MAX_ADAPTIVE_RUNTIME_SECONDS == 3600
+    assert runner_module.MAX_ADAPTIVE_RUNTIME_SECONDS == 14400
     approved = configuration({**cfg, "max_runtime_seconds": 3600, "qa_reserved_seconds": 900})
     assert approved["max_runtime_seconds"] - approved["qa_reserved_seconds"] == 2700
+    for minutes in (60,120,180,240):
+        configured = configuration({**cfg,"max_runtime_seconds":minutes *60,"qa_reserved_seconds":900})
+        assert configured["max_runtime_seconds"] ==minutes *60
     # Rows and configs admitted under the earlier 30-minute envelope stay valid.
     assert configuration({**cfg, "max_runtime_seconds": 1800, "qa_reserved_seconds": 600})["max_runtime_seconds"] == 1800
     with pytest.raises(Refusal, match="^approved_envelope_mismatch$"):
-        configuration({**cfg, "max_runtime_seconds": 3601, "qa_reserved_seconds": 900})
+        configuration({**cfg, "max_runtime_seconds": 14401, "qa_reserved_seconds": 900})
     with pytest.raises(Refusal, match="^adaptive_phase_envelope_invalid$"):
         configuration({**cfg, "max_runtime_seconds": 3600, "qa_reserved_seconds": 3600})
     # The non-adaptive cap is unchanged.
@@ -129,7 +132,7 @@ def test_owner_approved_adaptive_envelope_is_the_single_runtime_bound():
     for field, phase in (("research_runtime_seconds", "research"), ("total_runtime_seconds", "qa")):
         assert phase_runtime_seconds({field: 3600}, {}, phase) == 3600
         with pytest.raises(Refusal, match="^pinned_phase_envelope_invalid$"):
-            phase_runtime_seconds({field: 3601}, {}, phase)
+            phase_runtime_seconds({field: 14401}, {}, phase)
 
 
 def test_sixty_minute_row_pins_forty_five_minute_research_and_shared_total(fixture, tmp_path):

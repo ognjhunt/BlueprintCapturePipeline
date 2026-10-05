@@ -45,13 +45,12 @@ NOTION = "3ea80154161d81c7810cc42e9e7df9c5"
 CENTRAL = ZoneInfo("America/Chicago")
 REMOTE_OUTPUT = "/workspace/outputs/daily-research.json"
 LIMIT_BYTES = 2_000_000
-# Owner-approved maximum total runtime for one adaptive-sites-v1 row (owner decision
-# 2026-10-04: 60 minutes, research plus reserved QA). This is the only adaptive bound:
-# config admission, pinned phase windows, repair authority, paid expansion grant and
-# expansion deadline all use it. Each row keeps its own admitted total, so rows
-# admitted under the earlier 1800-second envelope keep 1800. The non-adaptive cap
-# stays 180 seconds.
-MAX_ADAPTIVE_RUNTIME_SECONDS = 3600
+# Shared supported ceiling for owner-configurable adaptive runtime (up to four
+# hours). The operational duration is config.max_runtime_seconds, not this ceiling.
+# The owner-approved next-run setting remains 60 minutes. Admission, pinned phases,
+# recovery and paid-grant deadlines use this one bound; existing rows retain their
+# original admitted duration. Non-adaptive runs remain capped at 180 seconds.
+MAX_ADAPTIVE_RUNTIME_SECONDS = 4 * 60 * 60
 # The review packet carries everything in the output except the paged discovery
 # inventory. Flag an oversized display at validation, where the agent gets repair
 # feedback, instead of after it, where the packet ceiling would block the whole run.
@@ -1727,6 +1726,17 @@ def status_summary(row):
     if row.get("expansion_profile") == "exa-guarded-v1" or row.get("findall_profile"):
         from tools.daily_research.expansion import allocation_diagnostic
         result["expansion_allocation_status"] = allocation_diagnostic(row)
+    packet = row.get("packet")
+    if isinstance(packet, dict):
+        manifest = packet.get("discovery_inventory_manifest")
+        delivery = row.get("delivery", {}).get("sheets", {}).get("payload")
+        result["discovery_funnel"] = {
+            "report_findings": len(packet.get("findings", [])),
+            "raw_inventory_records": manifest.get("record_count") if isinstance(manifest, dict) else None,
+            "formal_candidates": len(verification.packet_candidates(packet)),
+            "accepted_for_crm": len(delivery.get("candidates", [])) if isinstance(delivery, dict) else None,
+            "counts_are_not_interchangeable": True,
+        }
     if row.get("findall_profile"):
         from tools.daily_research import findall
         result["findall_status"] = findall.status(row)

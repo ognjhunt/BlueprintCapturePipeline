@@ -812,3 +812,48 @@ test('FindAll paged snapshots export all evidence and reject missing or mixed pa
     sha256:hash(bad),bytes:bad.length,snapshot_sha256:'0'.repeat(64)}}});
   await assert.rejects(store.snapshot(value.date),/findall_snapshot_binding_invalid/);
 });
+
+
+test('owner runtime adjustment is fenced, next-run-only and preserves all other control fields',async()=>{
+  const {db,store}=await fixture();
+  const source='c'.repeat(40),original=db.values.get(ROOT);
+  const config={enabled:true,discovery_profile:'adaptive-sites-v1',max_runtime_seconds:3600,qa_reserved_seconds:900,
+    soft_target_usd:5,recurring_budget_authority_reference:'synthetic-owner'};
+  db.values.set(ROOT,{...original,source_commit:source,config,paid_expansion:{enabled:false,current:null},
+    workflow:{enabled:true},learning:{enabled:true}});
+  const day='2026-10-03',path=`${ROOT}/runs/${day}`;
+  const historical={state:'completed',research_runtime_seconds:1200,total_runtime_seconds:1800,blob:'historical'};
+  db.values.set(path,historical);
+  for(const minutes of[60,120,180,240]) {
+    const before=structuredClone(db.values.get(ROOT));
+    const result=await store.dispatch({op:'runtime_set',total_seconds:minutes*60,qa_seconds:900,
+      expected_config:before.config,expected_source_commit:source});
+    assert.equal(result.active_rows,0);
+    const after=db.values.get(ROOT);
+    assert.deepEqual(after,{...before,config:{...before.config,max_runtime_seconds:minutes*60,qa_reserved_seconds:900}});
+    assert.deepEqual(db.values.get(path),historical);
+  }
+  const before=structuredClone(db.values.get(ROOT));
+  for(const request of[
+    {expected_config:{...before.config,max_runtime_seconds:3600}},
+    {expected_source_commit:'d'.repeat(40)},
+    {total_seconds:14401},{total_seconds:true},{qa_seconds:14400},
+  ]) {
+    await assert.rejects(store.dispatch({op:'runtime_set',total_seconds:7200,qa_seconds:900,
+      expected_config:before.config,expected_source_commit:source,...request}),/runtime_(control_changed|phase_envelope_invalid)/);
+    assert.deepEqual(db.values.get(ROOT),before);
+  }
+});
+
+for(const active of[{state:'running'},{qa_state:'qa_running'},{repair_state:'input_unresolved'},
+  {publication_state:'cancel_pending'}])
+test(`runtime adjustment atomically refuses active ${Object.keys(active)[0]}`,async()=>{
+  const {db,store}=await fixture();
+  const source='c'.repeat(40),config={discovery_profile:'adaptive-sites-v1',max_runtime_seconds:3600,qa_reserved_seconds:900};
+  db.values.set(ROOT,{...db.values.get(ROOT),source_commit:source,config});
+  db.values.set(`${ROOT}/runs/2026-10-03`,{state:'completed',...active});
+  const before=structuredClone(db.values.get(ROOT));
+  await assert.rejects(store.dispatch({op:'runtime_set',total_seconds:7200,qa_seconds:900,
+    expected_config:config,expected_source_commit:source}),/runtime_active_research_qa_repair_or_publication/);
+  assert.deepEqual(db.values.get(ROOT),before);
+});

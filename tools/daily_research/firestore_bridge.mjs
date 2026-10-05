@@ -1522,6 +1522,30 @@ export class Store {
           tx.set(this.control, value); return true;
         });
       }
+      case 'runtime_set': {
+        const {total_seconds:total,qa_seconds:qa,expected_config:expected,expected_source_commit:source}=request;
+        if(!Number.isInteger(total) || total<120 || total>14400 || !Number.isInteger(qa) || qa<60 || qa>=total)
+          refuse('runtime_phase_envelope_invalid');
+        return this.transaction(async tx=>{
+          const control=(await tx.get(this.control)).data();this.fence(control);
+          if(control?.config?.discovery_profile!=='adaptive-sites-v1' || !hexOK(source,40)
+              || source!==control.source_commit || valueHash(expected)!==valueHash(control.config))
+            refuse('runtime_control_changed');
+          const inventory=await tx.get(this.db.collection(`${ROOT}/runs`).limit(10001));
+          if(inventory.docs.length>10000) refuse('firestore_history_limit');
+          const active={qa_state:['qa_running','qa_input_unresolved','qa_correction_input_unresolved','qa_cancel_pending'],
+            repair_state:['running','input_unresolved','cancel_pending'],
+            publication_state:['running','input_unresolved','cancel_pending']};
+          if(inventory.docs.some(doc=>{
+            const row=doc.data();return !TERMINAL.includes(row.state)
+              || Object.entries(active).some(([field,states])=>states.includes(row[field]));
+          })) refuse('runtime_active_research_qa_repair_or_publication');
+          const config={...control.config,max_runtime_seconds:total,qa_reserved_seconds:qa};
+          tx.set(this.control,{config},{merge:true});
+          return {previous_total_seconds:control.config.max_runtime_seconds,previous_qa_seconds:control.config.qa_reserved_seconds,
+            total_seconds:total,qa_seconds:qa,source_commit:source,active_rows:0};
+        });
+      }
       case 'configure': {
         const value = request.value;
         if (value?.schema_version !== 'blueprint.research-control.v1' || typeof value.enabled !== 'boolean')

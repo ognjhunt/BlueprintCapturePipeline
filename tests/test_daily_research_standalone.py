@@ -162,9 +162,10 @@ def test_optional_findall_import_uses_only_exported_stdlib_closure(repository, t
     code = (
         "import json, pathlib, socket, sys; sys.path.insert(0, sys.argv[1]); "
         "socket.create_connection = lambda *a, **k: (_ for _ in ()).throw(AssertionError('network')); "
-        "from tools.daily_research import findall; "
+        "from tools.daily_research import findall; findall.runtime(); "
         "assert not any(m.startswith(('openai', 'torch')) for m in sys.modules); "
-        "assert all(pathlib.Path(m.__file__).is_relative_to(sys.argv[1]) "
+        "assert len([n for n in sys.modules if n == 'blueprint_pipeline' or n.startswith('blueprint_pipeline.')]) ==7; "
+        "assert all(pathlib.Path(m.__file__).resolve().is_relative_to(pathlib.Path(sys.argv[1]).resolve()) "
         "for n, m in sys.modules.items() if n.startswith('blueprint_pipeline')); "
         "print(json.dumps(findall.runtime_status()))"
     )

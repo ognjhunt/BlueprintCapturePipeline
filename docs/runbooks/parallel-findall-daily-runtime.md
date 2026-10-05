@@ -42,7 +42,9 @@ do not create additional authority. No paid readiness canary is required.
 Preflight advertises the three functions only with the typed handler installed.
 The exact definitions digest and `parallel-findall-v1` profile are frozen in the
 session intent and checked during research, QA and repair. Installation cannot
-add tools to an already running unpinned session. Creates are restricted to the
+add tools to an already running unpinned session. For broad site discovery, enumerate with FindAll early before deep individual
+Perplexity investigation; retain the sourced backlog, then assess a subset.
+Requested matches are not returned, deduplicated or qualified counts. Creates are restricted to the
 original research phase before final output and QA; free reads are restricted to
 provider IDs retained by the same daily owner.
 

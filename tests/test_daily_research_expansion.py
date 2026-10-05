@@ -7,7 +7,7 @@ import pytest
 
 from tools.daily_research import allocation
 from tools.daily_research import expansion as e
-from tools.daily_research.runner import digest
+from tools.daily_research.runner import MAX_ADAPTIVE_RUNTIME_SECONDS, digest
 
 NOW = datetime(2026, 10, 4, 12, 1, tzinfo=timezone.utc)
 COMMIT = "b" * 40
@@ -195,9 +195,11 @@ def test_sixty_minute_row_admits_expansion_until_its_own_forty_five_minute_deadl
     # At this row's deadline an original-ID read is not extended or sent.
     assert call(context, name=e.READ, args={}, now=started + timedelta(seconds=2700))["run_id"] == first["run_id"]
     assert not transport.reads and len(transport.starts) == 1
+    # The shared adaptive envelope (MAX_ADAPTIVE_RUNTIME_SECONDS) bounds the expansion deadline.
     with pytest.raises(e.ExpansionError, match="^expansion_original_deadline_invalid$"):
-        e._deadline({**row, "research_runtime_seconds": 3601})
-    assert e._deadline({**row, "research_runtime_seconds": 3600}) == started + timedelta(seconds=3600)
+        e._deadline({**row, "research_runtime_seconds": MAX_ADAPTIVE_RUNTIME_SECONDS + 1})
+    assert e._deadline({**row, "research_runtime_seconds": MAX_ADAPTIVE_RUNTIME_SECONDS}) == started + timedelta(
+        seconds=MAX_ADAPTIVE_RUNTIME_SECONDS)
 
 
 def test_host_unavailable_reason_is_actionable_without_claim(context):
