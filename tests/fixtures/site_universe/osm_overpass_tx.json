@@ -1,0 +1,397 @@
+{
+ "amenities": {
+  "elements": [
+   {
+    "id": 1006,
+    "lat": 30.5,
+    "lon": -97.6,
+    "tags": {
+     "amenity": "hospital",
+     "beds": "220",
+     "email": "info@glimmerdale.example.invalid",
+     "healthcare": "hospital",
+     "name": "Glimmerdale Regional Hospital",
+     "phone": "+1 512 555 0199"
+    },
+    "type": "node"
+   }
+  ],
+  "generator": "Overpass API fixture",
+  "osm3s": {
+   "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL.",
+   "timestamp_osm_base": "2026-10-04T00:00:00Z"
+  },
+  "version": 0.6
+ },
+ "buildings": {
+  "elements": [
+   {
+    "bounds": {
+     "maxlat": 32.7802,
+     "maxlon": -96.799,
+     "minlat": 32.779,
+     "minlon": -96.803
+    },
+    "geometry": [
+     {
+      "lat": 32.779,
+      "lon": -96.803
+     },
+     {
+      "lat": 32.779,
+      "lon": -96.799
+     },
+     {
+      "lat": 32.7802,
+      "lon": -96.799
+     },
+     {
+      "lat": 32.7802,
+      "lon": -96.803
+     },
+     {
+      "lat": 32.779,
+      "lon": -96.803
+     }
+    ],
+    "id": 1001,
+    "nodes": [
+     1,
+     2,
+     3,
+     4,
+     1
+    ],
+    "tags": {
+     "building": "warehouse",
+     "name": "Acme Cold Storage",
+     "operator": "Acme Cold Storage LLC",
+     "phone": "+1 214 555 0100"
+    },
+    "type": "way"
+   },
+   {
+    "geometry": [
+     {
+      "lat": 32.9,
+      "lon": -96.9
+     },
+     {
+      "lat": 32.9,
+      "lon": -96.899
+     },
+     {
+      "lat": 32.901,
+      "lon": -96.899
+     },
+     {
+      "lat": 32.9,
+      "lon": -96.9
+     }
+    ],
+    "id": 1007,
+    "tags": {
+     "building": "warehouse",
+     "name": "Warehouse"
+    },
+    "type": "way"
+   },
+   {
+    "geometry": [
+     {
+      "lat": 32.95,
+      "lon": -96.95
+     },
+     {
+      "lat": 32.95,
+      "lon": -96.949
+     },
+     {
+      "lat": 32.951,
+      "lon": -96.949
+     },
+     {
+      "lat": 32.95,
+      "lon": -96.95
+     }
+    ],
+    "id": 1008,
+    "tags": {
+     "building": "warehouse",
+     "name": "Public Storage"
+    },
+    "type": "way"
+   },
+   {
+    "bounds": {
+     "maxlat": 31.001,
+     "maxlon": -96.999,
+     "minlat": 31.0,
+     "minlon": -97.0
+    },
+    "id": 1009,
+    "members": [
+     {
+      "geometry": [
+       {
+        "lat": 31.0,
+        "lon": -97.0
+       },
+       {
+        "lat": 31.0,
+        "lon": -96.999
+       },
+       {
+        "lat": 31.001,
+        "lon": -96.999
+       }
+      ],
+      "ref": 1,
+      "role": "outer",
+      "type": "way"
+     },
+     {
+      "geometry": [
+       {
+        "lat": 31.001,
+        "lon": -96.999
+       },
+       {
+        "lat": 31.001,
+        "lon": -97.0
+       },
+       {
+        "lat": 31.0,
+        "lon": -97.0
+       }
+      ],
+      "ref": 2,
+      "role": "outer",
+      "type": "way"
+     },
+     {
+      "geometry": [
+       {
+        "lat": 31.0004,
+        "lon": -96.9996
+       },
+       {
+        "lat": 31.0004,
+        "lon": -96.9994
+       },
+       {
+        "lat": 31.0006,
+        "lon": -96.9994
+       },
+       {
+        "lat": 31.0006,
+        "lon": -96.9996
+       },
+       {
+        "lat": 31.0004,
+        "lon": -96.9996
+       }
+      ],
+      "ref": 3,
+      "role": "inner",
+      "type": "way"
+     }
+    ],
+    "tags": {
+     "building": "industrial",
+     "email": "sales@ironclad.example.invalid",
+     "man_made": "works",
+     "name": "Ironclad Foundry",
+     "type": "multipolygon"
+    },
+    "type": "relation"
+   }
+  ],
+  "generator": "Overpass API fixture",
+  "osm3s": {
+   "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL.",
+   "timestamp_osm_base": "2026-10-04T00:00:00Z"
+  },
+  "version": 0.6
+ },
+ "industrial_areas": {
+  "elements": [
+   {
+    "bounds": {
+     "maxlat": 32.7802,
+     "maxlon": -96.799,
+     "minlat": 32.779,
+     "minlon": -96.803
+    },
+    "geometry": [
+     {
+      "lat": 32.779,
+      "lon": -96.803
+     },
+     {
+      "lat": 32.779,
+      "lon": -96.799
+     },
+     {
+      "lat": 32.7802,
+      "lon": -96.799
+     },
+     {
+      "lat": 32.7802,
+      "lon": -96.803
+     },
+     {
+      "lat": 32.779,
+      "lon": -96.803
+     }
+    ],
+    "id": 1001,
+    "nodes": [
+     1,
+     2,
+     3,
+     4,
+     1
+    ],
+    "tags": {
+     "building": "warehouse",
+     "name": "Acme Cold Storage",
+     "operator": "Acme Cold Storage LLC",
+     "phone": "+1 214 555 0100"
+    },
+    "type": "way"
+   },
+   {
+    "geometry": [
+     {
+      "lat": 31.9,
+      "lon": -102.1
+     },
+     {
+      "lat": 31.9,
+      "lon": -102.09
+     },
+     {
+      "lat": 31.91,
+      "lon": -102.09
+     },
+     {
+      "lat": 31.9,
+      "lon": -102.1
+     }
+    ],
+    "id": 1004,
+    "tags": {
+     "industrial": "gas",
+     "landuse": "industrial",
+     "name": "Quillmoor Gas Plant"
+    },
+    "type": "way"
+   },
+   {
+    "geometry": [
+     {
+      "lat": 29.8,
+      "lon": -95.6
+     },
+     {
+      "lat": 29.8,
+      "lon": -95.59
+     },
+     {
+      "lat": 29.81,
+      "lon": -95.59
+     },
+     {
+      "lat": 29.81,
+      "lon": -95.6
+     },
+     {
+      "lat": 29.8,
+      "lon": -95.6
+     }
+    ],
+    "id": 1005,
+    "tags": {
+     "landuse": "industrial",
+     "name": "Westside Industrial Park"
+    },
+    "type": "way"
+   },
+   {
+    "id": 1010,
+    "lat": 29.4003,
+    "lon": -98.5001,
+    "tags": {
+     "contact:phone": "+1 210 555 0111",
+     "industrial": "brewery",
+     "name": "Kestramar Brewing"
+    },
+    "type": "node"
+   }
+  ],
+  "generator": "Overpass API fixture",
+  "osm3s": {
+   "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL.",
+   "timestamp_osm_base": "2026-10-04T00:00:00Z"
+  },
+  "version": 0.6
+ },
+ "retail": {
+  "elements": [
+   {
+    "geometry": [
+     {
+      "lat": 30.2671,
+      "lon": -97.7432
+     },
+     {
+      "lat": 30.2671,
+      "lon": -97.743
+     },
+     {
+      "lat": 30.2673,
+      "lon": -97.743
+     },
+     {
+      "lat": 30.2673,
+      "lon": -97.7432
+     },
+     {
+      "lat": 30.2671,
+      "lon": -97.7432
+     }
+    ],
+    "id": 1003,
+    "tags": {
+     "addr:city": "Austin",
+     "addr:housenumber": "500",
+     "addr:postcode": "78701",
+     "addr:street": "Main Street",
+     "brand": "H-E-B",
+     "brand:wikidata": "Q830621",
+     "name": "H-E-B",
+     "shop": "supermarket"
+    },
+    "type": "way"
+   },
+   {
+    "id": 1011,
+    "lat": 31.5,
+    "lon": -97.1,
+    "tags": {
+     "building": "house",
+     "name": "Corner Grocery",
+     "shop": "supermarket"
+    },
+    "type": "node"
+   }
+  ],
+  "generator": "Overpass API fixture",
+  "osm3s": {
+   "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL.",
+   "timestamp_osm_base": "2026-10-04T00:00:00Z"
+  },
+  "version": 0.6
+ }
+}
