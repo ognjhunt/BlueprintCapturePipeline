@@ -17,6 +17,7 @@ from .task_evaluation_openai_usage_validation import (
 import hashlib
 import json
 import os
+import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -287,15 +288,46 @@ def sync_inference_usage_to_webapp(
 def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     payload = (json.dumps(dict(value), sort_keys=True, separators=(",", ":")) + "\n").encode()
+    # Publish only complete, durable bytes. A killed writer must not leave a
+    # partial packet that every subsequent recovery would treat as authoritative.
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".usage-") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fchmod(stream.fileno(), 0o440)
+        os.fsync(stream.fileno())
+        try:
+            os.link(stream.name, path)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != payload:
+                raise OpenAIInferenceUsageError(
+                    "openai_inference_usage_artifact_conflict"
+                ) from None
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+
+def _retained_packet(path: Path, expected: Mapping[str, Any]) -> dict[str, Any]:
     try:
-        with path.open("xb") as stream:
-            stream.write(payload)
-        path.chmod(0o440)
-    except FileExistsError:
-        if path.is_symlink() or path.read_bytes() != payload:
-            raise OpenAIInferenceUsageError(
-                "openai_inference_usage_artifact_conflict"
-            ) from None
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("not a regular packet")
+        packet = json.loads(path.read_bytes())
+        if not isinstance(packet, dict) or not isinstance(packet.get("generated_at_utc"), str):
+            raise ValueError("invalid packet")
+        timestamp = datetime.fromisoformat(packet["generated_at_utc"].replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            raise ValueError("timestamp lacks timezone")
+        # Compare every projected field, not only the caller-supplied receipt
+        # digest: modified usage with an unchanged digest must also be refused.
+        bound = dict(expected, generated_at_utc=packet["generated_at_utc"])
+        bound["packet_digest"] = cross_runtime_canonical_digest(bound, digest_field="packet_digest")
+        if packet != bound:
+            raise ValueError("packet binding mismatch")
+        return packet
+    except (OSError, ValueError, TypeError) as exc:
+        raise OpenAIInferenceUsageError("openai_inference_usage_artifact_conflict") from exc
 
 
 def materialize_placement_usage_projection(
@@ -315,12 +347,23 @@ def materialize_placement_usage_projection(
     )
     root = Path(output_root).expanduser().resolve()
     packet_path = root / "openai_inference_usage_packet.v1.json"
-    _write_immutable_json(packet_path, packet)
+    if not packet_path.exists() and not packet_path.is_symlink():
+        try:
+            _write_immutable_json(packet_path, packet)
+        except OpenAIInferenceUsageError:
+            # A simultaneous first writer may have won with another timestamp.
+            # Validate its complete projection below before any transport.
+            if not packet_path.exists():
+                raise
+    packet = _retained_packet(packet_path, packet)
     sync = sync_inference_usage_to_webapp(packet=packet)
+    # Keep attempt outcomes separate from both the packet and older immutable
+    # result references. Failure/skipped receipts cannot poison later success.
+    sync_digest = canonical_digest(sync).removeprefix("sha256:")
+    sync_path = root / "openai-inference-usage-sync" / f"{sync_digest}.v1.json"
+    _write_immutable_json(sync_path, sync)
     if require_sync and sync.get("status") != "succeeded":
         raise OpenAIInferenceUsageError("openai_inference_usage_sync_required")
-    sync_path = root / "openai_inference_usage_webapp_sync.v1.json"
-    _write_immutable_json(sync_path, sync)
     return {
         "openai_inference_usage_packet": _artifact_record(packet_path),
         "openai_inference_usage_webapp_sync": {

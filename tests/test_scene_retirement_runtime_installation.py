@@ -1,5 +1,6 @@
 """Protected runtime preparation is separate from issuing deletion authority."""
 from pathlib import Path
+import fcntl
 import importlib.util
 import os
 import sys
@@ -13,8 +14,15 @@ def tmp_path():
     # Linux RUNNER_TEMP is intentionally shared/writable. Protected-input
     # positives require genuinely non-writable ancestry, not an ancestry waiver.
     # The directory and every tiny fixture are removed after each test.
-    with tempfile.TemporaryDirectory(prefix='.blueprint-scene-fixture-', dir=Path.home()) as name:
-        yield Path(name).resolve()
+    # Each worker otherwise changes the same protected home directory's mtime
+    # while another is checking its identity. Retain one shared lock inode;
+    # unlinking it could let later workers lock a different file concurrently.
+    fd = os.open(Path.home() / '.blueprint-scene-fixture.lock',
+                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, 'a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with tempfile.TemporaryDirectory(prefix='.blueprint-scene-fixture-', dir=Path.home()) as name:
+            yield Path(name).resolve()
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/install_scene_retirement_runtime.py'
@@ -560,7 +568,7 @@ def test_first_upgrade_authenticates_installer_data_from_service_owned_release_b
             fd = int(command[3].rsplit('/', 1)[1])
             raw = os.pread(fd, 1024 * 1024, 0)
             assert raw == signed
-            protected = namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'runtime_installer.py'
+            protected = namespace['_SCENE_RUNTIME_BOOT_ROOT'] / 'installers' / commit / 'runtime_installer.py'
             assert protected.read_bytes() == signed
             assert not protected.stat().st_mode & 0o022
             receipt = json.loads((protected.parent / 'runtime-installer.json').read_bytes())
@@ -586,6 +594,103 @@ def test_first_upgrade_unknown_fixed_installer_refuses_without_overwriting_or_ex
     with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
         namespace['_prepare_scene_retirement_runtime'](source_repo=tmp_path, source_commit='1' * 40)
     assert helper.read_bytes() == b'unknown prior root helper' and helper.stat().st_ino == before.st_ino
+
+
+def test_public_contracts_fetch_uses_fixed_https_and_verifies_real_git_objects(tmp_path, monkeypatch):
+    import subprocess
+    import time
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    repository = tmp_path / 'contracts'
+    (repository / 'src/blueprint_contracts').mkdir(parents=True)
+    (repository / 'src/blueprint_contracts/__init__.py').write_text('VALUE = 1\n')
+    subprocess.run(['/usr/bin/git', '-C', str(repository), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(repository), 'add', '.'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(repository), '-c', 'user.name=fixture',
+                    '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'contracts'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(repository), 'rev-parse', 'HEAD']).decode().strip()
+    actual_popen = subprocess.Popen
+    fetched = []
+
+    def local_transport(command, **kwargs):
+        if 'fetch' in command:
+            expected = 'https://github.com/ognjhunt/BlueprintContracts.git'
+            assert expected in command and command[-1] == commit
+            assert 'GIT_SSH_COMMAND' not in kwargs['env']
+            assert kwargs['env']['GIT_CONFIG_GLOBAL'] == '/dev/null'
+            assert kwargs['env']['GIT_TERMINAL_PROMPT'] == '0'
+            assert 'credential.helper=' in command
+            fetched.append(command.copy())
+            command = [str(repository) if arg == expected else arg for arg in command]
+        return actual_popen(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'Popen', local_transport)
+    package = {'name': 'blueprint-contracts', 'source': {
+        'git': f'https://github.com/ognjhunt/BlueprintContracts.git?rev={commit}#{commit}'}}
+    rows = module._sdk_git_rows(package, None, time.monotonic() + 30)
+    assert len(fetched) == 1
+    assert Path(rows['blueprint_contracts/__init__.py']['source']).read_text() == 'VALUE = 1\n'
+
+
+def test_upgrade_executes_authenticated_candidate_instead_of_valid_obsolete_helper(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    import subprocess
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    root = namespace['_SCENE_RUNTIME_BOOT_ROOT']
+    root.mkdir()
+    old = b'raise RuntimeError("obsolete fetch path")\n'
+    (root / 'runtime_installer.py').write_bytes(old)
+    (root / 'runtime-installer.json').write_text(json.dumps({
+        'schema': 'scene-retirement-runtime-installer.v1',
+        'sha256': 'sha256:' + hashlib.sha256(old).hexdigest(), 'size_bytes': len(old)}))
+    source = tmp_path / 'candidate'
+    (source / 'scripts').mkdir(parents=True)
+    candidate = b'# reviewed new installer\n'
+    (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(candidate)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', '.'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture',
+                    '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'candidate'], check=True)
+    commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
+    (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(b'raise RuntimeError("mutable")\n')
+    actual_run = subprocess.run
+    executed = []
+
+    def execute(command, **kwargs):
+        if command[:3] == ['/usr/bin/python3', '-I', '-S']:
+            raw = os.pread(int(command[3].rsplit('/', 1)[1]), 1024 * 1024, 0)
+            assert raw == candidate
+            assert (root / 'runtime_installer.py').read_bytes() == old
+            executed.append(raw)
+            return subprocess.CompletedProcess(command, 0, json.dumps({
+                'status': 'refreshed', 'source_commit': commit,
+                'authority_issued': False, 'cleanup_enabled': False}).encode(), b'')
+        return actual_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', execute)
+    for _ in range(2):
+        namespace['_prepare_scene_retirement_runtime'](source_repo=source, source_commit=commit)
+    assert executed == [candidate, candidate]
+    selected = root / 'installers' / commit / 'runtime_installer.py'
+    selected.write_bytes(b'changed candidate')
+    with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
+        namespace['_prepare_scene_retirement_runtime'](source_repo=source, source_commit=commit)
+    assert executed == [candidate, candidate]
+
+
+@pytest.mark.parametrize('receipt', ['runtime-installer.json', 'runtime-installer-pending.json'])
+def test_orphan_retained_installer_receipt_refuses_before_candidate_staging(tmp_path, monkeypatch, receipt):
+    namespace = _deployer_runtime_fixture(monkeypatch, tmp_path)
+    root = namespace['_SCENE_RUNTIME_BOOT_ROOT']
+    root.mkdir()
+    marker = root / receipt
+    marker.write_bytes(b'{}')
+    def unexpected(*args, **kwargs):
+        pytest.fail('orphan installer receipt must refuse before candidate staging')
+    namespace['_bootstrap_scene_retirement_installer'] = unexpected
+    with pytest.raises(ValueError, match='deploy_scene_retirement_runtime_unproven'):
+        namespace['_prepare_scene_retirement_runtime'](source_repo=tmp_path, source_commit='1' * 40)
+    assert marker.read_bytes() == b'{}' and not (root / 'installers').exists()
 
 
 def test_native_git_output_is_bounded_before_parent_buffer_growth(tmp_path, monkeypatch):
@@ -723,3 +828,239 @@ def test_actual_locked_sdk_includes_cpu_control_plane_runtime_imports_without_gp
     # These are the root runtime's CPU import dependencies. No model/GPU
     # operator is invoked by this administrative protected-runtime install.
     assert not {'ultralytics', 'torch', 'nvidia-cuda-runtime-cu12'} & names
+
+
+def test_many_member_wheel_parses_directory_once_for_consecutive_payloads(tmp_path, monkeypatch):
+    import time
+    import zipfile
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    wheel = tmp_path / 'many.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        for index in range(5620):
+            archive.writestr(f'package/file{index:05}.py', f'value = {index}\n')
+    rows = module._wheel_entries(wheel, time.monotonic()+30)
+    # A bounded sample still carries the real, large central directory. Count
+    # parsing work rather than asserting a machine-dependent wall clock.
+    sample = dict(list(rows.items())[:128])
+    real_zip = zipfile.ZipFile
+    opened = []
+    def observed(*args, **kwargs):
+        archive = real_zip(*args, **kwargs)
+        opened.append(archive)
+        return archive
+    monkeypatch.setattr(module.zipfile, 'ZipFile', observed)
+    destination = tmp_path / 'extracted'
+    module._sdk_extract(destination, sample, time.monotonic()+60)
+    assert len(opened) == 1
+    assert all(archive.fp is None for archive in opened)
+    for index in range(128):
+        assert (destination / f'package/file{index:05}.py').read_text() == f'value = {index}\n'
+    module._sdk_extract(destination, sample, time.monotonic()+30)
+    assert len(opened) == 1  # Complete retained files are validated, not re-extracted.
+
+
+@pytest.mark.parametrize('change', ['replace', 'writable'])
+def test_cached_archive_refuses_identity_change_between_members(tmp_path, monkeypatch, change):
+    import time
+    import zipfile
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    wheel = tmp_path / 'source.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr('a.py', 'a = 1\n')
+        archive.writestr('b.py', 'b = 2\n')
+    rows = module._wheel_entries(wheel, time.monotonic()+10)
+    destination = tmp_path / 'extracted'
+    real_read = module._read
+    real_zip = zipfile.ZipFile
+    opened = []
+    def observed(*args, **kwargs):
+        archive = real_zip(*args, **kwargs)
+        opened.append(archive)
+        return archive
+    def mutate(path, deadline, **kwargs):
+        result = real_read(path, deadline, **kwargs)
+        if path == destination / 'a.py':
+            if change == 'replace':
+                replacement = tmp_path / 'replacement.whl'
+                replacement.write_bytes(wheel.read_bytes())
+                replacement.replace(wheel)
+            else:
+                wheel.chmod(0o666)
+        return result
+    monkeypatch.setattr(module, '_read', mutate)
+    monkeypatch.setattr(module.zipfile, 'ZipFile', observed)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_extract(destination, rows, time.monotonic()+10)
+    assert (destination / 'a.py').read_text() == 'a = 1\n'
+    assert not (destination / 'b.py').exists()
+    assert len(opened) == 1 and opened[0].fp is None
+
+
+def test_cached_archive_switch_and_interruption_resume_preserve_exact_bytes(tmp_path, monkeypatch):
+    import time
+    import zipfile
+    module, _, _ = fixture(tmp_path, monkeypatch)
+    rows = {}
+    for index, names in enumerate([['a.py', 'c.py'], ['b.py']]):
+        wheel = tmp_path / f'source{index}.whl'
+        with zipfile.ZipFile(wheel, 'w') as archive:
+            for name in names:
+                archive.writestr(name, name.encode()*100)
+        rows.update(module._wheel_entries(wheel, time.monotonic()+10))
+    destination = tmp_path / 'extracted'
+    append = module._sdk_append_chunk
+    def interrupt(output, original, raw, offset, deadline):
+        append(output, original, raw[:10], offset, deadline)
+        raise ValueError(module._ERROR)
+    monkeypatch.setattr(module, '_sdk_append_chunk', interrupt)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._sdk_extract(destination, rows, time.monotonic()+10)
+    assert (destination / 'a.py.pending').read_bytes() == (b'a.py'*100)[:10]
+    monkeypatch.setattr(module, '_sdk_append_chunk', append)
+    module._sdk_extract(destination, rows, time.monotonic()+10)
+    for name in rows:
+        assert (destination / name).read_bytes() == name.encode()*100
+    assert not list(destination.glob('*.pending'))
+
+
+def _interrupted_connected_install(tmp_path, monkeypatch):
+    import subprocess
+    module, source, _ = fixture(tmp_path, monkeypatch)
+    wheel = _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
+    def git(*args):
+        return subprocess.check_output(['/usr/bin/git', '-C', str(source), *args], stderr=subprocess.DEVNULL).decode().strip()
+    git('init', '-q')
+    git('add', 'src', 'scripts', 'deploy', 'uv.lock')
+    git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial')
+    first = git('rev-parse', 'HEAD')
+    copy = module._copy
+    def interrupt(path, destination, expected, deadline):
+        if destination == module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py':
+            copy(path, destination, expected, deadline)
+            raise ValueError(module._ERROR)
+        return copy(path, destination, expected, deadline)
+    monkeypatch.setattr(module, '_copy', interrupt)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare_deployment(source, source_commit=first, wheelhouse=wheel.parent)
+    monkeypatch.setattr(module, '_copy', copy)
+    return module, source, wheel, first, git
+
+
+@pytest.mark.parametrize('next_commit', [False, True])
+def test_connected_deployment_resumes_initial_intent_before_refresh(tmp_path, monkeypatch, next_commit):
+    module, source, wheel, first, git = _interrupted_connected_install(tmp_path, monkeypatch)
+    intent = module._BOOT_ROOT / 'installation.json'
+    original = intent.read_bytes()
+    if next_commit:
+        (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(b'# new authenticated helper data\n')
+        (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# new release\n')
+        git('add', 'scripts', 'src')
+        git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'next')
+    target = git('rev-parse', 'HEAD')
+    result = module.prepare_deployment(source, source_commit=target, wheelhouse=wheel.parent)
+    assert result['status'] == 'refreshed' and result['source_commit'] == target
+    assert result['authority_issued'] is False and result['cleanup_enabled'] is False
+    assert intent.read_bytes() == original
+    assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
+    import json
+    selected = json.loads((module._BOOT_ROOT / 'CURRENT.json').read_bytes())
+    assert (Path(selected['runtime_root']) / 'src/blueprint_pipeline/__init__.py').read_bytes() == (b'# new release\n' if next_commit else b'# trusted package\n')
+
+
+@pytest.mark.parametrize('change', ['source', 'sdk', 'partial', 'foreign', 'missing'])
+def test_initial_resume_preserves_unmatched_or_tampered_inputs(tmp_path, monkeypatch, change):
+    module, source, wheel, first, git = _interrupted_connected_install(tmp_path, monkeypatch)
+    intent = module._BOOT_ROOT / 'installation.json'
+    original = intent.read_bytes()
+    cache = module._sdk_root() / 'release-inputs' / first
+    if change == 'source':
+        (cache / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# changed retained source\n')
+    elif change == 'missing':
+        (cache / 'scripts/scene_retirement_continuous_bootstrap.py').unlink()
+    elif change == 'sdk':
+        next((module._sdk_root() / 'sdk-inputs').glob('*/fixture_sdk/__init__.py')).write_bytes(b'# changed retained sdk\n')
+    elif change == 'foreign':
+        (module._RUNTIME_ROOT / 'foreign.py').write_bytes(b'# unknown\n')
+    else:
+        (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# wrong partial\n')
+    (source / 'scripts/install_scene_retirement_runtime.py').write_bytes(b'# next helper\n')
+    git('add', 'scripts')
+    git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'next')
+    with pytest.raises((ValueError, FileNotFoundError), match='scene_retirement_runtime_unproven|No such file'):
+        module.prepare_deployment(source, source_commit=git('rev-parse', 'HEAD'), wheelhouse=wheel.parent)
+    assert intent.read_bytes() == original
+    assert not (module._BOOT_ROOT / 'CURRENT.json').exists()
+    assert not (module._BOOT_ROOT / 'continuous_bootstrap.py').exists()
+
+
+def test_initial_resume_survives_interruption_before_refresh(tmp_path, monkeypatch):
+    module, source, wheel, first, _ = _interrupted_connected_install(tmp_path, monkeypatch)
+    original = (module._BOOT_ROOT / 'installation.json').read_bytes()
+    refresh = module.refresh
+    monkeypatch.setattr(module, 'refresh', lambda *args, **kwargs: (_ for _ in ()).throw(ValueError(module._ERROR)))
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare_deployment(source, source_commit=first, wheelhouse=wheel.parent)
+    assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
+    assert not (module._BOOT_ROOT / 'CURRENT.json').exists()
+    monkeypatch.setattr(module, 'refresh', refresh)
+    assert module.prepare_deployment(source, source_commit=first, wheelhouse=wheel.parent)['status'] == 'refreshed'
+    assert (module._BOOT_ROOT / 'installation.json').read_bytes() == original
+
+
+def test_signed_release_retry_authenticates_retained_git_blob_without_reacquiring(tmp_path, monkeypatch):
+    import time
+    module, source, _, first, _ = _interrupted_connected_install(tmp_path, monkeypatch)
+    git = module._sdk_git_command
+    def existing(checkout, arguments, deadline, **kwargs):
+        assert arguments[:2] not in (['cat-file', 'blob'], ['cat-file', '-s'])
+        return git(checkout, arguments, deadline, **kwargs)
+    monkeypatch.setattr(module, '_sdk_git_command', existing)
+    root = module._signed_release(source, first, time.monotonic()+10)
+    assert (root / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
+    (root / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# changed retained source\n')
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._signed_release(source, first, time.monotonic()+10)
+
+
+def test_initial_resume_uses_retained_sdk_when_new_release_changes_dependencies(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    import zipfile
+    module, source, wheel, first, git = _interrupted_connected_install(tmp_path, monkeypatch)
+    original = (module._BOOT_ROOT / 'installation.json').read_bytes()
+    old_hash = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    old_size = wheel.stat().st_size
+    replacement = tmp_path / 'next-wheelhouse' / wheel.name
+    replacement.parent.mkdir()
+    with zipfile.ZipFile(wheel) as before, zipfile.ZipFile(replacement, 'w') as after:
+        for name in before.namelist():
+            after.writestr(name, b'value = 2\n' if name.endswith('/__init__.py') else before.read(name))
+    lock = source / 'uv.lock'
+    lock.write_text(lock.read_text().replace(old_hash, hashlib.sha256(replacement.read_bytes()).hexdigest())
+                    .replace('size = ' + str(old_size), 'size = ' + str(replacement.stat().st_size)))
+    (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# changed release\n')
+    git('add', 'uv.lock', 'src')
+    git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'new SDK')
+    module.prepare_deployment(source, source_commit=git('rev-parse', 'HEAD'), wheelhouse=replacement.parent)
+    assert (module._BOOT_ROOT / 'installation.json').read_bytes() == original
+    assert (module._RUNTIME_ROOT / 'dependencies/fixture_sdk/__init__.py').read_bytes() == b'value = 1\n'
+    selected = json.loads((module._BOOT_ROOT / 'CURRENT.json').read_bytes())
+    assert (Path(selected['dependencies_root']) / 'fixture_sdk/__init__.py').read_bytes() == b'value = 2\n'
+
+
+def test_initial_resume_retries_interrupted_original_dependency_copy(tmp_path, monkeypatch):
+    module, source, wheel, first, _ = _interrupted_connected_install(tmp_path, monkeypatch)
+    original = (module._BOOT_ROOT / 'installation.json').read_bytes()
+    copy = module._copy
+    def interrupt(path, destination, expected, deadline):
+        result = copy(path, destination, expected, deadline)
+        if destination == module._RUNTIME_ROOT / 'dependencies/fixture_sdk/__init__.py':
+            raise ValueError(module._ERROR)
+        return result
+    monkeypatch.setattr(module, '_copy', interrupt)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare_deployment(source, source_commit=first, wheelhouse=wheel.parent)
+    assert not (module._BOOT_ROOT / 'continuous_bootstrap.py').exists()
+    monkeypatch.setattr(module, '_copy', copy)
+    assert module.prepare_deployment(source, source_commit=first, wheelhouse=wheel.parent)['status'] == 'refreshed'
+    assert (module._BOOT_ROOT / 'installation.json').read_bytes() == original
