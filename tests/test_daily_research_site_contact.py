@@ -9,8 +9,8 @@ import pytest
 from tests import daily_research_site_screen_fixture as fixture
 from tests.daily_research_site_screen_fixture import (
     KEY,
-    OWNER,
     OTHER_PERSON,
+    OWNER,
     PERSON,
     SITE_STRINGS,
     TODAY,
@@ -186,7 +186,7 @@ def test_review_c6_the_bare_website_answer_never_sets_the_email_domain(tmp_path)
                                "reason": "site_screen_email_off_operator_domain"}
     assert mail.encode() not in stored(workspace, record["site_key"])
     # The operator's domain is the one whose page proves the operator, and the provider is told that one.
-    contact_input = [event["input"] for event in workspace.ledger("contact").events() if event["event"] == "intent"][0]
+    contact_input = next(event["input"] for event in workspace.ledger("contact").events() if event["event"] == "intent")
     assert contact_input["operator_domains"] == ["operator-1.example"]
     assert contact_input["task_input"]["website"] == "https://operator-1.example"
 
@@ -199,7 +199,7 @@ def test_a_directory_or_government_page_never_gives_the_operator_domain(tmp_path
     mail = f"plant.team@{host.removeprefix('www.')}"
     answers = contact_answers(1, email=mail, email_url=operator_url, email_quote=f"Write to {mail} for plant questions.")
     pages = {**pages_for(answers, ["person"]), operator_url: f"Profile. Write to {mail} for plant questions."}
-    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages, screen_changes={"operator_identity_url": operator_url})
+    _workspace, _, (record,), _ = contacted(tmp_path, [answers], pages, screen_changes={"operator_identity_url": operator_url})
     assert record["email"]["reason"] == "site_screen_operator_domain_unproven" and record["recipient"]["kind"] == "none"
 
 

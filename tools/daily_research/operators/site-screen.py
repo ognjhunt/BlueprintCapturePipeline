@@ -31,7 +31,7 @@ def api_key(key_file=None, environ=None):
         value = ""
         for line in lines:
             line = line.strip()
-            name, separator, item = (line[7:] if line.startswith("export ") else line).partition("=")
+            name, separator, item = line.removeprefix("export ").partition("=")
             if separator and not line.startswith("#") and name.strip() == site_screen.API_KEY_ENV:
                 value = item.strip().strip("\"'")
     if not value:

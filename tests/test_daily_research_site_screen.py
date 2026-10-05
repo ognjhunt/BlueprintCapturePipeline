@@ -401,9 +401,8 @@ def test_max_runs_outside_the_reviewed_bound_is_refused(tmp_path, max_runs):
 
 def test_a_second_command_on_the_same_out_dir_refuses(tmp_path):
     workspace, provider, client = workspace_and_client(tmp_path)
-    with workspace.lock():
-        with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_busy$"):
-            ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=True)
+    with workspace.lock(), pytest.raises(ss.ScreenError, match="^site_screen_out_dir_busy$"):
+        ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1, apply=True)
     assert provider.calls == []
 
 
@@ -424,7 +423,7 @@ def test_a_torn_final_ledger_line_is_sealed_and_other_damage_refuses(tmp_path):
 
 
 def test_the_first_apply_pins_the_owner_ceiling_once(tmp_path):
-    workspace, provider, client = workspace_and_client(tmp_path)
+    workspace, _provider, client = workspace_and_client(tmp_path)
     ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="0.50",
            max_runs=7, apply=True)
     path = workspace.root / "owner_ceiling.json"
@@ -531,7 +530,7 @@ def test_review_s4b_kept_results_whose_ledger_entries_are_gone_refuse(tmp_path):
 
 def test_each_intent_records_the_code_commit_and_whether_the_tree_was_dirty(tmp_path, monkeypatch):
     monkeypatch.setattr(ss, "code_state", REAL_CODE_STATE)
-    workspace, provider, client = workspace_and_client(tmp_path)
+    workspace, _provider, client = workspace_and_client(tmp_path)
     result = ss.run(raw_input([inventory_record(1)]), workspace, client=client, owner_reference=OWNER, ceiling_usd="1",
                     max_runs=1, apply=True)
     intent = workspace.ledger("screen").events()[0]

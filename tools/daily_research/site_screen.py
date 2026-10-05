@@ -84,7 +84,7 @@ API_HOST, RUNS_PATH = "api.parallel.ai", "/v1/tasks/runs"
 API_KEY_ENV = "PARALLEL_API_KEY"  # The operator reads it; this module only receives the value.
 DEFAULT_PROCESSOR = "core"
 PRICES_USD = {"core": Decimal("0.025")}  # Per completed run. Add a processor only with its published price.
-MAX_CEILING_USD = Decimal("100")  # A typo guard on --ceiling-usd; the owner's ceiling is the control.
+MAX_CEILING_USD = Decimal(100)  # A typo guard on --ceiling-usd; the owner's ceiling is the control.
 MAX_RUNS = 5000  # All stages of one out dir; a site universe export has at most 5,000 rows.
 WORKER_FLAG = "BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED"  # Set (to any value) only on the daily worker.
 # Storage the system prunes: macOS tmp_cleaner, per-user temporary folders, tmpfs. A lost ledger means paying again.
@@ -694,7 +694,7 @@ def guard_out_dir(path, code_root=CODE_ROOT):
     if resolved == root or root in resolved.parents or any(
             (folder / ".git").exists() for folder in (resolved, *resolved.parents)):
         raise ScreenError("site_screen_out_dir_inside_repository")
-    for volatile in map(lambda value: Path(value).resolve(), VOLATILE_ROOTS):
+    for volatile in (Path(value).resolve() for value in VOLATILE_ROOTS):
         if resolved == volatile or volatile in resolved.parents:
             raise ScreenError("site_screen_out_dir_volatile")
     return resolved
@@ -894,7 +894,7 @@ def _billable(site):
 
 def committed_usd(sites):
     """The price of every run that may be billed: created and not seen failed, or of unknown outcome."""
-    return sum((Decimal(site["price_usd"]) for site in sites.values() if _billable(site)), Decimal("0"))
+    return sum((Decimal(site["price_usd"]) for site in sites.values() if _billable(site)), Decimal(0))
 
 
 def run_count(sites):
@@ -907,7 +907,7 @@ def parse_ceiling(value):
         amount = Decimal(str(value).strip())
     except (InvalidOperation, ValueError):
         raise ScreenError("site_screen_ceiling_invalid") from None
-    if not amount.is_finite() or not Decimal("0") < amount <= MAX_CEILING_USD:
+    if not amount.is_finite() or not Decimal(0) < amount <= MAX_CEILING_USD:
         raise ScreenError("site_screen_ceiling_invalid")
     return amount
 
@@ -936,7 +936,7 @@ def admit(stages, *, price, ceiling, max_runs):
     dir. Checked before every create."""
     if sum(run_count(sites) for sites in stages) + 1 > max_runs:
         raise ScreenError("site_screen_max_runs_reached")
-    if sum((committed_usd(sites) for sites in stages), Decimal("0")) + price > ceiling:
+    if sum((committed_usd(sites) for sites in stages), Decimal(0)) + price > ceiling:
         raise ScreenError("site_screen_spend_ceiling_reached")
 
 
@@ -1123,7 +1123,7 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
             "apply": apply, "state": "stopped" if stop else "complete" if apply else "planned", "stop": stop,
             "sites": len(sites), **counts, "refused": dict(refused),
             "runs": sum(run_count(sites) for sites in every),
-            "committed_usd": str(sum((committed_usd(sites) for sites in every), Decimal("0"))),
+            "committed_usd": str(sum((committed_usd(sites) for sites in every), Decimal(0))),
             "stage_runs": run_count(state), "stage_committed_usd": str(committed_usd(state)),
             "ceiling_usd": str(ceiling), "max_runs": limit, "processor": processor, "price_usd": str(price), "code": code,
             "pin": {"state": pinned, **{name: shown[name] for name in ("ceiling_usd", "max_runs", "owner_reference")}}}
@@ -1265,7 +1265,7 @@ def addresses(text):
 def email_address(value):
     """The provider's address, lower case, or None when it is not one plain address."""
     text = light(value)
-    text = (text[7:] if text.startswith("mailto:") else text).strip("<> ")
+    text = (text.removeprefix("mailto:")).strip("<> ")
     return text if EMAIL.fullmatch(text) else None
 
 
@@ -2024,13 +2024,13 @@ def summary(workspace):
     quotes, and no page read or provider call."""
     report = {"schema_version": SUMMARY, "command": "summary", "state": "complete",
               "rules": {"screen": SCREEN_RULE, "contact": CONTACT_RULE}}
-    billed = committed = Decimal("0")
+    billed = committed = Decimal(0)
     with workspace.lock():
         states, pin = workspace.states()
         for stage in STAGES:
             sites, records = states[stage], list(stage_records(workspace, states, stage).values())
             stage_billed = sum((Decimal(site["price_usd"]) for site in sites.values()
-                                if site.get("observed") and site["status"] == "completed"), Decimal("0"))
+                                if site.get("observed") and site["status"] == "completed"), Decimal(0))
             stage_committed = committed_usd(sites)
             billed, committed = billed + stage_billed, committed + stage_committed
             unread = sum(site.get("status") == "completed" and site.get("observed") for site in sites.values())
