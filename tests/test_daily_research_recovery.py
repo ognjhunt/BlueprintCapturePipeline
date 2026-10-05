@@ -14,8 +14,8 @@ import pytest
 from tests.test_daily_research_consumer import consumer_setup
 from tests.test_daily_research_knowledge import policy_bundle, v3
 from tests.test_daily_research_runner import AGENT, DAY, NOW
-from tools.daily_research import recovery, render, search
-from tools.daily_research.runner import Ledger, Refusal, canonical, digest, validate_output
+from tools.daily_research import recovery, render, search, site_universe
+from tools.daily_research.runner import Ledger, Refusal, Runner, canonical, digest, validate_output
 
 
 @pytest.mark.parametrize("raw", [b'{"duplicate": "false", "unknown": null}',
@@ -467,5 +467,69 @@ def test_qa_lost_reply_has_sanitized_receipt_and_is_observed_without_resend(tmp_
                            "code": None, "http_status": None, "request_id": None}
         assert consumer.step()["state"] == "reviewed"
         assert len(api.inputs) == len(api.payloads) == 1
+    finally:
+        generator.close()
+
+
+def frozen_failed_setup(tmp_path):
+    """A failed search-profile row that attached a slice; then the pin is disabled and the bucket cleared."""
+    from tests.test_daily_research_consumer import slice_inventory
+    generator = consumer_setup(tmp_path, failed=True, site_universe={"inventory": slice_inventory})
+    consumer, api, ledger, bridge, _ = next(generator)
+    row = ledger.get(DAY)
+    assert row["state"] == "failed" and row["site_universe"]["state"] == "attached" and "packet" not in row
+    with ledger.lock():
+        bridge.call("site_universe_set", expected_sha256=row["site_universe"]["pin"]["sha256"],
+                    value={**row["site_universe"]["pin"], "enabled": False})
+    bridge.call("test_bucket_clear")
+    return generator, consumer, api, ledger, bridge, row
+
+
+def assert_frozen_outcomes(final, original):
+    block = final["packet"]["site_universe"]
+    assert block["state"] == "attached" and block["slice_sha256"] == original["site_universe"]["slice_sha256"]
+    assert [item["outcome"] for item in block["outcomes"]] == ["screened", "candidate"] + ["untouched"] * 4
+    assert block["outcomes"][1]["candidate_key"] == final["packet"]["candidates"][0]["candidate_key"]
+    assert final["create_payload"] == original["create_payload"] and final["metadata"] == original["metadata"]
+    assert final["packet_digest"] == digest(final["packet"]) and final["site_universe"] == original["site_universe"]
+
+
+def test_validation_repair_links_outcomes_from_the_frozen_slice_with_one_repair_sentence(tmp_path):
+    from tests.test_daily_research_repair_gaps import correcting_agent
+    generator, consumer, api, ledger, bridge, original = frozen_failed_setup(tmp_path)
+    try:
+        repaired = json.loads(ledger.read_bytes(DAY + "-artifact.json"))
+        repaired["proposed_knowledge_deltas"] = []
+        calls = correcting_agent(api, ledger, bridge, canonical(repaired).encode())
+        row = recovery.RepairLoop(ledger, consumer.config, api, clock=consumer.clock).step(DAY)
+        assert row["validation_repairs"][-1]["state"] == "validated" and len(calls) == len(api.payloads) == 1
+        text = json.loads(ledger.read_bytes(row["validation_repairs"][-1]["input_file"]))["input"][0]["content"][0]["text"]
+        assert text.count(site_universe.repair_sentence(row)) == 1
+        assert_frozen_outcomes(ledger.get(DAY), original)
+    finally:
+        generator.close()
+
+
+def test_finalize_keeps_the_frozen_outcomes_when_only_a_located_item_is_excluded(tmp_path):
+    from tests.test_daily_research_repair_gaps import correcting_agent
+    generator, consumer, api, ledger, bridge, original = frozen_failed_setup(tmp_path)
+    try:
+        correcting_agent(api, ledger, bridge, ledger.read_bytes(DAY + "-artifact.json"))  # The agent repeats itself.
+        row = recovery.RepairLoop(ledger, consumer.config, api, clock=consumer.clock).step(DAY)
+        assert row["validation_repair_outcome"]["state"] == "accepted_with_exclusions"
+        assert_frozen_outcomes(ledger.get(DAY), original)
+    finally:
+        generator.close()
+
+
+def test_recover_output_keeps_the_frozen_outcomes(tmp_path):
+    generator, consumer, api, ledger, _, original = frozen_failed_setup(tmp_path)
+    try:
+        receipt = {"session_id": original["session_id"], "turn_id": original["turn_id"],
+                   "raw_output_sha256": original["raw_output_digest"], "approval_reference": "owner-synthetic-recovery",
+                   "scope": "quarantine-null-operator-deltas-no-inference-no-publication"}
+        row = Runner(ledger, consumer.config, None, clock=consumer.clock).recover_output(DAY, receipt)
+        assert row["state"] == "awaiting_review" and row["output_recovery"] and len(api.payloads) == 1
+        assert_frozen_outcomes(ledger.get(DAY), original)
     finally:
         generator.close()

@@ -73,13 +73,18 @@ class Bridge:
 class FirestoreLedger:
     def __init__(self, bridge):
         self.bridge = bridge
+        self.leased_control = None
 
     @contextmanager
     def lock(self):
         self.bridge.call("acquire")
+        # Every control writer needs this lease, so a control read made under it stays current
+        # until release (only the lease field itself renews). It is never reused across leases.
+        self.leased_control = {}
         try:
             yield
         finally:
+            self.leased_control = None
             self.bridge.call("release")
 
     def rows(self):
@@ -93,6 +98,8 @@ class FirestoreLedger:
 
     def company_history_binding(self):
         control = self.bridge.call("control")
+        if getattr(self, "leased_control", None) == {} and isinstance(control, dict):
+            self.leased_control = control
         return control.get("learning") if isinstance(control, dict) else None
 
     def paid_expansion_control(self):
@@ -100,6 +107,21 @@ class FirestoreLedger:
         # ignore control.paid_expansion. The worker never reads object storage.
         control = self.bridge.call("control")
         return control if isinstance(control, dict) else None
+
+    def site_universe_control(self):
+        # Top-level company control like paid_expansion: config keys stay allowlisted and older
+        # packages ignore control.site_universe. The run start's control read in this lease is
+        # reused when there is one (the history profile makes it); otherwise this is one read.
+        # Absent or disabled, the runner reads nothing more.
+        control = getattr(self, "leased_control", None) or self.bridge.call("control")
+        return control.get("site_universe") if isinstance(control, dict) else None
+
+    def site_universe_object(self, pin):
+        # Exactly the pinned generation. The bridge checks generation, size and SHA-256 within
+        # its own 20 s bound, inside this pipe's 35 s deadline.
+        value = self.bridge.call("site_universe_object_get", sha256=pin["sha256"], generation=pin["generation"],
+                                 size=pin["bytes"])
+        return base64.b64decode(value["data"], validate=True)
 
     def contact_research_context(self, day):
         return self.bridge.call("contact_research_context", day=day)

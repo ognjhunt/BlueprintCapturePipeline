@@ -744,6 +744,23 @@ def _capability_fit(site, config, scope, context):
     return best
 
 
+def lead_capability(row, config=None) -> str:
+    """The capability that sets a ranked row's capability fit (used by the backlog export).
+
+    It is the capability named by ``components.capability_fit.basis``: ``cap``, or ``cap via
+    secondary site type X``. It must be one of the row's capabilities and have a weight in
+    ``config``. Raises RankError otherwise. Reads the row only; ranking output is unchanged.
+    """
+    config = as_config(config)
+    _require(isinstance(row, dict), "a ranked row must be an object")
+    fit = (row.get("components") or {}).get("capability_fit") or {}
+    basis = fit.get("basis") if isinstance(fit, dict) else None
+    capability = basis.split(" via secondary site type ", 1)[0] if isinstance(basis, str) else None
+    _require(capability in (row.get("capabilities") or ()) and capability in config.capability_weights,
+             f"{row.get('site_id')}: capability fit basis {basis!r} names no capability of the row")
+    return capability
+
+
 def _task_evidence(site, config, scope, context):
     codes = site_naics(site, "primary")
     best = None

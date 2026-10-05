@@ -1,4 +1,4 @@
-"""Command line: build, stats, import-raw and rank."""
+"""Command line: build, stats, import-raw, rank and export."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from tools.site_universe import build as build_module
+from tools.site_universe import export as export_module
 from tools.site_universe import rank as rank_module
 from tools.site_universe import sources
 from tools.site_universe.adapters import AdapterError, fsis_mpi, osha_ita
@@ -139,6 +140,16 @@ def _rank(args) -> int:
     return 0
 
 
+def _export(args) -> int:
+    result = export_module.export(
+        args.ranking, args.snapshot, args.out, approval_reference=args.approval_reference,
+        config=args.config, previous_snapshot=args.previous_snapshot, top=args.top,
+        per_capability=args.per_capability, max_rows=args.max_rows, log=_log,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.site_universe")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -181,12 +192,29 @@ def main(argv=None) -> int:
                         help="JSONL of site ids, names or operators to exclude, each with a reason")
     ranked.set_defaults(handler=_rank)
 
+    exported = commands.add_parser(
+        "export", help="export the ranked backlog that the daily research run's slice reads")
+    exported.add_argument("--ranking", required=True, help="rank output directory (complete ranking)")
+    exported.add_argument("--snapshot", required=True, help="the snapshot the ranking was made from")
+    exported.add_argument("--out", required=True, help="output directory, outside the repository")
+    exported.add_argument("--approval-reference", required=True,
+                          help="the owner's approval of this ranking review")
+    exported.add_argument("--config", help="the rank config the ranking used (default: rank_config.json)")
+    exported.add_argument("--previous-snapshot", help="an earlier snapshot, to count new sites")
+    exported.add_argument("--top", type=int, default=export_module.DEFAULT_TOP,
+                          help="global top N ranked sites")
+    exported.add_argument("--per-capability", type=int, default=export_module.DEFAULT_PER_CAPABILITY,
+                          help="top N ranked sites of each lead capability")
+    exported.add_argument("--max-rows", type=int, default=export_module.runtime.MAX_ROWS,
+                          help="refuse an export with more rows than this")
+    exported.set_defaults(handler=_export)
+
     args = parser.parse_args(argv)
     if args.command == "import-raw" and not (args.out or args.raw_dir):
         parser.error("import-raw needs --out or --raw-dir")
     try:
         return args.handler(args)
     except (sources.SourceRefused, build_module.BuildError, FetchError,
-            rank_module.RankError) as error:
+            rank_module.RankError, export_module.ExportError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

@@ -25,8 +25,10 @@ from tools.daily_research.runner import (
     Provider,
     Refusal,
     Runner,
+    canonical,
     configuration,
     crm_snapshot,
+    digest,
     due_date,
     main,
     preflight,
@@ -1062,3 +1064,242 @@ def test_exact_dedupe_preserves_same_city_distinct_named_facilities():
     accepted, duplicates = validate_output(o, DAY, set())
     assert len(accepted) == 2 and not duplicates
     assert len({c["candidate_key"] for c in accepted}) == 2
+
+
+# --- Site universe slice (control.site_universe) --------------------------------------------------
+
+
+class UniverseLedger(Ledger):
+    """The disk ledger plus the two company-control reads that FirestoreLedger exposes."""
+
+    def __init__(self, root, control=None, objects=None):
+        super().__init__(root)
+        self.universe, self.objects, self.universe_reads, self.intents = control, dict(objects or {}), [], []
+
+    def site_universe_control(self):
+        self.universe_reads.append("control")
+        if isinstance(self.universe, Exception):
+            raise self.universe
+        return deepcopy(self.universe)
+
+    def site_universe_object(self, pin):
+        self.universe_reads.append("object")
+        value = self.objects.get((pin["sha256"], pin["generation"]))
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            raise Refusal("site_universe_object_missing")
+        return value
+
+    def put(self, row):
+        if row.get("state") == "creating":
+            self.intents.append(len(json.dumps(row, sort_keys=True, separators=(",", ":")).encode()))
+        super().put(row)
+
+
+@pytest.fixture
+def universe(tmp_path):
+    """Search-profile creates, each in its own directory, with or without the control reads."""
+    from tests.test_daily_research_search import fixture as search_fixture
+    opened = []
+
+    def run(name, *, control=..., objects=None, history=(), create=True):
+        root = tmp_path / name
+        root.mkdir()
+        generator = search_fixture.__wrapped__(root)
+        runner, api, ledger = next(generator)
+        opened.append(generator)
+        if control is not ...:
+            ledger = runner.ledger = UniverseLedger(root / "universe", control, objects)
+            opened.append(ledger)
+        for row in history:
+            ledger.put(row)
+        if create:
+            runner.start_or_resume()
+        return runner, api, ledger
+
+    yield run
+    for value in reversed(opened):
+        if isinstance(value, Ledger):
+            value.db.close()
+        else:
+            next(value, None)
+
+
+def universe_pin(rows=None, **changes):
+    from tests.test_daily_research_site_universe import build_export, pin_for, site
+    raw = build_export(rows or [site(number) for number in range(1, 10)])
+    value = pin_for(raw, **{"slice_size": 6, **changes})
+    return value, {(value["sha256"], value["generation"]): raw}
+
+
+def without_payload_digest(payload):
+    value = deepcopy(payload)
+    value["metadata"].pop("payload_digest")
+    return value
+
+
+@pytest.mark.parametrize("control", [None, {"enabled": False},
+                                     {"enabled": False, "sha256": "stale", "slice_size": 999, "uri": "anything"}])
+def test_site_universe_flag_off_keeps_payload_metadata_input_and_row_byte_identical(universe, control):
+    _, plain_api, plain = universe("plain")
+    _, api, ledger = universe("flag-off", control=control)
+    assert canonical(api.payloads) == canonical(plain_api.payloads) and len(api.payloads) == 1
+    assert canonical(ledger.get(DAY)) == canonical(plain.get(DAY))
+    assert ledger.universe_reads == ["control"]  # Nothing else is read.
+    payload = api.payloads[0]
+    assert "site_universe_slice_digest" not in payload["metadata"] and "site_universe" not in ledger.get(DAY)
+    assert [f["path"] for f in payload["environment"]["files"]] == [f["path"] for f in plain_api.payloads[0]["environment"]["files"]]
+    assert "site-universe" not in payload["input"] and "site_universe" not in payload["input"]
+
+
+def test_site_universe_flag_on_freezes_one_slice_and_recovery_never_reads_it_again(universe):
+    from tools.daily_research import site_universe
+    _, plain_api, _ = universe("plain")
+    value, objects = universe_pin()
+    runner, api, ledger = universe("flag-on", control=value, objects=objects)
+    assert len(api.payloads) == 1 and ledger.universe_reads == ["control", "object"]
+    row, payload, plain = ledger.get(DAY), api.payloads[0], plain_api.payloads[0]
+    record = row["site_universe"]
+    assert record["state"] == "attached" and len(record["site_ids"]) == 6 and row["create_payload"] == payload
+    [slice_file] = [f for f in payload["environment"]["files"] if f["path"] == site_universe.SLICE_PATH]
+    raw = base64.b64decode(slice_file["data"])
+    assert hashlib.sha256(raw).hexdigest() == payload["metadata"]["site_universe_slice_digest"] == record["slice_sha256"]
+    assert row["metadata"] == payload["metadata"] and api.sessions[0]["metadata"] == payload["metadata"]
+    # The payload is today's plus exactly the file, its digest and one paragraph after the CRM prefix.
+    end = "compare semantics without assuming a match. "
+    anchor = plain["input"][:plain["input"].index(end) + len(end)]
+    expected = without_payload_digest(plain)
+    expected["environment"]["files"].append(slice_file)
+    expected["metadata"]["site_universe_slice_digest"] = record["slice_sha256"]
+    expected["input"] = expected["input"].replace(anchor, anchor + site_universe.paragraph(record), 1).replace(
+        site_universe.DISPOSITIONS_TODAY, site_universe.DISPOSITIONS_WITH_SLICE, 1)
+    assert without_payload_digest(payload) == expected
+    assert payload["input"].count(site_universe.DISPOSITIONS_WITH_SLICE) == 1
+    assert site_universe.DISPOSITIONS_TODAY not in payload["input"] and site_universe.DISPOSITIONS_TODAY in plain["input"]
+    assert payload["metadata"]["payload_digest"] == digest(without_payload_digest(payload))
+    assert payload["agent"] == plain["agent"]  # No new tool; the session's tool schemas are unchanged.
+    # Collection reads only the frozen row: control and the bucket are never read again.
+    ledger.universe, ledger.objects = AssertionError("control re-read"), {}
+    output = json.loads(api.raw)
+    first = output["candidates"][0]
+    output["discovery_inventory"] = [
+        {"operator": None, "site": None, "location": None, "task_hypothesis": None, "source_urls": [],
+         "evidence_gap": "Screened only from the slice", "disposition": "screened", "site_universe_id": record["site_ids"][0]},
+        {"operator": first["organization"], "site": first["site"], "location": first["location"],
+         "task_hypothesis": first["task"], "source_urls": [first["evidence"][0]["url"]], "evidence_gap": "QA pending",
+         "disposition": "candidate", "site_universe_id": record["site_ids"][1]}]
+    api.raw, api.turn_status = canonical(output).encode(), "completed"
+    collected = runner.start_or_resume(allow_create=False)
+    assert collected["state"] == "awaiting_review" and len(api.payloads) == 1
+    assert ledger.universe_reads == ["control", "object"]
+    block = collected["packet"]["site_universe"]
+    outcomes = {item["site_id"]: item for item in block["outcomes"]}
+    assert outcomes[record["site_ids"][0]]["outcome"] == "screened"
+    assert outcomes[record["site_ids"][1]]["candidate_key"] == collected["packet"]["candidates"][0]["candidate_key"]
+    assert block["funnel"]["agent"]["untouched"] == 4 and collected["packet_digest"] == digest(collected["packet"])
+    from tools.daily_research.runner import status_summary
+    assert status_summary(collected)["site_universe"]["state"] == "attached"
+
+
+def refused_cases():
+    from tests.test_daily_research_site_universe import build_export, offered, pin_for, sha, site
+    rows = [site(number) for number in range(1, 10)]
+    value, objects = universe_pin(rows)
+    key = (value["sha256"], value["generation"])
+    corrupt = b"\x1f\x8b corrupt export"
+    corrupt_pin = pin_for(corrupt, slice_size=6)
+    every = [offered("2026-09-29", list(range(1, 10)), dict.fromkeys(range(1, 10), "screened"))]
+    tampered = offered("2026-09-29", [1, 2, 3, 4, 5], {1: "screened"})
+    tampered["metadata"]["site_universe_slice_digest"] = "0" * 64  # The slice its intent bound no longer verifies.
+    return [
+        ("site_universe_pin_invalid", {**value, "slice_size": 99}, objects, ()),
+        ("site_universe_slice_exceeds_research_window", {**value, "slice_size": 14}, objects, ()),
+        ("site_universe_object_missing", value, {}, ()),
+        ("site_universe_object_generation_mismatch", value, {key: Refusal("site_universe_object_generation_mismatch")}, ()),
+        ("site_universe_object_digest_mismatch", value, {key: build_export(rows[:3])}, ()),
+        ("site_universe_object_too_large", value, {key: Refusal("site_universe_object_too_large")}, ()),
+        ("site_universe_object_unavailable", value, {key: Refusal("site_universe_object_unavailable")}, ()),
+        ("site_universe_export_invalid", corrupt_pin, {(corrupt_pin["sha256"], "1001"): corrupt}, ()),
+        ("site_universe_export_binding_mismatch", {**value, "snapshot_id": sha("other")}, objects, ()),
+        ("site_universe_history_binding_invalid", value, objects, (tampered,)),
+        ("site_universe_attach_unavailable", value, {key: RuntimeError("upstream text")}, ()),
+        ("site_universe_slice_empty", value, objects, tuple(every)),
+    ]
+
+
+@pytest.mark.parametrize("case", range(12))
+def test_every_site_universe_failure_still_creates_the_session_without_the_slice(universe, case):
+    code, control, objects, history = refused_cases()[case]
+    _, plain_api, _ = universe("plain", history=deepcopy(history))
+    _, api, ledger = universe("refused", control=control, objects=objects, history=deepcopy(history))
+    assert len(api.payloads) == 1 and canonical(api.payloads) == canonical(plain_api.payloads)
+    record = ledger.get(DAY)["site_universe"]
+    assert record["code"] == code and record["state"] == ("exhausted" if code == "site_universe_slice_empty" else "refused")
+    from tools.daily_research.runner import status_summary
+    assert status_summary(ledger.get(DAY))["site_universe"]["code"] == code
+
+
+def test_unsupported_profile_records_its_code_and_reads_no_object(fixture, tmp_path):
+    runner, api, _ = fixture
+    value, objects = universe_pin()
+    ledger = runner.ledger = UniverseLedger(tmp_path / "universe", value, objects)
+    try:
+        row = runner.start_or_resume()
+        assert row["site_universe"]["code"] == "site_universe_profile_unsupported" and len(api.payloads) == 1
+        assert ledger.universe_reads == ["control"] and "site_universe_slice_digest" not in api.payloads[0]["metadata"]
+    finally:
+        ledger.db.close()
+
+
+def test_a_lost_lease_while_reading_the_pin_stops_the_run_as_today(universe):
+    runner, api, ledger = universe("lost", control=Refusal("firestore_lease_lost"), create=False)
+    with pytest.raises(Refusal, match="^firestore_lease_lost$"):
+        runner.start_or_resume()
+    assert not api.payloads and ledger.get(DAY) is None and ledger.universe_reads == ["control"]
+
+
+def ceiling_case(scenario):
+    from tests.test_daily_research_site_universe import offered
+    value, objects = universe_pin()
+    history = ()
+    if scenario == "refused":
+        objects = {}
+    if scenario == "exhausted":
+        history = (offered("2026-09-29", list(range(1, 10)), dict.fromkeys(range(1, 10), "screened")),)
+    return value, objects, history
+
+
+@pytest.mark.parametrize("delta", [100, 300, 10, 0])
+@pytest.mark.parametrize(("scenario", "state", "code"), [
+    ("attached", "refused", "site_universe_intent_resource_ceiling"),
+    ("refused", "refused", "site_universe_object_missing"),
+    ("exhausted", "exhausted", "site_universe_slice_empty")])
+def test_a_flag_on_run_never_fails_the_intent_ceiling_where_flag_off_succeeds(universe, monkeypatch, scenario,
+                                                                               state, code, delta):
+    from tools.daily_research import search
+    value, objects, history = ceiling_case(scenario)
+    _, plain_api, plain = universe("plain", control=None, history=deepcopy(history))
+    low = plain.intents[0]
+    monkeypatch.setattr(search, "MAX_INTENT", low + delta)
+    _, api, ledger = universe("flag-on", control=value, objects=objects, history=deepcopy(history))
+    row = ledger.get(DAY)
+    assert len(api.payloads) == 1 and canonical(api.payloads) == canonical(plain_api.payloads)
+    assert ledger.intents[0] <= low + delta
+    if delta >= 100:
+        assert {key: row["site_universe"][key] for key in ("state", "code")} == {"state": state, "code": code}
+        if delta == 100:  # No full record fits in 100 bytes, so each one shrinks to {state, code}.
+            assert set(row["site_universe"]) == {"state", "code"}
+    else:
+        # No room for even the short record: the row is exactly the flag-off row.
+        assert "site_universe" not in row and canonical(row) == canonical(plain.get(DAY))
+
+
+@pytest.mark.parametrize("scenario", ["attached", "refused", "exhausted"])
+def test_the_intent_ceiling_still_stops_a_run_that_flag_off_would_stop(universe, monkeypatch, scenario):
+    from tools.daily_research import search
+    value, objects, history = ceiling_case(scenario)
+    _, _, plain = universe("plain", control=None, history=deepcopy(history))
+    monkeypatch.setattr(search, "MAX_INTENT", plain.intents[0] - 1)
+    with pytest.raises(Refusal, match="^research_profile_intent_resource_ceiling$"):
+        universe("over", control=value, objects=objects, history=deepcopy(history))

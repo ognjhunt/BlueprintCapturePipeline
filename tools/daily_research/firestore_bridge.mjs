@@ -92,6 +92,31 @@ const paidStamp=x=>{
   return Number.isFinite(ms) && new Date(ms).toISOString().slice(0,19)+'+00:00'===x?ms:NaN;
 };
 const paidText=x=>typeof x==='string' && /^[\x20-\x7e]{1,500}$/.test(x) && x.trim()!=='';
+// Owner-pinned site universe export; mirrors tools/daily_research/site_universe.py.
+const SU_PREFIX='operations/research/site-universe/', SU_NAME='backlog.v1.json.gz', SU_EXPORT='blueprint.site_universe.backlog.v1';
+const SU_MAX_OBJECT=2*1024*1024, SU_MAX_RAW=6*1024*1024, SU_MAX_ROWS=5000;
+const SU_PIN_FIELDS=['approval_reference','bytes','enabled','generation','rank_config_sha256','reoffer_after_days','sha256',
+  'slice_size','snapshot_id','uri'];
+const suUri=hash=>`gs://${CLEANUP_BUCKET}/${SU_PREFIX}${hash}/${SU_NAME}`;
+const suGeneration=x=>typeof x==='string' && /^[1-9][0-9]{0,18}$/.test(x);
+const suInt=(x,low,high)=>Number.isSafeInteger(x) && x>=low && x<=high;
+const suCode=x=>typeof x==='string' && /^site_universe_[a-z_]{1,80}$/.test(x);
+function suPinProblem(pin) {
+  if(!keysAre(pin,SU_PIN_FIELDS) || pin.enabled!==true || !hexOK(pin.sha256) || pin.uri!==suUri(pin.sha256)
+      || !suGeneration(pin.generation) || !suInt(pin.bytes,1,SU_MAX_OBJECT) || !hexOK(pin.snapshot_id)
+      || !hexOK(pin.rank_config_sha256) || !suInt(pin.slice_size,5,30) || !suInt(pin.reoffer_after_days,1,365)
+      || !paidText(pin.approval_reference) || /^PENDING/i.test(pin.approval_reference.trim())) return 'site_universe_pin_invalid';
+  return null;
+}
+// Object reads have their own bound, inside firestore.py's 35 s pipe deadline, so a slow
+// read refuses with a stable code and never marks the bridge broken.
+async function suBounded(fn,ms) {
+  let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Refusal('site_universe_object_unavailable')),ms);});
+  try {return await Promise.race([fn(),deadline]);}
+  catch(error) {throw error instanceof Refusal && suCode(error.message)?error:new Refusal('site_universe_object_unavailable');}
+  finally {clearTimeout(timer);}
+}
 function paidDirectionProblem(d,control) {
   if(!keysAre(d,PAID_FIELDS) || d.schema_version!==PAID_DIRECTION) return 'paid_expansion_direction_invalid';
   if(paidMicros(d.per_run_limit_usd)===null) return 'paid_expansion_limit_invalid';
@@ -119,6 +144,7 @@ export class Store {
     this.terminalCollectionReceipt = terminalCollectionReceipt;
     this.schedulerStopped = schedulerStopped;
     this.archiveBucket = archiveBucket;
+    this.siteUniverseReadMs = 20000; this.siteUniverseWriteMs = 30000;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -916,6 +942,71 @@ export class Store {
     if(!Buffer.isBuffer(raw) || sha(raw)!==hash || Number(meta?.size)!==raw.length) refuse('paid_expansion_object_conflict');
     return {uri:paidUri(hash),sha256:hash,bytes:raw.toString('base64'),generation:String(meta.generation)};
   }
+  suFile(hash,generation=null) {
+    if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('site_universe_object_unavailable');
+    return this.archiveBucket.file(`${SU_PREFIX}${hash}/${SU_NAME}`,generation===null?undefined:{generation});
+  }
+  async suRead(hash,generation,size) {
+    // Exactly the pinned generation: generation, size and SHA-256 before any use. The size is
+    // checked on metadata before download; only the owner command may omit it (size null).
+    const missing=error=>Number(error?.code)===404?'site_universe_object_missing':'site_universe_object_unavailable';
+    const file=this.suFile(hash,generation);let meta,raw;
+    try {[meta]=await file.getMetadata();} catch(error) {refuse(missing(error));}
+    if(String(meta?.generation)!==generation) refuse('site_universe_object_generation_mismatch');
+    const stored=Number(meta?.size);
+    if(!Number.isSafeInteger(stored) || stored>SU_MAX_OBJECT) refuse('site_universe_object_too_large');
+    if(size!==null && stored!==size) refuse('site_universe_object_digest_mismatch');
+    try {[raw]=await file.download();} catch(error) {refuse(missing(error));}
+    if(!Buffer.isBuffer(raw) || raw.length>SU_MAX_OBJECT) refuse('site_universe_object_too_large');
+    if(raw.length!==stored || sha(raw)!==hash) refuse('site_universe_object_digest_mismatch');
+    return {uri:suUri(hash),sha256:hash,generation,size:raw.length,data:raw.toString('base64')};
+  }
+  async siteUniverseObjectGet(hash,generation,size) {
+    if(!hexOK(hash) || !suGeneration(generation) || !(size===null || suInt(size,1,SU_MAX_OBJECT)))
+      refuse('site_universe_pin_invalid');
+    return suBounded(()=>this.suRead(hash,generation,size),this.siteUniverseReadMs);
+  }
+  async siteUniverseObjectPut(hash,encoded) {
+    // Content-addressed and create-only. An export grants nothing until site_universe_set pins
+    // it, so it needs no lease. The Python loader is the full validator; this keeps the bounds.
+    if(!hexOK(hash) || typeof encoded!=='string') refuse('site_universe_pin_invalid');
+    const raw=Buffer.from(encoded,'base64');
+    if(raw.length>SU_MAX_OBJECT) refuse('site_universe_object_too_large');
+    if(!raw.length || sha(raw)!==hash) refuse('site_universe_object_digest_mismatch');
+    let document;
+    try {document=JSON.parse(gunzipSync(raw,{maxOutputLength:SU_MAX_RAW}).toString('utf8'));} catch {refuse('site_universe_export_invalid');}
+    if(document?.schema_version!==SU_EXPORT || document.manifest?.distribution!=='internal_only'
+        || !Array.isArray(document.rows) || !document.rows.length || document.rows.length>SU_MAX_ROWS)
+      refuse('site_universe_export_invalid');
+    return suBounded(async()=>{
+      const file=this.suFile(hash);
+      try {await file.save(raw,{resumable:false,preconditionOpts:{ifGenerationMatch:0},
+        metadata:{contentType:'application/gzip',metadata:{sha256:hash}}});}
+      catch(error) {if(Number(error?.code)!==412) refuse('site_universe_object_unavailable');}
+      let meta;try {[meta]=await file.getMetadata();} catch {refuse('site_universe_object_unavailable');}
+      const stored=await this.suRead(hash,String(meta?.generation),raw.length);
+      return {uri:stored.uri,sha256:hash,generation:stored.generation,size:stored.size};
+    },this.siteUniverseWriteMs);
+  }
+  async siteUniverseSet(expected,value) {
+    // The only writer of control.site_universe: a compare-and-swap under the fenced lease. A pin
+    // is complete and valid; disable keeps the current pin exactly, with enabled=false.
+    if(!(expected===null || hexOK(expected)) || !value || typeof value!=='object' || Array.isArray(value))
+      refuse('site_universe_pin_invalid');
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(); this.fence(control);
+      const prior=control.site_universe ?? null;
+      if((prior?.sha256 ?? null)!==expected) refuse('site_universe_control_conflict');
+      if(value.enabled===false) {
+        if(!prior || valueHash({...prior,enabled:false})!==valueHash(value)) refuse('site_universe_pin_invalid');
+      } else {
+        const problem=suPinProblem(value);
+        if(problem) refuse(problem);
+      }
+      tx.set(this.control,{...control,site_universe:value});
+      return {enabled:value.enabled,sha256:value.sha256 ?? null,generation:value.generation ?? null};
+    });
+  }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
     const groups=await Promise.all(['validation_repair_pending','agent_qa_pending','publication_pending']
@@ -1520,6 +1611,7 @@ export class Store {
         const value = request.value;
         if (value?.enabled !== false || value?.schema_version !== 'blueprint.research-control.v1') refuse('firestore_init_not_disabled');
         if (Object.hasOwn(value, 'paid_expansion')) refuse('paid_expansion_requires_direction_operation');
+        if (Object.hasOwn(value, 'site_universe')) refuse('site_universe_requires_pin_operation');
         return this.transaction(async tx => {
           const snap = await tx.get(this.control);
           if (snap.exists) refuse('firestore_control_already_exists');
@@ -1556,12 +1648,15 @@ export class Store {
           refuse('firestore_control_binding_invalid');
         return this.transaction(async tx => {
           const control = (await tx.get(this.control)).data(); this.fence(control);
-          // Only paid_expansion_set writes the owner's direction; a full replace keeps it.
+          // Only paid_expansion_set and site_universe_set write their owner sections; a full replace keeps them.
           if (Object.hasOwn(value, 'paid_expansion') && valueHash(value.paid_expansion ?? null) !== valueHash(control.paid_expansion ?? null))
             refuse('paid_expansion_requires_direction_operation');
-          const replacement = {...value}; delete replacement.paid_expansion;
+          if (Object.hasOwn(value, 'site_universe') && valueHash(value.site_universe ?? null) !== valueHash(control.site_universe ?? null))
+            refuse('site_universe_requires_pin_operation');
+          const replacement = {...value}; delete replacement.paid_expansion; delete replacement.site_universe;
           tx.set(this.control, {...replacement, cleanup_observation_required:control.cleanup_observation_required===true,
-            lease: control.lease, ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {})}); return true;
+            lease: control.lease, ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {}),
+            ...(control.site_universe ? {site_universe: control.site_universe} : {})}); return true;
         });
       }
       case 'acquire': return this.acquire();
@@ -1660,6 +1755,12 @@ export class Store {
       case 'paid_expansion_audit': return this.paidExpansionAudit();
       case 'paid_expansion_object_put': return this.paidExpansionObjectPut(request.sha256, request.bytes);
       case 'paid_expansion_object_get': return this.paidExpansionObjectGet(request.sha256);
+      case 'site_universe_object_get': return this.siteUniverseObjectGet(request.sha256,request.generation,request.size ?? null);
+      case 'site_universe_object_put': return this.siteUniverseObjectPut(request.sha256,request.bytes);
+      case 'site_universe_set': {
+        if (!Object.hasOwn(request, 'expected_sha256')) refuse('site_universe_pin_invalid');
+        return this.siteUniverseSet(request.expected_sha256, request.value);
+      }
       default: refuse('firestore_operation_invalid');
     }
   }

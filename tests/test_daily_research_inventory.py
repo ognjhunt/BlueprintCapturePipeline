@@ -242,3 +242,113 @@ def test_forged_inventory_manifest_with_null_source_refuses_instead_of_crashing(
             return {"row": row, "files": {"repair-1-input": base64.b64encode(repair_input).decode()}}
     with pytest.raises(Refusal, match="discovery_inventory_source_binding_invalid"):
         render.export_snapshot(Bridge(), DAY, tmp_path / "export")
+
+
+
+SLICE_ID, OTHER_ID = "ab" * 32, "cd" * 32
+
+
+def universe_record(**changes):
+    value = {"operator": None, "site": None, "location": None, "task_hypothesis": None, "source_urls": [],
+             "evidence_gap": "Screened from the attached slice only", "disposition": "screened", "site_universe_id": SLICE_ID}
+    value.update(changes)
+    return {key: item for key, item in value.items() if item is not ...}
+
+
+def base_inventory_issues(entries):
+    """The previous release's rules, verbatim. Without an attached slice the validator must match them exactly."""
+    fields = {"operator", "site", "location", "task_hypothesis", "source_urls", "evidence_gap", "disposition"}
+    if not isinstance(entries, list):
+        yield {"pointer": "/discovery_inventory", "code": "discovery_inventory_invalid"}
+        return
+    from tools.daily_research.runner import Refusal, canonical, public_url
+    for index, entry in enumerate(entries):
+        path = f"/discovery_inventory/{index}"
+        if not isinstance(entry, dict) or set(entry) != fields:
+            yield {"pointer": path, "code": "discovery_inventory_invalid"}
+            continue
+        for field in ("operator", "site", "location", "task_hypothesis"):
+            value = entry[field]
+            if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 2000):
+                yield {"pointer": path + "/" + field, "code": "discovery_inventory_invalid"}
+        if not isinstance(entry["disposition"], str) or entry["disposition"] not in {"candidate", "unresolved", "rejected", "learning", "duplicate"} or not isinstance(entry["evidence_gap"], str) or not entry["evidence_gap"].strip() or len(entry["evidence_gap"]) > 2000:
+            yield {"pointer": path, "code": "discovery_inventory_invalid"}
+        if len(canonical(entry).encode()) > discovery.INVENTORY_PAGE_BYTES - 1000:
+            yield {"pointer": path, "code": "discovery_inventory_record_resource_ceiling_raw_retained"}
+        urls = entry["source_urls"]
+        if not isinstance(urls, list) or not urls or len(urls) > 12:
+            yield {"pointer": path + "/source_urls", "code": "discovery_inventory_invalid"}
+        else:
+            for number, url in enumerate(urls):
+                try:
+                    public_url(url)
+                except (Refusal, ValueError, TypeError):
+                    yield {"pointer": path + f"/source_urls/{number}", "code": "discovery_inventory_invalid"}
+
+
+def fuzz_records():
+    """The review's differential fuzz space, plus a well-formed id outside the slice."""
+    import itertools
+    ids = [..., SLICE_ID, OTHER_ID, SLICE_ID.upper(), "ab" * 31, SLICE_ID + "\n", None, 7, "", "zz" * 32, "\u0661" * 64]
+    urls = [[], ["https://fixture.example/a"], [f"https://fixture.example/{n}" for n in range(12)],
+            [f"https://fixture.example/{n}" for n in range(13)], "https://fixture.example/a", None]
+    dispositions = ["candidate", "unresolved", "rejected", "learning", "duplicate", "screened", "qualified", None, ""]
+    for sid, url, disposition, text, extra in itertools.product(ids, urls, dispositions, [None, "Synthetic text"],
+                                                                [{}, {"slice_rank": 1}]):
+        entry = {"operator": text, "site": text, "location": "Test city", "task_hypothesis": text, "source_urls": url,
+                 "evidence_gap": "Synthetic gap", "disposition": disposition, **extra}
+        if sid is not ...:
+            entry["site_universe_id"] = sid
+        yield entry
+
+
+def test_without_an_attached_slice_inventory_validation_is_exactly_the_base_rules():
+    records = list(fuzz_records())
+    assert len(records) == 2376
+    for entry in records:
+        assert list(discovery.inventory_issues([entry])) == list(base_inventory_issues([entry]))
+    # The review's relaxed records: base refuses every one, and so does a run without a slice.
+    for record in (universe_record(), universe_record(source_urls=["https://fixture.example/a"]),
+                   universe_record(disposition="unresolved"), universe_record(site_universe_id=..., source_urls=["https://fixture.example/a"])):
+        assert list(discovery.inventory_issues([record])) and list(base_inventory_issues([record]))
+
+
+def test_with_a_slice_the_schema_accepts_the_shape_and_the_host_also_requires_membership():
+    schema = json.loads((Path(__file__).parents[1] / "tools/daily_research/daily-research.v3.schema.json").read_text())
+    items = {"$schema": schema["$schema"], **schema["properties"]["discovery_inventory"]["items"]}
+    assert "stricter" in items["description"]
+    shape = Draft202012Validator(items)
+    members = frozenset({SLICE_ID})
+    disagreements = []
+    for entry in fuzz_records():
+        host = list(discovery.inventory_issues([entry], members))
+        if "site_universe_id" not in entry and entry["disposition"] != "screened":
+            assert host == list(base_inventory_issues([entry]))  # Records without the slice extensions keep the base rules.
+        if (not host) != shape.is_valid(entry):
+            disagreements.append(entry)
+    # The only documented difference: a well-formed id that the frozen slice does not list.
+    outside = [entry for entry in fuzz_records() if entry.get("site_universe_id") == OTHER_ID and shape.is_valid(entry)]
+    assert disagreements == outside and len(outside) == 36
+    for entry in outside:
+        assert list(discovery.inventory_issues([entry], members)) == [
+            {"pointer": "/discovery_inventory/0/site_universe_id", "code": "discovery_inventory_invalid"}]
+
+
+@pytest.mark.parametrize(("record", "with_slice", "without_slice"), [
+    (universe_record(), True, False),
+    (universe_record(source_urls=["https://fixture.example/site"], disposition="unresolved"), True, False),
+    (universe_record(site_universe_id=OTHER_ID), False, False),
+    (universe_record(site_universe_id=...), False, False),          # empty source_urls needs a slice id
+    (universe_record(site_universe_id=..., source_urls=["https://fixture.example/site"]), True, False),
+    (universe_record(site_universe_id=..., source_urls=["https://fixture.example/site"], disposition="unresolved"), True, True),
+])
+def test_validate_output_takes_the_frozen_ids_explicitly(record, with_slice, without_slice):
+    out, ctx, policy = result(1)
+    out["discovery_inventory"] = [record]
+    options = {"contract_version": 3, "knowledge_context": ctx, "refresh_policy": policy, "observed_at": NOW}
+    for ids, valid in ((frozenset({SLICE_ID}), with_slice), (None, without_slice)):
+        if valid:
+            validate_output(out, DAY, set(), site_universe_ids=ids, **options)
+        else:
+            with pytest.raises(Refusal, match="discovery_inventory_invalid"):
+                validate_output(out, DAY, set(), site_universe_ids=ids, **options)
