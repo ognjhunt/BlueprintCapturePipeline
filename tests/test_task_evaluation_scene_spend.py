@@ -48,6 +48,51 @@ def test_pointer_includes_full_caps_and_does_not_double_count_refresh(tmp_path):
     assert json.loads((tmp_path / "current.json").read_text())["digest"] == third["pointer"]["digest"]
 
 
+@pytest.mark.parametrize("launch_status,held", [("blocked", 21.26), ("failed", 24.72), ("completed", 24.72), (None, 4.5)])
+def test_terminal_settlement_retains_executed_exposure(tmp_path, launch_status, held):
+    from tests.test_terminal_scene_attempt_settlement import _fixture, _settle
+
+    fx = _fixture(tmp_path, launch_status=launch_status)
+    _settle(fx)
+    args = dict(scene_root=fx["root"], seed_reconciliation_path=seed(tmp_path),
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    first = publish_current_scene_project_spend(**args, now=300)
+    assert first["total_cost_usd"] == pytest.approx(43.197914 + held)
+    assert publish_current_scene_project_spend(**args, now=400)["total_cost_usd"] == first["total_cost_usd"]
+
+
+@pytest.mark.parametrize("matching_authority", [True, False])
+def test_posted_charge_replaces_exact_reservation_once(tmp_path, matching_authority):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from tests.test_same_goal_spend_reconciliation import _fixture, _materialize
+
+    root = tmp_path / "intents"
+    intent = stage(root)
+    reserved = attempt(root, intent)
+    billing = _fixture(tmp_path / "billing")
+    terminal = json.loads(billing["result"].read_text())
+    if matching_authority:
+        terminal["authorization_consumption"]["authorization_digest"] = reserved["attempt_digest"]
+    terminal["receipt_digest"] = canonical_digest(terminal, digest_field="receipt_digest")
+    billing["result"].write_text(json.dumps(terminal))
+    posted, _ = _materialize(tmp_path / "billing", "native_task_arena", billing)
+    baseline, _ = _human_baseline(tmp_path / "baseline.json")
+    prior = tmp_path / "seed.json"
+    materialize_project_spend_reconciliation(baseline_authority_path=baseline,
+        posted_reconciliation_paths=[posted], expected_coverage_ids=["fixture-attempt-1"],
+        completeness_reference="fixture-scope", authorized_by="fixture-owner",
+        authorized_on="2026-10-05", output_path=prior)
+    args = dict(scene_root=root, seed_reconciliation_path=prior,
+                output_root=tmp_path / "spend", current_path=tmp_path / "current.json")
+    first = publish_current_scene_project_spend(**args)
+    retained = 0 if matching_authority else 2
+    assert first["total_cost_usd"] == pytest.approx(43.197914 + .025 + retained)
+    assert first["scene_reservation_count"] == (0 if matching_authority else 1)
+    assert publish_current_scene_project_spend(**args)["total_cost_usd"] == first["total_cost_usd"]
+    attempt(root, intent, "a2")
+    assert publish_current_scene_project_spend(**args)["total_cost_usd"] == pytest.approx(43.197914 + .025 + retained + 2)
+
+
 def test_revocation_never_implies_a_zero_bill_and_corruption_does_not_refresh(tmp_path):
     prior = seed(tmp_path)
     root = tmp_path / "intents"
