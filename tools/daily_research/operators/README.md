@@ -659,6 +659,72 @@ All I/O goes through injectable adapters; the hermetic tests use the real bridge
 with in-memory Firestore and a fake object store. No provider, model, session,
 CRM write or send.
 
+## Site universe backlog slice
+
+`site-universe-backlog.py` pins one reviewed site universe export as optional
+prioritization for the daily run (ADP-010 partner discovery). It is off until the
+owner pins an export; with `control.site_universe` absent or `enabled=false` the
+run reads nothing more and its create payload, metadata, instructions and row are
+byte-identical to a release without this feature. The export stays internal
+(ODbL): the slice goes into the hosted sandbox for processing, never into
+findings or publication.
+
+```bash
+RELEASE=/opt/render/project/src/dist/daily-research/release
+COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/site-universe-backlog.py"
+PYTHONPATH=$RELEASE $COMMAND show
+PYTHONPATH=$RELEASE $COMMAND publish --file /PRIVATE/backlog.v1.json.gz
+PYTHONPATH=$RELEASE $COMMAND publish --file /PRIVATE/backlog.v1.json.gz --apply
+PYTHONPATH=$RELEASE $COMMAND pin --sha256 SHA --generation GEN --approval-reference REF --slice-size 20
+PYTHONPATH=$RELEASE $COMMAND pin --sha256 SHA --generation GEN --approval-reference REF --slice-size 20 --apply
+PYTHONPATH=$RELEASE $COMMAND disable --apply
+PYTHONPATH=$RELEASE $COMMAND funnel --days 7
+```
+
+- Every command except `show` and `funnel` is a dry run unless `--apply`. Output
+  shows counts, SHA-256s, generations and site ids, never site names.
+- `publish` validates the local file with the runtime loader
+  (`site_universe.load_export`: canonical bytes, `rows_sha256`, at most 2 MiB gzip,
+  6 MiB raw and 5,000 rows) and prints the URI and SHA-256. `--apply` writes
+  `gs://blueprint-8c1ca.appspot.com/operations/research/site-universe/<sha256>/backlog.v1.json.gz`
+  create-only through the existing bridge identity, reads it back and prints the
+  object generation. A published export grants nothing until it is pinned.
+- `pin` reads exactly that generation, runs the loader and a dry-run selection
+  for the next run date with current history and the canonical CRM, then takes the
+  fenced lease only for the `site_universe_set` compare-and-swap and reads control
+  back. `--slice-size` is 5–30 (default 20) and at most the research window
+  divided by 90 seconds (2700 s allows 30). `--reoffer-after-days` is 1–365
+  (default 90). `--approval-reference` must not be `PENDING`. An empty dry-run
+  slice refuses with `site_universe_slice_empty`. `--expect-current SHA|none` pins
+  the transition a dry run showed; a concurrent change refuses with
+  `site_universe_control_conflict`. While a run or QA is active it refuses with
+  `site_universe_run_active_apply_after_run`; `--during-active-run` overrides this.
+  A pin applies from the next create; a running row keeps what it froze.
+- `show` reads control, verifies the pinned object and prints the dry-run
+  selection. `ready: true` means the next run would attach a slice;
+  `enabled_unusable` gives the code the run would record.
+- `disable --apply` keeps the pin with `enabled=false`, so the next run reads
+  nothing more. Re-enable with `pin`.
+- `funnel --days 7` lists each run date's state and code (`attached`, `refused`,
+  `exhausted` or `off`) and its funnel, and sums the counts: selection, agent work
+  (touched, screened, researched with a gap, inventory and formal candidates,
+  rejected, learning, duplicate, agent-added), QA (eligible for promotion and
+  accepted, from the slice and for the whole run) and run level (time, calls,
+  research evidence bytes, paid reservations). Contacted, replied and
+  conversations are null because the run sends nothing; per-site cost is
+  `not_measured`.
+
+The run records `row.site_universe` and `packet.site_universe`; status shows the
+state and code. Any slice failure (`site_universe_pin_invalid`,
+`site_universe_slice_exceeds_research_window`, `site_universe_object_*`,
+`site_universe_export_*`, `site_universe_history_binding_invalid`,
+`site_universe_intent_resource_ceiling`, `site_universe_profile_unsupported`,
+`site_universe_attach_unavailable`) records `{state: "refused", code}` and research
+continues exactly as without the slice; an empty selection records `exhausted`.
+A lost store or lease still stops the run. The hermetic tests use the real bridge
+with in-memory Firestore and a fake object store. No provider, model, session, CRM
+write or send.
+
 ## Daily research runtime envelope
 
 The 2026-10-04 owner decision gives each daily research run 60 minutes in total:
@@ -684,5 +750,5 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python \
 
 `configure` validates the input with the installed release and replaces the
 whole control document except the lease, `cleanup_observation_required` and
-`paid_expansion`. Never apply a partial document. Read the control back and run
+`paid_expansion` and `site_universe`. Never apply a partial document. Read the control back and run
 `preflight` with the same prefix before the next 07:00 run.

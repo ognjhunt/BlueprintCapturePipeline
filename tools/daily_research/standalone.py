@@ -23,7 +23,8 @@ FILES = (
     "knowledge-snapshot.v1.schema.json", "knowledge-refresh-policy.v1.schema.json",
     "systemd/blueprint-researcher-daily.service", "systemd/blueprint-researcher-daily.timer",
     "operators/research-oct2-control.py", "operators/research-perplexity-canary.py",
-    "operators/research-perplexity-canary.mjs", "operators/paid-expansion-direction.py", "operators/README.md",
+    "operators/research-perplexity-canary.mjs", "operators/paid-expansion-direction.py", "operators/site-universe-backlog.py",
+    "operators/README.md",
 )
 PREFIX = "tools/daily_research/"
 # The canonical stdlib FindAll closure from src/blueprint_pipeline/. The WebApp installer

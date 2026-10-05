@@ -107,7 +107,7 @@ config on every scheduler tick (`approved_envelope_mismatch`).
 
    `configure` checks the root bindings and `config` with the installed release.
    It does not check the other sections. It replaces the whole document except
-   the lease, `cleanup_observation_required` and `paid_expansion`, so a partial
+   the lease, `cleanup_observation_required`, `paid_expansion` and `site_universe`, so a partial
    file silently removes sections. For example, a missing `workflow` stops QA
    and publication. A held lease refuses with `runner_overlap`; try again after
    the worker releases it.
@@ -120,6 +120,43 @@ To roll back, first wait until no 3600-second row is unfinished. Then configure
 release. An older release refuses a 3600 control on every tick. It also refuses
 a 3600-second row with `pinned_phase_envelope_invalid`, and it cancels such a
 row that is still in its research phase.
+
+## Site universe slice
+
+Optional, owner-pinned prioritization for ADP-010 partner discovery; off by default.
+`control.site_universe` is top-level like `paid_expansion`: config keys stay
+allowlisted and older packages ignore it. An older release's `configure` keeps only
+what its input holds, so an input without the key turns the slice off. The disk
+`Ledger` has no company control, so the feature is always off there.
+
+- Off (key absent or `enabled=false`): nothing more is read, and the create
+  payload, metadata, instructions and row are byte-identical to today.
+- On, under the lease after `preflight`, `site_universe.attach` reads the pinned
+  object through `site_universe_object_get` (exact generation, size and SHA-256;
+  its own 20 s bound inside the 35 s pipe deadline), validates the export and
+  selects up to `slice_size` sites: sites with an outcome in the last
+  `reoffer_after_days`, CRM rows and prior formal candidates are removed; one seed
+  per policy capability, then rank order with at most half per lead capability and
+  one site per group, then each cap relaxed.
+- The slice goes into `/workspace/inputs/blueprint-site-universe-slice.json` as an
+  inline file, `metadata.site_universe_slice_digest` holds its SHA-256, and one
+  trusted paragraph follows the CRM prefix. No tool is added, so the session's
+  tool schemas, `search.tools()` and `check_agent` are unchanged. `put`,
+  `observe` and `create_check` compare metadata, so the slice cannot change after
+  the intent. It is attached only while the intent stays within
+  `search.MAX_INTENT`.
+- Recovery, repair and QA use the frozen row only; `frozen_slice` re-checks the
+  SHA-256 before any use. `Runner.prepare_output` writes `packet.site_universe`
+  (one outcome per slice site, link issues and the funnel, under 16 KB and bound
+  by `packet_digest`) on every path. Explain, repair and QA text gain one sentence
+  only when a slice is attached.
+- Any slice failure records `row.site_universe = {state: "refused", code}` (or
+  `exhausted` for an empty slice) and the run continues without the slice. A lost
+  store or lease stops the run as today.
+
+Deploy a release with this module only while the worker is idle, with the key
+absent, and confirm that the next create payload is unchanged before pinning. The
+owner commands are in [operators/README.md](operators/README.md#site-universe-backlog-slice).
 
 ## Stable private consumer contract
 
@@ -312,7 +349,9 @@ PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python -m to
    `init --input /PRIVATE/control.json`. Existing control refuses replacement;
    use `configure --input /PRIVATE/control.json` for a validated update.
    `configure` keeps the top-level `paid_expansion` owner direction, which only
-   `operators/paid-expansion-direction.py` changes ([SEARCH.md](SEARCH.md#owner-directed-paid-expansion-allowance)).
+   `operators/paid-expansion-direction.py` changes ([SEARCH.md](SEARCH.md#owner-directed-paid-expansion-allowance)),
+   and the `site_universe` pin, which only `operators/site-universe-backlog.py` changes
+   (see [Site universe slice](#site-universe-slice)).
    Deploy a release that changes a session tool schema only while the worker is
    idle. The 2026-10-04 release raises the Exa `max_cost_micros` maximum from
    5,000,000 to 50,000,000, and an in-flight session's tool check would refuse it.
