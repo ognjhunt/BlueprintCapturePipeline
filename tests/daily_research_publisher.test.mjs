@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {Publisher,planSheets,planNotion,publicationVerification} from '../tools/daily_research/publisher.mjs';
+import {Publisher,planSheets,planNotion,publicationVerification,openChecks,firstQuestion,QUESTION_TEMPLATES} from '../tools/daily_research/publisher.mjs';
 import {Store,ROOT} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 import {verificationDigest} from '../tools/daily_research/verification-digest.mjs';
@@ -1090,4 +1090,286 @@ test('retains more than100 source-supported candidates through Sheets planning w
   const r=row(candidates),snapshot={sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers]};
   const plan=planSheets(r,snapshot);assert.equal(plan.sheet_rows.length,125);
   assert.equal(plan.sheet_rows[124][3],'Invented site 124');
+});
+
+// Outreach-ready hypotheses (synthetic): one verified row plus one hypothesis bound by a v3 review.
+const RESULT_V3='blueprint.lead-verification-result.v3', RULE='blueprint.outreach-ready-rule.v1.1';
+// Design v1.1 (Blueprint-WebApp #855): exactly one question, chosen S, then M, then A, with task and site verbatim.
+const TEMPLATES={S:'Is Depositing done at your South site, or somewhere else in the company?',
+  M:'Which parts of Depositing at South still need people, and what has kept them from being automated?',
+  A:'What has kept the remaining Depositing work at South from being automated so far?'};
+const CHECKS=['manual_workflow','existing_automation','fit','interest'];
+function rebind(r) {
+  for(const d of Object.values(r.delivery)) {d.payload_json=JSON.stringify(d.payload);d.payload_digest=sha(d.payload_json);}
+  return r;
+}
+function hypothesisRow({validUntil='2030-01-01T00:00:00Z'}={}) {
+  const r=row([candidate(),{...candidate(),site:'South',candidate_key:'synthetic-h'}]);
+  const [verified,hypothesis]=r.packet.candidates,[first,second]=r.review.lead_verification.results;
+  r.packet.lead_verification_result_version=RESULT_V3;
+  for(const result of [first,second]) Object.assign(result,{version:RESULT_V3,tier:'verified',eligible_for_outreach_ready:false,
+    outreach_ready:{rule_version:RULE,proving_sources:[],open_checks:[],open_questions:[],blockers:[]}});
+  second.assessment.claims.human_workflow.status='unresolved';second.assessment.valid_until=validUntil;
+  second.assessment_digest=verificationDigest(second.assessment);
+  Object.assign(second,{status:'unresolved',eligible_for_qualified_promotion:false,tier:'outreach_ready',eligible_for_outreach_ready:true,
+    outreach_ready:{...second.outreach_ready,open_checks:CHECKS,open_questions:[TEMPLATES.M]}});
+  r.review.outreach_ready_keys=['synthetic-h'];
+  r.outreach_ready={schema_version:'blueprint.outreach-ready-admission.v1',state:'enabled',paths:['daily_qa'],label:'hypothesis',
+    max_rows_per_batch:50,sends_authorized:false};
+  const entry={candidate:hypothesis,open_checks:CHECKS,open_questions:[TEMPLATES.M]};
+  for(const name of ['sheets','notion']) r.delivery[name].payload={...r.delivery[name].payload,candidates:[verified],hypotheses:[entry]};
+  return rebind(r);
+}
+const crmSnapshot=()=>({sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers]});
+
+test('the question and open checks are exactly what Blueprint-WebApp #855 derives from the assessment',()=>{
+  const c={task:'Depositing',site:'South'},claims=(task,workflow)=>({claims:{site_task:{status:task},human_workflow:{status:workflow}}});
+  for(const [assessment,checks,template] of [
+    [{...claims('inference','unresolved'),valid_until:null},['site_link','manual_workflow','freshness','existing_automation','fit','interest'],'S'],
+    [{...claims('verified_fact','unresolved'),valid_until:'2030-01-01T00:00:00Z'},CHECKS,'M'],
+    [{...claims('verified_fact','verified_fact'),valid_until:null},['freshness','existing_automation','fit','interest'],'A']]) {
+    assert.deepEqual(openChecks(assessment),checks);assert.equal(firstQuestion(checks,c),TEMPLATES[template]);
+  }
+  assert.deepEqual(Object.keys(QUESTION_TEMPLATES),['S','M','A']);
+});
+
+test('hypotheses add labelled rows in the existing 19 columns and verified cells stay byte-identical',()=>{
+  const r=hypothesisRow(),plain=row([candidate()]),snapshot=crmSnapshot();
+  for(const name of ['sheets','notion']) {
+    const verification=publicationVerification(r,name);
+    assert.equal(verification.eligible,true);assert.deepEqual(verification.hypotheses,[{candidate_key:'synthetic-h',eligible:true,reasons:[]}]);
+  }
+  assert.equal(Object.hasOwn(publicationVerification(plain,'sheets'),'hypotheses'),false);
+  const only=hypothesisRow();for(const d of Object.values(only.delivery)) d.payload.candidates=[];rebind(only);
+  assert.equal(publicationVerification(only,'sheets').eligible,true);  // A day may publish hypotheses only.
+  assert.deepEqual(planSheets(only,snapshot).sheet_rows.map(cells=>cells[6]),['Hypothesis']);
+  const plan=planSheets(r,snapshot),base=planSheets(plain,snapshot);
+  assert.equal(plan.sheet_rows.length,2);assert.ok(plan.sheet_rows.every(cells=>cells.length===19));
+  assert.deepEqual(plan.hypothesis_keys,['synthetic-h']);assert.equal(Object.hasOwn(base,'hypothesis_keys'),false);
+  assert.equal(Object.hasOwn(planNotion(plain),'hypothesis_keys'),false);  // Plans without hypotheses are unchanged.
+  // Every verified cell is unchanged; only the marker, which binds this payload, differs in M.
+  assert.deepEqual(plan.sheet_rows[0],base.sheet_rows[0].map(cell=>cell.replace(base.marker,plan.marker)));
+  const hypothesis=plan.sheet_rows[1];
+  assert.equal(hypothesis[0],'BP-000002');assert.equal(hypothesis[6],'Hypothesis');
+  assert.equal(hypothesis[16],'Outreach-ready: operator, site, task proven');
+  assert.equal(hypothesis[12],'First email asks: '+TEMPLATES.M+'\n'+plan.marker);
+  // Apart from its own ID and site, a hypothesis row differs from a verified row only in G, M and Q.
+  const expected=[...base.sheet_rows[0]];expected[0]='BP-000002';expected[3]='South';
+  for(const column of [6,12,16]) expected[column]=hypothesis[column];
+  assert.deepEqual(hypothesis,expected);
+  const notion=planNotion(r),text=notion.paragraphs.slice(1).join(''),plainText=planNotion(plain).paragraphs.slice(1).join('');
+  assert.deepEqual(notion.hypothesis_keys,['synthetic-h']);
+  const verifiedEntry=plainText.slice(plainText.indexOf('Example Plant — North'));
+  assert.ok(text.includes(verifiedEntry+'\n\nHypothesis, not verified: Example Plant — South\nTask: Depositing\n'));
+  assert.ok(text.includes('Open checks: manual_workflow; existing_automation; fit; interest\n'));
+  assert.ok(text.includes('First email asks: '+TEMPLATES.M+'\nDraft only; no send is authorized.\n'));
+});
+
+for(const change of ['tier','eligible','promotion','version','rule','checks','questions','template','two_questions','order',
+  'direction','refused','support','sends','path','limit','overlap','expired','valid_until_form','empty','extra','unbound',
+  'assessment','duplicate','nonobject','in_crm'])
+  test(`a malformed or expired hypothesis (${change}) is withheld on its own list and never blocks the verified row`,async()=>{
+    const r=hypothesisRow(),result=r.review.lead_verification.results[1],entry=r.delivery.sheets.payload.hypotheses[0];
+    const both=fn=>{for(const name of ['sheets','notion']) fn(r.delivery[name].payload.hypotheses);};
+    let verifiedRows=['Needs recheck'];
+    if(change==='tier') result.tier='none';
+    if(change==='eligible') result.eligible_for_outreach_ready=false;
+    if(change==='promotion') result.eligible_for_qualified_promotion=true;
+    if(change==='version') result.version='blueprint.lead-verification-result.v2';
+    if(change==='rule') result.outreach_ready.rule_version='blueprint.outreach-ready-rule.v1';
+    if(change==='checks') both(h=>{h[0]={...entry,open_checks:['interest']};});
+    if(change==='questions') both(h=>{h[0]={...entry,open_questions:['Is Depositing at South still done mostly by hand?']};});
+    // The review's own block agrees, but the question is not the one #855 derives (S while no site link is open).
+    if(change==='template') {result.outreach_ready.open_questions=[TEMPLATES.S];both(h=>{h[0]={...entry,open_questions:[TEMPLATES.S]};});}
+    if(change==='two_questions') {const two=[TEMPLATES.M,TEMPLATES.A];result.outreach_ready.open_questions=two;
+      both(h=>{h[0]={...entry,open_questions:two};});}
+    if(change==='order') r.review.outreach_ready_keys=['synthetic-0'];
+    if(change==='direction') delete r.outreach_ready;
+    if(change==='refused') r.outreach_ready.state='refused';
+    // A hypothesis-only day, so only the hypothesis check can refuse it.
+    if(change==='support') {r.review.source_support_verified=false;for(const d of Object.values(r.delivery)) d.payload.candidates=[];
+      verifiedRows=[];}
+    if(change==='sends') r.outreach_ready.sends_authorized=true;
+    if(change==='path') r.outreach_ready.paths=['site_screen'];
+    if(change==='limit') r.outreach_ready.max_rows_per_batch=0;
+    if(change==='overlap') both(h=>{h[0]={...entry,candidate:r.packet.candidates[0]};});
+    if(change==='expired') {result.assessment.valid_until=new Date(Date.now()-1000).toISOString();result.assessment_digest=verificationDigest(result.assessment);}
+    // Current, but not in the form #855 records (its ISO_TIMESTAMP needs T, seconds and a colon offset).
+    if(change==='valid_until_form') {result.assessment.valid_until='2030-01-01 00:00+0000';result.assessment_digest=verificationDigest(result.assessment);}
+    if(change==='empty') {both(h=>{h.length=0;});r.review.outreach_ready_keys=[];}
+    if(change==='extra') both(h=>{h[0]={...entry,verified:true};});
+    if(change==='unbound') both(h=>{h[0]={...entry,candidate:{...entry.candidate,task:'Changed task'}};});
+    if(change==='assessment') result.assessment.claims.operator.reason='Changed original evidence';
+    if(change==='duplicate') result.duplicate_of='synthetic-0';
+    if(change==='nonobject') both(h=>{h[0]=null;});
+    rebind(r);
+    for(const name of ['sheets','notion']) {
+      const verification=publicationVerification(r,name);
+      assert.equal(verification.eligible,true);assert.deepEqual(verification.reasons,[]);
+      assert.ok(verification.hypotheses.every(h=>h.eligible===false && h.reasons.length>0) || change==='empty' || change==='in_crm');
+    }
+    const f=await fixture(r);
+    if(change==='in_crm') f.values.push(['BP-000041','Example Plant','Facility / site','South','','','Needs recheck','','',
+      'https://plant.example/tasks','Research','','','','Depositing']);
+    await finishNotion(f);
+    const saved=await f.store.get(r.date);saved.delivery.notion.state='acknowledged';await f.store.put(saved);
+    const receipt=await f.store.publish(r.date);
+    assert.equal(receipt.destination,'sheets');assert.equal(receipt.readback_verified,true);
+    assert.deepEqual(f.values.slice(change==='in_crm'?6:5).map(cells=>cells[6]),verifiedRows);
+    const plans=(await f.store.get(r.date)).delivery;
+    if(change!=='empty') assert.deepEqual(plans.sheets.plan.hypothesis_keys,[]);
+    // Only Sheets checks the CRM: a hypothesis the CRM already holds still appears, labelled, in Notion.
+    if(change!=='empty') assert.deepEqual(plans.notion.plan.hypothesis_keys,change==='in_crm'?['synthetic-h']:[]);
+    assert.equal(JSON.stringify(f.pages[0].body).includes('Hypothesis, not verified'),change==='in_crm');
+  });
+
+test('store publication writes the hypothesis row once beside the verified row and reads both back',async()=>{
+  const f=await fixture(hypothesisRow());
+  assert.equal((await f.store.publish(f.r.date)).destination,'notion');
+  const saved=await f.store.get(f.r.date);saved.delivery.notion.state='acknowledged';await f.store.put(saved);
+  const receipt=await f.store.publish(f.r.date);
+  assert.equal(receipt.reference,`sheets:${SHEET}:Prospects:BP-000001,BP-000002`);assert.equal(receipt.readback_verified,true);
+  assert.deepEqual(f.writes.map(w=>w.destination),['notion','sheets']);
+  assert.deepEqual(f.values.slice(5).map(r=>r[6]),['Needs recheck','Hypothesis']);
+  assert.ok(JSON.stringify(f.pages[0].body).includes('Hypothesis, not verified: Example Plant'));
+  assert.deepEqual((await f.store.get(f.r.date)).delivery.sheets.plan.hypothesis_keys,['synthetic-h']);
+});
+
+test('a hypothesis that expires after its plan was made is written as planned; readback replays the plan',()=>{
+  const at=Date.parse('2026-10-01T00:00:00Z'),r=hypothesisRow({validUntil:new Date(at+60000).toISOString()});
+  const publisher=new Publisher({crmReader:async()=>crmSnapshot(),google:async()=>({}),notion:async()=>({}),clock:()=>at});
+  const plan=planSheets(r,crmSnapshot(),at),notion=planNotion(r,{now:at});
+  assert.deepEqual(plan.hypothesis_keys,['synthetic-h']);assert.equal(plan.sheet_rows.length,2);
+  publisher.clock=()=>at+120000;  // Expired since the plan; the verified row stays eligible.
+  assert.equal(publicationVerification(r,'sheets',at+120000).eligible,true);
+  assert.equal(publicationVerification(r,'sheets',at+120000).hypotheses[0].eligible,false);
+  publisher.validate(r,'sheets',plan);publisher.validate(r,'sheets',plan,{reconcile:true});
+  publisher.validate(r,'notion',notion);publisher.validate(r,'notion',notion,{reconcile:true});
+  assert.deepEqual(planSheets(r,crmSnapshot(),at+120000).hypothesis_keys,[]);  // A fresh plan now leaves it out.
+  for(const keys of [['synthetic-x'],['synthetic-h','synthetic-h'],'synthetic-h'])
+    assert.throws(()=>publisher.validate(r,'sheets',{...plan,hypothesis_keys:keys}),/publication_plan_binding_invalid/);
+});
+
+test('rollback probe: a frozen record whose digest an older bridge dropped never strands the row and publishes no hypothesis',async()=>{
+  // Synthetic replay of the reviewer's rollback_probe.mjs. An older bridge rewrites the whole manifest without
+  // the fields it does not know; deleting outreach_ready_digest reproduces exactly that write.
+  const r=hypothesisRow(),manifest=()=>f.db.values.get(`${ROOT}/runs/${r.date}`),f=await fixture(r);
+  const bound=manifest().outreach_ready_digest;
+  assert.match(bound,/^[a-f0-9]{64}$/);assert.equal(Object.hasOwn(manifest(),'outreach_ready_unbound'),false);
+  await assert.rejects(f.store.put({...r,outreach_ready:{...r.outreach_ready,max_rows_per_batch:49}}),/outreach_ready_already_bound/);
+  delete manifest().outreach_ready_digest;  // The rollback.
+  await f.store.put(r);  // Roll forward: never stranded.
+  assert.equal(manifest().outreach_ready_unbound,true);assert.equal(manifest().outreach_ready_digest,bound);
+  const {outreach_ready:_dropped,...without}=r;
+  for(const changed of [without,{...r,outreach_ready:{...r.outreach_ready,state:'refused'}}])
+    await assert.rejects(f.store.put(changed),/outreach_ready_already_bound/);
+  await finishNotion(f);
+  const saved=await f.store.get(r.date);saved.delivery.notion.state='acknowledged';await f.store.put(saved);
+  assert.equal((await f.store.publish(r.date)).readback_verified,true);
+  assert.deepEqual(f.values.slice(5).map(cells=>cells[6]),['Needs recheck']);
+  const plans=(await f.store.get(r.date)).delivery;
+  assert.deepEqual(plans.sheets.plan.hypothesis_keys,[]);assert.deepEqual(plans.notion.plan.hypothesis_keys,[]);
+  assert.equal(manifest().outreach_ready_unbound,true);  // Sticky across later writes.
+  assert.deepEqual(publicationVerification(r,'sheets',Date.now(),{withheld:'outreach_ready_unbound'}).hypotheses[0].eligible,false);
+  // A shadow-mode row keeps a manifest with neither field, exactly as before the feature.
+  const g=await fixture(row([candidate()]));
+  assert.equal(['outreach_ready_digest','outreach_ready_unbound'].some(key=>Object.hasOwn(g.db.values.get(`${ROOT}/runs/${r.date}`),key)),false);
+});
+
+async function rollbackOutreach(f,{rewrite=true}={}) {
+  const saved=await f.store.get(f.r.date),manifest=f.db.values.get(`${ROOT}/runs/${f.r.date}`);
+  delete manifest.outreach_ready_digest;
+  if(rewrite) {
+    await f.store.put(saved);
+    assert.equal(f.db.values.get(`${ROOT}/runs/${f.r.date}`).outreach_ready_unbound,true);
+  }
+}
+
+for(const rewrite of [false,true])
+for(const destination of ['sheets','notion','notion-paginated'])
+test(`rollback replaces an unclaimed saved hypothesis plan with verified rows only (${destination}, rewrite=${rewrite})`,async()=>{
+  const r=hypothesisRow(),name=destination==='sheets'?'sheets':'notion';
+  if(destination==='notion-paginated') {r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);}
+  const f=await fixture(r),saved=await f.store.get(r.date);
+  saved.delivery[name].plan=await f.publisher.prepare(saved,name);await f.store.put(saved);
+  const original=structuredClone(saved.delivery[name].plan);
+  assert.deepEqual(original.hypothesis_keys,['synthetic-h']);
+  if(destination==='notion-paginated') assert.equal(original.protocol,'notion-paginated-v1');
+  await rollbackOutreach(f,{rewrite});
+  let receipt;
+  for(let i=0;i<10 && !receipt;i++) receipt=await f.store.publish(r.date,name);
+  assert.equal(receipt.readback_verified,true);
+  const plan=(await f.store.get(r.date)).delivery[name].plan;
+  assert.equal(f.db.values.get(`${ROOT}/runs/${r.date}`).outreach_ready_unbound,true);
+  assert.deepEqual(plan.hypothesis_keys,[]);
+  assert.equal(plan.payload_digest,original.payload_digest);
+  if(name==='sheets') assert.deepEqual(f.values.slice(5).map(cells=>cells[6]),['Needs recheck']);
+  else assert.equal(JSON.stringify(f.pages).includes('Hypothesis, not verified'),false);
+});
+
+for(const destination of ['sheets','notion'])
+test(`rollback keeps a claimed hypothesis plan readback-only after an uncertain write (${destination})`,async()=>{
+  const f=await fixture(hypothesisRow()),write=f.publisher.write.bind(f.publisher);
+  f.publisher.write=async()=>{throw new Error('Synthetic interruption after durable claim');};
+  await assert.rejects(f.store.publish(f.r.date,destination),/publication_attempt_unresolved/);
+  const plan=structuredClone((await f.store.get(f.r.date)).delivery[destination].plan);
+  await rollbackOutreach(f);f.publisher.write=write;
+  assert.equal(await f.store.publish(f.r.date,destination),null);
+  assert.deepEqual((await f.store.get(f.r.date)).delivery[destination].plan,plan);
+  assert.equal(f.writes.length,0);
+});
+
+for(const destination of ['sheets','notion'])
+test(`rollback reads back an already accepted hypothesis effect without another write (${destination})`,async()=>{
+  const f=await fixture(hypothesisRow());f.faults.lost=true;
+  await assert.rejects(f.store.publish(f.r.date,destination),/publication_attempt_unresolved/);
+  const plan=structuredClone((await f.store.get(f.r.date)).delivery[destination].plan),writes=f.writes.length;
+  await rollbackOutreach(f);
+  assert.equal((await f.store.publish(f.r.date,destination)).readback_verified,true);
+  assert.deepEqual((await f.store.get(f.r.date)).delivery[destination].plan,plan);
+  assert.equal(f.writes.length,writes);
+});
+
+test('rollback preserves a partial Notion hypothesis plan without claiming another batch',async()=>{
+  const r=hypothesisRow();r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);
+  const f=await fixture(r);
+  assert.equal(await f.store.publish(r.date,'notion'),null);
+  const plan=structuredClone((await f.store.get(r.date)).delivery.notion.plan),writes=f.writes.length;
+  const claims=structuredClone(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_batches.notion);
+  await rollbackOutreach(f);
+  assert.equal(await f.store.publish(r.date,'notion'),null);
+  assert.deepEqual((await f.store.get(r.date)).delivery.notion.plan,plan);
+  assert.deepEqual(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_batches.notion,claims);
+  assert.equal(f.writes.length,writes);
+});
+
+for(const destination of ['sheets','notion','notion-paginated'])
+test(`rollback after a hypothesis claim refuses its pending mutation (${destination})`,async()=>{
+  const r=hypothesisRow(),name=destination==='sheets'?'sheets':'notion';
+  if(destination==='notion-paginated') {r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);}
+  const f=await fixture(r);
+  const unbind=()=>{delete f.db.values.get(`${ROOT}/runs/${r.date}`).outreach_ready_digest;};
+  if(destination==='notion-paginated') f.publisher.beforeNotionStep=async()=>unbind();
+  else {
+    const write=f.publisher.write.bind(f.publisher);
+    f.publisher.write=async(...args)=>{unbind();return write(...args);};
+  }
+  await assert.rejects(f.store.publish(r.date,name),/publication_hypotheses_withheld/);
+  assert.equal(f.writes.length,0);
+  assert.equal(await f.store.publish(r.date,name),null);
+});
+
+test('terminal Sheets recovery recovers the verified rows on a day with hypotheses and withholds every hypothesis',async()=>{
+  const f=await stoppedTerminalSheetsFixture(),r=await f.store.get(f.r.date);
+  const hypothesis={...structuredClone(r.packet.candidates[0]),candidate_key:'candidate-h',site:'South'};
+  r.delivery.sheets.payload.hypotheses=[{candidate:hypothesis,open_checks:CHECKS,open_questions:[TEMPLATES.M]}];
+  r.delivery.sheets.payload_json=JSON.stringify(r.delivery.sheets.payload);r.delivery.sheets.payload_digest=sha(r.delivery.sheets.payload_json);
+  r.review.outreach_ready_keys=['candidate-h'];r.qa.decision=structuredClone(r.review);
+  await f.store.put(r);
+  f.request.source_row_blob=f.db.values.get(`${ROOT}/runs/${r.date}`).blob;f.request.payload_digest=r.delivery.sheets.payload_digest;
+  const result=await f.store.dispatch(f.request);
+  assert.equal(result.state,'acknowledged');assert.equal(f.writes.length,1);
+  assert.deepEqual(f.values.slice(5).map(cells=>cells[6]),['Needs recheck']);
+  assert.deepEqual((await f.store.get(r.date)).delivery.sheets.plan.hypothesis_keys,[]);
+  assert.equal((await f.store.dispatch(f.request)).state,'acknowledged');assert.equal(f.writes.length,1);
 });

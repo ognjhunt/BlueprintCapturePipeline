@@ -1303,3 +1303,198 @@ def test_the_intent_ceiling_still_stops_a_run_that_flag_off_would_stop(universe,
     monkeypatch.setattr(search, "MAX_INTENT", plain.intents[0] - 1)
     with pytest.raises(Refusal, match="^research_profile_intent_resource_ceiling$"):
         universe("over", control=value, objects=objects, history=deepcopy(history))
+
+
+def outreach_control(paths="daily_qa", rows=50, enabled=True, now=NOW - timedelta(hours=1)):
+    """A verified control.outreach_ready value, built by the owner command's own planner."""
+    from tests.test_daily_research_operator_outreach_ready import operator as owner
+    _, entry = owner.next_entry({}, paths=paths, max_rows_per_batch=rows, approval_reference="owner-synthetic-outreach",
+                                approved_by="owner", reason="Synthetic outreach-ready direction", now=now)
+    return {"enabled": enabled, "current": {**entry, "generation": "1001"}}
+
+
+@pytest.mark.parametrize(("value", "state", "version"), [
+    (None, None, "v2"), ("disabled", None, "v2"), ("screen_only", None, "v2"), ("expired", "refused", "v2"),
+    ("enabled", "enabled", "v3")])
+def test_run_freezes_the_direction_and_pins_v3_only_for_an_enabled_daily_qa_direction(fixture, tmp_path, value, state, version):
+    from tools.daily_research import verification
+    runner, _, ledger = fixture
+    control = {None: None, "disabled": outreach_control(enabled=False), "screen_only": outreach_control("site_screen"),
+               "expired": outreach_control(now=NOW - timedelta(days=40)), "enabled": outreach_control()}[value]
+    ledger.outreach_ready_control = lambda: control
+    row = runner.start_or_resume()
+    plain = Runner(Ledger(tmp_path / "plain"), runner.config, FakeAPI(), clock=lambda: NOW).start_or_resume()
+    assert row["create_payload"] == plain["create_payload"] and row["metadata"] == plain["metadata"]
+    assert (row.get("outreach_ready") or {}).get("state") == state
+    pinned = {"v2": verification.DIAGNOSTIC_RESULT_VERSION, "v3": verification.OUTREACH_RESULT_VERSION}[version]
+    assert row["lead_verification_result_version"] == row["packet"]["lead_verification_result_version"] == pinned
+    if value in {None, "disabled", "screen_only"}:
+        assert row["packet"] == plain["packet"] and row["packet_digest"] == plain["packet_digest"] and "outreach_ready" not in row
+    if value == "expired":
+        assert row["outreach_ready"]["code"] == "outreach_ready_expired"
+
+
+def outreach_row(fixture, *, page=True):
+    from tests.test_daily_research_consumer import retain_page
+    runner, _, ledger = fixture
+    ledger.outreach_ready_control = lambda: outreach_control(rows=1)
+    runner.start_or_resume()
+    if page:
+        retain_page(ledger)
+    return ledger.get(DAY)
+
+
+def outreach_decision(row, read, *, workflow="unresolved", keys=None, accepted=(), support=True):
+    from tests.daily_research_verification_fixture import assessment
+    from tools.daily_research import verification
+    candidates = row["packet"]["candidates"]
+    assessments = {}
+    for c in candidates:
+        assessments[c["candidate_key"]] = assessment(c, NOW)
+        assessments[c["candidate_key"]]["claims"]["human_workflow"]["status"] = workflow
+    evidence = verification.retained_evidence(row, read)
+    cohort = verification.cohort(verification.packet_candidates(row["packet"]), assessments, NOW,
+                                 result_version=verification.OUTREACH_RESULT_VERSION, evidence=evidence)
+    return {"packet_digest": row["packet_digest"], "reviewer_reference": "agent-turn:sess_1:turn_qa",
+            "source_support_verified": support, "crm_rechecked": True, "accepted_keys": list(accepted),
+            "summary": "Synthetic outreach-ready review", "lead_verification": cohort,
+            "outreach_ready_keys": [c["candidate_key"] for c in candidates] if keys is None else keys}
+
+
+def test_review_binds_rule_ready_keys_as_hypotheses_and_refuses_every_other_list(fixture):
+    runner, _, ledger = fixture
+    row = outreach_row(fixture)
+    key = row["packet"]["candidates"][0]["candidate_key"]
+    refusals = [({"keys": [key, key]}, "review_outreach_ready_keys_invalid"),
+                ({"keys": [7]}, "review_outreach_ready_keys_invalid"),
+                ({"keys": "x"}, "review_outreach_ready_keys_invalid"),
+                ({"workflow": "verified_fact", "accepted": [key]}, "outreach_ready_overlaps_accepted_keys"),
+                ({"workflow": "verified_fact"}, "outreach_ready_tier_required"),
+                ({"keys": ["unknown"]}, "outreach_ready_tier_required"),
+                ({"support": False}, "outreach_ready_requires_source_support")]
+    for changes, code in refusals:
+        with pytest.raises(Refusal, match=f"^{code}$"):
+            runner.review(DAY, outreach_decision(row, ledger.read_bytes, **changes))
+    forged = outreach_decision(row, ledger.read_bytes)
+    forged["lead_verification"]["results"][0]["outreach_ready"]["open_checks"] = ["interest"]
+    with pytest.raises(Refusal, match="^lead_verification_result_binding_invalid$"):
+        runner.review(DAY, forged)
+    decision = outreach_decision(row, ledger.read_bytes)
+    reviewed = runner.review(DAY, decision)
+    result = decision["lead_verification"]["results"][0]
+    hypotheses = [{"candidate": row["packet"]["candidates"][0], "open_checks": result["outreach_ready"]["open_checks"],
+                   "open_questions": result["outreach_ready"]["open_questions"]}]
+    assert reviewed["review"] == decision and reviewed["delivery"]["sheets"]["payload"]["candidates"] == []
+    assert reviewed["delivery"]["sheets"]["payload"]["hypotheses"] == hypotheses == reviewed["delivery"]["notion"]["payload"]["hypotheses"]
+    assert runner.review(DAY, decision) == reviewed
+
+
+def test_review_payloads_stay_unchanged_when_no_key_is_admitted(fixture):
+    runner, _, ledger = fixture
+    row = outreach_row(fixture)
+    reviewed = runner.review(DAY, outreach_decision(row, ledger.read_bytes, keys=[]))
+    assert set(reviewed["delivery"]["sheets"]["payload"]) == {"sheet_id", "tab", "candidates"}
+    assert set(reviewed["delivery"]["notion"]["payload"]) == {"parent_id", "summary", "candidates"}
+
+
+def test_a_shadow_row_refuses_any_outreach_list(fixture):
+    from tools.daily_research import verification
+    runner, _, _ = fixture
+    row = runner.start_or_resume()
+    value = decision(row)
+    value.update(accepted_keys=[], source_support_verified=False, outreach_ready_keys=[])
+    assert row["packet"]["lead_verification_result_version"] == verification.DIAGNOSTIC_RESULT_VERSION
+    with pytest.raises(Refusal, match="^outreach_ready_not_enabled_for_run$"):
+        runner.review(DAY, value)
+
+
+def test_prior_outreach_ready_keys_are_known_like_prior_accepted_keys(fixture):
+    from tools.daily_research import verification
+    from tools.daily_research.runner import keys
+    runner, _, ledger = fixture
+    c = {**output()["candidates"][0], "candidate_key": "prior"}
+    for review, duplicate in (({"accepted_keys": [], "outreach_ready_keys": ["prior"]}, True),
+                              ({"accepted_keys": [], "outreach_ready_keys": []}, False), ({"accepted_keys": []}, False)):
+        ledger.put({"date": "2026-09-29", "state": "completed", "run_key": "blueprint-researcher:2026-09-29",
+                    "packet": {"candidates": [{**c, "identity_keys": sorted(keys(c))}]}, "review": review})
+        fresh = {"date": DAY, "run_key": "blueprint-researcher:" + DAY, "session_id": "sess_1", "turn_id": "turn_1",
+                 "cost_status": "unknown", "usage": None,
+                 "lead_verification_result_version": verification.DIAGNOSTIC_RESULT_VERSION}
+        runner.prepare_output(fresh, output())
+        assert bool(fresh["packet"]["duplicates"]) is duplicate and bool(fresh["packet"]["candidates"]) is not duplicate
+
+
+def test_a_failed_control_read_or_an_oversized_record_freezes_a_code_and_never_stops_the_run(fixture):
+    from tools.daily_research import outreach_ready, verification
+    runner, _, ledger = fixture
+    ledger.outreach_ready_control = lambda: (_ for _ in ()).throw(Refusal("firestore_bridge_deadline"))
+    row = runner.start_or_resume()
+    assert row["state"] == "awaiting_review" and row["lead_verification_result_version"] == verification.DIAGNOSTIC_RESULT_VERSION
+    assert row["outreach_ready"]["state"] == "refused" and row["outreach_ready"]["code"] == "outreach_ready_control_unavailable"
+    base, control = {"run_key": "blueprint-researcher:" + DAY}, outreach_control()
+    full, code = outreach_ready.frozen_record(lambda: control, base, NOW, 1_000_000)
+    assert full["state"] == "enabled" and code is None
+    fits = len(canonical({**base, "outreach_ready": full}).encode())
+    compact, code = outreach_ready.frozen_record(lambda: control, base, NOW, fits - 1)
+    assert compact == {"schema_version": outreach_ready.ADMISSION, "run_key": base["run_key"], "frozen_at": NOW.isoformat(),
+                       "direction_sha256": full["direction_sha256"], "state": "refused", "code": "outreach_ready_record_too_large"}
+    assert code == "outreach_ready_record_too_large"
+    assert outreach_ready.frozen_record(lambda: control, base, NOW, 10) == (None, "outreach_ready_record_too_large")
+    assert outreach_ready.frozen_record(lambda: None, base, NOW, 10) == (None, None)
+
+
+def test_review_checks_hypotheses_against_the_decision_s_own_evaluation_and_the_run_deadline(fixture):
+    runner, api, ledger = fixture
+    row = outreach_row(fixture)
+    decision = outreach_decision(row, ledger.read_bytes)  # Each assessment is valid for 7 days.
+    # A retried review after every hypothesis expired still binds the decision exactly; publication leaves it out.
+    late = Runner(ledger, runner.config, api, clock=lambda: NOW + timedelta(days=8))
+    with pytest.raises(Refusal, match="^lead_verification_required_before_promotion$"):
+        late.review(DAY, outreach_decision(row, ledger.read_bytes, workflow="verified_fact", keys=[],
+                                           accepted=[row["packet"]["candidates"][0]["candidate_key"]]))
+    reviewed = late.review(DAY, decision)
+    assert reviewed["review"] == decision and len(reviewed["delivery"]["sheets"]["payload"]["hypotheses"]) == 1
+
+
+def test_review_refuses_a_listed_key_that_expires_before_the_run_deadline(fixture):
+    from tests.daily_research_verification_fixture import assessment
+    from tools.daily_research import verification
+    from tools.daily_research.consumer import qa_deadline
+    runner, _, ledger = fixture
+    row = outreach_row(fixture)
+    candidate = row["packet"]["candidates"][0]
+    value = assessment(candidate, NOW)
+    value["claims"]["human_workflow"]["status"] = "unresolved"
+    value["valid_until"] = (qa_deadline(row, {}) - timedelta(seconds=1)).isoformat()
+    cohort = verification.cohort(verification.packet_candidates(row["packet"]), {candidate["candidate_key"]: value}, NOW,
+                                 result_version=verification.OUTREACH_RESULT_VERSION,
+                                 evidence=verification.retained_evidence(row, ledger.read_bytes))
+    assert cohort["results"][0]["tier"] == "outreach_ready"
+    decision = {**outreach_decision(row, ledger.read_bytes), "lead_verification": cohort}
+    with pytest.raises(Refusal, match="^outreach_ready_tier_required$"):
+        runner.review(DAY, decision)
+
+
+def test_review_reuses_the_caller_s_evidence_and_withholds_only_hypotheses_it_cannot_re_prove(fixture, monkeypatch):
+    from tools.daily_research import verification
+    runner, _, ledger = fixture
+    row = outreach_row(fixture)
+    evidence = verification.retained_evidence(row, ledger.read_bytes)
+    decision = outreach_decision(row, ledger.read_bytes)
+    reads, original = [], ledger.read_bytes
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: reads.append(name) or original(name))
+    forged = deepcopy(decision)
+    forged["lead_verification"]["results"][0]["status"] = "verified"  # The verified path stays bound exactly.
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: (_ for _ in ()).throw(FileNotFoundError(name)))
+    with pytest.raises(Refusal, match="^lead_verification_result_binding_invalid$"):
+        runner.review(DAY, forged)
+    reviewed = runner.review(DAY, decision)
+    assert reviewed["review"] == decision and "hypotheses" not in reviewed["delivery"]["sheets"]["payload"]
+    assert reviewed["outreach_ready_withheld"] == {"code": "outreach_ready_review_evidence_changed",
+                                                   "keys": decision["outreach_ready_keys"]}
+    assert runner.review(DAY, decision) == reviewed  # A repeat call binds the same review.
+    other = Runner(Ledger(ledger.root.parent / "other"), runner.config, FakeAPI(), clock=lambda: NOW)
+    assert other.tier_evidence(row, decision, evidence) == (evidence, None)  # Supplied and matching: no read.
+    assert other.tier_evidence(row, {"lead_verification": {"tier_evidence": verification.UNAVAILABLE}}, None)[1] is None
+    monkeypatch.setattr(other.ledger, "read_bytes", lambda name: (_ for _ in ()).throw(Refusal("firestore_bridge_deadline")))
+    assert other.tier_evidence(row, decision, None)[1] == "outreach_ready_review_evidence_unavailable"
