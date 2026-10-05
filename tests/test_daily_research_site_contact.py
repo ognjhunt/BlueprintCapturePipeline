@@ -1,5 +1,6 @@
 """Hermetic contact stage of the site screen line: fake Parallel Task API and fake pages; synthetic people only."""
 import importlib.util
+import json
 import re
 from pathlib import Path
 
@@ -50,17 +51,25 @@ def screened_sites(tmp_path, count, *, unproven=()):
 
 
 def contacted(tmp_path, answers, pages, *, basis=None):
-    """Screen one site per contact answer, then run, collect and verify the contact stage with the fakes."""
+    """Screen one site per contact answer, then run, collect and verify the contact stage with the fakes. The
+    contact pages are read when a result is collected, so its email is checked before anything is stored."""
     workspace, provider, keys = screened_sites(tmp_path, len(answers))
     for key, content in zip(keys, answers):
         provider.contacts[key] = {"content": content, "basis": (basis or {}).get(key, [])}
     client = ss.TaskClient(KEY, transport=provider)
     result = ss.contact(workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
-    ss.collect(workspace, client=client, wait_seconds=0)
     reader = FakePages(pages)
+    ss.collect(workspace, client=client, reader=reader, today=TODAY, wait_seconds=0)
     ss.verify(workspace, reader=reader, today=TODAY)
     records = {record["site_key"]: record for record in workspace.records("contact")}
     return workspace, reader, [records[key] for key in keys if key in records], result
+
+
+def stored(workspace, key):
+    """Every byte the contact stage kept for one site: its raw result, page reads and record."""
+    return b"".join(path.read_bytes() for path in (workspace.path("contact", "results", key),
+                                                    workspace.path("contact", "evidence", key),
+                                                    workspace.record_path("contact", key)))
 
 
 def site_key(number):
@@ -125,24 +134,120 @@ def test_contact_runs_are_idempotent_and_share_the_screen_ceiling(tmp_path):
 def test_a_verified_person_email_is_the_preferred_recipient(tmp_path):
     answers = contact_answers(1)
     _, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers))
-    assert record["schema_version"] == ss.CONTACT and record["decision_role"] == "Plant manager"
+    assert (record["schema_version"], record["rule_version"]) == (ss.CONTACT, "blueprint.site-contact-rule.v2")
+    assert record["decision_role"] == "Plant manager"
     assert record["person"] == {"verified": True, "level": "verified_on_page", "name": PERSON, "title": "Plant Manager",
                                 "url": "https://operator-1.example/team", "date": "2026-06-01", "current": True}
     assert record["email"] == {"verified": True, "level": "verified_on_page", "discarded": False,
-                               "address": "plant.lead@operator-1.example", "url": "https://operator-1.example/team"}
-    assert record["recipient"] == {"kind": "person_email", "rank": 0, "address": "plant.lead@operator-1.example"}
+                               "address": "avery.placeholder@operator-1.example", "url": "https://operator-1.example/team",
+                               "role": "person"}
+    assert record["recipient"] == {"kind": "person_email", "rank": 0, "address": "avery.placeholder@operator-1.example"}
     # A title alone never proves remit, so the remit stays an open question.
     assert [question["check"] for question in record["open_questions"]] == ["decision_remit"]
 
 
-def test_an_email_not_on_its_page_is_discarded_and_recorded_unverified(tmp_path):
-    answers = contact_answers(1)
-    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers, ["person"]))
+def test_review_c1_an_email_counts_only_on_our_own_read_of_its_page(tmp_path):
+    answers = contact_answers(1, email_url="https://operator-1.example/contact")
+    page = {answers["email_url"]: "Synthetic page. General questions: info@operator-1.example. Footer."}
+    excerpt = {"excerpts": [answers["email_quote"]]}
+    for name, cited in (("broker", "https://people-broker.example/avery"), ("same", answers["email_url"])):
+        basis = {site_key(1): [{"field": "email", "citations": [{"url": cited, **excerpt}]}]}
+        for label, pages in (("read", {**pages_for(answers, ["person"]), **page}), ("blocked", pages_for(answers, ["person"]))):
+            workspace, _, (record,), _ = contacted(tmp_path / f"{name}-{label}", [answers], pages, basis=basis)
+            assert record["email"]["verified"] is False and record["email"]["discarded"] is True
+            assert record["recipient"]["kind"] == "none"
+            assert answers["email"].encode() not in stored(workspace, record["site_key"])
+
+
+@pytest.mark.parametrize("email, published_on, reason", [
+    ("avery.placeholder@gmail.com", "https://club-news.example/roster", "site_screen_email_free_mail"),  # Review C2.
+    ("avery.placeholder@other-operator.example", "https://operator-1.example/team", "site_screen_email_off_operator_domain"),
+    ("avery.placeholder@operator-1.example.net", "https://operator-1.example/team", "site_screen_email_off_operator_domain"),
+])
+def test_review_c2_an_email_must_be_on_the_operator_domain_and_never_free_mail(tmp_path, email, published_on, reason):
+    answers = contact_answers(1, email=email, email_url=published_on, email_quote=f"Contact Avery at {email} about the plant.")
+    pages = {**pages_for(answers, ["person"]), published_on: f"Roster. Contact Avery at {email} about the plant."}
+    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages)
+    assert record["email"] == {"verified": False, "level": "unverified", "discarded": True, "reason": reason}
+    assert record["recipient"]["kind"] == "none" and email.encode() not in stored(workspace, record["site_key"])
+
+
+def test_an_address_on_a_subdomain_of_the_operator_is_accepted(tmp_path):
+    email = "avery.placeholder@plant.operator-1.example"
+    answers = contact_answers(1, email=email, email_quote=f"Write to {email} for plant questions.")
+    _, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers))
+    assert record["email"]["verified"] is True and record["recipient"]["kind"] == "person_email"
+
+
+@pytest.mark.parametrize("local, label, kind, role", [
+    ("info", "person_email", "general_inbox", "general"),  # Review C3: the provider's label is ignored.
+    ("press", "team_inbox", "general_inbox", "general"),
+    ("sales", "general_inbox", "team_inbox", "team"),
+    ("plant.operations", "none", "team_inbox", "team"),
+    ("careers", "general_inbox", "none", "refused"),
+    ("jsmith", "person_email", "none", "unknown"),  # Neither the person's name nor a role word.
+    ("aplaceholder", "team_inbox", "person_email", "person"),
+])
+def test_review_c3_the_recipient_kind_comes_from_the_address_itself(tmp_path, local, label, kind, role):
+    email = f"{local}@operator-1.example"
+    answers = contact_answers(1, email=email, email_quote=f"Write to {email} for plant questions.", channel_type=label)
+    _, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers))
+    assert (record["email"]["verified"], record["email"]["role"], record["recipient"]["kind"]) == (True, role, kind)
+    assert record["channel"]["label"] == label
+
+
+def test_a_person_email_needs_the_verified_person_named_in_the_address(tmp_path):
+    answers = contact_answers(1, person_quote="Our plant manager leads the machining plant and its lathes.")
+    _, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers))
+    assert record["person"]["verified"] is False and record["email"]["verified"] is True
+    assert record["recipient"]["kind"] == "none"
+
+
+def test_the_recipient_follows_the_owner_preference_order(tmp_path):
+    assert ss.RECIPIENT_PREFERENCE == ("person_email", "team_inbox", "general_inbox")
+    nobody = {"person_name": "", "person_title": "", "person_url": "", "person_quote": "", "person_date": ""}
+    team = contact_answers(1, **nobody, email="plant.team@operator-1.example",
+                           email_quote="Write to plant.team@operator-1.example for plant questions.",
+                           channel_type="general_inbox")
+    general = contact_answers(2, **nobody, email="info@operator-2.example",
+                              email_quote="General questions go to info@operator-2.example any day.",
+                              channel_type="person_email")
+    form = contact_answers(3, **nobody, email="", email_url="", email_quote="", channel_type="contact_form",
+                           channel_url="https://operator-3.example/contact-us")
+    person = contact_answers(4, channel_type="team_inbox")
+    answers = [team, general, form, person]
+    pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
+    workspace, _, records, _ = contacted(tmp_path, answers, pages)
+    assert [record["recipient"]["kind"] for record in records] == ["team_inbox", "general_inbox", "none", "person_email"]
+    assert [record["recipient"]["kind"] for record in sorted(records, key=lambda r: r["recipient"]["rank"])] == [
+        "person_email", "team_inbox", "general_inbox", "none"]
+    assert records[2]["channel"] == {"label": "contact_form", "url": "https://operator-3.example/contact-us"}
+    assert records[2]["email"] == {"verified": False, "level": "no_email", "discarded": False}
+    report = ss.summary(workspace)["contact"]
+    assert report["recipients"] == {"person_email": 1, "team_inbox": 1, "general_inbox": 1, "none": 1}
+    assert report["emails_discarded"] == 0 and report["channels"]["contact_form"] == 1
+    assert (report["estimated_cost_usd"], report["runs"]["completed"]) == ("0.100", 4)
+
+
+def test_an_email_not_on_its_page_is_discarded_and_never_stored(tmp_path):
+    answers = contact_answers(1, notes="An older page also lists avery.p@operator-1.example for the plant.")
+    citation = {"url": "https://people-broker.example/avery", "excerpts": ["Reach avery.p@operator-1.example today."]}
+    basis = {site_key(1): [{"field": "notes", "citations": [citation]}]}
+    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers, ["person"]), basis=basis)
     assert record["email"] == {"verified": False, "level": "unverified", "discarded": True}
-    assert record["recipient"] == {"kind": "none", "rank": 3, "address": None}
-    assert [question["check"] for question in record["open_questions"]] == ["decision_remit", "recipient"]
-    stored = workspace.record_path("contact", record["site_key"]).read_text()
-    assert answers["email"] not in stored  # Discarded: only the raw provider response keeps it.
+    kept = stored(workspace, record["site_key"])
+    assert b"@operator-1.example" not in kept and b"[redacted-email]" in kept
+    result = json.loads(workspace.path("contact", "results", record["site_key"]).read_text())
+    assert result["output"]["content"]["email"] == "[redacted-email]" and result["run"]["status"] == "completed"
+
+
+def test_only_the_verified_address_survives_in_stored_results_and_pages(tmp_path):
+    answers = contact_answers(1, notes="The site also lists jordan.fixture@operator-1.example and info@operator-1.example.")
+    page = {answers["email_url"]: f"{answers['person_quote']} {answers['email_quote']} Billing: billing@operator-1.example."}
+    workspace, _, (record,), _ = contacted(tmp_path, [answers], {**pages_for(answers), **page})
+    kept = stored(workspace, record["site_key"]).decode()
+    assert record["recipient"]["address"] == "avery.placeholder@operator-1.example"
+    assert set(ss.EMAIL.findall(kept.lower())) == {"avery.placeholder@operator-1.example"}
 
 
 def test_a_pattern_guessed_email_is_refused(tmp_path):
@@ -152,8 +257,7 @@ def test_a_pattern_guessed_email_is_refused(tmp_path):
     workspace, _, (record,), _ = contacted(tmp_path, [answers], pages)
     assert record["person"]["verified"] is True
     assert record["email"] == {"verified": False, "level": "unverified", "discarded": True}
-    assert record["recipient"]["kind"] == "none"
-    assert guessed not in workspace.record_path("contact", record["site_key"]).read_text()
+    assert record["recipient"]["kind"] == "none" and guessed.encode() not in stored(workspace, record["site_key"])
 
 
 @pytest.mark.parametrize("published, claimed, quote_on_page", [
@@ -165,8 +269,7 @@ def test_a_pattern_guessed_email_is_refused(tmp_path):
 ])
 def test_only_an_address_published_verbatim_is_accepted(tmp_path, published, claimed, quote_on_page):
     quote = LONG.format(claimed)
-    answers = contact_answers(1, email=claimed, email_quote=quote, email_url="https://operator-1.example/visit",
-                              channel_type="general_inbox")
+    answers = contact_answers(1, email=claimed, email_quote=quote, email_url="https://operator-1.example/visit")
     page = "Visitors. " + LONG.format(published)
     # Whole-word matching ignores the @, so a quote can stand on a page that publishes a longer address; the
     # address check still refuses it.
@@ -179,24 +282,10 @@ def test_only_an_address_published_verbatim_is_accepted(tmp_path, published, cla
 
 def test_the_email_quote_must_contain_the_exact_address(tmp_path):
     answers = contact_answers(1, email_quote="Write to the plant team for plant questions.")
-    pages = {answers["person_url"]: f"{answers['person_quote']} {answers['email_quote']} plant.lead@operator-1.example"}
+    pages = {answers["person_url"]: f"{answers['person_quote']} {answers['email_quote']} avery.placeholder@operator-1.example"}
     _, _, (record,), _ = contacted(tmp_path, [answers], pages)
     assert record["email"] == {"verified": False, "level": "unverified", "discarded": True,
                                "reason": "site_screen_quote_lacks_address"}
-
-
-def test_a_citation_excerpt_counts_when_the_page_blocks_our_reader_and_holds_the_exact_address(tmp_path):
-    answers = contact_answers(1, email_url="https://operator-1.example/press")
-    citation = {"url": answers["email_url"], "excerpts": [answers["email_quote"]]}
-    basis = {site_key(1): [{"field": "email", "citations": [citation]}]}
-    _, reader, (record,), _ = contacted(tmp_path / "held", [answers], pages_for(answers, ["person"]), basis=basis)
-    assert record["email"]["level"] == "in_citation_excerpt" and record["recipient"]["kind"] == "person_email"
-    assert answers["email_url"] in reader.requested
-    other = {**citation, "excerpts": [answers["email_quote"].replace("plant.lead@", "plantlead@")]}
-    _, _, (record,), _ = contacted(tmp_path / "other", [answers], pages_for(answers, ["person"]),
-                                   basis={site_key(1): [{"field": "email", "citations": [other]}]})
-    assert record["email"] == {"verified": False, "level": "unverified_page_unreachable", "discarded": True,
-                               "reason": "source_http_failure"}
 
 
 def test_the_person_quote_must_contain_the_name_and_the_page_must_show_it(tmp_path):
@@ -211,60 +300,29 @@ def test_the_person_quote_must_contain_the_name_and_the_page_must_show_it(tmp_pa
     assert not ss.has_phrase(ss.words(renamed["person_quote"]), ss.words(pages[renamed["person_url"]]))
     _, _, (first, second), _ = contacted(tmp_path, [nameless, renamed], pages)
     assert first["person"] == {"verified": False, "level": "unverified", "reason": "site_screen_quote_lacks_name"}
-    assert second["person"] == {"verified": False, "level": "unverified"}  # The near-exact quote never vouches for a name.
+    assert second["person"] == {"verified": False, "level": "unverified"}
     for record in (first, second):
         # A verified address alone is not a person's email: the recipient needs a verified person too.
         assert record["email"]["verified"] is True and record["recipient"]["kind"] == "none"
         assert [question["check"] for question in record["open_questions"]] == ["decision_maker", "recipient"]
 
 
-def test_the_recipient_follows_the_owner_preference_order(tmp_path):
-    assert ss.RECIPIENT_PREFERENCE == ("person_email", "team_inbox", "general_inbox")
-    assert ss.recipient("person_email", True, True) == "person_email"
-    assert ss.recipient("team_inbox", True, False) == "team_inbox"
-    assert ss.recipient("general_inbox", True, False) == "general_inbox"
-    assert ss.recipient("person_email", True, False) == "none"
-    assert {ss.recipient(channel, True, True) for channel in ("contact_form", "phone", "none", "fax")} == {"none"}
-    assert {ss.recipient(channel, False, True) for channel in ss.RECIPIENT_PREFERENCE} == {"none"}
-    nobody = {"person_name": "", "person_title": "", "person_url": "", "person_quote": "", "person_date": ""}
-    team = contact_answers(1, **nobody, email="plant.team@operator-1.example",
-                           email_quote="Write to plant.team@operator-1.example for plant questions.",
-                           channel_type="Team inbox")
-    general = contact_answers(2, **nobody, email="info@operator-2.example",
-                              email_quote="General questions go to info@operator-2.example any day.",
-                              channel_type="general_inbox")
-    form = contact_answers(3, **nobody, email="", email_url="", email_quote="", channel_type="contact_form",
-                           channel_url="https://operator-3.example/contact-us")
-    person = contact_answers(4)
-    answers = [team, general, form, person]
-    pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
-    workspace, _, records, _ = contacted(tmp_path, answers, pages)
-    assert [record["recipient"]["kind"] for record in records] == ["team_inbox", "general_inbox", "none", "person_email"]
-    assert [record["recipient"]["kind"] for record in sorted(records, key=lambda r: r["recipient"]["rank"])] == [
-        "person_email", "team_inbox", "general_inbox", "none"]
-    assert records[2]["channel"] == {"type": "contact_form", "url": "https://operator-3.example/contact-us"}
-    assert records[2]["email"] == {"verified": False, "level": "no_email", "discarded": False}
-    report = ss.summary(workspace)["contact"]
-    assert report["recipients"] == {"person_email": 1, "team_inbox": 1, "general_inbox": 1, "none": 1}
-    assert report["emails_discarded"] == 0 and report["channels"]["contact_form"] == 1
-    assert (report["estimated_cost_usd"], report["runs"]["completed"]) == ("0.100", 4)
-
-
 @pytest.mark.parametrize("url", [
     "https://www.linkedin.com/in/synthetic-profile", "https://linkedin.com/company/synthetic-operator-1",
     "https://uk.linkedin.com/in/synthetic-profile", "www.linkedin.com/in/synthetic-profile",
-    "https://lnkd.in/synthetic",
+    "https://lnkd.in/synthetic", "https://web.archive.org/web/2025/https://www.linkedin.com/in/avery-placeholder",
 ])
-def test_a_linkedin_source_is_refused_as_evidence_and_never_fetched(tmp_path, url):
+def test_review_c4_a_linkedin_source_is_refused_and_never_fetched_even_inside_a_wrapper(tmp_path, url):
     answers = contact_answers(1, person_url=url, email_url=url)
     # Even the provider's own LinkedIn excerpt is no evidence for a person or an address.
     citation = {"url": url, "excerpts": [answers["person_quote"], answers["email_quote"]]}
     basis = {site_key(1): [{"field": "person_quote", "citations": [citation]}, {"field": "email", "citations": [citation]}]}
     pages = {url: answers["person_quote"] + " " + answers["email_quote"]}  # It would verify if it were read.
-    _, reader, (record,), _ = contacted(tmp_path, [answers], pages, basis=basis)
+    workspace, reader, (record,), _ = contacted(tmp_path, [answers], pages, basis=basis)
     assert record["person"] == {"verified": False, "level": "person_source_not_allowed"}
     assert record["email"] == {"verified": False, "level": "person_source_not_allowed", "discarded": True}
     assert record["recipient"]["kind"] == "none" and reader.requested == []
+    assert answers["email"].encode() not in stored(workspace, record["site_key"])
 
 
 def test_a_linkedin_excerpt_never_stands_in_for_a_page_that_blocks_our_reader(tmp_path):
@@ -296,15 +354,16 @@ def test_the_contact_command_prints_counts_only(tmp_path, capsys):
     spend = ["contact", "--out", out, "--owner-reference", OWNER, "--ceiling-usd", "1", "--max-runs", "5"]
     assert operator.main(spend, environ=environ, transport=provider)["would_create"] == 2
     assert operator.main([*spend, "--apply"], environ=environ, transport=provider)["created"] == 2
-    operator.main(["collect", "--out", out, "--wait-seconds", "0"], environ=environ, transport=provider)
     pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
+    operator.main(["collect", "--out", out, "--wait-seconds", "0"], environ=environ, transport=provider,
+                  reader=FakePages(pages), today=TODAY)
     assert operator.main(["verify", "--out", out], reader=FakePages(pages), today=TODAY)["contact"] == {
-        "records": 2, "pages_kept": 2, "recipient_person_email": 2}
+        "records": 2, "pages_kept": 0, "recipient_person_email": 2}
     report = operator.main(["summary", "--out", out])
     assert report["contact"]["recipients"] == {"person_email": 2, "team_inbox": 0, "general_inbox": 0, "none": 0}
     output = capsys.readouterr().out
     assert KEY not in output
-    assert not any(value in output for value in (*SITE_STRINGS, "plant.lead", "Plant Manager", "@"))
+    assert not any(value in output for value in (*SITE_STRINGS, "placeholder", "Plant Manager", "@"))
 
 
 def test_every_fixture_person_and_host_is_synthetic():

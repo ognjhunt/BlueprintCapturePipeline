@@ -146,8 +146,8 @@ def contact_answers(number, **changes):
         "decision_role": "Plant manager", "person_name": PERSON, "person_title": "Plant Manager",
         "person_url": f"{site}/team", "person_quote": f"{PERSON} leads the machining plant as plant manager.",
         "person_date": "2026-06-01",
-        "email": f"plant.lead@operator-{number}.example", "email_url": f"{site}/team",
-        "email_quote": f"Write to plant.lead@operator-{number}.example for plant questions.",
+        "email": f"avery.placeholder@operator-{number}.example", "email_url": f"{site}/team",
+        "email_quote": f"Write to avery.placeholder@operator-{number}.example for plant questions.",
         "channel_type": "person_email", "channel_url": "", "notes": "No direct phone line is published.",
     }
     value.update(changes)

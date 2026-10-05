@@ -882,19 +882,33 @@ repository root, with `--key-file` set to a private env file. Start with
   `evidence_index` the URL-keyed evidence). `verify` writes
   `<stage>/records/<site_key>.<rule>.json`, and `summary` and `contact` recompute in
   memory, so a new rule needs no paid run, no page read and no deletion.
-- `contact` creates one run per outreach-ready screen record, in screen order,
-  under its own ledger, ceiling and run limit. The form asks for the deciding role,
-  a named current person from a reputable public source, a business email address
-  published verbatim, the channel type, and a contact form or phone URL when no
-  address is published. A person counts only when the person quote contains the
-  name and the page, or the field's citation excerpt, shows the quote and the name.
-  An email counts only when the email quote contains the exact address and the
-  address stands whole and verbatim on the cited page or in the field's citation
-  excerpt. Any other address is discarded: the record keeps its level, never the
-  address. A `person_url` or `email_url` on LinkedIn is refused as
-  `person_source_not_allowed`, and a LinkedIn citation excerpt is not evidence.
-- `recipient` follows the owner's order: `person_email` (it also needs a verified
-  person), then `team_inbox`, then `general_inbox`, else `none`. A title alone never
+- `contact` creates one run per outreach-ready screen record (recomputed under the
+  current screen rule), in screen order, under the same pinned ceiling and run limit.
+  The form asks for the deciding role, a named current person from a reputable public
+  source, a business email address published verbatim, the channel type, and a
+  contact form or phone URL when no address is published.
+- A person counts only when the person quote (five words or more) contains the name
+  and stands whole-word on our read of the person's page or in a provider excerpt
+  cited for that same URL.
+- An email counts only when all of these hold (rule `blueprint.site-contact-rule.v2`):
+  it is one plain address on the operator's own domain (from the screen's website) or
+  a subdomain of it, never a free-mail domain; its quote holds the exact address; and
+  our own read of the cited page holds the quote and the whole address. A provider
+  excerpt alone never counts. The codes are `site_screen_email_free_mail`,
+  `site_screen_email_off_operator_domain`, `site_screen_quote_lacks_address` and
+  `site_screen_address_not_on_source`.
+- `collect` checks a completed contact result's email on our own read of its page
+  before anything is stored. Then every address but a verified one is replaced by
+  `[redacted-email]` in the stored result and page reads, so a discarded address is
+  never kept; the decision (level and reason) stays with the page reads.
+- LinkedIn is never read or evidence for a person or an email, including inside an
+  archive or redirect wrapper (`person_source_not_allowed`).
+- The recipient comes from the address itself; the provider's channel label is
+  recorded and ignored. `person_email`: the local part holds a word of at least three
+  letters from a verified person's name. `team_inbox` or `general_inbox`: a role word
+  such as sales or operations (team), or info, contact or press (general). A careers,
+  legal, support or similar inbox, or anyone else's address, gives `none`. The order
+  is `person_email`, `team_inbox`, `general_inbox`, then `none`. A title alone never
   proves remit, so `decision_remit` is always an open question for a named person.
   `person_current` (no dated source within 18 months) and `recipient` are added when
   they are unproven.

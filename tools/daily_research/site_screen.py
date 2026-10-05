@@ -34,6 +34,10 @@ A proven quote must also name its answer: the operator's name, the input site's 
 state, and a word of the task. The task quote, or its page, must name the site's city or street;
 otherwise the task is only ``company_level_task``.
 
+A contact email counts only when our own read of its cited page holds its quote and the whole address, on
+the operator's own domain and never free mail; the recipient kind comes from the address itself. Every
+other address is removed from the stored result and page reads before they are written (``seal_contact``).
+
 Records are recomputed from the stored raw results and page reads under ``SCREEN_RULE`` (``screen_gates``
 and ``outreach_tier``, which mirror the in-flight ``verification.outreach_gates`` and ``outreach_tier``),
 so a later rule needs no paid re-run, and each derived file carries its rule version in its name.
@@ -69,7 +73,7 @@ OWNER_CEILING = "blueprint.site-screen.owner-ceiling.v1"
 EVIDENCE = "blueprint.site-screen.evidence.v1"
 # The rules each stage's records are recomputed under; a derived file's name carries its rule version.
 SCREEN_RULE = "blueprint.site-screen-rule.v2"
-CONTACT_RULE = "blueprint.site-contact-rule.v1"
+CONTACT_RULE = "blueprint.site-contact-rule.v2"
 STAGES = ("screen", "contact")
 API_HOST, RUNS_PATH = "api.parallel.ai", "/v1/tasks/runs"
 API_KEY_ENV = "PARALLEL_API_KEY"  # The operator reads it; this module only receives the value.
@@ -104,6 +108,22 @@ TERMINAL = frozenset({"completed", "failed", "cancelled"})
 TIERS = ("outreach_ready", "screened")
 RECIPIENT_PREFERENCE = ("person_email", "team_inbox", "general_inbox")  # The owner's order; else none.
 CHANNELS = (*RECIPIENT_PREFERENCE, "contact_form", "phone", "none")
+FREE_MAIL = frozenset({
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "hotmail.com", "outlook.com", "live.com", "msn.com",
+    "aol.com", "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com", "gmx.com", "gmx.net", "mail.com",
+    "yandex.com", "zoho.com", "fastmail.com", "hey.com", "tutanota.com", "comcast.net", "att.net", "verizon.net",
+    "sbcglobal.net", "bellsouth.net", "charter.net", "cox.net", "earthlink.net"})
+# Words in an address's local part that name what it reaches (design section 4: a press inbox is general).
+TEAM_INBOX = frozenset({"sales", "operations", "ops", "plant", "engineering", "manufacturing", "production",
+                        "purchasing", "procurement", "quality", "maintenance", "automation", "innovation", "projects",
+                        "service", "orders", "business", "partnerships"})
+GENERAL_INBOX = frozenset({"info", "contact", "contacts", "hello", "office", "mail", "enquiries", "enquiry",
+                           "inquiries", "inquiry", "general", "admin", "reception", "press", "media", "pr", "news",
+                           "communications"})
+REFUSED_INBOX = frozenset({"careers", "career", "jobs", "job", "hr", "recruiting", "recruitment", "talent", "hiring",
+                           "legal", "privacy", "support", "help", "helpdesk", "noreply", "donotreply", "billing",
+                           "accounts", "invoices", "webmaster", "abuse", "security", "unsubscribe"})
+REDACTED = "[redacted-email]"
 # The lead-verification claims and the three a quote must prove (verification.CLAIMS and PROVEN_FACTS).
 CLAIMS = ("operator", "physical_site", "site_task", "human_workflow", "plausible_fit")
 PROVEN_FACTS = ("operator", "physical_site", "site_task")
@@ -140,6 +160,7 @@ SOURCE_ID = re.compile(r"[a-z0-9_]{1,64}")
 CODE = re.compile(r"[a-z][a-z0-9_]{2,80}")
 DAY = re.compile(r"(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?")
 EMAIL = re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
+EMAIL_ANY = re.compile(EMAIL.pattern, re.IGNORECASE)
 CODE_ROOT = Path(__file__).resolve().parents[2]  # The repository, or the release directory holding this copy.
 
 
@@ -1092,12 +1113,15 @@ def _stored_status(raw):
     return run.get("status") if run.get("status") in TERMINAL else None
 
 
-def collect(workspace, *, client, wait_seconds=COLLECT_WAIT_SECONDS, poll_seconds=POLL_SECONDS,
-            monotonic=time.monotonic, sleep=time.sleep):
+def collect(workspace, *, client, reader=None, today=None, wait_seconds=COLLECT_WAIT_SECONDS,
+            poll_seconds=POLL_SECONDS, monotonic=time.monotonic, sleep=time.sleep):
     """Store each created run's terminal response once, then record the observation. Reads are not billed;
-    a failed read is tried again on the next pass until ``wait_seconds`` ends."""
+    a failed read is tried again on the next pass until ``wait_seconds`` ends. A completed contact result is
+    sealed first (seal_contact): its email is checked on our own read of its page, and every address but a
+    verified one is removed before anything is stored."""
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= MAX_WAIT_SECONDS:
         raise ScreenError("site_screen_wait_invalid")
+    pages, today = Pages(reader), today or datetime.now(timezone.utc).date()
     observed, read_errors, pending = Counter(), Counter(), {}
     with workspace.lock():
         deadline = monotonic() + wait_seconds
@@ -1113,9 +1137,10 @@ def collect(workspace, *, client, wait_seconds=COLLECT_WAIT_SECONDS, poll_second
                                                    result_sha256=_sha256(path.read_bytes())))
                     observed[f"{stage}_{status}"] += 1
                     continue
-                pending[(stage, key)] = site["run_id"]
+                pending[(stage, key)] = site
         while pending:
-            for (stage, key), run_id in list(pending.items()):
+            for (stage, key), site in list(pending.items()):
+                run_id = site["run_id"]
                 try:
                     run_value, raw = client.status(run_id)
                     if run_value["status"] == "completed":
@@ -1127,6 +1152,8 @@ def collect(workspace, *, client, wait_seconds=COLLECT_WAIT_SECONDS, poll_second
                         raise
                     read_errors[str(error)] += 1
                     continue
+                if stage == "contact" and run_value["status"] == "completed":
+                    raw = seal_contact(workspace, key, site["input"], raw, pages, today)
                 _write_once(workspace.path(stage, "results", key), raw)
                 workspace.append(stage, _event(stage, "observed", key, run_id=run_id, status=run_value["status"],
                                                result_sha256=_sha256(raw)))
@@ -1559,36 +1586,68 @@ def _person(text, index, evidence, today):
             "date": text["person_date"] or None, "current": _fresh(text["person_date"], today)}
 
 
-def _email(text, index, evidence):
+def site_domain(url):
+    """The registrable domain of a URL's host: its last two labels, or three under a two-letter country code's
+    second level (co.uk). None without a host."""
+    labels = (_host(url) or "").split(".")
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in {"co", "com", "net", "org", "gov", "ac", "edu"}:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:]) if len(labels) >= 2 and all(labels[-2:]) else None
+
+
+def email_check(text, site, index, evidence):
+    """The contact's published business address, proven only on our own read of its cited page.
+
+    It must parse as one address on the operator's own domain (the screen's website) or a subdomain of it, never
+    a free-mail domain; its quote must hold the exact address and stand whole-word on that page, where the
+    address must also stand as a whole token. A provider excerpt never counts, and LinkedIn never does."""
     raw, url, quote = text["email"], text["email_url"], text["email_quote"]
     if not raw:
         return {"verified": False, "level": "no_email", "discarded": False}
-    address = email_address(raw)
+    address, operator = email_address(raw), site_domain(site["task_input"].get("website") or "")
+    domain = address.rpartition("@")[2] if address else ""
     if address is None:
         level, code = "unverified", "site_screen_email_invalid"
-    elif never_fetch(url):
+    elif never_fetch(url) or never_fetch(raw):
         level, code = "person_source_not_allowed", None
-    elif quote and address not in addresses(quote):
+    elif domain in FREE_MAIL or site_domain("https://" + domain) in FREE_MAIL:
+        level, code = "unverified", "site_screen_email_free_mail"
+    elif not operator or not (domain == operator or domain.endswith("." + operator)):
+        level, code = "unverified", "site_screen_email_off_operator_domain"
+    elif not _string(quote):
+        level, code = "unverified", "site_screen_quote_missing"
+    elif address not in addresses(quote):
         level, code = "unverified", "site_screen_quote_lacks_address"
     else:
-        item = proof(quote, url, index, evidence)
-        level, code = item["level"], item.get("read")
-        if level == "no_quote":
-            level, code = "unverified", "site_screen_quote_missing"
-        elif level in PROVEN and address not in addresses(holding(quote, url, index)[2]):
+        level, _, page = holding(quote, url, index, kinds=("pages",))
+        if level is None:
+            item = proof(quote, url, {"pages": index["pages"], "excerpts": {}}, evidence)
+            level, code = item["level"], item.get("read")
+        elif address not in addresses(page):
             level, code = "unverified", "site_screen_address_not_on_source"
-    if level not in PROVEN:
-        # Discarded: the address stays only in the raw provider response, never in this record.
+        else:
+            code = None
+    if level != "verified_on_page":
+        # Discarded: no stored result, page read or record keeps this address (redact).
         return {"verified": False, "level": level, "discarded": True, **({"reason": code} if code else {})}
     return {"verified": True, "level": level, "discarded": False, "address": address, "url": url}
 
 
-def recipient(channel, email_verified, person_verified):
-    """The recipient kind in the owner's preference order (a person's email, a team inbox, a general inbox)
-    or none. A verified address is needed, and for person_email a verified person too."""
-    if not email_verified or channel not in RECIPIENT_PREFERENCE or channel == "person_email" and not person_verified:
-        return "none"
-    return channel
+def address_role(address, person):
+    """What a verified address reaches, from the address itself; the provider's channel label is ignored.
+
+    person: its local part holds a word of at least three letters from the verified person's name. team or
+    general: a role word (TEAM_INBOX, GENERAL_INBOX; a press inbox is general). refused: a careers, legal,
+    support or similar inbox. unknown: anything else, such as another person's address."""
+    local = address.partition("@")[0]
+    parts, letters = set(re.findall(r"[a-z]+", local)), "".join(re.findall(r"[a-z]+", local))
+    names = [word for word in words(person.get("name")).split() if len(word) >= 3] if person["verified"] else []
+    if any(name in letters for name in names):
+        return "person"
+    for role, vocabulary in (("refused", REFUSED_INBOX), ("team", TEAM_INBOX), ("general", GENERAL_INBOX)):
+        if parts & vocabulary:
+            return role
+    return "unknown"
 
 
 def recipient_rank(kind):
@@ -1606,25 +1665,62 @@ def contact_questions(person, kind):
     return [{"check": name, "question": CONTACT_QUESTIONS[name]} for name in names]
 
 
+def redact(value, keep=None):
+    """``value`` with every email address but ``keep`` replaced by REDACTED, in every string it holds."""
+    if isinstance(value, str):
+        return EMAIL_ANY.sub(lambda match: match.group(0) if match.group(0).lower() == keep else REDACTED, value)
+    if isinstance(value, list):
+        return [redact(item, keep) for item in value]
+    if isinstance(value, dict):
+        return {key: redact(item, keep) for key, item in value.items()}
+    return value
+
+
+def seal_contact(workspace, key, site, raw, pages, today):
+    """The contact result to store: its email checked on our own read of its page first, then every address but
+    a verified one removed from the result and from the page reads, before either is written."""
+    result = _json(raw)
+    content, basis = output_of(result)
+    text = {field: _string(content.get(field)) for field in CONTACT_SCHEMA["properties"]}
+    path = workspace.path("contact", "evidence", key)
+    if path.exists():  # Kept before an interruption: its decision stands, and nothing is read again.
+        evidence = _evidence(path.read_bytes())
+    else:
+        evidence = read_evidence("contact", key, result, pages, today)
+        check = email_check(text, site, evidence_index(evidence, basis), evidence)
+        evidence = redact({**evidence, "email": {name: check[name] for name in ("level", "reason") if name in check}},
+                          check.get("address"))
+        _write_once(path, (json.dumps(evidence, sort_keys=True) + "\n").encode())
+    keep = email_address(text["email"]) if (evidence.get("email") or {}).get("level") == "verified_on_page" else None
+    return (json.dumps(redact(result, keep), sort_keys=True) + "\n").encode()
+
+
 def contact_record(site, run_id, result_raw, evidence_raw):
-    """One site's contact under CONTACT_RULE, recomputed from its stored raw result and page reads alone. Only a
-    proven person and a proven address are kept; the raw provider response keeps everything else."""
+    """One site's contact under CONTACT_RULE, recomputed from its stored result and page reads alone. A discarded
+    address was removed before anything was stored, so its decision is the one kept with the page reads."""
     evidence = _evidence(evidence_raw)
     content, basis = output_of(_json(result_raw))
     text = {field: _string(content.get(field)) for field in CONTACT_SCHEMA["properties"]}
     index = evidence_index(evidence, basis)
     checked_on = evidence.get("checked_on")
     today = date.fromisoformat(checked_on) if isinstance(checked_on, str) else date.min
-    person, email = _person(text, index, evidence, today), _email(text, index, evidence)
-    channel = re.sub(r"[\s-]+", "_", text["channel_type"].lower())
-    channel = channel if channel in CHANNELS else "none"
-    kind = recipient(channel, email["verified"], person["verified"])
+    person = _person(text, index, evidence, today)
+    decision = evidence.get("email") if isinstance(evidence.get("email"), dict) else {}
+    if decision.get("level") in (None, "verified_on_page", "no_email"):
+        email = email_check(text, site, index, evidence)
+    else:
+        email = {"verified": False, "level": decision["level"], "discarded": True,
+                 **({"reason": decision["reason"]} if decision.get("reason") else {})}
+    role = address_role(email["address"], person) if email["verified"] else None
+    kind = {"person": "person_email", "team": "team_inbox", "general": "general_inbox"}.get(role, "none")
+    label = re.sub(r"[\s-]+", "_", text["channel_type"].lower())
     channel_url = text["channel_url"] if _public_url(text["channel_url"]) and not never_fetch(text["channel_url"]) else None
     return {"schema_version": CONTACT, "rule_version": CONTACT_RULE, "site_key": site["site_key"],
             "origin": site["origin"], "input": site["task_input"], "run_id": run_id,
             "result_sha256": _sha256(result_raw), "evidence_sha256": _sha256(evidence_raw), "checked_on": checked_on,
-            "decision_role": text["decision_role"] or None, "person": person, "email": email,
-            "channel": {"type": channel, "url": channel_url},
+            "decision_role": text["decision_role"] or None, "person": person,
+            "email": {**email, "role": role} if role else email,
+            "channel": {"label": label if label in CHANNELS else "none", "url": channel_url},
             "recipient": {"kind": kind, "rank": recipient_rank(kind),
                           "address": email.get("address") if kind != "none" else None},
             "open_questions": contact_questions(person, kind)}
@@ -1727,7 +1823,7 @@ def _contact_counts(records):
             "person_levels": dict(Counter(r["person"]["level"] for r in records)),
             "email_levels": dict(Counter(r["email"]["level"] for r in records)),
             "emails_discarded": sum(r["email"]["discarded"] for r in records),
-            "channels": dict(Counter(r["channel"]["type"] for r in records)),
+            "channels": dict(Counter(r["channel"]["label"] for r in records)),
             "open_questions": dict(Counter(q["check"] for r in records for q in r["open_questions"]))}
 
 

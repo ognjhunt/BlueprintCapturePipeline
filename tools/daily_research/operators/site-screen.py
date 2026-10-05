@@ -98,8 +98,8 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
                                      apply=args.apply)
     elif args.command == "collect":
         workspace = site_screen.Workspace(args.out)
-        result = site_screen.collect(workspace, client=client(), wait_seconds=args.wait_seconds,
-                                     monotonic=monotonic, sleep=sleep)
+        result = site_screen.collect(workspace, client=client(), reader=reader, today=today,
+                                     wait_seconds=args.wait_seconds, monotonic=monotonic, sleep=sleep)
     elif args.command == "verify":
         result = site_screen.verify(site_screen.Workspace(args.out), reader=reader, today=today)
     else:
