@@ -728,11 +728,12 @@ state and code. Any slice failure (`site_universe_pin_invalid`,
 `site_universe_attach_unavailable`) records `{state: "refused", code}` and research
 continues exactly as without the slice; an empty selection records `exhausted`.
 Near the intent ceiling the record shrinks to `{state, code}` or is dropped, so a
-pinned run never fails where an unpinned one would succeed. A damaged prior row is
-skipped and the sites it names stay out for the window (the funnel counts it as
-`history_rows_untrusted` with `history_codes`); only one that names no readable
-site refuses with `site_universe_history_binding_invalid`. A lost store or lease
-still stops the run. The hermetic tests use the real bridge
+pinned run never fails where an unpinned one would succeed. A prior row offered a
+slice only if its intent bound one (`metadata.site_universe_slice_digest` and the
+slice file). Without a trusted outcome block, every site that slice offered stays out
+for the window (the funnel counts it as `history_rows_untrusted` with
+`history_codes`); a bound slice file that no longer verifies refuses with
+`site_universe_history_binding_invalid`. A lost store or lease still stops the run. The hermetic tests use the real bridge
 with in-memory Firestore and a fake object store. No provider, model, session, CRM
 write or send.
 

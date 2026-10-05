@@ -301,20 +301,52 @@ def _hex_ids(values):
     return {value for value in values if _hex(value)} if isinstance(values, list) else set()
 
 
-def _history(history, day, reoffer_after_days):
-    """Outcome, untrusted and candidate inputs from prior rows; refuses only an unbounded gap.
+def offered_ids(row):
+    """The site ids a prior row's slice offered, or None when its intent bound no slice.
 
-    A row inside the window whose packet no longer matches its packet_digest, or whose
-    block is malformed or unavailable, is skipped: its outcomes are not trusted, so every
-    site it names (the slice its record offered and its listed outcomes) stays out for the
-    window instead. Only a row that may have attached a slice but names no readable site
-    could hide a recent outcome for any site, so that alone refuses the slice.
+    Only metadata.site_universe_slice_digest, which the store binds at the intent, says that a
+    row offered a slice; the ids come from the slice file that digest binds (the check
+    frozen_slice makes). The mutable record and packet never decide it. A file that no longer
+    verifies refuses with site_universe_history_binding_invalid.
+    """
+    metadata = row.get("metadata") if isinstance(row, dict) else None
+    expected = metadata.get("site_universe_slice_digest") if isinstance(metadata, dict) else None
+    if expected is None:
+        return None
+    try:
+        files = [item for item in row["create_payload"]["environment"]["files"]
+                 if isinstance(item, dict) and item.get("path") == SLICE_PATH]
+        _need(len(files) == 1 and _hex(expected), HISTORY_INVALID)
+        raw = base64.b64decode(files[0]["data"], validate=True)
+        _need(hashlib.sha256(raw).hexdigest() == expected, HISTORY_INVALID)
+        value = json.loads(raw)
+        ids = [site["site_id"] for site in value["sites"]]
+        _need(value.get("schema_version") == SLICE and ids and all(_hex(site_id) for site_id in ids)
+              and len(set(ids)) == len(ids), HISTORY_INVALID)
+    except (SiteUniverseError, KeyError, TypeError, ValueError, AttributeError):
+        raise SiteUniverseError(HISTORY_INVALID) from None
+    return ids
+
+
+def _history(history, day, reoffer_after_days):
+    """Outcome, untrusted and candidate inputs from prior rows (fail closed).
+
+    Inside the window, a row whose intent bound a slice (``offered_ids``) gives its outcomes
+    only from a trusted block: the packet matches its packet_digest and holds the attached
+    block for that slice, with one outcome per offered site in slice order. Otherwise every site
+    the slice offered stays out for the window. A row whose bound slice no longer verifies
+    refuses the slice. A row whose intent bound no slice never offered a site.
     """
     from tools.daily_research.runner import digest
     recent, untrusted, candidates, codes = set(), set(), [], set()
     outcome_rows = untrusted_rows = 0
     for prior in history or []:
-        if not isinstance(prior, dict) or not isinstance(prior.get("packet"), dict):
+        if not isinstance(prior, dict):
+            continue
+        packet = prior.get("packet") if isinstance(prior.get("packet"), dict) else None
+        metadata = prior.get("metadata") if isinstance(prior.get("metadata"), dict) else {}
+        bound_slice = metadata.get("site_universe_slice_digest")
+        if packet is None and bound_slice is None:
             continue
         try:
             prior_day = date.fromisoformat(prior["date"])
@@ -322,32 +354,26 @@ def _history(history, day, reoffer_after_days):
             raise SiteUniverseError(HISTORY_INVALID) from None
         if prior_day >= day:
             continue
-        packet = prior["packet"]
-        candidates.extend(c for c in packet.get("candidates") or [] if isinstance(c, dict))
-        block, record = packet.get("site_universe"), prior.get("site_universe")
-        offered = isinstance(record, dict) and record.get("state") == "attached"
-        if block is None and not offered or (day - prior_day).days >= reoffer_after_days:
+        if packet is not None:
+            candidates.extend(c for c in packet.get("candidates") or [] if isinstance(c, dict))
+        if bound_slice is None or (day - prior_day).days >= reoffer_after_days:
             continue
+        offered = offered_ids(prior)
+        block = packet.get("site_universe") if packet is not None else None
         found = block.get("outcomes") if isinstance(block, dict) else None
         try:
-            bound = digest(packet) == prior.get("packet_digest")
+            bound = packet is not None and digest(packet) == prior.get("packet_digest")
         except (TypeError, ValueError):
             bound = False
-        well = isinstance(found, list) and all(
-            isinstance(o, dict) and _hex(o.get("site_id")) and o.get("outcome") in {*OUTCOME.values(), "untouched"}
-            for o in found)
-        if bound and isinstance(block, dict) and block.get("state") == "attached" and well:
+        if (bound and isinstance(block, dict) and block.get("state") == "attached"
+                and block.get("slice_sha256") == bound_slice and isinstance(found, list)
+                and [item.get("site_id") if isinstance(item, dict) else None for item in found] == offered
+                and all(item.get("outcome") in {*OUTCOME.values(), "untouched"} for item in found)):
             outcome_rows += 1
-            recent.update(o["site_id"] for o in found if o["outcome"] != "untouched")
+            recent.update(item["site_id"] for item in found if item["outcome"] != "untouched")
             continue
-        if bound and isinstance(block, dict) and block.get("state") in {"refused", "exhausted"} and not offered:
-            continue  # That run attached no slice: nothing was offered.
-        named = _hex_ids(record.get("site_ids") if offered else None) | _hex_ids(
-            [o.get("site_id") for o in found if isinstance(o, dict)] if isinstance(found, list) else None)
-        nothing_offered = isinstance(record, dict) and record.get("state") in {"refused", "exhausted"}
-        _need(named or nothing_offered, HISTORY_INVALID)
         untrusted_rows += 1
-        untrusted |= named
+        untrusted.update(offered)
         code = block.get("code") if bound and isinstance(block, dict) and block.get("state") == "unavailable" else None
         codes.add(code if isinstance(code, str) and CODE.fullmatch(code) else HISTORY_INVALID)
     return recent, untrusted, candidates, outcome_rows, untrusted_rows, sorted(codes)
@@ -366,8 +392,8 @@ def select(export, *, history, crm_values, run_date, slice_size, reoffer_after_d
     """The run's slice (export rows in rank order) and its selection record. Pure: no clock.
 
     1. Remove every site with a recorded outcome (anything but untouched) in a prior row's
-       ``packet.site_universe`` within ``reoffer_after_days`` of ``run_date``, and every site an
-       untrusted prior row in that window names (see ``_history``).
+       trusted ``packet.site_universe`` within ``reoffer_after_days`` of ``run_date``, and every
+       site that a prior slice without a trusted block offered in that window (see ``_history``).
     2. Remove sites that match a CRM row (``crm_values[5:]``) or a prior formal candidate
        (see ``_Identities``).
     3. Walk the rest in export order (rank, then site_id): one seed per

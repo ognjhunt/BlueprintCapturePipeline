@@ -17,6 +17,7 @@ from tools.daily_research.runner import Refusal, canonical, digest, keys
 DAY = "2026-10-06"
 WEIGHTS = {"fixed_arm_machine_tending": 1.0, "hospital_logistics": 0.25, "kitting": 0.85, "palletizing": 0.85}
 SEEDS = ["fixed_arm_machine_tending", "kitting", "palletizing"]
+HISTORY = "site_universe_history_binding_invalid"
 ANCHOR = "Before searching read /workspace/inputs/blueprint-research-crm-identities.json; exact SHA256 x. "
 STARTED = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
 
@@ -294,11 +295,26 @@ def test_equal_ranks_break_by_site_id():
     assert [s["site_id"] for s in sites] == [row["site_id"] for row in ordered]
 
 
+def offered(day, numbers, touched=None):
+    """A prior row whose intent bound a slice of exactly ``numbers``, with outcomes for ``touched``."""
+    row = attached_row([site(number) for number in numbers], slice_size=max(su.MIN_SLICE, len(numbers)))
+    inventory = [record_for(number, disposition) for number, disposition in (touched or {}).items()]
+    packet = {"candidates": [], "site_universe": su.outcomes(row, {"discovery_inventory": inventory}, [], [])}
+    row.update(date=day, run_key="blueprint-researcher:" + day, state="completed", packet=packet,
+               packet_digest=digest(packet))
+    return row
+
+
+def slice_file(row):
+    return next(item for item in row["create_payload"]["environment"]["files"] if item["path"] == su.SLICE_PATH)
+
+
 def test_history_outcomes_are_removed_inside_the_reoffer_window_only():
     rows = [site(number) for number in range(1, 9)]
-    history = [prior("2026-09-26", [outcome(1), outcome(2, "untouched"), outcome(3, "rejected")]),
-               prior("2026-07-08", [outcome(4, "researched_gap")]),  # 90 days before: re-offered.
-               prior(DAY, [outcome(5)]), prior("2026-10-07", [outcome(6)])]  # Not prior to the run date.
+    history = [offered("2026-09-26", [1, 2, 3, 7, 8], {1: "screened", 3: "rejected"}),  # 2, 7 and 8 untouched.
+               offered("2026-07-08", [4, 5, 6, 7, 8], {4: "unresolved"}),  # 90 days before: re-offered.
+               offered(DAY, [5, 6, 7, 8], {5: "screened"}),  # Not prior to the run date.
+               offered("2026-10-07", [6, 7, 8], {6: "screened"})]
     ranks, selection = chosen(rows, slice_size=8, history=history)
     assert ranks == [2, 4, 5, 6, 7, 8]
     assert selection["removed"] == {"reoffer_window": 2, "untrusted_history": 0, "crm": 0, "prior_candidate": 0}
@@ -318,36 +334,81 @@ def damaged(day, *, block=..., record=None, outcomes=()):
     return value
 
 
-def test_a_damaged_history_row_is_skipped_and_every_site_it_names_stays_out_for_the_window():
-    rows = [site(number) for number in range(1, 9)]
-    record = {"state": "attached", "site_ids": [sha("synthetic-site-2"), sha("synthetic-site-3")]}
-    history = [damaged("2026-10-01", record=record, outcomes=[outcome(1), outcome(2, "untouched")])]
-    ranks, selection = chosen(rows, slice_size=8, history=history)
-    assert ranks == [4, 5, 6, 7, 8]  # 1 from its untrusted outcomes, 2 and 3 from the slice it offered.
-    assert selection["removed"] == {"reoffer_window": 0, "untrusted_history": 3, "crm": 0, "prior_candidate": 0}
-    assert selection["history_rows_untrusted"] == 1 and selection["history_outcome_rows"] == 0
-    assert selection["history_codes"] == ["site_universe_history_binding_invalid"]
-    # A bound row whose outcomes were unavailable is untrusted the same way, with its own code.
-    unavailable = prior("2026-10-01")
-    unavailable["packet"]["site_universe"] = {"schema_version": su.OUTCOMES, "state": "unavailable",
-                                              "code": "site_universe_frozen_slice_binding_invalid"}
-    unavailable.update(packet_digest=digest(unavailable["packet"]), site_universe=record)
-    ranks, selection = chosen(rows, slice_size=8, history=[unavailable])
-    assert ranks == [1, 4, 5, 6, 7, 8] and selection["history_codes"] == ["site_universe_frozen_slice_binding_invalid"]
-    # A damaged row that attached no slice offered nothing, and one outside the window is ignored.
-    assert chosen(rows, slice_size=8, history=[damaged("2026-10-01", record={"state": "refused", "code": "x"})])[0] == list(range(1, 9))
-    assert chosen(rows, slice_size=8, history=[damaged("2026-07-08", block="garbage")])[1]["history_rows_untrusted"] == 0
+def rebound(row, block):
+    row["packet"]["site_universe"] = block
+    row["packet_digest"] = digest(row["packet"])
 
 
-@pytest.mark.parametrize("value", [
-    lambda: damaged("2026-10-01", block="garbage"),
-    lambda: damaged("2026-10-01", outcomes=[{"site_id": "x", "outcome": "screened"}]),
-    lambda: damaged("2026-10-01", record={"state": "attached", "site_ids": "not-a-list"}),
-    lambda: {**prior("2026-10-01", [{"site_id": "x", "outcome": "screened"}])},  # bound but malformed
+def other_slice_outcomes(row):
+    block = deepcopy(row["packet"]["site_universe"])
+    for number, item in zip(range(6, 11), block["outcomes"]):
+        item["site_id"] = sha(f"synthetic-site-{number}")
+    rebound(row, block)
+
+
+DAMAGE = {  # Mutable row fields only; the intent's metadata digest and the slice file it binds stay intact.
+    "intact": lambda row: None,
+    "record lists other sites": lambda row: row["site_universe"].update(
+        site_ids=[sha(f"synthetic-site-{number}") for number in range(6, 11)]),
+    "packet digest mismatch": lambda row: row.update(packet_digest="0" * 64),
+    "block removed": lambda row: row["packet"].pop("site_universe"),
+    "record removed, digest mismatch": lambda row: (row.pop("site_universe"), row.update(packet_digest="0" * 64)),
+    "record and block removed": lambda row: (row.pop("site_universe"), row["packet"].pop("site_universe")),
+    "record refused, outcomes emptied, digest mismatch": lambda row: (
+        row.update(site_universe={"state": "refused", "code": "site_universe_pin_invalid"}),
+        row["packet"]["site_universe"].update(outcomes=[]), row.update(packet_digest="0" * 64)),
+    "packet null": lambda row: row.update(packet=None),
+    "packet removed, state failed": lambda row: (row.pop("packet"), row.update(state="failed")),
+    "bound outcomes for another slice": other_slice_outcomes,
+    "bound block for another slice": lambda row: rebound(row, {**row["packet"]["site_universe"], "slice_sha256": "0" * 64}),
+    "bound block unavailable": lambda row: rebound(row, {"schema_version": su.OUTCOMES, "state": "unavailable",
+                                                         "code": "site_universe_frozen_slice_binding_invalid"}),
+    "bound block refused": lambda row: rebound(row, {"schema_version": su.OUTCOMES, "state": "refused",
+                                                     "code": "site_universe_pin_invalid"}),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(DAMAGE))
+def test_a_prior_slice_never_comes_back_early_whatever_its_mutable_fields_say(damage):
+    # The prior run offered sites 1-5 and recorded outcomes for 1 and 2.
+    prior_row = offered("2026-10-03", [1, 2, 3, 4, 5], {1: "screened", 2: "rejected"})
+    DAMAGE[damage](prior_row)
+    ranks, selection = chosen([site(number) for number in range(1, 11)], slice_size=10, history=[prior_row])
+    if damage in {"intact", "record lists other sites"}:
+        # Trusted outcomes: the touched sites stay out and the untouched ones come back.
+        assert ranks == [3, 4, 5, 6, 7, 8, 9, 10]
+        assert selection["history_outcome_rows"] == 1 and selection["history_rows_untrusted"] == 0
+    else:
+        assert ranks == [6, 7, 8, 9, 10]  # Without a trusted block every site the slice offered stays out.
+        assert selection["removed"]["untrusted_history"] == 5 and selection["history_rows_untrusted"] == 1
+        assert selection["history_codes"] == ["site_universe_frozen_slice_binding_invalid"
+                                              if damage == "bound block unavailable" else HISTORY]
+
+
+@pytest.mark.parametrize("damage", [
+    lambda row: slice_file(row).update(data=base64.b64encode(b"{}").decode()),
+    lambda row: row["create_payload"]["environment"]["files"].remove(slice_file(row)),
+    lambda row: row["create_payload"]["environment"]["files"].append(dict(slice_file(row))),
+    lambda row: row.pop("create_payload"),
+    lambda row: row["metadata"].update(site_universe_slice_digest="0" * 64),
 ])
-def test_a_damaged_row_that_names_no_readable_site_refuses_the_slice(value):
+def test_a_row_whose_intent_bound_a_slice_that_no_longer_verifies_refuses_the_slice(damage):
+    prior_row = offered("2026-10-03", [1, 2, 3, 4, 5], {1: "screened"})
+    damage(prior_row)
     with pytest.raises(su.SiteUniverseError, match="^site_universe_history_binding_invalid$"):
-        chosen([site(1)], history=[value()])
+        chosen([site(number) for number in range(1, 11)], slice_size=10, history=[prior_row])
+    assert chosen([site(1)], history=[{**prior_row, "date": "2026-07-08"}])[0] == [1]  # Outside the window: not read.
+
+
+def test_rows_whose_intent_bound_no_slice_never_exclude_or_refuse():
+    rows = [site(number) for number in range(1, 9)]
+    never = [prior("2026-10-01", [outcome(1), outcome(2)]),  # Outcomes without a bound slice are not evidence.
+             damaged("2026-10-01", block="garbage"), {"date": "2026-10-01", "state": "failed"},
+             {**prior("2026-10-01"), "site_universe": {"state": "attached", "site_ids": [sha("synthetic-site-3")]}},
+             {**prior("2026-10-01"), "metadata": {"run_key": "blueprint-researcher:2026-10-01"}}]
+    ranks, selection = chosen(rows, slice_size=8, history=never)
+    assert ranks == list(range(1, 9))
+    assert selection["history_rows_untrusted"] == selection["history_outcome_rows"] == 0 and selection["history_codes"] == []
 
 
 def test_crm_and_prior_candidates_are_prefiltered_by_organization_words_and_place():
@@ -369,7 +430,7 @@ def test_crm_and_prior_candidates_are_prefiltered_by_organization_words_and_plac
 def test_selection_is_deterministic_and_independent_of_history_and_crm_order():
     rows = [site(number, lead=random.Random(number).choice(sorted(WEIGHTS)), group=f"group {number % 4}")
             for number in range(1, 40)]
-    history = [prior(f"2026-09-{day:02d}", [outcome(day)]) for day in range(10, 20)]
+    history = [offered(f"2026-09-{day:02d}", [day, day + 15], {day: "screened"}) for day in range(10, 20)]
     values = crm(*[(f"Synthetic Operator {n}", "Plant", "Fixture City") for n in range(20, 26)])
     expected = chosen(rows, slice_size=12, history=history, values=values)
     for seed in range(3):
@@ -428,8 +489,9 @@ def test_profile_window_history_and_exhaustion_are_recorded_codes():
     store, _, _ = store_for(rows)
     assert attach(store, supported=False)[0]["code"] == "site_universe_profile_unsupported" and store.reads == ["control"]
     assert attach(store_for(rows)[0], research_seconds=449)[0]["code"] == "site_universe_slice_exceeds_research_window"
-    history = [damaged("2026-10-01", block="garbage")]  # A damaged row that names no readable site.
-    assert attach(store_for(rows)[0], history=history)[0]["code"] == "site_universe_history_binding_invalid"
+    broken = offered("2026-10-01", [1, 2, 3, 4, 5], {1: "screened"})
+    broken["metadata"]["site_universe_slice_digest"] = "0" * 64  # The slice its intent bound no longer verifies.
+    assert attach(store_for(rows)[0], history=[broken])[0]["code"] == "site_universe_history_binding_invalid"
     record, raw = attach(store_for(rows)[0], values=crm(("Synthetic", "Plant", "Fixture City")))
     assert raw is None and record["state"] == "exhausted" and record["code"] == "site_universe_slice_empty"
     assert record["selection"]["removed"]["crm"] == 7 and record["selection"]["offered"] == 0

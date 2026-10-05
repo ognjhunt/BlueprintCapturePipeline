@@ -1203,25 +1203,15 @@ def test_site_universe_flag_on_freezes_one_slice_and_recovery_never_reads_it_aga
 
 
 def refused_cases():
-    from tests.test_daily_research_site_universe import (
-        build_export,
-        outcome,
-        pin_for,
-        prior,
-        sha,
-        site,
-    )
+    from tests.test_daily_research_site_universe import build_export, offered, pin_for, sha, site
     rows = [site(number) for number in range(1, 10)]
     value, objects = universe_pin(rows)
     key = (value["sha256"], value["generation"])
     corrupt = b"\x1f\x8b corrupt export"
     corrupt_pin = pin_for(corrupt, slice_size=6)
-    every = [prior("2026-09-29", [outcome(number) for number in range(1, 10)])]
-    for history in every:
-        history.update(state="completed", run_key="blueprint-researcher:" + history["date"])
-    tampered = prior("2026-09-29", [outcome(1)], tamper=True)
-    tampered.update(state="completed", run_key="blueprint-researcher:2026-09-29")
-    tampered["packet"]["site_universe"] = "garbage"  # A damaged row that names no readable site.
+    every = [offered("2026-09-29", list(range(1, 10)), dict.fromkeys(range(1, 10), "screened"))]
+    tampered = offered("2026-09-29", [1, 2, 3, 4, 5], {1: "screened"})
+    tampered["metadata"]["site_universe_slice_digest"] = "0" * 64  # The slice its intent bound no longer verifies.
     return [
         ("site_universe_pin_invalid", {**value, "slice_size": 99}, objects, ()),
         ("site_universe_slice_exceeds_research_window", {**value, "slice_size": 14}, objects, ()),
@@ -1270,15 +1260,13 @@ def test_a_lost_lease_while_reading_the_pin_stops_the_run_as_today(universe):
 
 
 def ceiling_case(scenario):
-    from tests.test_daily_research_site_universe import outcome, prior
+    from tests.test_daily_research_site_universe import offered
     value, objects = universe_pin()
     history = ()
     if scenario == "refused":
         objects = {}
     if scenario == "exhausted":
-        every = prior("2026-09-29", [outcome(number) for number in range(1, 10)])
-        every.update(state="completed", run_key="blueprint-researcher:2026-09-29")
-        history = (every,)
+        history = (offered("2026-09-29", list(range(1, 10)), dict.fromkeys(range(1, 10), "screened")),)
     return value, objects, history
 
 

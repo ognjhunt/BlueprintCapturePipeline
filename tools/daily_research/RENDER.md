@@ -140,10 +140,13 @@ what its input holds, so an input without the key turns the slice off. The disk
   selects up to `slice_size` sites: sites with an outcome in the last
   `reoffer_after_days`, CRM rows and prior formal candidates are removed; one seed
   per policy capability, then rank order with at most half per lead capability and
-  one site per group, then each cap relaxed. A prior row in the window whose packet
-  no longer matches its `packet_digest`, or whose outcomes are unavailable, is
-  skipped; every site it names stays out for the window, and the selection counts
-  it with its code. Only such a row that names no readable site refuses the slice.
+  one site per group, then each cap relaxed. Whether a prior row offered a slice,
+  and which sites, comes only from its intent: `metadata.site_universe_slice_digest`
+  and the slice file it binds. Its outcomes count only from a trusted block (the
+  packet matches its `packet_digest` and holds that slice's attached block);
+  otherwise every site it offered stays out for the window, and the selection
+  counts it with its code. A bound slice file that no longer verifies refuses the
+  slice.
   The export must list only reviewed licenses (`CC0-1.0`, `ODbL-1.0`, `US-Gov-Work`, `US-PD`).
 - The slice goes into `/workspace/inputs/blueprint-site-universe-slice.json` as an
   inline file, `metadata.site_universe_slice_digest` holds its SHA-256, one
