@@ -1298,7 +1298,7 @@ export class Store {
         return {success:true,output:{validated_research:row.qa.decision || null,packet:row.packet,
           lead_verification:row.review?.lead_verification || null,
           verification_eligibility:Object.fromEntries(Object.keys(row.delivery || {}).map(name=>[name,publicationVerification(row,name,this.clock(),
-            {withheld:run.outreach_ready_unbound===true?'outreach_ready_unbound':null})])),
+            {withheld:this.outreachUnbound(run,row)?'outreach_ready_unbound':null})])),
           destinations:Object.fromEntries(Object.entries(row.delivery || {}).map(([name,d])=>[name,{
             key:d.key,payload:d.payload,payload_digest:d.payload_digest,presentation:d.presentation || null,
             state:d.state,receipt:d.receipt || null,plan:d.plan || null,
@@ -1532,7 +1532,8 @@ export class Store {
     try {
       if(terminalRecovery && attemptState((await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row,destination).claimed && !d.plan)
         refuse('terminal_sheets_recovery_claim_plan_missing');
-      const withheld=await this.hypothesesWithheld(day,terminalRecovery);
+      const withheld=terminalRecovery || d.payload?.hypotheses?.length
+        ? await this.hypothesesWithheld(day,terminalRecovery,row) : null;
       const replan=withheld && d.plan?.hypothesis_keys?.length;
       if(replan) {
         const run=(await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),state=attemptState(run,row,destination);
@@ -1569,7 +1570,7 @@ export class Store {
         if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || attemptState(run,row,destination).claimed) refuse('publication_attempt_not_admitted');
-        this.hypothesisPlanGate(run,d.plan);
+        this.hypothesisPlanGate(run,row,d.plan);
         if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
         requirePublicationVerification(row,destination,this.clock());
         tx.set(ref,claimUpdate(run,row,destination,d.plan.request_digest),{merge:true});
@@ -1590,7 +1591,8 @@ export class Store {
       requirePublicationVerification(row,destination,this.clock());
       await this.publisher.write(row,destination,d.plan,{beforeWrite:async()=>{
         requirePublicationVerification(row,destination,this.clock());
-        const latest=(await ref.get()).data();this.hypothesisPlanGate(latest,d.plan);
+        if(!terminalRecovery && !d.plan.hypothesis_keys?.length) return;
+        const latest=(await ref.get()).data();this.hypothesisPlanGate(latest,row,d.plan);
         if(!terminalRecovery) return;
         const control=(await this.control.get()).data();
         this.terminalSheetsGate(control,row,terminalRecovery);
@@ -1608,12 +1610,18 @@ export class Store {
   }
   // Why every hypothesis on this row stays out of a fresh plan, or null: an unbound outreach record
   // (an older bridge dropped its digest) or a verified-rows-only terminal Sheets recovery.
-  async hypothesesWithheld(day,terminalRecovery=null) {
+  async hypothesesWithheld(day,terminalRecovery=null,row=null) {
     if(terminalRecovery) return 'terminal_sheets_recovery_verified_rows_only';
-    return (await this.db.doc(`${ROOT}/runs/${day}`).get()).data()?.outreach_ready_unbound===true ? 'outreach_ready_unbound' : null;
+    const run=(await this.db.doc(`${ROOT}/runs/${day}`).get()).data();
+    return this.outreachUnbound(run,row || await this.get(day)) ? 'outreach_ready_unbound' : null;
   }
-  hypothesisPlanGate(run,plan) {
-    if(run?.outreach_ready_unbound===true && plan.hypothesis_keys?.length)
+  outreachUnbound(run,row) {
+    // Publication may resume directly after rollback, before put projects the sticky flag.
+    return run?.outreach_ready_unbound===true || row?.outreach_ready!=null
+      && run?.outreach_ready_digest!==valueHash(row.outreach_ready);
+  }
+  hypothesisPlanGate(run,row,plan) {
+    if(this.outreachUnbound(run,row) && plan.hypothesis_keys?.length)
       refuse('publication_hypotheses_withheld');
   }
   async publishNotionBatch(row,plan,authority,collectionAuthority,proof,agentContext=null) {
@@ -1640,13 +1648,13 @@ export class Store {
       const snap=await tx.get(ref),run=snap.data();
       if(run.blob!==before.data().blob || attemptState(run,row,'notion').batches?.[step.number])
         refuse('publication_attempt_not_admitted');
-      this.hypothesisPlanGate(run,plan);
+      this.hypothesisPlanGate(run,row,plan);
       tx.set(ref,claimUpdate(run,row,'notion',plan.request_digest,{...claims,[step.number]:claim}),{merge:true});
     });
     // Reads and the claim can be slow. Check current authority and lease immediately before mutation.
     if(this.publisher.beforeNotionStep) await this.publisher.beforeNotionStep(row,plan,step);
     const latest=(await ref.get()).data(),control=(await this.control.get()).data();
-    this.hypothesisPlanGate(latest,plan);
+    this.hypothesisPlanGate(latest,row,plan);
     this.fence(control);
     this.workflowGate(control,!!proof);
     if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);

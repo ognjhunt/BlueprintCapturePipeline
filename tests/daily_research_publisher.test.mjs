@@ -1276,15 +1276,18 @@ test('rollback probe: a frozen record whose digest an older bridge dropped never
   assert.equal(['outreach_ready_digest','outreach_ready_unbound'].some(key=>Object.hasOwn(g.db.values.get(`${ROOT}/runs/${r.date}`),key)),false);
 });
 
-async function rollbackOutreach(f) {
+async function rollbackOutreach(f,{rewrite=true}={}) {
   const saved=await f.store.get(f.r.date),manifest=f.db.values.get(`${ROOT}/runs/${f.r.date}`);
   delete manifest.outreach_ready_digest;
-  await f.store.put(saved);
-  assert.equal(f.db.values.get(`${ROOT}/runs/${f.r.date}`).outreach_ready_unbound,true);
+  if(rewrite) {
+    await f.store.put(saved);
+    assert.equal(f.db.values.get(`${ROOT}/runs/${f.r.date}`).outreach_ready_unbound,true);
+  }
 }
 
+for(const rewrite of [false,true])
 for(const destination of ['sheets','notion','notion-paginated'])
-test(`rollback replaces an unclaimed saved hypothesis plan with verified rows only (${destination})`,async()=>{
+test(`rollback replaces an unclaimed saved hypothesis plan with verified rows only (${destination}, rewrite=${rewrite})`,async()=>{
   const r=hypothesisRow(),name=destination==='sheets'?'sheets':'notion';
   if(destination==='notion-paginated') {r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);}
   const f=await fixture(r),saved=await f.store.get(r.date);
@@ -1292,11 +1295,12 @@ test(`rollback replaces an unclaimed saved hypothesis plan with verified rows on
   const original=structuredClone(saved.delivery[name].plan);
   assert.deepEqual(original.hypothesis_keys,['synthetic-h']);
   if(destination==='notion-paginated') assert.equal(original.protocol,'notion-paginated-v1');
-  await rollbackOutreach(f);
+  await rollbackOutreach(f,{rewrite});
   let receipt;
   for(let i=0;i<10 && !receipt;i++) receipt=await f.store.publish(r.date,name);
   assert.equal(receipt.readback_verified,true);
   const plan=(await f.store.get(r.date)).delivery[name].plan;
+  assert.equal(f.db.values.get(`${ROOT}/runs/${r.date}`).outreach_ready_unbound,true);
   assert.deepEqual(plan.hypothesis_keys,[]);
   assert.equal(plan.payload_digest,original.payload_digest);
   if(name==='sheets') assert.deepEqual(f.values.slice(5).map(cells=>cells[6]),['Needs recheck']);
@@ -1344,7 +1348,7 @@ test(`rollback after a hypothesis claim refuses its pending mutation (${destinat
   const r=hypothesisRow(),name=destination==='sheets'?'sheets':'notion';
   if(destination==='notion-paginated') {r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);}
   const f=await fixture(r);
-  const unbind=()=>{f.db.values.get(`${ROOT}/runs/${r.date}`).outreach_ready_unbound=true;};
+  const unbind=()=>{delete f.db.values.get(`${ROOT}/runs/${r.date}`).outreach_ready_digest;};
   if(destination==='notion-paginated') f.publisher.beforeNotionStep=async()=>unbind();
   else {
     const write=f.publisher.write.bind(f.publisher);
