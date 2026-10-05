@@ -241,9 +241,10 @@ for the intent freezes `outreach_ready_record_too_large`; both keep shadow mode.
   once, within the same budget, and admits a listed key only when all hold: the
   recomputed tier is `outreach_ready`; the key is promotable, unaccepted and new to
   the CRM; its one QA check is source-verified and not a duplicate; QA attests
-  day-level `source_support_verified`; its `valid_until` is null or later than the
-  run's deadline (`consumer.qa_deadline`, which also bounds publication); and the
-  live direction still allows it.
+  day-level `source_support_verified`; its `valid_until` is null, or a timestamp in
+  the form #855 records (`YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z` or
+  `±HH:MM`) later than the run's deadline (`consumer.qa_deadline`, which also bounds
+  publication); and the live direction still allows it.
 - `Runner.review` reuses that read in the same step; a retried review reads once.
   Hypotheses are checked against the decision's own bound evaluation, so a
   hypothesis that has expired since never refuses the review or its verified rows.

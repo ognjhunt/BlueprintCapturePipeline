@@ -30,6 +30,8 @@ export const openChecks=assessment=>[...(assessment?.claims?.site_task?.status!=
   ...(assessment?.valid_until===null?['freshness']:[]),'existing_automation','fit','interest'];
 export const firstQuestion=(checks,candidate)=>QUESTION_TEMPLATES[checks.includes('site_link')?'S'
   :checks.includes('manual_workflow')?'M':'A'](candidate.task,candidate.site);
+// The form #855 records for valid_until (its ISO_TIMESTAMP); outreach_ready.VALID_UNTIL mirrors it.
+const VALID_UNTIL=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const NOTION_BATCH_BLOCKS = 90, NOTION_REQUEST_BYTES = 450000;
 const paragraph = content=>({object:'block',type:'paragraph',paragraph:{rich_text:rich(content)}});
 const createBody = (title,children)=>({parent:{type:'page_id',page_id:NOTION},
@@ -96,7 +98,8 @@ function hypothesisEligibility(row,candidates,hypotheses,now,withheld=null) {
         || !isDeepStrictEqual(h.open_checks,checks) || !isDeepStrictEqual(h.open_questions,[question])
         || typeof question!=='string' || question.indexOf('?')!==question.length-1)
       reasons.push(`${key || 'hypothesis'}: retain the exact outreach-ready entry the protected review bound, with its open checks and one question; a hypothesis is never verified and never sent.`);
-    else if(!(Date.parse(assessment.assessed_at)<=now && (assessment.valid_until===null || now<Date.parse(assessment.valid_until))))
+    else if(!(Date.parse(assessment.assessed_at)<=now && (assessment.valid_until===null
+        || typeof assessment.valid_until==='string' && VALID_UNTIL.test(assessment.valid_until) && now<Date.parse(assessment.valid_until))))
       reasons.push(`${key}: its assessment is no longer current, so this hypothesis is left out; the verified rows still publish.`);
     if(key) seen.add(key);
     return {candidate_key:key,eligible:!reasons.length,reasons};

@@ -1166,8 +1166,8 @@ test('hypotheses add labelled rows in the existing 19 columns and verified cells
 });
 
 for(const change of ['tier','eligible','promotion','version','rule','checks','questions','template','two_questions','order',
-  'direction','refused','support','sends','path','limit','overlap','expired','empty','extra','unbound','assessment',
-  'duplicate','nonobject','in_crm'])
+  'direction','refused','support','sends','path','limit','overlap','expired','valid_until_form','empty','extra','unbound',
+  'assessment','duplicate','nonobject','in_crm'])
   test(`a malformed or expired hypothesis (${change}) is withheld on its own list and never blocks the verified row`,async()=>{
     const r=hypothesisRow(),result=r.review.lead_verification.results[1],entry=r.delivery.sheets.payload.hypotheses[0];
     const both=fn=>{for(const name of ['sheets','notion']) fn(r.delivery[name].payload.hypotheses);};
@@ -1194,6 +1194,8 @@ for(const change of ['tier','eligible','promotion','version','rule','checks','qu
     if(change==='limit') r.outreach_ready.max_rows_per_batch=0;
     if(change==='overlap') both(h=>{h[0]={...entry,candidate:r.packet.candidates[0]};});
     if(change==='expired') {result.assessment.valid_until=new Date(Date.now()-1000).toISOString();result.assessment_digest=verificationDigest(result.assessment);}
+    // Current, but not in the form #855 records (its ISO_TIMESTAMP needs T, seconds and a colon offset).
+    if(change==='valid_until_form') {result.assessment.valid_until='2030-01-01 00:00+0000';result.assessment_digest=verificationDigest(result.assessment);}
     if(change==='empty') {both(h=>{h.length=0;});r.review.outreach_ready_keys=[];}
     if(change==='extra') both(h=>{h[0]={...entry,verified:true};});
     if(change==='unbound') both(h=>{h[0]={...entry,candidate:{...entry.candidate,task:'Changed task'}};});

@@ -227,17 +227,22 @@ EVIDENCE_MAX_SECONDS = 60
 SHADOW_DEADLINE_MARGIN = timedelta(seconds=120)
 SHADOW_FILE_SUFFIX = "-outreach-ready-shadow.json"
 SHADOW_MAX_BYTES = 64 * 1024
+# A published valid_until must be null or this exact form (Blueprint-WebApp #855 ISO_TIMESTAMP);
+# the assessment itself also accepts a space separator, no seconds or an offset without a colon.
+VALID_UNTIL = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})")
 
 
 def admissible_until(result, deadline):
-    """True when the assessment stays valid through the run: valid_until is null or later than
-    ``deadline`` (consumer.qa_deadline, which also bounds publication). A hypothesis admitted
-    under this rule never expires while its run's QA, review and publication can still act."""
+    """True when the assessment stays valid through the run: valid_until is null, or a timestamp in
+    the form the WebApp records (VALID_UNTIL) later than ``deadline`` (consumer.qa_deadline, which
+    also bounds publication). A hypothesis admitted under this rule never expires while its run's
+    QA, review and publication can still act."""
     if not isinstance(deadline, datetime):
         return False
     try:
         valid_until = result["assessment"]["valid_until"]
-        return valid_until is None or verification.moment(valid_until) > deadline
+        return valid_until is None or (isinstance(valid_until, str) and bool(VALID_UNTIL.fullmatch(valid_until))
+                                       and verification.moment(valid_until) > deadline)
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
 

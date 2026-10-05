@@ -1628,15 +1628,16 @@ def test_outreach_key_feedback_is_deferrable_and_only_for_an_enabled_row(fixture
 
 def test_qa_decision_caps_at_the_live_row_limit_and_admits_nothing_without_admission():
     from tools.daily_research.consumer import outreach_keys
-    packet = {"candidates": [{"candidate_key": k, "identity_keys": ["id-" + k]} for k in "abcde"]}
+    packet = {"candidates": [{"candidate_key": k, "identity_keys": ["id-" + k]} for k in "abcdef"]}
     row, deadline = {"packet": packet}, NOW + timedelta(minutes=3)
     valid = {"a": None, "b": (NOW + timedelta(days=1)).isoformat(), "c": None, "d": None,
-             "e": (NOW + timedelta(minutes=2)).isoformat()}  # e expires before the run's deadline.
+             "e": (NOW + timedelta(minutes=2)).isoformat(),  # e expires before the run's deadline.
+             "f": "2026-10-07 12:00+0000"}  # f is valid but not in the form the WebApp records.
     cohort = {"results": [{"candidate_key": k, "eligible_for_outreach_ready": k != "d", "assessment": {"valid_until": valid[k]}}
-                          for k in "abcde"]}
-    checks = [{"candidate_key": k, "source_support_verified": k != "c", "duplicate": False} for k in "abcde"]
+                          for k in "abcdef"]}
+    checks = [{"candidate_key": k, "source_support_verified": k != "c", "duplicate": False} for k in "abcdef"]
     result = {"source_support_verified": True, "accepted_keys": ["c"], "checks": checks,
-              "outreach_ready_keys": ["a", "a", "b", "c", "d", "e", "x", ["list"], "b"]}
+              "outreach_ready_keys": ["a", "a", "b", "c", "d", "e", "f", "x", ["list"], "b"]}
     assert outreach_keys(row, result, cohort, [], set(), (5, None), deadline) == ["a", "b"]
     assert outreach_keys(row, result, cohort, [], set(), (1, None), deadline) == ["a"]
     assert outreach_keys(row, result, cohort, [], {"id-a"}, (5, None), deadline) == ["b"]
