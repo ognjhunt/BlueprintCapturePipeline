@@ -46,6 +46,9 @@ def _row(tmp_path: Path) -> dict[str, Any]:
             "task_family": "pick_place",
         },
         "proof_boundary": {"provider_spend_authorized": False},
+        "funding": {"payer": "blueprint", "customer_price_usd": 0, "cap_usd": 10,
+                    "max_attempts": 1, "expires_at_iso": "2100-01-01T00:00:00Z",
+                    "approved_by": "fixture-operator", "approval_digest": "sha256:" + "a" * 64},
     }
     canonical_json = json.dumps(admission, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return {
@@ -54,7 +57,8 @@ def _row(tmp_path: Path) -> dict[str, Any]:
         "team_id": "team-1",
         "task_family": "pick_place",
         "quoted_episodes": 5,
-        "quoted_usd": 10,
+        "quoted_usd": 0,
+        "evaluation_purpose": "pilot",
         "dispatch": None,
         "checkpoint": {"checkpoint_id": "checkpoint-1"},
         "scene": {"request_id": "scene-request-1"},
@@ -91,6 +95,19 @@ class FakeClient:
 
     def report_completed(self, _row: Any, _pipeline_run_id: str, receipt: dict[str, Any]) -> None:
         self.completed.append(receipt)
+
+
+@pytest.mark.parametrize("purpose,price", [(None, 0), ("private", 0), ("private", 99), ("pilot", 1), ("pilot", False), ("pilot", "0"), ("unknown", 0)])
+def test_free_beta_refuses_paid_or_unclassified_queue_rows(tmp_path: Path, purpose: Any, price: Any) -> None:
+    row = _row(tmp_path)
+    row["evaluation_purpose"] = purpose
+    row["quoted_usd"] = price
+    client = FakeClient([row])
+    summary = executor.poll_once(client=client, capture_root=tmp_path)
+    assert summary["blocked"] == 1
+    assert summary["claimed"] == 0
+    assert not client.claims
+    assert not client.completed
 
 
 def test_missing_admission_refuses_claim_and_execution(tmp_path: Path) -> None:
@@ -131,6 +148,8 @@ def test_digest_bound_episode_receipt_closes_claimed_run(tmp_path: Path) -> None
 
 def test_missing_provider_cost_does_not_block_quoted_episode_settlement(tmp_path: Path) -> None:
     row = _row(tmp_path)
+    # Historical paid outcomes still settle even though new paid claims refuse.
+    row["quoted_usd"] = 10
     received: list[tuple[str, dict[str, Any]]] = []
 
     class RecordingClient(FakeClient):
@@ -379,7 +398,7 @@ def test_signed_local_webapp_queue_closes_digest_bound_fixture(tmp_path: Path) -
         payload["execution_admission_digest"] == row["execution_admission_digest"]
         for _, payload in received
     )
-    assert received[-1][1]["rate_usd"] == 2.0
+    assert received[-1][1]["rate_usd"] == 0.0
 
 
 def _partition_row(partition: Path, scene_id: str, capture_id: str, run_id: str) -> dict[str, Any]:
@@ -655,3 +674,35 @@ def test_missing_or_mismatched_start_owner_never_enters_native_execution(
     summary = executor.poll_once(client=client, capture_root=tmp_path)
     assert summary["blocked"] == 1 and summary["claimed"] == summary["staged"] == 0
     assert not list((tmp_path / "pipeline/robot_eval_job_requests").glob("**/*.json"))
+
+
+@pytest.mark.parametrize("mode", ["paid", "expired", "cancelled", "unavailable"])
+@pytest.mark.parametrize("state", ["staged", "native_execution_in_progress"])
+def test_restart_never_launches_after_authority_ends_but_still_reconciles(tmp_path, monkeypatch, mode, state):
+    from blueprint_pipeline import controlled_native_queue as native
+    row = _row(tmp_path)
+    if mode == "paid":
+        row["quoted_usd"] = 99
+    if mode == "expired":
+        row["execution_admission"]["funding"]["expires_at_iso"] = "2020-01-01T00:00:00Z"
+    journal_dir = tmp_path / "journals"
+    journal_dir.mkdir()
+    (journal_dir / "run-1.json").write_text(json.dumps({
+        "state": state, "run_id": "run-1", "pipeline_run_id": "attempt-1", "row": row,
+        "canonical_job_id": "canonical-job-1", "capture_root": str(tmp_path),
+    }))
+    client = FakeClient([])
+    def current(_run_id):
+        if mode == "unavailable":
+            raise OSError("transport unavailable")
+        return {"state": "requested", "cancellation_requested": mode == "cancelled"}
+    client.get_run = current
+    monkeypatch.setattr(native, "routes_controlled_request", lambda _request: True)
+    def forbidden(**_kwargs):
+        pytest.fail("stale authority must not execute native work")
+    monkeypatch.setattr(native, "execute_staged_controlled_request", forbidden)
+    receipt = {"status": "completed", "episodes_run": 1, "episodes_succeeded": 0, "observed_cost_usd": 2}
+    summary = executor.poll_once(client=client, capture_root=tmp_path, journal_dir=journal_dir,
+        terminal_reader=lambda **_kwargs: receipt)
+    assert summary["completed"] == 1
+    assert client.completed == [receipt]

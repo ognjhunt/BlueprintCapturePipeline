@@ -8,8 +8,10 @@ task, checkpoint, capture, rights grant, budget, or testbed binding.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -42,8 +44,31 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _free_beta_run(row: Mapping[str, Any]) -> bool:
+    """A stale producer or retained paid row cannot authorize a beta launch."""
+    price = row.get("quoted_usd")
+    funding = _mapping(_mapping(row.get("execution_admission")).get("funding"))
+    cap = funding.get("cap_usd")
+    try:
+        expiry = datetime.fromisoformat(str(funding.get("expires_at_iso", "")).replace("Z", "+00:00"))
+        current = expiry.tzinfo is not None and expiry > datetime.now(timezone.utc)
+    except ValueError:
+        current = False
+    digest = str(funding.get("approval_digest", ""))
+    return (row.get("evaluation_purpose") == "pilot" and type(price) in (int, float) and price == 0
+            and funding.get("payer") == "blueprint"
+            and type(funding.get("customer_price_usd")) in (int, float) and funding["customer_price_usd"] == 0
+            and type(funding.get("max_attempts")) is int and funding["max_attempts"] == 1
+            and type(cap) in (int, float) and math.isfinite(cap) and 0 < cap <= 20
+            and isinstance(funding.get("approved_by"), str) and bool(funding["approved_by"].strip()) and current
+            and digest.startswith("sha256:") and len(digest) == 71
+            and all(c in "0123456789abcdef" for c in digest[7:]))
+
+
 def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = None) -> list[str]:
     blockers: list[str] = []
+    if not _free_beta_run(row):
+        blockers.append("paid_evaluations_disabled")
     admission = _mapping(row.get("execution_admission"))
     binding = _mapping(admission.get("binding"))
     request = _mapping(admission.get("decision_request"))
@@ -131,7 +156,8 @@ def validate_queue_run(row: Mapping[str, Any], *, capture_root: Path | None = No
                 blockers.append("agent_execution_unapproved_staged_policy_package")
     if authorization.get("episodes") != row.get("quoted_episodes"):
         blockers.append("agent_execution_episode_quote_mismatch")
-    if authorization.get("max_cost_usd") != row.get("quoted_usd"):
+    sponsor_cap = _mapping(admission.get("funding")).get("cap_usd")
+    if authorization.get("max_cost_usd") != sponsor_cap:
         blockers.append("agent_execution_cost_quote_mismatch")
     tasks = canonical.get("requested_tasks")
     if not isinstance(tasks, list) or len(tasks) != 1:
@@ -459,6 +485,10 @@ def poll_once(
         if journal.get("state") != "claim_intent":
             continue
         row = _mapping(journal.get("row"))
+        if not _free_beta_run(row):
+            # Preserve the receipt/hold for reconciliation; do not stage or claim.
+            summary["blocked"] += 1
+            continue
         run_id = str(journal.get("run_id") or "")
         pipeline_run_id = str(journal.get("pipeline_run_id") or "")
         try:
@@ -467,7 +497,7 @@ def poll_once(
             summary["pending"] += 1
             continue
         observed_state = str(observed.get("state") or "")
-        if observed.get("money_resolved") is True or observed_state != "requested":
+        if observed.get("money_resolved") is True or observed.get("cancellation_requested") is True or observed_state != "requested":
             journal["state"] = "claim_rejected"
             journal["rejection"] = "server_run_not_executable"
             _write_json_atomic(journal_path, journal)
@@ -614,7 +644,16 @@ def poll_once(
         row = _mapping(journal.get("row"))
         canonical = _mapping(_mapping(row.get("execution_admission")).get("canonical_execution_request"))
         from .controlled_native_queue import routes_controlled_request, execute_staged_controlled_request
-        if routes_controlled_request(canonical):
+        launch_allowed = _free_beta_run(row)
+        if launch_allowed:
+            try:
+                current_run = client.get_run(str(row["run_id"]))
+                launch_allowed = (current_run.get("state") == "requested"
+                    and current_run.get("money_resolved") is not True
+                    and current_run.get("cancellation_requested") is not True)
+            except (OSError, ValueError, urllib.error.URLError):
+                launch_allowed = False
+        if routes_controlled_request(canonical) and launch_allowed:
             journal["state"] = "native_execution_in_progress"
             _write_json_atomic(journal_path, journal)
             execute_staged_controlled_request(request=canonical,

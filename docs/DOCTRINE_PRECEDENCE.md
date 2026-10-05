@@ -10,11 +10,26 @@ to *read* conflicts; it is not a license to ignore doctrine.
 ## Sole Active Program
 
 [`arm_decision_proof_v1/north_star_contract.json`](arm_decision_proof_v1/north_star_contract.json)
-is the frozen scope and acceptance contract for Blueprint's sole active program.
+is the frozen scope and acceptance contract for Blueprint's first
+evaluation-proof track, its sole active evaluation build-out program.
 [`arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
 is the only active backlog. They govern what work may be started; they do not
 override raw artifact truth, code/schema reality, rights, safety, spend, or
 physical-evidence gates.
+
+The owner decision of 2026-10-05
+(`gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`)
+sets how to read them. Prospecting, screening, outreach, and partner discovery
+are open across robot forms and task families. The contract's `scope` is the
+current default build target, not a ban on other forms, and its `non_goals`
+bound this track's build-out. Its `status` value `sole_active_program`, like
+"sole active program" elsewhere, means the sole active evaluation build-out
+program. Where older freeze or sequencing wording, including in the shared
+blocks of `PLATFORM_CONTEXT.md`, `WORLD_MODEL_STRATEGY_CONTEXT.md`, and
+`VISION.md`, names a robot form or task family, it limits build-out, not
+discovery. Building evaluation support for another form or task family needs a
+new recorded owner focus decision based on demand evidence; it does not wait
+for a completed proof. `AGENTS.md` holds the rule text.
 
 Other documents remain useful as stable dependency contracts, compatibility
 instructions, or historical evidence. Their existence does not make their lane

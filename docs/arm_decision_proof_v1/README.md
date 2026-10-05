@@ -1,9 +1,11 @@
 # Arm Decision Proof v1
 
+> Current owner direction (2026-10-05, recorded in AGENTS.md; owner record `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`): **demand discovery is open.** Prospecting, screening, outreach, and partner discovery span every robot form (fixed arm, humanoid, wheeled, bimanual, and others) and task family, deformables included. This program stays as the first evaluation-proof track; its fixed-arm, rigid-object envelope is the current default build target, not a ban on other forms. Building evaluation support for a new form or task family needs a recorded owner focus decision based on demand evidence. Spend stays inside approved allowances; sending and automatic first contact stay off.
+
 > Current owner direction (2026-08-13, recorded in AGENTS.md): **artifixer3D+ with gpt-image-2** is the appearance path. AuraFusion360 and Inpaint360GS are retired execution lanes; older method-selection passages below and in the frozen north-star v3 contract are historical context, not launch requirements. Use the sealed public scene for the development-only two-candidate Franka rehearsal, then the existing fresh Raw V3.2 capture path. The historical 7/10 index remains unchanged. See [current lane reachability](LIVE_LANE_REACHABILITY.md).
 
 
-Status: **sole active Blueprint program**
+Status: **first evaluation-proof track; sole active evaluation build-out program**
 Approved: 2026-08-04
 Amended: 2026-08-06
 Machine-readable contract: [`north_star_contract.json`](north_star_contract.json)
@@ -323,8 +325,10 @@ Every proposed task must answer:
 
 If it cannot answer, it is not active work.
 
-The following are frozen unless a recorded, observed Arm Decision Proof blocker
-requires the smallest possible use of them:
+The following build-out is frozen unless a recorded, observed Arm Decision Proof
+blocker requires the smallest possible use of it, or, for the robot-form and
+task-family items, a recorded owner focus decision based on demand evidence
+opens it:
 
 - humanoid/G1 and locomotion work;
 - deformable, cable, cloth, granular, insertion, and force-task expansion;
@@ -337,6 +341,10 @@ requires the smallest possible use of them:
 - post-training and policy-improvement products;
 - multi-site generalization;
 - unrelated WebApp, growth, city-launch, and public-site polish.
+
+Prospecting, screening, outreach, and partner discovery across robot forms and
+task families are not frozen (owner decision 2026-10-05; see the note at the
+top). They answer this rule with ADP-010 and the partner-phase day-7 gate.
 
 Historical artifacts, schemas, readers, and stable compatibility paths remain
 readable. They are not active roadmap authority and do not authorize new work.
