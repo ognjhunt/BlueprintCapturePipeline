@@ -1012,27 +1012,9 @@ def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_chec
 
 
 def _sdk_fetch_contracts(commit, deadline):
-    # The fixed OS ssh uses only existing protected root credentials. A
-    # service-owned credential helper, environment executable or key cannot
-    # enter the privileged dependency installation path.
-    key = Path('/root/.ssh/id_ed25519')
-    known_hosts = Path('/root/.ssh/known_hosts')
-    for path in (key, known_hosts):
-        fd = _open(path, directory=False, partial=True)
-        try:
-            info = os.fstat(fd)
-            _require(info.st_uid == 0 and stat.S_IMODE(info.st_mode) in {0o600, 0o644})
-        finally:
-            os.close(fd)
-    _require(stat.S_IMODE(key.stat().st_mode) == 0o600)
-    ssh_binary = Path('/usr/bin/ssh')
-    parent = _open(ssh_binary.parent, directory=True)
-    try:
-        info = os.stat(ssh_binary.name, dir_fd=parent, follow_symlinks=False)
-        _require(stat.S_ISREG(info.st_mode) and info.st_uid == 0
-                 and stat.S_IMODE(info.st_mode) == 0o755)
-    finally:
-        os.close(parent)
+    # This fixed repository is public. No root key, mutable credential helper,
+    # user configuration or prompt is needed; the caller verifies Git hashes.
+    _require(type(commit) is str and re.fullmatch('[0-9a-f]{40}', commit))
     root = _sdk_root() / 'git-objects' / commit
     claim = root.parent / (commit + '.claim.json')
     raw = _encoded({'schema': 'scene-retirement-contracts-source.v1', 'commit': commit,
@@ -1042,11 +1024,10 @@ def _sdk_fetch_contracts(commit, deadline):
         _require(claim.exists() and _record_bytes(claim, deadline)[0] == raw)
     _record(claim, raw, deadline)
     _mkdir(root)
-    ssh = '/usr/bin/ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -i /root/.ssh/id_ed25519'
     if not (root / 'HEAD').exists():
         _sdk_git_command(root, ['init', '--bare', '--quiet'], deadline)
-    _sdk_git_command(root, ['fetch', '--quiet', '--no-tags', '--depth=1',
-                           'git@github.com:ognjhunt/BlueprintContracts.git', commit], deadline, ssh=ssh)
+    _sdk_git_command(root, ['-c', 'credential.helper=', 'fetch', '--quiet', '--no-tags', '--depth=1',
+                           'https://github.com/ognjhunt/BlueprintContracts.git', commit], deadline)
     return root
 
 
