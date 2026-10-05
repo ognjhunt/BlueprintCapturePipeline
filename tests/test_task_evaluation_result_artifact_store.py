@@ -15,7 +15,10 @@ import pytest
 
 from blueprint_pipeline import task_evaluation_result_artifact_store as offload
 from blueprint_pipeline import task_evaluation_configured_scene_object_store as store
-from blueprint_pipeline.control_plane_disk_budget import reserve_control_plane_disk
+from blueprint_pipeline.control_plane_disk_budget import (
+    ControlPlaneDiskBudgetError,
+    reserve_control_plane_disk,
+)
 from blueprint_pipeline.control_plane_evidence_offload import build_evidence_offload_manifest
 from blueprint_pipeline.decision_evidence_contracts import (
     canonical_digest,
@@ -166,6 +169,56 @@ def test_remote_corruption_fails_before_exposing_bytes_and_cleans_up(setup):
     response = _get(f.client, f.token, f.run_id, "remote-corrupt")
     assert response.status_code == 503
     assert f.payload not in response.content
+    assert list(f.cache.iterdir()) == [] and not list(f.ledger.glob("*.json"))
+
+
+@pytest.mark.parametrize("reason", ["object_store", "disk_budget", "filesystem"])
+def test_remote_failure_logs_only_safe_boundary_and_same_artifact_can_retry(
+    setup, monkeypatch, caplog, reason,
+):
+    f = setup
+    apply(f)
+    registry_before = f.registry_path.read_bytes()
+    private_detail = "private-tenant/path?signature=private-storage-credential"
+    seam, error = {
+        "object_store": ("materialize_configured_scene_artifact",
+                         store.TaskEvaluationConfiguredSceneObjectStoreError),
+        "disk_budget": ("reserve_control_plane_disk", ControlPlaneDiskBudgetError),
+        "filesystem": ("_download_cache", OSError),
+    }[reason]
+    calls = []
+
+    def unavailable(*args, **kwargs):
+        calls.append(reason)
+        raise error(private_detail)
+
+    url = f"/api/live-pipeline/task-evaluation-runs/{f.run_id}/artifacts/{ARTIFACT_ID}"
+    with monkeypatch.context() as fault:
+        fault.setattr(offload, seam, unavailable)
+        assert f.client.get(url).status_code == 401
+        assert not calls
+        response = _get(f.client, f.token, f.run_id, "failure-" + reason)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "result_artifact_remote_unavailable"}
+    records = [row for row in caplog.records if row.name ==
+               "blueprint_pipeline.live_pipeline_result_artifact_response"]
+    assert len(records) == 1
+    assert records[0].getMessage() == f"result_artifact_remote_unavailable reason={reason}"
+    assert records[0].exc_info is None
+    assert private_detail not in caplog.text and private_detail not in response.text
+    assert f.registry_path.read_bytes() == registry_before
+    assert not f.path.exists()
+    assert not f.cache.exists() or list(f.cache.iterdir()) == []
+    assert not list(f.ledger.glob("*.json"))
+    # An origin failure releases the real reader lease and leaves the same
+    # immutable artifact available for a fresh authenticated range request.
+    release = offload.acquire_artifact_read_lease(f.root, exclusive=True)
+    release()
+    retry = f.client.get(url, headers={**_headers(f.token, "retry-" + reason),
+                                       "Range": "bytes=0-0"})
+    assert retry.status_code == 206 and retry.content == f.payload[:1]
+    assert retry.headers["x-blueprint-artifact-sha256"] == f.registry["artifacts"][0]["sha256"]
+    assert f.objects.upload_count == 1
     assert list(f.cache.iterdir()) == [] and not list(f.ledger.glob("*.json"))
 
 
