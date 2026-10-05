@@ -462,12 +462,20 @@ def retained_evidence(row, read, *, budget=None):
 
 
 def url_key(value):
-    """Same-URL comparison: scheme, host case, www., a trailing slash and the fragment do not differ."""
+    """Same-URL comparison: scheme, default port, host case, www., trailing slash and fragment do not differ.
+
+    Non-default ports identify a different source and must remain in the binding.
+    """
     try:
         parts = urlsplit(value)
         host = (parts.hostname or "").lower().removeprefix("www.")
         if parts.scheme not in {"http", "https"} or not host or parts.username or parts.password:
             return None
+        port = parts.port  # Validate malformed and out-of-range ports even when no suffix is needed.
+        if ":" in host:
+            host = "[" + host + "]"
+        if port is not None and port != (443 if parts.scheme == "https" else 80):
+            host += ":" + str(port)
         return host + (parts.path.rstrip("/") or "") + ("?" + parts.query if parts.query else "")
     except (AttributeError, TypeError, ValueError):
         return None

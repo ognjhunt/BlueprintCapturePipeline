@@ -439,6 +439,21 @@ def test_quote_levels_need_whole_words_the_same_url_and_three_words():
     assert verification.evidence_index({"state": "retained", "pages": [{"url": 1}, "x", {**page, "text": None}]})["pages"] == {}
 
 
+@pytest.mark.parametrize("kind", ["pages", "excerpts"])
+def test_quote_proof_keeps_nondefault_ports_and_refuses_invalid_ports(kind):
+    record = {"url": "https://site.example:8443/a", "text": "Workers hand pack trays", "tool_result_sha256": "a" * 64}
+    index = verification.evidence_index({"state": "retained", kind: [record]})
+    level = "verified_on_page" if kind == "pages" else "in_citation_excerpt"
+    assert verification.quote_level(record["text"], record["url"], index) == (level, "a" * 64)
+    for url in ("https://site.example/a", "https://site.example:443/a", "https://site.example:9443/a",
+                "https://site.example:invalid/a", "https://site.example:65536/a"):
+        assert verification.quote_level(record["text"], url, index) == (None, None)
+    for scheme, port in (("https", 443), ("http", 80)):
+        assert verification.url_key(f"{scheme}://site.example:{port}/a") == verification.url_key(f"{scheme}://site.example/a")
+    assert verification.url_key("https://[2001:db8::1]:8443/a") != verification.url_key("https://[2001:db8::1]/a")
+    assert verification.url_key("https://site.example:invalid/a") is None
+
+
 def test_site_link_needs_the_city_street_or_a_job_post_at_this_site():
     candidate = {"site": "North plant, 123 Main St", "location": "Chicago, Illinois, US"}
     places, names = verification.site_terms(candidate)

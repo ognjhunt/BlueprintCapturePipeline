@@ -1532,10 +1532,19 @@ export class Store {
     try {
       if(terminalRecovery && attemptState((await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),row,destination).claimed && !d.plan)
         refuse('terminal_sheets_recovery_claim_plan_missing');
-      if (!d.plan) {
+      const withheld=await this.hypothesesWithheld(day,terminalRecovery);
+      const replan=withheld && d.plan?.hypothesis_keys?.length;
+      if(replan) {
+        const run=(await this.db.doc(`${ROOT}/runs/${day}`).get()).data(),state=attemptState(run,row,destination);
+        // A consumed plan may already have an external effect. Preserve its exact readback,
+        // but do not append any more batches after rollback loses hypothesis authority.
+        if(state.claimed || Object.keys(state.batches || {}).length || d.receipt || d.state==='acknowledged')
+          return await this.publisher.reconcile(row,destination,d.plan);
+      }
+      if (!d.plan || replan) {
         requirePublicationVerification(row,destination,this.clock());
         const expected_blob=terminalRecovery?sha(JSON.stringify(row)):null;
-        d.plan=await this.publisher.prepare(row,destination,{withheld:await this.hypothesesWithheld(day,terminalRecovery)});
+        d.plan=await this.publisher.prepare(row,destination,{withheld});
         await this.put(row,terminalRecovery?{expected_blob,context:terminalRecovery}:null);
       }
       if(terminalRecovery) await this.transaction(async tx=>{
@@ -1560,6 +1569,7 @@ export class Store {
         if (collectionAuthority && !same(collectionAuthority,control.workflow)) refuse('publication_authority_changed');
         const snap=await tx.get(ref),run=snap.data();
         if (run.blob!==before.data().blob || attemptState(run,row,destination).claimed) refuse('publication_attempt_not_admitted');
+        this.hypothesisPlanGate(run,d.plan);
         if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);
         requirePublicationVerification(row,destination,this.clock());
         tx.set(ref,claimUpdate(run,row,destination,d.plan.request_digest),{merge:true});
@@ -1580,8 +1590,9 @@ export class Store {
       requirePublicationVerification(row,destination,this.clock());
       await this.publisher.write(row,destination,d.plan,{beforeWrite:async()=>{
         requirePublicationVerification(row,destination,this.clock());
+        const latest=(await ref.get()).data();this.hypothesisPlanGate(latest,d.plan);
         if(!terminalRecovery) return;
-        const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+        const control=(await this.control.get()).data();
         this.terminalSheetsGate(control,row,terminalRecovery);
         if(latest.blob!==before.data().blob || attemptState(latest,row,destination).claimed!==d.plan.request_digest)
           refuse('publication_authority_or_plan_changed');
@@ -1600,6 +1611,10 @@ export class Store {
   async hypothesesWithheld(day,terminalRecovery=null) {
     if(terminalRecovery) return 'terminal_sheets_recovery_verified_rows_only';
     return (await this.db.doc(`${ROOT}/runs/${day}`).get()).data()?.outreach_ready_unbound===true ? 'outreach_ready_unbound' : null;
+  }
+  hypothesisPlanGate(run,plan) {
+    if(run?.outreach_ready_unbound===true && plan.hypothesis_keys?.length)
+      refuse('publication_hypotheses_withheld');
   }
   async publishNotionBatch(row,plan,authority,collectionAuthority,proof,agentContext=null) {
     const ref=this.db.doc(`${ROOT}/runs/${row.date}`),before=await ref.get();
@@ -1625,11 +1640,13 @@ export class Store {
       const snap=await tx.get(ref),run=snap.data();
       if(run.blob!==before.data().blob || attemptState(run,row,'notion').batches?.[step.number])
         refuse('publication_attempt_not_admitted');
+      this.hypothesisPlanGate(run,plan);
       tx.set(ref,claimUpdate(run,row,'notion',plan.request_digest,{...claims,[step.number]:claim}),{merge:true});
     });
     // Reads and the claim can be slow. Check current authority and lease immediately before mutation.
     if(this.publisher.beforeNotionStep) await this.publisher.beforeNotionStep(row,plan,step);
     const latest=(await ref.get()).data(),control=(await this.control.get()).data();
+    this.hypothesisPlanGate(latest,plan);
     this.fence(control);
     this.workflowGate(control,!!proof);
     if(agentContext) this.publicationAgentGate(control,row,agentContext.request_digest,agentContext.action);

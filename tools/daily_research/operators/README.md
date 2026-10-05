@@ -783,6 +783,8 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
   exactly as without it. If a rollback's older bridge drops the record's manifest
   digest, the row is not stranded: it binds the record again, stays
   `outreach_ready_unbound` and publishes no hypothesis.
+  Saved plans without a write claim are rebuilt with verified rows only; consumed
+  plans keep exact GET-only readback without any further Notion batch claims.
 - Admission at the QA decision also needs the live pin. `disable --apply` is the
   brake: it keeps the pin with `enabled=false` and applies at once, including to a
   run in progress. **The brake does not stop hypotheses that review already bound:**

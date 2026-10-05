@@ -1276,6 +1276,85 @@ test('rollback probe: a frozen record whose digest an older bridge dropped never
   assert.equal(['outreach_ready_digest','outreach_ready_unbound'].some(key=>Object.hasOwn(g.db.values.get(`${ROOT}/runs/${r.date}`),key)),false);
 });
 
+async function rollbackOutreach(f) {
+  const saved=await f.store.get(f.r.date),manifest=f.db.values.get(`${ROOT}/runs/${f.r.date}`);
+  delete manifest.outreach_ready_digest;
+  await f.store.put(saved);
+  assert.equal(f.db.values.get(`${ROOT}/runs/${f.r.date}`).outreach_ready_unbound,true);
+}
+
+for(const destination of ['sheets','notion','notion-paginated'])
+test(`rollback replaces an unclaimed saved hypothesis plan with verified rows only (${destination})`,async()=>{
+  const r=hypothesisRow(),name=destination==='sheets'?'sheets':'notion';
+  if(destination==='notion-paginated') {r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);}
+  const f=await fixture(r),saved=await f.store.get(r.date);
+  saved.delivery[name].plan=await f.publisher.prepare(saved,name);await f.store.put(saved);
+  const original=structuredClone(saved.delivery[name].plan);
+  assert.deepEqual(original.hypothesis_keys,['synthetic-h']);
+  if(destination==='notion-paginated') assert.equal(original.protocol,'notion-paginated-v1');
+  await rollbackOutreach(f);
+  let receipt;
+  for(let i=0;i<10 && !receipt;i++) receipt=await f.store.publish(r.date,name);
+  assert.equal(receipt.readback_verified,true);
+  const plan=(await f.store.get(r.date)).delivery[name].plan;
+  assert.deepEqual(plan.hypothesis_keys,[]);
+  assert.equal(plan.payload_digest,original.payload_digest);
+  if(name==='sheets') assert.deepEqual(f.values.slice(5).map(cells=>cells[6]),['Needs recheck']);
+  else assert.equal(JSON.stringify(f.pages).includes('Hypothesis, not verified'),false);
+});
+
+for(const destination of ['sheets','notion'])
+test(`rollback keeps a claimed hypothesis plan readback-only after an uncertain write (${destination})`,async()=>{
+  const f=await fixture(hypothesisRow()),write=f.publisher.write.bind(f.publisher);
+  f.publisher.write=async()=>{throw new Error('Synthetic interruption after durable claim');};
+  await assert.rejects(f.store.publish(f.r.date,destination),/publication_attempt_unresolved/);
+  const plan=structuredClone((await f.store.get(f.r.date)).delivery[destination].plan);
+  await rollbackOutreach(f);f.publisher.write=write;
+  assert.equal(await f.store.publish(f.r.date,destination),null);
+  assert.deepEqual((await f.store.get(f.r.date)).delivery[destination].plan,plan);
+  assert.equal(f.writes.length,0);
+});
+
+for(const destination of ['sheets','notion'])
+test(`rollback reads back an already accepted hypothesis effect without another write (${destination})`,async()=>{
+  const f=await fixture(hypothesisRow());f.faults.lost=true;
+  await assert.rejects(f.store.publish(f.r.date,destination),/publication_attempt_unresolved/);
+  const plan=structuredClone((await f.store.get(f.r.date)).delivery[destination].plan),writes=f.writes.length;
+  await rollbackOutreach(f);
+  assert.equal((await f.store.publish(f.r.date,destination)).readback_verified,true);
+  assert.deepEqual((await f.store.get(f.r.date)).delivery[destination].plan,plan);
+  assert.equal(f.writes.length,writes);
+});
+
+test('rollback preserves a partial Notion hypothesis plan without claiming another batch',async()=>{
+  const r=hypothesisRow();r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);
+  const f=await fixture(r);
+  assert.equal(await f.store.publish(r.date,'notion'),null);
+  const plan=structuredClone((await f.store.get(r.date)).delivery.notion.plan),writes=f.writes.length;
+  const claims=structuredClone(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_batches.notion);
+  await rollbackOutreach(f);
+  assert.equal(await f.store.publish(r.date,'notion'),null);
+  assert.deepEqual((await f.store.get(r.date)).delivery.notion.plan,plan);
+  assert.deepEqual(f.db.values.get(`${ROOT}/runs/${r.date}`).publication_batches.notion,claims);
+  assert.equal(f.writes.length,writes);
+});
+
+for(const destination of ['sheets','notion','notion-paginated'])
+test(`rollback after a hypothesis claim refuses its pending mutation (${destination})`,async()=>{
+  const r=hypothesisRow(),name=destination==='sheets'?'sheets':'notion';
+  if(destination==='notion-paginated') {r.delivery.notion.payload.summary='Retained full report '.repeat(10000);rebind(r);}
+  const f=await fixture(r);
+  const unbind=()=>{f.db.values.get(`${ROOT}/runs/${r.date}`).outreach_ready_unbound=true;};
+  if(destination==='notion-paginated') f.publisher.beforeNotionStep=async()=>unbind();
+  else {
+    const write=f.publisher.write.bind(f.publisher);
+    f.publisher.write=async(...args)=>{unbind();return write(...args);};
+  }
+  await assert.rejects(f.store.publish(r.date,name),/publication_hypotheses_withheld/);
+  assert.equal(f.writes.length,0);
+  assert.equal(await f.store.publish(r.date,name),null);
+});
+
 test('terminal Sheets recovery recovers the verified rows on a day with hypotheses and withholds every hypothesis',async()=>{
   const f=await stoppedTerminalSheetsFixture(),r=await f.store.get(f.r.date);
   const hypothesis={...structuredClone(r.packet.candidates[0]),candidate_key:'candidate-h',site:'South'};

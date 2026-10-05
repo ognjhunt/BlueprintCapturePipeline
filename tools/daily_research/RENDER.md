@@ -265,6 +265,8 @@ for the intent freezes `outreach_ready_record_too_large`; both keep shadow mode.
   manifest an older bridge rewrote without that digest (a rollback) is never
   stranded: like `paid_expansion_grant_unbound`, it binds the record it carries from
   then on, stays `outreach_ready_unbound`, and publishes no hypothesis.
+  An unclaimed saved plan is rebuilt with verified rows only. A claimed plan keeps
+  its exact GET-only readback; no further Notion batch is claimed while unbound.
 - Terminal Sheets recovery still recovers the verified rows on a day with
   hypotheses. It withholds every hypothesis, because their QA listing and protected
   review are not part of what the recovery proves.
