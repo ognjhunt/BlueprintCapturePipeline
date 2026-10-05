@@ -73,6 +73,9 @@ Pipeline source, contract v3, search `perplexity-fast-v1`, discovery
 soft total target $5 and recurring budget reference exactly
 `Sentinel_c30352f247c88191bbd695cc2bd99de1`. That receipt approves model, search
 and hosted environment total as a soft target; it is not a hard API billing cap.
+This pinned helper still writes 1800/600. The 2026-10-04 owner decision later
+raised the daily envelope to 3600 seconds total with 900 reserved for QA; see
+[Daily research runtime envelope](#daily-research-runtime-envelope).
 
 Preserve first_date, existing workflow settings/authorities, approval/scheduler
 references, unrelated control fields, history, failed intent, raw bytes and
@@ -131,7 +134,11 @@ legacy `ceiling_usd` admission field records that allowance, not a hard provider
 billing cap. It never replaces recurring authority or creates a timer.
 
 Research deadline is 1200 seconds and total research+QA 1800 seconds, with 600
-seconds reserved for QA. Existing independent Linux watchdog convention is
+seconds reserved for QA. These are the canary's own pinned values, not the daily
+envelope: `inspect` still requires the 1800/600 production profile, so after the
+daily envelope changes to 3600/900 a new canary attempt refuses with
+`canary_production_profile_not_migrated` until the canary has its own authority.
+Existing independent Linux watchdog convention is
 `timeout --signal=TERM --kill-after=60s 1860s`. Process stop/cancellation does not
 guarantee provider teardown or a total-dollar cap. Model usage is observed for
 baseline measurement; an arbitrary $8 stop and cancellation for absent usage
@@ -574,3 +581,108 @@ probe. Keep the production scheduler disabled until actual QA validation,
 both publication receipts, and `export-recovered` are verified. No worker
 deployment, Pipeline host deployment, paid GPU job, outreach or deletion is
 part of this command.
+
+## Owner paid expansion allowance
+
+`paid-expansion-direction.py` sets the combined per-run allowance for paid
+expansion sources (Exa now; FindAll later). The 2026-10-04 owner decision is $10
+per daily research run, separate from the unchanged $5 research soft target.
+The amount is data; a new value needs no code change, redeploy or package. It is
+the only binding number: each start may use up to half of it ($10 allows a $5
+Exa start, $20 a $10 start, $30 a $15 start; never above $50). A raised amount
+applies from the next run. A lower amount or the brake applies to the run in
+progress.
+
+Run it from the installed release with the existing worker environment
+(`FIREBASE_SERVICE_ACCOUNT_JSON`, `node`); it is packaged with the release.
+
+```bash
+RELEASE=/opt/render/project/src/dist/daily-research/release
+COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/paid-expansion-direction.py"
+PYTHONPATH=$RELEASE $COMMAND show
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 20.00 --approval-reference REF
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 20.00 --approval-reference REF --apply
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 10.00 --sources findall --approval-reference REF --apply
+PYTHONPATH=$RELEASE $COMMAND set --per-run-usd 10.00 --sources exa --approval-reference REF --apply
+PYTHONPATH=$RELEASE $COMMAND disable --apply
+```
+
+- `show` reads control and the `paidExpansionDirections` audit chain and verifies
+  the current object. It writes nothing.
+- `set` is a dry run without `--apply`. It prints the next direction: version+1,
+  superseding the current SHA-256. Amounts must match `^[1-9]\d{0,2}(\.\d{2})?$`
+  within $1.00–$100.00 (`20` becomes `20.00`). Optional flags: `--approved-by`,
+  `--reason`, `--expires-at` (UTC, at most 366 days; default 90 days) and
+  `--expect-current SHA|none` to pin the transition shown by a dry run.
+- `set --apply` writes `gs://blueprint-8c1ca.appspot.com/operations/research/paid-expansion/<sha256>/direction.json`
+  create-only through the existing bridge identity and reads it back. It then
+  takes the fenced lease only for the `paid_expansion_set` compare-and-swap and
+  reads control back. A concurrent change refuses with
+  `paid_expansion_direction_conflict`; run `show` and plan again. While a run or
+  QA is active it refuses with `paid_expansion_run_active_apply_after_run`;
+  `--during-active-run` overrides this (a lower amount then also tightens the run
+  in progress). The new direction supersedes control's current one, or the audit
+  head if a rollback dropped control's copy. A current direction this package
+  cannot verify is reported as `current_problem` and can still be replaced.
+- `--sources` chooses which paid sources the direction admits: `findall`, `exa`
+  or `exa,findall`. Without it, `set` admits every supported source. A start of
+  a source that the current direction does not name is refused with
+  `paid_expansion_source_not_directed`, and research continues. Switching
+  sources is the same `set` command with another `--sources` value. Adding a
+  source applies from the next run, like a higher amount. Removing a source, like
+  a lower amount or the brake, applies at once: new starts of that source are
+  refused, and active FindAll runs are cancelled at the next observation.
+- FindAll has no provider-side dollar cap. Its create request carries
+  `match_limit`, and the host reserves the generator's listed fixed price plus
+  per-match price times `match_limit` (pricing version in
+  `src/blueprint_pipeline/parallel_findall_execution.py`). The limit holds at
+  Parallel's list price with Parallel enforcing `match_limit`. Exa's
+  `budget.maxCostDollars` is a provider-enforced cap. The FindAll instructions
+  start with base requests of about 50 matches ($1.75 each). Larger or repeated
+  requests can use most of a $10 allowance and leave no room for an Exa start, so
+  set `--per-run-usd 20.00` when both sources should run every day.
+- `show` and `set` report `source_readiness`: for each source, its credential
+  binding name (`EXA_API_KEY` or `PARALLEL_API_KEY`), whether that binding is
+  present in this worker process (presence only; no value is read or printed)
+  and whether the current direction names it. `set` adds the warning
+  `paid_expansion_source_binding_missing:<source>` when it names a source whose
+  binding is missing, because every run skips that source until the key exists.
+- `disable --apply` is the emergency brake. It stops new paid starts at once,
+  including in an active run, and needs no object write. Re-enable with a new
+  `set`; to correct a mistaken amount mid-run, brake and then `set` the lower
+  amount.
+- Both commands poll every 0.25 s, for up to 200 s, for the worker's next lease
+  release. They hold the lease only for the swap, so they never displace an
+  active worker.
+
+All I/O goes through injectable adapters; the hermetic tests use the real bridge
+with in-memory Firestore and a fake object store. No provider, model, session,
+CRM write or send.
+
+## Daily research runtime envelope
+
+The 2026-10-04 owner decision gives each daily research run 60 minutes in total:
+`config.max_runtime_seconds=3600` with `config.qa_reserved_seconds=900`, so
+research has 2700 seconds and QA keeps 900. The $5 soft target is unchanged.
+`runner.MAX_ADAPTIVE_RUNTIME_SECONDS` (3600) is the only adaptive bound; see
+[RENDER.md](../RENDER.md#runtime-envelope) for every value that derives from it.
+Each row keeps the envelope it was admitted with, so a row admitted at 1800
+seconds is never extended.
+
+The installed release must contain this bound before the control changes. An
+older release refuses a 3600 config on every scheduler tick with
+`approved_envelope_mismatch`. Deploy the worker while research is idle, outside
+07:00–08:05 America/Chicago. Then read the complete current control document
+and change only the two config fields. `source_commit` must name the installed
+release; if it does not, set it in the same input. Apply the document with the
+existing fenced `configure` command from `/opt/render/project/src`:
+
+```bash
+PYTHONPATH=dist/daily-research/release dist/daily-research/venv/bin/python \
+  -m tools.daily_research.render configure --input /PRIVATE/control.json
+```
+
+`configure` validates the input with the installed release and replaces the
+whole control document except the lease, `cleanup_observation_required` and
+`paid_expansion`. Never apply a partial document. Read the control back and run
+`preflight` with the same prefix before the next 07:00 run.

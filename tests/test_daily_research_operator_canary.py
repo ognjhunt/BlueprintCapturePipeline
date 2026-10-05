@@ -1043,6 +1043,10 @@ def test_same_session_agent_repair_then_existing_qa_publication(fixture, monkeyp
         assert result['state'] == 'completed', result
         final = ledger.get(canary.DAY)
         assert final['started_at'] == failed['started_at'] and final['turn_id'] == failed['turn_id']
+        # The producer pins the row's own admitted total, never a separate constant.
+        authority = final['validation_repair_authority']
+        assert authority['duration_seconds'] == final['total_runtime_seconds'] == 1800
+        assert canary.qa_deadline(final, {}) == later + timedelta(seconds=final['total_runtime_seconds'])
         assert ledger.read_bytes(canary.DAY + '-artifact.json') == original
         assert len(api.payloads) == len(api.repair_calls) == len(api.inputs) == 1
         assert final['packet']['research_revision']['turn_id'] == 'turn_repair_1'
@@ -1051,6 +1055,23 @@ def test_same_session_agent_repair_then_existing_qa_publication(fixture, monkeyp
         exported = fixture[5] / 'agent-repaired-export'
         assert not canary.render.export_snapshot(bridge, canary.DAY, exported)['missing_files']
         assert (exported / (canary.DAY + '-repair-1-artifact.json')).exists()
+    finally:
+        bridge.close()
+
+
+def test_repair_report_refuses_a_row_without_an_admitted_total_before_any_write(fixture, monkeypatch):
+    bridge, ledger, api, _cfg, _failed = failed_repair_baseline(fixture, monkeypatch)
+    try:
+        with ledger.lock():
+            row = ledger.get(canary.DAY)
+            row.pop('total_runtime_seconds')
+            ledger.put(row)
+        before = ledger.get(canary.DAY)
+        with pytest.raises(Refusal, match='^validation_repair_authority_or_binding_invalid$'):
+            canary.repair_report(bridge, fixture[5], api_factory=lambda *_: api,
+                                 clock=lambda: NOW + timedelta(hours=1), sleep=lambda _: None)
+        assert ledger.get(canary.DAY) == before and 'validation_repair_authority' not in before
+        assert not api.repair_calls and len(api.payloads) == 1
     finally:
         bridge.close()
 

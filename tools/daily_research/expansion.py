@@ -1,8 +1,9 @@
 """Optional host-admitted Exa expansion; no default transport or billing claims.
 
-The caller holds the existing daily ledger lock/fence. Allocation and tool_schema
-come from trusted host evidence, never model arguments. Transport must implement
-start(request) and read(original_run_id), without automatic POST retries.
+The caller holds the existing daily ledger lock/fence. The run's frozen paid
+expansion grant (allocation.py), live control and tool_schema come from trusted
+host evidence, never model arguments. Transport must implement start(request)
+and read(original_run_id), without automatic POST retries.
 The injected transport must bound each request to the original run deadline.
 """
 import copy
@@ -13,14 +14,22 @@ import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from tools.daily_research import allocation
+from tools.daily_research.runner import MAX_ADAPTIVE_RUNTIME_SECONDS
+
 START = "blueprint_start_exa_expansion"
 READ = "blueprint_read_exa_expansion"
 PROFILE = "exa-guarded-v1"
-ALLOCATION = "blueprint.research-expansion-allocation.v1"
-LIMIT_MICROS = 5_000_000
-# Exa documents a $1 minimum for Ultra; advertise exactly the range the host enforces.
+# The only per-start ceiling: allocation's $50 hard bound. The owner's per-run amount is
+# the binding number; the host admits min(grant per-start, remaining) through
+# allocation.problem and names max_start_micros. No second hidden cap.
+LIMIT_MICROS = allocation.PER_START_CEILING_MICROS
+# Exa documents a $1 minimum for Ultra; the schema and host refuse anything smaller.
 ULTRA_MIN_MICROS = 1_000_000
 TERMINAL = {"completed", "failed", "cancelled"}
+# Cap refusals keep the existing remaining-allocation code and name the headroom.
+CAP_PROBLEMS = {"paid_expansion_cap_exceeds_remaining": "expansion_cap_exceeds_remaining_allocation",
+                "paid_expansion_cap_exceeds_per_start_maximum": "expansion_cap_exceeds_per_start_maximum"}
 MAX_BYTES = 5_000_000
 
 
@@ -31,7 +40,7 @@ class ExpansionError(ValueError):
 def tools():
     return [
         {"type": "function", "name": START, "defer_loading": False,
-         "description": "Optionally expand a useful discovery family once within this daily run. Host verifies existing authentication, native cap and remaining all-in allocation; unverified admission skips without a provider start.",
+         "description": "Optionally expand a useful discovery family once within this daily run. Host verifies existing authentication, native cap and this run's remaining owner-set paid expansion allowance; unverified admission skips without a provider start.",
          "parameters": {"type": "object", "additionalProperties": False,
                         "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 24000},
                                        "max_cost_micros": {"type": "integer", "minimum": ULTRA_MIN_MICROS, "maximum": LIMIT_MICROS}},
@@ -49,10 +58,14 @@ def instructions():
         "before final output and source QA. US sites only; consider manufacturing, laundry, food production, "
         "packing, machine tending, material handling, warehouses and other relevant physical tasks. "
         "Use one exact query grounded in retained findings, without enrichments or outreach. "
-        "The requested max_cost_micros is an integer from 1000000 ($1, Exa Ultra's documented minimum) to 5000000 ($5); "
+        "The requested max_cost_micros is an integer of at least 1000000 ($1, Exa Ultra's documented minimum); "
         "a smaller cap is refused, never raised automatically. "
-        "It shares the existing all-in $5 research allocation and is not extra authority. "
-        "Host admission requires verified authentication, actual native cap support and remaining all-in headroom. "
+        "It draws on this run's separate host-reserved paid expansion allowance, frozen from the owner's direction at run "
+        "start; the research soft target is unchanged and neither is extra authority. "
+        "The host admits at most half of this run's owner-set allowance per start ($10 allows 5000000, $20 allows "
+        "10000000, $30 allows 15000000; never above 50000000) and only within the remaining allowance; any refusal "
+        "names the exact max_start_micros and remaining_micros. "
+        "Host admission also requires verified authentication and actual native cap support. "
         "If any is unavailable or unknown, retain the actionable skip and continue ordinary research. "
         "Once attempted, never repeat a native start, change the query, use previousRunId or create another job. "
         "Observe pending work only with the original-ID read tool within the original deadline. "
@@ -89,7 +102,7 @@ def below_ultra_minimum(name, args):
 
 def _deadline(row):
     seconds = row.get("research_runtime_seconds")
-    if type(seconds) is not int or not 0 < seconds <= 1800:
+    if type(seconds) is not int or not 0 < seconds <= MAX_ADAPTIVE_RUNTIME_SECONDS:
         raise ExpansionError("expansion_original_deadline_invalid")
     return _time(row["started_at"]) + timedelta(seconds=seconds)
 
@@ -110,8 +123,9 @@ def _cap_supported(schema, request):
                 and not set(schema.get("required", [])) - {"query", "effort", "budget"}
                 and not set(budget.get("required", [])) - {"maxCostDollars"})
         # Ultra's documented minimum applies even when tools/list omits it.
+        # A live maximum binds; without one, the host's single per-start ceiling applies.
         return (compatible and ULTRA_MIN_MICROS / 1_000_000 <= dollars <= LIMIT_MICROS / 1_000_000
-                and dollars >= cap.get("minimum", 1) and dollars <= cap.get("maximum", 5)
+                and dollars >= cap.get("minimum", 1) and dollars <= cap.get("maximum", LIMIT_MICROS / 1_000_000)
                 and ("exclusiveMinimum" not in cap or dollars > cap["exclusiveMinimum"])
                 and ("exclusiveMaximum" not in cap or dollars < cap["exclusiveMaximum"])
                 and ("enum" not in cap or dollars in cap["enum"])
@@ -120,83 +134,22 @@ def _cap_supported(schema, request):
         return False
 
 
-def _allocation(snapshot, row, cap, now, deadline):
-    return _allocation_problem(snapshot, row, cap, now, deadline) is None
+def allocation_diagnostic(row, control=None, *, now=None):
+    """Read-only frozen-grant status (allocation.diagnostic); never manufactures cost.
 
-
-def _allocation_problem(snapshot, row, cap, now, deadline):
-    """None when admitted; "cap_exceeds_remaining" when only the requested cap is too
-    large for a verified snapshot; "unverified" for every other gap."""
-    try:
-        fields = ("limit_micros", "committed_micros", "reserved_micros", "remaining_micros")
-        if (not isinstance(snapshot, dict) or snapshot.get("schema_version") != ALLOCATION
-                or snapshot.get("all_in_verified") is not True or snapshot.get("usage_unknown") is not False
-                or snapshot.get("run_key") != row["run_key"]
-                or snapshot.get("authority_reference") != row.get("recurring_budget_authority_reference")
-                or not isinstance(snapshot.get("evidence_reference"), str) or not snapshot["evidence_reference"].strip()
-                or any(type(snapshot.get(key)) is not int or snapshot[key] < 0 for key in fields)
-                or snapshot["limit_micros"] != LIMIT_MICROS or row.get("soft_target_usd") != 5
-                or snapshot["remaining_micros"] != LIMIT_MICROS - snapshot["committed_micros"] - snapshot["reserved_micros"]
-                or not _time(snapshot["checked_at"]) <= now < _time(snapshot["valid_until"]) <= deadline):
-            return "unverified"
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return "unverified"
-    return "cap_exceeds_remaining" if cap > snapshot["remaining_micros"] else None
-
-
-def allocation_diagnostic(row, snapshot=None, *, now=None):
-    """Read-only, allowlisted explanation; never manufactures cost evidence.
-
-    A token count, soft target or communications reservation cannot produce an
-    all-in research allocation. The original admission predicate remains the
-    source of truth. Unknown/malformed evidence yields no numeric headroom.
+    The owner direction and claims ledger remain the source of truth; unknown or
+    malformed evidence yields no numeric headroom.
     """
-    now = now or datetime.now(timezone.utc)
-    result = {"schema_version": "blueprint.research-expansion-allocation-status.v1",
-              "verification": "unknown", "remaining_micros": None,
-              "reasons": [], "claim_created": False, "provider_started": False}
-    if not isinstance(row, dict):
-        result["reasons"] = ["research_run_context_missing"]
-        return result
-    result["model_usage_present"] = isinstance(row.get("usage"), dict)
-    result["application_tool_billing_verified"] = row.get("application_tool_usage", {}).get("provider_billing_verified") is True if isinstance(row.get("application_tool_usage"), dict) else False
-    if not isinstance(snapshot, dict):
-        result["reasons"] = ["company_all_in_allocation_missing"]
-        result["required_evidence"] = ["model_and_agent_hosting_billing", "research_tool_billing",
-                                       "remaining_phase_reservations", "current_run_authority_binding"]
-        return result
-    reasons = result["reasons"]
-    if snapshot.get("schema_version") != ALLOCATION:
-        reasons.append("allocation_schema_invalid")
-    if snapshot.get("all_in_verified") is not True or snapshot.get("usage_unknown") is not False:
-        reasons.append("all_in_usage_unverified")
-    if snapshot.get("run_key") != row.get("run_key"):
-        reasons.append("allocation_run_mismatch")
-    if snapshot.get("authority_reference") != row.get("recurring_budget_authority_reference"):
-        reasons.append("allocation_authority_mismatch")
-    if not isinstance(snapshot.get("evidence_reference"), str) or not snapshot["evidence_reference"].strip():
-        reasons.append("allocation_evidence_reference_missing")
-    fields = ("limit_micros", "committed_micros", "reserved_micros", "remaining_micros")
-    integers = all(type(snapshot.get(key)) is int and snapshot[key] >= 0 for key in fields)
-    if not integers:
-        reasons.append("allocation_amounts_invalid")
-    elif snapshot["remaining_micros"] != LIMIT_MICROS - snapshot["committed_micros"] - snapshot["reserved_micros"]:
-        reasons.append("allocation_arithmetic_invalid")
-    if snapshot.get("limit_micros") != LIMIT_MICROS or row.get("soft_target_usd") != 5:
-        reasons.append("allocation_existing_limit_mismatch")
-    try:
-        deadline = _deadline(row)
-        if not _time(snapshot["checked_at"]) <= now < _time(snapshot["valid_until"]) <= deadline:
-            reasons.append("allocation_not_current_within_original_deadline")
-        valid = _allocation(snapshot, row, 0, now, deadline)
-    except (AttributeError, KeyError, TypeError, ValueError):
-        reasons.append("allocation_time_or_run_context_invalid")
-        valid = False
-    if valid:
-        result.update(verification="verified_retained_snapshot", remaining_micros=snapshot["remaining_micros"])
-    elif not reasons:
-        reasons.append("allocation_admission_unverified")
-    return result
+    return allocation.diagnostic(row, control, now=now)
+
+
+def _room(grant, found, problem, control=None):
+    """Headroom named in a skip; nothing can start while a standing fence refuses."""
+    if allocation.granted(grant):
+        return {"remaining_micros": None, "max_start_micros": None}
+    room = allocation.headroom(grant, found, allocation.effective_limit(grant, control))
+    return {"remaining_micros": room["remaining_micros"],
+            "max_start_micros": room["max_start_micros"] if problem in CAP_PROBLEMS or problem is None else 0}
 
 
 def _receipt(ledger, claim, label, raw):
@@ -232,10 +185,14 @@ def _project(claim, result=None):
     return value
 
 
-def execute(name, args, row, ledger, *, transport=None, allocation=None,
+def execute(name, args, row, ledger, *, transport=None, control=None,
             tool_schema=None, phase="research", now=None, admit=None,
             unavailable_reason="expansion_authenticated_transport_missing", allocation_status=None):
-    """Single start per daily run; original-ID reads retain full JSON provenance."""
+    """Single start per daily run; original-ID reads retain full JSON provenance.
+
+    A start is admitted only by allocation.problem against the row's frozen grant,
+    this run's durable claims and the live control fence observed by the host.
+    """
     now = now or datetime.now(timezone.utc)
     started = time.monotonic()
 
@@ -245,7 +202,8 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
     if name not in {START, READ} or not isinstance(args, dict):
         raise ExpansionError("expansion_arguments_invalid")
     stored = ledger.get(row["date"])
-    if not stored or any(stored.get(k) != row.get(k) for k in ("run_key", "session_id", "turn_id", "started_at")):
+    if not stored or any(stored.get(k) != row.get(k) for k in ("run_key", "session_id", "turn_id", "started_at",
+                                                                 "paid_expansion_grant")):
         raise ExpansionError("expansion_daily_binding_changed")
     claim = stored.get("exa_expansion")
     if claim:
@@ -328,15 +286,25 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
     if now >= deadline:
         return _skip("expansion_original_deadline_exhausted") if not claim else _project(claim)
     if name == START and args["max_cost_micros"] < ULTRA_MIN_MICROS:
-        # Pure argument check: needs no credential or allocation and consumes no claim.
-        return {**_skip("expansion_cap_below_ultra_minimum"),
-                "action": "No Exa start was made and no claim was consumed. If the expansion still serves a useful gap, call once "
-                          f"more with max_cost_micros from {ULTRA_MIN_MICROS} to {LIMIT_MICROS} within the shared "
-                          "$5 research allocation; otherwise continue ordinary research."}
+        # Pure argument check: needs no credential or live control and consumes no claim.
+        # The frozen grant's headroom is informational here; the live fences still apply.
+        room = _room(stored.get("paid_expansion_grant"), allocation.claims(stored), None)
+        largest = room["max_start_micros"]
+        return {**_skip("expansion_cap_below_ultra_minimum"), **room,
+                "action": "No Exa start was made and no claim was consumed. " + (
+                    f"If the expansion still serves a useful gap, call once more with max_cost_micros from {ULTRA_MIN_MICROS} "
+                    f"to {largest} within this run's host-reserved paid expansion allowance; otherwise continue ordinary research."
+                    if largest is not None and largest >= ULTRA_MIN_MICROS else
+                    "No Ultra cap fits this run's paid expansion allowance; continue ordinary research.")}
     if transport is None or not callable(getattr(transport, "start", None)) or not callable(getattr(transport, "read", None)):
         outcome = _skip(unavailable_reason) if not claim else _project(claim)
         if allocation_status is not None:
-            outcome["allocation_status"] = allocation_diagnostic(row, allocation, now=now)
+            outcome["allocation_status"] = allocation_diagnostic(row, control, now=now)
+            if not claim and unavailable_reason == "expansion_remaining_all_in_allocation_unverified":
+                # The host stopped before any transport; name the same grant fields as a start skip.
+                grant = stored.get("paid_expansion_grant")
+                code = allocation.standing(grant, control, now) or "paid_expansion_grant_unverified"
+                outcome.update(_room(grant, allocation.claims(stored), code, control), allocation_reason=code)
         return outcome
     if name == START:
         if phase != "research" or row.get("state") != "running" or row.get("qa") or row.get("raw_output_digest"):
@@ -345,21 +313,25 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
                    "budget": {"maxCostDollars": args["max_cost_micros"] / 1_000_000}}
         if not _cap_supported(tool_schema, request):
             return _skip("expansion_supported_native_cap_unverified")
-        problem = _allocation_problem(allocation, row, args["max_cost_micros"], now, deadline)
-        if problem == "cap_exceeds_remaining":
-            remaining = allocation["remaining_micros"]
-            fits = remaining >= ULTRA_MIN_MICROS
-            return {**_skip("expansion_cap_exceeds_remaining_allocation"), "remaining_micros": remaining,
+        grant, found = stored.get("paid_expansion_grant"), allocation.claims(stored)
+        problem = allocation.problem(grant, found, args["max_cost_micros"], now, control=control)
+        if problem is None and grant["run_key"] != row["run_key"]:
+            problem = "paid_expansion_grant_invalid"
+        room = _room(grant, found, problem, control)
+        if problem in CAP_PROBLEMS:
+            fits = room["max_start_micros"] >= ULTRA_MIN_MICROS
+            return {**_skip(CAP_PROBLEMS[problem]), **room,
                     "action": "No Exa start was made and no claim was consumed. " + (
-                        f"Call once more with max_cost_micros from {ULTRA_MIN_MICROS} to {min(remaining, LIMIT_MICROS)} "
+                        f"Call once more with max_cost_micros from {ULTRA_MIN_MICROS} to {room['max_start_micros']} "
                         "if that still serves the gap; otherwise continue ordinary research." if fits else
                         "No Ultra cap fits the remaining verified allocation; continue ordinary research.")}
         if problem:
-            return _skip("expansion_remaining_all_in_allocation_unverified")
+            return {**_skip("expansion_remaining_all_in_allocation_unverified"), **room, "allocation_reason": problem}
         intent = {"run_key": row["run_key"], "session_id": row["session_id"], "turn_id": row["turn_id"],
                   "deadline": deadline.isoformat(), "authority_reference": row["recurring_budget_authority_reference"],
-                  "request": request,
-                  "allocation": copy.deepcopy(allocation), "tool_schema_sha256": _hash(_bytes(tool_schema))}
+                  "request": request, "grant": copy.deepcopy(grant),
+                  "reserved_before_micros": allocation.headroom(grant, found)["reserved_micros"],
+                  "tool_schema_sha256": _hash(_bytes(tool_schema))}
         claim = {"date": row["date"], "run_key": row["run_key"], "intent": intent,
                  "intent_json": _bytes(intent).decode(),
                  "intent_sha256": _hash(_bytes(intent)), "cap_micros": args["max_cost_micros"],
@@ -372,7 +344,7 @@ def execute(name, args, row, ledger, *, transport=None, allocation=None,
         ledger.put(row)  # Caller holds daily lock/fence; claim permanently precedes POST.
         if admit:
             admit(row)
-        if current_time() >= deadline or not _allocation(allocation, row, args["max_cost_micros"], current_time(), deadline):
+        if current_time() >= deadline or allocation.problem(grant, found, args["max_cost_micros"], current_time(), control=control):
             return {**_project(claim), "reason": "expansion_admission_expired_before_submission",
                     "action": "No provider call was made; retain the consumed claim and allocation for host reconciliation."}
         try:

@@ -18,21 +18,24 @@ stay limited to research strategy, output presentation, source/date handling,
 exact facility/task deduplication and ordinary-error recovery. Do not widen the
 general AutoAgent allowlist or introduce services, credentials or access.
 
-The optional Exa list-expansion policy shares the existing $5/day research
-allocation. The actual session must expose existing `agent_run` with a supported
-`maxCostDollars` cap, and retained all-in usage/reservations must establish enough
-remaining allocation for the native start and the rest of the run. Otherwise
-skip expansion with a specific reason. Retain one-use intent before the single
+Optional paid list expansion (Exa now; FindAll later) draws on a separate,
+host-reserved per-run allowance that the owner sets as data with
+`operators/paid-expansion-direction.py` (2026-10-04 owner decision: $10 combined
+per run); the $5/day research soft target is unchanged. The actual session must
+expose existing `agent_run` with a supported `maxCostDollars` cap, and the run's
+frozen grant must have remaining allowance for the native start (see
+[SEARCH.md](SEARCH.md#owner-directed-paid-expansion-allowance)). Otherwise skip
+expansion with a specific reason. Retain one-use intent before the single
 start and use the original acknowledged `runId` for observation; uncertain writes
 are reconciled without replay or `previousRunId`. Merge raw discoveries before
 final QA and exact site/task/history deduplication; no quotas or enrichment.
 
 Activation is separate from policy publication: the current
 `owner-readonly-mcp-v1` session profile does not expose Exa, and unverified cost
-headroom cannot authorize an expansion. This policy release adds no tool/config
-binding or native recurring stage and must not be reported as enabling one.
-The expansion remains nonactive until the actual supported tool exposure, durable
-start claim and verifiable remaining-allocation route exist in the daily session.
+headroom cannot authorize an expansion. The remaining-allocation route is the
+frozen per-run grant; it enables nothing until a released package selects
+`exa-guarded-v1` and the owner applies a direction. Do not report expansion as
+active before a real daily session exposes the tool and records a granted row.
 
 ## Capture and choose
 

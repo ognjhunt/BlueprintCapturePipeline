@@ -1,5 +1,6 @@
 """Real private-pipe adapter recovery with hermetic Node Firestore transactions."""
 import base64
+import copy
 import hashlib
 import json
 from datetime import timedelta
@@ -247,3 +248,70 @@ def test_completed_validation_failure_enters_existing_workflow_only_when_eligibl
     assert result["state"] == ("existing_workflow_called" if boundary == "eligible" else "failed")
     assert creation_modes == [command == "run"] and len(api.payloads) == 1
     assert ledger.read_bytes(DAY + "-artifact.json") == retained
+
+
+@pytest.fixture
+def adjustable_control():
+    return json.loads((ROOT/"tools/daily_research/render.control.example.json").read_text())
+
+
+@pytest.mark.parametrize("minutes",[60,120,180,240])
+def test_runtime_minutes_are_owner_adjustable_without_changing_budget(adjustable_control,minutes):
+    control=adjustable_control
+    control["config"].update(discovery_profile="adaptive-sites-v1",max_runtime_seconds=3600,qa_reserved_seconds=900)
+    original=copy.deepcopy(control)
+    configured=render.runtime_configuration(control,minutes)
+    assert configured["max_runtime_seconds"] ==minutes*60 and configured["qa_reserved_seconds"] ==900
+    assert configured["soft_target_usd"] ==control["config"]["soft_target_usd"]
+    assert control ==original
+    assert render.runtime_configuration(control,minutes,20)["qa_reserved_seconds"] ==1200
+
+
+@pytest.mark.parametrize("minutes,qa",[(None,None),(True,None),(1,None),(241,None),(120,True),(120,120)])
+def test_runtime_minutes_and_qa_refuse_invalid_values(adjustable_control,minutes,qa):
+    adjustable_control["config"].update(discovery_profile="adaptive-sites-v1",max_runtime_seconds=3600,qa_reserved_seconds=900)
+    with pytest.raises(Refusal):
+        render.runtime_configuration(adjustable_control,minutes,qa)
+
+
+def test_real_private_pipe_adjusts_runtime_without_provider_start(fixture,adjustable_control,monkeypatch):
+    _,api,ledger,bridge,_=fixture
+    control=adjustable_control
+    control["source_commit"]="c"*40
+    control["config"].update(discovery_profile="adaptive-sites-v1",max_runtime_seconds=3600,qa_reserved_seconds=900)
+    with ledger.lock():
+        bridge.call("configure",value=control)
+    original=render.read_json
+    monkeypatch.setattr(render,"read_json",lambda path: {"source_commit":"c"*40} if Path(path).name=="manifest.json" else original(path))
+    result=render.set_runtime(bridge,ledger,240)
+    assert result["total_minutes"] ==240 and result["qa_minutes"] ==15 and result["research_minutes"] ==225
+    assert result["existing_rows_changed"] is False and result["paid_allowance_changed"] is False
+    assert bridge.call("control")["config"]["max_runtime_seconds"] ==14400
+    assert api.payloads ==[]
+
+
+def test_invoke_wires_the_stop_signal_into_the_provider_for_findall(monkeypatch, tmp_path):
+    """The FindAll handler reads provider.stopped, so a SIGTERM must reach it before a create POST."""
+    seen = {}
+
+    class Provider:
+        pass
+
+    class FakeRunner:
+        def __init__(self, ledger, cfg, api):
+            seen["api"] = api
+
+        def start_or_resume(self, *, allow_create):
+            return {"state": "completed"}
+
+    class FakeBridge:
+        def call(self, op, **_kwargs):
+            return None if op == "active_qa" else {}
+
+    def stopped():
+        return True
+
+    monkeypatch.setattr(render, "configured", lambda *_args: {"enabled": False})
+    monkeypatch.setattr(render, "Runner", FakeRunner)
+    render.invoke("reconcile", FakeBridge(), tmp_path, stopped=stopped, api_factory=lambda *_args: Provider())
+    assert seen["api"].stopped is stopped

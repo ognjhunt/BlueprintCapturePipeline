@@ -691,6 +691,7 @@ def spend(api, row):
 
 
 class CanaryProvider(FencedProvider):
+    findall_from_worker_binding = False  # The frozen canary never advertises paid FindAll tools.
     stopped = staticmethod(lambda: False)
     clock = staticmethod(lambda: datetime.now(timezone.utc))
 
@@ -902,8 +903,10 @@ def repair_report(bridge, cache, *, api_factory=CanaryProvider, stopped=lambda: 
                     or row.get("canary", {}).get("baseline", {}).get("soft_total_usd") != 25):
                 raise Refusal("validation_repair_retained_intent_required")
             if not row.get("validation_repair_authority"):
+                # The window is the row's own admitted total (1800 for the retained
+                # baseline rows); repair_deadline refuses any other value before the write.
                 row["validation_repair_authority"] = {
-                    "started_at": clock().isoformat(), "duration_seconds": 1800,
+                    "started_at": clock().isoformat(), "duration_seconds": row.get("total_runtime_seconds"),
                     "request": {"scope": "same-session-validation-repair-and-qa-no-outreach",
                         "authority_reference": authority_reference,
                         "budget_authority_reference": BASELINE["authority_reference"],

@@ -40,6 +40,73 @@ const claimUpdate=(run,row,name,digest,batches=null)=>{
     ...(batches?{publication_batches:{...run.publication_batches,[name]:batches}}:{})};
 };
 const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+// Owner-directed paid expansion allowance; mirrors tools/daily_research/allocation.py.
+const PAID_DIRECTION='blueprint.research-paid-expansion-direction.v1', PAID_GRANT='blueprint.research-paid-expansion-grant.v1';
+const PAID_PREFIX='operations/research/paid-expansion/', PAID_SOURCES=['exa','findall']; // Mirrors allocation.SOURCES.
+const PAID_FIELDS=['approval_reference','approved_by','effective_from','expires_at','issued_at','per_run_limit_usd',
+  'reason','schema_version','scope','sources','supersedes','version'];
+const PAID_GRANT_FIELDS=['approval_reference','direction_sha256','direction_uri','frozen_at','grant_id','limit_micros',
+  'per_start_max_micros','run_key','schema_version','source_commit','sources','state','valid_until','version'];
+const hexOK=(x,n=64)=>typeof x==='string' && x.length===n && /^[a-f0-9]+$/.test(x);
+const keysAre=(value,keys)=>!!value && typeof value==='object' && !Array.isArray(value)
+  && JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
+const paidMicros=x=>{
+  if(typeof x!=='string' || !/^[1-9]\d{0,2}(?:\.\d{2})?$/.test(x)) return null;
+  const [whole,cents='0']=x.split('.'),value=Number(whole)*1000000+Number(cents)*10000;
+  return value>=1000000 && value<=100000000?value:null;
+};
+const paidPerStart=limit=>Math.min(Math.max(Math.floor(limit/2),1000000),50000000);
+// FindAll claims are the owner journal entries (parallel_findall_owner.SUBMISSIONS_FIELD). Each
+// reserves its prepared request's whole maximum_cost_usd (mirrors allocation.findall_micros).
+const FINDALL_FIELD='parallel_findall_submissions', FINDALL_PROFILE='parallel-findall-v1';
+const findallMicros=x=>{
+  if(typeof x!=='string' || !/^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/.test(x)) return null;
+  const [whole,cents='']=x.split('.'),value=Number(whole)*1000000+Number(cents.padEnd(2,'0'))*10000;
+  return value>0 && value<=100000000?value:null;
+};
+function findallClaims(row) {
+  const entries=row[FINDALL_FIELD];
+  if(entries===undefined || entries===null) return {};
+  if(typeof entries!=='object' || Array.isArray(entries)) refuse('findall_claim_binding_invalid');
+  const claims={};
+  for(const [key,entry] of Object.entries(entries)) {
+    const prepared=entry?.prepared,reserved=findallMicros(prepared?.maximum_cost_usd);
+    if(!hexOK(key) || typeof entry?.operation_id!=='string' || sha(Buffer.from(entry.operation_id))!==key
+        || !entry.operation_id.startsWith(`${row.run_key}:findall:`) || prepared?.operation_id!==entry.operation_id
+        || prepared?.resource_class!=='parallel_findall' || typeof entry.allocation_binding_digest!=='string'
+        || prepared.allocation_binding_digest!==entry.allocation_binding_digest || reserved===null
+        || ![null,undefined].includes(entry.findall_id) && !/^findall_[A-Za-z0-9_-]+$/.test(entry.findall_id))
+      refuse('findall_claim_binding_invalid');
+    // The binding is immutable; state, receipt and the provider ID (once known) may advance.
+    claims[key]={binding:valueHash({operation_id:entry.operation_id,
+      allocation_binding_digest:entry.allocation_binding_digest,prepared}),
+      reserved_micros:reserved,findall_id:entry.findall_id || null};
+  }
+  return claims;
+}
+const paidUri=hash=>`gs://${CLEANUP_BUCKET}/${PAID_PREFIX}${hash}/direction.json`;
+// Whole UTC seconds on a real calendar day; Date.parse alone rolls 11-31 into 12-01.
+const paidStamp=x=>{
+  if(typeof x!=='string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$/.test(x)) return NaN;
+  const ms=Date.parse(x);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0,19)+'+00:00'===x?ms:NaN;
+};
+const paidText=x=>typeof x==='string' && /^[\x20-\x7e]{1,500}$/.test(x) && x.trim()!=='';
+function paidDirectionProblem(d,control) {
+  if(!keysAre(d,PAID_FIELDS) || d.schema_version!==PAID_DIRECTION) return 'paid_expansion_direction_invalid';
+  if(paidMicros(d.per_run_limit_usd)===null) return 'paid_expansion_limit_invalid';
+  const scope=d.scope,[issued,start,end]=['issued_at','effective_from','expires_at'].map(k=>paidStamp(d[k]));
+  if(!keysAre(scope,['agent_id','firestore_root','project_id','run_key_prefix','timezone'])
+      || scope.project_id!==control?.project_id || scope.agent_id!==control?.agent_id || scope.firestore_root!==ROOT
+      || scope.run_key_prefix!=='blueprint-researcher:' || scope.timezone!=='America/Chicago') return 'paid_expansion_scope_mismatch';
+  if(!Number.isSafeInteger(d.version) || d.version<1 || d.version>1000000 || (d.version===1)!==(d.supersedes===null)
+      || d.supersedes!==null && !hexOK(d.supersedes) || !Array.isArray(d.sources) || !d.sources.length
+      || !d.sources.every((s,i)=>PAID_SOURCES.includes(s) && (i===0 || d.sources[i-1]<s))
+      || !['approval_reference','approved_by','reason'].every(k=>paidText(d[k])) || /^PENDING/i.test(d.approval_reference.trim())
+      || ![issued,start,end].every(Number.isFinite) || !(issued<=start && start<end) || end-issued>366*86400000)
+    return 'paid_expansion_direction_invalid';
+  return null;
+}
 
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
@@ -189,6 +256,49 @@ export class Store {
         refuse('expansion_original_id_changed');
       if(prior.data()?.exa_expansion_terminal_receipt && !same(prior.data().exa_expansion_terminal_receipt,exa?.terminal_receipt))
         refuse('expansion_terminal_receipt_changed');
+      const grant=row.paid_expansion_grant,grantDigest=grant===undefined || grant===null?null:valueHash(grant);
+      // One frozen grant per row: bound at the durable intent, never replaced or added later.
+      // A manifest an older bridge wrote cannot prove which grant the intent froze, so that
+      // row stays unbound and admits no new paid claim.
+      const priorGrant=prior.data()?.paid_expansion_grant_digest;
+      const unbound=prior.exists && (priorGrant===undefined || prior.data().paid_expansion_grant_unbound===true);
+      if(prior.exists && priorGrant!==undefined && priorGrant!==grantDigest) refuse('paid_expansion_grant_already_bound');
+      if(!prior.exists && grant?.state==='granted') await this.paidGrantGate(tx,control,row,grant,true);
+      // FindAll claims are append-only: a known claim keeps its exact binding and provider ID.
+      // A manifest an older bridge rewrote adopts the row's claims and admits no new one.
+      const findall=findallClaims(row),priorFindall=prior.data()?.findall_claims;
+      const findallUnbound=prior.exists && (priorFindall===undefined || prior.data().findall_unbound===true);
+      const knownFindall=priorFindall===undefined?(findallUnbound?findall:{}):priorFindall;
+      for(const [key,claim] of Object.entries(knownFindall)) {
+        if(!findall[key] || findall[key].binding!==claim.binding) refuse('findall_claim_already_consumed');
+        if(claim.findall_id && findall[key].findall_id!==claim.findall_id) refuse('findall_original_id_changed');
+      }
+      if(Object.keys(findall).length && (row.findall_profile!==FINDALL_PROFILE || !hexOK(row.metadata?.findall_tools_digest)))
+        refuse('findall_profile_invalid');
+      const freshFindall=Object.keys(findall).filter(key=>!knownFindall[key]);
+      // Exa and FindAll debit one combined allowance; an unknown cost holds its whole reservation.
+      // The Exa reservation is the immutable intent's native budget on every write, so a
+      // later rewrite of cap_micros cannot hide reserved spend from the combined check.
+      const exaReserved=exa?Math.round(Number(exa.intent?.request?.budget?.maxCostDollars)*1000000):null;
+      if(exa && (!Number.isSafeInteger(exaReserved) || exaReserved!==exa.cap_micros)) refuse('paid_expansion_claim_cap_mismatch');
+      const reserved=[...(exa?[exaReserved]:[]),...Object.values(findall).map(claim=>claim.reserved_micros)];
+      const overGrant=limit=>!reserved.every(v=>Number.isSafeInteger(v) && v>0)
+        || reserved.reduce((a,b)=>a+b,0)>limit;
+      if(exa && !prior.data()?.exa_expansion_intent_digest) {
+        // A new paid claim debits the frozen grant; an unknown cost holds its whole cap.
+        if(unbound || grant?.state!=='granted' || valueHash(exa.intent?.grant ?? null)!==grantDigest)
+          refuse('paid_expansion_grant_required');
+        const liveLimit=await this.paidGrantGate(tx,control,row,grant,false,'exa');
+        const dollars=exa.intent?.request?.budget?.maxCostDollars;
+        if(typeof dollars!=='number' || Math.round(dollars*1000000)!==exa.cap_micros) refuse('paid_expansion_claim_cap_mismatch');
+        if(exa.cap_micros>paidPerStart(liveLimit) || overGrant(liveLimit)) refuse('paid_expansion_reservation_exceeds_grant');
+      }
+      if(freshFindall.length) {
+        if(unbound || findallUnbound || grant?.state!=='granted') refuse('paid_expansion_grant_required');
+        const liveLimit=await this.paidGrantGate(tx,control,row,grant,false,'findall');
+        if(freshFindall.some(key=>findall[key].reserved_micros>paidPerStart(liveLimit)) || overGrant(liveLimit))
+          refuse('paid_expansion_reservation_exceeds_grant');
+      }
       if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
         refuse('research_mcp_profile_changed');
       if(row.mcp_profile && (!['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'].includes(row.mcp_profile)
@@ -252,6 +362,8 @@ export class Store {
         exa_expansion_intent_digest:exa?.intent_sha256 || null,
         exa_expansion_run_id:exa?.run_id || null,
         exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
+        paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
+        findall_claims:findall,findall_unbound:findallUnbound,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
         cleanup_binding_digest: cleanupBinding,
         cleanup_archive: prior.data()?.cleanup_archive || null,
@@ -406,6 +518,40 @@ export class Store {
       if(sha(raw)!==receipt.sha256 || raw.length!==receipt.bytes) refuse('expansion_receipt_digest_mismatch');
       files[receipt.file.slice(day.length+1,-5)]=encoded;
     }
+    // FindAll created-run, owned-read and settlement receipts (findall.receipt_refs). Each snapshot is
+    // ONE immutable file; a paged receipt also binds the page layout its reader slices from that file
+    // (parallel_findall_owner.page_view). The retired multi-file parts format fails closed.
+    const snapshotReceipts=[
+      ...Object.values(row[FINDALL_FIELD] || {}).map(entry=>entry?.receipt).filter(receipt=>receipt!==undefined && receipt!==null),
+      ...Object.values(row.parallel_findall_reads || {}),
+      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || [])];
+    const findallRefs=[
+      ...Object.values(row[FINDALL_FIELD] || {}).filter(entry=>entry?.receipt_file)
+        .map(entry=>({file:entry.receipt_file,sha256:entry.receipt_sha256})),
+      ...Object.values(row.parallel_findall_reads || {}).map(read=>({file:read?.file,sha256:read?.sha256,bytes:read?.bytes})),
+      ...Object.values(row.parallel_findall_settlements || {}).flatMap(record=>record?.receipts || [])];
+    for(const receipt of findallRefs) {
+      if(typeof receipt?.file!=='string' || !receipt.file.startsWith(`${day}-tool-findall-`) || !receipt.file.endsWith('.json'))
+        refuse('findall_export_binding_invalid');
+      const encoded=await this.fileGet(receipt.file),raw=Buffer.from(encoded,'base64');
+      if(sha(raw)!==receipt.sha256 || receipt.bytes!==undefined && raw.length!==receipt.bytes) refuse('findall_receipt_digest_mismatch');
+      files[receipt.file.slice(day.length+1,-5)]=encoded;
+    }
+    for(const receipt of snapshotReceipts) {
+      const encoded=typeof receipt?.file==='string'?files[receipt.file.slice(day.length+1,-5)]:undefined;
+      if(typeof encoded!=='string' || Object.hasOwn(receipt,'parts')) refuse('findall_snapshot_binding_invalid');
+      const raw=Buffer.from(encoded,'base64');
+      if(sha(raw)!==receipt.sha256 || raw.length!==receipt.bytes) refuse('findall_snapshot_binding_invalid');
+      const paging=['schema_version','page_chars','page_count'].filter(key=>Object.hasOwn(receipt,key));
+      if(paging.length) {
+        // Code points, as Python slices them: every UTF-8 byte that is not a continuation byte.
+        let chars=0;for(const byte of raw) if((byte&0xc0)!==0x80) chars++;
+        if(paging.length!==3 || receipt.schema_version!=='blueprint.findall-snapshot.v2' || receipt.page_chars!==24000
+            || !Number.isSafeInteger(receipt.page_count) || receipt.page_count<1
+            || Math.ceil(chars/24000)!==receipt.page_count) refuse('findall_snapshot_binding_invalid');
+      }
+      try {JSON.parse(raw.toString('utf8'));} catch {refuse('findall_snapshot_binding_invalid');}
+    }
     if (row.qa?.input_file) {
       const input = files['qa-input'] && Buffer.from(files['qa-input'], 'base64');
       if (row.qa.input_file !== `${day}-qa-input.json` || !input || input.at(-1) !== 10
@@ -470,6 +616,9 @@ export class Store {
         exa_expansion_intent_digest:row.exa_expansion?.intent_sha256 || null,
         exa_expansion_run_id:row.exa_expansion?.run_id || null,
         exa_expansion_terminal_receipt:row.exa_expansion?.terminal_receipt || null,
+        paid_expansion_grant_digest:row.paid_expansion_grant?valueHash(row.paid_expansion_grant):null,
+        // An imported row keeps its claims and never admits a new one.
+        findall_claims:findallClaims(row),findall_unbound:true,
         environment_id: row.environment_id || null});
       this.projectWorkItem(tx, row, hash);
       return true;
@@ -662,6 +811,103 @@ export class Store {
     if (control.config?.search_provider !== row.search_provider || control.config?.soft_target_usd !== target
         || control.config?.recurring_budget_authority_reference !== authority)
       refuse('research_tool_budget_authority_changed');
+  }
+  async paidGrantGate(tx,control,row,grant,atIntent,source=null) {
+    // A granted record binds its audited owner direction, the live brake and the reviewed
+    // release; at the durable intent it must also be frozen from the current direction.
+    // Validate the live successor in this same transaction: it can tighten the source,
+    // allowance or interval before a new reservation is durable. The worker repeats
+    // the complete check immediately before POST, including the frozen run deadline.
+    const limit=grant?.limit_micros;
+    if(!keysAre(grant,PAID_GRANT_FIELDS) || grant.schema_version!==PAID_GRANT || grant.state!=='granted'
+        || grant.run_key!==row.run_key || !hexOK(grant.direction_sha256) || source && !grant.sources?.includes(source)
+        || grant.grant_id!==sha(JSON.stringify([grant.direction_sha256,row.run_key]))) refuse('paid_expansion_grant_not_admitted');
+    const audit=(await tx.get(this.db.doc(`${ROOT}/paidExpansionDirections/${grant.direction_sha256}`))).data();
+    if(!audit || audit.sha256!==grant.direction_sha256 || paidMicros(audit.direction?.per_run_limit_usd)!==limit
+        || grant.per_start_max_micros!==paidPerStart(limit) || audit.version!==grant.version || audit.uri!==grant.direction_uri
+        || !Array.isArray(grant.sources) || !grant.sources.every(s=>audit.direction.sources?.includes(s))
+        || control?.paid_expansion?.enabled!==true || control.source_commit!==grant.source_commit
+        || atIntent && control.paid_expansion.current?.sha256!==grant.direction_sha256) refuse('paid_expansion_grant_not_admitted');
+    const current=control.paid_expansion.current;
+    if(!keysAre(control.paid_expansion,['enabled','current']) || !keysAre(current,['sha256','version','uri','direction'])
+        || paidDirectionProblem(current.direction,control) || valueHash(current.direction)!==current.sha256
+        || current.version!==current.direction.version || current.uri!==paidUri(current.sha256)
+        || source && !current.direction.sources.includes(source)
+        || this.clock()<paidStamp(current.direction.effective_from) || this.clock()>=paidStamp(current.direction.expires_at))
+      refuse('paid_expansion_grant_not_admitted');
+    const liveAudit=(await tx.get(this.db.doc(`${ROOT}/paidExpansionDirections/${current.sha256}`))).data();
+    if(!liveAudit || valueHash(liveAudit.direction)!==current.sha256 || liveAudit.sha256!==current.sha256
+        || liveAudit.version!==current.version || liveAudit.uri!==current.uri) refuse('paid_expansion_grant_not_admitted');
+    return Math.min(limit,paidMicros(current.direction.per_run_limit_usd));
+  }
+  async paidExpansionSet(expected,value) {
+    // The only writer of control.paid_expansion: an owner direction compare-and-swap under
+    // the lease. A new direction appends a create-only audit record; the same direction may
+    // only be braked (enabled=false), and only a new owner direction re-enables expansion.
+    if(!(expected===null || hexOK(expected)) || !keysAre(value,['current','enabled']) || typeof value.enabled!=='boolean'
+        || !keysAre(value.current,['direction','sha256','uri','version'])) refuse('paid_expansion_request_invalid');
+    const entry=value.current;
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(); this.fence(control);
+      const paid=control.paid_expansion,prior=paid?.current || null;
+      if((prior?.sha256 ?? null)!==expected) refuse('paid_expansion_direction_conflict');
+      if(expected!==null && entry.sha256===expected) {
+        if(valueHash(entry)!==valueHash(prior)) refuse('paid_expansion_direction_conflict');
+        if(value.enabled && paid.enabled!==true) refuse('paid_expansion_reenable_requires_new_direction');
+        if(paid.enabled!==value.enabled) tx.set(this.control,{...control,paid_expansion:{enabled:value.enabled,current:prior}});
+        return {enabled:value.enabled,sha256:entry.sha256,version:prior.version,audit:'existing'};
+      }
+      const problem=paidDirectionProblem(entry.direction,control);
+      if(problem) refuse(problem);
+      if(!hexOK(entry.sha256) || pythonHash(entry.direction)!==entry.sha256 || entry.version!==entry.direction.version
+          || entry.uri!==paidUri(entry.sha256)) refuse('paid_expansion_direction_digest_mismatch');
+      // The chain continues from control's current record or, when a rollback dropped it,
+      // from the audit head, so one linear version chain survives.
+      let parent=prior;
+      if(!parent) {
+        const audits=(await tx.get(this.db.collection(`${ROOT}/paidExpansionDirections`).limit(1001))).docs.map(s=>s.data());
+        if(audits.length>1000) refuse('paid_expansion_audit_limit');
+        parent=audits.reduce((head,record)=>!head || (record.version ?? 0)>(head.version ?? 0)?record:head,null);
+      }
+      if(!value.enabled || entry.direction.supersedes!==(parent?.sha256 ?? null)
+          || entry.version!==(parent?(parent.version+1):1)) refuse('paid_expansion_direction_chain_invalid');
+      const ref=this.db.doc(`${ROOT}/paidExpansionDirections/${entry.sha256}`);
+      if((await tx.get(ref)).exists) refuse('paid_expansion_audit_conflict');
+      tx.set(this.control,{...control,paid_expansion:{enabled:true,current:entry}});
+      tx.set(ref,{sha256:entry.sha256,version:entry.version,uri:entry.uri,direction:entry.direction,
+        recorded_at:new Date(this.clock()).toISOString()});
+      return {enabled:true,sha256:entry.sha256,version:entry.version,audit:'created'};
+    });
+  }
+  async paidExpansionAudit() {
+    const snaps=await this.db.collection(`${ROOT}/paidExpansionDirections`).limit(1001).get();
+    if(snaps.docs.length>1000) refuse('paid_expansion_audit_limit');
+    return snaps.docs.map(snap=>snap.data()).sort((a,b)=>(a.version ?? 0)-(b.version ?? 0));
+  }
+  paidObject(hash) {
+    if(!hexOK(hash)) refuse('paid_expansion_request_invalid');
+    if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('paid_expansion_object_transport_unavailable');
+    return this.archiveBucket.file(`${PAID_PREFIX}${hash}/direction.json`);
+  }
+  async paidExpansionObjectPut(hash,encoded) {
+    // Content-addressed and create-only. The record grants nothing until paid_expansion_set,
+    // so it needs no lease; the worker never reads it.
+    const file=this.paidObject(hash),raw=Buffer.from(typeof encoded==='string'?encoded:'','base64');
+    let direction;try {direction=JSON.parse(raw.toString('utf8'));} catch {refuse('paid_expansion_direction_invalid');}
+    const problem=paidDirectionProblem(direction,(await this.control.get()).data());
+    if(problem) refuse(problem);
+    if(sha(raw)!==hash || pythonHash(direction)!==hash) refuse('paid_expansion_direction_digest_mismatch');
+    try {await file.save(raw,{resumable:false,preconditionOpts:{ifGenerationMatch:0},
+      metadata:{contentType:'application/json',metadata:{sha256:hash}}});}
+    catch(error) {if(Number(error?.code)!==412) refuse('paid_expansion_object_write_unavailable');}
+    return this.paidExpansionObjectGet(hash);
+  }
+  async paidExpansionObjectGet(hash) {
+    const file=this.paidObject(hash);let meta,raw;
+    try {[meta]=await file.getMetadata();[raw]=await file.download();}
+    catch {refuse('paid_expansion_object_missing');}
+    if(!Buffer.isBuffer(raw) || sha(raw)!==hash || Number(meta?.size)!==raw.length) refuse('paid_expansion_object_conflict');
+    return {uri:paidUri(hash),sha256:hash,bytes:raw.toString('base64'),generation:String(meta.generation)};
   }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
@@ -1266,10 +1512,35 @@ export class Store {
       case 'init': {
         const value = request.value;
         if (value?.enabled !== false || value?.schema_version !== 'blueprint.research-control.v1') refuse('firestore_init_not_disabled');
+        if (Object.hasOwn(value, 'paid_expansion')) refuse('paid_expansion_requires_direction_operation');
         return this.transaction(async tx => {
           const snap = await tx.get(this.control);
           if (snap.exists) refuse('firestore_control_already_exists');
           tx.set(this.control, value); return true;
+        });
+      }
+      case 'runtime_set': {
+        const {total_seconds:total,qa_seconds:qa,expected_config:expected,expected_source_commit:source}=request;
+        if(!Number.isInteger(total) || total<120 || total>14400 || !Number.isInteger(qa) || qa<60 || qa>=total)
+          refuse('runtime_phase_envelope_invalid');
+        return this.transaction(async tx=>{
+          const control=(await tx.get(this.control)).data();this.fence(control);
+          if(control?.config?.discovery_profile!=='adaptive-sites-v1' || !hexOK(source,40)
+              || source!==control.source_commit || valueHash(expected)!==valueHash(control.config))
+            refuse('runtime_control_changed');
+          const inventory=await tx.get(this.db.collection(`${ROOT}/runs`).limit(10001));
+          if(inventory.docs.length>10000) refuse('firestore_history_limit');
+          const active={qa_state:['qa_running','qa_input_unresolved','qa_correction_input_unresolved','qa_cancel_pending'],
+            repair_state:['running','input_unresolved','cancel_pending'],
+            publication_state:['running','input_unresolved','cancel_pending']};
+          if(inventory.docs.some(doc=>{
+            const row=doc.data();return !TERMINAL.includes(row.state)
+              || Object.entries(active).some(([field,states])=>states.includes(row[field]));
+          })) refuse('runtime_active_research_qa_repair_or_publication');
+          const config={...control.config,max_runtime_seconds:total,qa_reserved_seconds:qa};
+          tx.set(this.control,{config},{merge:true});
+          return {previous_total_seconds:control.config.max_runtime_seconds,previous_qa_seconds:control.config.qa_reserved_seconds,
+            total_seconds:total,qa_seconds:qa,source_commit:source,active_rows:0};
         });
       }
       case 'configure': {
@@ -1278,8 +1549,12 @@ export class Store {
           refuse('firestore_control_binding_invalid');
         return this.transaction(async tx => {
           const control = (await tx.get(this.control)).data(); this.fence(control);
-          tx.set(this.control, {...value, cleanup_observation_required:control.cleanup_observation_required===true,
-            lease: control.lease}); return true;
+          // Only paid_expansion_set writes the owner's direction; a full replace keeps it.
+          if (Object.hasOwn(value, 'paid_expansion') && valueHash(value.paid_expansion ?? null) !== valueHash(control.paid_expansion ?? null))
+            refuse('paid_expansion_requires_direction_operation');
+          const replacement = {...value}; delete replacement.paid_expansion;
+          tx.set(this.control, {...replacement, cleanup_observation_required:control.cleanup_observation_required===true,
+            lease: control.lease, ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {})}); return true;
         });
       }
       case 'acquire': return this.acquire();
@@ -1371,6 +1646,13 @@ export class Store {
       case 'cleanup_claim': return this.cleanupClaim(request.day,request.binding_digest);
       case 'cleanup_delete_check': return this.cleanupClaim(request.day,request.binding_digest,true);
       case 'create_check': return this.createCheck(request.day, request.metadata);
+      case 'paid_expansion_set': {
+        if (!Object.hasOwn(request, 'expected_sha256')) refuse('paid_expansion_request_invalid');
+        return this.paidExpansionSet(request.expected_sha256, request.value);
+      }
+      case 'paid_expansion_audit': return this.paidExpansionAudit();
+      case 'paid_expansion_object_put': return this.paidExpansionObjectPut(request.sha256, request.bytes);
+      case 'paid_expansion_object_get': return this.paidExpansionObjectGet(request.sha256);
       default: refuse('firestore_operation_invalid');
     }
   }

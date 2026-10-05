@@ -95,6 +95,12 @@ class FirestoreLedger:
         control = self.bridge.call("control")
         return control.get("learning") if isinstance(control, dict) else None
 
+    def paid_expansion_control(self):
+        # Top-level company control: config keys stay allowlisted and older packages
+        # ignore control.paid_expansion. The worker never reads object storage.
+        control = self.bridge.call("control")
+        return control if isinstance(control, dict) else None
+
     def contact_research_context(self, day):
         return self.bridge.call("contact_research_context", day=day)
 
@@ -123,30 +129,41 @@ class FirestoreLedger:
 
 
 class FencedProvider(Provider):
+    # The daily worker's default provider. Like EXA_API_KEY for Exa, PARALLEL_API_KEY
+    # in the worker environment (presence only) adds the FindAll application handler;
+    # every create is still admitted by the run's shared paid expansion grant.
+    findall_from_worker_binding = True
+
     def __init__(self, ledger, api_key):
         super().__init__(api_key)
         self.ledger = ledger
+        if self.findall_from_worker_binding:
+            from tools.daily_research import findall
+            # None without the binding: no FindAll tool is advertised and research is unchanged.
+            self.findall_application_tools = findall.owner_handler(self)
 
     def create(self, payload):
         self.ledger.bridge.call("create_check", day=payload["metadata"]["run_key"].split(":", 1)[1], metadata=payload["metadata"])
         return super().create(payload)
 
     def expansion_context(self, row, name):
-        from tools.daily_research import expansion
+        from tools.daily_research import allocation, expansion
         from tools.daily_research.exa_transport import ExaTransport, ExaTransportError
         self.tool_admit(row, "research")
         if name == expansion.START and any(previous.get("exa_expansion")
                 and not previous["exa_expansion"].get("terminal_receipt") for previous in self.ledger.rows()):
             return {"unavailable_reason": "expansion_original_run_or_ack_pending_no_new_start"}
+        # The row's frozen grant is the allowance; live control supplies only the
+        # owner's brake and the reviewed release fence. No object-storage read.
         control = self.ledger.bridge.call("control")
-        allocation = control.get("exa_expansion_allocation")
-        allocation_status = expansion.allocation_diagnostic(row, allocation)
-        if name == expansion.START and not isinstance(allocation, dict):
-            return {"unavailable_reason": "expansion_remaining_all_in_allocation_unverified",
+        now = getattr(self, "clock", lambda: datetime.now(timezone.utc))()
+        allocation_status = expansion.allocation_diagnostic(row, control, now=now)
+        if name == expansion.START and allocation.standing(row.get("paid_expansion_grant"), control, now):
+            return {"unavailable_reason": "expansion_remaining_all_in_allocation_unverified", "control": control,
                     "allocation_status": allocation_status}
         key = os.environ.get("EXA_API_KEY")
         if not key:
-            return {"unavailable_reason": "expansion_worker_exa_binding_missing", "allocation": allocation,
+            return {"unavailable_reason": "expansion_worker_exa_binding_missing", "control": control,
                     "allocation_status": allocation_status}
 
         def retain(receipt):
@@ -177,15 +194,23 @@ class FencedProvider(Provider):
             schema = transport.discover()
         except ExaTransportError:
             return {"unavailable_reason": "expansion_authenticated_catalog_unavailable"}
-        return {"transport": transport, "allocation": allocation, "tool_schema": schema,
+        return {"transport": transport, "control": control, "tool_schema": schema,
                 "allocation_status": allocation_status}
 
     def expansion_admit(self, row, phase):
+        from tools.daily_research import allocation
         self.tool_admit(row, phase)
         claim = row.get("exa_expansion")
         if claim and not claim.get("run_id"):
+            # Recheck the complete allocation against fresh control after persisting
+            # the claim. Its own reservation is the proposed cap, not a prior debit.
             control = self.ledger.bridge.call("control")
-            if control.get("exa_expansion_allocation") != claim["intent"]["allocation"]:
+            grant = claim["intent"].get("grant")
+            prior = [value for value in allocation.claims(row)
+                     if not (value["source"] == "exa" and value["intent_sha256"] == claim["intent_sha256"])]
+            if (grant is None or grant != row.get("paid_expansion_grant")
+                    or allocation.problem(grant, prior, claim.get("cap_micros"),
+                                          getattr(self, "clock", lambda: datetime.now(timezone.utc))(), control=control)):
                 raise Refusal("expansion_allocation_changed_before_submission")
 
     def cancel(self, session_id, run_key):

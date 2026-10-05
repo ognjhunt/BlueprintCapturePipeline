@@ -5,7 +5,7 @@
   "scheduler_authority_reference": "PENDING-no-cutover",
   "crm_snapshot": "/var/lib/blueprint/researcher/crm.json",
   "slack_channel_id": null,
-  "max_runtime_seconds": 1800,
+  "max_runtime_seconds": 3600,
   "soft_target_usd": null,
   "recurring_budget_authority_reference": "PENDING-owner-recurring-budget-decision",
   "research_contract_version": 3,
@@ -13,7 +13,7 @@
   "knowledge_filters": {},
   "knowledge_refresh_policy": "/var/lib/blueprint/researcher/refresh-policy.approved.v1.json",
   "discovery_profile": "adaptive-sites-v1",
-  "qa_reserved_seconds": 600,
+  "qa_reserved_seconds": 900,
   "search_provider": "perplexity-fast-v1",
   "publication_profile": "agent-owned-v1",
   "history_profile": "agent-history-v1"

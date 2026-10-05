@@ -5,9 +5,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tools.daily_research import allocation
 from tools.daily_research import expansion as e
+from tools.daily_research.runner import MAX_ADAPTIVE_RUNTIME_SECONDS, digest
 
 NOW = datetime(2026, 10, 4, 12, 1, tzinfo=timezone.utc)
+COMMIT = "b" * 40
 ARGS = {"query": "US regional laundry sites with towel handling evidence", "max_cost_micros": 2_000_000}
 SCHEMA = {"type": "object", "required": ["query"], "properties": {
     "effort": {"type": "string", "enum": ["low", "auto", "ultra"], "default": "low"},
@@ -61,40 +64,97 @@ class Transport:
         return copy.deepcopy(self.result)
 
 
+def owner_control(limit="10.00", *, enabled=True, commit=COMMIT):
+    """Company control carrying one verified owner direction (allocation.py)."""
+    value = {"schema_version": allocation.DIRECTION, "version": 1, "supersedes": None, "per_run_limit_usd": limit,
+             "sources": ["exa"], "scope": dict(allocation.SCOPE), "effective_from": "2026-09-01T00:00:00+00:00",
+             "expires_at": "2026-12-31T00:00:00+00:00", "approval_reference": "owner-direction-synthetic",
+             "approved_by": "owner", "issued_at": "2026-09-01T00:00:00+00:00", "reason": "Synthetic allowance"}
+    sha = allocation.digest(value)
+    return {"source_commit": commit, "paid_expansion": {"enabled": enabled, "current": {
+        "sha256": sha, "version": 1, "uri": allocation.uri(sha), "direction": value}}}
+
+
+def freeze(row, ledger, limit="10.00"):
+    """The runner's one grant per daily row, frozen at the run start."""
+    control = owner_control(limit)
+    row["paid_expansion_grant"] = allocation.grant(control, row, datetime.fromisoformat(row["started_at"]))
+    ledger.put(row)
+    return control
+
+
 @pytest.fixture
 def context(tmp_path):
-    row = {"date": "2026-10-04", "run_key": "synthetic_daily_run", "session_id": "sess_synthetic",
+    row = {"date": "2026-10-04", "run_key": "blueprint-researcher:2026-10-04", "session_id": "sess_synthetic",
            "turn_id": "turn_synthetic", "state": "running", "started_at": (NOW - timedelta(seconds=60)).isoformat(),
            "research_runtime_seconds": 1200, "recurring_budget_authority_reference": "synthetic_owner_authority",
            "soft_target_usd": 5}
     ledger = Ledger(tmp_path)
-    ledger.put(row)
-    allocation = {"schema_version": e.ALLOCATION, "run_key": row["run_key"],
-                  "authority_reference": row["recurring_budget_authority_reference"],
-                  "all_in_verified": True, "usage_unknown": False, "evidence_reference": "company-synthetic-evidence",
-                  "limit_micros": 5_000_000, "committed_micros": 1_000_000, "reserved_micros": 2_000_000,
-                  "remaining_micros": 2_000_000, "checked_at": NOW.isoformat(),
-                  "valid_until": (NOW + timedelta(seconds=30)).isoformat()}
-    return row, ledger, Transport(ledger, row), allocation
+    control = freeze(row, ledger)
+    assert row["paid_expansion_grant"]["state"] == "granted"
+    return row, ledger, Transport(ledger, row), control
 
 
 def call(context, name=e.START, args=None, **overrides):
-    row, ledger, transport, allocation = context
-    options = {"transport": transport, "allocation": allocation, "tool_schema": SCHEMA, "now": NOW}
+    row, ledger, transport, control = context
+    options = {"transport": transport, "control": control, "tool_schema": SCHEMA, "now": NOW}
     options.update(overrides)
     return e.execute(name, ARGS if args is None else args, row, ledger, **options)
 
 
-@pytest.mark.parametrize("change", [
-    {"usage_unknown": True}, {"all_in_verified": False}, {"remaining_micros": 3_000_000},
-    {"reserved_micros": 3_000_000, "remaining_micros": 1_000_000}, {"limit_micros": 10_000_000},
-    {"authority_reference": "another_authority"}, {"run_key": "another_run"}, {"evidence_reference": ""},
-    {"valid_until": NOW.isoformat()}, {"committed_micros": True},
+def regrant(context, grant):
+    row, ledger, _, _ = context
+    row["paid_expansion_grant"] = grant
+    ledger.put(row)
+
+
+@pytest.mark.parametrize(("control", "grant", "reason"), [
+    (owner_control(enabled=False), None, "paid_expansion_disabled"),
+    ({"source_commit": COMMIT}, None, "paid_expansion_disabled"),
+    (owner_control(commit="d" * 40), None, "paid_expansion_source_commit_changed"),
+    (None, None, "paid_expansion_disabled"),
+    (owner_control(), {"limit_micros": 20_000_000}, "paid_expansion_grant_invalid"),
+    (owner_control(), {"valid_until": NOW.isoformat()}, "paid_expansion_expired"),
+    (owner_control(), {"state": "refused", "code": "paid_expansion_disabled"}, "paid_expansion_disabled"),
 ])
-def test_unknown_or_mismatched_allocation_skips_without_claim_or_post(context, change):
-    context[3].update(change)
-    assert call(context)["state"] == "skipped"
+def test_unknown_braked_or_changed_grant_skips_without_claim_or_post(context, control, grant, reason):
+    if grant is not None:
+        regrant(context, {**context[0]["paid_expansion_grant"], **grant})
+    result = call(context, control=control)
+    assert result["state"] == "skipped" and result["reason"] == "expansion_remaining_all_in_allocation_unverified"
+    assert result["allocation_reason"] == reason and result["max_start_micros"] in {0, None}
     assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
+
+
+@pytest.mark.parametrize("grant", [None, "missing"])
+def test_older_rows_without_a_frozen_grant_keep_todays_skip(context, grant):
+    row, ledger, transport, _ = context
+    if grant:
+        row.pop("paid_expansion_grant")
+    else:
+        row["paid_expansion_grant"] = None
+    ledger.put(row)
+    result = call(context)
+    assert result["reason"] == "expansion_remaining_all_in_allocation_unverified"
+    assert result["allocation_reason"] == "paid_expansion_grant_missing" and result["remaining_micros"] is None
+    assert not transport.starts and "exa_expansion" not in ledger.get(row["date"])
+
+
+def test_host_stopped_skip_names_the_same_grant_fields(context):
+    result = call(context, transport=None, control=owner_control(enabled=False), allocation_status={},
+                  unavailable_reason="expansion_remaining_all_in_allocation_unverified")
+    assert result["reason"] == "expansion_remaining_all_in_allocation_unverified"
+    assert (result["allocation_reason"], result["remaining_micros"], result["max_start_micros"]) == (
+        "paid_expansion_disabled", 10_000_000, 0)
+    assert result["allocation_status"]["reasons"] == ["paid_expansion_disabled"]
+    assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
+
+
+def test_in_memory_grant_must_match_the_durable_row(context):
+    context[0]["paid_expansion_grant"] = {**context[0]["paid_expansion_grant"], "limit_micros": 100_000_000}
+    with pytest.raises(e.ExpansionError, match="expansion_daily_binding_changed"):
+        call(context)
+    assert not context[2].starts
 
 
 @pytest.mark.parametrize("schema", [None, {"properties": {}}, {"properties": None},
@@ -117,6 +177,31 @@ def test_no_binding_phase_or_original_deadline_extension(context):
     assert not context[2].starts
 
 
+def test_sixty_minute_row_admits_expansion_until_its_own_forty_five_minute_deadline(tmp_path):
+    row = {"date": "2026-10-04", "run_key": "blueprint-researcher:2026-10-04", "session_id": "sess_synthetic",
+           "turn_id": "turn_synthetic", "state": "running", "started_at": (NOW - timedelta(seconds=60)).isoformat(),
+           "research_runtime_seconds": 2700, "recurring_budget_authority_reference": "synthetic_owner_authority",
+           "soft_target_usd": 5}
+    ledger = Ledger(tmp_path)
+    control = freeze(row, ledger)
+    transport = Transport(ledger, row)
+    started = datetime.fromisoformat(row["started_at"])
+    assert e._deadline(row) == started + timedelta(seconds=2700)
+    assert row["paid_expansion_grant"]["valid_until"] == (started + timedelta(seconds=2700)).isoformat()
+    context = (row, ledger, transport, control)
+    # The old 1200-second research window has closed; this row's own window has not.
+    first = call(context, now=started + timedelta(seconds=1201))
+    assert first["run_id"] == "agent_run_synthetic" and len(transport.starts) == 1
+    # At this row's deadline an original-ID read is not extended or sent.
+    assert call(context, name=e.READ, args={}, now=started + timedelta(seconds=2700))["run_id"] == first["run_id"]
+    assert not transport.reads and len(transport.starts) == 1
+    # The shared adaptive envelope (MAX_ADAPTIVE_RUNTIME_SECONDS) bounds the expansion deadline.
+    with pytest.raises(e.ExpansionError, match="^expansion_original_deadline_invalid$"):
+        e._deadline({**row, "research_runtime_seconds": MAX_ADAPTIVE_RUNTIME_SECONDS + 1})
+    assert e._deadline({**row, "research_runtime_seconds": MAX_ADAPTIVE_RUNTIME_SECONDS}) == started + timedelta(
+        seconds=MAX_ADAPTIVE_RUNTIME_SECONDS)
+
+
 def test_host_unavailable_reason_is_actionable_without_claim(context):
     result = call(context, transport=None, unavailable_reason="expansion_existing_auth_missing")
     assert result["reason"] == "expansion_existing_auth_missing"
@@ -128,6 +213,9 @@ def test_native_start_is_once_across_restart_and_preserves_exact_cap(context):
     row, ledger, transport, _ = context
     assert first["run_id"] == "agent_run_synthetic"
     assert transport.starts == [{"query": ARGS["query"], "effort": "ultra", "budget": {"maxCostDollars": 2.0}}]
+    intent = ledger.get(row["date"])["exa_expansion"]["intent"]
+    assert intent["grant"] == row["paid_expansion_grant"] and intent["reserved_before_micros"] == 0
+    assert "allocation" not in intent
     restored = ledger.get(row["date"])
     resumed = (restored, Ledger(ledger.path), transport, context[3])
     assert call(resumed)["run_id"] == first["run_id"] and len(transport.starts) == 1
@@ -143,27 +231,81 @@ def test_documented_ultra_minimum_is_enforced_when_catalog_omits_it(context):
     assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
 
 
-def test_advertised_cap_bounds_equal_enforced_ultra_bounds():
-    """2026-10-04: the agent requested 500000 micros because the tool advertised a 1-micro minimum."""
+def test_tool_bounds_are_the_ultra_minimum_and_the_single_per_start_ceiling():
+    """2026-10-04: the agent requested 500000 micros because the tool advertised a 1-micro minimum.
+    The owner's per-run amount, not a second hidden schema cap, decides each start."""
     cap = e.tools()[0]["parameters"]["properties"]["max_cost_micros"]
-    assert (cap["minimum"], cap["maximum"]) == (e.ULTRA_MIN_MICROS, e.LIMIT_MICROS) == (1_000_000, 5_000_000)
-    assert "1000000" in e.instructions() and "5000000" in e.instructions()
+    assert (cap["minimum"], cap["maximum"]) == (e.ULTRA_MIN_MICROS, allocation.PER_START_CEILING_MICROS)
+    assert e.LIMIT_MICROS == allocation.PER_START_CEILING_MICROS == 50_000_000
+    text = e.instructions()
+    assert "1000000" in text and "50000000" in text and "max_start_micros" in text
+    assert "$20 allows 10000000" in text and "shares the existing all-in $5" not in text
 
 
-@pytest.mark.parametrize("overrides", [{}, {"transport": None, "allocation": None,
+def test_tool_schema_digest_changes_only_at_an_idle_release_boundary():
+    """check_agent compares live session tools with search.tools(): change these bytes only
+    when no daily session is in flight, never per run."""
+    assert digest(e.tools()) == "6ee756d6ebf1e0b8861b23c4c5eacddc32a47ee43e799735abbeb2b6308183b4"
+
+
+@pytest.mark.parametrize(("limit", "cap", "reason"), [
+    ("20.00", 10_000_000, None), ("20.00", 10_000_001, "expansion_cap_exceeds_per_start_maximum"),
+    ("10.00", 5_000_000, None), ("10.00", 6_000_000, "expansion_cap_exceeds_per_start_maximum"),
+    ("30.00", 15_000_000, None), ("100.00", 50_000_000, None), ("6.00", 3_000_001, "expansion_cap_exceeds_per_start_maximum"),
+    ("1.50", 2_000_000, "expansion_cap_exceeds_remaining_allocation")])
+def test_the_owner_amount_alone_binds_each_exa_start(context, limit, cap, reason):
+    row, ledger, transport, _ = context
+    control = freeze(row, ledger, limit)
+    grant = row["paid_expansion_grant"]
+    result = call(context, args={**ARGS, "max_cost_micros": cap}, control=control)
+    if reason is None:
+        assert result["run_id"] == "agent_run_synthetic"
+        assert transport.starts[-1]["budget"]["maxCostDollars"] == cap / 1_000_000
+        return
+    largest = min(grant["per_start_max_micros"], grant["limit_micros"])
+    assert result["state"] == "skipped" and result["reason"] == reason
+    assert result["max_start_micros"] == largest and result["remaining_micros"] == grant["limit_micros"]
+    assert str(largest) in result["action"] and not transport.starts
+
+
+def test_starts_above_the_hard_ceiling_are_invalid_arguments(context):
+    freeze(context[0], context[1], "100.00")
+    with pytest.raises(e.ExpansionError, match="expansion_start_arguments_invalid"):
+        call(context, args={**ARGS, "max_cost_micros": 50_000_001})
+    assert not context[2].starts
+
+
+def test_a_lower_current_direction_tightens_the_run_in_progress(context):
+    row, ledger, transport, _ = context
+    assert not transport.starts
+    freeze(row, ledger, "30.00")
+    lowered = owner_control("6.00")
+    lowered["paid_expansion"]["current"]["direction"].update(version=2, supersedes="a" * 64)
+    value = lowered["paid_expansion"]["current"]["direction"]
+    lowered["paid_expansion"]["current"].update(sha256=allocation.digest(value), version=2,
+                                                uri=allocation.uri(allocation.digest(value)))
+    result = call(context, args={**ARGS, "max_cost_micros": 4_000_000}, control=lowered)
+    assert result["reason"] == "expansion_cap_exceeds_per_start_maximum"
+    assert (result["remaining_micros"], result["max_start_micros"]) == (6_000_000, 3_000_000)
+    assert call(context, args={**ARGS, "max_cost_micros": 3_000_000}, control=lowered)["run_id"] == "agent_run_synthetic"
+
+
+@pytest.mark.parametrize("overrides", [{}, {"transport": None, "control": None,
                                             "unavailable_reason": "expansion_remaining_all_in_allocation_unverified"}])
 def test_cap_below_ultra_minimum_is_actionable_and_consumes_no_claim(context, overrides):
     result = call(context, args={**ARGS, "max_cost_micros": 500_000}, **overrides)
     assert result["state"] == "skipped" and result["reason"] == "expansion_cap_below_ultra_minimum"
+    assert (result["remaining_micros"], result["max_start_micros"]) == (10_000_000, 5_000_000)
     assert "1000000" in result["action"] and "5000000" in result["action"] and "no claim" in result["action"].lower()
     assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
 
 
-def test_cap_above_remaining_allocation_names_the_headroom(context):
-    context[3].update(reserved_micros=3_000_000, remaining_micros=1_000_000)
+def test_cap_above_remaining_allocation_names_the_headroom(context, monkeypatch):
+    # FindAll will add claims of its own; any earlier durable reservation debits this run.
+    monkeypatch.setattr(allocation, "claims", lambda row: [{"source": "findall", "reserved_micros": 9_000_000}])
     result = call(context)
     assert result["state"] == "skipped" and result["reason"] == "expansion_cap_exceeds_remaining_allocation"
-    assert result["remaining_micros"] == 1_000_000
+    assert result["remaining_micros"] == 1_000_000 and result["max_start_micros"] == 1_000_000
     assert not context[2].starts and "exa_expansion" not in context[1].get(context[0]["date"])
 
 
@@ -206,6 +348,8 @@ def test_uncertain_ack_is_permanent_not_a_retry_or_free_budget(context):
     assert call(context)["reserved_micros"] == ARGS["max_cost_micros"]
     assert call(context, e.READ, {})["run_id"] is None
     assert len(context[2].starts) == 1 and not context[2].reads
+    status = e.allocation_diagnostic(context[1].get(context[0]["date"]), context[3], now=NOW)
+    assert status["reserved_micros"] == ARGS["max_cost_micros"] and status["remaining_micros"] == 8_000_000
 
 
 def test_ack_file_recovers_pointer_failure_without_second_post(context):
@@ -290,7 +434,7 @@ def test_claim_storage_or_final_fence_failure_never_reaches_transport(context):
 
 
 def test_expired_admission_after_claim_keeps_reservation_without_native_start(context, monkeypatch):
-    ticks = iter([0, 31, 31])
+    ticks = iter([0, 1200, 1200])  # The grant ends at the original research deadline.
     monkeypatch.setattr(e.time, "monotonic", lambda: next(ticks))
     result = call(context)
     assert result["reason"] == "expansion_admission_expired_before_submission"
@@ -306,15 +450,21 @@ def test_cap_supported_enforces_ultra_floor_even_when_catalog_omits_minimum():
     assert e._cap_supported(SCHEMA, {**request, "budget": {"maxCostDollars": 1.0}})
 
 
-def test_no_ultra_cap_fits_remaining_allocation_says_so(context):
-    context[3].update(committed_micros=1_000_000, reserved_micros=3_500_000, remaining_micros=500_000)
+@pytest.mark.parametrize(("used", "remaining"), [(9_500_000, 500_000), (10_000_000, 0), (12_000_000, 0)])
+def test_no_ultra_cap_fits_remaining_allocation_says_so(context, monkeypatch, used, remaining):
+    # Earlier durable reservations (FindAll later) exhaust the combined run allowance.
+    monkeypatch.setattr(allocation, "claims", lambda row: [{"source": "findall", "reserved_micros": used}])
     result = call(context)
-    assert result["reason"] == "expansion_cap_exceeds_remaining_allocation" and result["remaining_micros"] == 500_000
+    assert result["reason"] == "expansion_cap_exceeds_remaining_allocation"
+    assert (result["remaining_micros"], result["max_start_micros"]) == (remaining, remaining)
     assert "No Ultra cap fits" in result["action"] and not context[2].starts
+    assert "exa_expansion" not in context[1].get(context[0]["date"])
 
 
 @pytest.mark.parametrize("value", [None, 5, "not-a-time"])
-def test_malformed_allocation_times_skip_instead_of_crashing(context, value):
-    context[3]["checked_at"] = value
-    assert call(context)["reason"] == "expansion_remaining_all_in_allocation_unverified"
+def test_malformed_grant_times_skip_instead_of_crashing(context, value):
+    regrant(context, {**context[0]["paid_expansion_grant"], "valid_until": value})
+    result = call(context)
+    assert result["reason"] == "expansion_remaining_all_in_allocation_unverified"
+    assert result["allocation_reason"] == "paid_expansion_grant_invalid"
     assert e.allocation_diagnostic(context[0], context[3], now=NOW)["remaining_micros"] is None

@@ -93,6 +93,32 @@ live evidence. The adaptive profile records why fewer than ten new candidates
 withstood research instead of padding the result. Legacy configurations below
 retain their original narrow scan envelope until explicitly replaced.
 
+New adaptive requests work breadth-first before they deepen (ported from #2561
+onto the v3 inventory). Before external searches, the agent reads the broader
+Notion [Team Directory](https://app.notion.com/p/3eb80154161d817aa3e6d9b9d7eba938)
+through the owner's existing read connection, when available, and relevant
+authorized history. The small supplied capability register is not the whole
+directory, and a directory entry is a research lead, not a qualified partner. A
+failed directory read stays a visible gap; public research continues. The agent
+maps supported task families from that evidence and surveys several of them
+before it spends most of the run on one. It keeps every sourced site/task lead in
+`discovery_inventory`, then deepens the strongest leads. An early hit or the
+first CRM-ready row is not a reason to stop. Broad Perplexity queries can request
+20 results, which is the existing tool maximum. The agent still chooses its
+searches and decides when marginal returns justify stopping, within its admitted
+envelope. There is no lead-count goal.
+
+QA reviews the inventory as a research backlog. It keeps site/task evidence and
+robot fit separate from buying-interest evidence, summarizes the supported leads
+and their evidence gaps in the brief, and explains breadth across task families.
+Only fully reviewed `candidates` reach the Prospects sheet and communications
+intake. An inventory disposition or a directory entry grants neither contact nor
+publication authority. The v3 schema, the tool definitions, saved agents, grants,
+budgets, schedules and paid claims do not change. A session keeps the research
+prompt and session instructions frozen in its create payload, but a QA turn that
+starts after release uses the new QA text, so release while research is idle. A
+matched worker package is still required.
+
 CRM authority: [existing Sheet](https://docs.google.com/spreadsheets/d/1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY/edit).
 Reviewed knowledge is private input, not bundled evidence. The reviewed Library
 bundle is `libfile_a9fff47b9b908191b69316ae1a438310`, **version 1**; expected

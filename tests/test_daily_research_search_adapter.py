@@ -542,6 +542,22 @@ def test_exact_absolute_deadline_prevents_execution_and_tool_result_submission(p
     assert value["application_tool_calls"]["call_1"]["attempted"] is False
 
 
+@pytest.mark.parametrize("phase,expired", [("research", 2700), ("qa", 3600)])
+def test_sixty_minute_row_tools_run_past_the_old_envelope_until_its_own_deadline(phase, expired):
+    value, ledger = {**row(), "research_runtime_seconds": 2700, "total_runtime_seconds": 3600}, MemoryLedger()
+    api = ToolAPI(ledger)
+    turn = "turn_qa" if phase == "qa" else "turn_research"
+    # 1801 seconds is past the old 1800-second total and the old 1200-second research window.
+    assert respond(value, [action(tid=turn)], ledger, api, phase=phase,
+                   clock=lambda: NOW + timedelta(seconds=1801)) is True
+    assert len(api.executions) == len(api.replies) == 1
+    with pytest.raises(Refusal, match="^research_tool_stopped_or_expired$"):
+        respond(value, [action(cid="call_2", tid=turn)], ledger, api, phase=phase,
+                clock=lambda: NOW + timedelta(seconds=expired))
+    assert len(api.executions) == len(api.replies) == 1
+    assert value["application_tool_calls"]["call_2"]["attempted"] is False
+
+
 def test_stopped_before_execution_and_stopped_after_result_both_fail_closed():
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)
@@ -658,27 +674,122 @@ def test_upstream_execution_error_is_secret_free_and_never_replayed():
     assert "synthetic-private" not in canonical(value)
 
 
-def test_call_and_evidence_ceiling_is_shared_across_research_and_qa(monkeypatch):
-    monkeypatch.setattr(search, "MAX_CALLS", 2)
+def budget_reply(reply):
+    error = json.loads(reply["error"])
+    return reply["success"] is False and error["code"] == "research_tool_budget_exhausted" and "final output" in error["guidance"]
+
+
+def test_call_budget_fails_soft_reserves_qa_and_keeps_a_hard_stop(monkeypatch):
+    monkeypatch.setattr(search, "MAX_CALLS", 3)
+    monkeypatch.setattr(search, "QA_RESERVED_CALLS", 1)
+    monkeypatch.setattr(search, "BUDGET_GRACE_CALLS", 2)
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)
     respond(value, [action()], ledger, api)
-    respond(value, [action(cid="call_2", tid="turn_qa")], ledger, api, phase="qa")
-    assert {call["phase"] for call in value["application_tool_calls"].values()} == {"research", "qa"}
+    respond(value, [action(cid="call_2")], ledger, api)
+    # Research may not use QA's reserved share: it is told to finish instead of being cancelled.
+    respond(value, [action(cid="call_3")], ledger, api)
+    assert len(api.executions) == 2 and budget_reply(api.replies[-1][1])
+    # QA still has its reserve, then gets the same fail-soft reply at the shared ceiling.
+    respond(value, [action(cid="call_4", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 3 and api.replies[-1][1]["success"] is True
+    respond(value, [action(cid="call_5", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 3 and budget_reply(api.replies[-1][1])
+    # A replay of a budget reply returns the same retained bytes and executes nothing.
+    respond(value, [action(cid="call_5", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 3 and api.replies[-1] == api.replies[-2]
+    # Each phase has its own grace replies; after them, the hard ceiling still refuses.
+    respond(value, [action(cid="call_6", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 3 and budget_reply(api.replies[-1][1])
     with pytest.raises(Refusal, match="^research_tool_evidence_resource_ceiling$"):
-        respond(value, [action(cid="call_3", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == len(api.replies) == 2
+        respond(value, [action(cid="call_7", tid="turn_qa")], ledger, api, phase="qa")
+    assert {call["phase"] for call in value["application_tool_calls"].values()} == {"research", "qa"}
+    assert value["application_tool_usage"]["attempted_search_requests"] == 3
 
 
-def test_byte_evidence_ceiling_includes_prior_research_during_qa(monkeypatch):
+def test_research_grace_replies_do_not_use_up_qa_grace(monkeypatch):
+    monkeypatch.setattr(search, "MAX_CALLS", 3)
+    monkeypatch.setattr(search, "QA_RESERVED_CALLS", 1)
+    monkeypatch.setattr(search, "BUDGET_GRACE_CALLS", 1)
+    value, ledger = row(), MemoryLedger()
+    api = ToolAPI(ledger)
+    respond(value, [action()], ledger, api)
+    respond(value, [action(cid="call_2")], ledger, api)
+    respond(value, [action(cid="call_3")], ledger, api)
+    assert budget_reply(api.replies[-1][1])
+    with pytest.raises(Refusal, match="^research_tool_evidence_resource_ceiling$"):
+        respond(value, [action(cid="call_4")], ledger, api)
+    # Research used all of its grace replies. QA keeps its reserve and its own grace reply.
+    respond(value, [action(cid="call_5", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 3 and api.replies[-1][1]["success"] is True
+    respond(value, [action(cid="call_6", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 3 and budget_reply(api.replies[-1][1])
+
+
+def repair_row():
+    value = row()
+    value.update(raw_output_digest="sha256:" + "a" * 64, validation_repairs=[{"turn_id": "turn_repair"}],
+                 validation_repair_authority={"kind": "workflow", "duration_seconds": 90, "started_at": NOW.isoformat(),
+                     "request": {"scope": "same-session-validation-repair-and-qa-no-outreach",
+                                 "session_id": "sess_offline", "root_turn_id": "turn_research",
+                                 "raw_output_sha256": "sha256:" + "a" * 64,
+                                 "authority_reference": "owner-synthetic-workflow-authority"}})
+    return value
+
+
+def test_validation_repair_keeps_the_qa_call_reserve(monkeypatch):
+    monkeypatch.setattr(search, "MAX_CALLS", 2)
+    monkeypatch.setattr(search, "QA_RESERVED_CALLS", 1)
+    value, ledger = repair_row(), MemoryLedger()
+    api = ToolAPI(ledger)
+    respond(value, [action()], ledger, api)
+    # Repair runs before QA, so like research it may not use QA's reserved share.
+    respond(value, [action(cid="call_2", tid="turn_repair")], ledger, api, phase="repair")
+    assert len(api.executions) == 1 and budget_reply(api.replies[-1][1])
+    respond(value, [action(cid="call_3", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 2 and api.replies[-1][1]["success"] is True
+
+
+def test_byte_budget_fails_soft_and_includes_prior_research_during_qa(monkeypatch):
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)
     respond(value, [action()], ledger, api)
     used = sum(call["result_bytes"] for call in value["application_tool_calls"].values())
     monkeypatch.setattr(search, "MAX_EVIDENCE", used + search.MAX_RESPONSE + 20000)
-    with pytest.raises(Refusal, match="^research_tool_evidence_resource_ceiling$"):
-        respond(value, [action(cid="call_2", tid="turn_qa")], ledger, api, phase="qa")
-    assert len(api.executions) == len(api.replies) == 1
+    monkeypatch.setattr(search, "QA_RESERVED_EVIDENCE", 0)
+    respond(value, [action(cid="call_2", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 1 and budget_reply(api.replies[-1][1])
+
+
+def test_research_byte_budget_leaves_the_qa_evidence_reserve(monkeypatch):
+    value, ledger = row(), MemoryLedger()
+    api = ToolAPI(ledger)
+    respond(value, [action()], ledger, api)
+    used = sum(call["result_bytes"] for call in value["application_tool_calls"].values())
+    monkeypatch.setattr(search, "QA_RESERVED_EVIDENCE", 1000)
+    monkeypatch.setattr(search, "MAX_EVIDENCE", used + search.MAX_RESPONSE + 20000 + 999)
+    respond(value, [action(cid="call_2")], ledger, api)
+    assert len(api.executions) == 1 and budget_reply(api.replies[-1][1])
+    respond(value, [action(cid="call_3", tid="turn_qa")], ledger, api, phase="qa")
+    assert len(api.executions) == 2 and api.replies[-1][1]["success"] is True
+
+
+def test_research_last_result_cannot_shrink_the_qa_evidence_reserve(monkeypatch):
+    # A recorded event escapes its JSON output again, so one result can reach about
+    # twice MAX_RESPONSE. Research must stop early enough that QA keeps its share.
+    monkeypatch.setattr(search, "MAX_RESPONSE", 100_000)
+    value, ledger = row(), MemoryLedger()
+    api = ToolAPI(ledger)
+    respond(value, [action()], ledger, api)
+    used = sum(call["result_bytes"] for call in value["application_tool_calls"].values())
+    monkeypatch.setattr(search, "QA_RESERVED_EVIDENCE", 200_000)
+    monkeypatch.setattr(search, "MAX_EVIDENCE", used + 200_000 + 100_000 + 20_000 + 1)
+    api.result = {"quoted": '"' * 49_000}
+    assert len(canonical(api.result).encode()) <= search.MAX_RESPONSE
+    respond(value, [action(cid="call_2")], ledger, api)
+    used = sum(call["result_bytes"] for call in value["application_tool_calls"].values())
+    assert search.MAX_EVIDENCE - used >= search.QA_RESERVED_EVIDENCE
+    assert budget_reply(api.replies[-1][1])
 
 
 def test_existing_record_ceiling_prevents_every_mutation(monkeypatch):

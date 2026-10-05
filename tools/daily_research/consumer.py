@@ -250,7 +250,13 @@ def qa_text(row, snapshot, crm_digest):
                   "rejected/duplicate findings, unresolved promising branches and why work stopped; count never "
                   "establishes completion. Check contact relevance and public professional provenance, prior "
                   "contact/history, counterevidence and explicit interest/owner/budget unknowns. Count distinct "
-                  "site/task opportunities separately from findings and robotics-team knowledge. ") if adaptive else ""
+                  "site/task opportunities separately from findings and robotics-team knowledge. "
+                  "Review discovery_inventory as a research backlog, not accepted CRM rows: verify the material source "
+                  "claims the brief relies on, keep site/task evidence and robot fit separate from actual buying-interest "
+                  "evidence, and keep other leads explicitly unverified. Summarize the supported inventory leads and their "
+                  "evidence gaps in the published summary, marking unsupported or rejected entries. A Team Directory "
+                  "entry never authorizes accepted_keys without full candidate QA. Explain breadth across "
+                  "capability/task families and whether premature concentration left gaps. ") if adaptive else ""
     trusted = ("Blueprint QA phase for the preceding research only. Read the reviewed evidence skill. "
                "Check every material finding, claim scope, quoted passage and candidate source against the actual sources; "
                "check semantic site/task duplicates against the supplied complete CRM identities. Missing evidence remains unresolved; "
@@ -433,6 +439,11 @@ class Consumer:
         return {"date": row["date"], "state": result["state"]}
 
     def qa(self, row):
+        # The stale-caller fence stays at entry. The FindAll registry is checked
+        # inside the observation try (observe and check_session), where a release
+        # that changed tool text routes a running QA session to cancel instead of
+        # raising on every tick.
+        search.assert_findall_caller(row, self.ledger, self.api, registry=False)
         deadline = qa_deadline(row, self.config)
         if not row.get("qa"):
             if self.clock() >= deadline:
@@ -526,6 +537,7 @@ class Consumer:
             return None
 
     def cancel(self, row, reason):
+        search.assert_findall_caller(row, self.ledger, self.api, registry=False)
         qa = row["qa"]
         if not qa["cancel_attempted"]:
             # Classify the actual action time, rather than trusting a reason
@@ -556,6 +568,7 @@ class Consumer:
 
     def correct_qa(self, row, feedback, session, deadline):
         """One durable corrective message in the saved session and existing envelope."""
+        search.assert_findall_caller(row, self.ledger, self.api)
         qa = row["qa"]
         qa["validation_feedback"] = feedback
         corrections = qa.setdefault("corrections", [])
@@ -643,6 +656,7 @@ class Consumer:
             self.ledger.put(row)
 
     def observe(self, row, deadline):
+        search.assert_findall_caller(row, self.ledger, self.api)
         qa = row["qa"]
         session = self.api.get("session", row["session_id"])
         self.check_session(row, session)
@@ -754,10 +768,13 @@ class Consumer:
         if row.get("mcp_profile") and digest(row.get("mcp_binding")) != row["metadata"].get("mcp_binding_digest"):
             raise Refusal("research_mcp_binding_changed")
         check_mcp_vault_binding(row, session)
+        if row.get("findall_profile") is not None:
+            from tools.daily_research import findall
+            findall.check_binding(row)
         if row.get("mcp_profile") and row["create_payload"]["agent"]["tools"] != (
-                search.tools(row.get("publication_profile"), row.get("history_profile"), row.get("expansion_profile"))
+                search.tools(row.get("publication_profile"), row.get("history_profile"), row.get("expansion_profile"), row.get("findall_profile"))
                 + search.mcp_tools(row["mcp_binding"], row["mcp_profile"])):
             raise Refusal("research_mcp_binding_changed")
-        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"))
+        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"), row.get("findall_profile"))
         if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
             raise Refusal("session_search_instructions_mismatch")

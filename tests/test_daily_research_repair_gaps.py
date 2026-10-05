@@ -27,6 +27,7 @@ from tools.daily_research import (
     recovery,
     render,
 )
+from tools.daily_research import runner as runner_module
 from tools.daily_research.contracts import checked_day, lookup
 from tools.daily_research.knowledge import (  # noqa: F401
     LEVELS,
@@ -422,7 +423,8 @@ def test_exclusion_drops_only_items_whose_every_failure_is_inside_them():
 
 
 def test_canary_authority_is_data_bound_to_the_admitted_baseline():
-    row = {"session_id": "sess", "turn_id": "turn", "raw_output_digest": "a" * 64,
+    # Every admitted row pins total_runtime_seconds; retained baseline rows pinned 1800.
+    row = {"session_id": "sess", "turn_id": "turn", "raw_output_digest": "a" * 64, "total_runtime_seconds": 1800,
            "canary": {"baseline": {"baseline_id": "baseline-any", "soft_total_usd": 40, "authority_reference": "budget-approval"}}}
     request = {"scope": "same-session-validation-repair-and-qa-no-outreach", "session_id": "sess", "root_turn_id": "turn",
                "raw_output_sha256": "a" * 64, "authority_reference": "any-newly-recorded-approval", "baseline_id": "baseline-any",
@@ -441,6 +443,52 @@ def test_canary_authority_is_data_bound_to_the_admitted_baseline():
     unbound["validation_repair_authority"]["request"].update(baseline_id=None, soft_total_usd=None, budget_authority_reference=None)
     with pytest.raises(Refusal, match="validation_repair_authority_or_binding_invalid"):
         recovery.repair_deadline(unbound)
+
+
+def repair_authority_row(total, *, kind="workflow", duration=None, authority_started=NOW):
+    row = {"started_at": NOW.isoformat(), "session_id": "sess", "turn_id": "turn", "raw_output_digest": "a" * 64,
+           "total_runtime_seconds": total}
+    request = {"scope": "same-session-validation-repair-and-qa-no-outreach", "session_id": "sess",
+               "root_turn_id": "turn", "raw_output_sha256": "a" * 64, "authority_reference": "recorded-approval"}
+    authority = {"started_at": authority_started.isoformat(), "duration_seconds": total if duration is None else duration,
+                 "request": request}
+    if kind == "workflow":
+        authority["kind"] = "workflow"
+    else:
+        row["canary"] = {"baseline": {"baseline_id": "baseline-any", "soft_total_usd": 40, "authority_reference": "budget"}}
+        request.update(baseline_id="baseline-any", soft_total_usd=40, budget_authority_reference="budget")
+    row["validation_repair_authority"] = authority
+    return row
+
+
+@pytest.mark.parametrize("kind", ["workflow", "canary"])
+def test_repair_authority_lasts_exactly_the_rows_own_admitted_total(kind):
+    later = NOW + timedelta(minutes=7)
+    started = NOW if kind == "workflow" else later  # The canary window starts at its own authorization time.
+    for total in (1800, 3600):  # Existing 30-minute rows and owner-approved 60-minute rows.
+        row = repair_authority_row(total, kind=kind, authority_started=started)
+        assert recovery.repair_deadline(row) == started + timedelta(seconds=total)
+    # The authority cannot claim a window other than the row's admitted total.
+    for total, duration in ((3600, 1800), (1800, 3600), (3600, 3601), (3600, None)):
+        row = repair_authority_row(total, kind=kind, authority_started=started)
+        row["validation_repair_authority"]["duration_seconds"] = duration
+        with pytest.raises(Refusal, match="^validation_repair_authority_or_binding_invalid$"):
+            recovery.repair_deadline(row)
+    # A row outside the owner-approved envelope, or without a pinned total, is refused.
+    for total in (3601, 0, None, "3600"):
+        with pytest.raises(Refusal, match="^validation_repair_authority_or_binding_invalid$"):
+            recovery.repair_deadline(repair_authority_row(total, kind=kind, duration=3600, authority_started=started))
+    # Every other binding is still checked.
+    for change in ({"session_id": "other"}, {"root_turn_id": "other"}, {"raw_output_sha256": "b" * 64},
+                   {"scope": "other"}, {"authority_reference": "PENDING-owner"}):
+        row = repair_authority_row(3600, kind=kind, authority_started=started)
+        row["validation_repair_authority"]["request"].update(change)
+        with pytest.raises(Refusal, match="^validation_repair_authority_or_binding_invalid$"):
+            recovery.repair_deadline(row)
+    if kind == "workflow":
+        moved = repair_authority_row(3600, authority_started=later)
+        with pytest.raises(Refusal, match="^validation_repair_authority_or_binding_invalid$"):
+            recovery.repair_deadline(moved)
 
 
 # --- Daily worker: exclusion instead of blocking -----------------------------------------
@@ -482,6 +530,43 @@ def run_daily_worker(consumer, api, bridge, tmp_path, monkeypatch):
     monkeypatch.setattr(render, "Consumer", lambda *a, **kw: type(consumer)(*a, **kw, clock=consumer.clock))
     monkeypatch.setattr(render.time, "sleep", lambda _: None)
     return render.consume_workflow(bridge, tmp_path, api_factory=lambda *_: api)
+
+
+def test_sixty_minute_daily_row_repairs_qa_and_publishes_after_the_old_envelope(tmp_path, monkeypatch):
+    generator = consumer_setup(tmp_path, failed=True, envelope=(3600, 900))
+    consumer, api, ledger, bridge, _ = next(generator)
+    try:
+        original = ledger.get(DAY)
+        assert original["state"] == "failed" and original["error"] == "knowledge_delta_evidence_invalid"
+        assert (original["total_runtime_seconds"], original["research_runtime_seconds"]) == (3600, 2700)
+        repaired = json.loads(ledger.read_bytes(DAY + "-artifact.json"))
+        repaired["proposed_knowledge_deltas"] = []
+        # Repair, QA and publication all run after the old 1800-second envelope has closed.
+        after_old = NOW + timedelta(seconds=1900)
+        consumer.clock = lambda: after_old
+        bridge.call("test_clock", now=int(after_old.timestamp() * 1000))
+        # Observe on the test clock: this row's own remaining window, not wall time.
+        observed = []
+        def observation(row, cfg, phase):
+            observed.append(runner_module.observation_seconds(row, cfg, phase, consumer.clock()))
+            return observed[-1]
+        monkeypatch.setattr(render, "observation_seconds", observation)
+        calls = correcting_agent(api, ledger, bridge, canonical(repaired).encode(),
+                                 completed_at=int((NOW + timedelta(seconds=1950)).timestamp()))
+        assert run_daily_worker(consumer, api, bridge, tmp_path, monkeypatch)["state"] == "completed"
+        assert observed and observed[0] == 3600 - 1900 + 30
+        final = ledger.get(DAY)
+        deadline_ms = int((NOW + timedelta(seconds=3600)).timestamp() * 1000)
+        authority = final["validation_repair_authority"]
+        assert authority["kind"] == "workflow" and authority["duration_seconds"] == final["total_runtime_seconds"] == 3600
+        assert authority["started_at"] == final["started_at"] == original["started_at"]
+        assert recovery.repair_deadline(final) == NOW + timedelta(seconds=3600)
+        assert final["validation_repairs"][-1]["state"] == "validated"
+        assert final["validation_repairs"][-1]["deadline_ms"] == final["qa"]["deadline_ms"] == deadline_ms
+        assert len(calls) == len(api.inputs) == len(api.payloads) == 1
+        assert all(d["receipt"]["readback_verified"] for d in final["delivery"].values())
+    finally:
+        generator.close()
 
 
 def test_repeated_item_failure_excludes_only_that_item_then_qa_publishes(tmp_path, monkeypatch):

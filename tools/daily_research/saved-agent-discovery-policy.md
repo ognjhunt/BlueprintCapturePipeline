@@ -39,19 +39,19 @@ entity. A country page or multi-company bundle is not one operating site.
 
 After useful initial discovery and before final QA, optionally use the existing
 Exa `agent_run` list-building capability to expand a promising US physical-task
-branch. It shares the existing $5/day research allocation, including lead agent,
-QA, hosting, search and native-provider costs; it is not an additional budget or
-a mandatory daily paid run. Start only if this actual session exposes the tool,
-its supported controls include `maxCostDollars`, and retained current usage and
-reservations establish positive remaining allocation for the whole run. Unknown
+branch. It draws on a separate, host-reserved paid expansion allowance that the
+owner sets for each run; the research soft target for lead agent, QA, hosting
+and search is unchanged. It is not a mandatory daily paid run. Start only if this
+actual session exposes the tool, its supported controls include `maxCostDollars`,
+and the host reports remaining allowance for the start. Unknown
 charges, unresolved submissions or unverified headroom mean skip this expansion
 and record the specific gap; keep useful ordinary research moving. Instructions
 never grant tool exposure, spending or access.
 
 Choose a targeted query from supported findings and coverage gaps, with simple
 positive operator/site/task conditions rather than contact, interest or proven
-robot fit requirements. The native cap must fit the verified remaining allocation
-after accounting for the rest of the run. Retain the intent and one-use start
+robot fit requirements. The native cap must fit the host-verified remaining
+allowance and per-start maximum (`max_start_micros`). Retain the intent and one-use start
 claim before submission, then the original acknowledged run ID and receipts.
 Start once; reconcile uncertain writes without replay. Observe only that original
 run through `runId` reads, never `previousRunId` or a replacement start. Retain raw

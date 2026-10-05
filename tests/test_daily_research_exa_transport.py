@@ -107,7 +107,7 @@ def test_no_guessed_or_unsupported_cost_cap_and_no_native_start(schema):
     {**REQUEST, "budget": {"maxCostDollars": True}},
     {**REQUEST, "budget": {"maxCostDollars": float("nan")}},
     {k: v for k, v in REQUEST.items() if k != "effort"}, {**REQUEST, "effort": "auto"},
-    {**REQUEST, "budget": {"maxCostDollars": .99}}, {**REQUEST, "budget": {"maxCostDollars": 5.01}},
+    {**REQUEST, "budget": {"maxCostDollars": .99}}, {**REQUEST, "budget": {"maxCostDollars": 50.01}},
 ])
 def test_bad_start_is_rejected_before_any_http(start_request):
     wire = Wire()
@@ -116,12 +116,25 @@ def test_bad_start_is_rejected_before_any_http(start_request):
     assert not wire.calls
 
 
-@pytest.mark.parametrize("cap", [1, 5])
-def test_ultra_cap_endpoints_and_required_effort_are_sent_explicitly(cap):
-    wire = Wire(schema={**SCHEMA, "required": ["query", "effort"]})
+@pytest.mark.parametrize(("cap", "maximum"), [(1, 5), (5, 5), (15, None), (50, 50)])
+def test_ultra_cap_endpoints_and_required_effort_are_sent_explicitly(cap, maximum):
+    """The host's single $50 per-start ceiling; a live schema maximum still binds when present."""
+    schema = copy.deepcopy({**SCHEMA, "required": ["query", "effort"]})
+    budget = schema["properties"]["budget"]["properties"]["maxCostDollars"]
+    budget.pop("maximum")
+    if maximum is not None:
+        budget["maximum"] = maximum
+    wire = Wire(schema=schema)
     request = {**REQUEST, "budget": {"maxCostDollars": cap}}
     assert ExaTransport(request_io=wire).start(request) == RECORD
     assert wire.native_calls == [{"name": "agent_run", "arguments": request}]
+
+
+def test_live_schema_maximum_still_binds_below_the_host_ceiling():
+    wire = Wire()  # The live catalog advertises maximum 5.
+    with pytest.raises(ExaTransportError, match="exa_mcp_supported_cost_cap_missing"):
+        ExaTransport(request_io=wire).start({**REQUEST, "budget": {"maxCostDollars": 10}})
+    assert wire.native_calls == []
 
 
 def test_legacy_original_id_read_needs_no_ultra_start_schema():

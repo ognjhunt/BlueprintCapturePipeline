@@ -50,7 +50,7 @@ test('shutdown drains the canonical terminal hook after the child has stopped', 
   finish(); await stop;
   assert.equal(drained, true);
 });
-for (const key of ['PERPLEXITY_API_KEY', 'EXA_API_KEY']) {
+for (const key of ['PERPLEXITY_API_KEY', 'EXA_API_KEY', 'PARALLEL_API_KEY']) {
 test(`${key} passes only to the application worker, never logs`, async t => {
   const previous = process.env[key];
   process.env[key] = 'offline-placeholder';

@@ -50,6 +50,17 @@ MAX_CALL_RECORDS = 1_000_000  # Leave room for packet, QA and delivery plans.
 MAX_INTENT = 1_000_000
 MAX_PACKET = 500_000
 MAX_CALLS = 500  # Resource ceiling, never a quality quota; shared research+QA.
+# Research and its validation repair stop short of a share reserved for QA's source
+# verification, so a long research phase cannot starve QA. At its budget a tool call
+# gets a fixed reply that tells the agent to finish its output; the session is not
+# cancelled. A hard refusal remains after BUDGET_GRACE_CALLS such replies in a phase.
+QA_RESERVED_CALLS = 50
+QA_RESERVED_EVIDENCE = 1_000_000
+BUDGET_GRACE_CALLS = 20
+BUDGET_EXHAUSTED = {"code": "research_tool_budget_exhausted",
+                    "guidance": "This run's tool budget for this phase is used up. Do not call more tools. "
+                                "Write the final output now from the evidence already retained, and record "
+                                "the remaining promising branches as unresolved for the next run."}
 
 
 class ToolFailure(ValueError):
@@ -186,7 +197,7 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools(publication_profile=None, history_profile=None, expansion_profile=None):
+def tools(publication_profile=None, history_profile=None, expansion_profile=None, findall_profile=None):
     declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
@@ -213,6 +224,11 @@ def tools(publication_profile=None, history_profile=None, expansion_profile=None
     if expansion_profile == "exa-guarded-v1":
         from tools.daily_research.expansion import tools as expansion_tools
         declared.extend(expansion_tools())
+    if findall_profile is not None:
+        from tools.daily_research import findall
+        if findall_profile != findall.PROFILE:
+            raise ToolFailure("findall_tool_registry_binding_changed")
+        declared.extend(findall.tools())
     return declared
 
 
@@ -220,6 +236,13 @@ def instructions():
     return ("Use blueprint_search (Perplexity Search API search_type=fast) for all public discovery and "
             "adaptive follow-up queries, then blueprint_read_source for underlying primary pages. "
             "You choose the queries, domains, contradictions and follow-ups; the controller never preselects prospects. "
+            "For broad discovery queries, use max_results=20 when useful to inspect more distinct leads per search; "
+            "3-5 results suit narrow verification, not a default ceiling for market exploration. Omitted max_results "
+            "defaults to 10. Vary task vocabulary, operator types and regions within the admitted scope; count unique "
+            "supported sites, not URLs. "
+            "During enumeration, read operator facility/location directories and follow their sourced site "
+            "lists rather than doing a separate deep search for every site. Preserve thin location entries "
+            "in the discovery inventory with explicit task/workflow gaps; qualify a prioritized subset afterward. "
             "Define this run's concrete task/industry/region hypotheses before searching and expand promising "
             "branches adaptively. Search for physical workflow verbs, objects and operator terminology, including "
             "regional equivalents such as handballing/devanning/container unloading or machine loading/tending, "
@@ -455,6 +478,29 @@ class ApplicationTools:
                 "search_cost_estimate_usd": "0.001", "billing_receipt_verified": False}
 
 
+def assert_findall_caller(row, ledger, api, *, registry=True):
+    """Run before outer lifecycle writes of a FindAll-pinned row, outside their persistence handlers.
+
+    With a handler, the held lease and the stored row's call, FindAll and Exa claim
+    fields must match this caller's row, so a stale row can never erase a claim.
+    Without one (this process holds no FindAll binding), the pinned session continues
+    ordinary research and its FindAll calls report an actionable unavailable result.
+    Cancellation passes registry=False: a registry change never blocks a cancel.
+    """
+    if row.get("findall_profile") is None:
+        return
+    from tools.daily_research import findall
+    from tools.daily_research.runner import Refusal
+    handler = getattr(api, "findall_application_tools", None)
+    if handler is not None:
+        findall.installed_profile(api)
+        if handler.ledger is not ledger:
+            raise Refusal("findall_tool_ledger_binding_changed")
+        handler.assert_fresh_caller(row)
+    if registry:
+        findall.check_binding(row)
+
+
 def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     """Serve only pending exact-turn actions, saving intent/result before mutations."""
     from tools.daily_research.runner import (
@@ -468,6 +514,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
 
     if row.get("search_provider") != PROFILE:
         return False
+    assert_findall_caller(row, ledger, api)
     if len(canonical(row).encode()) > MAX_RECORD:
         raise Refusal("research_tool_record_resource_ceiling")
     tid = row.get("publication", {}).get("turn_id") if phase == "publication" else row.get("turn_id") if phase == "research" else (row.get("validation_repairs", [{}])[-1].get("turn_id")
@@ -491,6 +538,15 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     admitted_names |= early_publication
     expansion_names = {expansion.START, expansion.READ} if row.get("expansion_profile") == expansion.PROFILE else set()
     admitted_names |= expansion_names
+    findall_handler = getattr(api, "findall_application_tools", None)
+    findall_names = set()
+    stable_errors = (ToolFailure, expansion.ExpansionError)
+    if row.get("findall_profile") is not None:
+        # Only a session whose intent froze the FindAll registry may call it.
+        from tools.daily_research import findall
+        findall_names = set(findall.NAMES)
+        admitted_names |= findall_names
+        stable_errors += findall.stable_errors()
     calls = row.setdefault("application_tool_calls", {})
     for action in session.get("required_actions", []):
         if action.get("type") == "environment_connection":
@@ -505,9 +561,22 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             raise Refusal("research_tool_call_identity_conflict")
         if not prior:
             used = sum(c.get("result_bytes", 0) for c in calls.values())
-            if len(calls) >= MAX_CALLS or used >= MAX_EVIDENCE - MAX_RESPONSE - 20000:
+            # A recorded event escapes its JSON output again, so one result can reach about
+            # twice MAX_RESPONSE. Phases before QA stop that far short of QA's share.
+            before_qa = phase in {"research", "repair"}
+            reserve_calls = QA_RESERVED_CALLS if before_qa else 0
+            reserve_bytes = QA_RESERVED_EVIDENCE + MAX_RESPONSE if before_qa else 0
+            # Fail-soft replies are bounded separately and never use a real call's share.
+            executed = sum(c.get("budget_exhausted") is not True for c in calls.values())
+            exhausted = (executed >= MAX_CALLS - reserve_calls
+                         or used >= MAX_EVIDENCE - reserve_bytes - MAX_RESPONSE - 20000)
+            # Each phase has its own grace replies, so research cannot use up QA's.
+            grace = sum(c.get("budget_exhausted") is True and c.get("phase") == phase for c in calls.values())
+            if exhausted and (grace >= BUDGET_GRACE_CALLS or used >= MAX_EVIDENCE - 20000):
                 raise Refusal("research_tool_evidence_resource_ceiling")
             prior = {"request_digest": digest(binding), "request": binding, "phase": phase, "attempted": False}
+            if exhausted:
+                prior["budget_exhausted"] = True
             calls[cid] = prior
             if (len(canonical(binding).encode()) > 10000 or len(canonical(calls).encode()) > MAX_CALL_RECORDS
                     or len(canonical(row).encode()) > MAX_RECORD):
@@ -521,17 +590,22 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             raise Refusal("research_tool_stopped_or_expired")
         if "result_file" not in prior:
             outcome = {"success": False, "error": "research_tool_reply_unresolved_no_replay"}
+            if prior.get("budget_exhausted") is True:
+                # No provider call: a small fixed reply that asks the agent to finish.
+                # It is recorded like any result, so a replay returns the same bytes.
+                outcome = {"success": False, "error": canonical(BUDGET_EXHAUSTED),
+                           "output": canonical({"ok": False, "error": BUDGET_EXHAUSTED})}
             # Expansion's whole-run claim, rather than a model call ID, owns
             # the paid start. Re-entering it can only recover the original ACK
             # or read that same run; it never repeats an uncertain submission.
-            if not prior["attempted"] or action["name"] in expansion_names:
+            elif not prior["attempted"] or action["name"] in expansion_names:
                 prior["attempted"] = True
                 ledger.put(row)  # No paid POST is replayed after a lost reply/crash.
                 api.tool_admit(row, phase)
                 if stopped() or clock().timestamp() >= deadline:
                     raise Refusal("research_tool_stopped_or_expired")
                 try:
-                    with bounded_request(min(15, deadline - clock().timestamp())):
+                    with (findall.tool_bound(findall_handler, action["name"], deadline - clock().timestamp()) if action["name"] in findall_names else bounded_request(min(15, deadline - clock().timestamp()))):
                         if action["name"] in early_publication:
                             result = {"ok": False, "error": {"code": "publication_requires_review",
                                 "guidance": "Finish research and QA validation first. Then inspect destinations and choose publication in this same session."}}
@@ -549,19 +623,23 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                                 else {})
                             result = expansion.execute(action["name"], action.get("arguments"), row, ledger,
                                 phase=phase, now=clock(), admit=lambda current: api.expansion_admit(current, phase), **context)
+                        elif action["name"] in findall_names:
+                            # Admission is the shared paid expansion allowance (findall.py).
+                            result = (findall_handler.execute(action, row=row, phase=phase)
+                                      if findall_handler is not None else findall.unavailable(action["name"]))
                         else:
                             result = api.application_tool(action["name"], action.get("arguments"))
                         output = canonical(result)
                     if len(output.encode()) > MAX_RESPONSE:
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
-                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names else True, "output": output}
+                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names | findall_names else True, "output": output}
                     if outcome["success"] is False:
                         failure = result.get("error") or {"code": result.get("reason") or "research_tool_unavailable_no_replay"}
                         if not result.get("error") and result.get("action"):
                             failure["guidance"] = result["action"]
                         outcome["error"] = canonical(failure)
-                except (ToolFailure, expansion.ExpansionError) as exc:
-                    # Both carry fixed, secret-free codes the agent can act on.
+                except stable_errors as exc:
+                    # Tool, Exa and FindAll failures carry fixed, secret-free codes the agent can act on.
                     failure = {"code": str(exc)}
                     outcome = {"success": False, "error": canonical(failure),
                                "output": canonical({"ok": False, "error": failure})}

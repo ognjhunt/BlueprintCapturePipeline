@@ -47,6 +47,36 @@ def next_wake(now):
     return target.astimezone(timezone.utc)
 
 
+def runtime_configuration(control, minutes, qa_minutes=None):
+    """Owner's next-run duration; keep QA and all spend/authority settings separate."""
+    cfg = control_configuration(control)
+    if cfg.get("discovery_profile") != "adaptive-sites-v1":
+        raise Refusal("adjustable_runtime_requires_adaptive_profile")
+    if type(minutes) is not int or not 2 <= minutes <=240:
+        raise Refusal("runtime_minutes_invalid")
+    qa = cfg.get("qa_reserved_seconds") if qa_minutes is None else (
+        qa_minutes *60 if type(qa_minutes) is int and qa_minutes >0 else None)
+    return configuration({**cfg, "max_runtime_seconds": minutes *60, "qa_reserved_seconds": qa})
+
+
+def set_runtime(bridge, ledger, minutes, qa_minutes=None):
+    """Fenced, atomically drained duration update. Never starts a provider or alters a row."""
+    with ledger.lock():
+        control = bridge.call("control")
+        candidate = runtime_configuration(control, minutes, qa_minutes)
+        manifest = read_json(Path(__file__).resolve().parents[2] / "manifest.json")
+        if manifest.get("source_commit") != control.get("source_commit"):
+            raise Refusal("reviewed_release_source_mismatch")
+        result = bridge.call("runtime_set", total_seconds=candidate["max_runtime_seconds"],
+            qa_seconds=candidate["qa_reserved_seconds"], expected_config=control["config"],
+            expected_source_commit=control["source_commit"])
+    return {"state": "runtime_configured_for_next_run", **result,
+            "total_minutes": candidate["max_runtime_seconds"] //60,
+            "qa_minutes": candidate["qa_reserved_seconds"] /60,
+            "research_minutes": (candidate["max_runtime_seconds"] - candidate["qa_reserved_seconds"]) /60,
+            "existing_rows_changed": False, "paid_allowance_changed": False, "provider_started": False}
+
+
 def configured(bridge, cache, *, allow_create=True):
     control = bridge.call("control")
     cfg = control_configuration(control)
@@ -94,6 +124,9 @@ def invoke(command, bridge, cache, *, stopped=lambda: False, day=None, decision=
                 bridge.call("refresh_crm")
             save_bytes(cache / "crm.json", ledger.read_bytes("crm.json"))
     api = None if command in {"review", "receipt"} else api_factory(ledger, os.environ.get("OPENAI_API_KEY", ""))
+    if api is not None:
+        # The FindAll handler reads provider.stopped, so SIGTERM stops a create before its POST.
+        api.stopped = stopped
     runner = Runner(ledger, cfg, api)
     runner.stop_requested = stopped
     runner.required_history = True
@@ -457,6 +490,18 @@ def export_snapshot(bridge, day, destination):
         if (not filename.startswith(day + "-exa-") or not filename.endswith(".json") or raw is None
                 or hashlib.sha256(raw).hexdigest() != receipt.get("sha256") or len(raw) != receipt.get("bytes")):
             raise Refusal("expansion_export_binding_invalid")
+    from tools.daily_research.findall import receipt_refs, validate_snapshot_exports
+    for receipt in receipt_refs(row):
+        filename = receipt.get("file", "")
+        raw = files.get(filename[len(day) + 1:-5])
+        if (not filename.startswith(day + "-tool-findall-") or not filename.endswith(".json") or raw is None
+                or hashlib.sha256(raw).hexdigest() != receipt.get("sha256")
+                or "bytes" in receipt and len(raw) != receipt["bytes"]):
+            raise Refusal("findall_export_binding_invalid")
+    try:
+        validate_snapshot_exports(row, lambda filename: files[filename[len(day) + 1:-5]])
+    except (ValueError, KeyError, TypeError):
+        raise Refusal("findall_export_binding_invalid") from None
     destination = Path(destination)
     destination.mkdir(mode=0o700, exist_ok=False)
     save_bytes(destination / "status.json", canonical(row).encode())
@@ -681,11 +726,13 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["scheduler", "init", "configure", "publish-input", "import-state", "preflight", "run", "reconcile", "status", "review", "receipt", "record-cleanup", "export"])
+    parser.add_argument("command", choices=["scheduler", "init", "configure", "set-runtime", "publish-input", "import-state", "preflight", "run", "reconcile", "status", "review", "receipt", "record-cleanup", "export"])
     parser.add_argument("--input")
     parser.add_argument("--name", choices=list(INPUTS.values()))
     parser.add_argument("--date")
     parser.add_argument("--output")
+    parser.add_argument("--minutes", type=int)
+    parser.add_argument("--qa-minutes", type=int)
     args = parser.parse_args(argv)
     stopped = threading.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -711,6 +758,8 @@ def main(argv=None):
             with ledger.lock():
                 bridge.call("configure", value=value)
             result = {"state": "control_configured", "enabled": value["enabled"]}
+        elif args.command == "set-runtime":
+            result = set_runtime(bridge, ledger, args.minutes, args.qa_minutes)
         elif args.command == "publish-input":
             if not args.name or not args.input:
                 raise Refusal("name_and_input_required")
