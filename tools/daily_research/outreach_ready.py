@@ -8,14 +8,17 @@ ignore it. The pin binds the object's generation and SHA-256; control also carri
 direction itself, so the worker never reads object storage.
 
 The runner freezes the pin once per daily row under its lease, before the durable intent
-(``freeze``). Absent or disabled, the run is in shadow mode: its create payload, packet,
-QA input, review and publication payloads stay byte-identical to a release without this
-feature, the tier is recorded only in ``row.outreach_ready_shadow`` and nothing is
-admitted. An enabled pin that directs daily_qa pins lead-verification result v3 for the
-row. QA may then list outreach-ready keys; admission also needs the live pin (the brake
-applies at once) and publishes them only as rows labelled "Hypothesis, not verified".
-``sends_authorized`` is always false, and no CRM write path is added beyond the existing
-agent-owned publication. Standard library only.
+(``freeze``). Absent, disabled or naming only site_screen, the run is in shadow mode: the
+row, its create payload, packet, QA input, review, publication payloads and status output
+stay byte-identical to a release without this feature. After publication completes, the
+consumer records the tier each candidate would get in the separate ledger file
+``<date>-outreach-ready-shadow.json`` (``shadow``), within a read and time budget, and
+nothing is admitted. An enabled pin that directs daily_qa pins lead-verification result v3
+for the row. QA may then list outreach-ready keys; admission also needs the live pin (the
+brake applies at once) and publishes them only as rows labelled "Hypothesis, not
+verified". The brake does not reach hypotheses that review already bound into the
+publication payloads. ``sends_authorized`` is always false, and no CRM write path is added
+beyond the existing publication. Standard library only.
 """
 import hashlib
 import re
@@ -45,6 +48,7 @@ STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:0
 SHA = re.compile(r"[a-f0-9]{64}")
 GENERATION = re.compile(r"[1-9][0-9]{0,18}")
 CODE = re.compile(r"outreach_ready_[a-z_]{1,80}")
+NOT_DIRECTED = "outreach_ready_daily_qa_not_directed"
 
 
 def digest(direction):
@@ -115,12 +119,11 @@ def current(control):
     return (None, code) if code else (pin["current"], None)
 
 
-def freeze(value, row, now):
-    """This run's frozen direction record, or None for shadow mode with an unchanged row; never raises.
+def assess(value, row, now):
+    """The record a run would freeze from control.outreach_ready, or None when absent or disabled; never raises.
 
-    ``value`` is control.outreach_ready, read once under the run's lease before the durable
-    intent. Absent or disabled gives None. An unusable, expired or not-yet-effective direction,
-    or one that does not direct daily_qa, gives a refusal record: shadow mode with its code.
+    An unusable, expired, not-yet-effective or screen-only direction gives a refusal record
+    with its code. ``freeze`` drops the screen-only refusal: it does not concern daily runs.
     """
     if value is None or isinstance(value, dict) and value.get("enabled") is False:
         return None
@@ -135,7 +138,7 @@ def freeze(value, row, now):
             elif now >= stamp(direction["expires_at"]):
                 code = "outreach_ready_expired"
             elif "daily_qa" not in direction["scope"]["paths"]:
-                code = "outreach_ready_daily_qa_not_directed"
+                code = NOT_DIRECTED
             elif not isinstance(record["run_key"], str) or not record["run_key"].startswith(BINDING["run_key_prefix"]):
                 code = "outreach_ready_binding_mismatch"
         except (KeyError, TypeError, ValueError):
@@ -147,6 +150,40 @@ def freeze(value, row, now):
             "uri": entry["uri"], "rule_version": direction["rule_version"], "paths": list(scope["paths"]),
             "label": scope["label"], "max_rows_per_batch": scope["max_rows_per_batch"], "sends_authorized": False,
             "approval_reference": direction["approval_reference"], "valid_until": direction["expires_at"]}
+
+
+def freeze(value, row, now):
+    """This run's frozen direction record, or None for shadow mode with an unchanged row; never raises.
+
+    ``value`` is control.outreach_ready, read once under the run's lease before the durable
+    intent. Absent, disabled or a direction that names only site_screen gives None: the row
+    and its bridge manifest stay exactly as without the feature. A daily_qa direction that
+    is unusable, expired or not yet effective gives a refusal record: shadow mode with its code.
+    """
+    record = assess(value, row, now)
+    return None if record is not None and record.get("code") == NOT_DIRECTED else record
+
+
+def frozen_record(reader, row, now, ceiling):
+    """(record or None, code or None) for Runner.start_or_resume; never raises.
+
+    A failed control read freezes a refusal with outreach_ready_control_unavailable. A record
+    that would take the intent past ``ceiling`` bytes is replaced by a compact refusal with
+    outreach_ready_record_too_large; when even that does not fit, nothing is frozen and the
+    code is returned for the caller to report.
+    """
+    try:
+        record = freeze(reader(), row, now)
+    except Exception:  # noqa: BLE001 - an optional direction never stops the daily run
+        record = {"schema_version": ADMISSION, "run_key": row.get("run_key"), "frozen_at": now.isoformat(),
+                  "direction_sha256": None, "state": "refused", "code": "outreach_ready_control_unavailable"}
+    if record is None:
+        return None, None
+    for candidate in (record, {key: record[key] for key in ("schema_version", "run_key", "frozen_at", "direction_sha256")}
+                      | {"state": "refused", "code": "outreach_ready_record_too_large"}):
+        if len(canonical({**row, "outreach_ready": candidate}).encode()) <= ceiling:
+            return candidate, candidate.get("code")
+    return None, "outreach_ready_record_too_large"
 
 
 def enabled(row, path="daily_qa"):
@@ -181,62 +218,81 @@ def admission(row, control, now, path="daily_qa"):
 
 
 
+# Retained evidence is read within a budget: research and QA tool results are capped at
+# search.MAX_CALLS (500), plus a few FindAll snapshots. Spent, the evidence is unavailable.
+EVIDENCE_MAX_READS = 600
+EVIDENCE_MAX_SECONDS = 60
+# The shadow runs after publication completed and is skipped with a recorded code when less than
+# this remains before the run's absolute QA and publication deadline.
+SHADOW_DEADLINE_MARGIN = timedelta(seconds=120)
+SHADOW_FILE_SUFFIX = "-outreach-ready-shadow.json"
 SHADOW_MAX_BYTES = 64 * 1024
-SHADOW_RESERVE_BYTES = 500_000  # Publication bookkeeping after review: plans, receipts and tool records.
 
 
-def shadow(row, result, decision, known, evidence, now):
-    """Shadow-mode record of the tier each candidate would get, outside every digest-bound artifact.
+def admissible_until(result, deadline):
+    """True when the assessment stays valid through the run: valid_until is null or later than
+    ``deadline`` (consumer.qa_deadline, which also bounds publication). A hypothesis admitted
+    under this rule never expires while its run's QA, review and publication can still act."""
+    if not isinstance(deadline, datetime):
+        return False
+    try:
+        valid_until = result["assessment"]["valid_until"]
+        return valid_until is None or verification.moment(valid_until) > deadline
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
 
-    Recomputes result v3 over the QA checks with the retained evidence. QA was not asked to list
-    keys, so nothing is admitted; would_admit counts promotable, CRM-new, unaccepted candidates
-    the rule rates outreach_ready. Never raises.
+
+def shadow_file(row):
+    return row["date"] + SHADOW_FILE_SUFFIX
+
+
+def read_budget():
+    return verification.ReadBudget(EVIDENCE_MAX_READS, EVIDENCE_MAX_SECONDS)
+
+
+def shadow_skipped(row, code, now):
+    return {"schema_version": SHADOW, "state": "skipped", "code": code, "run_key": row.get("run_key"),
+            "recorded_at": now.isoformat(), "admitted": []}
+
+
+def shadow(row, qa_result, evidence, now, deadline):
+    """Shadow-mode record of the tier each candidate would get; written outside the row. Never raises.
+
+    Runs once publication completed. Recomputes result v3 over the QA checks with the retained
+    evidence at the QA decision's own evaluation time. QA was not asked to list keys, so
+    nothing is admitted; would_admit counts promotable, unaccepted candidates the rule rates
+    outreach_ready whose QA check is source-verified and not a duplicate and whose assessment
+    stays valid past ``deadline``, before the CRM recheck an enabled run would add.
     """
     try:
-        packet, checks = row["packet"], result["checks"]
+        packet, checks, review = row["packet"], qa_result["checks"], row["review"]
+        results = (review.get("lead_verification") or {}).get("results") or []
+        evaluated_at = verification.moment(results[0]["evaluated_at"]) if results else now
         value = verification.cohort(
-            verification.packet_candidates(packet), {c["candidate_key"]: c.get("lead_verification") for c in checks}, now,
-            duplicate_checks={c["candidate_key"]: {"duplicate": c["duplicate"], "duplicate_of": c.get("duplicate_of"),
-                                                   "reason": c["reason"]} for c in checks},
+            verification.packet_candidates(packet), {c["candidate_key"]: c.get("lead_verification") for c in checks},
+            evaluated_at, duplicate_checks={c["candidate_key"]: {"duplicate": c["duplicate"], "duplicate_of": c.get("duplicate_of"),
+                                                                  "reason": c["reason"]} for c in checks},
             result_version=verification.OUTREACH_RESULT_VERSION, evidence=evidence)
-        promotable = {c["candidate_key"]: c for c in packet["candidates"]}
-        accepted = {key for key in decision["accepted_keys"] if isinstance(key, str)}
+        promotable = {c["candidate_key"] for c in packet["candidates"]}
+        accepted = {key for key in review["accepted_keys"] if isinstance(key, str)}
+        supported = {c["candidate_key"] for c in checks if c.get("source_support_verified") is True and c.get("duplicate") is False}
         would = [r["candidate_key"] for r in value["results"] if r["eligible_for_outreach_ready"] is True
                  and r["candidate_key"] in promotable and r["candidate_key"] not in accepted
-                 and not set(promotable[r["candidate_key"]]["identity_keys"]) & known]
+                 and r["candidate_key"] in supported and admissible_until(r, deadline)]
         frozen = row.get("outreach_ready") or {}
-        return {"schema_version": SHADOW, "state": "recorded", "rule_version": verification.OUTREACH_RULE_VERSION,
-                "evaluated_at": now.isoformat(), "direction_state": frozen.get("state", "absent"),
-                "direction_code": frozen.get("code"), "tier_evidence": value["tier_evidence"],
-                "tiers": {tier: sum(r["tier"] == tier for r in value["results"]) for tier in ("verified", "outreach_ready", "none")},
-                "would_admit_count": len(would), "would_admit": would, "admitted": [],
-                "results": [{"candidate_key": r["candidate_key"], "tier": r["tier"],
-                             "blockers": r["outreach_ready"]["blockers"], "open_checks": r["outreach_ready"]["open_checks"],
-                             "proof_levels": {p["claim"]: p["level"] for p in r["outreach_ready"]["proving_sources"]}}
-                            for r in value["results"]]}
+        record = {"schema_version": SHADOW, "state": "recorded", "rule_version": verification.OUTREACH_RULE_VERSION,
+                  "run_key": row["run_key"], "evaluated_at": evaluated_at.isoformat(), "recorded_at": now.isoformat(),
+                  "direction_state": frozen.get("state", "absent"), "direction_code": frozen.get("code"),
+                  "tier_evidence": value["tier_evidence"],
+                  "tiers": {tier: sum(r["tier"] == tier for r in value["results"]) for tier in ("verified", "outreach_ready", "none")},
+                  "would_admit_count": len(would), "would_admit": would, "admitted": [],
+                  "results": [{"candidate_key": r["candidate_key"], "tier": r["tier"], "blockers": r["outreach_ready"]["blockers"],
+                               "open_checks": r["outreach_ready"]["open_checks"],
+                               "open_questions": r["outreach_ready"]["open_questions"],
+                               "proof_levels": {p["claim"]: p["level"] for p in r["outreach_ready"]["proving_sources"]}}
+                              for r in value["results"]]}
+        if len(canonical(record).encode()) > SHADOW_MAX_BYTES:
+            record = {key: item for key, item in record.items() if key not in {"results", "would_admit"}}
+        return record
     except Exception:  # noqa: BLE001 - shadow measurement never blocks QA or publication
-        return {"schema_version": SHADOW, "state": "unavailable", "code": "outreach_ready_shadow_unavailable", "admitted": []}
-
-
-def bounded_shadow(row, record, ceiling):
-    """The record, its counts alone, or None: a shadow record never costs the row headroom it needs.
-
-    Call after QA bound its decision. It reserves room for what review and publication add later
-    (the review copy of the decision, delivery payloads, a sheet plan holding the CRM values and
-    publication bookkeeping); each form must also stay under SHADOW_MAX_BYTES.
-    """
-    try:
-        decision = row["qa"]["decision"]
-        selected = [c for c in row["packet"]["candidates"] if c["candidate_key"] in decision["accepted_keys"]]
-        size = len(canonical(row).encode())
-        reserve = (2 * len(canonical(decision).encode()) + 8 * len(canonical(selected).encode())
-                   + 4 * len(canonical(decision.get("summary")).encode()) + len(canonical(row.get("crm_snapshot")).encode())
-                   + SHADOW_RESERVE_BYTES)
-        counts = {key: value for key, value in record.items() if key not in {"results", "would_admit"}}
-        for candidate in (record, counts):
-            raw = len(canonical(candidate).encode())
-            if raw <= SHADOW_MAX_BYTES and size + raw + reserve <= ceiling:
-                return candidate
-    except Exception:  # noqa: BLE001 - an unmeasurable row records nothing rather than risk its ceiling
-        return None
-    return None
+        return shadow_skipped(row, "outreach_ready_shadow_unavailable", now)

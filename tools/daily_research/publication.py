@@ -28,8 +28,9 @@ def hypothesis_sentence(row):
     if not isinstance(payload, dict) or not payload.get("hypotheses"):
         return ""
     return ("The canonical payloads also carry outreach-ready hypotheses. The publisher labels them itself (Sheets "
-            "Verification \"Hypothesis\"; each Notion entry \"Hypothesis, not verified\") beside the verified rows; "
-            "never present one as verified, and nothing authorizes a send. ")
+            "Verification \"Hypothesis\"; each Notion entry \"Hypothesis, not verified\") beside the verified rows, and "
+            "leaves out any hypothesis whose own verification_eligibility entry lists a reason; that never blocks the "
+            "verified rows. Never present one as verified, and nothing authorizes a send. ")
 
 
 def cancel(consumer, row, reason, *, observation_only=False):

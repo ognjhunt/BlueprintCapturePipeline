@@ -1233,13 +1233,14 @@ class Runner:
                 if len(canonical(row).encode()) > search.MAX_INTENT:
                     raise Refusal("research_profile_intent_resource_ceiling")
             # Optional owner direction for outreach-ready hypotheses, frozen under this lease before the
-            # durable intent. Absent or disabled, the run is in shadow mode and its row, payload and packet
-            # are exactly as without it; an enabled daily_qa direction pins result v3 for the row.
+            # durable intent. Absent, disabled or screen-only, the run is in shadow mode and its row, payload
+            # and packet are exactly as without it; an enabled daily_qa direction pins result v3 for the row.
+            # A failed control read or an oversized record freezes a refusal code instead; neither stops the run.
             reader = getattr(self.ledger, "outreach_ready_control", None)
             if reader is not None:
                 from tools.daily_research import outreach_ready
-                frozen = outreach_ready.freeze(reader(), row, self.clock())
-                if frozen is not None and len(canonical({**row, "outreach_ready": frozen}).encode()) <= search.MAX_INTENT:
+                frozen, _ = outreach_ready.frozen_record(reader, row, self.clock(), search.MAX_INTENT)
+                if frozen is not None:
                     row["outreach_ready"] = frozen
                     if outreach_ready.enabled(row):
                         row["lead_verification_result_version"] = verification.OUTREACH_RESULT_VERSION
@@ -1581,7 +1582,14 @@ class Runner:
             self.ledger.put(row)
             return row
 
-    def review(self, day, decision):
+    def review(self, day, decision, *, evidence=None):
+        """Bind a QA decision after recomputing every outcome at this transition time.
+
+        ``evidence`` is the retained evidence a result-v3 QA decision read in the caller's same
+        step; review reuses it rather than reading again. Outreach-ready hypotheses are checked
+        against the decision's own bound evaluation, so a hypothesis that has expired since never
+        refuses a retried review or its verified rows; publication withholds it instead.
+        """
         with self.ledger.lock():
             row = self.ledger.get(day)
             if not row or row["state"] not in {"awaiting_review", "reviewed", "completed"}:
@@ -1616,15 +1624,15 @@ class Runner:
             if ("lead_verification" in decision and decision["lead_verification"].get("result_version", verification.RESULT_VERSION)
                     != result_version):
                 raise Refusal("lead_verification_result_version_mismatch")
-            # v3 recomputes the tier from the same evidence state the decision recorded: retained
-            # tool results are reread and digest-checked; recorded-unavailable evidence proves no quote.
-            evidence = None
+            # v3 recomputes the tier from the evidence state the decision recorded: the caller's read, or
+            # one bounded read here. When that state cannot be reproduced, the verified path is still
+            # checked exactly and the hypotheses are withheld from the payloads, never the verified rows.
+            withheld = None
             if result_version == verification.OUTREACH_RESULT_VERSION:
-                recorded = decision.get("lead_verification", {}).get("tier_evidence") or {}
-                evidence = (verification.retained_evidence(row, self.ledger.read_bytes) if recorded.get("state") == "retained"
-                            else verification.UNAVAILABLE)
+                evidence, withheld = self.tier_evidence(row, decision, evidence)
             cohort = verification.cohort(all_candidates, assessments, self.clock(), duplicate_checks=duplicate_checks,
                                          result_version=result_version, evidence=evidence)
+            decided = cohort
             if "lead_verification" in decision:
                 try:
                     evaluated_at = verification.moment(retained[0]["evaluated_at"]) if retained else self.clock()
@@ -1632,17 +1640,21 @@ class Runner:
                         raise ValueError("future assessment")
                     expected = verification.cohort(all_candidates, assessments, evaluated_at, duplicate_checks=duplicate_checks,
                                                    result_version=result_version, evidence=evidence)
+                    bound, claimed = expected, decision["lead_verification"]
+                    if withheld:
+                        bound, claimed = verification.without_tier(bound), verification.without_tier(claimed)
                     # The fenced Node bridge preserves numeric values, not JSON
                     # float lexemes (coverage 1.0 becomes 1). Use the dedicated
                     # portable binding for new verification receipts only.
-                    if verification.digest(expected) != verification.digest(decision["lead_verification"]):
+                    if verification.digest(bound) != verification.digest(claimed):
                         raise ValueError("derived verification changed")
+                    decided = expected
                 except (KeyError, IndexError, TypeError, ValueError, OverflowError):
                     raise Refusal("lead_verification_result_binding_invalid") from None
             eligible = {r["candidate_key"] for r in cohort["results"] if r["eligible_for_qualified_promotion"]}
             if any(c["candidate_key"] not in eligible for c in selected) or (selected and not decision["source_support_verified"]):
                 raise Refusal("lead_verification_required_before_promotion")
-            outreach = self.outreach_ready_keys(row, decision, cohort, result_version)
+            outreach = self.outreach_ready_keys(row, decision, decided, result_version, withheld)
             # Preserve the submitted assessment and full-cohort results; old
             # completed reviews above remain immutable and are never rewritten.
             if "lead_verification" not in decision:
@@ -1651,6 +1663,9 @@ class Runner:
             if not isinstance(summary, str) or not summary or len(summary.encode()) > LIMIT_BYTES:
                 raise Refusal("bounded_review_summary_required")
             row["review"], row["state"] = decision, "reviewed"
+            if withheld and decision.get("outreach_ready_keys"):
+                # The review still equals the QA decision; only the payloads leave the hypotheses out.
+                row["outreach_ready_withheld"] = {"code": withheld, "keys": list(decision["outreach_ready_keys"])}
             # An agent owns QA/publication; observers need no receipt to unblock it.
             payloads = {"sheets": {"sheet_id": SHEET, "tab": "Prospects", "candidates": selected},
                         "notion": {"parent_id": row["packet"]["destinations"]["notion_parent"], "summary": summary, "candidates": selected}}
@@ -1668,17 +1683,40 @@ class Runner:
             self.ledger.put(row)
             return row
 
+    def tier_evidence(self, row, decision, evidence):
+        """(evidence, None) reproducing the decision's recorded tier evidence, else (unavailable, withheld code).
+
+        Recorded-unavailable evidence is reproduced without a read. Otherwise the caller's read is
+        reused, or the results are read once within the evidence budget; a read that fails, runs
+        out of budget or differs from the recorded summary cannot re-prove the hypotheses.
+        """
+        from tools.daily_research import outreach_ready
+        recorded = (decision.get("lead_verification") or {}).get("tier_evidence")
+        if not isinstance(recorded, dict) or recorded.get("state") != "retained":
+            return dict(verification.UNAVAILABLE), None
+        if evidence is None:
+            try:
+                evidence = verification.retained_evidence(row, self.ledger.read_bytes, budget=outreach_ready.read_budget())
+            except Exception:  # noqa: BLE001 - hypotheses are withheld; the verified rows still bind
+                return dict(verification.UNAVAILABLE), "outreach_ready_review_evidence_unavailable"
+        if verification.evidence_summary(evidence) != recorded:
+            return dict(verification.UNAVAILABLE), "outreach_ready_review_evidence_changed"
+        return evidence, None
+
     @staticmethod
-    def outreach_ready_keys(row, decision, cohort, result_version):
+    def outreach_ready_keys(row, decision, decided, result_version, withheld=None):
         """The decision's outreach-ready keys after the same checks QA admission made; [] when it lists none.
 
         Refuses a list on a row that froze no enabled daily_qa direction, a malformed or oversized
         list, an overlap with accepted keys, keys without QA's day-level source support and any key
-        the recomputed rule does not rate outreach_ready.
+        the decision's bound evaluation (``decided``) does not rate outreach_ready or whose
+        assessment does not stay valid past the run's deadline. A withheld review keeps the list in
+        the decision but publishes no hypothesis.
         """
         if "outreach_ready_keys" not in decision:
             return []
         from tools.daily_research import outreach_ready
+        from tools.daily_research.consumer import qa_deadline
         keys = decision["outreach_ready_keys"]
         if result_version != verification.OUTREACH_RESULT_VERSION or not outreach_ready.enabled(row):
             raise Refusal("outreach_ready_not_enabled_for_run")
@@ -1689,9 +1727,16 @@ class Runner:
             raise Refusal("outreach_ready_overlaps_accepted_keys")
         if keys and decision["source_support_verified"] is not True:
             raise Refusal("outreach_ready_requires_source_support")
-        ready = {r["candidate_key"] for r in cohort["results"] if r.get("eligible_for_outreach_ready") is True}
+        if withheld:
+            return []
+        ready = {r["candidate_key"]: r for r in decided["results"] if r.get("eligible_for_outreach_ready") is True}
         promotable = {c["candidate_key"] for c in row["packet"]["candidates"]}
-        if any(key not in ready or key not in promotable for key in keys):
+        try:
+            deadline = qa_deadline(row, {}) if keys else None
+        except Exception:  # noqa: BLE001 - no deadline, no admission
+            raise Refusal("outreach_ready_tier_required") from None
+        if any(key not in ready or key not in promotable or not outreach_ready.admissible_until(ready[key], deadline)
+               for key in keys):
             raise Refusal("outreach_ready_tier_required")
         return keys
 
@@ -1835,13 +1880,14 @@ def status_summary(row):
         }
         if isinstance(delivery, dict) and "hypotheses" in delivery:
             result["discovery_funnel"]["hypotheses_for_crm"] = len(delivery["hypotheses"])
-    review = row.get("review") if isinstance(row.get("review"), dict) else {}
-    if "outreach_ready" in row or "outreach_ready_shadow" in row or "outreach_ready_keys" in review:
-        frozen, shadow = row.get("outreach_ready") or {}, row.get("outreach_ready_shadow") or {}
-        result["outreach_ready"] = {"direction_state": frozen.get("state", "absent"), "direction_code": frozen.get("code"),
+    from tools.daily_research import outreach_ready
+    if outreach_ready.enabled(row):
+        # Only a run that froze an enabled daily_qa direction reports the tier; shadow mode prints
+        # exactly what a release without it prints (its record is the ledger shadow file).
+        review = row.get("review") if isinstance(row.get("review"), dict) else {}
+        result["outreach_ready"] = {"direction_state": row["outreach_ready"]["state"],
                                     "admitted": len(review.get("outreach_ready_keys") or []) if "outreach_ready_keys" in review else None,
-                                    "shadow_state": shadow.get("state"), "shadow_tiers": shadow.get("tiers"),
-                                    "shadow_would_admit": shadow.get("would_admit_count")}
+                                    "withheld_code": (row.get("outreach_ready_withheld") or {}).get("code")}
     if row.get("findall_profile"):
         from tools.daily_research import findall
         result["findall_status"] = findall.status(row)

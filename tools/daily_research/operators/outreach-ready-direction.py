@@ -88,10 +88,13 @@ def described(entry, enabled):
 
 
 def next_run(value, now):
-    """What the next run would freeze from this control value: shadow, refused with a code, or enabled."""
-    frozen = outreach_ready.freeze(value, {"run_key": outreach_ready.BINDING["run_key_prefix"] + "next"}, now)
+    """What the next run would freeze from this control value: shadow (a screen-only direction names its
+    code but freezes nothing), refused with a code, or enabled."""
+    frozen = outreach_ready.assess(value, {"run_key": outreach_ready.BINDING["run_key_prefix"] + "next"}, now)
     if frozen is None:
         return {"state": "shadow"}
+    if frozen.get("code") == outreach_ready.NOT_DIRECTED:
+        return {"state": "shadow", "code": frozen["code"]}
     return {"state": frozen["state"], "code": frozen.get("code"), "paths": frozen.get("paths"),
             "max_rows_per_batch": frozen.get("max_rows_per_batch")}
 

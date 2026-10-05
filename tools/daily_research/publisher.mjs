@@ -15,10 +15,21 @@ const normalized = x => String(x || '').normalize('NFKC').toLowerCase().replace(
 const identity = x => [x.organization,x.site||x.location,x.location||x.site,x.task].map(normalized).join('\n');
 const NOTION_PARENT_PAGE_LIMIT = 100, NOTION_READ_BUDGET_MS = 25000;
 // Outreach-ready hypotheses (verification.py result v3, outreach_ready.py). Labelled rows, never verified ones.
-const OUTREACH_RESULT='blueprint.lead-verification-result.v3', OUTREACH_RULE='blueprint.outreach-ready-rule.v1';
-// The WebApp recomputes these cells (Blueprint-WebApp #854): Sheets column G and Q; each Notion entry heading.
+const OUTREACH_RESULT='blueprint.lead-verification-result.v3', OUTREACH_RULE='blueprint.outreach-ready-rule.v1.1';
+// The WebApp recomputes these cells (Blueprint-WebApp #855): Sheets column G and Q; each Notion entry heading.
 export const HYPOTHESIS_LABEL='Hypothesis', HYPOTHESIS_MATURITY='Outreach-ready: operator, site, task proven';
 export const HYPOTHESIS_HEADING='Hypothesis, not verified';
+// Design v1.1, exactly as Blueprint-WebApp #855 derives them from the assessment: open checks in rule
+// order, then exactly one question, by precedence S (site link open), then M (manual workflow open), then A.
+export const QUESTION_TEMPLATES={
+  S:(task,site)=>`Is ${task} done at your ${site} site, or somewhere else in the company?`,
+  M:(task,site)=>`Which parts of ${task} at ${site} still need people, and what has kept them from being automated?`,
+  A:(task,site)=>`What has kept the remaining ${task} work at ${site} from being automated so far?`};
+export const openChecks=assessment=>[...(assessment?.claims?.site_task?.status!=='verified_fact'?['site_link']:[]),
+  ...(assessment?.claims?.human_workflow?.status!=='verified_fact'?['manual_workflow']:[]),
+  ...(assessment?.valid_until===null?['freshness']:[]),'existing_automation','fit','interest'];
+export const firstQuestion=(checks,candidate)=>QUESTION_TEMPLATES[checks.includes('site_link')?'S'
+  :checks.includes('manual_workflow')?'M':'A'](candidate.task,candidate.site);
 const NOTION_BATCH_BLOCKS = 90, NOTION_REQUEST_BYTES = 450000;
 const paragraph = content=>({object:'block',type:'paragraph',paragraph:{rich_text:rich(content)}});
 const createBody = (title,children)=>({parent:{type:'page_id',page_id:NOTION},
@@ -53,50 +64,70 @@ const aliasInvalid=assessment=>(!Object.hasOwn(assessment,'version') && !Object.
 
 // A hypothesis payload entry is exactly what Runner.review bound: an enabled daily_qa direction
 // frozen on the row, the review's outreach_ready_keys in order, and a current v3 outreach_ready
-// result whose open checks and questions it repeats. It never overlaps a verified candidate.
-function hypothesisReasons(row,candidates,hypotheses,now) {
-  const keys=row.review?.outreach_ready_keys,frozen=row.outreach_ready;
-  if(!Array.isArray(hypotheses) || !hypotheses.length || !Array.isArray(keys) || row.review?.source_support_verified!==true
+// result whose open checks and one question it repeats and #855 derives. It never overlaps a
+// verified candidate. Each entry gets its own list: a hypothesis that is malformed, withheld or
+// expired since review is left out of the publication and never blocks the day's verified rows.
+function hypothesisEligibility(row,candidates,hypotheses,now,withheld=null) {
+  const keys=row.review?.outreach_ready_keys,frozen=row.outreach_ready,entries=Array.isArray(hypotheses)?hypotheses:[];
+  const shared=[];
+  if(withheld) shared.push(`Hypotheses on this row are withheld from publication (${withheld}); the verified rows publish without them.`);
+  if(!Array.isArray(keys) || row.review?.source_support_verified!==true
       || row.packet?.lead_verification_result_version!==OUTREACH_RESULT || frozen?.state!=='enabled'
       || frozen.sends_authorized!==false || !Array.isArray(frozen.paths) || !frozen.paths.includes('daily_qa')
-      || !Number.isSafeInteger(frozen.max_rows_per_batch) || hypotheses.length>frozen.max_rows_per_batch
-      || !isDeepStrictEqual(hypotheses.map(h=>h?.candidate?.candidate_key),keys))
-    return ['Hypotheses publish only from an enabled daily_qa outreach-ready direction and the protected review that listed them.'];
-  const verified=new Set(candidates.map(c=>c?.candidate_key)),seen=new Set(),reasons=[];
-  for(const h of hypotheses) {
-    if(!h || typeof h!=='object' || Array.isArray(h)) {reasons.push('hypothesis: retain the exact entry the protected review bound.');continue;}
-    const c=h.candidate,key=c?.candidate_key;
+      || !Number.isSafeInteger(frozen.max_rows_per_batch) || entries.length>frozen.max_rows_per_batch
+      || !isDeepStrictEqual(entries.map(h=>h?.candidate?.candidate_key),keys))
+    shared.push('Hypotheses publish only from an enabled daily_qa outreach-ready direction and the protected review that listed them.');
+  const verified=new Set(candidates.map(c=>c?.candidate_key)),seen=new Set();
+  return entries.map(h=>{
+    const reasons=[...shared],c=h?.candidate,key=typeof c?.candidate_key==='string'?c.candidate_key:null;
     const results=row.review?.lead_verification?.results?.filter(r=>r.candidate_key===key) || [];
-    const result=results.length===1 ? results[0] : null,outreach=result?.outreach_ready;
-    let bound=false;
-    try {bound=!!result?.assessment && result.candidate_digest===verificationDigest(c)
-      && result.assessment_digest===verificationDigest(result.assessment)
-      && result.assessment.candidate_digest===result.candidate_digest && !aliasInvalid(result.assessment);}catch {}
-    if(!key || seen.has(key) || verified.has(key) || !bound
+    const result=results.length===1 ? results[0] : null,outreach=result?.outreach_ready,assessment=result?.assessment;
+    let bound=false,checks=null,question=null;
+    try {bound=!!assessment && result.candidate_digest===verificationDigest(c)
+      && result.assessment_digest===verificationDigest(assessment)
+      && assessment.candidate_digest===result.candidate_digest && !aliasInvalid(assessment);
+      checks=openChecks(assessment);question=firstQuestion(checks,c);}catch {}
+    if(!h || typeof h!=='object' || Array.isArray(h) || !key || seen.has(key) || verified.has(key) || !bound
         || Object.keys(h).sort().join(',')!=='candidate,open_checks,open_questions'
         || !row.packet.candidates?.some(p=>isDeepStrictEqual(p,c))
         || result.version!==OUTREACH_RESULT || result.tier!=='outreach_ready' || result.eligible_for_outreach_ready!==true
         || result.eligible_for_qualified_promotion!==false || result.duplicate_of || outreach?.rule_version!==OUTREACH_RULE
         || !isDeepStrictEqual(h.open_checks,outreach.open_checks) || !isDeepStrictEqual(h.open_questions,outreach.open_questions)
-        || !Array.isArray(h.open_questions) || h.open_questions.length<1 || h.open_questions.length>3
-        || h.open_questions.some(q=>typeof q!=='string' || !q.trim())
-        || !(Date.parse(result.assessment.assessed_at)<=now
-          && (result.assessment.valid_until===null || now<Date.parse(result.assessment.valid_until))))
-      reasons.push(`${key || 'hypothesis'}: retain a current outreach-ready assessment bound by the protected review; a hypothesis is never verified and never sent.`);
-    seen.add(key);
+        || !isDeepStrictEqual(h.open_checks,checks) || !isDeepStrictEqual(h.open_questions,[question])
+        || typeof question!=='string' || question.indexOf('?')!==question.length-1)
+      reasons.push(`${key || 'hypothesis'}: retain the exact outreach-ready entry the protected review bound, with its open checks and one question; a hypothesis is never verified and never sent.`);
+    else if(!(Date.parse(assessment.assessed_at)<=now && (assessment.valid_until===null || now<Date.parse(assessment.valid_until))))
+      reasons.push(`${key}: its assessment is no longer current, so this hypothesis is left out; the verified rows still publish.`);
+    if(key) seen.add(key);
+    return {candidate_key:key,eligible:!reasons.length,reasons};
+  });
+}
+
+// The hypotheses a fresh plan publishes: the eligible ones at ``now``, in payload order. A replayed
+// plan uses exactly the keys it recorded, which must be an ordered subset of the bound payload.
+function plannedHypotheses(row,d,now,{hypothesisKeys,withheld}={}) {
+  const bound=d.payload.hypotheses || [];
+  if(hypothesisKeys===undefined) {
+    if(now===null) return [];
+    const eligible=new Set(hypothesisEligibility(row,d.payload.candidates,bound,now,withheld).filter(e=>e.eligible).map(e=>e.candidate_key));
+    return bound.filter(h=>eligible.has(h?.candidate?.candidate_key));
   }
-  return reasons;
+  const order=bound.map(h=>h?.candidate?.candidate_key);
+  if(!bound.length || !Array.isArray(hypothesisKeys) || new Set(hypothesisKeys).size!==hypothesisKeys.length
+      || hypothesisKeys.some((key,i)=>!order.includes(key) || i && order.indexOf(hypothesisKeys[i-1])>order.indexOf(key)))
+    fail('publication_plan_binding_invalid');
+  return bound.filter(h=>hypothesisKeys.includes(h?.candidate?.candidate_key));
 }
 
 // Protected Runner.review writes these derived receipts. Rebind exact raw
 // candidates and assessments at every fresh sink claim and mutation. This is
 // evidence eligibility only; the separate commercial/rights/readiness gates stay open.
-export function publicationVerification(row,destination,now=Date.now()) {
+// Hypotheses never change eligibility: each has its own list under ``hypotheses``.
+export function publicationVerification(row,destination,now=Date.now(),{withheld=null}={}) {
   const candidates=row.delivery?.[destination]?.payload?.candidates;
   if(!Array.isArray(candidates)) return {eligible:false,reasons:['Retain an exact canonical publication candidate payload.']};
   const reasons=[];
   const hypotheses=row.delivery[destination].payload.hypotheses;
-  if(hypotheses!==undefined) reasons.push(...hypothesisReasons(row,candidates,hypotheses,now));
   for(const candidate of candidates) {
     const results=row.review?.lead_verification?.results?.filter(r=>r.candidate_key===candidate.candidate_key) || [];
     const result=results.length===1 ? results[0] : null;
@@ -115,7 +146,8 @@ export function publicationVerification(row,destination,now=Date.now()) {
       if(Array.isArray(result?.reasons)) reasons.push(...result.reasons);
     }
   }
-  return {eligible:reasons.length===0,reasons,separate_gates:['buying_intent','consent_rights','commercial_qualification','robot_compatibility','deployment_readiness']};
+  return {eligible:reasons.length===0,reasons,separate_gates:['buying_intent','consent_rights','commercial_qualification','robot_compatibility','deployment_readiness'],
+    ...(hypotheses!==undefined?{hypotheses:hypothesisEligibility(row,candidates,hypotheses,now,withheld)}:{})};
 }
 
 export function requirePublicationVerification(row,destination,now=Date.now()) {
@@ -152,15 +184,20 @@ function bind(row, destination, now=Date.now()) {
   return delivery;
 }
 
-export function planSheets(row, snapshot, now=Date.now()) {
+export function planSheets(row, snapshot, now=Date.now(), options={}) {
   const d = bind(row, 'sheets',now), values = snapshot.values;
   const used = crmRows(snapshot);
   const ids = used.map(r => r[0]);
   const existing = new Set(used.map(r => identity({organization:r[1],site:r[3],location:r[17],task:r[14]})));
-  const hypotheses = d.payload.hypotheses || [];
-  if ([...d.payload.candidates,...hypotheses.map(h=>h.candidate)].some(c => existing.has(identity(c)) || used.some(r=>!normalized(r[17])
+  const duplicate = c => existing.has(identity(c)) || used.some(r=>!normalized(r[17])
       && normalized(r[1])===normalized(c.organization) && normalized(r[3])===normalized(c.site)
-      && normalized(r[14])===normalized(c.task)))) fail('publication_crm_duplicate_changed');
+      && normalized(r[14])===normalized(c.task));
+  if (d.payload.candidates.some(duplicate)) fail('publication_crm_duplicate_changed');
+  // A hypothesis the CRM already holds is left out of a fresh plan, never failing the verified rows;
+  // a replayed plan was made from the same CRM values and so never names one.
+  const planned = plannedHypotheses(row,d,now,options);
+  if (options.hypothesisKeys!==undefined && planned.some(h=>duplicate(h.candidate))) fail('publication_plan_binding_invalid');
+  const hypotheses = planned.filter(h=>!duplicate(h.candidate));
   let sequence = Math.max(0, ...ids.map(id => Number(id.slice(3))));
   const marker = `[${d.key};${d.payload_digest}]`;
   // The existing 19 columns: verified rows are unchanged; a hypothesis changes only G, M and Q, after them.
@@ -174,22 +211,24 @@ export function planSheets(row, snapshot, now=Date.now()) {
       capability?.url || '',maturity,c.location,row.date];
   };
   const rows = [...d.payload.candidates.map(c => sheetRow(c,'Needs recheck',c.proposed_next_action,'Unverified')),
-    ...hypotheses.map(h => sheetRow(h.candidate,HYPOTHESIS_LABEL,
-      'First email asks: '+h.open_questions.join(' '),HYPOTHESIS_MATURITY))];
+    ...hypotheses.map(h => sheetRow(h.candidate,HYPOTHESIS_LABEL,'First email asks: '+h.open_questions[0],HYPOTHESIS_MATURITY))];
   const body = JSON.stringify({majorDimension:'ROWS',values:rows});
   return {destination:'sheets',key:d.key,payload_digest:d.payload_digest,body_json:body,request_digest:sha(body),
-    marker,crm_values:values,sheet_rows:rows};
+    marker,crm_values:values,sheet_rows:rows,
+    ...(d.payload.hypotheses?.length?{hypothesis_keys:hypotheses.map(h=>h.candidate.candidate_key)}:{})};
 }
 
-export function planNotion(row,{legacy=false,now=Date.now()}={}) {
+export function planNotion(row,{legacy=false,now=Date.now(),hypothesisKeys,withheld}={}) {
   const d = bind(row,'notion',now), marker = `${d.key};${d.payload_digest}`;
+  const hypotheses = plannedHypotheses(row,d,now,{hypothesisKeys,withheld});
+  const recorded = d.payload.hypotheses?.length?{hypothesis_keys:hypotheses.map(h=>h.candidate.candidate_key)}:{};
   const evidence = c => c.evidence.map(e => `${e.claim_kind}/${e.classification}: ${e.claim}\n${e.url}\nChecked: ${e.checked_date}`).join('\n');
   const text = `Blueprint research ${row.date}\n${d.payload.summary}\n\n`+
     [...d.payload.candidates.map(c => `${c.organization} — ${c.site}\nTask: ${c.task}\nStatus: ${c.qualification_status}\n`+
       `Unknowns: ${c.unknowns.join('; ')}\nNext proposed action: ${c.proposed_next_action}\n`+evidence(c)),
-    ...(d.payload.hypotheses || []).map(({candidate:c,open_checks:checks,open_questions:questions}) =>
+    ...hypotheses.map(({candidate:c,open_checks:checks,open_questions:questions}) =>
       `${HYPOTHESIS_HEADING}: ${c.organization} — ${c.site}\nTask: ${c.task}\nOpen checks: ${checks.join('; ')}\n`+
-      `First email asks: ${questions.join(' ')}\nDraft only; no send is authorized.\n`+
+      `First email asks: ${questions[0]}\nDraft only; no send is authorized.\n`+
       `Unknowns: ${c.unknowns.join('; ')}\n`+evidence(c))].join('\n\n');
   const title = `Blueprint research ${row.date} ${d.payload_digest.slice(0,12)}`;
   const oldParagraphs=[marker,...Array.from({length:Math.ceil(text.length/1800)},(_,i)=>text.slice(i*1800,(i+1)*1800))];
@@ -200,7 +239,7 @@ export function planNotion(row,{legacy=false,now=Date.now()}={}) {
       && isDeepStrictEqual(oldParagraphs,paragraphs)) {
     if(oldParagraphs.length>NOTION_BATCH_BLOCKS) fail('publication_report_too_large');
     return {destination:'notion',key:d.key,payload_digest:d.payload_digest,...(d.presentation?{presentation_digest:d.presentation.decision_digest}:{}),title,paragraphs:oldParagraphs,
-      body_json:oldBody,request_digest:sha(oldBody)};
+      body_json:oldBody,request_digest:sha(oldBody),...recorded};
   }
   const batches=[];
   for(let start=0;start<paragraphs.length;) {
@@ -216,7 +255,7 @@ export function planNotion(row,{legacy=false,now=Date.now()}={}) {
     start+=children.length;
   }
   return {destination:'notion',key:d.key,payload_digest:d.payload_digest,...(d.presentation?{presentation_digest:d.presentation.decision_digest}:{}),title,paragraphs,
-    protocol:'notion-paginated-v1',batches,body_json:batches[0].body_json,request_digest:batches[0].request_digest};
+    protocol:'notion-paginated-v1',batches,body_json:batches[0].body_json,request_digest:batches[0].request_digest,...recorded};
 }
 
 export class Publisher {
@@ -229,13 +268,15 @@ export class Publisher {
       for (const cell of row.values || []) if (cell.userEnteredValue || cell.dataValidation)
         fail('publication_target_cells_not_plain_empty');
   }
-  async prepare(row,destination) {
+  // ``withheld`` names why every hypothesis on this row stays out of the plan (an unbound outreach
+  // record, or a verified-rows-only recovery); the verified rows are planned as always.
+  async prepare(row,destination,{withheld=null}={}) {
     if (destination === 'notion') {
       const parent = await this.notion('GET',`/pages/${NOTION}`);
       if (parent.id?.replaceAll('-','') !== NOTION || parent.object !== 'page') fail('publication_notion_parent_mismatch');
-      return planNotion(row,{now:this.clock()});
+      return planNotion(row,{now:this.clock(),withheld});
     }
-    const snapshot = await this.crmReader(), plan = planSheets(row,snapshot,this.clock());
+    const snapshot = await this.crmReader(), plan = planSheets(row,snapshot,this.clock(),{withheld});
     const first = snapshot.values.length+1, last = first+Math.max(0,plan.sheet_rows.length-1);
     if (plan.sheet_rows.length) await this.sheetsTargetEmpty(`Prospects!A${first}:S${last}`);
     return plan;
@@ -244,7 +285,9 @@ export class Publisher {
     const now=reconcile ? null : this.clock(),d = bind(row,destination,now);
     if (plan.destination !== destination || plan.key !== d.key || plan.payload_digest !== d.payload_digest
         || plan.request_digest !== sha(plan.body_json)) fail('publication_plan_binding_invalid');
-    const expected = destination === 'notion' ? planNotion(row,{legacy:!plan.protocol,now}) : planSheets(row,{sheet_id:SHEET,complete:true,values:plan.crm_values},now);
+    const hypothesisKeys = plan.hypothesis_keys;
+    const expected = destination === 'notion' ? planNotion(row,{legacy:!plan.protocol,now,hypothesisKeys})
+      : planSheets(row,{sheet_id:SHEET,complete:true,values:plan.crm_values},now,{hypothesisKeys});
     if (!isDeepStrictEqual(expected,plan)) fail('publication_plan_binding_invalid');
   }
   async write(row,destination,plan,{beforeWrite}={}) {

@@ -4,7 +4,7 @@ The agent judges source meaning and exact site/task linkage. This harness binds
 that judgment to retained evidence, enforces the transition and exposes gaps.
 Public research never grants commercial, consent, robot or deployment authority.
 The only I/O is retained_evidence's injected read of digest-checked tool results.
-The outreach tier (blueprint.outreach-ready-rule.v1) is one pure derivation over
+The outreach tier (blueprint.outreach-ready-rule.v1.1) is one pure derivation over
 these gates: a hypothesis label for drafting, never verification or send authority.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ import json
 import math
 import re
 import struct
+import time
 import unicodedata
 from datetime import datetime
 from urllib.parse import urlsplit
@@ -24,7 +25,8 @@ DIAGNOSTIC_RESULT_VERSION = "blueprint.lead-verification-result.v2"
 # v2 plus tier, eligible_for_outreach_ready and the outreach_ready block. status and
 # eligible_for_qualified_promotion keep their v2 meaning: the verified path is unchanged.
 OUTREACH_RESULT_VERSION = "blueprint.lead-verification-result.v3"
-OUTREACH_RULE_VERSION = "blueprint.outreach-ready-rule.v1"
+# v1.1 (design section 10): a site link check, one question, facility blocks, automation as a question.
+OUTREACH_RULE_VERSION = "blueprint.outreach-ready-rule.v1.1"
 EVIDENCE_VERSION = "blueprint.outreach-ready-evidence.v1"
 FACTS = ("operator", "physical_site", "site_task", "human_workflow")
 CLAIMS = (*FACTS, "plausible_fit")
@@ -32,18 +34,52 @@ STATES = {"verified_fact", "inference", "unresolved", "contradicted", "stale", "
 SEPARATE_GATES = ["buying_intent", "consent_rights", "commercial_qualification",
                   "robot_compatibility", "deployment_readiness"]
 PROVEN_FACTS = ("operator", "physical_site", "site_task")
-# A shorter quote proves too little: one or two words appear on almost any page.
+# site_task may rest on company-wide evidence (inference): the site link stays open and is the question.
+SITE_TASK_STATES = frozenset({"verified_fact", "inference"})
+# A shorter quote proves too little: one or two words appear on almost any page. Words are
+# whitespace-separated tokens with punctuation stripped, so "U.S. Foods" is two words.
 MIN_QUOTE_WORDS = 3
 READ_TOOL, SEARCH_TOOL = "blueprint_read_source", "blueprint_search"  # search.READ and search.SEARCH
 # Publication-phase reads come after review, so they never change a recomputed tier.
 EVIDENCE_PHASES = frozenset({"research", "repair", "qa"})
-# Fixed templates, at most 3, asked in this order; each covers the open checks it names. {task}
-# and {site} are the candidate's task and site fields verbatim (the WebApp recomputes them).
-# Hypothesis drafts may ask all of them; verified drafts keep the one-question rule.
-QUESTIONS = (("Is {task} at {site} still done mostly by hand?", ("manual_workflow", "freshness")),
-             ("Do you already use or plan automation for it?", ("existing_automation",)),
-             ("Would a short look at whether a robot could take on part of it be useful?", ("fit", "interest")))
+# Open checks in rule order; the last three are always open (Blueprint-WebApp #855 derives the same list).
+OPEN_CHECKS = ("site_link", "manual_workflow", "freshness", "existing_automation", "fit", "interest")
+# Exactly one question: the missing fact whose answer would change the decision, by precedence S
+# (site link open), then M (manual workflow open), then A. Word for word; {task} and {site} are the
+# candidate's task and site fields verbatim. The other open checks are recorded and stay unasked.
+QUESTION_TEMPLATES = {
+    "S": "Is {task} done at your {site} site, or somewhere else in the company?",
+    "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
+    "A": "What has kept the remaining {task} work at {site} from being automated so far?"}
+# Optional assessment fields (design v1.1 section 10.2), each {"value", "source_refs", "reason"}. A
+# blocking value blocks the tier only when proven: a cited, usable, non-vendor source whose quote is
+# found in retained text. Absent or "unknown" changes nothing; a malformed field gives none.
+FACILITY_FIELDS = {"facility_type": (frozenset({"operations", "office", "mailing_only", "unknown"}), frozenset({"office", "mailing_only"})),
+                   "facility_operator": (frozenset({"company", "contractor", "tenant", "unknown"}), frozenset({"contractor", "tenant"}))}
+FACILITY_BLOCKERS = {"facility_type": "facility_office_or_mailing_only", "facility_operator": "facility_operated_by_another_party"}
+# A job post names the place of work, so one that names the site ties the task to it.
+JOB_PATH_SEGMENTS = frozenset({"careers", "career", "jobs", "job", "job-posting", "job-postings", "openings", "vacancies"})
+JOB_HOSTS = ("greenhouse.io", "lever.co", "myworkdayjobs.com", "icims.com", "smartrecruiters.com", "jobvite.com",
+             "ashbyhq.com", "workable.com", "bamboohr.com", "taleo.net")
+STREET = re.compile(r"\d[^\W_]* [^\W\d_]")  # A normalized address segment: a house number, then a name.
 UNAVAILABLE = {"schema_version": EVIDENCE_VERSION, "state": "unavailable"}
+
+
+class EvidenceBudgetExhausted(Exception):
+    """retained_evidence stopped before reading every result: its read or time budget ran out."""
+
+
+class ReadBudget:
+    """At most ``reads`` result reads within ``seconds`` of monotonic time, checked before each read."""
+
+    def __init__(self, reads, seconds, clock=time.monotonic):
+        self.reads, self.clock = reads, clock
+        self.deadline = clock() + seconds
+
+    def take(self):
+        if self.reads <= 0 or self.clock() >= self.deadline:
+            raise EvidenceBudgetExhausted()
+        self.reads -= 1
 
 
 def digest(value):
@@ -346,15 +382,34 @@ def _citations(snapshot):
             stack.extend(item)
 
 
-def retained_evidence(row, read):
+def host_key(value):
+    """The host part of url_key: letter case and www. do not differ; None for an unusable URL."""
+    key = url_key(value)
+    return key.split("/", 1)[0].split("?", 1)[0] if key else None
+
+
+def retained_evidence(row, read, *, budget=None):
     """Page text and excerpts from this row's retained tool results, each checked against its digests.
 
     ``read`` is the ledger's read_bytes, the only I/O. Pages are blueprint_read_source text;
     excerpts are blueprint_search snippets and Parallel FindAll citation excerpts. A result whose
-    bytes, digest or shape differ is skipped and counted, never trusted. Store errors propagate:
-    callers record the evidence as unavailable (QA) or retry (review).
+    bytes, digest or shape differ, or whose file is missing, is skipped and counted as refused;
+    the others are still used. Page text is credited to the requested URL and its redirect hops
+    only while every hop stays on the requested host: a cross-host redirect gets no credit, since
+    its text is another host's. ``budget`` (a ReadBudget) is taken before each read and raises
+    EvidenceBudgetExhausted when spent. Other store errors propagate: callers record the evidence
+    as unavailable.
     """
     pages, excerpts, refused = [], [], 0
+
+    def load(name):
+        if budget is not None:
+            budget.take()
+        try:
+            return read(name)
+        except FileNotFoundError:
+            return None
+
     calls = row.get("application_tool_calls") if isinstance(row, dict) else None
     calls = calls if isinstance(calls, dict) else {}
     for cid, call in sorted(calls.items()):
@@ -363,8 +418,10 @@ def retained_evidence(row, read):
         if (name not in {READ_TOOL, SEARCH_TOOL} or call.get("phase") not in EVIDENCE_PHASES
                 or call.get("success") is not True or not isinstance(call.get("result_file"), str)):
             continue
-        raw = read(call["result_file"])
+        raw = load(call["result_file"])
         try:
+            if raw is None:
+                raise ValueError("tool result missing")
             event = json.loads(raw)
             if (hashlib.sha256(raw).hexdigest() != call.get("result_sha256") or _json_digest(event) != call.get("result_digest")
                     or event.get("success") is not True or event.get("call_id") != cid):
@@ -373,8 +430,11 @@ def retained_evidence(row, read):
             if name == READ_TOOL:
                 if not isinstance(output["text"], str):
                     raise TypeError("page text")
-                urls = {output["requested_url"], output["url"], *(item["url"] for item in output.get("redirects") or [])}
-                found = [{"url": url, "text": output["text"], "tool_result_sha256": sha} for url in sorted(urls)]
+                chain = [output["requested_url"], *(item["url"] for item in output.get("redirects") or []), output["url"]]
+                host = host_key(chain[0])
+                same_host = host is not None and all(host_key(url) == host for url in chain)
+                found = ([{"url": url, "text": output["text"], "tool_result_sha256": sha} for url in sorted(set(chain))]
+                         if same_host else [])
             else:
                 found = [{"url": item["url"], "text": item["snippet"], "tool_result_sha256": sha, "kind": "search_snippet"}
                          for item in output["response"]["results"]]
@@ -388,9 +448,9 @@ def retained_evidence(row, read):
         if (not isinstance(call, dict) or call.get("phase") not in EVIDENCE_PHASES or not isinstance(receipt, dict)
                 or receipt.get("operation") not in {"status", "result"} or not isinstance(receipt.get("file"), str)):
             continue
-        raw = read(receipt["file"])
+        raw = load(receipt["file"])
         try:
-            if hashlib.sha256(raw).hexdigest() != receipt.get("sha256") or len(raw) != receipt.get("bytes"):
+            if raw is None or hashlib.sha256(raw).hexdigest() != receipt.get("sha256") or len(raw) != receipt.get("bytes"):
                 raise ValueError("snapshot binding")
             found = [{"url": url, "text": text, "tool_result_sha256": receipt["sha256"], "kind": "citation_excerpt"}
                      for url, text in _citations(json.loads(raw))]
@@ -433,25 +493,97 @@ def evidence_index(evidence):
     return index
 
 
+def quote_words(quote):
+    """Whitespace-separated tokens that keep a letter or digit once punctuation is stripped."""
+    return [token for token in unicodedata.normalize("NFKC", quote).split() if re.search(r"[^\W_]", token)]
+
+
 def quote_level(quote, url, index):
     """(verified_on_page | in_citation_excerpt, tool_result_sha256) for a quote proven at this URL.
 
     The normalized quote must appear whole-word in retained page text for the same URL
     (verified_on_page), else in a retained search snippet or citation excerpt for it.
-    (None, None) otherwise, including a quote shorter than MIN_QUOTE_WORDS.
+    (None, None) otherwise, including a quote of fewer than MIN_QUOTE_WORDS words (quote_words).
     """
     try:
-        words, key = normalized(quote), url_key(url)
+        needle, key = normalized(quote), url_key(url)
+        if key is None or len(quote_words(quote)) < MIN_QUOTE_WORDS:
+            return None, None
     except (AttributeError, TypeError):
         return None, None
-    if key is None or len(words.split()) < MIN_QUOTE_WORDS:
-        return None, None
-    needle = " " + words + " "
+    needle = " " + needle + " "
     for level, kind in (("verified_on_page", "pages"), ("in_citation_excerpt", "excerpts")):
         for text_value, sha in index[kind].get(key, ()):
             if needle in text_value:
                 return level, sha
     return None, None
+
+
+def site_terms(candidate):
+    """(places, names) that tie evidence to this facility, normalized.
+
+    places: the city (the first part of a "City, Region[, Country]" location) and any street
+    address (a site or location part that starts with a house number). names: the places and
+    the site's own name (its first part), which only a job post may use.
+    """
+    def parts(value):
+        return [normalized(part) for part in value.split(",")] if isinstance(value, str) else []
+    site, location = parts(candidate.get("site")), parts(candidate.get("location"))
+    places = {part for part in site + location if STREET.match(part)}
+    if len([part for part in location if part]) >= 2 and location[0]:
+        places.add(location[0])
+    names = places | ({site[0]} if site and site[0] else set())
+    return frozenset(places), frozenset(names)
+
+
+def job_post(url):
+    """True for a careers or jobs page: a careers/jobs path segment or host, or a hiring-system host."""
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    segments = {segment.lower() for segment in parts.path.split("/") if segment}
+    return (bool(segments & JOB_PATH_SEGMENTS) or host.split(".", 1)[0] in {"careers", "jobs"}
+            or any(host == name or host.endswith("." + name) for name in JOB_HOSTS))
+
+
+def names_site(source, index, places, names):
+    """The quote or its retained page names the site's city or street, or the source is a job post naming the site."""
+    try:
+        key = url_key(source.get("url"))
+        texts = [" " + normalized(source["quote"]) + " ", *(text_value for kind in ("pages", "excerpts")
+                                                             for text_value, _ in index[kind].get(key, ()))]
+    except (AttributeError, KeyError, TypeError):
+        return False
+    def found(terms):
+        return any(" " + term + " " in text_value for term in terms for text_value in texts)
+    return found(places) or job_post(source.get("url")) and found(names)
+
+
+def facility_gates(assessment, indexed, index):
+    """{field: {"value", "proven"}} for the optional facility fields; "invalid" when one is malformed."""
+    value = {"valid": True}
+    try:
+        assessed_at = moment(assessment.get("assessed_at"))
+    except (TypeError, ValueError):
+        assessed_at = None
+    for field, (allowed, _) in FACILITY_FIELDS.items():
+        entry = assessment.get(field)
+        if entry is None:
+            value[field] = {"value": None, "proven": False}
+            continue
+        refs = entry.get("source_refs") if isinstance(entry, dict) else None
+        if (not isinstance(entry, dict) or entry.get("value") not in allowed or not isinstance(refs, list)
+                or any(not isinstance(ref, str) or ref not in indexed for ref in refs)):
+            value.update(valid=False)
+            value[field] = {"value": None, "proven": False}
+            continue
+        proven = assessed_at is not None and any(
+            source_usable(indexed[ref], assessed_at) and indexed[ref].get("classification") != "vendor"
+            and quote_level(indexed[ref].get("quote"), indexed[ref].get("url"), index)[0] for ref in refs)
+        value[field] = {"value": entry["value"], "proven": proven}
+    return value
 
 
 def outreach_gates(result, candidate, index, *, conflict=False):
@@ -463,6 +595,7 @@ def outreach_gates(result, candidate, index, *, conflict=False):
     counter = assessment.get("counterevidence") if isinstance(assessment.get("counterevidence"), dict) else {}
     states = {name: claims[name].get("status") if isinstance(claims.get(name), dict) else None for name in CLAIMS}
     states["counterevidence"] = counter.get("status")
+    places, names = site_terms(candidate)
     facts = {}
     for name in PROVEN_FACTS:
         refs = claims[name].get("source_refs") if isinstance(claims.get(name), dict) else None
@@ -472,32 +605,52 @@ def outreach_gates(result, candidate, index, *, conflict=False):
             usable = bool(linked) and len(linked) == len(refs) and all(source_usable(s, assessed_at, primary=True) for s in linked)
         except (TypeError, ValueError):
             usable = False
-        proofs = []
+        proofs, site_specific = [], False
         for source in linked:
             level, sha = quote_level(source.get("quote"), source.get("url"), index)
             if level:
                 proofs.append({"claim": name, "source_id": source["id"], "url": source["url"],
                                "quote_sha256": hashlib.sha256(source["quote"].encode()).hexdigest(),
                                "level": level, "tool_result_sha256": sha})
-        facts[name] = {"primary_sources_usable": usable, "proofs": proofs}
+                site_specific = site_specific or name == "site_task" and names_site(source, index, places, names)
+        facts[name] = {"primary_sources_usable": usable, "proofs": proofs, "site_specific": site_specific}
     check = result.get("duplicate_check")
     return {"eligible_for_qualified_promotion": result.get("eligible_for_qualified_promotion") is True,
             "assessment_valid": result.get("assessment_valid") is True and not result.get("validation_errors"),
             "identity_present": bool(result.get("identity_key")),
             "duplicate": bool(result.get("duplicate_of")) or isinstance(check, dict) and check.get("duplicate") is True,
             "conflict": conflict is True, "valid_until": assessment.get("valid_until"), "states": states, "facts": facts,
-            "task": candidate.get("task"), "site": candidate.get("site")}
+            "facility": facility_gates(assessment, indexed, index), "task": candidate.get("task"), "site": candidate.get("site")}
+
+
+def open_checks(states, valid_until):
+    """The rule-order open checks Blueprint-WebApp #855 derives from the same assessment."""
+    return (["site_link"] if states.get("site_task") != "verified_fact" else []) + (
+        ["manual_workflow"] if states.get("human_workflow") != "verified_fact" else []) + (
+        ["freshness"] if valid_until is None else []) + ["existing_automation", "fit", "interest"]
+
+
+def question_template(checks):
+    """S while the site link is open, else M while the manual workflow is open, else A."""
+    return "S" if "site_link" in checks else "M" if "manual_workflow" in checks else "A"
 
 
 def outreach_tier(gates, now):
-    """blueprint.outreach-ready-rule.v1. site_screen imports this; never copy it.
+    """blueprint.outreach-ready-rule.v1.1. site_screen imports this; never copy it.
 
-    verified: the unchanged full-proof path. outreach_ready: operator, physical_site and
-    site_task are verified_fact from usable primary sources, each with a quote at
-    verified_on_page or in_citation_excerpt; the assessment is valid, unexpired (or of
-    unknown freshness), not a duplicate or conflict; and nothing is contradicted (a closed
-    site is a contradicted physical_site, vendor-only automation evidence a contradicted
-    counterevidence). Anything else, including any defect here, is none.
+    verified: the unchanged full-proof path. outreach_ready: operator and physical_site are
+    verified_fact and site_task is verified_fact or inference, each from usable primary
+    sources with a quote at verified_on_page or in_citation_excerpt; a verified_fact
+    site_task must be tied to this facility (the quote or its page names the site's city or
+    street, or it is a job post naming the site), so company-wide capability text is
+    inference and leaves site_link open. The assessment is valid, unexpired (or of unknown
+    freshness), not a duplicate or conflict. A contradicted claim blocks: a closed site is a
+    contradicted physical_site, and only a contradicted human_workflow (the exact task at
+    this site shown fully automated) is an automation block. Other automation evidence,
+    including a contradicted counterevidence, changes the question, not the eligibility. A
+    proven office or mailing-only address, or a site run by a contractor or tenant rather
+    than the named operator, blocks. Exactly one question is asked, by precedence S, M, A.
+    Anything else, including any defect here, is none.
     """
     block = {"rule_version": OUTREACH_RULE_VERSION, "proving_sources": [], "open_checks": [],
              "open_questions": [], "blockers": []}
@@ -506,7 +659,7 @@ def outreach_tier(gates, now):
         block["proving_sources"] = [facts[name]["proofs"][0] for name in PROVEN_FACTS if facts[name]["proofs"]]
         if gates["eligible_for_qualified_promotion"] is True:
             return {"tier": "verified", "eligible_for_outreach_ready": False, "outreach_ready": block}
-        blockers = [name + "_contradicted" for name in (*CLAIMS, "counterevidence") if states.get(name) == "contradicted"]
+        blockers = [name + "_contradicted" for name in CLAIMS if states.get(name) == "contradicted"]
         valid_until = gates["valid_until"]
         for failed, code in ((gates["assessment_valid"] is not True, "assessment_invalid"),
                              (gates["identity_present"] is not True, "identity_missing"),
@@ -516,24 +669,34 @@ def outreach_tier(gates, now):
             if failed:
                 blockers.append(code)
         for name in PROVEN_FACTS:
-            if states.get(name) != "verified_fact":
-                blockers.append(name + "_not_verified_fact")
+            if states.get(name) not in (SITE_TASK_STATES if name == "site_task" else {"verified_fact"}):
+                blockers.append(name + ("_not_verified_fact_or_inference" if name == "site_task" else "_not_verified_fact"))
             elif facts[name]["primary_sources_usable"] is not True:
                 blockers.append(name + "_primary_source_unusable")
             elif not facts[name]["proofs"]:
                 blockers.append(name + "_quote_unproven")
+            elif name == "site_task" and states[name] == "verified_fact" and facts[name]["site_specific"] is not True:
+                blockers.append("site_task_company_level")
+        facility = gates["facility"]
+        if facility["valid"] is not True:
+            blockers.append("facility_invalid")
+        for field, (_, blocking) in FACILITY_FIELDS.items():
+            if facility[field]["value"] in blocking and facility[field]["proven"] is True:
+                blockers.append(FACILITY_BLOCKERS[field])
         task, site = gates["task"], gates["site"]
+        checks = open_checks(states, valid_until)
+        question = None
         if not text(task) or not text(site):
             blockers.append("question_task_or_site_missing")
+        else:
+            question = QUESTION_TEMPLATES[question_template(checks)].format(task=task, site=site)
+            if question.count("?") != 1:
+                blockers.append("question_not_single")
         if blockers:
             return {"tier": "none", "eligible_for_outreach_ready": False,
                     "outreach_ready": {**block, "blockers": list(dict.fromkeys(blockers))}}
-        checks = (["manual_workflow"] if states.get("human_workflow") != "verified_fact" else []) + (
-            ["freshness"] if valid_until is None else []) + ["existing_automation", "fit", "interest"]
-        questions = [template.format(task=task, site=site) for template, covers in QUESTIONS
-                     if any(c in checks for c in covers)]
         return {"tier": "outreach_ready", "eligible_for_outreach_ready": True,
-                "outreach_ready": {**block, "open_checks": checks, "open_questions": questions}}
+                "outreach_ready": {**block, "open_checks": checks, "open_questions": [question]}}
     except Exception:  # noqa: BLE001 - any defect in the tier computation yields none; QA and publication continue
         return {"tier": "none", "eligible_for_outreach_ready": False,
                 "outreach_ready": {**block, "proving_sources": [], "blockers": ["tier_computation_unavailable"]}}
@@ -557,6 +720,24 @@ def evidence_summary(evidence):
     return {"schema_version": EVIDENCE_VERSION, "state": "retained", **counts,
             "refused": refused if type(refused) is int and refused >= 0 else 0,
             "sources_sha256": _json_digest(shas)}
+
+
+TIER_FIELDS = ("tier", "eligible_for_outreach_ready", "outreach_ready")
+TIER_COHORT_FIELDS = ("outreach_rule_version", "tier_evidence", "outreach_ready_count")
+
+
+def without_tier(value):
+    """A result-v3 cohort as the v2 cohort it extends: the verified path, which the tier never changes.
+
+    Review binds this part exactly even when it cannot re-prove the tier from retained evidence.
+    Anything else is returned unchanged.
+    """
+    if not isinstance(value, dict) or value.get("result_version") != OUTREACH_RESULT_VERSION or not isinstance(value.get("results"), list):
+        return value
+    results = [{**{key: item for key, item in r.items() if key not in TIER_FIELDS}, "version": DIAGNOSTIC_RESULT_VERSION}
+               if isinstance(r, dict) else r for r in value["results"]]
+    return {**{key: item for key, item in value.items() if key not in TIER_COHORT_FIELDS},
+            "result_version": DIAGNOSTIC_RESULT_VERSION, "results": results}
 
 
 def packet_candidates(packet):

@@ -162,6 +162,9 @@ def qa_validation_feedback(row, result):
                           ASSESSMENT_ISSUE + "outreach_ready_key_accepted")
                 if isinstance(usable.get(key), dict) and usable[key].get("duplicate") is True:
                     issue(path, "a duplicate is never outreach-ready", key, ASSESSMENT_ISSUE + "outreach_ready_key_duplicate")
+                elif isinstance(usable.get(key), dict) and usable[key].get("source_support_verified") is not True:
+                    issue(path, "an outreach-ready key's own check has source_support_verified true: its sources support "
+                          "the operator, site and task", key, ASSESSMENT_ISSUE + "outreach_ready_key_unsupported")
     return issues
 
 
@@ -269,12 +272,20 @@ def outreach_sentence(row):
     return (f"Owner direction {frozen['direction_sha256'][:12]} admits outreach-ready hypotheses in this run. A hypothesis "
             "is a labelled draft lead, never a verified row: listing one never changes accepted_keys or promotion, "
             "and nothing authorizes a send. In outreach_ready_keys list at most "
-            f"{frozen['max_rows_per_batch']} exact candidate keys that are not accepted and not duplicates when operator, "
-            "physical_site and site_task are each verified_fact from current operator or primary sources and each of those "
-            "three claims cites a source whose quote is copied exactly, word for word, from page text retained by "
+            f"{frozen['max_rows_per_batch']} exact candidate keys that are not accepted and whose own check has "
+            "source_support_verified true and duplicate false, when operator and physical_site are each verified_fact "
+            "and site_task is verified_fact or inference, each from current operator or primary sources, and each of "
+            "those three claims cites a source whose quote is copied exactly, word for word, from page text retained by "
             "blueprint_read_source for that same URL, or from a retained blueprint_search snippet or Parallel citation "
-            "excerpt for it; valid_until is an evidence-based expiry or null; and human_workflow, plausible_fit and "
-            "counterevidence are not contradicted (vendor automation evidence and a closed site are contradictions). "
+            "excerpt for it. site_task is verified_fact only when its quote or that page names this site's city or "
+            "street, or it is a job post at this site; company-wide capability text makes site_task inference, and the "
+            "first email then asks whether the task is done at this site. valid_until is an evidence-based expiry or "
+            "null. A contradicted claim blocks: a closed site contradicts physical_site, and human_workflow is "
+            "contradicted only when the exact task at this site is shown fully automated. Automation of other tasks, "
+            "other sites or part of this task goes in counterevidence and does not block. Optionally record "
+            "facility_type {value: operations|office|mailing_only|unknown, source_refs, reason} and facility_operator "
+            "{value: company|contractor|tenant|unknown, source_refs, reason} in the assessment; a proven office or "
+            "mailing-only address, or a site run by a contractor or tenant rather than this operator, blocks. "
             "Listed keys count only when the review's top-level source_support_verified is true. Blueprint recomputes every "
             "condition from the retained tool results and admits only keys that pass, so a paraphrased quote never "
             "qualifies. Use an empty list when none qualify. ")
@@ -362,11 +373,14 @@ def qa_text(row, snapshot, crm_digest):
                               for c in verification.packet_candidates(row["packet"])}}))
 
 
-def outreach_keys(row, result, cohort_value, selected, known, admission):
+def outreach_keys(row, result, cohort_value, selected, known, admission, deadline):
     """QA-listed keys the recomputed rule rates outreach_ready, promotable, CRM-new and not accepted.
 
-    ``admission`` is outreach_ready.admission's (row limit, code) for this moment. Never raises:
-    any defect admits nothing, and the accepted_keys path is untouched.
+    ``admission`` is outreach_ready.admission's (row limit, code) for this moment and ``deadline``
+    the run's QA and publication deadline: a key's assessment must stay valid past it, so an
+    admitted hypothesis cannot expire before its own review and publication. Each key also
+    needs exactly one QA check, source-verified and not a duplicate (WebApp #855 checks the
+    same). Never raises: any defect admits nothing, and the accepted_keys path is untouched.
     """
     try:
         limit, code = admission
@@ -374,13 +388,19 @@ def outreach_keys(row, result, cohort_value, selected, known, admission):
         # Like accepted keys, hypotheses need QA's day-level source support (the WebApp checks it too).
         if code is not None or not isinstance(listed, list) or result["source_support_verified"] is not True:
             return []
-        ready = {r["candidate_key"] for r in cohort_value["results"] if r.get("eligible_for_outreach_ready") is True}
+        ready = {r["candidate_key"]: r for r in cohort_value["results"] if r.get("eligible_for_outreach_ready") is True}
         packet = {c["candidate_key"]: c for c in row["packet"]["candidates"]}
         accepted = {key for key in result["accepted_keys"] if isinstance(key, str)} | set(selected)
+        checks = {}
+        for check in result["checks"]:
+            checks.setdefault(check["candidate_key"], []).append(check)
         keys = []
         for key in listed:
+            own = checks.get(key, []) if isinstance(key, str) else []
             if (isinstance(key, str) and key not in keys and key in ready and key in packet and key not in accepted
-                    and not set(packet[key]["identity_keys"]) & known):
+                    and not set(packet[key]["identity_keys"]) & known and len(own) == 1
+                    and own[0].get("source_support_verified") is True and own[0].get("duplicate") is False
+                    and outreach_ready.admissible_until(ready[key], deadline)):
                 keys.append(key)
         return keys[:limit]
     except Exception:  # noqa: BLE001 - a malformed list or admission admits nothing; QA continues
@@ -416,8 +436,12 @@ def qa_decision(row, result, known, observed_at=None, defer_assessment_issues=Fa
                 "source_support_verified": result["source_support_verified"], "crm_rechecked": True, "accepted_keys": selected,
                 "summary": result["summary"], "qa_artifact_digest": qa["artifact_digest"], "lead_verification": verified}
     if result_version == verification.OUTREACH_RESULT_VERSION:
+        try:
+            deadline = qa_deadline(row, {})
+        except Exception:  # noqa: BLE001 - an unknown deadline admits nothing
+            deadline, admission = None, (0, "outreach_ready_deadline_unavailable")
         decision["outreach_ready_keys"] = outreach_keys(row, result, verified, selected, known,
-                                                        admission or (0, "outreach_ready_admission_unavailable"))
+                                                        admission or (0, "outreach_ready_admission_unavailable"), deadline)
     return decision
 
 
@@ -453,6 +477,7 @@ class Consumer:
         self.ledger, self.config, self.api, self.clock, self.stopped = ledger, config, api, clock, stopped
         self.active_day = None
         self.terminal_collection_receipt = terminal_collection_receipt
+        self.decided = None  # (decision, evidence) a result-v3 QA decision read in this step, for review to reuse
 
     def refresh_crm(self):
         self.ledger.bridge.call("refresh_crm")
@@ -460,6 +485,18 @@ class Consumer:
         return crm_snapshot(self.config["crm_snapshot"], self.clock())
 
     def step(self):
+        """One QA or publication step. Once publication completed, a shadow-mode day also records
+        its outreach-ready shadow, after every QA and publication write and outside them."""
+        self.decided = None
+        try:
+            result = self.step_once()
+        finally:
+            self.decided = None
+        if result.get("state") == "completed" and result.get("date"):
+            self.record_outreach_shadow(result["date"])
+        return result
+
+    def step_once(self):
         decision = None
         with self.ledger.lock():
             admission_error = None
@@ -521,7 +558,12 @@ class Consumer:
             else:
                 raise Refusal("workflow_state_invalid")
         runner = Runner(self.ledger, self.config, self.api, clock=self.clock)
-        result = runner.review(row["date"], decision) if decision else runner.receipt(row["date"], receipt)
+        if decision:
+            # The evidence this step's result-v3 decision read is reused, so review reads nothing again.
+            evidence = self.decided[1] if self.decided and self.decided[0] is decision else None
+            result = runner.review(row["date"], decision, evidence=evidence)
+        else:
+            result = runner.receipt(row["date"], receipt)
         return {"date": row["date"], "state": result["state"]}
 
     def qa(self, row):
@@ -830,11 +872,13 @@ class Consumer:
                 feedback = qa_validation_feedback(row, result)
                 if feedback and self.correct_qa(row, feedback, session, deadline) != "decide":
                     return None
-                # Only a result-v3 row reads evidence before deciding; shadow mode decides exactly as before.
+                # Only a result-v3 row reads evidence before deciding, once: review reuses this read in the
+                # same step. Shadow mode decides exactly as before and reads nothing here.
                 tiered = row["packet"].get("lead_verification_result_version") == verification.OUTREACH_RESULT_VERSION
                 evidence = self.outreach_evidence(row) if tiered else None
                 decision = qa_decision(row, result, known, self.clock(), defer_assessment_issues=bool(feedback),
                                        evidence=evidence, admission=self.outreach_admission(row))
+                self.decided = (decision, evidence) if tiered else None
                 if late_deadline_cancel:
                     qa["terminal_collection_receipt"] = {"turn_id": tid, "completed_at": turn["completed_at"],
                                                          "deadline_ms": int(deadline.timestamp() * 1000),
@@ -845,7 +889,6 @@ class Consumer:
                     correction.update(state="validated", artifact_file=qa["artifact_file"], artifact_digest=qa["artifact_digest"],
                         evidence_file=qa["evidence_file"], evidence_digest=qa["evidence_digest"])
                 self.ledger.put(row)
-                self.record_shadow(row, result, decision, known)
                 return decision
         reason = "agent_qa_stopped" if self.stopped() else None
         if not workflow(self.ledger.bridge.call("control")):
@@ -862,10 +905,11 @@ class Consumer:
         return None
 
     def outreach_evidence(self, row):
-        """Digest-checked retained tool evidence for the tier, or unavailable; never stops QA."""
+        """Digest-checked retained tool evidence for the tier, read within its budget, or unavailable;
+        never stops QA."""
         try:
-            return verification.retained_evidence(row, self.ledger.read_bytes)
-        except Exception:  # noqa: BLE001 - unreadable evidence proves no quote; the decision records it as unavailable
+            return verification.retained_evidence(row, self.ledger.read_bytes, budget=outreach_ready.read_budget())
+        except Exception:  # noqa: BLE001 - unreadable or over-budget evidence proves no quote; the decision records it
             return dict(verification.UNAVAILABLE)
 
     def outreach_admission(self, row):
@@ -877,21 +921,50 @@ class Consumer:
         except Exception:  # noqa: BLE001 - unknown live authority admits nothing
             return 0, "outreach_ready_admission_unavailable"
 
-    def record_shadow(self, row, result, decision, known):
-        """Shadow mode only, after the validated decision is durable: each candidate's tier in
-        row.outreach_ready_shadow, outside every digest-bound artifact. Optional; never raises."""
-        if row["packet"].get("lead_verification_result_version") == verification.OUTREACH_RESULT_VERSION:
-            return
-        evidence = self.outreach_evidence(row)
-        record = outreach_ready.bounded_shadow(row, outreach_ready.shadow(row, result, decision, known, evidence, self.clock()),
-                                               search.MAX_RECORD)
-        if record is None:
-            return
-        row["outreach_ready_shadow"] = record
+    def record_outreach_shadow(self, day):
+        """Shadow mode only, once publication completed: the tier each candidate would get, in the ledger
+        file <day>-outreach-ready-shadow.json and never in the row. Within a read and time budget; near
+        the run's deadline it records only a skip code. Never raises: a store failure here, including a
+        bridge deadline, records nothing and cannot reach QA or publication, which are already complete."""
         try:
-            self.ledger.put(row)
-        except Exception:  # noqa: BLE001 - the decision is already durable; a lost shadow record changes nothing else
-            row.pop("outreach_ready_shadow", None)
+            with self.ledger.lock():
+                row = self.ledger.get(day)
+                if (not isinstance(row, dict) or row.get("state") != "completed" or outreach_ready.enabled(row)
+                        or row.get("packet", {}).get("lead_verification_result_version") == verification.OUTREACH_RESULT_VERSION
+                        or row.get("qa", {}).get("state") != "validated"):
+                    return None
+                name = outreach_ready.shadow_file(row)
+                try:
+                    self.ledger.read_bytes(name)
+                    return None  # Recorded once.
+                except FileNotFoundError:
+                    pass
+                record = self.outreach_shadow(row, self.clock())
+                self.ledger.write_json(name, record)
+                return record
+        except Exception:  # noqa: BLE001 - optional measurement; QA and publication finished before it began
+            return None
+
+    def outreach_shadow(self, row, now):
+        try:
+            deadline = qa_deadline(row, self.config)
+        except Exception:  # noqa: BLE001 - an unknown deadline is treated as reached
+            return outreach_ready.shadow_skipped(row, "outreach_ready_shadow_deadline_unavailable", now)
+        if deadline - now < outreach_ready.SHADOW_DEADLINE_MARGIN:
+            return outreach_ready.shadow_skipped(row, "outreach_ready_shadow_near_deadline", now)
+        budget = outreach_ready.read_budget()
+        try:
+            budget.take()
+            raw = self.ledger.read_bytes(row["qa"]["artifact_file"])
+            if hashlib.sha256(raw).hexdigest() != row["qa"]["artifact_digest"]:
+                return outreach_ready.shadow_skipped(row, "outreach_ready_shadow_qa_artifact_mismatch", now)
+            result, _ = recovery.parse_artifact_json(raw)
+            evidence = verification.retained_evidence(row, self.ledger.read_bytes, budget=budget)
+        except verification.EvidenceBudgetExhausted:
+            return outreach_ready.shadow_skipped(row, "outreach_ready_shadow_read_budget", now)
+        except Exception:  # noqa: BLE001 - an unreadable store skips the measurement
+            return outreach_ready.shadow_skipped(row, "outreach_ready_shadow_evidence_unavailable", now)
+        return outreach_ready.shadow(row, result, evidence, now, deadline)
 
     @staticmethod
     def check_session(row, session):

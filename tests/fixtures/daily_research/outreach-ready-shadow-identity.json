@@ -1,87 +1,71 @@
 {
-  "description": "Digests of every digest-bound daily research artifact from two synthetic end-to-end flows (tests/test_daily_research_consumer.py shadow_identity_artifacts), computed on main before the outreach-ready tier existed. With control.outreach_ready absent, disabled or not directing daily_qa, this release must reproduce every value exactly.",
+  "description": "Synthetic shadow-mode identity: per-artifact SHA-256 digests (identity_digests in tests/test_daily_research_consumer.py) of five end-to-end flows run on main before the outreach-ready tier existed. Shadow mode (direction absent, disabled or naming only site_screen) must reproduce every value. Never real research data.",
   "fixture_only": true,
   "flows": {
     "agent_publication": {
-      "create_payload": "494ba6fab3261a25a1f69065a07ac2d203a112f1ff0d7717ece8c424d54015be",
-      "crm_after_publication": "d7879e4b400c8a06db98fbccddb0f479cdf9d521d4b0eb312009e3a18b5ceaac",
-      "decision_equals_review": true,
-      "lead_verification_result_version": "blueprint.lead-verification-result.v2",
-      "metadata": "9e67f6cc0e90acf92364a4fa7659a9c5d07417e573fd7634df56e98fdad0f536",
-      "notion": {
-        "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
-        "payload_json": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
-        "plan": "01421e148ca1a90430c873572699a54ecb9085d12ec152a9325f130e35297b7b",
-        "receipt": {
-          "destination": "notion",
-          "key": "blueprint-researcher:2026-09-30:notion",
-          "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
-          "readback_verified": true,
-          "reference": "notion:page-result"
-        },
-        "state": "acknowledged"
-      },
-      "packet": "e1c53f9d5c44bf8c4146450ce96a0c724ac5f515709222d9a7bdab06da20529d",
-      "packet_recomputed": "e1c53f9d5c44bf8c4146450ce96a0c724ac5f515709222d9a7bdab06da20529d",
-      "publication_input": "dfc3eed0cfd631ec8fec91d5f788b00f2bf06c997eb9918b5c47358798706837",
-      "qa_artifact": "dd7672a16d92d4c39b82e7adac2adfed95b55b3777a49d3333cde46d77c83802",
-      "qa_decision": "03b46f7b1be9dae4645c40ec9b4cf62333ddbf299fb41847988439dae0150402",
-      "qa_input": "8cdbdd588b6abb9e451ae3b9773cad474859fe7a842038b29c04991f5a5c3e32",
-      "review": "03b46f7b1be9dae4645c40ec9b4cf62333ddbf299fb41847988439dae0150402",
-      "review_file": "1752e81205096d91866fbc564bf4950e0549dda0cf1cfe18569cc432698a2254",
-      "sheets": {
-        "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
-        "payload_json": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
-        "plan": "f11eb12cb0d1d60a7a080963b6703431b2ebb4ddae8ecd597a894518bd1627a1",
-        "receipt": {
-          "destination": "sheets",
-          "key": "blueprint-researcher:2026-09-30:sheets",
-          "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
-          "readback_verified": true,
-          "reference": "sheets:1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY:Prospects:BP-000001"
-        },
-        "state": "acknowledged"
-      }
+      "api_inputs": "607b9a529b65bafccea94d6b4fac17d30f07345d84b78d6255f5733512773020",
+      "api_payloads": "d64ae38e92f3982f27db03bc0936affc0a8b0d8c1d49e2e5eef6aa4b684f5799",
+      "crm_values": "67adbb86fe32b4507d189b6f8cfd676eff0a773ecf3dcb365abf67a105f42bc1",
+      "db": "0902ca3deca23874d72946da5edfe366c044cba9d9fefbe453cd15e76ec816a6",
+      "files": "0da164fd68ebe3525b405b88cd60618040486c9e66abf662cfa588d49bf25d26",
+      "publication_events": "0eef3154725e1508d08c5549e568811c63378badab0be6db780398730cd54f3a",
+      "publication_posts": "3578b161859f1b0a32568c7ab5421da8158d115e816f61035346c4cdd929d0bb",
+      "row": "e1086ed91a9c85e058868d25fa22952ecdc646b6aa7dce2ef1782c68d031b25f",
+      "row_before_qa": "706435d4fa9250d23ce6a43f77b5c7aef24f11596ce8a48ed2c455fb2df3453f",
+      "state": "c917c052634bd4957960be61663f0e39b200581afe863335dbb7ea599bf80f7e",
+      "status": "2eb4cf85aa8f624edf20a401dc6d68bde0caa7832a2168a9098a1c1268c49544"
+    },
+    "history_mcp_agent": {
+      "api_inputs": "607b9a529b65bafccea94d6b4fac17d30f07345d84b78d6255f5733512773020",
+      "api_payloads": "bcd0ee825ee9d690c9c409426d8801dc69890212ce2ea2e46f4c64da21e89bcc",
+      "crm_values": "67adbb86fe32b4507d189b6f8cfd676eff0a773ecf3dcb365abf67a105f42bc1",
+      "db": "cf9cb8efead67eb38697c44b2b2d2cb5c34a3186abf0afeda655880f7988fc61",
+      "files": "0da164fd68ebe3525b405b88cd60618040486c9e66abf662cfa588d49bf25d26",
+      "publication_events": "0eef3154725e1508d08c5549e568811c63378badab0be6db780398730cd54f3a",
+      "publication_posts": "3578b161859f1b0a32568c7ab5421da8158d115e816f61035346c4cdd929d0bb",
+      "row": "baad4d80fb4dc9abbcfab7a7b55d39f1405fb869bd6fe9a68148422092bf3fc3",
+      "row_before_qa": "31ad47bfe4bd4ab2822b34fd2cf56b9aa1dcd1036c923e757d5000154e86d193",
+      "state": "c917c052634bd4957960be61663f0e39b200581afe863335dbb7ea599bf80f7e",
+      "status": "2eb4cf85aa8f624edf20a401dc6d68bde0caa7832a2168a9098a1c1268c49544"
     },
     "legacy": {
-      "create_payload": "25a519c896d201d7e192a1df7bceeb788ff8d2779ff8b27587f9160dfd0b4131",
-      "crm_after_publication": "d7879e4b400c8a06db98fbccddb0f479cdf9d521d4b0eb312009e3a18b5ceaac",
-      "decision_equals_review": true,
-      "lead_verification_result_version": "blueprint.lead-verification-result.v2",
-      "metadata": "645bfb12b645ac115489c8873ceab70d64b208d96b2cce46ab7bb469d03bb032",
-      "notion": {
-        "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
-        "payload_json": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
-        "plan": "01421e148ca1a90430c873572699a54ecb9085d12ec152a9325f130e35297b7b",
-        "receipt": {
-          "destination": "notion",
-          "key": "blueprint-researcher:2026-09-30:notion",
-          "payload_digest": "5672a5dbc8d7ba4c8d026983020ce54cf64d99426041fcd83b093f52367277d8",
-          "readback_verified": true,
-          "reference": "notion:page-result"
-        },
-        "state": "acknowledged"
-      },
-      "packet": "f7eb4439be5ac261121ca3faf3a18817c2f386faa5b2ad816b720e5860a533ba",
-      "packet_recomputed": "f7eb4439be5ac261121ca3faf3a18817c2f386faa5b2ad816b720e5860a533ba",
-      "qa_artifact": "4117be499f482cc386112b4dc318c66e7a2d3e020ff5829c47e1eccae73b98d4",
-      "qa_decision": "5b536ff286179235e31d2059e9f9a135d0b5851a65bab0238881bc7418bd0936",
-      "qa_input": "84263b9752feb71ef0e1cccd9874759e119e8777eec7aadfaa2e1213fe2232be",
-      "review": "5b536ff286179235e31d2059e9f9a135d0b5851a65bab0238881bc7418bd0936",
-      "review_file": "224b638f9e1425030ec5c0b96608a4aaa3289cdd7fae2a291696e7fb7e63030b",
-      "sheets": {
-        "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
-        "payload_json": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
-        "plan": "f11eb12cb0d1d60a7a080963b6703431b2ebb4ddae8ecd597a894518bd1627a1",
-        "receipt": {
-          "destination": "sheets",
-          "key": "blueprint-researcher:2026-09-30:sheets",
-          "payload_digest": "4605520b1b317cce7f315ba923286e044d455704e77bb5d9c2783a0ac8eead75",
-          "readback_verified": true,
-          "reference": "sheets:1n95Ih0Swc-q-kZyUaDHoZh6SVzxvf_zt-CRR7i39bWY:Prospects:BP-000001"
-        },
-        "state": "acknowledged"
-      }
+      "api_inputs": "607b9a529b65bafccea94d6b4fac17d30f07345d84b78d6255f5733512773020",
+      "api_payloads": "214a763e163fcfed3b159ac87dee57452be4321f3a3ae5b36208832c1fc51cac",
+      "crm_values": "67adbb86fe32b4507d189b6f8cfd676eff0a773ecf3dcb365abf67a105f42bc1",
+      "db": "361e3a6f014b7edef190e8b2e6ac413c3befe1ea9f1f9ddb60fda79cd1c21d0f",
+      "files": "d34b8eb998f975a733916c24b4a73e35c35c315629c94411b6b0674aabb1fac6",
+      "publication_events": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "publication_posts": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "row": "98d33301864349b3c3dab0c31a58436b51b00eedbcaa10dc03033a11d30f7569",
+      "row_before_qa": "6e50f59089770fc8ebcc7f8c0a72eeb4e2b79f5c5f979bdd297e74aba915eb4d",
+      "state": "7093fda846e50b267da144f7b3683ee1dd8838506939f6052b7370dd01fa2ad0",
+      "status": "931b3be00aa4546fb83faeae59cb2bc6f85158e6f6a1c13e68f339e508b69b8a"
+    },
+    "site_universe_agent": {
+      "api_inputs": "607b9a529b65bafccea94d6b4fac17d30f07345d84b78d6255f5733512773020",
+      "api_payloads": "066924c1541b6e0d2059caef35bd2a934b85fe22ead21503da9d94d2f1c9d56f",
+      "crm_values": "67adbb86fe32b4507d189b6f8cfd676eff0a773ecf3dcb365abf67a105f42bc1",
+      "db": "196787f331ed12743f8183adae327f7503132a85eeedfaf9d78fbb4783c7707d",
+      "files": "1488d2b40ac7b007d5ed7748e9905ac599302e981c092babb3d98407c3040644",
+      "publication_events": "021eb191e4ed32b0fd0a10e1ec62819e2b0183c87d68961c9943f84e80bdfda9",
+      "publication_posts": "c785b44288d0316eaa7dcc0d1f7a10a273d1f5984b1afce3017f05a4da40f28b",
+      "row": "30d9f31fd6c01027d3aca929f93cd6c63e36e017c644ff8f2f32138304a25728",
+      "row_before_qa": "1d696002707743b2e9251d86de0b259fd08acecd6c28093ccfd398c5225cc738",
+      "state": "c917c052634bd4957960be61663f0e39b200581afe863335dbb7ea599bf80f7e",
+      "status": "5a5ad4b7fc98e5b408567766fe9bcfa60409fce972f1b1dd378cae422b3130e2"
+    },
+    "site_universe_legacy_pub": {
+      "api_inputs": "607b9a529b65bafccea94d6b4fac17d30f07345d84b78d6255f5733512773020",
+      "api_payloads": "9f5bdd9e53128fbc3fa053d9b13fe140d2b6fdd00e595a3ed3bfa3aa02e0118e",
+      "crm_values": "67adbb86fe32b4507d189b6f8cfd676eff0a773ecf3dcb365abf67a105f42bc1",
+      "db": "a3e098afe5e196b16526d2f7270b31b367fae2de70b6fd9ad26d86fa981e5b51",
+      "files": "478602b3e1959fb7ea468d303a14f5e7bbcf3bc090d37749d5ffa3a7f96033be",
+      "publication_events": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "publication_posts": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "row": "72a62331a08cea67c0b5361dfa50dcb06dc045289533ca3bf1a9fba4eecb17a0",
+      "row_before_qa": "0c9430e80d52fb2fb35715d7decd5e32452aad9ea75ebcd73bdb7757dda1f40d",
+      "state": "7093fda846e50b267da144f7b3683ee1dd8838506939f6052b7370dd01fa2ad0",
+      "status": "4d8aa83ca5971c2c5a131750897a71cdf8da7134a1fb2724a197a5aeecc07e3b"
     }
   },
   "source_commit": "dd2d404fbcd914f7c371849d31b8a86fcc8e84a2"

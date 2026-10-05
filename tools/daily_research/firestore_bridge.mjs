@@ -39,7 +39,7 @@ const claimUpdate=(run,row,name,digest,batches=null)=>{
     publication_source_bindings:{...run.publication_source_bindings,[name]:sourceBinding(d)},
     ...(batches?{publication_batches:{...run.publication_batches,[name]:batches}}:{})};
 };
-const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
+const fileOK = x => typeof x === 'string' && /^(?:\d{4}-\d{2}-\d{2}-(?:artifact|evidence|output|review|recovery|qa|qa-evidence|qa-input|publication-(?:input|evidence)|qa-correction-[12]-(?:input|artifact|evidence)|repair-[1-9]\d*-(?:input|artifact)|outreach-ready-shadow|inventory-[a-f0-9]{64}-\d+|exa-(?:http-[a-f0-9]{64}|[a-f0-9]{64}-(?:start(?:-http)?|read-[a-f0-9]{64}))|tool-[A-Za-z0-9_-]{1,200})|(?:crm|knowledge|refresh-policy))\.json$/.test(x);
 // Owner-directed paid expansion allowance; mirrors tools/daily_research/allocation.py.
 const PAID_DIRECTION='blueprint.research-paid-expansion-direction.v1', PAID_GRANT='blueprint.research-paid-expansion-grant.v1';
 const PAID_PREFIX='operations/research/paid-expansion/', PAID_SOURCES=['exa','findall']; // Mirrors allocation.SOURCES.
@@ -118,7 +118,7 @@ async function suBounded(fn,ms) {
   finally {clearTimeout(timer);}
 }
 // Owner direction for outreach-ready hypotheses; mirrors tools/daily_research/outreach_ready.py.
-const OR_DIRECTION='blueprint.outreach-ready-direction.v1', OR_RULE='blueprint.outreach-ready-rule.v1';
+const OR_DIRECTION='blueprint.outreach-ready-direction.v1', OR_RULE='blueprint.outreach-ready-rule.v1.1';
 const OR_PREFIX='operations/research/outreach-ready/', OR_PATHS=['daily_qa','site_screen'], OR_MAX_OBJECT=16*1024;
 const OR_FIELDS=['approval_reference','approved_by','binding','effective_from','expires_at','issued_at','reason',
   'rule_version','schema_version','scope','supersedes','version'];
@@ -358,8 +358,15 @@ export class Store {
           refuse('paid_expansion_reservation_exceeds_grant');
       }
       const outreach=row.outreach_ready,outreachDigest=outreach===undefined || outreach===null?null:valueHash(outreach);
-      // One frozen outreach-ready record per row, bound at the durable intent: never added or replaced later.
-      if(prior.exists && (prior.data().outreach_ready_digest ?? null)!==outreachDigest) refuse('outreach_ready_already_bound');
+      // One frozen outreach-ready record per row, bound at the durable intent: never added, replaced or
+      // dropped while bound. A shadow-mode row has no record and no field, exactly like an older manifest,
+      // so a record whose manifest an older bridge rewrote (a rollback dropped the digest) cannot be
+      // told apart from a record added later. Like paid_expansion_grant_unbound, that row is never
+      // stranded: it binds the record it carries from then on, stays unbound, and publishes no hypothesis.
+      const priorOutreach=prior.data()?.outreach_ready_digest;
+      const outreachUnbound=prior.exists && (prior.data().outreach_ready_unbound===true
+        || priorOutreach===undefined && outreachDigest!==null);
+      if(prior.exists && priorOutreach!==undefined && priorOutreach!==outreachDigest) refuse('outreach_ready_already_bound');
       if(prior.data()?.mcp_profile && prior.data().mcp_profile!==row.mcp_profile)
         refuse('research_mcp_profile_changed');
       if(row.mcp_profile && (!['owner-readonly-mcp-v1','owner-delegated-research-mcp-v1'].includes(row.mcp_profile)
@@ -424,7 +431,7 @@ export class Store {
         exa_expansion_run_id:exa?.run_id || null,
         exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
         paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
-        ...(outreachDigest?{outreach_ready_digest:outreachDigest}:{}),
+        ...(outreachDigest?{outreach_ready_digest:outreachDigest}:{}),...(outreachUnbound?{outreach_ready_unbound:true}:{}),
         findall_claims:findall,findall_unbound:findallUnbound,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
         cleanup_binding_digest: cleanupBinding,
@@ -1290,7 +1297,8 @@ export class Store {
           allowed_repair:'Call blueprint_inspect_publication with an empty object.'}]);
         return {success:true,output:{validated_research:row.qa.decision || null,packet:row.packet,
           lead_verification:row.review?.lead_verification || null,
-          verification_eligibility:Object.fromEntries(Object.keys(row.delivery || {}).map(name=>[name,publicationVerification(row,name,this.clock())])),
+          verification_eligibility:Object.fromEntries(Object.keys(row.delivery || {}).map(name=>[name,publicationVerification(row,name,this.clock(),
+            {withheld:run.outreach_ready_unbound===true?'outreach_ready_unbound':null})])),
           destinations:Object.fromEntries(Object.entries(row.delivery || {}).map(([name,d])=>[name,{
             key:d.key,payload:d.payload,payload_digest:d.payload_digest,presentation:d.presentation || null,
             state:d.state,receipt:d.receipt || null,plan:d.plan || null,
@@ -1409,8 +1417,9 @@ export class Store {
         || typeof request.publication_authority_reference!=='string') refuse('terminal_sheets_recovery_request_invalid');
     const source=JSON.parse(Buffer.from(await this.blobGet(request.source_row_blob),'base64').toString('utf8'));
     const p=source.publication,d=source.delivery?.sheets,review=source.review,qa=source.qa;
-    // This recovery re-derives only the verified Sheets payload; a row with hypotheses is never recovered here.
-    if(d?.payload?.hypotheses!==undefined || review?.outreach_ready_keys?.length) refuse('terminal_sheets_recovery_hypotheses_unsupported');
+    // This recovery re-derives only the verified Sheets payload. On a day with hypotheses it still
+    // recovers the verified rows and withholds every hypothesis (publish passes the reason to the plan):
+    // their QA listing and protected review are not part of what the recovery proves.
     if(source.date!==request.day || source.run_key!==`blueprint-researcher:${request.day}` || source.canary
         || source.state!=='reviewed' || source.publication_profile!=='agent-owned-v1'
         || !source.session_id || !source.turn_id || qa?.state!=='validated' || !qa.turn_id
@@ -1526,7 +1535,7 @@ export class Store {
       if (!d.plan) {
         requirePublicationVerification(row,destination,this.clock());
         const expected_blob=terminalRecovery?sha(JSON.stringify(row)):null;
-        d.plan=await this.publisher.prepare(row,destination);
+        d.plan=await this.publisher.prepare(row,destination,{withheld:await this.hypothesesWithheld(day,terminalRecovery)});
         await this.put(row,terminalRecovery?{expected_blob,context:terminalRecovery}:null);
       }
       if(terminalRecovery) await this.transaction(async tx=>{
@@ -1585,6 +1594,12 @@ export class Store {
       if(error.provider_response) wrapped.provider_response=error.provider_response;
       throw wrapped;
     }
+  }
+  // Why every hypothesis on this row stays out of a fresh plan, or null: an unbound outreach record
+  // (an older bridge dropped its digest) or a verified-rows-only terminal Sheets recovery.
+  async hypothesesWithheld(day,terminalRecovery=null) {
+    if(terminalRecovery) return 'terminal_sheets_recovery_verified_rows_only';
+    return (await this.db.doc(`${ROOT}/runs/${day}`).get()).data()?.outreach_ready_unbound===true ? 'outreach_ready_unbound' : null;
   }
   async publishNotionBatch(row,plan,authority,collectionAuthority,proof,agentContext=null) {
     const ref=this.db.doc(`${ROOT}/runs/${row.date}`),before=await ref.get();

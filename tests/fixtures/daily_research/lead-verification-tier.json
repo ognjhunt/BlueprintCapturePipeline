@@ -1,14 +1,27 @@
 {
   "fixture_only": true,
-  "description": "Synthetic shared golden file for blueprint.outreach-ready-rule.v1. Python verification.cohort(result_version=v3) and the WebApp TypeScript mirror must both reproduce every expected result exactly. Never real lead evidence.",
-  "rule_version": "blueprint.outreach-ready-rule.v1",
+  "description": "Synthetic shared golden file for blueprint.outreach-ready-rule.v1.1. Python verification.cohort(result_version=v3) reproduces every expected result exactly; open_checks and the one open question equal what Blueprint-WebApp #855 derives from the same assessment. A case with \"retained\" holds raw tool results: derive its evidence with retained_evidence first. Never real lead evidence.",
+  "rule_version": "blueprint.outreach-ready-rule.v1.1",
   "result_version": "blueprint.lead-verification-result.v3",
   "evidence_version": "blueprint.outreach-ready-evidence.v1",
   "min_quote_words": 3,
+  "question_templates": {
+    "S": "Is {task} done at your {site} site, or somewhere else in the company?",
+    "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
+    "A": "What has kept the remaining {task} work at {site} from being automated so far?"
+  },
+  "open_checks": [
+    "site_link",
+    "manual_workflow",
+    "freshness",
+    "existing_automation",
+    "fit",
+    "interest"
+  ],
   "cases": [
     {
       "name": "outreach_ready_page_and_snippet",
-      "note": "Operator and site proven on the retained page; task in a search snippet.",
+      "note": "Operator and site proven on the retained page; the task in a job-post snippet that names the site. Manual workflow open: template M.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -142,7 +155,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -176,9 +189,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
             ],
             "blockers": []
           }
@@ -195,7 +206,7 @@
     },
     {
       "name": "outreach_ready_unknown_freshness",
-      "note": "valid_until null keeps freshness open; Q1 also covers it.",
+      "note": "valid_until null keeps freshness open; manual workflow still chooses M.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -329,7 +340,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -364,9 +375,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
             ],
             "blockers": []
           }
@@ -383,7 +392,7 @@
     },
     {
       "name": "outreach_ready_workflow_verified_fit_open",
-      "note": "human_workflow verified, fit unresolved: manual_workflow closes, Q1 asks only freshness.",
+      "note": "human_workflow verified, fit unresolved, freshness unknown: neither site link nor manual workflow is open, so A.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -517,7 +526,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -551,9 +560,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "What has kept the remaining Manual case picking for outbound orders work at Fixture DC 4, 100 Example Way from being automated so far?"
             ],
             "blockers": []
           }
@@ -706,7 +713,7 @@
           "tier": "verified",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -750,7 +757,7 @@
     },
     {
       "name": "findall_citation_excerpt",
-      "note": "The task quote appears only in a Parallel citation excerpt.",
+      "note": "The task quote appears only in a Parallel citation excerpt, which names the site.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -871,7 +878,7 @@
             "url": "https://operator.example/careers/picker-123",
             "tool_result_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
             "kind": "citation_excerpt",
-            "text": "Order pickers manually pick cases for outbound orders using pallet jacks."
+            "text": "Fixture DC 4 order pickers manually pick cases for outbound orders using pallet jacks."
           }
         ],
         "refused": 0
@@ -884,7 +891,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -918,9 +925,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
             ],
             "blockers": []
           }
@@ -1076,7 +1081,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -1110,9 +1115,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
             ],
             "blockers": []
           }
@@ -1263,7 +1266,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -1297,9 +1300,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
             ],
             "blockers": []
           }
@@ -1450,7 +1451,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -1620,7 +1621,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -1792,7 +1793,342 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "operator_quote_unproven",
+              "physical_site_quote_unproven"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "two_words_after_punctuation",
+      "note": "Words are whitespace-separated tokens with punctuation stripped: \"U.S. Foods\" is two words, too few.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "U.S. Foods",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          },
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+            "text": "Supplied by U.S. Foods at Fixture DC 4."
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "operator_quote_unproven",
+              "physical_site_quote_unproven"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 2,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "7979bb2ffd1d0c4c485e68a842ef4526b53afce58a6bc87ee91ec2c60a297bfc"
+      }
+    },
+    {
+      "name": "hyphenated_quote_word_count",
+      "note": "\"Fixture DC-4\" is two words even though it normalizes to three.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Fixture DC-4",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "site_task",
@@ -1957,7 +2293,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -2113,7 +2449,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [],
             "open_checks": [],
             "open_questions": [],
@@ -2128,6 +2464,1129 @@
       "expected_tier_evidence": {
         "schema_version": "blueprint.outreach-ready-evidence.v1",
         "state": "unavailable"
+      }
+    },
+    {
+      "name": "same_host_redirect",
+      "note": "A read redirected within the requested host credits the requested URL and every hop.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "retained": {
+        "application_tool_calls": {
+          "read_site": {
+            "request": {
+              "turn_id": "turn_golden",
+              "call_id": "read_site",
+              "name": "blueprint_read_source",
+              "arguments": {
+                "url": "https://operator.example/dc4"
+              }
+            },
+            "phase": "research",
+            "attempted": true,
+            "success": true,
+            "result_file": "golden-tool-read_site.json",
+            "result_sha256": "59b5c7b4a93d4441c523912a9eb5364037a9ac89030b00cd18a2f5329afd3c23",
+            "result_digest": "5a9a0e7b633c58980259af185e60661da221b7fc7f33db3834cb2b8121a7e523"
+          },
+          "read_job": {
+            "request": {
+              "turn_id": "turn_golden",
+              "call_id": "read_job",
+              "name": "blueprint_read_source",
+              "arguments": {
+                "url": "https://operator.example/careers/picker-123"
+              }
+            },
+            "phase": "research",
+            "attempted": true,
+            "success": true,
+            "result_file": "golden-tool-read_job.json",
+            "result_sha256": "4d9474a6cea0878980443d7cbda6fb62ec375c9f62f0905cd02844c339c17194",
+            "result_digest": "c509624841237001a9f36106a4135e6764abf9371fbd3df8913b49e0f86278ea"
+          }
+        },
+        "files": {
+          "golden-tool-read_site.json": "{\"call_id\":\"read_site\",\"output\":\"{\\\"checked_at\\\":\\\"2026-10-05T12:00:00+00:00\\\",\\\"content_type\\\":\\\"text/html\\\",\\\"evidence_scope\\\":\\\"complete_static_extracted_text_not_javascript_rendered\\\",\\\"last_modified\\\":null,\\\"links\\\":[],\\\"metadata\\\":[],\\\"raw_sha256\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"redirects\\\":[{\\\"location\\\":\\\"https://operator.example/locations/fixture-dc-4\\\",\\\"status\\\":301,\\\"url\\\":\\\"https://operator.example/dc4\\\"}],\\\"requested_url\\\":\\\"https://operator.example/dc4\\\",\\\"text\\\":\\\"Locations\\\\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\\\\nContact us\\\",\\\"truncated\\\":false,\\\"url\\\":\\\"https://operator.example/locations/fixture-dc-4\\\"}\",\"success\":true,\"turn_id\":\"turn_golden\",\"type\":\"agent.session.input.tool_result\"}\n",
+          "golden-tool-read_job.json": "{\"call_id\":\"read_job\",\"output\":\"{\\\"checked_at\\\":\\\"2026-10-05T12:00:00+00:00\\\",\\\"content_type\\\":\\\"text/html\\\",\\\"evidence_scope\\\":\\\"complete_static_extracted_text_not_javascript_rendered\\\",\\\"last_modified\\\":null,\\\"links\\\":[],\\\"metadata\\\":[],\\\"raw_sha256\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"redirects\\\":[],\\\"requested_url\\\":\\\"https://operator.example/careers/picker-123\\\",\\\"text\\\":\\\"Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts.\\\",\\\"truncated\\\":false,\\\"url\\\":\\\"https://operator.example/careers/picker-123\\\"}\",\"success\":true,\"turn_id\":\"turn_golden\",\"type\":\"agent.session.input.tool_result\"}\n"
+        }
+      },
+      "expected_credited_urls": [
+        "https://operator.example/careers/picker-123",
+        "https://operator.example/dc4",
+        "https://operator.example/locations/fixture-dc-4"
+      ],
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "outreach_ready",
+          "eligible_for_outreach_ready": true,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "59b5c7b4a93d4441c523912a9eb5364037a9ac89030b00cd18a2f5329afd3c23"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "59b5c7b4a93d4441c523912a9eb5364037a9ac89030b00cd18a2f5329afd3c23"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "verified_on_page",
+                "tool_result_sha256": "4d9474a6cea0878980443d7cbda6fb62ec375c9f62f0905cd02844c339c17194"
+              }
+            ],
+            "open_checks": [
+              "manual_workflow",
+              "existing_automation",
+              "fit",
+              "interest"
+            ],
+            "open_questions": [
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
+            ],
+            "blockers": []
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 3,
+        "excerpts": 0,
+        "refused": 0,
+        "sources_sha256": "7a10ddda9f72d13cb5a1ca7f7194ab26cd372641a01e16e2bcaf4885eea02318"
+      }
+    },
+    {
+      "name": "cross_host_redirect",
+      "note": "A read redirected to another host gives no credit: its text is the other host's, not the requested URL's.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "retained": {
+        "application_tool_calls": {
+          "read_site": {
+            "request": {
+              "turn_id": "turn_golden",
+              "call_id": "read_site",
+              "name": "blueprint_read_source",
+              "arguments": {
+                "url": "https://operator.example/locations/fixture-dc-4"
+              }
+            },
+            "phase": "research",
+            "attempted": true,
+            "success": true,
+            "result_file": "golden-tool-read_site.json",
+            "result_sha256": "389d4744fbabf7562b4fde1802ff537da3de704346d35213edd12d381d0af67f",
+            "result_digest": "43001c630b7832caa74af894d781cadcbb5fd42b7e213eb9373acd44606dcd69"
+          },
+          "read_job": {
+            "request": {
+              "turn_id": "turn_golden",
+              "call_id": "read_job",
+              "name": "blueprint_read_source",
+              "arguments": {
+                "url": "https://operator.example/careers/picker-123"
+              }
+            },
+            "phase": "research",
+            "attempted": true,
+            "success": true,
+            "result_file": "golden-tool-read_job.json",
+            "result_sha256": "4d9474a6cea0878980443d7cbda6fb62ec375c9f62f0905cd02844c339c17194",
+            "result_digest": "c509624841237001a9f36106a4135e6764abf9371fbd3df8913b49e0f86278ea"
+          }
+        },
+        "files": {
+          "golden-tool-read_site.json": "{\"call_id\":\"read_site\",\"output\":\"{\\\"checked_at\\\":\\\"2026-10-05T12:00:00+00:00\\\",\\\"content_type\\\":\\\"text/html\\\",\\\"evidence_scope\\\":\\\"complete_static_extracted_text_not_javascript_rendered\\\",\\\"last_modified\\\":null,\\\"links\\\":[],\\\"metadata\\\":[],\\\"raw_sha256\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"redirects\\\":[{\\\"location\\\":\\\"https://directory.example/fixture-dc-4\\\",\\\"status\\\":302,\\\"url\\\":\\\"https://operator.example/locations/fixture-dc-4\\\"}],\\\"requested_url\\\":\\\"https://operator.example/locations/fixture-dc-4\\\",\\\"text\\\":\\\"Locations\\\\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\\\\nContact us\\\",\\\"truncated\\\":false,\\\"url\\\":\\\"https://directory.example/fixture-dc-4\\\"}\",\"success\":true,\"turn_id\":\"turn_golden\",\"type\":\"agent.session.input.tool_result\"}\n",
+          "golden-tool-read_job.json": "{\"call_id\":\"read_job\",\"output\":\"{\\\"checked_at\\\":\\\"2026-10-05T12:00:00+00:00\\\",\\\"content_type\\\":\\\"text/html\\\",\\\"evidence_scope\\\":\\\"complete_static_extracted_text_not_javascript_rendered\\\",\\\"last_modified\\\":null,\\\"links\\\":[],\\\"metadata\\\":[],\\\"raw_sha256\\\":\\\"0000000000000000000000000000000000000000000000000000000000000000\\\",\\\"redirects\\\":[],\\\"requested_url\\\":\\\"https://operator.example/careers/picker-123\\\",\\\"text\\\":\\\"Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts.\\\",\\\"truncated\\\":false,\\\"url\\\":\\\"https://operator.example/careers/picker-123\\\"}\",\"success\":true,\"turn_id\":\"turn_golden\",\"type\":\"agent.session.input.tool_result\"}\n"
+        }
+      },
+      "expected_credited_urls": [
+        "https://operator.example/careers/picker-123"
+      ],
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "verified_on_page",
+                "tool_result_sha256": "4d9474a6cea0878980443d7cbda6fb62ec375c9f62f0905cd02844c339c17194"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "operator_quote_unproven",
+              "physical_site_quote_unproven"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 0,
+        "refused": 0,
+        "sources_sha256": "aad85842541b5cd55e8b09826a95c0b8acb5f28d1fb553c7fdada3c34ec744d2"
+      }
+    },
+    {
+      "name": "company_level_task_inference",
+      "note": "Company-wide capability text leaves site_task inference: site_link opens and template S asks it.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/capabilities",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          },
+          {
+            "url": "https://operator.example/capabilities",
+            "tool_result_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+            "text": "Across our network, order pickers manually pick cases for outbound orders."
+          }
+        ],
+        "excerpts": [],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "outreach_ready",
+          "eligible_for_outreach_ready": true,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/capabilities",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "verified_on_page",
+                "tool_result_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+              }
+            ],
+            "open_checks": [
+              "site_link",
+              "manual_workflow",
+              "existing_automation",
+              "fit",
+              "interest"
+            ],
+            "open_questions": [
+              "Is Manual case picking for outbound orders done at your Fixture DC 4, 100 Example Way site, or somewhere else in the company?"
+            ],
+            "blockers": []
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 2,
+        "excerpts": 0,
+        "refused": 0,
+        "sources_sha256": "869dd52c07779a08382b0f3b4aabd0dbc6203ea198ffc6214ffc2f56d6295548"
+      }
+    },
+    {
+      "name": "company_level_task_marked_verified",
+      "note": "The same company-wide text cannot make site_task verified_fact: it names no city, street or job at this site.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/capabilities",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          },
+          {
+            "url": "https://operator.example/capabilities",
+            "tool_result_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+            "text": "Across our network, order pickers manually pick cases for outbound orders."
+          }
+        ],
+        "excerpts": [],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/capabilities",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "verified_on_page",
+                "tool_result_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "site_task_company_level"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 2,
+        "excerpts": 0,
+        "refused": 0,
+        "sources_sha256": "869dd52c07779a08382b0f3b4aabd0dbc6203ea198ffc6214ffc2f56d6295548"
+      }
+    },
+    {
+      "name": "task_page_names_the_city",
+      "note": "A task page that names the site's city ties the task to this facility.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/news/testville-expansion",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          },
+          {
+            "url": "https://operator.example/news/testville-expansion",
+            "tool_result_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+            "text": "Our Testville team grows. Order pickers manually pick cases for outbound orders."
+          }
+        ],
+        "excerpts": [],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "outreach_ready",
+          "eligible_for_outreach_ready": true,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/news/testville-expansion",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "verified_on_page",
+                "tool_result_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+              }
+            ],
+            "open_checks": [
+              "manual_workflow",
+              "existing_automation",
+              "fit",
+              "interest"
+            ],
+            "open_questions": [
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
+            ],
+            "blockers": []
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 2,
+        "excerpts": 0,
+        "refused": 0,
+        "sources_sha256": "869dd52c07779a08382b0f3b4aabd0dbc6203ea198ffc6214ffc2f56d6295548"
+      }
+    },
+    {
+      "name": "job_post_at_another_site",
+      "note": "A job post for another site does not tie the task to this one.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 9. Order pickers manually pick cases for outbound orders."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "site_task_company_level"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
       }
     },
     {
@@ -2266,7 +3725,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -2313,7 +3772,7 @@
     },
     {
       "name": "vendor_only_automation_evidence",
-      "note": "Vendor-only automation evidence still blocks the tier.",
+      "note": "Vendor automation evidence is a contradicted counterevidence; it changes the question, not the eligibility.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -2459,10 +3918,10 @@
           "candidate_key": "golden-1",
           "status": "unresolved",
           "eligible_for_qualified_promotion": false,
-          "tier": "none",
-          "eligible_for_outreach_ready": false,
+          "tier": "outreach_ready",
+          "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -2489,11 +3948,16 @@
                 "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
               }
             ],
-            "open_checks": [],
-            "open_questions": [],
-            "blockers": [
-              "counterevidence_contradicted"
-            ]
+            "open_checks": [
+              "manual_workflow",
+              "existing_automation",
+              "fit",
+              "interest"
+            ],
+            "open_questions": [
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
+            ],
+            "blockers": []
           }
         }
       ],
@@ -2507,8 +3971,209 @@
       }
     },
     {
-      "name": "human_workflow_contradicted",
-      "note": "A contradicted human workflow blocks the tier.",
+      "name": "automation_elsewhere_manual_verified",
+      "note": "Automation of another site does not block; with the manual workflow verified the question is A.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S4",
+              "url": "https://news.example/cold-storage-fixture/dc9",
+              "publisher": "Synthetic publisher S4",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Fixture DC 9 now picks with robots",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "contradicted",
+            "reason": "Synthetic report of robots at another site",
+            "source_refs": [
+              "S4"
+            ],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "rejected",
+          "eligible_for_qualified_promotion": false,
+          "tier": "outreach_ready",
+          "eligible_for_outreach_ready": true,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [
+              "existing_automation",
+              "fit",
+              "interest"
+            ],
+            "open_questions": [
+              "What has kept the remaining Manual case picking for outbound orders work at Fixture DC 4, 100 Example Way from being automated so far?"
+            ],
+            "blockers": []
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "task_fully_automated_at_site",
+      "note": "A contradicted human_workflow (the exact task at this site shown fully automated) blocks the tier.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -2551,10 +4216,8 @@
             },
             "human_workflow": {
               "status": "contradicted",
-              "reason": "Synthetic page says picking is automated",
-              "source_refs": [
-                "S2"
-              ]
+              "reason": "Synthetic page says picking at Fixture DC 4 is fully automated",
+              "source_refs": []
             },
             "plausible_fit": {
               "status": "inference",
@@ -2639,12 +4302,12 @@
       "expected": [
         {
           "candidate_key": "golden-1",
-          "status": "rejected",
+          "status": "unresolved",
           "eligible_for_qualified_promotion": false,
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -2824,7 +4487,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -2855,6 +4518,791 @@
             "open_questions": [],
             "blockers": [
               "plausible_fit_contradicted"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "office_or_mailing_only_facility",
+      "note": "A proven office or mailing-only address blocks the tier.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          },
+          "facility_type": {
+            "value": "office",
+            "source_refs": [
+              "S1"
+            ],
+            "reason": "Synthetic page lists only a sales office"
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "facility_office_or_mailing_only"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "office_claim_unproven",
+      "note": "An office claim whose quote is not in retained text is unproven and does not block.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S5",
+              "url": "https://press.example/fixture-dc-4-operations",
+              "publisher": "Synthetic publisher S5",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Fixture DC 4 is our regional sales office",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          },
+          "facility_type": {
+            "value": "office",
+            "source_refs": [
+              "S5"
+            ],
+            "reason": "Synthetic unconfirmed listing"
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "outreach_ready",
+          "eligible_for_outreach_ready": true,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [
+              "manual_workflow",
+              "existing_automation",
+              "fit",
+              "interest"
+            ],
+            "open_questions": [
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
+            ],
+            "blockers": []
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "contractor_operated_site",
+      "note": "A proven contractor-run site attributed to the named operator blocks the tier.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S5",
+              "url": "https://press.example/fixture-dc-4-operations",
+              "publisher": "Synthetic publisher S5",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Example Logistics runs Fixture DC 4 under contract",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          },
+          "facility_operator": {
+            "value": "contractor",
+            "source_refs": [
+              "S5"
+            ],
+            "reason": "Synthetic press release names the contractor"
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          },
+          {
+            "url": "https://press.example/fixture-dc-4-operations",
+            "tool_result_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+            "kind": "search_snippet",
+            "text": "Example Logistics runs Fixture DC 4 under contract for the operator."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "facility_operated_by_another_party"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 2,
+        "refused": 0,
+        "sources_sha256": "0e0a20af8e0c42e3a70ceb09d749dd5091e56aeb48d1bebb5fa763e77a43980b"
+      }
+    },
+    {
+      "name": "facility_field_invalid",
+      "note": "A malformed facility field gives none.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          },
+          "facility_type": {
+            "value": "warehouse",
+            "source_refs": [
+              "S1"
+            ],
+            "reason": "Not one of the allowed values"
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "facility_invalid"
             ]
           }
         }
@@ -3004,7 +5452,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -3036,6 +5484,366 @@
             "blockers": [
               "assessment_invalid",
               "assessment_expired"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "assessed_at_in_the_future",
+      "note": "An assessment dated after the evaluation is invalid.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T13:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "assessment_invalid"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "missing_identity",
+      "note": "Without a named operator there is no identity: none.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "3634e7f0663efd405948c52b61efe08d4aced9c19af7e79015760807bdfec80a",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "identity_missing"
             ]
           }
         }
@@ -3185,7 +5993,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -3216,6 +6024,186 @@
             "open_questions": [],
             "blockers": [
               "operator_not_verified_fact"
+            ]
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "site_task_unresolved",
+      "note": "site_task must be verified_fact or inference.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "Manual case picking for outbound orders",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "301f781865473fc3afa2e7d135c49eb656542db764b443f7f06928e800db03e7",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "site_task_not_verified_fact_or_inference"
             ]
           }
         }
@@ -3365,7 +6353,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -3545,7 +6533,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -3726,7 +6714,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -3817,7 +6805,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [],
             "open_checks": [],
             "open_questions": [],
@@ -3825,7 +6813,7 @@
               "assessment_invalid",
               "operator_not_verified_fact",
               "physical_site_not_verified_fact",
-              "site_task_not_verified_fact"
+              "site_task_not_verified_fact_or_inference"
             ]
           }
         }
@@ -4074,7 +7062,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -4108,9 +7096,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
             ],
             "blockers": []
           }
@@ -4122,7 +7108,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -4403,7 +7389,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -4444,7 +7430,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -4735,7 +7721,7 @@
           "tier": "outreach_ready",
           "eligible_for_outreach_ready": true,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -4769,9 +7755,7 @@
               "interest"
             ],
             "open_questions": [
-              "Is Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
+              "Which parts of Manual case picking for outbound orders at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
             ],
             "blockers": []
           }
@@ -4783,7 +7767,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -4813,7 +7797,8 @@
             "open_checks": [],
             "open_questions": [],
             "blockers": [
-              "duplicate"
+              "duplicate",
+              "site_task_company_level"
             ]
           }
         }
@@ -4829,7 +7814,192 @@
     },
     {
       "name": "question_uses_raw_task_and_site",
-      "note": "Templates insert the candidate's task and site fields verbatim.",
+      "note": "The template inserts the candidate's task and site fields verbatim.",
+      "now": "2026-10-05T12:00:00+00:00",
+      "candidates": [
+        {
+          "candidate_key": "golden-1",
+          "organization": "Synthetic Cold Storage Co",
+          "site": "Fixture DC 4, 100 Example Way",
+          "location": "Testville, Example State",
+          "task": "manual CASE picking, outbound orders.",
+          "potential_robot_match": "Synthetic case-picking robot hypothesis",
+          "qualification_status": "unqualified"
+        }
+      ],
+      "assessments": {
+        "golden-1": {
+          "version": "blueprint.lead-verification.v1",
+          "candidate_digest": "f584e8eb4ecbf09c48fddbea8df9e7ebe6cca6739953eebd6cb555648b51b392",
+          "assessed_at": "2026-10-05T12:00:00+00:00",
+          "valid_until": "2026-10-12T12:00:00+00:00",
+          "claims": {
+            "operator": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "physical_site": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S1"
+              ]
+            },
+            "site_task": {
+              "status": "verified_fact",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S2"
+              ]
+            },
+            "human_workflow": {
+              "status": "unresolved",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": []
+            },
+            "plausible_fit": {
+              "status": "inference",
+              "reason": "Synthetic scoped fixture reason, never a real claim",
+              "source_refs": [
+                "S3"
+              ]
+            }
+          },
+          "sources": [
+            {
+              "id": "S1",
+              "url": "https://operator.example/locations/fixture-dc-4",
+              "publisher": "Synthetic publisher S1",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Synthetic Cold Storage Co operates Fixture DC 4 at 100 Example Way",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S2",
+              "url": "https://operator.example/careers/picker-123",
+              "publisher": "Synthetic publisher S2",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "operator",
+              "quote": "Order pickers manually pick cases for outbound orders",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            },
+            {
+              "id": "S3",
+              "url": "https://news.example/cold-storage-fixture",
+              "publisher": "Synthetic publisher S3",
+              "source_date": null,
+              "event_date": null,
+              "checked_at": "2026-10-05T11:00:00+00:00",
+              "retrieval": "static",
+              "classification": "independent",
+              "quote": "Cold storage operators report persistent picking labor gaps",
+              "freshness": "current",
+              "freshness_reason": "Synthetic current fixture, never live proof"
+            }
+          ],
+          "counterevidence": {
+            "status": "checked",
+            "reason": "Synthetic bounded automation search; no conflict found",
+            "source_refs": [],
+            "searches": [
+              "Synthetic Fixture DC 4 automation search"
+            ]
+          }
+        }
+      },
+      "duplicate_checks": {},
+      "evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": [
+          {
+            "url": "https://operator.example/locations/fixture-dc-4",
+            "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "text": "Locations\nSYNTHETIC COLD STORAGE CO. operates Fixture DC-4 at 100 Example Way, Testville.\nContact us"
+          }
+        ],
+        "excerpts": [
+          {
+            "url": "https://operator.example/careers/picker-123",
+            "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "kind": "search_snippet",
+            "text": "Picker, Fixture DC 4. Order pickers manually pick cases for outbound orders on all shifts."
+          }
+        ],
+        "refused": 0
+      },
+      "expected": [
+        {
+          "candidate_key": "golden-1",
+          "status": "unresolved",
+          "eligible_for_qualified_promotion": false,
+          "tier": "outreach_ready",
+          "eligible_for_outreach_ready": true,
+          "outreach_ready": {
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
+            "proving_sources": [
+              {
+                "claim": "operator",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "physical_site",
+                "source_id": "S1",
+                "url": "https://operator.example/locations/fixture-dc-4",
+                "quote_sha256": "8e611a27d26fb644beb2b517be9202787306799a01c6f329457ce7edded80000",
+                "level": "verified_on_page",
+                "tool_result_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+              },
+              {
+                "claim": "site_task",
+                "source_id": "S2",
+                "url": "https://operator.example/careers/picker-123",
+                "quote_sha256": "2a721982b18b07a4596dbdf3d5b1a6319335590d71642d56b0b71886b3c4ea56",
+                "level": "in_citation_excerpt",
+                "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+              }
+            ],
+            "open_checks": [
+              "manual_workflow",
+              "existing_automation",
+              "fit",
+              "interest"
+            ],
+            "open_questions": [
+              "Which parts of manual CASE picking, outbound orders. at Fixture DC 4, 100 Example Way still need people, and what has kept them from being automated?"
+            ],
+            "blockers": []
+          }
+        }
+      ],
+      "expected_tier_evidence": {
+        "schema_version": "blueprint.outreach-ready-evidence.v1",
+        "state": "retained",
+        "pages": 1,
+        "excerpts": 1,
+        "refused": 0,
+        "sources_sha256": "055373d2d5916d7245990454c54ab62817bf787538ca4475c73a310b556aabef"
+      }
+    },
+    {
+      "name": "question_mark_in_task",
+      "note": "A task that would add a second question mark breaks the one-question rule: none.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -4960,10 +8130,10 @@
           "candidate_key": "golden-1",
           "status": "unresolved",
           "eligible_for_qualified_promotion": false,
-          "tier": "outreach_ready",
-          "eligible_for_outreach_ready": true,
+          "tier": "none",
+          "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -4990,18 +8160,11 @@
                 "tool_result_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
               }
             ],
-            "open_checks": [
-              "manual_workflow",
-              "existing_automation",
-              "fit",
-              "interest"
-            ],
-            "open_questions": [
-              "Is Manual case picking? for outbound orders. at Fixture DC 4, 100 Example Way still done mostly by hand?",
-              "Do you already use or plan automation for it?",
-              "Would a short look at whether a robot could take on part of it be useful?"
-            ],
-            "blockers": []
+            "open_checks": [],
+            "open_questions": [],
+            "blockers": [
+              "question_not_single"
+            ]
           }
         }
       ],
@@ -5150,7 +8313,7 @@
           "tier": "none",
           "eligible_for_outreach_ready": false,
           "outreach_ready": {
-            "rule_version": "blueprint.outreach-ready-rule.v1",
+            "rule_version": "blueprint.outreach-ready-rule.v1.1",
             "proving_sources": [
               {
                 "claim": "operator",
@@ -5180,6 +8343,7 @@
             "open_checks": [],
             "open_questions": [],
             "blockers": [
+              "site_task_company_level",
               "question_task_or_site_missing"
             ]
           }

@@ -740,10 +740,11 @@ write or send.
 ## Outreach-ready hypothesis direction
 
 `outreach-ready-direction.py` is the only switch for outreach-ready hypotheses in
-daily QA (ADP-010 partner discovery; owner decision 2026-10-05). Without an enabled
-direction every run is in shadow mode: the create payload, packet, QA input, review
-and publication payloads are byte-identical to a release without the feature, the
-tier is recorded only in `row.outreach_ready_shadow`, and nothing is admitted.
+daily QA (ADP-010 partner discovery; owner decision 2026-10-05; design v1.1). Without
+an enabled `daily_qa` direction every run is in shadow mode: the row, create payload,
+packet, QA input, review, publication payloads and status output are byte-identical
+to a release without the feature. After publication completes, the tier is recorded
+only in the ledger file `<date>-outreach-ready-shadow.json`, and nothing is admitted.
 
 ```bash
 RELEASE=/opt/render/project/src/dist/daily-research/release
@@ -755,7 +756,8 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
 ```
 
 - `show` reads control, verifies the pinned object generation and prints what the
-  next run would freeze (`shadow`, `refused` with a code, or `enabled`). It writes
+  next run would freeze (`shadow`, `refused` with a code, or `enabled`; a screen-only
+  direction shows `shadow` with `outreach_ready_daily_qa_not_directed`). It writes
   nothing.
 - `set` is a dry run without `--apply`. It prints the next direction: version+1,
   superseding the current SHA-256, with scope `paths` (default `daily_qa`;
@@ -773,20 +775,30 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
   active it refuses with `outreach_ready_run_active_apply_after_run`;
   `--during-active-run` overrides this.
 - A run freezes the direction under its lease at the durable intent, and the row
-  can never gain or change that record later. An enabled direction that names
+  can never change or drop that record later. An enabled direction that names
   `daily_qa` pins lead-verification result v3 for the row and asks QA for
-  `outreach_ready_keys`. An unusable, expired or screen-only direction records
-  `{state: "refused", code}` and the run stays in shadow mode.
+  `outreach_ready_keys`. An unusable, expired or not-yet-effective `daily_qa`
+  direction records `{state: "refused", code}` and the run stays in shadow mode. A
+  screen-only direction freezes nothing, so daily rows and their manifests stay
+  exactly as without it. If a rollback's older bridge drops the record's manifest
+  digest, the row is not stranded: it binds the record again, stays
+  `outreach_ready_unbound` and publishes no hypothesis.
 - Admission at the QA decision also needs the live pin. `disable --apply` is the
   brake: it keeps the pin with `enabled=false` and applies at once, including to a
-  run in progress. A new direction can lower a running row's row limit or remove
-  its path, never widen it. Re-enable with a new `set`.
+  run in progress. **The brake does not stop hypotheses that review already bound:**
+  once the protected review has written them into the publication payloads, that
+  day's publication still writes them (labelled, draft only). To keep them out,
+  apply the brake before that day's QA decision. A new direction can lower a running
+  row's row limit or remove its path, never widen it. Re-enable with a new `set`.
 - Admitted keys publish only through the row's existing publication path
   (agent-owned in production): Sheets rows with Verification `Hypothesis` and
-  Notion entries labelled "Hypothesis, not verified". Nothing authorizes a send.
-- Enable a direction only after the WebApp release that accepts result v3 and
-  `hypotheses` payloads is deployed. An older WebApp refuses every day whose
-  payload contains hypotheses, including that day's verified rows.
+  Notion entries labelled "Hypothesis, not verified", each with exactly one
+  question (template S, M or A). A hypothesis that is malformed or no longer current
+  at publication is left out on its own reason; it never blocks that day's verified
+  rows. Nothing authorizes a send.
+- Enable a direction only after the WebApp release that accepts result v3 and the
+  v1.1 `hypotheses` payloads (#855) is deployed. An older WebApp refuses every day
+  whose payload contains hypotheses, including that day's verified rows.
 
 The hermetic tests use the real bridge with in-memory Firestore and a fake object
 store. No provider, model, session, CRM write or send.

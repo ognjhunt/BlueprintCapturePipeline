@@ -278,8 +278,13 @@ def test_the_run_freezes_only_an_enabled_daily_qa_direction(fixture):
     early = outreach_ready.freeze(ledger.outreach_ready_control(), row, NOW - timedelta(seconds=1))
     assert early["code"] == "outreach_ready_not_yet_effective"
     setting(bridge, objects, paths="site_screen", now=NOW + timedelta(minutes=1))
-    screen_only = outreach_ready.freeze(ledger.outreach_ready_control(), row, NOW + timedelta(hours=1))
+    # A screen-only direction does not concern daily runs: nothing is frozen, so the row and its manifest
+    # stay exactly as without the feature. assess() and show still name the code.
+    assert outreach_ready.freeze(ledger.outreach_ready_control(), row, NOW + timedelta(hours=1)) is None
+    screen_only = outreach_ready.assess(ledger.outreach_ready_control(), row, NOW + timedelta(hours=1))
     assert screen_only["state"] == "refused" and screen_only["code"] == "outreach_ready_daily_qa_not_directed"
+    assert operator.show(bridge, objects, now=NOW + timedelta(hours=1))["next_run"] == {
+        "state": "shadow", "code": "outreach_ready_daily_qa_not_directed"}
     operator.disable(bridge, apply=True, sleep=lambda _: None)
     assert outreach_ready.freeze(ledger.outreach_ready_control(), row, NOW + timedelta(hours=1)) is None
     tampered = {"enabled": True, "current": {**bridge.call("control")["outreach_ready"]["current"], "version": 9}}
@@ -307,7 +312,7 @@ def test_live_admission_tightens_and_brakes_but_never_widens_a_frozen_run(fixtur
     assert outreach_ready.admission(row, None, later) == (0, "outreach_ready_disabled")
 
 
-def test_a_row_cannot_gain_or_change_its_frozen_record_after_the_durable_intent(fixture):
+def test_a_row_cannot_gain_or_change_its_frozen_record_after_the_durable_intent(fixture, tmp_path):
     bridge, objects, _ = fixture
     ledger = FirestoreLedger(bridge)
     setting(bridge, objects)
@@ -323,9 +328,20 @@ def test_a_row_cannot_gain_or_change_its_frozen_record_after_the_durable_intent(
             row = {**base, "state": "running", **({"outreach_ready": changed} if changed else {})}
             with pytest.raises(Refusal, match="^outreach_ready_already_bound$"):
                 ledger.put(row)
+        manifests = lambda: dict(json.loads((tmp_path / "firestore.json").read_text()))
+        bound = manifests()["blueprintDailyResearch/sites-first/runs/2026-10-05"]
+        assert bound["outreach_ready_digest"] and "outreach_ready_unbound" not in bound
         ledger.put(plain)
-        with pytest.raises(Refusal, match="^outreach_ready_already_bound$"):
-            ledger.put({**plain, "state": "running", "outreach_ready": frozen})
+        assert not {"outreach_ready_digest", "outreach_ready_unbound"} & set(manifests()["blueprintDailyResearch/sites-first/runs/2026-10-06"])
+        # A record added after the intent cannot be told from one whose digest an older bridge dropped. Like
+        # paid_expansion_grant_unbound the row is never stranded: it binds the record from then on, stays
+        # unbound, and its publication withholds every hypothesis (daily_research_publisher.test.mjs).
+        ledger.put({**plain, "state": "running", "outreach_ready": frozen})
+        late = manifests()["blueprintDailyResearch/sites-first/runs/2026-10-06"]
+        assert late["outreach_ready_unbound"] is True and late["outreach_ready_digest"] == bound["outreach_ready_digest"]
+        for changed in ({**frozen, "max_rows_per_batch": 49}, None):
+            with pytest.raises(Refusal, match="^outreach_ready_already_bound$"):
+                ledger.put({**plain, "state": "running", **({"outreach_ready": changed} if changed else {})})
 
 
 def test_cli_defaults_to_dry_run_and_apply_flag_is_required(fixture, capsys):

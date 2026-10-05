@@ -76,13 +76,14 @@ class QAAPI(FakeAPI):
 
 
 def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rejection=False, history=False, research_running=False, mcp=False,
-                   envelope=None, site_universe=None, outreach=None, outreach_rows=50):
+                   envelope=None, site_universe=None, outreach=None, outreach_rows=50, second=None):
     """``envelope=(total, qa_reserved)`` admits an adaptive row with that pinned runtime.
 
     ``site_universe={"slice_size": n, "inventory": output -> records}`` publishes a synthetic
     export to a fake object store, pins it and admits a search-profile row that attaches it.
     ``outreach`` ("enabled", "disabled" or "screen_only") pins a synthetic outreach-ready
-    direction through the owner command before the run starts.
+    direction through the owner command before the run starts. ``second`` adds a copy of the
+    candidate with these fields changed.
     """
     bucket = site_universe is not None or outreach is not None
     crm = tmp_path / "crm.json"
@@ -126,6 +127,8 @@ def consumer_setup(tmp_path, *, failed=False, publication=False, publication_rej
     cfg.update(research_contract_version=3, knowledge_snapshot=str(tmp_path / "knowledge.json"),
                knowledge_refresh_policy=str(tmp_path / "policy.json"))
     output = v3(context)
+    if second is not None:
+        output["candidates"].append({**deepcopy(output["candidates"][0]), **second})
     if failed:
         from tests.test_daily_research_knowledge import delta
         proposal = delta()
@@ -1237,28 +1240,16 @@ def test_qa_receives_the_frozen_site_universe_block_and_one_sentence(tmp_path):
         generator.close()
 
 
+
+
 SHADOW_IDENTITY = ROOT / "tests/fixtures/daily_research/outreach-ready-shadow-identity.json"
 PAGE_URL = "https://fixture.example/site-task"
-PAGE_TEXT = "Operations\nSynthetic operator runs this exact physical site where humans perform this task.\nCareers"
-
-
-def shadow_identity_artifacts(ledger, row, crm_path, *, search):
-    """Digests of every digest-bound artifact; the fixture holds main's values for the same flows."""
-    sha = lambda raw: hashlib.sha256(raw).hexdigest()
-    value = {"create_payload": digest(row["create_payload"]), "metadata": digest(row["metadata"]),
-             "packet": row["packet_digest"], "packet_recomputed": digest(row["packet"]),
-             "review_file": sha(ledger.read_bytes(DAY + "-review.json")),
-             "qa_input": sha(ledger.read_bytes(DAY + "-qa-input.json")) if search else digest(row["qa"]["event"]),
-             "qa_artifact": row["qa"]["artifact_digest"], "qa_decision": digest(row["qa"]["decision"]),
-             "review": digest(row["review"]), "decision_equals_review": row["qa"]["decision"] == row["review"],
-             "lead_verification_result_version": row["packet"].get("lead_verification_result_version"),
-             "crm_after_publication": digest(json.loads(Path(crm_path).read_text())["values"])}
-    for name, delivery in sorted(row["delivery"].items()):
-        value[name] = {"payload_digest": delivery["payload_digest"], "payload_json": sha(delivery["payload_json"].encode()),
-                       "plan": digest(delivery.get("plan")), "receipt": delivery.get("receipt"), "state": delivery["state"]}
-    if search:
-        value["publication_input"] = sha(ledger.read_bytes(DAY + "-publication-input.json"))
-    return value
+QUOTE = "Synthetic operator runs this exact physical site where humans perform this task."
+# Names the fixture candidate's street and city, so its site_task is tied to this facility (rule v1.1).
+PAGE_TEXT = "Operations at North plant, 123 Main St, Chicago\n" + QUOTE + "\nCareers"
+SOUTH = {"organization": "Second Synthetic Plant", "organization_url": "https://www.second.example/",
+         "site": "South plant, 9 Elm St", "location": "Springfield, Illinois, US", "task": "Manual tray loading"}
+SOUTH_PAGE = "Operations at South plant, 9 Elm St, Springfield\n" + QUOTE + "\nCareers"
 
 
 def finish(consumer, ledger):
@@ -1269,16 +1260,17 @@ def finish(consumer, ledger):
     return ledger.get(DAY)
 
 
-def publish_as_agent(consumer, api, ledger):
-    """Drive the agent-owned publication session: inspect, then full Notion and Sheets claims to readback."""
+def publish_as_agent(consumer, api, ledger, *, complete=False):
+    """Drive the agent-owned publication session: inspect, then full Notion and Sheets claims to readback.
+    ``complete`` then ends the publication turn, so the row completes."""
     from tools.daily_research import publication
-    posts, events, actions = [], [], []
+    posts, events, actions, turn = [], [], [], {"status": "in_progress"}
     listing, get = api.listing, api.get
 
     def values(resource, sid=None):
         result = listing(resource, sid)
         if resource == "turns" and posts:
-            result.append({"id": "turn_publication", "session_id": "sess_1", "agent_id": AGENT, "status": "in_progress",
+            result.append({"id": "turn_publication", "session_id": "sess_1", "agent_id": AGENT, "status": turn["status"],
                            "subagent_id": None, "completed_at": int((NOW + timedelta(seconds=40)).timestamp())})
         return result
 
@@ -1301,42 +1293,102 @@ def publish_as_agent(consumer, api, ledger):
         consumer.step()
         return json.loads(events[-1][1]["output"])
 
-    assert ask("inspect", publication.INSPECT, {})["success"] is True
+    inspected = ask("inspect", publication.INSPECT, {})
+    assert inspected["success"] is True
     for destination in ("notion", "sheets"):
         for attempt in range(6):
             reply = ask(f"{destination}_{attempt}", publication.PUBLISH, {"destination": destination, "strategy": "full"})
             if reply.get("output", {}).get("status") == "acknowledged":
                 break
+    if complete:
+        actions[:] = []
+        turn["status"] = "completed"
+        assert consumer.step()["state"] == "completed"
+    publish_as_agent.last = {"posts": posts, "events": events, "inspected": inspected}
     return ledger.get(DAY)
 
 
+def identity_digests(record, tmp):
+    """sha256 per artifact class of one synthetic flow. The temporary directory, lease owners, blob
+    hashes, learning observations, the owner control document and the shadow-mode outreach file are
+    normalized away; main's fixture (dd2d404f) was recorded with this same function."""
+    import hashlib as _hashlib
+    import json as _json
+
+    def clean(value, path=""):
+        if isinstance(value, dict):
+            return {key: clean(item, path + "/" + key) for key, item in value.items()
+                    if key not in {"blob", "row_blob", "source_row_blob"} and not (path.endswith("/lease") and key == "owner")}
+        if isinstance(value, list):
+            return [clean(item, path) for item in value]
+        return value
+    digests = {}
+    for name, value in sorted(record.items()):
+        if name == "db":
+            value = {path: item for path, item in value.items()
+                     if "/blobs/" not in path and "/learningObservations/" not in path
+                     and path != "blueprintDailyResearch/sites-first" and not path.endswith("-outreach-ready-shadow.json")}
+        text_value = _json.dumps(clean(value), sort_keys=True, default=str).replace(str(tmp), "<tmp>")
+        digests[name] = _hashlib.sha256(text_value.encode()).hexdigest()
+    return digests
+
+
+IDENTITY_FLOWS = {
+    "legacy": ({}, False),
+    "agent_publication": ({"publication": True}, True),
+    "site_universe_agent": ({"publication": True, "site_universe": {"inventory": slice_inventory}}, True),
+    "site_universe_legacy_pub": ({"site_universe": {"inventory": slice_inventory}}, False),
+    "history_mcp_agent": ({"publication": True, "history": True, "mcp": True}, True),
+}
+IDENTITY_FILES = ("-review.json", "-qa.json", "-qa-input.json", "-publication-input.json", "-artifact.json",
+                  "-evidence.json", "-output.json", "-qa-evidence.json")
+
+
+def identity_record(tmp, kwargs, agent, outreach):
+    """Every artifact one flow leaves: rows, status, CRM, files, store, create payloads and publication events."""
+    generator = consumer_setup(tmp, **kwargs, outreach=outreach)
+    consumer, api, ledger, _, _ = next(generator)
+    try:
+        before = deepcopy(ledger.get(DAY))
+        if agent:
+            assert consumer.step()["state"] == "reviewed"
+            row = publish_as_agent(consumer, api, ledger)
+            posts, events = publish_as_agent.last["posts"], publish_as_agent.last["events"]
+        else:
+            row, posts, events = finish(consumer, ledger), None, None
+        files = {}
+        for name in sorted({DAY + suffix for suffix in IDENTITY_FILES}):
+            try:
+                files[name] = hashlib.sha256(ledger.read_bytes(name)).hexdigest()
+            except Exception as exc:  # noqa: BLE001 - absence is part of the recorded shape
+                files[name] = "missing:" + type(exc).__name__
+        from tools.daily_research.runner import status_summary
+        db = {path: value for path, value in json.loads((tmp / "db.json").read_text())}
+        return {"state": row["state"], "row_before_qa": before, "row": row, "status": status_summary(row),
+                "crm_values": json.loads(Path(consumer.config["crm_snapshot"]).read_text())["values"], "files": files, "db": db,
+                "api_payloads": [digest(p) for p in api.payloads], "api_inputs": api.inputs,
+                "publication_posts": [canonical(p) for p in posts] if posts is not None else None,
+                "publication_events": [canonical(e) for e in events] if events is not None else None}
+    finally:
+        next(generator, None)
+
+
 @pytest.mark.parametrize("variant", [None, "disabled", "screen_only"])
-def test_shadow_mode_artifacts_are_byte_identical_to_main(tmp_path, variant):
-    """Absent, disabled or not directing daily_qa: create payload, packet, QA input, review and
-    publication payloads, plans and Sheets rows equal main's from before the tier existed."""
+def test_shadow_mode_matches_main_in_every_flow_row_status_store_and_payload(tmp_path, variant):
+    """The reviewer's side-by-side flows: absent, disabled or screen-only, every row, status line, CRM
+    row, file, store document, create payload and publication event equals main's, except the one
+    shadow file a completed run adds outside the row."""
     document = json.loads(SHADOW_IDENTITY.read_text())
     assert document["fixture_only"] is True and len(document["source_commit"]) == 40
-    for name, agent in (("legacy", False), ("agent_publication", True)):
-        (tmp_path / name).mkdir()
-        generator = consumer_setup(tmp_path / name, publication=agent, outreach=variant)
-        consumer, api, ledger, _, _ = next(generator)
-        try:
-            if agent:
-                assert consumer.step()["state"] == "reviewed"
-                row = publish_as_agent(consumer, api, ledger)
-            else:
-                row = finish(consumer, ledger)
-            assert shadow_identity_artifacts(ledger, row, consumer.config["crm_snapshot"], search=agent) == document["flows"][name]
-            assert all(delivery["state"] == "acknowledged" for delivery in row["delivery"].values())
-            assert "outreach_ready_keys" not in row["review"] and "hypotheses" not in row["delivery"]["sheets"]["payload"]
-            frozen = row.get("outreach_ready")
-            assert (frozen or {}).get("code") == ("outreach_ready_daily_qa_not_directed" if variant == "screen_only" else None)
-            assert (frozen is None) is (variant != "screen_only")
-            shadow = row["outreach_ready_shadow"]  # The tier is recorded only here, outside every digest.
-            assert shadow["state"] == "recorded" and shadow["admitted"] == [] and sum(shadow["tiers"].values()) == 1
-            assert shadow["direction_state"] == ("refused" if variant == "screen_only" else "absent")
-        finally:
-            next(generator, None)
+    assert set(document["flows"]) == set(IDENTITY_FLOWS)
+    for name, (kwargs, agent) in IDENTITY_FLOWS.items():
+        tmp = tmp_path / name
+        tmp.mkdir()
+        record = identity_record(tmp, kwargs, agent, variant)
+        assert identity_digests(record, tmp) == document["flows"][name], name
+        shadow = [path for path in record["db"] if path.endswith(DAY + "-outreach-ready-shadow.json")]
+        assert len(shadow) == (record["state"] == "completed"), name
+        assert "outreach_ready" not in record["row"] and "outreach_ready" not in record["status"], name
 
 
 def retain_page(ledger, url=PAGE_URL, text=PAGE_TEXT, cid="read_fixture_page", phase="research"):
@@ -1358,27 +1410,42 @@ def retain_page(ledger, url=PAGE_URL, text=PAGE_TEXT, cid="read_fixture_page", p
         ledger.put(row)
 
 
-def hypothesis_qa(api, *, listed=True):
-    """QA attests the day's source support, leaves human workflow unresolved, accepts nothing and lists
-    every candidate as outreach-ready (the WebApp #854 day shape)."""
+def hypothesis_qa(api, *, listed=True, keys=None, accepted=(), change=None):
+    """QA attests the day's source support and lists outreach-ready keys (the WebApp #855 day shape): each
+    listed check is source-verified with the human workflow unresolved; ``accepted`` keys keep the full
+    verified assessment. ``change(key, check)`` edits a check afterwards."""
     original = api.artifact
 
     def artifact(sid, aid):
         if aid == "artifact_qa":
-            api.qa_result.update(accepted_keys=[], source_support_verified=True)
+            listed_keys = [c["candidate_key"] for c in api.qa_result["checks"] if c["candidate_key"] not in accepted] \
+                if keys is None else list(keys)
+            api.qa_result.update(accepted_keys=list(accepted), source_support_verified=True)
             for check in api.qa_result["checks"]:
-                check["source_support_verified"] = False
-                check["lead_verification"]["claims"]["human_workflow"]["status"] = "unresolved"
+                if check["candidate_key"] not in accepted:
+                    check["lead_verification"]["claims"]["human_workflow"]["status"] = "unresolved"
+                if change:
+                    change(check["candidate_key"], check)
             if listed:
-                api.qa_result["outreach_ready_keys"] = [c["candidate_key"] for c in api.qa_result["checks"]]
+                api.qa_result["outreach_ready_keys"] = listed_keys
         return original(sid, aid)
 
     api.artifact = artifact
 
 
+def question(template, candidate):
+    return verification.QUESTION_TEMPLATES[template].format(task=candidate["task"], site=candidate["site"])
+
+
 @pytest.fixture
 def enabled(tmp_path):
     yield from consumer_setup(tmp_path, outreach="enabled")
+
+
+@pytest.fixture
+def mixed(tmp_path):
+    """The reviewer's two-candidate day: the first verified, the second a hypothesis at another site."""
+    yield from consumer_setup(tmp_path, outreach="enabled", second=SOUTH)
 
 
 def test_enabled_direction_publishes_rule_proven_keys_only_as_labelled_hypotheses(enabled):
@@ -1392,33 +1459,36 @@ def test_enabled_direction_publishes_rule_proven_keys_only_as_labelled_hypothese
     row = ledger.get(DAY)
     text = row["qa"]["event"]["input"][0]["content"][0]["text"]
     assert "admits outreach-ready hypotheses" in text and '"outreach_ready_keys":[]' in text
+    assert "company-wide capability text makes site_task inference" in text
     key = row["packet"]["candidates"][0]["candidate_key"]
     assert row["review"] == row["qa"]["decision"] and row["review"]["accepted_keys"] == []
     assert row["review"]["outreach_ready_keys"] == [key] and "outreach_ready_shadow" not in row
     result = row["review"]["lead_verification"]["results"][0]
     assert result["tier"] == "outreach_ready" and result["status"] == "unresolved"
     assert result["eligible_for_qualified_promotion"] is False
+    assert result["outreach_ready"]["rule_version"] == "blueprint.outreach-ready-rule.v1.1"
     assert [p["level"] for p in result["outreach_ready"]["proving_sources"]] == ["verified_on_page"] * 3
     hypotheses = row["delivery"]["sheets"]["payload"]["hypotheses"]
     assert hypotheses == row["delivery"]["notion"]["payload"]["hypotheses"] and len(hypotheses) == 1
     assert hypotheses[0]["candidate"]["candidate_key"] == key and row["delivery"]["sheets"]["payload"]["candidates"] == []
     candidate = row["packet"]["candidates"][0]
     assert hypotheses[0]["open_checks"] == ["manual_workflow", "existing_automation", "fit", "interest"]
-    assert hypotheses[0]["open_questions"] == [  # The fixed templates, with task and site verbatim.
-        f"Is {candidate['task']} at {candidate['site']} still done mostly by hand?",
-        "Do you already use or plan automation for it?",
-        "Would a short look at whether a robot could take on part of it be useful?"]
+    assert hypotheses[0]["open_questions"] == [question("M", candidate)]  # Exactly one, template M, verbatim.
     assert key in json.loads(ledger.read_bytes(DAY + "-qa.json"))["outreach_ready_keys"]
     row = finish(consumer, ledger)
     assert row["state"] == "completed"
     written = json.loads(Path(consumer.config["crm_snapshot"]).read_text())["values"][5:]
     marker = row["delivery"]["sheets"]["plan"]["marker"]
     assert len(written) == 1 and written[0][6] == "Hypothesis" and written[0][16] == "Outreach-ready: operator, site, task proven"
-    assert written[0][12] == "First email asks: " + " ".join(hypotheses[0]["open_questions"]) + "\n" + marker
+    assert written[0][12] == "First email asks: " + question("M", candidate) + "\n" + marker
     assert row["delivery"]["sheets"]["receipt"]["reference"].endswith(":" + written[0][0])
+    assert row["delivery"]["sheets"]["plan"]["hypothesis_keys"] == row["delivery"]["notion"]["plan"]["hypothesis_keys"] == [key]
     from tools.daily_research.runner import status_summary
     status = status_summary(row)
-    assert status["outreach_ready"]["admitted"] == 1 and status["discovery_funnel"]["hypotheses_for_crm"] == 1
+    assert status["outreach_ready"] == {"direction_state": "enabled", "admitted": 1, "withheld_code": None}
+    assert status["discovery_funnel"]["hypotheses_for_crm"] == 1
+    with pytest.raises(FileNotFoundError):  # An enabled run records no shadow.
+        ledger.read_bytes(DAY + "-outreach-ready-shadow.json")
 
 
 def test_the_brake_after_the_run_started_admits_nothing_and_verified_flow_continues(enabled):
@@ -1434,22 +1504,39 @@ def test_the_brake_after_the_run_started_admits_nothing_and_verified_flow_contin
     assert finish(consumer, ledger)["state"] == "completed"
 
 
-@pytest.mark.parametrize("change", ["paraphrase", "unlisted", "known_in_crm"])
+@pytest.mark.parametrize("change", ["paraphrase", "unlisted", "known_in_crm", "unsupported", "expires_before_deadline",
+                                    "company_level"])
 def test_only_qa_listed_rule_proven_crm_new_keys_are_admitted(enabled, change):
     consumer, api, ledger, _, _ = enabled
-    retain_page(ledger, text="A page that says something else entirely." if change == "paraphrase" else PAGE_TEXT)
-    hypothesis_qa(api, listed=change != "unlisted")
+    retain_page(ledger, text="A page that says something else entirely." if change == "paraphrase"
+                else "Operations\n" + QUOTE + "\nCareers" if change == "company_level" else PAGE_TEXT)
+
+    def edit(key, check):
+        if change == "unsupported":
+            check["source_support_verified"] = False
+        if change == "expires_before_deadline":  # Valid at QA, but not past the run's QA deadline (NOW + 3 min).
+            check["lead_verification"]["valid_until"] = (NOW + timedelta(minutes=2)).isoformat()
+
+    hypothesis_qa(api, listed=change != "unlisted", change=edit)
     if change == "known_in_crm":
         original_refresh = consumer.refresh_crm
         def refresh():
             snapshot, known = original_refresh()
             return snapshot, known | set(ledger.get(DAY)["packet"]["candidates"][0]["identity_keys"])
         consumer.refresh_crm = refresh
-    assert consumer.step()["state"] == "reviewed"
+    state = consumer.step()["state"]
+    if change == "unsupported":  # Deferrable same-session feedback first.
+        assert state == "qa_correction_input_unresolved"
+        assert [item["reason"] for item in ledger.get(DAY)["qa"]["validation_feedback"]] == [
+            "agent_qa_assessment_outreach_ready_key_unsupported"]
+        return
+    assert state == "reviewed"
     row = ledger.get(DAY)
     assert row["review"]["outreach_ready_keys"] == [] and "hypotheses" not in row["delivery"]["notion"]["payload"]
-    tier = row["review"]["lead_verification"]["results"][0]["tier"]
-    assert tier == ("none" if change == "paraphrase" else "outreach_ready")
+    result = row["review"]["lead_verification"]["results"][0]
+    assert result["tier"] == ("none" if change in {"paraphrase", "company_level"} else "outreach_ready")
+    if change == "company_level":
+        assert result["outreach_ready"]["blockers"] == ["site_task_company_level"]
 
 
 def test_a_key_also_accepted_gets_deferrable_same_session_feedback_first(enabled):
@@ -1489,6 +1576,29 @@ def test_any_tier_exception_or_unreadable_evidence_never_stops_qa_or_publication
     assert finish(consumer, ledger)["state"] == "completed"
 
 
+def test_enabled_qa_reads_the_evidence_once_and_review_reuses_it(enabled, monkeypatch):
+    consumer, api, ledger, _, _ = enabled
+    retain_page(ledger)
+    hypothesis_qa(api)
+    reads, original_read = [], ledger.read_bytes
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: reads.append(name) or original_read(name))
+    assert consumer.step()["state"] == "reviewed"
+    assert [name for name in reads if "-tool-" in name] == [DAY + "-tool-read_fixture_page.json"]
+    assert ledger.get(DAY)["review"]["outreach_ready_keys"] == [ledger.get(DAY)["packet"]["candidates"][0]["candidate_key"]]
+
+
+def test_an_evidence_read_over_budget_admits_nothing_and_qa_continues(enabled, monkeypatch):
+    from tools.daily_research import outreach_ready
+    consumer, api, ledger, _, _ = enabled
+    retain_page(ledger)
+    hypothesis_qa(api)
+    monkeypatch.setattr(outreach_ready, "EVIDENCE_MAX_READS", 0)
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["lead_verification"]["tier_evidence"] == verification.UNAVAILABLE
+    assert row["review"]["outreach_ready_keys"] == []
+
+
 def test_outreach_key_feedback_is_deferrable_and_only_for_an_enabled_row(fixture):
     _, _, ledger, _, _ = fixture
     row = ledger.get(DAY)
@@ -1509,23 +1619,36 @@ def test_outreach_key_feedback_is_deferrable_and_only_for_an_enabled_row(fixture
         "outreach_ready_key_invalid", "outreach_ready_key_invalid", "outreach_ready_key_invalid"]
     assert all(deferrable_assessment_issue(issue) for issue in issues)
     assert qa_validation_feedback(row, {**qa, "outreach_ready_keys": "x"})[-1]["path"] == "/outreach_ready_keys"
+    unsupported = {**qa, "accepted_keys": [], "outreach_ready_keys": [key],
+                   "checks": [{**qa["checks"][0], "duplicate": False, "source_support_verified": False}]}
+    issues = [i for i in qa_validation_feedback(row, unsupported) if "outreach" in i["path"]]
+    assert [i["reason"] for i in issues] == ["agent_qa_assessment_outreach_ready_key_unsupported"]
+    assert deferrable_assessment_issue(issues[0])
 
 
 def test_qa_decision_caps_at_the_live_row_limit_and_admits_nothing_without_admission():
     from tools.daily_research.consumer import outreach_keys
-    packet = {"candidates": [{"candidate_key": k, "identity_keys": ["id-" + k]} for k in "abcd"]}
-    row = {"packet": packet}
-    cohort = {"results": [{"candidate_key": k, "eligible_for_outreach_ready": k != "d"} for k in "abcd"]}
-    result = {"source_support_verified": True, "accepted_keys": ["c"],
-              "outreach_ready_keys": ["a", "a", "b", "c", "d", "x", ["list"], "b"]}
-    assert outreach_keys(row, result, cohort, [], set(), (5, None)) == ["a", "b"]
-    assert outreach_keys(row, result, cohort, [], set(), (1, None)) == ["a"]
-    assert outreach_keys(row, result, cohort, [], {"id-a"}, (5, None)) == ["b"]
-    assert outreach_keys(row, result, cohort, ["b"], set(), (5, None)) == ["a"]
-    assert outreach_keys(row, result, cohort, [], set(), (5, "outreach_ready_disabled")) == []
-    assert outreach_keys(row, {**result, "outreach_ready_keys": "a"}, cohort, [], set(), (5, None)) == []
-    assert outreach_keys(row, result, None, [], set(), (5, None)) == []
-    assert outreach_keys(row, {**result, "source_support_verified": False}, cohort, [], set(), (5, None)) == []
+    packet = {"candidates": [{"candidate_key": k, "identity_keys": ["id-" + k]} for k in "abcde"]}
+    row, deadline = {"packet": packet}, NOW + timedelta(minutes=3)
+    valid = {"a": None, "b": (NOW + timedelta(days=1)).isoformat(), "c": None, "d": None,
+             "e": (NOW + timedelta(minutes=2)).isoformat()}  # e expires before the run's deadline.
+    cohort = {"results": [{"candidate_key": k, "eligible_for_outreach_ready": k != "d", "assessment": {"valid_until": valid[k]}}
+                          for k in "abcde"]}
+    checks = [{"candidate_key": k, "source_support_verified": k != "c", "duplicate": False} for k in "abcde"]
+    result = {"source_support_verified": True, "accepted_keys": ["c"], "checks": checks,
+              "outreach_ready_keys": ["a", "a", "b", "c", "d", "e", "x", ["list"], "b"]}
+    assert outreach_keys(row, result, cohort, [], set(), (5, None), deadline) == ["a", "b"]
+    assert outreach_keys(row, result, cohort, [], set(), (1, None), deadline) == ["a"]
+    assert outreach_keys(row, result, cohort, [], {"id-a"}, (5, None), deadline) == ["b"]
+    assert outreach_keys(row, result, cohort, ["b"], set(), (5, None), deadline) == ["a"]
+    assert outreach_keys(row, result, cohort, [], set(), (5, None), NOW + timedelta(days=2)) == ["a"]
+    assert outreach_keys(row, result, cohort, [], set(), (5, "outreach_ready_disabled"), deadline) == []
+    assert outreach_keys(row, {**result, "outreach_ready_keys": "a"}, cohort, [], set(), (5, None), deadline) == []
+    assert outreach_keys(row, result, None, [], set(), (5, None), deadline) == []
+    assert outreach_keys(row, {**result, "source_support_verified": False}, cohort, [], set(), (5, None), deadline) == []
+    unchecked = {**result, "checks": [c for c in checks if c["candidate_key"] != "a"] + [checks[0], checks[0]]}
+    assert outreach_keys(row, unchecked, cohort, [], set(), (5, None), deadline) == ["b"]  # a has two checks.
+    assert outreach_keys(row, result, cohort, [], set(), (5, None), None) == []
 
 
 def test_after_exhausted_corrections_bad_outreach_keys_are_dropped_and_never_block_the_decision(enabled):
@@ -1539,7 +1662,7 @@ def test_after_exhausted_corrections_bad_outreach_keys_are_dropped_and_never_blo
     value["claims"]["human_workflow"]["status"] = "unresolved"
     result = {"schema_version": "blueprint.research-qa.v1", "packet_digest": row["packet_digest"], "crm_digest": "crm",
               "source_support_verified": True, "accepted_keys": [], "summary": "Synthetic unresolved review",
-              "checks": [{"candidate_key": key, "source_support_verified": False, "duplicate": False,
+              "checks": [{"candidate_key": key, "source_support_verified": True, "duplicate": False,
                           "reason": "Synthetic", "lead_verification": value}],
               "outreach_ready_keys": [key, key, "unknown"]}
     evidence, later = consumer.outreach_evidence(row), NOW + timedelta(seconds=30)
@@ -1554,20 +1677,208 @@ def test_after_exhausted_corrections_bad_outreach_keys_are_dropped_and_never_blo
                        admission=(50, None))["outreach_ready_keys"] == []
 
 
-def test_shadow_recording_follows_the_durable_decision_and_a_failed_write_changes_nothing(fixture, monkeypatch):
-    consumer, _, ledger, _, _ = fixture
-    puts, original = [], ledger.put
+def mixed_qa(api, ledger, *, change=None):
+    """The reviewer's enabled_flow: QA accepts the first candidate and lists the second as outreach-ready."""
+    row = ledger.get(DAY)
+    verified_key, hypothesis_key = (c["candidate_key"] for c in row["packet"]["candidates"])
+    retain_page(ledger, text=SOUTH_PAGE)  # The second site's street and city tie its task to it.
+    hypothesis_qa(api, keys=[hypothesis_key], accepted=[verified_key],
+                  change=lambda key, check: change(check) if change and key == hypothesis_key else None)
+    return verified_key, hypothesis_key
 
-    def put(row):
-        puts.append((row.get("qa", {}).get("state"), "outreach_ready_shadow" in row))
-        if "outreach_ready_shadow" in row:
-            raise RuntimeError("synthetic store failure")
-        return original(row)
 
-    monkeypatch.setattr(ledger, "put", put)
+def crm_rows(consumer):
+    return json.loads(Path(consumer.config["crm_snapshot"]).read_text())["values"][5:]
+
+
+def test_a_day_with_a_verified_row_and_a_hypothesis_publishes_both(mixed):
+    consumer, api, ledger, _, _ = mixed
+    verified_key, hypothesis_key = mixed_qa(api, ledger)
     assert consumer.step()["state"] == "reviewed"
     row = ledger.get(DAY)
-    assert row["qa"]["state"] == "validated" and row["review"] == row["qa"]["decision"]
-    assert "outreach_ready_shadow" not in row
-    first = puts.index(("validated", False))
-    assert puts[first + 1] == ("validated", True)  # The shadow write is attempted only after the decision is durable.
+    assert row["review"]["accepted_keys"] == [verified_key] and row["review"]["outreach_ready_keys"] == [hypothesis_key]
+    row = finish(consumer, ledger)
+    assert row["state"] == "completed"
+    rows = crm_rows(consumer)
+    south = next(c for c in row["packet"]["candidates"] if c["candidate_key"] == hypothesis_key)
+    assert [r[6] for r in rows] == ["Needs recheck", "Hypothesis"]
+    assert rows[1][12].split("\n")[0] == "First email asks: " + question("M", south)
+    assert row["delivery"]["sheets"]["receipt"]["reference"].endswith(":" + ",".join(r[0] for r in rows))
+
+
+@pytest.mark.parametrize("variant", ["expiring", "nullexpiry"])
+def test_a_hypothesis_that_expires_before_publication_never_blocks_the_verified_row(mixed, variant):
+    """The reviewer's enabled_flow probe: admitted while valid past the QA deadline, the hypothesis expires before a
+    later legacy publication. The verified row publishes; the expired hypothesis is left out on its own reason."""
+    consumer, api, ledger, bridge, _ = mixed
+
+    def change(check):
+        if variant == "expiring":
+            check["lead_verification"]["valid_until"] = (NOW + timedelta(seconds=190)).isoformat()  # Deadline + 10 s.
+        else:
+            check["lead_verification"]["valid_until"] = None
+            check["lead_verification"]["claims"]["human_workflow"]["status"] = "verified_fact"
+
+    _, hypothesis_key = mixed_qa(api, ledger, change=change)
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"]["outreach_ready_keys"] == [hypothesis_key]
+    south = next(c for c in row["packet"]["candidates"] if c["candidate_key"] == hypothesis_key)
+    entry = row["delivery"]["sheets"]["payload"]["hypotheses"][0]
+    if variant == "nullexpiry":
+        assert entry["open_checks"] == ["freshness", "existing_automation", "fit", "interest"]
+        assert entry["open_questions"] == [question("A", south)]
+    later = NOW + timedelta(seconds=200)
+    consumer.clock = lambda: later
+    bridge.call("test_clock", now=int(later.timestamp() * 1000))
+    row = finish(consumer, ledger)
+    assert row["state"] == "completed"
+    rows = crm_rows(consumer)
+    if variant == "expiring":
+        assert [r[6] for r in rows] == ["Needs recheck"] and row["delivery"]["sheets"]["plan"]["hypothesis_keys"] == []
+        assert row["delivery"]["notion"]["plan"]["hypothesis_keys"] == []
+    else:
+        assert [r[6] for r in rows] == ["Needs recheck", "Hypothesis"]
+        assert rows[1][12].split("\n")[0] == "First email asks: " + question("A", south)
+
+
+def test_a_retried_review_after_the_hypothesis_expired_still_binds_and_publishes_the_verified_row(mixed, monkeypatch):
+    """The reviewer's review_retry_probe: the QA decision is durable, the first review fails transiently and the retry
+    runs after the hypothesis expired. Review binds the decision's own evaluation; publication leaves the hypothesis out."""
+    from tools.daily_research import consumer as consumer_module
+    consumer, api, ledger, bridge, _ = mixed
+    verified_key, hypothesis_key = mixed_qa(api, ledger, change=lambda check: check["lead_verification"].update(
+        valid_until=(NOW + timedelta(hours=2)).isoformat()))
+    real_review = consumer_module.Runner.review
+    calls = []
+
+    def flaky(self, day, decision, **kwargs):
+        calls.append(kwargs.get("evidence") is not None)
+        if len(calls) == 1:
+            raise Refusal("firestore_bridge_deadline")
+        return real_review(self, day, decision, **kwargs)
+
+    monkeypatch.setattr(consumer_module.Runner, "review", flaky)
+    with pytest.raises(Refusal, match="^firestore_bridge_deadline$"):
+        consumer.step()
+    row = ledger.get(DAY)
+    assert row["qa"]["state"] == "validated" and row["qa"]["decision"]["outreach_ready_keys"] == [hypothesis_key]
+    assert "review" not in row and calls == [True]
+    later = NOW + timedelta(hours=3)  # After the hypothesis's valid_until; the verified row is valid for 7 days.
+    consumer.clock = lambda: later
+    bridge.call("test_clock", now=int(later.timestamp() * 1000))
+    assert consumer.step()["state"] == "reviewed" and calls == [True, False]
+    row = ledger.get(DAY)
+    assert row["review"] == row["qa"]["decision"] and row["review"]["accepted_keys"] == [verified_key]
+    assert row["delivery"]["sheets"]["payload"]["hypotheses"][0]["candidate"]["candidate_key"] == hypothesis_key
+    row = finish(consumer, ledger)
+    assert row["state"] == "completed" and [r[6] for r in crm_rows(consumer)] == ["Needs recheck"]
+    assert row["delivery"]["sheets"]["plan"]["hypothesis_keys"] == []
+
+
+def test_a_review_that_cannot_reproduce_the_tier_evidence_withholds_only_the_hypotheses(mixed, monkeypatch):
+    from tools.daily_research import consumer as consumer_module
+    consumer, api, ledger, _, _ = mixed
+    _, hypothesis_key = mixed_qa(api, ledger)
+    real_review = consumer_module.Runner.review
+
+    def failing_once(self, day, decision, **kwargs):
+        monkeypatch.setattr(consumer_module.Runner, "review", real_review)
+        raise Refusal("firestore_bridge_deadline")
+
+    monkeypatch.setattr(consumer_module.Runner, "review", failing_once)
+    with pytest.raises(Refusal):
+        consumer.step()
+    original_read = ledger.read_bytes
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: (_ for _ in ()).throw(FileNotFoundError(name))
+                        if "-tool-" in name else original_read(name))
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["review"] == row["qa"]["decision"] and row["review"]["outreach_ready_keys"] == [hypothesis_key]
+    assert "hypotheses" not in row["delivery"]["sheets"]["payload"] and row["delivery"]["sheets"]["payload"]["candidates"]
+    assert row["outreach_ready_withheld"] == {"code": "outreach_ready_review_evidence_changed", "keys": [hypothesis_key]}
+    from tools.daily_research.runner import status_summary
+    assert status_summary(row)["outreach_ready"]["withheld_code"] == "outreach_ready_review_evidence_changed"
+    row = finish(consumer, ledger)
+    assert row["state"] == "completed" and [r[6] for r in crm_rows(consumer)] == ["Needs recheck"]
+
+
+def shadow_file(ledger):
+    return json.loads(ledger.read_bytes(DAY + "-outreach-ready-shadow.json"))
+
+
+def test_the_shadow_is_recorded_once_after_publication_completes_and_never_in_the_row(fixture, monkeypatch):
+    consumer, api, ledger, _, _ = fixture
+    retain_page(ledger)
+    hypothesis_qa(api, listed=False)
+    reads, original_read = [], ledger.read_bytes
+    monkeypatch.setattr(ledger, "read_bytes", lambda name: reads.append(name) or original_read(name))
+    assert consumer.step()["state"] == "reviewed"
+    assert not [name for name in reads if "-tool-" in name]  # Nothing read between QA and publication.
+    with pytest.raises(FileNotFoundError):
+        original_read(DAY + "-outreach-ready-shadow.json")
+    reviewed = ledger.get(DAY)
+    row = finish(consumer, ledger)
+    assert row["state"] == "completed" and "outreach_ready_shadow" not in row and "outreach_ready" not in row
+    record = shadow_file(ledger)
+    key = row["packet"]["candidates"][0]["candidate_key"]
+    assert record["state"] == "recorded" and record["admitted"] == [] and record["would_admit"] == [key]
+    assert record["tiers"] == {"verified": 0, "outreach_ready": 1, "none": 0} and record["direction_state"] == "absent"
+    assert record["evaluated_at"] == reviewed["review"]["lead_verification"]["results"][0]["evaluated_at"]
+    assert record["results"][0]["open_questions"] == [question("M", row["packet"]["candidates"][0])]
+    assert consumer.record_outreach_shadow(DAY) is None and shadow_file(ledger) == record  # Recorded once.
+    from tools.daily_research.runner import status_summary
+    assert "outreach_ready" not in status_summary(row)
+
+
+@pytest.mark.parametrize("cause", ["near_deadline", "read_budget"])
+def test_the_shadow_records_only_a_skip_code_near_the_deadline_or_over_budget(fixture, monkeypatch, cause):
+    from tools.daily_research import outreach_ready
+    consumer, _, ledger, _, _ = fixture
+    retain_page(ledger)
+    assert consumer.step()["state"] == "reviewed"
+    if cause == "near_deadline":  # The legacy fixture's deadline is NOW + 3 min.
+        consumer.clock = lambda: NOW + timedelta(seconds=120)
+    else:
+        monkeypatch.setattr(outreach_ready, "EVIDENCE_MAX_READS", 1)  # The QA artifact read uses it.
+    assert finish(consumer, ledger)["state"] == "completed"
+    record = shadow_file(ledger)
+    assert record["state"] == "skipped" and record["code"] == "outreach_ready_shadow_" + cause and "results" not in record
+
+
+@pytest.mark.parametrize("failure", ["read", "write", "lock"])
+def test_a_bridge_deadline_while_recording_the_shadow_never_raises_into_publication(fixture, monkeypatch, failure):
+    consumer, _, ledger, _, _ = fixture
+    retain_page(ledger)
+    assert consumer.step()["state"] == "reviewed"
+    deadline = lambda *args, **kwargs: (_ for _ in ()).throw(Refusal("firestore_bridge_deadline"))
+    original_put = ledger.put
+    if failure == "read":
+        monkeypatch.setattr(ledger, "read_bytes", deadline)
+    elif failure == "write":
+        monkeypatch.setattr(ledger, "write_bytes", deadline)
+
+    def put(row):
+        original_put(row)
+        if failure == "lock" and row["state"] == "completed":
+            monkeypatch.setattr(ledger, "lock", deadline)
+
+    monkeypatch.setattr(ledger, "put", put)
+    assert finish(consumer, ledger)["state"] == "completed"
+    monkeypatch.undo()
+    with pytest.raises(FileNotFoundError):
+        ledger.read_bytes(DAY + "-outreach-ready-shadow.json")
+
+
+def test_an_agent_owned_publication_records_the_shadow_once_its_turn_completes(tmp_path):
+    generator = consumer_setup(tmp_path, publication=True)
+    consumer, api, ledger, _, _ = next(generator)
+    try:
+        retain_page(ledger)
+        assert consumer.step()["state"] == "reviewed"
+        published = publish_as_agent(consumer, api, ledger, complete=True)
+        assert published["state"] == "completed" and "outreach_ready_shadow" not in published
+        record = shadow_file(ledger)
+        assert record["state"] == "recorded" and record["tiers"]["verified"] == 1 and record["would_admit"] == []
+    finally:
+        next(generator, None)
