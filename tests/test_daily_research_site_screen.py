@@ -629,7 +629,15 @@ def test_an_out_dir_on_storage_the_system_prunes_is_refused(monkeypatch, root):
     with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_volatile$"):
         ss.Workspace(path, create=True)
     assert not path.exists()
-    assert ss.guard_out_dir("/Users/Shared/blueprint-private/site-screen-synthetic").name == "site-screen-synthetic"
+
+
+def test_an_out_dir_outside_storage_the_system_prunes_is_accepted(tmp_path, monkeypatch):
+    volatile = tmp_path / "system-pruned"
+    durable = tmp_path / "durable" / "site-screen-synthetic"
+    monkeypatch.setattr(ss, "VOLATILE_ROOTS", (str(volatile),))
+    with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_volatile$"):
+        ss.guard_out_dir(volatile / "site-screen-synthetic")
+    assert ss.guard_out_dir(durable) == durable.resolve()
 
 
 # --- client: status, result and failed runs -------------------------------------------------
