@@ -5,7 +5,6 @@ separate from the explicitly authorized one-time test ceiling.
 """
 import hashlib
 import json
-import re
 from decimal import Decimal
 
 TARGET_NEW = 10
@@ -15,35 +14,40 @@ INVENTORY_VERSION = "blueprint.discovery-inventory.v1"
 # Broader Notion Team Directory (#2561). Its entries are research leads, never qualified partners.
 TEAM_DIRECTORY = "https://app.notion.com/p/3eb80154161d817aa3e6d9b9d7eba938"
 INVENTORY_FIELDS = frozenset({"operator", "site", "location", "task_hypothesis", "source_urls", "evidence_gap", "disposition"})
-# screened records a site from an attached site-universe slice that the agent only screened.
-DISPOSITIONS = frozenset({"candidate", "unresolved", "rejected", "learning", "duplicate", "screened"})
-SITE_UNIVERSE_ID = re.compile(r"[0-9a-f]{64}")
+BASE_DISPOSITIONS = frozenset({"candidate", "unresolved", "rejected", "learning", "duplicate"})
+# screened is valid only while a site-universe slice is attached; it records a site that was only screened.
+DISPOSITIONS = BASE_DISPOSITIONS | {"screened"}
 
 
-def inventory_issues(entries):
+def inventory_issues(entries, site_universe_ids=None):
     """Thin discoveries have their own contract and no promotion authority.
 
-    A record for a site-universe slice site may add ``site_universe_id``; only such a
-    record may have empty ``source_urls``. The v3 JSON Schema states the same rules.
+    ``site_universe_ids`` is the attached slice's frozen site ids (site_universe.frozen_ids),
+    or None without a slice, which keeps exactly the base rules. With a slice, a record may
+    add a site_universe_id from those ids, screened is a valid disposition, and only a record
+    with a site_universe_id may have empty source_urls. The v3 JSON Schema accepts this shape;
+    the host check is stricter (the no-slice rule and slice membership).
     """
     fields = INVENTORY_FIELDS
+    universe_on = site_universe_ids is not None
     if not isinstance(entries, list):
         yield {"pointer": "/discovery_inventory", "code": "discovery_inventory_invalid"}
         return
     from tools.daily_research.runner import Refusal, public_url
     for index, entry in enumerate(entries):
         path = f"/discovery_inventory/{index}"
-        if not isinstance(entry, dict) or set(entry) not in (fields, fields | {"site_universe_id"}):
+        if not isinstance(entry, dict) or (set(entry) not in (fields, fields | {"site_universe_id"}) if universe_on
+                                           else set(entry) != fields):
             yield {"pointer": path, "code": "discovery_inventory_invalid"}
             continue
         universe = "site_universe_id" in entry
-        if universe and (not isinstance(entry["site_universe_id"], str) or not SITE_UNIVERSE_ID.fullmatch(entry["site_universe_id"])):
+        if universe and (not isinstance(entry["site_universe_id"], str) or entry["site_universe_id"] not in site_universe_ids):
             yield {"pointer": path + "/site_universe_id", "code": "discovery_inventory_invalid"}
         for field in ("operator", "site", "location", "task_hypothesis"):
             value = entry[field]
             if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 2000):
                 yield {"pointer": path + "/" + field, "code": "discovery_inventory_invalid"}
-        if not isinstance(entry["disposition"], str) or entry["disposition"] not in DISPOSITIONS or not isinstance(entry["evidence_gap"], str) or not entry["evidence_gap"].strip() or len(entry["evidence_gap"]) > 2000:
+        if not isinstance(entry["disposition"], str) or entry["disposition"] not in (DISPOSITIONS if universe_on else BASE_DISPOSITIONS) or not isinstance(entry["evidence_gap"], str) or not entry["evidence_gap"].strip() or len(entry["evidence_gap"]) > 2000:
             yield {"pointer": path, "code": "discovery_inventory_invalid"}
         from tools.daily_research.runner import canonical
         if len(canonical(entry).encode()) > INVENTORY_PAGE_BYTES - 1000:

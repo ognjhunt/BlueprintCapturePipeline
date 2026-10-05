@@ -288,6 +288,10 @@ class _Identities:
                      or _phrase_in(place_words, _words(self.rows[position]["city"])))}
 
 
+def _hex_ids(values):
+    return {value for value in values if _hex(value)} if isinstance(values, list) else set()
+
+
 def _history(history, day, reoffer_after_days):
     from tools.daily_research.runner import digest
     recent, candidates, outcome_rows = set(), [], 0
@@ -500,6 +504,28 @@ def attached(row):
     return isinstance(record, dict) and record.get("state") == "attached"
 
 
+def frozen_ids(row):
+    """The site ids an attached row offered, for inventory validation; None when no slice is attached.
+
+    None keeps the base inventory rules exactly. With a slice, a record's site_universe_id must
+    be one of these ids.
+    """
+    if not attached(row):
+        return None
+    return frozenset(_hex_ids(row["site_universe"].get("site_ids")))
+
+
+def short(record):
+    """The smallest record for an intent near its ceiling: {state, code}. An attached slice that
+    no longer fits becomes refused with site_universe_intent_resource_ceiling."""
+    if isinstance(record, dict) and record.get("state") == "attached":
+        return {"state": "refused", "code": "site_universe_intent_resource_ceiling"}
+    state = record.get("state") if isinstance(record, dict) else None
+    code = record.get("code") if isinstance(record, dict) else None
+    return {"state": state if state in {"refused", "exhausted"} else "refused",
+            "code": code if isinstance(code, str) and CODE.fullmatch(code) else "site_universe_attach_unavailable"}
+
+
 def packet_reserve(row):
     return PACKET_RESERVE if attached(row) else 0
 
@@ -675,8 +701,9 @@ def status(row):
 
 
 def explain_sentence(row):
-    return (" A record for a site from the attached site-universe slice also has its exact site_universe_id; "
-            "screened is then a valid disposition, and only such a record may have empty source_urls.") if attached(row) else ""
+    return (" A record for a site from the attached site-universe slice also has that site's exact site_universe_id "
+            "from the file; screened is a valid disposition, and only a record with such an id may have empty "
+            "source_urls.") if attached(row) else ""
 
 
 def repair_sentence(row):

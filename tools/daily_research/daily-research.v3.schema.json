@@ -182,6 +182,7 @@
     "discovery_inventory": {
       "type": "array",
       "items": {
+        "description": "Shape only. The host validator is stricter: without an attached site-universe slice it refuses site_universe_id and screened and requires source_urls, exactly as before; with a slice, site_universe_id must be a site id from that run's frozen slice.",
         "type": "object",
         "additionalProperties": false,
         "properties": {

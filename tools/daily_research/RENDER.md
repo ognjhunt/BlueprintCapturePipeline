@@ -143,8 +143,15 @@ what its input holds, so an input without the key turns the slice off. The disk
   trusted paragraph follows the CRM prefix. No tool is added, so the session's
   tool schemas, `search.tools()` and `check_agent` are unchanged. `put`,
   `observe` and `create_check` compare metadata, so the slice cannot change after
-  the intent. It is attached only while the intent stays within
-  `search.MAX_INTENT`.
+  the intent.
+- The slice never stops an intent that fits without it. Over `search.MAX_INTENT`
+  the run keeps today's payload, shrinks `row.site_universe` to `{state, code}`
+  (`site_universe_intent_resource_ceiling` for a slice that no longer fits), and
+  drops even that when it does not fit.
+- Inventory validation is exactly the previous rules without a slice. With one, a
+  record may carry a `site_universe_id` from the frozen slice (no other id),
+  `screened` is valid, and only a record with such an id may have empty
+  `source_urls`. The v3 JSON Schema accepts this shape; the host is stricter.
 - Recovery, repair and QA use the frozen row only; `frozen_slice` re-checks the
   SHA-256 before any use. `Runner.prepare_output` writes `packet.site_universe`
   (one outcome per slice site, link issues and the funnel, under 16 KB and bound

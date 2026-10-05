@@ -192,6 +192,19 @@ def test_disable_keeps_the_pin_and_turns_the_slice_off(fixture):
     assert su.pin(bridge.call("control")["site_universe"]) is None  # The runner reads nothing more.
 
 
+def test_disable_waits_for_an_active_run_unless_overridden(fixture):
+    bridge, path, _ = fixture
+    value = pinning(bridge, published(bridge, path), apply=True)["pin"]
+    imported(bridge, {"date": "2026-10-04", "run_key": "blueprint-researcher:2026-10-04",
+                      "metadata": {"run_key": "blueprint-researcher:2026-10-04"}, "state": "running", "cleanup_required": True})
+    assert operator.disable(bridge)["state"] == "planned"  # A dry run never contends for the lease.
+    with pytest.raises(Refusal, match="^site_universe_run_active_apply_after_run$"):
+        operator.disable(bridge, apply=True, sleep=lambda _: None)
+    assert bridge.call("control")["site_universe"] == value
+    done = operator.disable(bridge, apply=True, during_active_run=True, sleep=lambda _: None)
+    assert done["state"] == "disabled" and bridge.call("control")["site_universe"] == {**value, "enabled": False}
+
+
 def test_show_reports_an_unusable_pin_with_its_code(fixture):
     bridge, path, _ = fixture
     assert operator.show(bridge, now=NOW)["state"] == "unset"
@@ -251,5 +264,6 @@ def test_cli_commands_print_stable_results(fixture, capsys):
                          sleep=lambda _: None)["state"] == "pinned"
     assert operator.main(["show"], bridge_factory=open_bridge, clock=lambda: NOW)["ready"] is True
     assert operator.main(["funnel", "--days", "7"], bridge_factory=open_bridge, clock=lambda: NOW)["runs"] == []
-    assert operator.main(["disable", "--apply"], bridge_factory=open_bridge, sleep=lambda _: None)["state"] == "disabled"
+    assert operator.main(["disable", "--apply", "--during-active-run"], bridge_factory=open_bridge,
+                         sleep=lambda _: None)["state"] == "disabled"
     assert not named(capsys.readouterr().out)

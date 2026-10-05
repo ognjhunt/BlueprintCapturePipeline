@@ -166,7 +166,7 @@ def pin(bridge, *, sha256, generation, approval_reference, slice_size=site_unive
               "expected_sha256": observed, "pin": value, "export": export_ids(export), "dry_run": check}
     if not apply:
         return {**result, "state": "planned", "firestore_writes": 0}
-    if not during_active_run and (bridge.call("summary").get("unfinished") or bridge.call("active_qa")):
+    if not during_active_run and active_run(bridge):
         # A pin applies from the next create anyway; avoid contending for an active worker's lease.
         raise Refusal("site_universe_run_active_apply_after_run")
     with lease(bridge, sleep, monotonic):
@@ -176,7 +176,11 @@ def pin(bridge, *, sha256, generation, approval_reference, slice_size=site_unive
     return {**result, "state": "pinned", "receipt": receipt, "readback_verified": True, "firestore_writes": 1}
 
 
-def disable(bridge, *, apply=False, sleep=time.sleep, monotonic=time.monotonic):
+def active_run(bridge):
+    return bool(bridge.call("summary").get("unfinished") or bridge.call("active_qa"))
+
+
+def disable(bridge, *, apply=False, during_active_run=False, sleep=time.sleep, monotonic=time.monotonic):
     """Turn the slice off from the next create; the current pin is kept with enabled=false."""
     value = (bridge.call("control") or {}).get("site_universe")
     result = {"schema_version": SCHEMA, "command": "disable", "apply": apply, "provider_calls": 0, "object_writes": 0}
@@ -185,6 +189,9 @@ def disable(bridge, *, apply=False, sleep=time.sleep, monotonic=time.monotonic):
     result.update(expected_sha256=value.get("sha256"), generation=value.get("generation"))
     if not apply:
         return {**result, "state": "planned", "firestore_writes": 0}
+    if not during_active_run and active_run(bridge):
+        # A running row keeps the slice it froze either way; avoid contending for an active worker's lease.
+        raise Refusal("site_universe_run_active_apply_after_run")
     disabled = {**value, "enabled": False}
     with lease(bridge, sleep, monotonic):
         receipt = bridge.call("site_universe_set", expected_sha256=value.get("sha256"), value=disabled)
@@ -242,6 +249,7 @@ def main(argv=None, *, bridge_factory=Bridge, clock=lambda: datetime.now(timezon
     pinner.add_argument("--during-active-run", action="store_true")
     pinner.add_argument("--apply", action="store_true")
     brake = commands.add_parser("disable")
+    brake.add_argument("--during-active-run", action="store_true")
     brake.add_argument("--apply", action="store_true")
     report = commands.add_parser("funnel")
     report.add_argument("--days", type=int, default=7)
@@ -258,7 +266,8 @@ def main(argv=None, *, bridge_factory=Bridge, clock=lambda: datetime.now(timezon
                          apply=args.apply, during_active_run=args.during_active_run, now=clock(), sleep=sleep,
                          monotonic=monotonic)
         elif args.command == "disable":
-            result = disable(bridge, apply=args.apply, sleep=sleep, monotonic=monotonic)
+            result = disable(bridge, apply=args.apply, during_active_run=args.during_active_run, sleep=sleep,
+                             monotonic=monotonic)
         else:
             result = funnel(bridge, days=args.days, now=clock())
         print(canonical(result))

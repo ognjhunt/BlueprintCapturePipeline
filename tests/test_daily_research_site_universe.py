@@ -558,3 +558,13 @@ def test_explain_repair_and_qa_text_gain_one_sentence_only_with_a_slice():
     without = qa_text(qa_row, snapshot, "crm")
     with_slice = qa_text({**qa_row, "site_universe": row["site_universe"]}, snapshot, "crm")
     assert with_slice.replace(su.qa_sentence(row), "", 1) == without and su.qa_sentence(row) in with_slice
+
+
+def test_frozen_ids_and_the_short_record_near_the_intent_ceiling():
+    row = attached_row([site(number) for number in range(1, 8)])
+    assert su.frozen_ids(row) == frozenset(row["site_universe"]["site_ids"])
+    assert su.frozen_ids({"site_universe": su.refused("site_universe_object_missing")}) is None and su.frozen_ids({}) is None
+    assert su.short(row["site_universe"]) == {"state": "refused", "code": "site_universe_intent_resource_ceiling"}
+    assert su.short(su.refused("site_universe_object_missing")) == {"state": "refused", "code": "site_universe_object_missing"}
+    assert su.short({"schema_version": su.ATTACHMENT, "state": "exhausted", "code": "site_universe_slice_empty",
+                     "selection": {"offered": 0}}) == {"state": "exhausted", "code": "site_universe_slice_empty"}

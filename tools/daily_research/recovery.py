@@ -154,7 +154,7 @@ def replay_saved_artifact(row, raw_artifact, tool_files, known, observed_at):
     if not remaining:
         candidates, duplicates = validate_output(derived, row["date"], set(known),
             contract_version=row["research_contract_version"], knowledge_context=row["knowledge_context"],
-            refresh_policy=row["refresh_policy"], observed_at=observed_at)
+            refresh_policy=row["refresh_policy"], observed_at=observed_at, site_universe_ids=site_universe.frozen_ids(row))
         counts = {"candidate_count": len(candidates), "duplicate_count": len(duplicates)}
     result = {"schema_version": "blueprint.saved-research-replay.v1", "provider_calls": 0,
             "database_writes": 0, "publication_writes": 0, "session_id": row["session_id"],
@@ -271,7 +271,8 @@ def validation_feedback(output, row, known, observed_at):
 
     version = row.get("research_contract_version", 1)
     options = {"contract_version": version, "knowledge_context": row.get("knowledge_context"),
-               "observed_at": observed_at, "refresh_policy": row.get("refresh_policy")}
+               "observed_at": observed_at, "refresh_policy": row.get("refresh_policy"),
+               "site_universe_ids": site_universe.frozen_ids(row)}
     for found in output_issues(output, row["date"], collect=True, **options):
         issue(found["pointer"] or "/", found["code"])
     if row.get("discovery_profile") == "adaptive-sites-v1" and isinstance(output, dict):

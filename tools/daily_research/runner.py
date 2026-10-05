@@ -333,13 +333,15 @@ def _issue(pointer, code, *, system=False):
 
 
 def output_issues(output, run_date, *, contract_version=1, knowledge_context=None, observed_at=None,
-                  refresh_policy=None, collect=False):
+                  refresh_policy=None, collect=False, site_universe_ids=None):
     """Every strict output rule, in the exact fail-fast order, as located issues.
 
     validate_output raises the first issue, so the acceptance gate and repair
     feedback cannot disagree about a rule. Strict mode lets malformed values raise
     exactly as before; collect=True reports them and keeps checking siblings.
     System issues describe Blueprint's own bindings, never the agent's output.
+    ``site_universe_ids`` is the row's frozen slice (site_universe.frozen_ids); None keeps
+    the base inventory rules exactly.
     """
     if not isinstance(output, dict):
         yield _issue("", "output_schema_invalid")
@@ -403,7 +405,7 @@ def output_issues(output, run_date, *, contract_version=1, knowledge_context=Non
             if not isinstance(value, str) or len(value) > 2000 or (v23 and not value.strip()):
                 yield _issue(f"/{field}/{index}", "output_summary_invalid")
     if contract_version == 3 and "discovery_inventory" in output:
-        yield from discovery.inventory_issues(output["discovery_inventory"])
+        yield from discovery.inventory_issues(output["discovery_inventory"], site_universe_ids)
     for index, candidate in enumerate(candidates or []):
         for pointer, code in _candidate_issues(candidate, run_date, contract_version, knowledge_context,
                                                observed_at, refresh_policy, collect):
@@ -502,9 +504,10 @@ def _evidence_issues(e, run_date, contract_version, knowledge_context, observed_
                                              policy=refresh_policy if contract_version == 3 else None, collect=collect)
 
 
-def validate_output(output, run_date, known, *, contract_version=1, knowledge_context=None, observed_at=None, refresh_policy=None):
+def validate_output(output, run_date, known, *, contract_version=1, knowledge_context=None, observed_at=None, refresh_policy=None,
+                    site_universe_ids=None):
     for found in output_issues(output, run_date, contract_version=contract_version, knowledge_context=knowledge_context,
-                               observed_at=observed_at, refresh_policy=refresh_policy):
+                               observed_at=observed_at, refresh_policy=refresh_policy, site_universe_ids=site_universe_ids):
         raise Refusal(found["code"])
     accepted, duplicates = [], []
     for index, c in enumerate(output["candidates"]):
@@ -1217,12 +1220,16 @@ class Runner:
             if self.config.get("search_provider") == search.PROFILE:
                 row["search_provider"] = search.PROFILE
                 row["recurring_budget_authority_reference"] = self.config["recurring_budget_authority_reference"]
-                if plain is not None and len(canonical(row).encode()) > search.MAX_INTENT:
-                    # The slice is optional: an intent it would push over the ceiling keeps today's payload.
-                    body = plain
-                    body["metadata"]["payload_digest"] = digest(body)
-                    row.update(metadata=body["metadata"], create_payload=body,
-                               site_universe=site_universe.refused("site_universe_intent_resource_ceiling"))
+                if universe is not None and len(canonical(row).encode()) > search.MAX_INTENT:
+                    # The slice is optional and never stops an intent that fits without it: keep today's
+                    # payload, shrink the record to {state, code}, and drop even that when it does not fit.
+                    if plain is not None:
+                        body = plain
+                        body["metadata"]["payload_digest"] = digest(body)
+                        row.update(metadata=body["metadata"], create_payload=body)
+                    row["site_universe"] = site_universe.short(row["site_universe"])
+                    if len(canonical(row).encode()) > search.MAX_INTENT:
+                        row.pop("site_universe")
                 if len(canonical(row).encode()) > search.MAX_INTENT:
                     raise Refusal("research_profile_intent_resource_ceiling")
             try:
@@ -1452,7 +1459,8 @@ class Runner:
                 raise Refusal("refresh_policy_ledger_binding_invalid")
             candidates, duplicates = validate_output(output, row["date"], known,
                                                      contract_version=row.get("research_contract_version", 1),
-                                                     knowledge_context=context, observed_at=self.clock(), refresh_policy=policy)
+                                                     knowledge_context=context, observed_at=self.clock(), refresh_policy=policy,
+                                                     site_universe_ids=site_universe.frozen_ids(row))
             if row.get("discovery_profile") == "adaptive-sites-v1":
                 discovery.validate_coverage(output.get("coverage"), len(output["candidates"]))
                 if row.get("search_provider") == search.PROFILE and "defined_run_scope" not in output["coverage"]:

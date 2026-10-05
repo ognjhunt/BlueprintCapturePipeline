@@ -704,7 +704,10 @@ PYTHONPATH=$RELEASE $COMMAND funnel --days 7
   selection. `ready: true` means the next run would attach a slice;
   `enabled_unusable` gives the code the run would record.
 - `disable --apply` keeps the pin with `enabled=false`, so the next run reads
-  nothing more. Re-enable with `pin`.
+  nothing more. Re-enable with `pin`. Like `pin`, it refuses with
+  `site_universe_run_active_apply_after_run` while a run or QA is active;
+  `--during-active-run` overrides this. A running row keeps the slice it froze
+  either way.
 - `funnel --days 7` lists each run date's state and code (`attached`, `refused`,
   `exhausted` or `off`) and its funnel, and sums the counts: selection, agent work
   (touched, screened, researched with a gap, inventory and formal candidates,
@@ -721,7 +724,9 @@ state and code. Any slice failure (`site_universe_pin_invalid`,
 `site_universe_intent_resource_ceiling`, `site_universe_profile_unsupported`,
 `site_universe_attach_unavailable`) records `{state: "refused", code}` and research
 continues exactly as without the slice; an empty selection records `exhausted`.
-A lost store or lease still stops the run. The hermetic tests use the real bridge
+Near the intent ceiling the record shrinks to `{state, code}` or is dropped, so a
+pinned run never fails where an unpinned one would succeed. A lost store or lease
+still stops the run. The hermetic tests use the real bridge
 with in-memory Firestore and a fake object store. No provider, model, session, CRM
 write or send.
 

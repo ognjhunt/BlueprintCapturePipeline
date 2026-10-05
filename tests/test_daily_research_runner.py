@@ -1218,6 +1218,7 @@ def refused_cases():
         history.update(state="completed", run_key="blueprint-researcher:" + history["date"])
     tampered = prior("2026-09-29", [outcome(1)], tamper=True)
     tampered.update(state="completed", run_key="blueprint-researcher:2026-09-29")
+    tampered["packet"]["site_universe"] = "garbage"  # A damaged row that names no readable site.
     return [
         ("site_universe_pin_invalid", {**value, "slice_size": 99}, objects, ()),
         ("site_universe_slice_exceeds_research_window", {**value, "slice_size": 14}, objects, ()),
@@ -1265,17 +1266,49 @@ def test_a_lost_lease_while_reading_the_pin_stops_the_run_as_today(universe):
     assert not api.payloads and ledger.get(DAY) is None and ledger.universe_reads == ["control"]
 
 
-def test_the_slice_is_attached_only_inside_the_intent_ceiling(universe, monkeypatch):
-    from tools.daily_research import search
-    _, plain_api, plain = universe("plain-intent", control=None)
+def ceiling_case(scenario):
+    from tests.test_daily_research_site_universe import outcome, prior
     value, objects = universe_pin()
-    _, _, attached = universe("attached-intent", control=value, objects=objects)
-    low, high = plain.intents[0], attached.intents[0]
-    assert high > low + 1_000
-    monkeypatch.setattr(search, "MAX_INTENT", (low + high) // 2)
-    _, api, ledger = universe("ceiling", control=value, objects=objects)
-    assert canonical(api.payloads) == canonical(plain_api.payloads)
-    assert ledger.get(DAY)["site_universe"]["code"] == "site_universe_intent_resource_ceiling"
-    monkeypatch.setattr(search, "MAX_INTENT", low - 1)
+    history = ()
+    if scenario == "refused":
+        objects = {}
+    if scenario == "exhausted":
+        every = prior("2026-09-29", [outcome(number) for number in range(1, 10)])
+        every.update(state="completed", run_key="blueprint-researcher:2026-09-29")
+        history = (every,)
+    return value, objects, history
+
+
+@pytest.mark.parametrize("delta", [100, 300, 10, 0])
+@pytest.mark.parametrize(("scenario", "state", "code"), [
+    ("attached", "refused", "site_universe_intent_resource_ceiling"),
+    ("refused", "refused", "site_universe_object_missing"),
+    ("exhausted", "exhausted", "site_universe_slice_empty")])
+def test_a_flag_on_run_never_fails_the_intent_ceiling_where_flag_off_succeeds(universe, monkeypatch, scenario,
+                                                                               state, code, delta):
+    from tools.daily_research import search
+    value, objects, history = ceiling_case(scenario)
+    _, plain_api, plain = universe("plain", control=None, history=deepcopy(history))
+    low = plain.intents[0]
+    monkeypatch.setattr(search, "MAX_INTENT", low + delta)
+    _, api, ledger = universe("flag-on", control=value, objects=objects, history=deepcopy(history))
+    row = ledger.get(DAY)
+    assert len(api.payloads) == 1 and canonical(api.payloads) == canonical(plain_api.payloads)
+    assert ledger.intents[0] <= low + delta
+    if delta >= 100:
+        assert {key: row["site_universe"][key] for key in ("state", "code")} == {"state": state, "code": code}
+        if delta == 100:  # No full record fits in 100 bytes, so each one shrinks to {state, code}.
+            assert set(row["site_universe"]) == {"state", "code"}
+    else:
+        # No room for even the short record: the row is exactly the flag-off row.
+        assert "site_universe" not in row and canonical(row) == canonical(plain.get(DAY))
+
+
+@pytest.mark.parametrize("scenario", ["attached", "refused", "exhausted"])
+def test_the_intent_ceiling_still_stops_a_run_that_flag_off_would_stop(universe, monkeypatch, scenario):
+    from tools.daily_research import search
+    value, objects, history = ceiling_case(scenario)
+    _, _, plain = universe("plain", control=None, history=deepcopy(history))
+    monkeypatch.setattr(search, "MAX_INTENT", plain.intents[0] - 1)
     with pytest.raises(Refusal, match="^research_profile_intent_resource_ceiling$"):
-        universe("over", control=value, objects=objects)
+        universe("over", control=value, objects=objects, history=deepcopy(history))
