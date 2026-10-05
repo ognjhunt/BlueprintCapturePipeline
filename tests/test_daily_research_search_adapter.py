@@ -259,9 +259,18 @@ def test_a_caller_can_block_domains_before_any_request_and_on_every_redirect(mon
         with pytest.raises(search.ToolFailure, match="^source_destination_not_allowed$"):
             search.source({"url": url}, blocked_domains=blocked)
     assert [call[0] for call in calls] == ["operator.example"]
-    # A host that only contains a blocked name stays readable.
+    # A wrapper that holds a blocked URL is refused too, on a redirect as on a first request.
+    wrapped = "https://archive.example/web/2025/https://www.linkedin.com/in/synthetic-profile"
+    calls = install_http(monkeypatch, [(302, {"Location": wrapped}, b"")])
+    with pytest.raises(search.ToolFailure, match="^source_destination_not_allowed$"):
+        search.source({"url": "https://operator.example/team"}, blocked_domains=blocked)
+    for url in (wrapped, "https://translate.example/?u=https%3A%2F%2Flnkd.in%2Fx", "https://linkedin.com.example/"):
+        with pytest.raises(search.ToolFailure, match="^source_destination_not_allowed$"):
+            search.source({"url": url}, blocked_domains=blocked)
+    assert [call[0] for call in calls] == ["operator.example"]
+    # Without blocked domains, the agent's own reads are unchanged.
     install_http(monkeypatch, [(200, {"Content-Type": "text/plain"}, b"Synthetic page.")])
-    assert search.source({"url": "https://linkedin.com.example/"}, blocked_domains=blocked)["text"] == "Synthetic page."
+    assert search.source({"url": "https://linkedin.com.example/"})["text"] == "Synthetic page."
 
 
 def test_https_connect_pins_validated_ip_and_keeps_original_tls_hostname(monkeypatch):

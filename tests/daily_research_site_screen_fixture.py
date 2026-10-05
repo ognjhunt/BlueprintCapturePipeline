@@ -106,7 +106,8 @@ def universe_row(number, sources=("epa_frs", "osha_ita"), **changes):
 
 
 def screen_answers(number, **changes):
-    """A complete screen form answer for site ``number``: every proof quoted on its own page."""
+    """A complete screen form answer for site ``number``: every proof quoted on its own page, naming its answer;
+    the task quote names the site's city."""
     site = f"https://operator-{number}.example"
     value = {
         "website": site,
@@ -116,16 +117,22 @@ def screen_answers(number, **changes):
         "site_identity": f"{number} Example Road, Fixture City, TX",
         "site_identity_url": f"{site}/contact",
         "site_identity_quote": f"Our plant is at {number} Example Road, Fixture City, TX.",
+        "facility_type": "operations", "facility_type_url": f"{site}/plant",
+        "facility_type_quote": "The Fixture City plant machines and assembles parts for forty customers.",
+        "facility_operator": "self", "facility_operator_url": f"{site}/about",
+        "facility_operator_quote": f"Synthetic Operator {number} owns and runs the Fixture City plant itself.",
         "operating_now": "yes", "operating_now_url": f"{site}/news",
         "operating_now_quote": "The plant added a second shift this spring.", "operating_now_date": "2026-05-01",
-        "target_task": "CNC machine tending", "target_task_found": "yes", "target_task_url": f"{site}/capabilities",
-        "target_task_quote": "Operators load and unload twelve CNC lathes on every shift.",
+        "target_task": "CNC machine tending", "target_task_found": "yes", "target_task_url": f"{site}/careers/lathe",
+        "target_task_quote": "Operators at our Fixture City plant load and unload twelve CNC lathes on every shift.",
         "target_task_date": "2026-04-02",
         "manual_today": "yes", "manual_today_url": f"{site}/careers",
         "manual_today_quote": "Machine operators load bar stock and unload finished parts by hand.",
         "manual_today_date": "2026-09-01",
         "existing_automation": "unknown", "existing_automation_url": "", "existing_automation_quote": "",
         "existing_automation_date": "",
+        "variability_signals": "high-mix batches", "variability_signals_url": f"{site}/plant",
+        "variability_signals_quote": "We run high-mix batches with frequent changeovers every single week.",
         "notes": "No public evidence on robot use was found.",
     }
     value.update(changes)

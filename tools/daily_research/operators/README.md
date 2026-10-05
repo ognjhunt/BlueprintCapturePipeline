@@ -742,8 +742,9 @@ write or send.
 `site-screen.py` runs the per-site research line for ADP-010 partner discovery. The
 owner approved it on 2026-10-05 after a successful 50-site pilot. Each site gets one
 Parallel Task run (processor `core`, $0.025 per completed run; failed runs are not
-billed). The run fills the `blueprint.site-screen.v1` form, with a URL and an exact
-quote for each answer. An optional second stage, the contact screen
+billed). The run fills the `blueprint.site-screen.v2` form, with a URL and an exact
+quote for each answer (design v1.1: the facility type and operator and the
+variability signals are added). An optional second stage, the contact screen
 (`blueprint.site-contact.v1`), runs only for sites whose screen is outreach-ready
 (owner decision 2026-10-05, company GCS
 `operations/recovery/2026-10-05/owner-decisions/owner-decision-contact-sources-20261005.json`).
@@ -755,9 +756,10 @@ RELEASE=/opt/render/project/src/dist/daily-research/release
 COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/site-screen.py"
 OUT=/Users/Shared/blueprint-private/site-screen-20261005  # Durable, outside every Git work tree, never /tmp.
 SPEND="--owner-reference REF --ceiling-usd 15 --max-runs 700"
-PYTHONPATH=$RELEASE $COMMAND plan --input /PRIVATE/backlog.v1.json.gz
-PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT $SPEND
-PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT $SPEND --apply
+BATCH="--batch-size N --seed site-screen-calibration-v1"  # Below the eligible count, at most --max-runs.
+PYTHONPATH=$RELEASE $COMMAND plan --input /PRIVATE/backlog.v1.json.gz $BATCH
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz $BATCH --out $OUT $SPEND
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz $BATCH --out $OUT $SPEND --apply
 PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
 PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
 PYTHONPATH=$RELEASE $COMMAND contact --out $OUT $SPEND --apply
@@ -778,15 +780,23 @@ repository root, with `--key-file` set to a private env file. Start with
   export rows. Sites are screened in file order, which is rank order for an export.
   Inventory records with disposition `rejected`, `learning` or `duplicate` are
   refused, and a site listed twice is refused the second time. `plan` counts each
-  refusal by code and estimates the cost of all sites. It reads nothing else.
-- On a site universe row with an `osha_ita` or `epa_frs` source, that government
-  record is the primary source for the operator (`operator`, else the establishment
-  `name`). When the row also has a street, city and state, it is the primary source
-  for the exact site too. The record is kept as
-  `{source: "government_record", source_ids, site_id, answer}`. Any other row, and
-  each web-found inventory site, must prove both with its own quotes. The export
-  does not record which source supplied each field (an OpenStreetMap record can
-  supply the name), so `source_ids` lists every source of the row.
+  refusal by code and estimates the cost of the batch. It reads nothing else.
+- `--batch-size N` (on `plan` and `run`) screens N sites: the first ones in file
+  order, with about one in ten taken instead from below that cut and flagged
+  `calibration: true`, so the ranking's yield can be measured. Calibration sites are
+  those with the lowest `sha256(seed:site_key)`, so one input, size and `--seed` give
+  the same batch on any host; one follows each nine ranked sites. A batch larger than
+  `--max-runs` is refused (`site_screen_batch_exceeds_max_runs`). When every site
+  fits, there is no cut and no calibration site, so choose N below the eligible count
+  that `plan` shows. The flag is never sent to the provider; `summary` counts tiers
+  for ranked and calibration sites separately.
+- On a site universe row with an `osha_ita` or `epa_frs` source and a street, city
+  and state, that government record is the primary source for the exact site
+  address, kept as `{source: "government_record", source_ids, site_id, answer}`.
+  The operator always needs its own quote: the export does not record which source
+  supplied the name or operator (an OpenStreetMap record can), so `source_ids` lists
+  every source of the row. Any other row, and each web-found inventory site, must
+  prove the address with its own quote too.
 - `run` and `contact` are dry runs unless `--apply`. A dry run makes the same
   admission, writes nothing and calls nothing.
 - The first `--apply` (of either stage) pins `--ceiling-usd`, `--max-runs` and
@@ -833,23 +843,45 @@ repository root, with `--key-file` set to a private env file. Start with
   `observed` line with its SHA-256. A 401 stops it; other read errors are counted and
   tried again on the next pass.
 - `verify` reads each cited page once with the daily agent's reader (`search.source`,
-  45 s alarm) and writes `<stage>/records/<site_key>.json` once. A quote is
-  `verified_on_page`; else `in_citation_excerpt` when one provider citation excerpt
-  for that field holds it; else `unverified`, or `unverified_page_unreachable` with
-  the read's code. A field without a URL and quote is `no_quote`. Matching is exact
-  after NFKC, lower case, plain quotes and dashes, and single spaces. A quote of 40
-  or more characters also matches on its leading or trailing 90 %. The verifier
-  never fetches LinkedIn (`linkedin.com`, any subdomain of it, or `lnkd.in`), on the
-  first request or on any redirect.
-- `outreach_ready` needs the operator, the exact physical site and the site task
-  each proven by a primary source, with a quote at `verified_on_page` or
-  `in_citation_excerpt`; on site universe rows the government record counts for
-  operator and site. `operating_now` must not be `no` and `existing_automation` must
-  not be `yes`; an answer that is not yes, no or unknown also fails these two
-  checks. Every other site is `screened`. `open_questions` lists what the rule leaves
-  unproven, for the first email: `manual_workflow`, `existing_automation`,
-  `freshness` (the site operating now and the task evidence within 18 months), and
-  `fit` and `interest`, which are always open.
+  45 s alarm) and keeps the text in `<stage>/evidence/<site_key>.json` with its date.
+  A quote needs at least five words. It is `verified_on_page` when our read of its
+  own URL holds every word of it, in order and as whole words (only case, spacing and
+  punctuation may differ; there is no near match); else `in_citation_excerpt` when a
+  provider citation excerpt cited for that same URL (scheme, `www.`, a trailing slash
+  and the fragment aside) holds it; else `unverified`, or
+  `unverified_page_unreachable` with the read's code. Other levels are `no_quote`,
+  `quote_too_short` and `source_not_allowed`.
+- LinkedIn is never read and never evidence: any URL whose host is `linkedin.com`,
+  `lnkd.in` or a subdomain, or that contains either name (an archive, translation or
+  redirect wrapper), is refused before any connection, on the first request and on
+  every redirect, and its excerpts are ignored. Both forms send
+  `source_policy: {exclude_domains: ["linkedin.com", "lnkd.in"]}`.
+- A proven quote must also name its answer: every significant word of the operator's
+  name (legal forms aside); the input street, or the input city followed by its
+  state code or name (USPS suffixes such as Road and Rd match); and a word of the
+  task phrase. The task quote, its page or a same-URL excerpt must name the site's
+  city or street; otherwise the task is `company_level_task` and does not qualify.
+- `outreach_ready` (rule `blueprint.site-screen-rule.v2`, design v1.1) needs the
+  operator, the exact site and the site task each proven that way, and nothing
+  contradicted: the site shown closed (`operating_now` `no`, or an answer that is
+  not yes, no or unknown), and, each with a proven quote, an `office` or `mailing`
+  facility, a `contractor` or `tenant` site the input attributes to another operator,
+  `manual_today` `no`, or `existing_automation` `full` (this task at this site fully
+  automated). Partial automation, or automation of other tasks or sites, keeps the
+  site eligible. Every other site is `screened`, with its `blockers`.
+- Each record asks exactly one question, the first of S, M and A whose check is open:
+  S (site link open) "Is <task> done at your <site> site, or somewhere else in the
+  company?"; M (manual workflow open) "Which parts of <task> at <site> still need
+  people, and what has kept them from being automated?"; A "What has kept the
+  remaining <task> work at <site> from being automated so far?". `<site>` is the
+  input city, else the site name. Every other open check (existing automation,
+  freshness, fit, interest) is recorded in `open_checks` and not asked.
+  `variability_signals` is recorded and never required.
+- Records are recomputed from the stored raw results and page reads, under each
+  stage's current rule (`screen_gates` gives the lead-verification gate shape and
+  `evidence_index` the URL-keyed evidence). `verify` writes
+  `<stage>/records/<site_key>.<rule>.json`, and `summary` and `contact` recompute in
+  memory, so a new rule needs no paid run, no page read and no deletion.
 - `contact` creates one run per outreach-ready screen record, in screen order,
   under its own ledger, ceiling and run limit. The form asks for the deciding role,
   a named current person from a reputable public source, a business email address
@@ -867,9 +899,10 @@ repository root, with `--key-file` set to a private env file. Start with
   `person_current` (no dated source within 18 months) and `recipient` are added when
   they are unproven.
 - `summary` prints and writes `summary.json`: for each stage, run counts, answer and
-  quote-level counts by field, check and tier counts (also by origin), recipient,
-  person and email levels, open questions, and cost. `estimated_cost_usd` counts
-  completed runs; `committed_usd` counts each run that may be billed.
+  quote-level counts by field, claim states, tier counts (by origin and for ranked and
+  calibration sites), blockers, questions, open checks, recipient, person and email
+  levels, and cost. `estimated_cost_usd` counts completed runs; `committed_usd`
+  counts each run that may be billed.
 - The key comes from `PARALLEL_API_KEY`, or from `--key-file` (KEY=VALUE lines,
   `export` allowed) when one is given. It is never printed or written. `--out` must
   be outside this repository and outside any Git work tree

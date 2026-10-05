@@ -141,7 +141,7 @@ def test_an_email_not_on_its_page_is_discarded_and_recorded_unverified(tmp_path)
     assert record["email"] == {"verified": False, "level": "unverified", "discarded": True}
     assert record["recipient"] == {"kind": "none", "rank": 3, "address": None}
     assert [question["check"] for question in record["open_questions"]] == ["decision_remit", "recipient"]
-    stored = workspace.path("contact", "records", record["site_key"]).read_text()
+    stored = workspace.record_path("contact", record["site_key"]).read_text()
     assert answers["email"] not in stored  # Discarded: only the raw provider response keeps it.
 
 
@@ -153,25 +153,27 @@ def test_a_pattern_guessed_email_is_refused(tmp_path):
     assert record["person"]["verified"] is True
     assert record["email"] == {"verified": False, "level": "unverified", "discarded": True}
     assert record["recipient"]["kind"] == "none"
-    assert guessed not in workspace.path("contact", "records", record["site_key"]).read_text()
+    assert guessed not in workspace.record_path("contact", record["site_key"]).read_text()
 
 
-@pytest.mark.parametrize("published, claimed, near", [
+@pytest.mark.parametrize("published, claimed, quote_on_page", [
     ("sales@operator-1.example.net", "sales@operator-1.example", True),  # The page's address is longer.
-    ("sales@operator-1.example", "sales@operator-1.exampl", True),  # The claim cuts the domain.
+    ("sales@operator-1.example", "sales@operator-1.exampl", False),  # The claim cuts the domain.
     ("presales@operator-1.example", "sales@operator-1.example", False),  # The page's local part is longer.
     ("sales@operator-1.example", "s.ales@operator-1.example", False),  # A changed local part.
     ("sales [at] operator-1.example", "sales@operator-1.example", False),  # Obfuscated: not published verbatim.
 ])
-def test_only_an_address_published_verbatim_is_accepted(tmp_path, published, claimed, near):
+def test_only_an_address_published_verbatim_is_accepted(tmp_path, published, claimed, quote_on_page):
     quote = LONG.format(claimed)
     answers = contact_answers(1, email=claimed, email_quote=quote, email_url="https://operator-1.example/visit",
                               channel_type="general_inbox")
     page = "Visitors. " + LONG.format(published)
-    # The near-exact quote rule alone would accept some of these quotes; the address check still refuses them.
-    assert ss.contains(ss.normalize(quote), ss.normalize(page)) is near
+    # Whole-word matching ignores the @, so a quote can stand on a page that publishes a longer address; the
+    # address check still refuses it.
+    assert ss.has_phrase(ss.words(quote), ss.words(page)) is quote_on_page
     _, _, (record,), _ = contacted(tmp_path, [answers], {**pages_for(answers, ["person"]), answers["email_url"]: page})
-    assert record["email"] == {"verified": False, "level": "unverified", "discarded": True}
+    assert {key: record["email"][key] for key in ("verified", "level", "discarded")} == {
+        "verified": False, "level": "unverified", "discarded": True}
     assert record["recipient"]["kind"] == "none"
 
 
@@ -206,7 +208,7 @@ def test_the_person_quote_must_contain_the_name_and_the_page_must_show_it(tmp_pa
                                      f"{nameless['email_quote']}",
              renamed["person_url"]: renamed["person_quote"].replace(OTHER_PERSON, "Jordan Fixtur") + " "
                                     + renamed["email_quote"]}
-    assert ss.contains(ss.normalize(renamed["person_quote"]), ss.normalize(pages[renamed["person_url"]]))
+    assert not ss.has_phrase(ss.words(renamed["person_quote"]), ss.words(pages[renamed["person_url"]]))
     _, _, (first, second), _ = contacted(tmp_path, [nameless, renamed], pages)
     assert first["person"] == {"verified": False, "level": "unverified", "reason": "site_screen_quote_lacks_name"}
     assert second["person"] == {"verified": False, "level": "unverified"}  # The near-exact quote never vouches for a name.
@@ -297,7 +299,7 @@ def test_the_contact_command_prints_counts_only(tmp_path, capsys):
     operator.main(["collect", "--out", out, "--wait-seconds", "0"], environ=environ, transport=provider)
     pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
     assert operator.main(["verify", "--out", out], reader=FakePages(pages), today=TODAY)["contact"] == {
-        "written": 2, "kept": 0, "recipient_person_email": 2}
+        "records": 2, "pages_kept": 2, "recipient_person_email": 2}
     report = operator.main(["summary", "--out", out])
     assert report["contact"]["recipients"] == {"person_email": 2, "team_inbox": 0, "general_inbox": 0, "none": 0}
     output = capsys.readouterr().out

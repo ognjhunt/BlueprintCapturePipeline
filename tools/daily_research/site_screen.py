@@ -2,14 +2,15 @@
 
 Owner decision 2026-10-05, after a successful 50-site pilot: each site gets one Parallel Task run
 (processor ``core``, $0.025 per completed run; failed runs are not billed) that fills the versioned
-``blueprint.site-screen.v1`` form, with a URL and an exact quote for every answer. A site whose screen
+``blueprint.site-screen.v2`` form, with a URL and an exact quote for every answer. A site whose screen
 is outreach-ready may then get one run of the ``blueprint.site-contact.v1`` form: the deciding role,
 a named person and a published business address (owner decision 2026-10-05,
 ``owner-decision-contact-sources-20261005.json``). Nothing here sends, drafts or writes a CRM.
 
-Inputs are daily-run discovery inventory records or site universe export rows (``load_sites``). On a
-site universe row with an OSHA ITA or EPA FRS source, that government record is the primary source
-for the operator and the exact site. A web-found site must prove both with its own quotes.
+Inputs are daily-run discovery inventory records or site universe export rows (``load_sites``); a batch
+may add about one calibration site in ten from below the ranked cut (``select_batch``). On a site
+universe row with an OSHA ITA or EPA FRS source, that government record is the primary source for the
+exact site address only. The operator, and the site of a web-found input, need their own quotes.
 
 Spend. The first ``--apply`` pins the owner's ceiling, run limit and owner reference in
 ``owner_ceiling.json``, which is created once; a later invocation may only lower them. Every event is
@@ -24,11 +25,18 @@ Only a run observed ``failed`` frees its price. On the daily worker, ``run`` and
 until this line uses ``paid_resource_admission`` (see ``operators/README.md``).
 
 Verification reads each cited page once with the daily agent's own reader (``search.source``) under
-its wall-time alarm, and never reads LinkedIn. A quote is ``verified_on_page``; else
-``in_citation_excerpt`` when one of the provider's citation excerpts for that field holds it (our read
-failed, or the page shows it only after scripts run); else ``unverified``, or
-``unverified_page_unreachable`` when our read failed. Matching is exact after normalization; a quote
-of 40 or more characters also matches on its leading or trailing 90 %.
+its wall-time alarm, and keeps the text. It never reads, and never accepts as evidence, a LinkedIn URL,
+including one inside an archive or redirect wrapper. A quote of at least five words is
+``verified_on_page`` when our read of its own URL holds every word of it, in order and as whole words
+(case, spacing and punctuation may differ); else ``in_citation_excerpt`` when a provider excerpt cited
+for that same URL does; else ``unverified``, or ``unverified_page_unreachable`` when our read failed.
+A proven quote must also name its answer: the operator's name, the input site's street or its city and
+state, and a word of the task. The task quote, or its page, must name the site's city or street;
+otherwise the task is only ``company_level_task``.
+
+Records are recomputed from the stored raw results and page reads under ``SCREEN_RULE`` (``screen_gates``
+and ``outreach_tier``, which mirror the in-flight ``verification.outreach_gates`` and ``outreach_tier``),
+so a later rule needs no paid re-run, and each derived file carries its rule version in its name.
 
 The API key is given to ``TaskClient`` and held only in its request headers: it is never read from a
 module global, logged or written. Failures leave as stable ``site_screen_*`` codes, never upstream text.
@@ -36,7 +44,6 @@ module global, logged or written. Failures leave as stable ``site_screen_*`` cod
 import hashlib
 import http.client
 import json
-import math
 import os
 import re
 import secrets
@@ -49,14 +56,20 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
-SCREEN = "blueprint.site-screen.v1"
+from tools.daily_research.verification import normalized  # Standard library only, like this module.
+
+SCREEN = "blueprint.site-screen.v2"
 CONTACT = "blueprint.site-contact.v1"
-INPUT = "blueprint.site-screen.input.v1"
+INPUT = "blueprint.site-screen.input.v2"
 LEDGER = "blueprint.site-screen.ledger.v1"
-SUMMARY = "blueprint.site-screen.summary.v1"
+SUMMARY = "blueprint.site-screen.summary.v2"
 OWNER_CEILING = "blueprint.site-screen.owner-ceiling.v1"
+EVIDENCE = "blueprint.site-screen.evidence.v1"
+# The rules each stage's records are recomputed under; a derived file's name carries its rule version.
+SCREEN_RULE = "blueprint.site-screen-rule.v2"
+CONTACT_RULE = "blueprint.site-contact-rule.v1"
 STAGES = ("screen", "contact")
 API_HOST, RUNS_PATH = "api.parallel.ai", "/v1/tasks/runs"
 API_KEY_ENV = "PARALLEL_API_KEY"  # The operator reads it; this module only receives the value.
@@ -75,18 +88,49 @@ PAGE_READ_SECONDS = 45  # The search.bounded_request alarm for one page read, re
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_INPUT_BYTES = 16 * 1024 * 1024
 FRESH_DAYS = 548  # The forms ask for sources from the last 18 months.
-NEAR_EXACT_CHARACTERS, NEAR_EXACT_SHARE = 40, 0.9
+MIN_QUOTE_WORDS = 5  # A shorter quote proves too little: a few words appear on almost any page.
+CALIBRATION_EVERY = 10  # About one batch site in ten is a calibration site from below the ranked cut.
+DEFAULT_SEED = "site-screen-calibration-v1"
 GOVERNMENT_SOURCES = frozenset({"epa_frs", "osha_ita"})  # Site universe source ids of EPA FRS and OSHA ITA.
 EXCLUDED_DISPOSITIONS = frozenset({"duplicate", "learning", "rejected"})  # Never new opportunities.
 INVENTORY_VERSION = "blueprint.discovery-inventory.v1"  # discovery.INVENTORY_VERSION
 INVENTORY_FIELDS = ("operator", "site", "location", "task_hypothesis", "source_urls")
-NEVER_FETCH = ("linkedin.com", "lnkd.in")  # LinkedIn's terms ban automated access: never read, never evidence.
+# LinkedIn's terms ban automated access: never read, never evidence, and excluded from the provider's search.
+NEVER_FETCH = ("linkedin.com", "lnkd.in")
+SOURCE_POLICY = {"exclude_domains": list(NEVER_FETCH)}  # Task API source_policy; an apex covers its subdomains.
 PROVEN = frozenset({"verified_on_page", "in_citation_excerpt"})
 STATUSES = frozenset({"queued", "action_required", "running", "completed", "failed", "cancelling", "cancelled"})
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 TIERS = ("outreach_ready", "screened")
 RECIPIENT_PREFERENCE = ("person_email", "team_inbox", "general_inbox")  # The owner's order; else none.
 CHANNELS = (*RECIPIENT_PREFERENCE, "contact_form", "phone", "none")
+# The lead-verification claims and the three a quote must prove (verification.CLAIMS and PROVEN_FACTS).
+CLAIMS = ("operator", "physical_site", "site_task", "human_workflow", "plausible_fit")
+PROVEN_FACTS = ("operator", "physical_site", "site_task")
+LEGAL_WORDS = frozenset({"inc", "incorporated", "llc", "llp", "lp", "ltd", "limited", "co", "corp", "corporation",
+                         "company", "plc", "pllc", "the", "and", "of"})
+TASK_STOPWORDS = frozenset({"a", "an", "and", "or", "of", "the", "to", "for", "in", "on", "at", "by", "with", "from"})
+# USPS street suffixes, directions and ordinals (tools/site_universe/normalize.py), and city abbreviations.
+STREET_WORDS = {"street": "st", "road": "rd", "avenue": "ave", "av": "ave", "drive": "dr", "boulevard": "blvd",
+                "highway": "hwy", "parkway": "pkwy", "lane": "ln", "court": "ct", "place": "pl", "circle": "cir",
+                "terrace": "ter", "trail": "trl", "square": "sq", "freeway": "fwy", "expressway": "expy",
+                "center": "ctr", "route": "rte", "suite": "ste", "north": "n", "south": "s", "east": "e", "west": "w",
+                "northeast": "ne", "northwest": "nw", "southeast": "se", "southwest": "sw", "first": "1st",
+                "second": "2nd", "third": "3rd", "fourth": "4th", "fifth": "5th", "sixth": "6th", "seventh": "7th",
+                "eighth": "8th", "ninth": "9th", "tenth": "10th"}
+CITY_WORDS = {"ft": "fort", "mt": "mount", "st": "saint", "pt": "port"}
+STATE_NAMES = {
+    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
+    "CT": "connecticut", "DE": "delaware", "DC": "district of columbia", "FL": "florida", "GA": "georgia",
+    "HI": "hawaii", "ID": "idaho", "IL": "illinois", "IN": "indiana", "IA": "iowa", "KS": "kansas",
+    "KY": "kentucky", "LA": "louisiana", "ME": "maine", "MD": "maryland", "MA": "massachusetts", "MI": "michigan",
+    "MN": "minnesota", "MS": "mississippi", "MO": "missouri", "MT": "montana", "NE": "nebraska", "NV": "nevada",
+    "NH": "new hampshire", "NJ": "new jersey", "NM": "new mexico", "NY": "new york", "NC": "north carolina",
+    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon", "PA": "pennsylvania",
+    "PR": "puerto rico", "RI": "rhode island", "SC": "south carolina", "SD": "south dakota", "TN": "tennessee",
+    "TX": "texas", "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
+    "WI": "wisconsin", "WY": "wyoming"}
+STATE_CODES = {name: code for code, name in STATE_NAMES.items()}
 SHA = re.compile(r"[0-9a-f]{64}")
 ATTEMPT = re.compile(r"[0-9a-f]{16}")
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -94,13 +138,8 @@ API_KEY = re.compile(r"[\x21-\x7e]{8,512}")
 REFERENCE = re.compile(r"[\x20-\x7e]{1,200}")
 SOURCE_ID = re.compile(r"[a-z0-9_]{1,64}")
 CODE = re.compile(r"[a-z][a-z0-9_]{2,80}")
-CHOICE = re.compile(r"(yes|no|unknown)\b")
 DAY = re.compile(r"(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?")
 EMAIL = re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
-SINGLE_QUOTES = re.compile("[\u2018\u2019\u201b']")
-DOUBLE_QUOTES = re.compile('[\u201c\u201d\u201f"]')
-DASHES = re.compile("[\u2010-\u2015-]")
-WHITESPACE = re.compile(r"\s+")
 CODE_ROOT = Path(__file__).resolve().parents[2]  # The repository, or the release directory holding this copy.
 
 
@@ -120,7 +159,8 @@ def _form(description, properties):
 
 ANSWER = "One of: yes, no, unknown. Use unknown unless a source supports yes or no."
 URL = "The single best public source URL supporting this answer, or empty when unknown."
-QUOTE = "An exact sentence copied verbatim from that source supporting the answer, or empty."
+QUOTE = ("An exact sentence of at least five words copied verbatim from that source, supporting the answer, or "
+         "empty.")
 DATE = "The source's publication or update date as YYYY-MM-DD if shown, else empty."
 PRIMARY = ("Use a primary source that owns the fact: the operator's own website, careers or job pages, a "
            "government record, or the operator's own press release or filing. Never use a directory, data broker, "
@@ -129,37 +169,53 @@ PERSON_SOURCES = ("Use only a reputable public source: the operator's own pages,
                   "news, a job post, or a conference or association page.")
 NO_LINKEDIN = ("Do not use LinkedIn as the source; a LinkedIn profile may only point you to a confirming press "
                "release, news story, job post or company page.")
-# The pilot's form, with the operator and the exact site added as quoted primary-source answers.
+# The pilot's form, with the operator, the exact site, the facility and its variability added as quoted answers.
 SCREEN_SCHEMA = _form(
     "Research ONE specific physical site (not the company in general) for a fixed-arm robot design partnership. "
     "Answer only from public sources about this exact site or its operator, quote sources exactly, and prefer "
     "sources from the last 18 months.",
     {"website": _s("The operator's official website URL, or empty."),
-     "operator_identity": _s("The name of the company that operates this exact site, as a primary source states it, "
-                             "or empty. " + PRIMARY),
+     "operator_identity": _s("The name of the company that runs the physical work at this exact site, as a primary "
+                             "source states it, or empty. " + PRIMARY),
      "operator_identity_url": _s("The primary source URL that names this operator at this site, or empty."),
-     "operator_identity_quote": _s("An exact sentence copied verbatim from that source that names the operator at "
-                                   "this site, or empty."),
+     "operator_identity_quote": _s("An exact sentence of at least five words copied verbatim from that source that "
+                                   "names the operator, or empty."),
      "site_identity": _s("The exact street address of this physical site (not a headquarters elsewhere), as a "
                          "primary source states it, or empty. " + PRIMARY),
      "site_identity_url": _s("The primary source URL that states this address, or empty."),
-     "site_identity_quote": _s("An exact sentence copied verbatim from that source that states this address, "
-                               "or empty."),
+     "site_identity_quote": _s("An exact sentence of at least five words copied verbatim from that source that "
+                               "states this street address, or this site's city and state, or empty."),
+     "facility_type": _s("What is at this address. One of: operations (a plant, shop, warehouse, lab or other site "
+                         "where physical work is done), office (offices only), mailing (a mailing, registered or "
+                         "headquarters address with no operations), unknown."),
+     "facility_type_url": _s(URL), "facility_type_quote": _s(QUOTE),
+     "facility_operator": _s("Who runs the physical work at this site. One of: self (the company in operator_identity "
+                             "runs it for itself), contractor (that company runs it as a contractor or third-party "
+                             "provider for another company), tenant (another company runs the work there, or that "
+                             "company is a tenant in another company's site), unknown."),
+     "facility_operator_url": _s(URL), "facility_operator_quote": _s(QUOTE),
      "operating_now": _s("Is this site operating now? " + ANSWER),
      "operating_now_url": _s(URL), "operating_now_quote": _s(QUOTE), "operating_now_date": _s(DATE),
      "target_task": _s("Short name of a repetitive physical task done at THIS site that a fixed robot arm could take "
                        "on, for example CNC machine tending, molding press unloading, case palletizing or kitting. "
                        "Empty if none found."),
      "target_task_found": _s("Is that task evidenced at this site? " + ANSWER),
-     "target_task_url": _s(URL), "target_task_quote": _s(QUOTE), "target_task_date": _s(DATE),
+     "target_task_url": _s("The best public source URL for this task at THIS site: a job post for work at this site, "
+                           "or a page about this site that names its city or street. Empty when unknown."),
+     "target_task_quote": _s(QUOTE), "target_task_date": _s(DATE),
      "manual_today": _s("Do people do this task by hand at this site now, for example a job post for operators, "
                         "loaders or packers listing that duty? " + ANSWER),
      "manual_today_url": _s(URL), "manual_today_quote": _s(QUOTE), "manual_today_date": _s(DATE),
-     "existing_automation": _s("Is there public evidence this site already uses robots or automation for this task, "
-                               "for example a vendor case study, press release or robot technician job post? "
-                               + ANSWER),
+     "existing_automation": _s("Does this site already automate this task? One of: full (a source shows this exact "
+                               "task at this site fully done by robots or automation), partial (a source shows some of "
+                               "this task at this site automated, or automation of other tasks or at other sites of "
+                               "the company), no (a source shows this task done without automation), unknown."),
      "existing_automation_url": _s(URL), "existing_automation_quote": _s(QUOTE),
      "existing_automation_date": _s(DATE),
+     "variability_signals": _s("A short phrase naming what a source shows about the work at this site: high-mix or "
+                               "low-volume work, frequent changeovers, many SKUs or part types, or irregular items. "
+                               "Empty when none is found."),
+     "variability_signals_url": _s(URL), "variability_signals_quote": _s(QUOTE),
      "notes": _s("One or two sentences on what could not be established.")})
 CONTACT_SCHEMA = _form(
     "For ONE specific physical site, find who would decide on a fixed-arm robot pilot for the named task, and a "
@@ -193,19 +249,25 @@ FORMS = {stage: {"version": version, "json_schema": schema,
          for stage, version, schema in (("screen", SCREEN, SCREEN_SCHEMA), ("contact", CONTACT, CONTACT_SCHEMA))}
 # Quoted screen answers: name -> (answer field, date field). Each also has <name>_url and <name>_quote.
 SCREEN_PROOFS = {"operator_identity": ("operator_identity", None), "site_identity": ("site_identity", None),
+                 "facility_type": ("facility_type", None), "facility_operator": ("facility_operator", None),
                  "operating_now": ("operating_now", "operating_now_date"),
                  "target_task": ("target_task_found", "target_task_date"),
                  "manual_today": ("manual_today", "manual_today_date"),
-                 "existing_automation": ("existing_automation", "existing_automation_date")}
+                 "existing_automation": ("existing_automation", "existing_automation_date"),
+                 "variability_signals": ("variability_signals", None)}
+# Enumerated answers by proof. An answer whose first word is none of these reads as other; an empty one as blank.
+CHOICES = {"operating_now": ("yes", "no", "unknown"), "target_task": ("yes", "no", "unknown"),
+           "manual_today": ("yes", "no", "unknown"), "existing_automation": ("full", "partial", "no", "unknown"),
+           "facility_type": ("operations", "office", "mailing", "unknown"),
+           "facility_operator": ("self", "contractor", "tenant", "unknown")}
 PERSON_FIELDS = frozenset({"person_name", "person_title", "person_url", "person_quote", "person_date"})
 EMAIL_FIELDS = frozenset({"email", "email_url", "email_quote"})
-SCREEN_QUESTIONS = {
-    "manual_workflow": "Do people still do this task by hand at the site today?",
-    "existing_automation": "Does the site already use robots or other automation for this task?",
-    "freshness": "Is the site operating now, and is the task evidence still current?",
-    "fit": "Do the parts, cycle times and cell layout suit a fixed robot arm?",
-    "interest": "Would the site take part in a fixed-arm robot design partnership?",
-}
+# Exactly one question per site (design v1.1, section 10), the first whose check is open, in this order. A is
+# the last: its check, existing automation, is always open. Every other open check is recorded, not asked.
+QUESTIONS = (("S", "site_link", "Is {task} done at your {site} site, or somewhere else in the company?"),
+             ("M", "manual_workflow",
+              "Which parts of {task} at {site} still need people, and what has kept them from being automated?"),
+             ("A", "existing_automation", "What has kept the remaining {task} work at {site} from being automated so far?"))
 CONTACT_QUESTIONS = {
     "decision_remit": "Does this person decide on a robot pilot for this task at this site? A title does not prove it.",
     "decision_maker": "Who decides on a robot pilot for this task at this site?",
@@ -355,10 +417,12 @@ class TaskClient:
 
 
 def create_body(stage, site, processor):
-    """The exact create request: the site's task input, its stable key as metadata and the stage's form."""
+    """The exact create request: the site's task input, its stable key as metadata, the stage's form, and a
+    source policy that keeps LinkedIn out of the provider's search."""
     form = FORMS[stage]
     return {"processor": processor, "input": site["task_input"],
             "metadata": {"site_key": site["site_key"], "form": form["version"]},
+            "source_policy": SOURCE_POLICY,
             "task_spec": {"output_schema": {"type": "json", "json_schema": form["json_schema"]}}}
 
 
@@ -373,11 +437,7 @@ def _clean(value, limit=2000):
 
 
 def _compact(value):
-    return {key: item for key, item in value.items() if item not in (None, "", [])}
-
-
-def _words(value):
-    return " ".join(re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", value or "").lower()))
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def _public_url(value):
@@ -390,7 +450,21 @@ def _public_url(value):
             and not parts.username and not parts.password)
 
 
-def from_inventory(record):
+def parse_location(text):
+    """Street, city and state from a free-text US location such as '12 Main St, Springfield, IL 62701'; empty
+    when the last part names no state."""
+    parts = [part.strip() for part in (text or "").split(",") if part.strip()]
+    if parts and normalized(parts[-1]) in {"us", "usa", "united states", "united states of america"}:
+        parts = parts[:-1]
+    match = re.fullmatch(r"([A-Za-z .]+?)(?:\s+\d{5}(?:-\d{4})?)?", parts[-1]) if len(parts) >= 2 else None
+    name = match.group(1).strip() if match else ""
+    state = name.upper() if name.upper() in STATE_NAMES else STATE_CODES.get(normalized(name))
+    if not state:
+        return {}
+    return _compact({"street": ", ".join(parts[:-2]) or None, "city": parts[-2], "state": state})
+
+
+def from_inventory(record, *, calibration=False):
     """A web-found site from one daily-run discovery inventory record. Its operator and exact site must
     still be proven by the screen's own quotes."""
     if not isinstance(record, dict) or not set(INVENTORY_FIELDS) <= set(record):
@@ -409,15 +483,18 @@ def from_inventory(record):
     # A record about a site universe site shares that site's key, so the site is never screened twice.
     universe = record.get("site_universe_id")
     key = universe if isinstance(universe, str) and SHA.fullmatch(universe) else _sha256(
-        canonical(["discovery_inventory", _words(operator), _words(site), _words(location)]).encode())
-    return {"schema_version": INPUT, "site_key": key, "origin": "discovery_inventory", "identity": {},
+        canonical(["discovery_inventory", normalized(operator or ""), normalized(site or ""),
+                   normalized(location)]).encode())
+    return {"schema_version": INPUT, "site_key": key, "origin": "discovery_inventory", "calibration": calibration,
+            "identity": {}, "address": parse_location(location),
             "task_input": _compact({"site_name": site, "operator": operator, "location": location,
                                     "task_hint": task, "known_source_urls": list(urls)})}
 
 
-def from_site_universe(row):
-    """A site from one site universe export row. With an OSHA ITA or EPA FRS source, that government record
-    is the primary source for the operator and, when it gives a street, the exact site."""
+def from_site_universe(row, *, calibration=False):
+    """A site from one site universe export row. With an OSHA ITA or EPA FRS source and a street, city and
+    state, that government record is the primary source for the exact site address. The operator still needs
+    a quote: the export does not say which source gave the name or operator."""
     if not isinstance(row, dict) or not isinstance(row.get("site_id"), str) or not SHA.fullmatch(row["site_id"]):
         raise ScreenError("site_screen_input_record_invalid")
     name, operator, street, city, state, postal, naics, lead = (_clean(row.get(field), 500) for field in (
@@ -432,12 +509,11 @@ def from_site_universe(row):
     if not address:
         raise ScreenError("site_screen_input_location_missing")
     identity = {}
-    if GOVERNMENT_SOURCES & set(sources):
-        record = {"source": "government_record", "source_ids": sorted(set(sources)), "site_id": row["site_id"]}
-        identity["operator"] = {**record, "answer": operator or name}
-        if street and city and state:
-            identity["physical_site"] = {**record, "answer": address}
-    return {"schema_version": INPUT, "site_key": row["site_id"], "origin": "site_universe", "identity": identity,
+    if GOVERNMENT_SOURCES & set(sources) and street and city and state:
+        identity["physical_site"] = {"source": "government_record", "source_ids": sorted(set(sources)),
+                                     "site_id": row["site_id"], "answer": address}
+    return {"schema_version": INPUT, "site_key": row["site_id"], "origin": "site_universe", "calibration": calibration,
+            "identity": identity, "address": _compact({"street": street, "city": city, "state": state}),
             "task_input": _compact({"site_name": name, "operator": operator, "location": address,
                                     "task_hint": lead.replace("_", " ") if lead else None, "naics": naics})}
 
@@ -484,6 +560,36 @@ def load_sites(raw):
     return sites, refused
 
 
+def parse_batch_size(value):
+    if type(value) is not int or not 1 <= value <= MAX_RUNS:
+        raise ScreenError("site_screen_batch_size_invalid")
+    return value
+
+
+def select_batch(sites, size, seed=DEFAULT_SEED):
+    """``size`` sites: the first ones in file (rank) order, with about one in ten taken instead from below that
+    cut and flagged ``calibration``, so the ranking's yield can be measured (design v1.1, section 10).
+
+    Calibration sites are those with the lowest sha256(seed:site_key), so a batch is the same for one input,
+    size and seed on any host. One follows each nine ranked sites, so a run that stops early keeps the mix.
+    When every site fits, the batch is the whole input and has no calibration site."""
+    size = parse_batch_size(size)
+    if not isinstance(seed, str) or not REFERENCE.fullmatch(seed):
+        raise ScreenError("site_screen_seed_invalid")
+    if size >= len(sites):
+        return [dict(site, calibration=False) for site in sites]
+    count = max(1, round(size / CALIBRATION_EVERY)) if size >= CALIBRATION_EVERY else 0
+    ranked, rest = sites[:size - count], sites[size - count:]
+    picked = sorted(rest, key=lambda site: _sha256(f"{seed}:{site['site_key']}".encode()))[:count]
+    calibration = [dict(site, calibration=True) for site in sorted(picked, key=rest.index)]
+    batch = []
+    for number, site in enumerate(ranked, 1):
+        batch.append(dict(site, calibration=False))
+        if number % (CALIBRATION_EVERY - 1) == 0 and calibration:
+            batch.append(calibration.pop(0))
+    return batch + calibration
+
+
 def read_input(path):
     """The bytes of one input file, bounded."""
     try:
@@ -503,16 +609,18 @@ def price_of(processor):
     return PRICES_USD[processor]
 
 
-def plan(raw, *, processor=DEFAULT_PROCESSOR):
-    """What one input file holds and what screening all of it would cost. Reads nothing else."""
+def plan(raw, *, processor=DEFAULT_PROCESSOR, batch_size=None, seed=DEFAULT_SEED):
+    """What one input file holds, the batch ``batch_size`` would screen, and its cost. Reads nothing else."""
     sites, refused = load_sites(raw)
     price = price_of(processor)
+    batch = select_batch(sites, batch_size, seed) if batch_size is not None else sites
     return {"command": "plan", "state": "planned", "form": SCREEN, "sites": len(sites),
             "by_origin": dict(Counter(site["origin"] for site in sites)),
-            "government_record": {name: sum(name in site["identity"] for site in sites)
-                                  for name in ("operator", "physical_site")},
+            "government_record": {"physical_site": sum("physical_site" in site["identity"] for site in sites)},
             "input_refused": dict(refused), "processor": processor, "price_usd": str(price),
-            "estimated_cost_usd": str(price * len(sites)), "provider_calls": 0}
+            "batch": {"size": len(batch), "calibration": sum(site["calibration"] for site in batch),
+                      "seed": seed if batch_size is not None else None},
+            "estimated_cost_usd": str(price * len(batch)), "provider_calls": 0}
 
 
 # --- out dir, ledger and spend admission ----------------------------------------------------
@@ -774,9 +882,16 @@ class Workspace:
     def path(self, stage, kind, key):
         return self.root / stage / kind / (key + ".json")
 
+    def record_path(self, stage, key):
+        """A derived record's file, named with the rule it was computed under."""
+        rule = (SCREEN_RULE if stage == "screen" else CONTACT_RULE).removeprefix("blueprint.")
+        return self.root / stage / "records" / f"{key}.{rule}.json"
+
     def records(self, stage):
+        """The derived records written under the stage's current rule."""
+        rule = (SCREEN_RULE if stage == "screen" else CONTACT_RULE).removeprefix("blueprint.")
         folder = self.root / stage / "records"
-        return [_json(path.read_bytes()) for path in sorted(folder.glob("*.json"))] if folder.is_dir() else []
+        return [_json(path.read_bytes()) for path in sorted(folder.glob(f"*.{rule}.json"))] if folder.is_dir() else []
 
     def append(self, stage, event):
         """Fsync one event to the spend journal, then to its stage ledger. A crash between the two leaves the
@@ -923,38 +1038,41 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
 
 
 def run(raw, workspace, *, client, owner_reference, ceiling_usd, max_runs, processor=DEFAULT_PROCESSOR, apply=False,
-        environ=None):
-    """Screen each site of one input file that has no run yet, within the pinned ceiling and ``max_runs``."""
+        batch_size=None, seed=DEFAULT_SEED, environ=None):
+    """Screen each site of one input file, or of its ``batch_size`` batch (``select_batch``), that has no run
+    yet, within the pinned ceiling and ``max_runs``. A batch never exceeds ``max_runs``."""
     refuse_on_worker(environ)
     sites, refused = load_sites(raw)
+    if batch_size is not None:
+        if parse_batch_size(batch_size) > parse_max_runs(max_runs):
+            raise ScreenError("site_screen_batch_exceeds_max_runs")
+        sites = select_batch(sites, batch_size, seed)
     with workspace.lock():
         states, pin = workspace.states()
         result = _submit(workspace, "screen", sites, states, pin, client=client, owner_reference=owner_reference,
                          ceiling_usd=ceiling_usd, max_runs=max_runs, processor=processor, apply=apply,
                          input_sha256=_sha256(bytes(raw)))
-    return {**result, "input_refused": dict(refused)}
+    return {**result, "input_refused": dict(refused), "calibration": sum(site["calibration"] for site in sites),
+            "batch": {"size": batch_size, "seed": seed} if batch_size is not None else None}
 
 
 def contact_input(record):
     """What a contact run is told: the proven operator and site, the task and the website."""
     identity, answers, given = record["identity"], record["answers"], record["input"]
-    operator = (identity.get("operator") or {}).get("answer") or answers.get("operator_identity") or given.get("operator")
     address = (identity.get("physical_site") or {}).get("answer") or answers.get("site_identity")
-    return _compact({"operator": operator, "site_name": given.get("site_name"), "site_address": address,
-                     "location": given.get("location"), "target_task": answers.get("target_task"),
-                     "website": answers.get("website")})
+    return _compact({"operator": answers.get("operator_identity") or given.get("operator"),
+                     "site_name": given.get("site_name"), "site_address": address, "location": given.get("location"),
+                     "target_task": answers.get("target_task"), "website": answers.get("website")})
 
 
 def contact_sites(workspace, states):
-    """One contact input per outreach-ready screen record, in the order the screen stage submitted them."""
-    sites = []
-    for key in states["screen"]:
-        path = workspace.path("screen", "records", key)
-        record = _json(path.read_bytes()) if path.exists() else None
-        if isinstance(record, dict) and record.get("tier") == "outreach_ready":
-            sites.append({"schema_version": INPUT, "site_key": key, "origin": record["origin"], "identity": {},
-                          "task_input": contact_input(record)})
-    return sites
+    """One contact input per outreach-ready screen record under the current rule, recomputed from the stored
+    result and page reads, in the order the screen stage submitted them."""
+    records = stage_records(workspace, states, "screen")
+    return [{"schema_version": INPUT, "site_key": key, "origin": records[key]["origin"],
+             "calibration": records[key]["calibration"], "identity": {}, "address": records[key]["address"],
+             "task_input": contact_input(records[key])}
+            for key in states["screen"] if key in records and records[key]["tier"] == "outreach_ready"]
 
 
 def contact(workspace, *, client, owner_reference, ceiling_usd, max_runs, processor=DEFAULT_PROCESSOR, apply=False,
@@ -1022,39 +1140,31 @@ def collect(workspace, *, client, wait_seconds=COLLECT_WAIT_SECONDS, poll_second
 
 
 # --- verification ---------------------------------------------------------------------------
-def normalize(text):
-    """The pilot's quote normalization: NFKC, lower case, plain quotes and dashes, single spaces."""
-    text = unicodedata.normalize("NFKC", text if isinstance(text, str) else "").lower()
-    text = DASHES.sub("-", DOUBLE_QUOTES.sub('"', SINGLE_QUOTES.sub("'", text)))
-    return WHITESPACE.sub(" ", text).strip()
+def words(value):
+    """Whole-word text, as verification.normalized: NFKC, lower case, letters and digits only, single spaces.
+    Case, spacing and punctuation never change a match; any other difference does."""
+    return normalized(value) if isinstance(value, str) else ""
 
 
-def contains(quote, text):
-    """True when the normalized quote is in the normalized text, or, for a quote of 40 or more characters,
-    its leading or trailing 90 % is."""
-    if not quote or not text:
-        return False
-    if quote in text:
-        return True
-    span = math.ceil(len(quote) * NEAR_EXACT_SHARE)
-    return len(quote) >= NEAR_EXACT_CHARACTERS and (quote[:span] in text or quote[-span:] in text)
+def has_phrase(phrase, text):
+    """True when the word string ``phrase`` stands in the word string ``text`` as whole words, in order."""
+    return bool(phrase) and f" {phrase} " in f" {text} "
 
 
-def _has_name(name, text):
-    """True when the normalized name stands as whole words in the normalized text."""
-    name = normalize(name)
-    return bool(name) and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text) is not None
+def light(text):
+    """Text for finding email addresses (``words`` drops the @): NFKC, lower case, single spaces."""
+    return " ".join(unicodedata.normalize("NFKC", text if isinstance(text, str) else "").lower().split())
 
 
 def addresses(text):
-    """Every email address in normalized text, as whole tokens: a longer address never matches a shorter one."""
-    tokens = EMAIL.findall(text)
+    """Every email address in the text, as whole tokens: a longer address never matches a shorter one."""
+    tokens = EMAIL.findall(light(text))
     return set(tokens) | {token.lstrip("'`") for token in tokens}
 
 
 def email_address(value):
-    """The provider's address, normalized, or None when it is not one plain address."""
-    text = normalize(value)
+    """The provider's address, lower case, or None when it is not one plain address."""
+    text = light(value)
     text = (text[7:] if text.startswith("mailto:") else text).strip("<> ")
     return text if EMAIL.fullmatch(text) else None
 
@@ -1070,9 +1180,25 @@ def _host(url):
 
 
 def never_fetch(url):
-    """True for a LinkedIn URL: linkedin.com, any subdomain of it, or its lnkd.in links."""
-    host = _host(url) or ""
-    return any(host == domain or host.endswith("." + domain) for domain in NEVER_FETCH)
+    """True for any URL that reaches LinkedIn: a host of linkedin.com, lnkd.in or a subdomain of either, or either
+    name anywhere in the URL, as in an archive, translation or redirect wrapper."""
+    if not isinstance(url, str):
+        return False
+    host, text = _host(url) or "", unquote(unquote(url)).lower()
+    return any(host == domain or host.endswith("." + domain) or domain in text for domain in NEVER_FETCH)
+
+
+def url_key(value):
+    """Same-URL comparison, as the in-flight verification.url_key: scheme, host case, www., a trailing slash and
+    the fragment do not differ."""
+    try:
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower().removeprefix("www.")
+        if parts.scheme not in {"http", "https"} or not host or parts.username or parts.password:
+            return None
+        return host + parts.path.rstrip("/") + ("?" + parts.query if parts.query else "")
+    except (AttributeError, TypeError, ValueError):
+        return None
 
 
 def public_page_reader(seconds=PAGE_READ_SECONDS):
@@ -1090,10 +1216,11 @@ def public_page_reader(seconds=PAGE_READ_SECONDS):
 
 
 class Pages:
-    """The page reads of one verify pass: each URL is read once, and a LinkedIn URL never."""
+    """The page reads of one command: each URL is read once, a LinkedIn URL never, and the default reader is
+    made only when a read is needed."""
 
-    def __init__(self, reader):
-        self.reader, self.cache, self.reads = reader, {}, 0
+    def __init__(self, reader=None):
+        self._reader, self.cache, self.reads = reader, {}, 0
 
     def __call__(self, url):
         if url not in self.cache:
@@ -1102,19 +1229,20 @@ class Pages:
 
     def _read(self, url):
         if _host(url) is None:
-            return "unreachable", "site_screen_page_url_invalid", set()
+            return {"state": "unreachable", "code": "site_screen_page_url_invalid"}
         if never_fetch(url):
-            return "unreachable", "site_screen_page_not_allowed", set()
+            return {"state": "not_allowed", "code": "site_screen_page_not_allowed"}
+        if self._reader is None:
+            self._reader = public_page_reader()
         self.reads += 1
         try:
-            page = self.reader(url)
+            page = self._reader(url)
         except Exception as error:  # noqa: BLE001 - a failed read is an observation, kept as a stable code
             code = str(error)
-            return "unreachable", code if CODE.fullmatch(code) else "site_screen_page_read_failed", set()
+            return {"state": "unreachable", "code": code if CODE.fullmatch(code) else "site_screen_page_read_failed"}
         if not isinstance(page, dict) or not isinstance(page.get("text"), str):
-            return "unreachable", "site_screen_page_read_failed", set()
-        text = normalize(page["text"])
-        return "ok", text, addresses(text)
+            return {"state": "unreachable", "code": "site_screen_page_read_failed"}
+        return {"state": "ok", "text": page["text"], "sha256": _sha256(page["text"].encode())}
 
 
 def output_of(result):
@@ -1129,50 +1257,86 @@ def output_of(result):
             [entry for entry in basis if isinstance(entry, dict)] if isinstance(basis, list) else [])
 
 
-def excerpts(basis, fields, *, linkedin=True):
-    """The normalized citation excerpts of the basis entries for ``fields``. Each is matched on its own."""
-    found = []
-    for entry in basis:
-        citations = entry.get("citations") if entry.get("field") in fields else None
-        for citation in citations if isinstance(citations, list) else ():
-            if not isinstance(citation, dict) or not linkedin and never_fetch(citation.get("url") or ""):
-                continue
-            notes = citation.get("excerpts")
-            found += [normalize(note) for note in notes if isinstance(note, str) and note.strip()] if isinstance(
-                notes, list) else []
-    return found
-
-
-def quote_level(url, quote, notes, pages, *, name=None, address=None):
-    """One quoted answer's level, and the read's code when our read failed.
-
-    ``name`` (a person) and ``address`` (an email) must also stand verbatim on the page, or in the excerpt,
-    that holds the quote, so a near-exact match never vouches for them."""
-    if not url or not quote:
-        return "no_quote", None
-    quote = normalize(quote)
-
-    def holds(text, found=None):
-        return (contains(quote, text) and (name is None or _has_name(name, text))
-                and (address is None or address in (addresses(text) if found is None else found)))
-
-    state, text, found = pages(url)
-    if state == "ok" and holds(text, found):
-        return "verified_on_page", None
-    if any(holds(note) for note in notes):
-        return "in_citation_excerpt", None
-    return ("unverified", None) if state == "ok" else ("unverified_page_unreachable", text)
-
-
 def _string(value):
     return " ".join(value.split()) if isinstance(value, str) else ""
 
 
-def _choice(value):
-    """yes, no or unknown from a form answer; a blank answer is blank and anything else is other."""
-    text = normalize(value)
-    match = CHOICE.match(text)
-    return match.group(1) if match else "other" if text else "blank"
+def cited_urls(stage, content):
+    """Every URL a result gives as an answer source."""
+    fields = [name + "_url" for name in SCREEN_PROOFS] if stage == "screen" else ["person_url", "email_url"]
+    return sorted({_string(content.get(field)) for field in fields} - {""})
+
+
+def read_evidence(stage, key, result, pages, today):
+    """Our reads of every URL the result cites, with their date, kept so the record can be recomputed offline."""
+    content, _ = output_of(result)
+    return {"schema_version": EVIDENCE, "stage": stage, "site_key": key, "checked_on": today.isoformat(),
+            "pages": {url: pages(url) for url in cited_urls(stage, content)}}
+
+
+def evidence_index(evidence, basis):
+    """Text by URL key, as the in-flight verification.evidence_index: our page reads, and the provider's
+    citation excerpts, never one cited from LinkedIn. Each entry is (whole-word text, sha256, raw text)."""
+    index = {"pages": {}, "excerpts": {}}
+    for url, page in (evidence.get("pages") or {}).items():
+        key = url_key(url)
+        if key and isinstance(page, dict) and page.get("state") == "ok" and isinstance(page.get("text"), str):
+            index["pages"].setdefault(key, []).append((words(page["text"]), page.get("sha256"), page["text"]))
+    for entry in basis:
+        citations = entry.get("citations")
+        for citation in citations if isinstance(citations, list) else ():
+            url = citation.get("url") if isinstance(citation, dict) else None
+            key = url_key(url)
+            notes = citation.get("excerpts") if key and not never_fetch(url) else None
+            for note in notes if isinstance(notes, list) else ():
+                if isinstance(note, str) and note.strip():
+                    index["excerpts"].setdefault(key, []).append((words(note), _sha256(note.encode()), note))
+    return index
+
+
+def holding(quote, url, index, kinds=("pages", "excerpts")):
+    """(level, sha256, raw text) of the first text kept for the quote's own URL that holds it whole-word."""
+    phrase, key = words(quote), url_key(url)
+    if key is None or never_fetch(url) or len(phrase.split()) < MIN_QUOTE_WORDS:
+        return None, None, None
+    for kind in kinds:
+        for text, sha, raw in index[kind].get(key, ()):
+            if has_phrase(phrase, text):
+                return ("verified_on_page" if kind == "pages" else "in_citation_excerpt"), sha, raw
+    return None, None, None
+
+
+def quote_level(quote, url, index):
+    """(level, sha256) of a quote proven at its own URL, in the shape of the in-flight verification.quote_level:
+    verified_on_page when our read of that URL holds it whole-word, else in_citation_excerpt when a provider
+    excerpt cited for that same URL does. (None, None) otherwise, and for a quote of fewer than MIN_QUOTE_WORDS
+    words or any LinkedIn URL."""
+    level, sha, _ = holding(quote, url, index)
+    return level, sha
+
+
+def proof(quote, url, index, evidence):
+    """One quoted answer's verification: its level, the proving text's sha256, or our read's code."""
+    if not _string(url) or not _string(quote):
+        return {"level": "no_quote"}
+    if never_fetch(url):
+        return {"level": "source_not_allowed"}
+    if len(words(quote).split()) < MIN_QUOTE_WORDS:
+        return {"level": "quote_too_short"}
+    level, sha = quote_level(quote, url, index)
+    if level:
+        return {"level": level, "sha256": sha}
+    page = (evidence.get("pages") or {}).get(_string(url))
+    page = page if isinstance(page, dict) else {}
+    if page.get("state") == "ok":
+        return {"level": "unverified"}
+    return {"level": "unverified_page_unreachable", "read": page.get("code") or "site_screen_page_not_read"}
+
+
+def _choice(value, allowed):
+    """The enumerated answer: its first word when allowed, else other; blank when empty."""
+    first = words(value).split()[:1]
+    return first[0] if first and first[0] in allowed else "other" if first else "blank"
 
 
 def _fresh(value, today):
@@ -1188,73 +1352,214 @@ def _fresh(value, today):
     return 0 <= (today - day).days <= FRESH_DAYS
 
 
-def screen_checks(identity, answers, levels, choices):
-    """The owner's outreach-ready rule: every check must pass."""
-    def proven(name, proof):
-        if identity.get(name):
-            return {"passed": True, "basis": "government_record"}
-        if answers[proof] and levels[proof] in PROVEN:
-            return {"passed": True, "basis": "web_quote", "level": levels[proof]}
-        return {"passed": False, "basis": None, "level": levels[proof]}
-    return {"operator": proven("operator", "operator_identity"),
-            "physical_site": proven("physical_site", "site_identity"),
-            "site_task": {"passed": bool(answers["target_task"]) and choices["target_task"] == "yes"
-                          and levels["target_task"] in PROVEN, "level": levels["target_task"]},
-            "not_closed": {"passed": choices["operating_now"] in {"yes", "unknown", "blank"},
-                           "answer": choices["operating_now"]},
-            "no_existing_automation": {"passed": choices["existing_automation"] in {"no", "unknown", "blank"},
-                                       "answer": choices["existing_automation"]}}
+def significant(name):
+    """A name's words without legal forms and articles."""
+    return [word for word in words(name).split() if word not in LEGAL_WORDS]
 
 
-def screen_questions(answers, levels, choices, today):
-    """The checks the outreach-ready rule leaves unproven, as questions for the first email."""
-    def proven(proof, answer):
-        return choices[proof] == answer and levels[proof] in PROVEN
-    fresh = (proven("operating_now", "yes") and _fresh(answers["operating_now_date"], today)
-             and _fresh(answers["target_task_date"], today))
-    unproven = {"manual_workflow": not proven("manual_today", "yes"),
-                "existing_automation": not proven("existing_automation", "no"),
-                "freshness": not fresh, "fit": True, "interest": True}
-    return [{"check": name, "question": SCREEN_QUESTIONS[name]} for name, open_ in unproven.items() if open_]
+def names_operator(quote, operator):
+    """True when the quote holds every significant word of the operator's name."""
+    tokens, found = significant(operator), set(words(quote).split())
+    return bool(tokens) and all(token in found for token in tokens)
 
 
-def screen_record(site, run_id, result, pages, today):
-    """One site's verified screen: input, answers, quote levels, checks, tier and open questions."""
-    content, basis = output_of(result)
+def same_operator(first, second):
+    """True when the significant words of one name are all in the other."""
+    one, other = set(significant(first)), set(significant(second))
+    return bool(one and other) and (one <= other or other <= one)
+
+
+def names_task(quote, task):
+    """True when the quote holds a word of the task phrase other than a stopword."""
+    return bool({word for word in words(task).split() if word not in TASK_STOPWORDS} & set(words(quote).split()))
+
+
+def _canon(text, table):
+    return " ".join(table.get(word, word) for word in words(text).split())
+
+
+def names_address(text, address):
+    """True when the text holds the input street, or the input city followed by its state code or name."""
+    street, city, state = address.get("street"), address.get("city"), address.get("state")
+    if street and has_phrase(_canon(street, STREET_WORDS), _canon(text, STREET_WORDS)):
+        return True
+    place = _canon(text, CITY_WORDS)
+    return bool(city and state) and any(has_phrase(_canon(city, CITY_WORDS) + " " + form, place)
+                                        for form in (state.lower(), STATE_NAMES.get(state, "")) if form)
+
+
+def names_place(text, address):
+    """True when the text holds the input street or the input city: what ties a task to this site."""
+    street, city = address.get("street"), address.get("city")
+    return bool(street and has_phrase(_canon(street, STREET_WORDS), _canon(text, STREET_WORDS))
+                or city and has_phrase(_canon(city, CITY_WORDS), _canon(text, CITY_WORDS)))
+
+
+def site_label(site):
+    """The site's name in a question: its city, else the input site name, else the operator."""
+    city = (site.get("address") or {}).get("city")
+    if city:
+        return city.title() if city.isupper() else city
+    return site["task_input"].get("site_name") or site["task_input"].get("operator") or ""
+
+
+def screen_gates(site, answers, choices, verification, index, *, valid):
+    """The inputs of the tier, in the shape of the in-flight verification.outreach_gates, from one screen.
+
+    A fact is verified_fact only when its quote is proven at its own URL and names its answer: every
+    significant word of the operator's name; the input street, or city and state (or, for the site address,
+    an OSHA ITA or EPA FRS record); and a task word, with the site's city or street in the task quote, its
+    page or a same-URL excerpt (else the task is company level). A closed site, a proven office or mailing
+    address, a proven contractor or tenant site that the input attributes to another operator, a proven
+    manual 'no', and this task proven fully automated are contradictions."""
+    address, given = site.get("address") or {}, site["task_input"]
+
+    def proven(name):
+        return verification[name]["level"] in PROVEN
+
+    def proofs(claim, name):
+        return [{"claim": claim, "source_id": name, "url": answers[name + "_url"],
+                 "quote_sha256": _sha256(answers[name + "_quote"].encode()), "level": verification[name]["level"],
+                 "tool_result_sha256": verification[name].get("sha256")}]
+
+    operator = bool(answers["operator_identity"]) and proven("operator_identity") and names_operator(
+        answers["operator_identity_quote"], answers["operator_identity"])
+    record = site["identity"].get("physical_site")
+    if record:
+        place = [{"claim": "physical_site", "source_id": "government_record", "url": None, "quote_sha256": None,
+                  "level": "government_record", "tool_result_sha256": None, "source_ids": record["source_ids"],
+                  "site_id": record["site_id"]}]
+    else:
+        place = proofs("physical_site", "site_identity") if (
+            answers["site_identity"] and proven("site_identity")
+            and names_address(answers["site_identity_quote"], address)) else []
+    task = (bool(answers["target_task"]) and choices["target_task"] == "yes" and proven("target_task")
+            and names_task(answers["target_task_quote"], answers["target_task"]))
+    key = url_key(answers["target_task_url"])
+    texts = [words(answers["target_task_quote"])] + [
+        entry[0] for kind in ("pages", "excerpts") for entry in index[kind].get(key, ())]
+    scope = ("site" if any(names_place(text, address) for text in texts) else "company") if task else None
+    attributed = given.get("operator") or (given.get("site_name") if site["origin"] == "site_universe" else None)
+    flags = {"closed": choices["operating_now"] in ("no", "other"),
+             "office_or_mailing": choices["facility_type"] in ("office", "mailing") and proven("facility_type"),
+             "operator_mismatch": (choices["facility_operator"] in ("contractor", "tenant")
+                                   and proven("facility_operator") and bool(attributed)
+                                   and not same_operator(attributed, answers["operator_identity"]))}
+    manual = choices["manual_today"] if proven("manual_today") else None
+    automation = choices["existing_automation"] if proven("existing_automation") else None
+    states = {"operator": "contradicted" if flags["operator_mismatch"] else "verified_fact" if operator else "unresolved",
+              "physical_site": ("contradicted" if flags["closed"] or flags["office_or_mailing"]
+                                else "verified_fact" if place else "unresolved"),
+              "site_task": "verified_fact" if scope == "site" else "unresolved",
+              "human_workflow": {"yes": "verified_fact", "no": "contradicted"}.get(manual, "unresolved"),
+              "plausible_fit": "unresolved",
+              "counterevidence": {"full": "contradicted", "partial": "checked", "no": "checked"}.get(automation,
+                                                                                                  "unresolved")}
+    facts = {"operator": {"primary_sources_usable": operator,
+                          "proofs": proofs("operator", "operator_identity") if operator else []},
+             "physical_site": {"primary_sources_usable": bool(place), "proofs": place},
+             "site_task": {"primary_sources_usable": scope == "site",
+                           "proofs": proofs("site_task", "target_task") if scope == "site" else []}}
+    return {"eligible_for_qualified_promotion": False, "assessment_valid": valid, "identity_present": True,
+            "duplicate": False, "conflict": False, "valid_until": None, "states": states, "facts": facts,
+            "task": answers["target_task"], "site": site_label(site), "site_task_scope": scope, "flags": flags}
+
+
+def outreach_tier(gates):
+    """SCREEN_RULE over screen_gates: the in-flight verification.outreach_tier, with design v1.1's single
+    question. Replace this with that function once it lands and bump SCREEN_RULE; records are recomputed.
+
+    outreach_ready: operator, physical_site and site_task are verified_fact with proofs, the result is valid,
+    and nothing is contradicted. Anything else, including any defect here, is none. The question is the first
+    of S, M and A (QUESTIONS) whose check is open; every other open check is recorded, not asked."""
+    block = {"rule_version": SCREEN_RULE, "proving_sources": [], "open_checks": [], "question": None,
+             "question_template": None, "blockers": []}
+    try:
+        facts, states = gates["facts"], gates["states"]
+        block["proving_sources"] = [facts[name]["proofs"][0] for name in PROVEN_FACTS if facts[name]["proofs"]]
+        blockers = [name + "_contradicted" for name in (*CLAIMS, "counterevidence") if states.get(name) == "contradicted"]
+        for failed, code in ((gates["assessment_valid"] is not True, "assessment_invalid"),
+                             (gates["identity_present"] is not True, "identity_missing"),
+                             (gates["duplicate"] is not False, "duplicate"),
+                             (gates["conflict"] is not False, "duplicate_conflict"),
+                             (gates["site_task_scope"] == "company", "company_level_task")):
+            if failed:
+                blockers.append(code)
+        for name in PROVEN_FACTS:
+            if states.get(name) != "verified_fact":
+                blockers.append(name + "_not_verified_fact")
+            elif facts[name]["primary_sources_usable"] is not True:
+                blockers.append(name + "_primary_source_unusable")
+            elif not facts[name]["proofs"]:
+                blockers.append(name + "_quote_unproven")
+        task, site = gates["task"], gates["site"]
+        if not task or not site:
+            blockers.append("question_task_or_site_missing")
+        checks = (["site_link"] if gates["site_task_scope"] != "site" else []) + (
+            ["manual_workflow"] if states.get("human_workflow") != "verified_fact" else []) + [
+            "existing_automation", "freshness", "fit", "interest"]
+        block["open_checks"] = checks
+        if task and site:
+            template, _, text = next(item for item in QUESTIONS if item[1] in checks)
+            block.update(question=text.format(task=task, site=site), question_template=template)
+        tier = "none" if blockers else "outreach_ready"
+        return {"tier": tier, "eligible_for_outreach_ready": tier == "outreach_ready",
+                "outreach_ready": {**block, "blockers": list(dict.fromkeys(blockers))}}
+    except Exception:  # noqa: BLE001 - any defect in the tier computation yields none
+        return {"tier": "none", "eligible_for_outreach_ready": False,
+                "outreach_ready": {**block, "proving_sources": [], "blockers": ["tier_computation_unavailable"]}}
+
+
+def _evidence(evidence_raw):
+    evidence = _json(evidence_raw)
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def screen_record(site, run_id, result_raw, evidence_raw):
+    """One site's screen under SCREEN_RULE, recomputed from its stored raw result and page reads alone."""
+    evidence = _evidence(evidence_raw)
+    content, basis = output_of(_json(result_raw))
     answers = {field: _string(content.get(field)) for field in SCREEN_SCHEMA["properties"]}
-    verification = {}
-    for proof, (answer, dated) in SCREEN_PROOFS.items():
-        fields = {proof, answer, proof + "_url", proof + "_quote", *((dated,) if dated else ())}
-        level, code = quote_level(answers[proof + "_url"], answers[proof + "_quote"], excerpts(basis, fields), pages)
-        verification[proof] = {"level": level, **({"read": code} if code else {})}
-    levels = {proof: item["level"] for proof, item in verification.items()}
-    choices = {proof: _choice(answers[answer]) for proof, (answer, dated) in SCREEN_PROOFS.items() if dated}
-    checks = screen_checks(site["identity"], answers, levels, choices)
-    return {"schema_version": SCREEN, "site_key": site["site_key"], "origin": site["origin"],
-            "input": site["task_input"], "identity": site["identity"], "run_id": run_id, "answers": answers,
-            "verification": verification, "choices": choices, "checks": checks,
-            "tier": "outreach_ready" if all(check["passed"] for check in checks.values()) else "screened",
-            "open_questions": screen_questions(answers, levels, choices, today), "verified_on": today.isoformat()}
+    index = evidence_index(evidence, basis)
+    verification = {name: proof(answers[name + "_quote"], answers[name + "_url"], index, evidence)
+                    for name in SCREEN_PROOFS}
+    choices = {name: _choice(answers[SCREEN_PROOFS[name][0]], allowed) for name, allowed in CHOICES.items()}
+    gates = screen_gates(site, answers, choices, verification, index, valid=bool(content))
+    outcome = outreach_tier(gates)
+    block = outcome["outreach_ready"]
+    return {"schema_version": SCREEN, "rule_version": SCREEN_RULE, "site_key": site["site_key"],
+            "origin": site["origin"], "calibration": site.get("calibration") is True, "input": site["task_input"],
+            "address": site.get("address") or {}, "identity": site["identity"], "run_id": run_id,
+            "result_sha256": _sha256(result_raw), "evidence_sha256": _sha256(evidence_raw),
+            "checked_on": evidence.get("checked_on"), "answers": answers, "verification": verification,
+            "choices": choices, "task_scope": gates["site_task_scope"],
+            "variability": {"answer": answers["variability_signals"] or None,
+                            "proven": bool(answers["variability_signals"])
+                            and verification["variability_signals"]["level"] in PROVEN},
+            "gates": gates, "tier": "outreach_ready" if outcome["tier"] == "outreach_ready" else "screened",
+            "blockers": block["blockers"], "proving_sources": block["proving_sources"],
+            "open_checks": block["open_checks"], "question": block["question"],
+            "question_template": block["question_template"]}
 
 
-def _person(text, basis, pages, today):
+def _person(text, index, evidence, today):
     name, url, quote = text["person_name"], text["person_url"], text["person_quote"]
     if not name:
         return {"verified": False, "level": "no_person"}
     if never_fetch(url):
-        level, code = "person_source_not_allowed", None
-    elif quote and not _has_name(name, normalize(quote)):
-        level, code = "unverified", "site_screen_quote_lacks_name"
-    else:
-        level, code = quote_level(url, quote, excerpts(basis, PERSON_FIELDS, linkedin=False), pages, name=name)
-        level, code = ("unverified", "site_screen_quote_missing") if level == "no_quote" else (level, code)
-    if level not in PROVEN:
-        return {"verified": False, "level": level, **({"reason": code} if code else {})}
-    return {"verified": True, "level": level, "name": name, "title": text["person_title"] or None, "url": url,
+        return {"verified": False, "level": "person_source_not_allowed"}
+    if quote and not has_phrase(words(name), words(quote)):
+        return {"verified": False, "level": "unverified", "reason": "site_screen_quote_lacks_name"}
+    item = proof(quote, url, index, evidence)
+    if item["level"] == "no_quote":
+        return {"verified": False, "level": "unverified", "reason": "site_screen_quote_missing"}
+    if item["level"] not in PROVEN:
+        return {"verified": False, "level": item["level"], **({"reason": item["read"]} if item.get("read") else {})}
+    return {"verified": True, "level": item["level"], "name": name, "title": text["person_title"] or None, "url": url,
             "date": text["person_date"] or None, "current": _fresh(text["person_date"], today)}
 
 
-def _email(text, basis, pages):
+def _email(text, index, evidence):
     raw, url, quote = text["email"], text["email_url"], text["email_quote"]
     if not raw:
         return {"verified": False, "level": "no_email", "discarded": False}
@@ -1263,11 +1568,15 @@ def _email(text, basis, pages):
         level, code = "unverified", "site_screen_email_invalid"
     elif never_fetch(url):
         level, code = "person_source_not_allowed", None
-    elif quote and address not in addresses(normalize(quote)):
+    elif quote and address not in addresses(quote):
         level, code = "unverified", "site_screen_quote_lacks_address"
     else:
-        level, code = quote_level(url, quote, excerpts(basis, EMAIL_FIELDS, linkedin=False), pages, address=address)
-        level, code = ("unverified", "site_screen_quote_missing") if level == "no_quote" else (level, code)
+        item = proof(quote, url, index, evidence)
+        level, code = item["level"], item.get("read")
+        if level == "no_quote":
+            level, code = "unverified", "site_screen_quote_missing"
+        elif level in PROVEN and address not in addresses(holding(quote, url, index)[2]):
+            level, code = "unverified", "site_screen_address_not_on_source"
     if level not in PROVEN:
         # Discarded: the address stays only in the raw provider response, never in this record.
         return {"verified": False, "level": level, "discarded": True, **({"reason": code} if code else {})}
@@ -1297,47 +1606,85 @@ def contact_questions(person, kind):
     return [{"check": name, "question": CONTACT_QUESTIONS[name]} for name in names]
 
 
-def contact_record(site, run_id, result, pages, today):
-    """One site's verified contact. Only a proven person and a proven address are kept; the raw provider
-    response keeps everything else."""
-    content, basis = output_of(result)
+def contact_record(site, run_id, result_raw, evidence_raw):
+    """One site's contact under CONTACT_RULE, recomputed from its stored raw result and page reads alone. Only a
+    proven person and a proven address are kept; the raw provider response keeps everything else."""
+    evidence = _evidence(evidence_raw)
+    content, basis = output_of(_json(result_raw))
     text = {field: _string(content.get(field)) for field in CONTACT_SCHEMA["properties"]}
-    person, email = _person(text, basis, pages, today), _email(text, basis, pages)
+    index = evidence_index(evidence, basis)
+    checked_on = evidence.get("checked_on")
+    today = date.fromisoformat(checked_on) if isinstance(checked_on, str) else date.min
+    person, email = _person(text, index, evidence, today), _email(text, index, evidence)
     channel = re.sub(r"[\s-]+", "_", text["channel_type"].lower())
     channel = channel if channel in CHANNELS else "none"
     kind = recipient(channel, email["verified"], person["verified"])
     channel_url = text["channel_url"] if _public_url(text["channel_url"]) and not never_fetch(text["channel_url"]) else None
-    return {"schema_version": CONTACT, "site_key": site["site_key"], "origin": site["origin"],
-            "input": site["task_input"], "run_id": run_id, "decision_role": text["decision_role"] or None,
-            "person": person, "email": email, "channel": {"type": channel, "url": channel_url},
+    return {"schema_version": CONTACT, "rule_version": CONTACT_RULE, "site_key": site["site_key"],
+            "origin": site["origin"], "input": site["task_input"], "run_id": run_id,
+            "result_sha256": _sha256(result_raw), "evidence_sha256": _sha256(evidence_raw), "checked_on": checked_on,
+            "decision_role": text["decision_role"] or None, "person": person, "email": email,
+            "channel": {"type": channel, "url": channel_url},
             "recipient": {"kind": kind, "rank": recipient_rank(kind),
                           "address": email.get("address") if kind != "none" else None},
-            "open_questions": contact_questions(person, kind), "verified_on": today.isoformat()}
+            "open_questions": contact_questions(person, kind)}
+
+
+RECORDS = {"screen": screen_record, "contact": contact_record}
+
+
+def stage_records(workspace, states, stage):
+    """The stage's records under its current rule, recomputed from the stored results and page reads. A site
+    whose pages are not read yet is left out. Reads no page and calls no provider."""
+    records = {}
+    for key, site in states[stage].items():
+        evidence = workspace.path(stage, "evidence", key)
+        if site.get("status") == "completed" and site.get("observed") and evidence.exists():
+            records[key] = RECORDS[stage](site["input"], site["run_id"],
+                                          workspace.path(stage, "results", key).read_bytes(), evidence.read_bytes())
+    return records
+
+
+def _write_derived(path, value):
+    """Replace a derived file atomically (mode 0600): it is recomputed from stored inputs whenever needed."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write((json.dumps(value, indent=1, sort_keys=True) + "\n").encode())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def verify(workspace, *, reader=None, today=None):
-    """Write the verified record of each stored completed result once, screen stage first. Counts only."""
+    """Read and keep the cited pages of each completed result once, then write each record under its stage's
+    current rule as records/<site_key>.<rule>.json. A new rule rewrites nothing old and reads no page again.
+    Counts only."""
     today = today or datetime.now(timezone.utc).date()
-    pages = Pages(reader if reader is not None else public_page_reader())
-    counts = {stage: Counter({"written": 0, "kept": 0}) for stage in STAGES}
+    pages = Pages(reader)
+    counts = {stage: Counter({"records": 0, "pages_kept": 0}) for stage in STAGES}
     with workspace.lock():
         states, _ = workspace.states()
         for stage in STAGES:
             for key, site in states[stage].items():
                 if site.get("status") != "completed" or not site.get("observed"):
                     continue
-                path = workspace.path(stage, "records", key)
-                if path.exists():
-                    counts[stage]["kept"] += 1
-                    continue
-                result = _json(workspace.path(stage, "results", key).read_bytes())
-                build = screen_record if stage == "screen" else contact_record
-                record = build(site["input"], site["run_id"], result, pages, today)
-                _write_once(path, (json.dumps(record, indent=1, sort_keys=True) + "\n").encode())
-                counts[stage]["written"] += 1
+                evidence = workspace.path(stage, "evidence", key)
+                if not evidence.exists():
+                    result = _json(workspace.path(stage, "results", key).read_bytes())
+                    kept = read_evidence(stage, key, result, pages, today)
+                    _write_once(evidence, (json.dumps(kept, sort_keys=True) + "\n").encode())
+                    counts[stage]["pages_kept"] += 1
+        for stage in STAGES:
+            for key, record in stage_records(workspace, states, stage).items():
+                _write_derived(workspace.record_path(stage, key), record)
+                counts[stage]["records"] += 1
                 counts[stage][record["tier"] if stage == "screen" else "recipient_" + record["recipient"]["kind"]] += 1
-    return {"command": "verify", "state": "complete", "screen": dict(counts["screen"]),
-            "contact": dict(counts["contact"]), "page_reads": pages.reads}
+    return {"command": "verify", "state": "complete", "rules": {"screen": SCREEN_RULE, "contact": CONTACT_RULE},
+            "screen": dict(counts["screen"]), "contact": dict(counts["contact"]), "page_reads": pages.reads}
 
 
 # --- summary --------------------------------------------------------------------------------
@@ -1351,18 +1698,26 @@ def _runs(sites):
 
 
 def _screen_counts(records):
-    return {"records": len(records), "tiers": {tier: sum(r["tier"] == tier for r in records) for tier in TIERS},
-            "tiers_by_origin": {origin: {tier: sum(r["tier"] == tier for r in records if r["origin"] == origin)
-                                         for tier in TIERS} for origin in sorted({r["origin"] for r in records})},
-            "fields": {proof: {"answers": dict(Counter(r["choices"].get(proof) or (
-                "present" if r["answers"][proof] else "blank") for r in records)),
-                "levels": dict(Counter(r["verification"][proof]["level"] for r in records))}
-                for proof in SCREEN_PROOFS},
-            "checks": {name: sum(r["checks"][name]["passed"] for r in records) for name in (
-                "operator", "physical_site", "site_task", "not_closed", "no_existing_automation")},
-            "identity_basis": {name: dict(Counter(r["checks"][name]["basis"] or "unproven" for r in records))
-                               for name in ("operator", "physical_site")},
-            "open_questions": dict(Counter(q["check"] for r in records for q in r["open_questions"]))}
+    def tiers(group):
+        return {tier: sum(record["tier"] == tier for record in group) for tier in TIERS}
+
+    return {"records": len(records), "tiers": tiers(records),
+            "tiers_by_origin": {origin: tiers([r for r in records if r["origin"] == origin])
+                                for origin in sorted({r["origin"] for r in records})},
+            "tiers_by_calibration": {name: tiers([r for r in records if r["calibration"] is flag])
+                                     for name, flag in (("ranked", False), ("calibration", True))},
+            "fields": {name: {"answers": dict(Counter(r["choices"].get(name) or (
+                "present" if r["answers"][name] else "blank") for r in records)),
+                "levels": dict(Counter(r["verification"][name]["level"] for r in records))} for name in SCREEN_PROOFS},
+            "claims": {name: dict(Counter(r["gates"]["states"][name] for r in records))
+                       for name in (*CLAIMS, "counterevidence")},
+            "physical_site_basis": dict(Counter((r["gates"]["facts"]["physical_site"]["proofs"] or [{}])[0].get(
+                "source_id", "unproven") for r in records)),
+            "task_scope": dict(Counter(r["task_scope"] or "unproven" for r in records)),
+            "blockers": dict(Counter(code for r in records for code in r["blockers"])),
+            "questions": dict(Counter(r["question_template"] or "none" for r in records if r["tier"] == "outreach_ready")),
+            "open_checks": dict(Counter(check for r in records for check in r["open_checks"])),
+            "variability_proven": sum(r["variability"]["proven"] for r in records)}
 
 
 def _contact_counts(records):
@@ -1377,25 +1732,26 @@ def _contact_counts(records):
 
 
 def summary(workspace):
-    """Counts by field, check, tier and recipient, and cost, for both stages; also written to summary.json.
-    Never names, addresses or quotes."""
-    report = {"schema_version": SUMMARY, "command": "summary", "state": "complete"}
+    """Counts by field, claim, tier and recipient, and cost, for both stages, recomputed under each stage's
+    current rule from stored results and page reads; also written to summary.json. Never names, addresses or
+    quotes, and no page read or provider call."""
+    report = {"schema_version": SUMMARY, "command": "summary", "state": "complete",
+              "rules": {"screen": SCREEN_RULE, "contact": CONTACT_RULE}}
     billed = committed = Decimal("0")
     with workspace.lock():
         states, pin = workspace.states()
         for stage in STAGES:
-            sites = states[stage]
-            records = [record for record in workspace.records(stage) if isinstance(record, dict)]
+            sites, records = states[stage], list(stage_records(workspace, states, stage).values())
             stage_billed = sum((Decimal(site["price_usd"]) for site in sites.values()
                                 if site.get("observed") and site["status"] == "completed"), Decimal("0"))
             stage_committed = committed_usd(sites)
             billed, committed = billed + stage_billed, committed + stage_committed
-            report[stage] = {"form": FORMS[stage]["version"], "runs": _runs(sites),
+            unread = sum(site.get("status") == "completed" and site.get("observed") for site in sites.values())
+            report[stage] = {"form": FORMS[stage]["version"], "runs": _runs(sites), "pages_not_read": unread - len(records),
                              **(_screen_counts(records) if stage == "screen" else _contact_counts(records)),
                              "estimated_cost_usd": str(stage_billed), "committed_usd": str(stage_committed)}
         report.update(estimated_cost_usd=str(billed), committed_usd=str(committed),
                       ceiling_usd=pin["ceiling_usd"] if pin else None, max_runs=pin["max_runs"] if pin else None)
         path = workspace.root / "summary.json"
-        path.unlink(missing_ok=True)  # A derived file: each summary replaces the last.
-        _write_once(path, (json.dumps(report, indent=1, sort_keys=True) + "\n").encode())
+        _write_derived(path, report)
     return report

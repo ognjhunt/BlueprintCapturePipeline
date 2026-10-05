@@ -3,7 +3,6 @@ import ast
 import hashlib
 import importlib.util
 import json
-import math
 import secrets
 import sys
 from contextlib import contextmanager
@@ -60,36 +59,52 @@ def kinds(workspace, stage="screen"):
 
 
 # --- form and inputs ------------------------------------------------------------------------
-def test_screen_form_is_versioned_strict_and_keeps_the_pilot_fields():
+def test_screen_form_v2_is_strict_keeps_the_pilot_fields_and_adds_quoted_answers():
     schema = ss.SCREEN_SCHEMA
-    identity = {name + suffix for name in ("operator_identity", "site_identity") for suffix in ("", "_url", "_quote")}
-    assert set(schema["properties"]) == PILOT_FIELDS | identity
+    added = {name + suffix for name in ("operator_identity", "site_identity", "facility_type", "facility_operator",
+                                        "variability_signals") for suffix in ("", "_url", "_quote")}
+    assert ss.SCREEN == "blueprint.site-screen.v2" and set(schema["properties"]) == PILOT_FIELDS | added
     assert schema["required"] == list(schema["properties"]) and schema["additionalProperties"] is False
     assert all(set(item) == {"type", "description"} and item["type"] == "string" for item in schema["properties"].values())
     assert ss.FORMS["screen"]["sha256"] == hashlib.sha256(ss.canonical(schema).encode()).hexdigest()
     site = ss.from_inventory(inventory_record(1))
     body = ss.create_body("screen", site, "core")
     assert body == {"processor": "core", "input": site["task_input"],
-                    "metadata": {"site_key": site["site_key"], "form": "blueprint.site-screen.v1"},
+                    "metadata": {"site_key": site["site_key"], "form": "blueprint.site-screen.v2"},
+                    "source_policy": {"exclude_domains": ["linkedin.com", "lnkd.in"]},
                     "task_spec": {"output_schema": {"type": "json", "json_schema": schema}}}
     # The provider's metadata limits: string keys of at most 16 and values of at most 512 characters.
     assert all(len(key) <= 16 and isinstance(value, str) and len(value) <= 512 for key, value in body["metadata"].items())
     assert ss.INVENTORY_VERSION == discovery.INVENTORY_VERSION
+    assert "calibration" not in body["input"] and "address" not in body["input"]
 
 
 def test_an_inventory_record_is_a_web_found_site_with_a_stable_key():
     site = ss.from_inventory(inventory_record(1))
     assert site == {"schema_version": ss.INPUT, "site_key": site["site_key"], "origin": "discovery_inventory",
-                    "identity": {}, "task_input": {"site_name": "Synthetic Works 1", "operator": "Synthetic Operator 1",
-                                                   "location": "Fixture City, TX", "task_hint": "CNC machine tending",
-                                                   "known_source_urls": ["https://operator-1.example/plant"]}}
-    assert ss.SHA.fullmatch(site["site_key"])
+                    "calibration": False, "identity": {}, "address": {"city": "Fixture City", "state": "TX"},
+                    "task_input": {"site_name": "Synthetic Works 1", "operator": "Synthetic Operator 1",
+                                   "location": "Fixture City, TX", "task_hint": "CNC machine tending",
+                                   "known_source_urls": ["https://operator-1.example/plant"]}}
+    assert ss.SHA.fullmatch(site["site_key"]) and ss.from_inventory(inventory_record(1), calibration=True)["calibration"]
     # Spacing, case and punctuation do not change the key, and another task hypothesis is the same site.
     same = inventory_record(1, operator=" synthetic  OPERATOR 1. ", task_hypothesis="Kitting")
     assert ss.from_inventory(same)["site_key"] == site["site_key"]
     assert ss.from_inventory(inventory_record(2))["site_key"] != site["site_key"]
     # A record about a site universe site shares that site's key.
     assert ss.from_inventory(inventory_record(1, site_universe_id="a" * 64))["site_key"] == "a" * 64
+
+
+@pytest.mark.parametrize("location, address", [
+    ("12 Main St, Springfield, IL 62701", {"street": "12 Main St", "city": "Springfield", "state": "IL"}),
+    ("Fixture City, TX", {"city": "Fixture City", "state": "TX"}),
+    ("Fixture City, Texas, USA", {"city": "Fixture City", "state": "TX"}),
+    ("Suite 4, 9 Mill Rd, Fixture City, tx 78701-1234", {"street": "Suite 4, 9 Mill Rd", "city": "Fixture City",
+                                                          "state": "TX"}),
+    ("Texas", {}), ("Fixture City", {}), ("Fixture City, Narnia", {}),
+])
+def test_a_free_text_location_gives_street_city_and_state_only_when_it_names_a_state(location, address):
+    assert ss.parse_location(location) == address
 
 
 @pytest.mark.parametrize("changes, code", [
@@ -110,28 +125,28 @@ def test_inventory_records_that_cannot_be_screened_are_refused(changes, code):
         ss.from_inventory(record)
 
 
-def test_a_site_universe_row_takes_operator_and_site_from_its_government_record():
+def test_a_site_universe_row_takes_only_the_site_address_from_its_government_record():
     row = universe_row(3)
     site = ss.from_site_universe(row)
-    record = {"source": "government_record", "source_ids": ["epa_frs", "osha_ita"], "site_id": row["site_id"]}
     assert site == {"schema_version": ss.INPUT, "site_key": row["site_id"], "origin": "site_universe",
-                    "identity": {"operator": {**record, "answer": "Synthetic Operator 3"},
-                                 "physical_site": {**record, "answer": "3 Example Road, Fixture City, TX 00003"}},
+                    "calibration": False, "address": {"street": "3 Example Road", "city": "Fixture City", "state": "TX"},
+                    "identity": {"physical_site": {"source": "government_record", "source_ids": ["epa_frs", "osha_ita"],
+                                                   "site_id": row["site_id"],
+                                                   "answer": "3 Example Road, Fixture City, TX 00003"}},
                     "task_input": {"site_name": "Synthetic Works 3", "operator": "Synthetic Operator 3",
                                    "location": "3 Example Road, Fixture City, TX 00003",
                                    "task_hint": "fixed arm machine tending", "naics": "332710"}}
 
 
-def test_the_government_record_needs_an_osha_or_epa_source_and_a_street_for_the_site():
+def test_the_government_record_needs_an_osha_or_epa_source_and_a_full_street_address():
     for sources in (("osm_overpass",), ("fsis_mpi", "osm_overpass")):
         assert ss.from_site_universe(universe_row(3, sources=sources))["identity"] == {}
-    no_street = ss.from_site_universe(universe_row(3, street=None))
-    assert set(no_street["identity"]) == {"operator"}
-    assert no_street["task_input"]["location"] == "Fixture City, TX 00003"
-    # EPA FRS names the facility only, so the facility name stands for the operator; all source ids are kept.
-    facility = ss.from_site_universe(universe_row(3, sources=("epa_frs", "osm_overpass"), operator=None))
-    assert facility["identity"]["operator"]["answer"] == "Synthetic Works 3"
-    assert facility["identity"]["operator"]["source_ids"] == ["epa_frs", "osm_overpass"]
+    for changes in ({"street": None}, {"city": None}, {"state": None}):
+        site = ss.from_site_universe(universe_row(3, **changes))
+        assert site["identity"] == {} and "operator" not in site["identity"]
+    # The row's sources are all kept, so a reader sees that OpenStreetMap may have given the name.
+    assert ss.from_site_universe(universe_row(3, sources=("epa_frs", "osm_overpass")))["identity"]["physical_site"][
+        "source_ids"] == ["epa_frs", "osm_overpass"]
     with pytest.raises(ss.ScreenError, match="^site_screen_input_record_invalid$"):
         ss.from_site_universe(universe_row(3, sources=[]))
 
@@ -160,12 +175,49 @@ def test_plan_counts_sites_refusals_and_cost_without_any_call():
     raw = raw_input([inventory_record(1), inventory_record(2), universe_row(3), inventory_record(5, location=None)])
     assert ss.plan(raw) == {
         "command": "plan", "state": "planned", "form": ss.SCREEN, "sites": 3,
-        "by_origin": {"discovery_inventory": 2, "site_universe": 1},
-        "government_record": {"operator": 1, "physical_site": 1},
+        "by_origin": {"discovery_inventory": 2, "site_universe": 1}, "government_record": {"physical_site": 1},
         "input_refused": {"site_screen_input_location_missing": 1}, "processor": "core", "price_usd": "0.025",
-        "estimated_cost_usd": "0.075", "provider_calls": 0}
+        "batch": {"size": 3, "calibration": 0, "seed": None}, "estimated_cost_usd": "0.075", "provider_calls": 0}
     with pytest.raises(ss.ScreenError, match="^site_screen_processor_price_unknown$"):
         ss.plan(raw, processor="ultra")
+
+
+def test_a_batch_keeps_rank_order_and_adds_about_one_seeded_calibration_site_in_ten():
+    sites, _ = ss.load_sites(raw_input([inventory_record(number) for number in range(1, 101)]))
+    batch = ss.select_batch(sites, 30, "seed-one")
+    keys = [site["site_key"] for site in sites]
+    ranked = [site for site in batch if not site["calibration"]]
+    calibration = [site for site in batch if site["calibration"]]
+    assert (len(batch), len(ranked), len(calibration)) == (30, 27, 3)
+    assert [site["site_key"] for site in ranked] == keys[:27]
+    assert all(keys.index(site["site_key"]) >= 27 for site in calibration)
+    # One calibration site follows each nine ranked sites, so a run that stops early keeps the mix.
+    assert [index for index, site in enumerate(batch) if site["calibration"]] == [9, 19, 29]
+    assert ss.select_batch(sites, 30, "seed-one") == batch
+    assert {s["site_key"] for s in ss.select_batch(sites, 30, "seed-two") if s["calibration"]} != {
+        s["site_key"] for s in calibration}
+    # When every site fits there is no cut, so there is no calibration site.
+    assert [s["calibration"] for s in ss.select_batch(sites, 100, "seed-one")] == [False] * 100
+    assert sum(s["calibration"] for s in ss.select_batch(sites, 5, "seed-one")) == 0
+    plan = ss.plan(raw_input([inventory_record(number) for number in range(1, 101)]), batch_size=30, seed="seed-one")
+    assert plan["batch"] == {"size": 30, "calibration": 3, "seed": "seed-one"} and plan["estimated_cost_usd"] == "0.750"
+    for size in (0, -1, 5001, True):
+        with pytest.raises(ss.ScreenError, match="^site_screen_batch_size_invalid$"):
+            ss.select_batch(sites, size, "seed-one")
+
+
+def test_run_screens_a_batch_within_max_runs_and_records_the_calibration_flag(tmp_path):
+    workspace, provider, client = workspace_and_client(tmp_path)
+    raw = raw_input([inventory_record(number) for number in range(1, 41)])
+    with pytest.raises(ss.ScreenError, match="^site_screen_batch_exceeds_max_runs$"):
+        ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="5", max_runs=19, batch_size=20,
+               apply=True)
+    result = ss.run(raw, workspace, client=client, owner_reference=OWNER, ceiling_usd="5", max_runs=20, batch_size=20,
+                    seed="seed-one", apply=True)
+    assert (result["created"], result["calibration"], result["batch"]) == (20, 2, {"size": 20, "seed": "seed-one"})
+    flags = [event["input"]["calibration"] for event in workspace.ledger("screen").events() if event["event"] == "intent"]
+    assert flags.count(True) == 2 and len(provider.creates()) == 20
+    assert all("calibration" not in body["input"] for body in provider.creates())
 
 
 # --- spend: idempotency, ceiling and max_runs -----------------------------------------------
@@ -584,181 +636,288 @@ def test_status_and_result_reads_bind_to_their_run(path, answer, code):
 
 
 # --- quote verification ---------------------------------------------------------------------
-QUOTE = "Operators load and unload twelve CNC lathes on every shift at the plant."
 URL = "https://operator-1.example/capabilities"
+QUOTE = "Operators at the Example Road plant unload the molding presses by hand."
 
 
-def level(page=None, notes=(), quote=QUOTE, url=URL):
-    pages = ss.Pages(FakePages({} if page is None else {URL: page}))
-    return ss.quote_level(url, quote, [ss.normalize(note) for note in notes], pages)
+def level(page=None, excerpts=(), quote=QUOTE, url=URL, cited=URL):
+    """The level of one quote against one page read of ``url`` and excerpts cited for ``cited``."""
+    evidence = {"pages": {url: {"state": "ok", "text": page, "sha256": "0" * 64} if page is not None
+                          else {"state": "unreachable", "code": "source_http_failure"}}}
+    basis = [{"field": "target_task_quote", "citations": [{"url": cited, "excerpts": list(excerpts)}]}]
+    return ss.proof(quote, url, ss.evidence_index(evidence, basis), evidence)["level"]
 
 
-def test_a_quote_on_its_page_is_verified_after_normalization():
-    assert level(f"Header. {QUOTE} Footer.") == ("verified_on_page", None)
-    # Case, no-break spaces and line breaks do not matter.
-    assert level("Header. " + QUOTE.upper().replace(" ", "\u00a0\n ")) == ("verified_on_page", None)
-    # Curly quotes and dashes match their plain forms.
-    page = "Header. It\u2019s the \u201cmain\u201d line \u2014 operators load and unload twelve CNC lathes."
-    quote = "It's the \"main\" line - operators load and unload twelve CNC lathes."
-    assert level(page, quote=quote) == ("verified_on_page", None)
+def test_a_quote_matches_whole_words_up_to_case_spacing_and_punctuation_only():
+    assert level(f"Header. {QUOTE} Footer.") == "verified_on_page"
+    assert level("Header. " + QUOTE.upper().replace(" ", "\u00a0\n ")) == "verified_on_page"
+    page = "It\u2019s the \u201cmain\u201d line \u2014 operators load and unload twelve CNC lathes."
+    assert level(page, quote="It's the \"main\" line - operators load and unload twelve CNC lathes.") == "verified_on_page"
+    # Review P4: no near-exact rule, so a changed last word or a changed lead never matches.
+    assert level(QUOTE.replace("by hand", "by robot")) == "unverified"
+    assert level("We do not use manual labor; every Example Road press is unloaded by a robot cell today.",
+                 quote="Every Example Road press is unloaded by hand by operators on every single shift today.") == "unverified"
+    assert level(QUOTE[:-6]) == "unverified" and level(QUOTE[5:]) == "unverified"
+    # Review P5: whole words only.
+    assert not ss.has_phrase(ss.words("one plant"), ss.words("We are done planting."))
+    assert level("We are done planting at the plant today.", quote="one plant at the plant today") == "unverified"
 
 
-def test_near_exact_needs_90_percent_of_a_quote_of_40_or_more_characters():
-    span = math.ceil(len(QUOTE) * 0.9)
-    assert len(QUOTE) >= 40
-    assert level(QUOTE[:span]) == ("verified_on_page", None)
-    assert level(QUOTE[-span:]) == ("verified_on_page", None)
-    assert level(QUOTE[:span - 1]) == ("unverified", None)
-    short = "Operators unload twelve CNC lathes."
-    assert len(short) < 40 and level(short[:-1], quote=short) == ("unverified", None)
-
-
-def test_the_citation_excerpt_level_applies_only_when_our_read_does_not_find_the_quote():
-    assert level(None, notes=[f"... {QUOTE} ..."]) == ("in_citation_excerpt", None)
-    assert level("A page that shows the quote only after its scripts run.", notes=[QUOTE]) == (
-        "in_citation_excerpt", None)
-    assert level(f"Header. {QUOTE}", notes=["Unrelated excerpt."]) == ("verified_on_page", None)
-    # Each excerpt is matched alone: a quote split across two excerpts is not in one.
-    assert level(None, notes=[QUOTE[:30], QUOTE[30:]]) == ("unverified_page_unreachable", "source_http_failure")
-    assert level("A page without it.") == ("unverified", None)
-    assert level(None) == ("unverified_page_unreachable", "source_http_failure")
-    assert level(f"Header. {QUOTE}", quote="") == ("no_quote", None)
-    assert level(f"Header. {QUOTE}", url="") == ("no_quote", None)
-
-
-def test_excerpts_come_only_from_the_basis_entries_of_that_field(tmp_path):
-    answers = screen_answers(1)
-    pages = pages_for(answers, [stem for stem in ss.SCREEN_PROOFS if stem != "target_task"])
-    key = ss.from_inventory(inventory_record(1))["site_key"]
-    citation = {"url": answers["target_task_url"], "excerpts": [answers["target_task_quote"]]}
-    other = {key: [{"field": "manual_today", "citations": [citation]}]}
-    *_, records = screen(tmp_path / "other", [inventory_record(1)], [answers], pages, basis=other)
-    assert records[key]["verification"]["target_task"] == {"level": "unverified_page_unreachable",
-                                                            "read": "source_http_failure"}
-    own = {key: [{"field": "target_task_quote", "citations": [citation], "reasoning": "", "confidence": "high"}]}
-    *_, records = screen(tmp_path / "own", [inventory_record(1)], [answers], pages, basis=own)
-    assert records[key]["verification"]["target_task"] == {"level": "in_citation_excerpt"}
-    assert records[key]["tier"] == "outreach_ready"
-
-
-def test_each_page_is_read_once_per_verify_and_never_from_linkedin(tmp_path):
-    shared = "https://operator-1.example/plant"
-    answers = screen_answers(1, operator_identity_url=shared, site_identity_url=shared,
-                             manual_today_url="https://www.linkedin.com/jobs/view/synthetic")
-    pages = {shared: answers["operator_identity_quote"] + " " + answers["site_identity_quote"],
-             **pages_for(answers, ["operating_now", "target_task"])}
-    key = ss.from_inventory(inventory_record(1))["site_key"]
-    citation = {"url": answers["manual_today_url"], "excerpts": [answers["manual_today_quote"]]}
-    _, _, reader, records = screen(tmp_path, [inventory_record(1)], [answers], pages,
-                                   basis={key: [{"field": "manual_today", "citations": [citation]}]})
-    assert sorted(reader.requested) == sorted({shared, answers["operating_now_url"], answers["target_task_url"]})
-    # The screen never reads LinkedIn; the provider's own excerpt can still place the quote.
-    assert records[key]["verification"]["manual_today"] == {"level": "in_citation_excerpt"}
-
-
-# --- the outreach-ready rule and open questions ---------------------------------------------
-def test_a_web_found_site_with_every_proof_is_outreach_ready(tmp_path):
-    answers = screen_answers(1)
-    *_, records = screen(tmp_path, [inventory_record(1)], [answers], pages_for(answers))
-    (record,) = records.values()
-    assert record["tier"] == "outreach_ready" and record["schema_version"] == ss.SCREEN
-    assert record["checks"] == {
-        "operator": {"passed": True, "basis": "web_quote", "level": "verified_on_page"},
-        "physical_site": {"passed": True, "basis": "web_quote", "level": "verified_on_page"},
-        "site_task": {"passed": True, "level": "verified_on_page"},
-        "not_closed": {"passed": True, "answer": "yes"},
-        "no_existing_automation": {"passed": True, "answer": "unknown"}}
-    assert record["input"] == ss.from_inventory(inventory_record(1))["task_input"] and record["answers"] == answers
-    assert [question["check"] for question in record["open_questions"]] == ["existing_automation", "fit", "interest"]
-    assert all(question["question"].endswith("?") for question in record["open_questions"])
-
-
-@pytest.mark.parametrize("changes, unpublished, failed", [
-    ({}, "operator_identity", "operator"),
-    ({"operator_identity": ""}, None, "operator"),
-    ({}, "site_identity", "physical_site"),
-    ({}, "target_task", "site_task"),
-    ({"target_task_found": "unknown"}, None, "site_task"),
-    ({"target_task": ""}, None, "site_task"),
-    ({"operating_now": "No"}, None, "not_closed"),
-    ({"operating_now": "Closed for a retool"}, None, "not_closed"),
-    ({"existing_automation": "yes"}, None, "no_existing_automation"),
-    ({"existing_automation": "Partly, on one line"}, None, "no_existing_automation"),
+@pytest.mark.parametrize("quote, expected", [
+    ("a", "quote_too_short"), ("the", "quote_too_short"), ("the molding presses by", "quote_too_short"),
+    ("the molding presses by hand", "verified_on_page"), ("Operators unload the molding presses", "unverified"),
+    ("", "no_quote"),
 ])
-def test_each_unproven_or_blocking_check_keeps_a_site_screened(tmp_path, changes, unpublished, failed):
-    answers = screen_answers(1, **changes)
-    pages = pages_for(answers, [stem for stem in ss.SCREEN_PROOFS if stem != unpublished])
-    *_, records = screen(tmp_path, [inventory_record(1)], [answers], pages)
+def test_review_p1_a_quote_needs_at_least_five_words(quote, expected):
+    assert level(f"Header. {QUOTE} Footer.", quote=quote) == expected
+
+
+def test_review_p9_an_excerpt_counts_only_for_the_answer_url():
+    closed = "Synthetic page. Our plant closed in 2024. Synthetic footer."
+    assert level(closed, excerpts=[QUOTE], cited="https://directory.example/listing/1") == "unverified"
+    assert level(None, excerpts=[QUOTE], cited="https://directory.example/listing/1") == "unverified_page_unreachable"
+    # The same URL, up to scheme, host case, www., a trailing slash and the fragment, holds the excerpt.
+    for cited in (URL, "http://www.OPERATOR-1.example/capabilities/", URL + "#scripts"):
+        assert level("A page that renders the quote only after its scripts run.", excerpts=[QUOTE], cited=cited) == (
+            "in_citation_excerpt")
+    assert level(None, excerpts=[QUOTE[:30], QUOTE[30:]]) == "unverified_page_unreachable"
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.linkedin.com/company/synthetic-operator-1", "https://uk.linkedin.com/in/synthetic",
+    "https://lnkd.in/synthetic", "https://web.archive.org/web/2025/https://www.linkedin.com/in/synthetic",
+    "https://translate.example/?u=https%3A%2F%2Fwww.linkedin.com%2Fin%2Fsynthetic",
+])
+def test_review_p3_a_linkedin_url_never_counts_directly_or_through_a_wrapper(tmp_path, url):
+    answers = screen_answers(1, site_identity_url=url)
+    pages = {**pages_for(answers, [stem for stem in ss.SCREEN_PROOFS if stem != "site_identity"]),
+             url: answers["site_identity_quote"]}  # It would verify if it were read.
+    basis = {ss.from_inventory(inventory_record(1))["site_key"]: [
+        {"field": "site_identity_quote", "citations": [{"url": url, "excerpts": [answers["site_identity_quote"]]}]}]}
+    _, _, reader, records = screen(tmp_path, [inventory_record(1)], [answers], pages, basis=basis)
     (record,) = records.values()
+    assert record["verification"]["site_identity"] == {"level": "source_not_allowed"}
+    assert record["tier"] == "screened" and "physical_site_not_verified_fact" in record["blockers"]
+    assert url not in reader.requested
+
+
+def test_both_forms_ask_the_provider_to_leave_linkedin_out():
+    site = ss.from_inventory(inventory_record(1))
+    for stage in ss.STAGES:
+        assert ss.create_body(stage, site, "core")["source_policy"] == {"exclude_domains": ["linkedin.com", "lnkd.in"]}
+
+
+# --- answers, the tier rule and the one question ---------------------------------------------
+def screened(tmp_path, answers, *, record=None, pages=None, basis=None, unpublished=()):
+    """The screen record of one site whose answers are published on their pages except ``unpublished``."""
+    record = record or inventory_record(1)
+    if pages is None:
+        pages = pages_for(answers, [stem for stem in ss.SCREEN_PROOFS if stem not in unpublished])
+    key = ss.load_sites(raw_input([record]))[0][0]["site_key"]
+    *_, records = screen(tmp_path, [record], [answers], pages, basis={key: basis} if basis else None)
+    return records[key]
+
+
+def test_a_web_found_site_with_every_proof_is_outreach_ready_with_one_question(tmp_path):
+    record = screened(tmp_path, screen_answers(1))
+    assert (record["tier"], record["rule_version"], record["schema_version"]) == (
+        "outreach_ready", "blueprint.site-screen-rule.v2", "blueprint.site-screen.v2")
+    assert record["blockers"] == [] and record["task_scope"] == "site"
+    assert record["gates"]["states"] == {"operator": "verified_fact", "physical_site": "verified_fact",
+                                         "site_task": "verified_fact", "human_workflow": "verified_fact",
+                                         "plausible_fit": "unresolved", "counterevidence": "unresolved"}
+    assert record["question_template"] == "A" and record["question"] == (
+        "What has kept the remaining CNC machine tending work at Fixture City from being automated so far?")
+    assert record["open_checks"] == ["existing_automation", "freshness", "fit", "interest"]
+    assert record["variability"] == {"answer": "high-mix batches", "proven": True}
+    assert [source["claim"] for source in record["proving_sources"]] == ["operator", "physical_site", "site_task"]
+
+
+def test_review_p2_each_quote_must_name_its_answer(tmp_path):
+    unrelated = screen_answers(1, operator_identity="Unrelated Holdings LLC", site_identity="999 Nowhere Lane, Elsewhere, ZZ",
+                               operator_identity_quote="The plant added a second shift this spring.",
+                               operator_identity_url="https://operator-1.example/news",
+                               site_identity_quote="The plant added a second shift this spring.",
+                               site_identity_url="https://operator-1.example/news")
+    record = screened(tmp_path / "unrelated", unrelated, pages=pages_for(screen_answers(1)))
+    assert record["verification"]["operator_identity"]["level"] == "verified_on_page"  # Found, but it names nobody.
+    assert record["gates"]["states"]["operator"] == record["gates"]["states"]["physical_site"] == "unresolved"
     assert record["tier"] == "screened"
-    assert [name for name, check in record["checks"].items() if not check["passed"]] == [failed]
+    no_task_word = screen_answers(1, target_task="Kitting",
+                                  target_task_quote="Operators at our Fixture City plant work on every single shift.")
+    assert screened(tmp_path / "task", no_task_word)["gates"]["states"]["site_task"] == "unresolved"
+    # A legal form never has to be quoted; every other word of the name does.
+    assert ss.names_operator("Synthetic Operator 1 runs the plant", "Synthetic Operator 1, Inc.")
+    assert not ss.names_operator("Synthetic runs the plant at the end of the road", "Synthetic Operator 1")
 
 
-def test_the_government_record_proves_operator_and_site_on_site_universe_rows(tmp_path):
+@pytest.mark.parametrize("quote, named", [
+    ("Our plant is at 1 Example Rd in the north end of town.", True),  # USPS suffixes match their full words.
+    ("Visit the plant in Fixture City, TX for a tour.", True),
+    ("Visit the plant in Fixture City, Texas for a tour.", True),
+    ("Visit the plant in Fixture City for a tour today.", False),  # A city needs its state.
+    ("Fixture City is a long way from Texas by road.", False),  # The state must follow the city.
+    ("Our plant is at 10 Example Road in the north end.", False),
+])
+def test_the_site_quote_names_the_input_street_or_city_and_state(quote, named):
+    assert ss.names_address(quote, {"street": "1 Example Road", "city": "Fixture City", "state": "TX"}) is named
+
+
+def test_the_government_record_proves_only_the_site_address(tmp_path):
     blank = {name + suffix: "" for name in ("operator_identity", "site_identity") for suffix in ("", "_url", "_quote")}
-    rows = [universe_row(2), universe_row(3, sources=("osm_overpass",))]
-    answers = [screen_answers(2, **blank), screen_answers(3, **blank)]
-    pages = {**pages_for(answers[0]), **pages_for(answers[1])}
-    *_, records = screen(tmp_path, rows, answers, pages)
-    government, mapped = records[rows[0]["site_id"]], records[rows[1]["site_id"]]
-    assert government["tier"] == "outreach_ready"
-    assert government["checks"]["operator"] == government["checks"]["physical_site"] == {
-        "passed": True, "basis": "government_record"}
-    assert government["identity"]["operator"]["source"] == "government_record"
-    # A row without an OSHA or EPA record needs web proof like any web-found site.
-    assert mapped["tier"] == "screened" and not mapped["checks"]["operator"]["passed"]
-    assert not mapped["checks"]["physical_site"]["passed"]
+    government = screened(tmp_path / "blank", screen_answers(2, **blank), record=universe_row(2))
+    assert government["gates"]["facts"]["physical_site"]["proofs"][0]["source_id"] == "government_record"
+    assert government["gates"]["states"]["operator"] == "unresolved" and government["tier"] == "screened"
+    quoted = screened(tmp_path / "quoted", screen_answers(2, **{name + suffix: "" for suffix in ("", "_url", "_quote")
+                                                               for name in ("site_identity",)}), record=universe_row(2))
+    assert quoted["tier"] == "outreach_ready" and quoted["gates"]["states"]["physical_site"] == "verified_fact"
+    mapped = screened(tmp_path / "mapped", screen_answers(3, **blank), record=universe_row(3, sources=("osm_overpass",)))
+    assert mapped["gates"]["states"]["physical_site"] == "unresolved" and mapped["tier"] == "screened"
 
 
-def test_open_questions_carry_what_the_rule_leaves_unproven(tmp_path):
-    proven_no = screen_answers(1, existing_automation="no", existing_automation_url="https://operator-1.example/faq",
-                               existing_automation_quote="Every part on the lathes is loaded by our operators.",
-                               existing_automation_date="2026-08-01")
-    stale = screen_answers(2, manual_today="unknown", target_task_date="2023-01-15")
-    undated = screen_answers(3, operating_now_date="")
-    records = [inventory_record(number) for number in (1, 2, 3)]
-    answers = [proven_no, stale, undated]
-    pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
-    *_, screened = screen(tmp_path, records, answers, pages)
-    questions = {record["input"]["site_name"]: [q["check"] for q in record["open_questions"]]
-                 for record in screened.values()}
-    assert questions == {"Synthetic Works 1": ["fit", "interest"],
-                         "Synthetic Works 2": ["manual_workflow", "existing_automation", "freshness", "fit", "interest"],
-                         "Synthetic Works 3": ["existing_automation", "freshness", "fit", "interest"]}
-    assert {record["tier"] for record in screened.values()} == {"outreach_ready"}
+def test_a_company_level_task_never_qualifies_and_asks_the_site_question(tmp_path):
+    company = screen_answers(1, target_task_quote="Our team loads and unloads CNC lathes for every customer order.")
+    record = screened(tmp_path / "company", company)
+    assert (record["task_scope"], record["tier"], record["question_template"]) == ("company", "screened", "S")
+    assert "company_level_task" in record["blockers"]
+    assert record["question"] == "Is CNC machine tending done at your Fixture City site, or somewhere else in the company?"
+    # The page or a same-URL excerpt naming the city or street ties the same quote to the site.
+    page = {company["target_task_url"]: "Fixture City plant careers. " + company["target_task_quote"]}
+    assert screened(tmp_path / "page", company, pages={**pages_for(company), **page})["task_scope"] == "site"
+    basis = [{"field": "target_task_quote", "citations": [{"url": company["target_task_url"], "excerpts": [
+        "Lathe operator, Fixture City. " + company["target_task_quote"]]}]}]
+    assert screened(tmp_path / "excerpt", company, basis=basis)["task_scope"] == "site"
+    # A site universe row also has a street, which ties the task as well as the city does.
+    street = {company["target_task_url"]: "Lathe operator at 1 Example Rd. " + company["target_task_quote"]}
+    assert screened(tmp_path / "street", company, record=universe_row(1),
+                    pages={**pages_for(company), **street})["task_scope"] == "site"
 
 
-def test_verify_writes_each_record_once(tmp_path):
+@pytest.mark.parametrize("changes, blocker", [
+    ({"facility_type": "office"}, "physical_site_contradicted"),
+    ({"facility_type": "mailing address"}, "physical_site_contradicted"),
+    ({"operating_now": "no"}, "physical_site_contradicted"),
+    ({"operating_now": "Closed for a retool"}, "physical_site_contradicted"),
+    ({"manual_today": "no", "manual_today_quote": "No operator loads the lathes; a gantry loader does every part."},
+     "human_workflow_contradicted"),
+    ({"existing_automation": "full", "existing_automation_url": "https://operator-1.example/robots",
+      "existing_automation_quote": "Robots load and unload every CNC lathe in the Fixture City plant."},
+     "counterevidence_contradicted"),
+])
+def test_a_proven_contradiction_blocks_the_tier(tmp_path, changes, blocker):
+    record = screened(tmp_path, screen_answers(1, **changes))
+    assert record["tier"] == "screened" and blocker in record["blockers"]
+
+
+@pytest.mark.parametrize("changes", [
+    {"facility_type": "office"},
+    {"manual_today": "no", "manual_today_quote": "No operator loads the lathes; a gantry loader does every part."},
+    {"existing_automation": "full", "existing_automation_url": "https://operator-1.example/robots",
+     "existing_automation_quote": "Robots load and unload every CNC lathe in the Fixture City plant."},
+])
+def test_review_p8_an_unproven_contradiction_never_blocks(tmp_path, changes):
+    stem = next(name for name in ("facility_type", "manual_today", "existing_automation") if name in changes)
+    record = screened(tmp_path, screen_answers(1, **changes), unpublished=(stem,))
+    assert record["tier"] == "outreach_ready", record["blockers"]
+
+
+def test_partial_automation_keeps_the_site_and_asks_question_a(tmp_path):
+    partial = screen_answers(1, existing_automation="partial", existing_automation_url="https://operator-1.example/robots",
+                             existing_automation_quote="A robot cell tends two of the twelve lathes at the plant.")
+    record = screened(tmp_path, partial)
+    assert (record["tier"], record["question_template"], record["gates"]["states"]["counterevidence"]) == (
+        "outreach_ready", "A", "checked")
+
+
+def test_an_unproven_manual_workflow_asks_question_m(tmp_path):
+    record = screened(tmp_path, screen_answers(1, manual_today="unknown", manual_today_url="", manual_today_quote=""))
+    assert (record["tier"], record["question_template"]) == ("outreach_ready", "M")
+    assert record["question"] == ("Which parts of CNC machine tending at Fixture City still need people, and what has "
+                                  "kept them from being automated?")
+    assert record["open_checks"] == ["manual_workflow", "existing_automation", "freshness", "fit", "interest"]
+
+
+@pytest.mark.parametrize("attributed, blocked", [("Synthetic Operator 1", False), ("Unrelated Holdings LLC", True),
+                                                 (None, False)])
+def test_a_contractor_site_blocks_only_when_the_input_names_another_operator(tmp_path, attributed, blocked):
+    contractor = screen_answers(1, facility_operator="contractor", facility_operator_quote=(
+        "Synthetic Operator 1 runs the Fixture City plant under contract for a customer."))
+    record = screened(tmp_path, contractor, record=inventory_record(1, operator=attributed))
+    assert ("operator_contradicted" in record["blockers"]) is blocked
+    assert (record["tier"] == "outreach_ready") is not blocked
+
+
+def test_variability_signals_are_recorded_and_never_required(tmp_path):
+    record = screened(tmp_path, screen_answers(1, variability_signals="", variability_signals_url="",
+                                               variability_signals_quote=""))
+    assert record["tier"] == "outreach_ready" and record["variability"] == {"answer": None, "proven": False}
+
+
+def test_screen_gates_have_the_lead_verification_shape_and_a_url_keyed_index(tmp_path):
+    record = screened(tmp_path, screen_answers(1))
+    gates = record["gates"]
+    assert set(gates) >= {"eligible_for_qualified_promotion", "assessment_valid", "identity_present", "duplicate",
+                          "conflict", "valid_until", "states", "facts", "task", "site"}
+    assert set(gates["states"]) == {*ss.CLAIMS, "counterevidence"} and set(gates["facts"]) == set(ss.PROVEN_FACTS)
+    proof = gates["facts"]["operator"]["proofs"][0]
+    assert set(proof) == {"claim", "source_id", "url", "quote_sha256", "level", "tool_result_sha256"}
+    assert proof["quote_sha256"] == hashlib.sha256(screen_answers(1)["operator_identity_quote"].encode()).hexdigest()
+    evidence = {"pages": {"https://www.operator-1.example/about/": {"state": "ok", "text": "Text.", "sha256": "1" * 64}}}
+    index = ss.evidence_index(evidence, [{"field": "x", "citations": [
+        {"url": "https://operator-1.example/about", "excerpts": ["Excerpt."]},
+        {"url": "https://www.linkedin.com/company/synthetic", "excerpts": ["Never kept."]}]}])
+    assert set(index["pages"]) == set(index["excerpts"]) == {"operator-1.example/about"}
+    assert ss.outreach_tier({})["tier"] == "none"  # A defect yields none, never outreach_ready.
+
+
+def test_each_page_is_read_once_per_verify_and_kept_for_recomputation(tmp_path):
+    shared = "https://operator-1.example/plant"
+    answers = screen_answers(1, operator_identity_url=shared, site_identity_url=shared)
+    pages = pages_for(answers)
+    workspace, _, reader, records = screen(tmp_path, [inventory_record(1)], [answers], pages)
+    assert sorted(reader.requested) == sorted(set(ss.cited_urls("screen", answers)))
+    (key,) = records
+    evidence = json.loads(workspace.path("screen", "evidence", key).read_text())
+    assert evidence["checked_on"] == TODAY.isoformat() and set(evidence["pages"]) == set(reader.requested)
+
+
+def test_records_carry_their_rule_and_are_recomputed_without_a_read_or_a_run(tmp_path, monkeypatch):
     answers = screen_answers(1)
     workspace, provider, reader, records = screen(tmp_path, [inventory_record(1)], [answers], pages_for(answers))
-    (path,) = (workspace.root / "screen" / "records").glob("*.json")
-    before = path.read_bytes()
-    again = ss.verify(workspace, reader=FakePages({}), today=TODAY)
-    assert (again["screen"], again["page_reads"]) == ({"written": 0, "kept": 1}, 0)
-    assert path.read_bytes() == before
+    (key,) = records
+    current = workspace.path("screen", "records", key).with_name(f"{key}.site-screen-rule.v2.json")
+    assert current.exists() and json.loads(current.read_text())["rule_version"] == ss.SCREEN_RULE
+    calls, reads = len(provider.calls), len(reader.requested)
+    current.unlink()
+    assert ss.summary(workspace)["screen"]["tiers"] == {"outreach_ready": 1, "screened": 0}
+    monkeypatch.setattr(ss, "SCREEN_RULE", "blueprint.site-screen-rule.v3")
+    result = ss.verify(workspace, reader=FakePages({}), today=TODAY)
+    assert (result["screen"]["records"], result["screen"]["pages_kept"], result["page_reads"]) == (1, 0, 0)
+    assert json.loads(current.with_name(f"{key}.site-screen-rule.v3.json").read_text())["rule_version"] == (
+        "blueprint.site-screen-rule.v3")
+    assert (len(provider.calls), len(reader.requested)) == (calls, reads)
 
 
-def test_summary_counts_fields_checks_tiers_and_cost_without_site_data(tmp_path):
+def test_summary_counts_fields_claims_tiers_questions_and_cost_without_site_data(tmp_path):
     ready, closed = screen_answers(1), screen_answers(2, operating_now="no")
     pages = {**pages_for(ready), **pages_for(closed)}
     workspace, *_ = screen(tmp_path, [inventory_record(1), universe_row(2)], [ready, closed], pages)
     report = ss.summary(workspace)
-    assert report["screen"]["runs"] == {"sites": 2, "created": 2, "outcome_unknown": 0, "refused_not_created": 0,
-                                        "completed": 2, "failed": 0, "cancelled": 0, "in_flight": 0}
-    assert report["screen"]["tiers"] == {"outreach_ready": 1, "screened": 1}
-    assert report["screen"]["tiers_by_origin"] == {"discovery_inventory": {"outreach_ready": 1, "screened": 0},
-                                                   "site_universe": {"outreach_ready": 0, "screened": 1}}
-    assert report["screen"]["fields"]["operating_now"] == {"answers": {"yes": 1, "no": 1},
-                                                           "levels": {"verified_on_page": 2}}
-    assert report["screen"]["fields"]["operator_identity"]["answers"] == {"present": 2}
-    assert report["screen"]["identity_basis"] == {"operator": {"web_quote": 1, "government_record": 1},
-                                                  "physical_site": {"web_quote": 1, "government_record": 1}}
-    assert report["screen"]["checks"]["not_closed"] == 1 and report["screen"]["open_questions"]["fit"] == 2
-    assert (report["estimated_cost_usd"], report["committed_usd"]) == ("0.050", "0.050")
-    assert report["contact"]["runs"]["sites"] == 0 and report["contact"]["records"] == 0
+    screen_report = report["screen"]
+    assert screen_report["runs"] == {"sites": 2, "created": 2, "outcome_unknown": 0, "refused_not_created": 0,
+                                     "completed": 2, "failed": 0, "cancelled": 0, "in_flight": 0}
+    assert screen_report["tiers"] == {"outreach_ready": 1, "screened": 1} and screen_report["pages_not_read"] == 0
+    assert screen_report["tiers_by_origin"] == {"discovery_inventory": {"outreach_ready": 1, "screened": 0},
+                                                "site_universe": {"outreach_ready": 0, "screened": 1}}
+    assert screen_report["tiers_by_calibration"]["ranked"] == {"outreach_ready": 1, "screened": 1}
+    assert screen_report["fields"]["operating_now"] == {"answers": {"yes": 1, "no": 1}, "levels": {"verified_on_page": 2}}
+    assert screen_report["physical_site_basis"] == {"site_identity": 1, "government_record": 1}
+    assert screen_report["claims"]["physical_site"] == {"verified_fact": 1, "contradicted": 1}
+    assert screen_report["questions"] == {"A": 1} and screen_report["variability_proven"] == 2
+    assert (report["estimated_cost_usd"], report["committed_usd"], report["rules"]["screen"]) == (
+        "0.050", "0.050", ss.SCREEN_RULE)
     assert json.loads((workspace.root / "summary.json").read_text()) == report
-    text = ss.canonical(report)
-    assert not any(value in text for value in SITE_STRINGS)
+    assert not any(value in ss.canonical(report) for value in SITE_STRINGS)
 
 
 # --- operator command, key and out dir ------------------------------------------------------
@@ -821,7 +980,7 @@ def test_the_command_prints_counts_only_and_the_key_never_leaves_the_client(tmp_
     assert operator.main(["collect", "--out", str(out), "--wait-seconds", "0"], environ=environ,
                          transport=provider)["state"] == "complete"
     pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
-    assert operator.main(["verify", "--out", str(out)], reader=FakePages(pages), today=TODAY)["screen"]["written"] == 2
+    assert operator.main(["verify", "--out", str(out)], reader=FakePages(pages), today=TODAY)["screen"]["records"] == 2
     assert operator.main(["summary", "--out", str(out)])["screen"]["tiers"] == {"outreach_ready": 2, "screened": 0}
     output = capsys.readouterr().out
     assert len(output.splitlines()) == 6 and all(json.loads(line) for line in output.splitlines())
@@ -835,12 +994,13 @@ def test_the_command_prints_counts_only_and_the_key_never_leaves_the_client(tmp_
 def test_site_screen_imports_only_the_standard_library_and_its_own_subtree():
     tree = ast.parse((ROOT / "tools/daily_research/site_screen.py").read_text())
     top = {alias.name.split(".")[0] for node in tree.body if isinstance(node, ast.Import) for alias in node.names}
-    top |= {node.module.split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom)}
+    top |= {node.module.split(".")[0] for node in tree.body if isinstance(node, ast.ImportFrom)
+            and node.module != "tools.daily_research.verification"}
     assert top <= set(sys.stdlib_module_names)
     later = {(node.module, alias.name) for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
              and node not in tree.body for alias in node.names}
     assert later == {("tools.daily_research", "site_universe"), ("tools.daily_research", "search")}
-    for name in ("site_universe.py", "search.py"):  # Those two are standard library only at import too.
+    for name in ("site_universe.py", "search.py", "verification.py"):  # Standard library only at import too.
         imported = ast.parse((ROOT / "tools/daily_research" / name).read_text()).body
         modules = {alias.name.split(".")[0] for node in imported if isinstance(node, ast.Import) for alias in node.names}
         modules |= {node.module.split(".")[0] for node in imported if isinstance(node, ast.ImportFrom)}

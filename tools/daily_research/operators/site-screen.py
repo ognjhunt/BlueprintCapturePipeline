@@ -46,11 +46,15 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
     planner = commands.add_parser("plan", help="Count sites, refusals and cost in one input file")
     planner.add_argument("--input", required=True, type=Path)
     planner.add_argument("--processor", default=site_screen.DEFAULT_PROCESSOR)
+    planner.add_argument("--batch-size", type=int, help="Plan this batch: rank order plus about one calibration site in ten")
+    planner.add_argument("--seed", default=site_screen.DEFAULT_SEED, help="Calibration seed; the same seed gives the same batch")
     for name, text in (("run", "Screen each site of --input that has no run yet"),
                        ("contact", "Find a contact route for each outreach-ready site")):
         spender = commands.add_parser(name, help=text + "; a dry run unless --apply")
         if name == "run":
             spender.add_argument("--input", required=True, type=Path)
+            spender.add_argument("--batch-size", type=int, help="Screen this batch, at most --max-runs (see plan)")
+            spender.add_argument("--seed", default=site_screen.DEFAULT_SEED)
         spender.add_argument("--out", required=True, type=Path,
                              help="Private durable directory outside every repository and outside /tmp")
         spender.add_argument("--owner-reference", required=True, help="The owner decision the first --apply pins")
@@ -77,14 +81,16 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
     if args.command in ("run", "contact"):
         site_screen.refuse_on_worker()  # Before any file is made or the key is read.
     if args.command == "plan":
-        result = site_screen.plan(site_screen.read_input(args.input), processor=args.processor)
+        result = site_screen.plan(site_screen.read_input(args.input), processor=args.processor,
+                                  batch_size=args.batch_size, seed=args.seed)
     elif args.command == "run":
         # The out dir guard runs before the key is read; the out dir is made only once both pass.
         site_screen.guard_out_dir(args.out)
         task_client, raw = client(), site_screen.read_input(args.input)
         result = site_screen.run(raw, site_screen.Workspace(args.out, create=True), client=task_client,
                                  owner_reference=args.owner_reference, ceiling_usd=args.ceiling_usd,
-                                 max_runs=args.max_runs, processor=args.processor, apply=args.apply)
+                                 max_runs=args.max_runs, processor=args.processor, apply=args.apply,
+                                 batch_size=args.batch_size, seed=args.seed)
     elif args.command == "contact":
         workspace = site_screen.Workspace(args.out)
         result = site_screen.contact(workspace, client=client(), owner_reference=args.owner_reference,
