@@ -24,6 +24,7 @@ test('unstarted repair snapshot retains raw evidence without inventing an input'
     input_error_receipt:{stage:'preconditions',class:'Refusal',code,http_status:null,request_id:null}};
   const value={...row(),state:'failed',artifact_downloaded:true,
     raw_output_digest:createHash('sha256').update(raw).digest('hex'),validation_repairs:[revision]};
+  await store.put(row());
   await store.filePut(`${value.date}-artifact.json`,raw.toString('base64'));
   await store.put(value);
   const snapshot=await store.snapshot(value.date);
