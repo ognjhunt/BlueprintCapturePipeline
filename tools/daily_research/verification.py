@@ -1,8 +1,11 @@
-"""Provider-neutral evidence assessment and promotion gate. No I/O or model calls.
+"""Provider-neutral evidence assessment, promotion gate and outreach tier. No model calls.
 
 The agent judges source meaning and exact site/task linkage. This harness binds
 that judgment to retained evidence, enforces the transition and exposes gaps.
 Public research never grants commercial, consent, robot or deployment authority.
+The only I/O is retained_evidence's injected read of digest-checked tool results.
+The outreach tier (blueprint.outreach-ready-rule.v1) is one pure derivation over
+these gates: a hypothesis label for drafting, never verification or send authority.
 """
 from __future__ import annotations
 
@@ -18,11 +21,28 @@ from urllib.parse import urlsplit
 VERSION = "blueprint.lead-verification.v1"
 RESULT_VERSION = "blueprint.lead-verification-result.v1"
 DIAGNOSTIC_RESULT_VERSION = "blueprint.lead-verification-result.v2"
+# v2 plus tier, eligible_for_outreach_ready and the outreach_ready block. status and
+# eligible_for_qualified_promotion keep their v2 meaning: the verified path is unchanged.
+OUTREACH_RESULT_VERSION = "blueprint.lead-verification-result.v3"
+OUTREACH_RULE_VERSION = "blueprint.outreach-ready-rule.v1"
+EVIDENCE_VERSION = "blueprint.outreach-ready-evidence.v1"
 FACTS = ("operator", "physical_site", "site_task", "human_workflow")
 CLAIMS = (*FACTS, "plausible_fit")
 STATES = {"verified_fact", "inference", "unresolved", "contradicted", "stale", "unreachable"}
 SEPARATE_GATES = ["buying_intent", "consent_rights", "commercial_qualification",
                   "robot_compatibility", "deployment_readiness"]
+PROVEN_FACTS = ("operator", "physical_site", "site_task")
+# A shorter quote proves too little: one or two words appear on almost any page.
+MIN_QUOTE_WORDS = 3
+READ_TOOL, SEARCH_TOOL = "blueprint_read_source", "blueprint_search"  # search.READ and search.SEARCH
+# Publication-phase reads come after review, so they never change a recomputed tier.
+EVIDENCE_PHASES = frozenset({"research", "repair", "qa"})
+# Fixed templates, at most 3; each names the open checks it covers. Hypothesis drafts may
+# ask all of them; verified drafts keep the one-question rule.
+QUESTIONS = (("Is {task} at {site} still done mostly by hand?", ("manual_workflow", "freshness")),
+             ("Do you already use or plan automation for it?", ("existing_automation",)),
+             ("Would a short look at whether a robot could take on part of it be useful?", ("fit", "interest")))
+UNAVAILABLE = {"schema_version": EVIDENCE_VERSION, "state": "unavailable"}
 
 
 def digest(value):
@@ -252,9 +272,14 @@ def assessment_issues(candidate, assessment):
     return issues
 
 
-def evaluate(candidate, assessment, now, *, result_version=DIAGNOSTIC_RESULT_VERSION):
+def evaluate(candidate, assessment, now, *, result_version=DIAGNOSTIC_RESULT_VERSION, evidence=None):
     if result_version == RESULT_VERSION:
         return _evaluate_v1(candidate, assessment, now)
+    if result_version == OUTREACH_RESULT_VERSION:
+        # One record without cohort context; cohort() adds duplicate and conflict state.
+        result = evaluate(candidate, assessment, now)
+        result.update(version=OUTREACH_RESULT_VERSION, **_tier(result, candidate, evidence_index(evidence), now, False))
+        return result
     if result_version != DIAGNOSTIC_RESULT_VERSION:
         raise ValueError("lead verification result version unsupported")
     # Reuse the proven claim checks after validating the envelope. Read the
@@ -302,6 +327,242 @@ def evaluate(candidate, assessment, now, *, result_version=DIAGNOSTIC_RESULT_VER
     return result
 
 
+def _json_digest(value):
+    # runner.digest; this module cannot import runner (runner imports it).
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _citations(snapshot):
+    """(url, excerpt) for every citation in a retained Parallel FindAll snapshot."""
+    stack = [snapshot]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, dict):
+            if isinstance(item.get("url"), str) and isinstance(item.get("excerpts"), list):
+                yield from ((item["url"], excerpt) for excerpt in item["excerpts"] if isinstance(excerpt, str))
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
+def retained_evidence(row, read):
+    """Page text and excerpts from this row's retained tool results, each checked against its digests.
+
+    ``read`` is the ledger's read_bytes, the only I/O. Pages are blueprint_read_source text;
+    excerpts are blueprint_search snippets and Parallel FindAll citation excerpts. A result whose
+    bytes, digest or shape differ is skipped and counted, never trusted. Store errors propagate:
+    callers record the evidence as unavailable (QA) or retry (review).
+    """
+    pages, excerpts, refused = [], [], 0
+    calls = row.get("application_tool_calls") if isinstance(row, dict) else None
+    calls = calls if isinstance(calls, dict) else {}
+    for cid, call in sorted(calls.items()):
+        request = call.get("request") if isinstance(call, dict) else None
+        name = request.get("name") if isinstance(request, dict) else None
+        if (name not in {READ_TOOL, SEARCH_TOOL} or call.get("phase") not in EVIDENCE_PHASES
+                or call.get("success") is not True or not isinstance(call.get("result_file"), str)):
+            continue
+        raw = read(call["result_file"])
+        try:
+            event = json.loads(raw)
+            if (hashlib.sha256(raw).hexdigest() != call.get("result_sha256") or _json_digest(event) != call.get("result_digest")
+                    or event.get("success") is not True or event.get("call_id") != cid):
+                raise ValueError("tool result binding")
+            output, sha = json.loads(event["output"]), call["result_sha256"]
+            if name == READ_TOOL:
+                if not isinstance(output["text"], str):
+                    raise TypeError("page text")
+                urls = {output["requested_url"], output["url"], *(item["url"] for item in output.get("redirects") or [])}
+                found = [{"url": url, "text": output["text"], "tool_result_sha256": sha} for url in sorted(urls)]
+            else:
+                found = [{"url": item["url"], "text": item["snippet"], "tool_result_sha256": sha, "kind": "search_snippet"}
+                         for item in output["response"]["results"]]
+        except (AttributeError, KeyError, TypeError, ValueError, UnicodeError):
+            refused += 1
+            continue
+        (pages if name == READ_TOOL else excerpts).extend(found)
+    reads = row.get("parallel_findall_reads") if isinstance(row, dict) else None
+    for cid, receipt in sorted(reads.items()) if isinstance(reads, dict) else ():
+        call = calls.get(cid)
+        if (not isinstance(call, dict) or call.get("phase") not in EVIDENCE_PHASES or not isinstance(receipt, dict)
+                or receipt.get("operation") not in {"status", "result"} or not isinstance(receipt.get("file"), str)):
+            continue
+        raw = read(receipt["file"])
+        try:
+            if hashlib.sha256(raw).hexdigest() != receipt.get("sha256") or len(raw) != receipt.get("bytes"):
+                raise ValueError("snapshot binding")
+            found = [{"url": url, "text": text, "tool_result_sha256": receipt["sha256"], "kind": "citation_excerpt"}
+                     for url, text in _citations(json.loads(raw))]
+        except (TypeError, ValueError, UnicodeError):
+            refused += 1
+            continue
+        excerpts.extend(found)
+    return {"schema_version": EVIDENCE_VERSION, "state": "retained", "pages": pages, "excerpts": excerpts, "refused": refused}
+
+
+def url_key(value):
+    """Same-URL comparison: scheme, host case, www., a trailing slash and the fragment do not differ."""
+    try:
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower().removeprefix("www.")
+        if parts.scheme not in {"http", "https"} or not host or parts.username or parts.password:
+            return None
+        return host + (parts.path.rstrip("/") or "") + ("?" + parts.query if parts.query else "")
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def evidence_index(evidence):
+    """Normalized text by URL key from retained evidence; malformed records are skipped."""
+    index, memo = {"pages": {}, "excerpts": {}}, {}
+    if not isinstance(evidence, dict) or evidence.get("state") != "retained":
+        return index
+    for kind in ("pages", "excerpts"):
+        records = evidence.get(kind)
+        for record in records if isinstance(records, list) else ():
+            try:
+                key, raw, sha = url_key(record["url"]), record["text"], record["tool_result_sha256"]
+                if key is None or not isinstance(sha, str) or not isinstance(raw, str):
+                    continue
+                if id(raw) not in memo:
+                    memo[id(raw)] = (raw, " " + normalized(raw) + " ")  # Keep raw alive so its id stays unique.
+                index[kind].setdefault(key, []).append((memo[id(raw)][1], sha))
+            except (KeyError, TypeError):
+                continue
+    return index
+
+
+def quote_level(quote, url, index):
+    """(verified_on_page | in_citation_excerpt, tool_result_sha256) for a quote proven at this URL.
+
+    The normalized quote must appear whole-word in retained page text for the same URL
+    (verified_on_page), else in a retained search snippet or citation excerpt for it.
+    (None, None) otherwise, including a quote shorter than MIN_QUOTE_WORDS.
+    """
+    try:
+        words, key = normalized(quote), url_key(url)
+    except (AttributeError, TypeError):
+        return None, None
+    if key is None or len(words.split()) < MIN_QUOTE_WORDS:
+        return None, None
+    needle = " " + words + " "
+    for level, kind in (("verified_on_page", "pages"), ("in_citation_excerpt", "excerpts")):
+        for text_value, sha in index[kind].get(key, ()):
+            if needle in text_value:
+                return level, sha
+    return None, None
+
+
+def outreach_gates(result, candidate, index, *, conflict=False):
+    """The inputs outreach_tier reads, from one evaluated result and the retained evidence."""
+    assessment = result.get("assessment") if isinstance(result.get("assessment"), dict) else {}
+    claims = assessment.get("claims") if isinstance(assessment.get("claims"), dict) else {}
+    sources = assessment.get("sources") if isinstance(assessment.get("sources"), list) else []
+    indexed = {s["id"]: s for s in sources if isinstance(s, dict) and text(s.get("id"))}
+    counter = assessment.get("counterevidence") if isinstance(assessment.get("counterevidence"), dict) else {}
+    states = {name: claims[name].get("status") if isinstance(claims.get(name), dict) else None for name in CLAIMS}
+    states["counterevidence"] = counter.get("status")
+    facts = {}
+    for name in PROVEN_FACTS:
+        refs = claims[name].get("source_refs") if isinstance(claims.get(name), dict) else None
+        linked = [indexed[r] for r in refs if isinstance(r, str) and r in indexed] if isinstance(refs, list) else []
+        try:
+            assessed_at = moment(assessment.get("assessed_at"))
+            usable = bool(linked) and len(linked) == len(refs) and all(source_usable(s, assessed_at, primary=True) for s in linked)
+        except (TypeError, ValueError):
+            usable = False
+        proofs = []
+        for source in linked:
+            level, sha = quote_level(source.get("quote"), source.get("url"), index)
+            if level:
+                proofs.append({"claim": name, "source_id": source["id"], "url": source["url"],
+                               "quote_sha256": hashlib.sha256(source["quote"].encode()).hexdigest(),
+                               "level": level, "tool_result_sha256": sha})
+        facts[name] = {"primary_sources_usable": usable, "proofs": proofs}
+    check = result.get("duplicate_check")
+    return {"eligible_for_qualified_promotion": result.get("eligible_for_qualified_promotion") is True,
+            "assessment_valid": result.get("assessment_valid") is True and not result.get("validation_errors"),
+            "identity_present": bool(result.get("identity_key")),
+            "duplicate": bool(result.get("duplicate_of")) or isinstance(check, dict) and check.get("duplicate") is True,
+            "conflict": conflict is True, "valid_until": assessment.get("valid_until"), "states": states, "facts": facts,
+            "task": candidate.get("task"), "site": candidate.get("site") or candidate.get("location")}
+
+
+def _template_value(value):
+    words = " ".join(value.replace("?", " ").split()).rstrip(".")
+    if not words:
+        raise ValueError("question value")
+    return words
+
+
+def outreach_tier(gates, now):
+    """blueprint.outreach-ready-rule.v1. site_screen imports this; never copy it.
+
+    verified: the unchanged full-proof path. outreach_ready: operator, physical_site and
+    site_task are verified_fact from usable primary sources, each with a quote at
+    verified_on_page or in_citation_excerpt; the assessment is valid, unexpired (or of
+    unknown freshness), not a duplicate or conflict; and nothing is contradicted (a closed
+    site is a contradicted physical_site, vendor-only automation evidence a contradicted
+    counterevidence). Anything else, including any defect here, is none.
+    """
+    block = {"rule_version": OUTREACH_RULE_VERSION, "proving_sources": [], "open_checks": [],
+             "open_questions": [], "blockers": []}
+    try:
+        facts, states = gates["facts"], gates["states"]
+        block["proving_sources"] = [facts[name]["proofs"][0] for name in PROVEN_FACTS if facts[name]["proofs"]]
+        if gates["eligible_for_qualified_promotion"] is True:
+            return {"tier": "verified", "eligible_for_outreach_ready": False, "outreach_ready": block}
+        blockers = [name + "_contradicted" for name in (*CLAIMS, "counterevidence") if states.get(name) == "contradicted"]
+        valid_until = gates["valid_until"]
+        for failed, code in ((gates["assessment_valid"] is not True, "assessment_invalid"),
+                             (gates["identity_present"] is not True, "identity_missing"),
+                             (gates["duplicate"] is not False, "duplicate"),
+                             (gates["conflict"] is not False, "duplicate_conflict"),
+                             (valid_until is not None and not now < moment(valid_until), "assessment_expired")):
+            if failed:
+                blockers.append(code)
+        for name in PROVEN_FACTS:
+            if states.get(name) != "verified_fact":
+                blockers.append(name + "_not_verified_fact")
+            elif facts[name]["primary_sources_usable"] is not True:
+                blockers.append(name + "_primary_source_unusable")
+            elif not facts[name]["proofs"]:
+                blockers.append(name + "_quote_unproven")
+        if blockers:
+            return {"tier": "none", "eligible_for_outreach_ready": False,
+                    "outreach_ready": {**block, "blockers": list(dict.fromkeys(blockers))}}
+        checks = (["manual_workflow"] if states.get("human_workflow") != "verified_fact" else []) + (
+            ["freshness"] if valid_until is None else []) + ["existing_automation", "fit", "interest"]
+        task, site = _template_value(gates["task"]), _template_value(gates["site"])
+        questions = [{"question": template.format(task=task, site=site), "checks": [c for c in covers if c in checks]}
+                     for template, covers in QUESTIONS if any(c in checks for c in covers)]
+        return {"tier": "outreach_ready", "eligible_for_outreach_ready": True,
+                "outreach_ready": {**block, "open_checks": checks, "open_questions": questions}}
+    except Exception:  # noqa: BLE001 - any defect in the tier computation yields none; QA and publication continue
+        return {"tier": "none", "eligible_for_outreach_ready": False,
+                "outreach_ready": {**block, "proving_sources": [], "blockers": ["tier_computation_unavailable"]}}
+
+
+def _tier(result, candidate, index, now, conflict):
+    try:
+        return outreach_tier(outreach_gates(result, candidate, index, conflict=conflict), now)
+    except Exception:  # noqa: BLE001 - a malformed record is tier none, never a QA failure
+        return outreach_tier({}, now)
+
+
+def evidence_summary(evidence):
+    """Bounded binding of the evidence a v3 cohort used; review recomputes against the same state."""
+    if not isinstance(evidence, dict) or evidence.get("state") != "retained":
+        return dict(UNAVAILABLE)
+    counts = {kind: len(evidence[kind]) if isinstance(evidence.get(kind), list) else 0 for kind in ("pages", "excerpts")}
+    shas = sorted({r["tool_result_sha256"] for kind in ("pages", "excerpts") for r in evidence.get(kind) or []
+                   if isinstance(r, dict) and isinstance(r.get("tool_result_sha256"), str)})
+    refused = evidence.get("refused")
+    return {"schema_version": EVIDENCE_VERSION, "state": "retained", **counts,
+            "refused": refused if type(refused) is int and refused >= 0 else 0,
+            "sources_sha256": _json_digest(shas)}
+
+
 def packet_candidates(packet):
     """New packets preserve full duplicate evidence without duplicating arrays."""
     candidates = packet["candidates"]
@@ -311,9 +572,16 @@ def packet_candidates(packet):
     return candidates
 
 
-def cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=None, *, result_version=DIAGNOSTIC_RESULT_VERSION):
-    """Apply identical criteria to the entire supplied discovery cohort."""
-    results = [evaluate(c, assessments.get(c.get("candidate_key")), now, result_version=result_version) for c in candidates]
+def cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=None, *, result_version=DIAGNOSTIC_RESULT_VERSION,
+           evidence=None):
+    """Apply identical criteria to the entire supplied discovery cohort.
+
+    v3 adds each candidate's outreach tier after the duplicate and conflict pass, from
+    ``evidence`` (retained_evidence output; None or unavailable proves no quote).
+    """
+    tiered = result_version == OUTREACH_RESULT_VERSION
+    base = DIAGNOSTIC_RESULT_VERSION if tiered else result_version
+    results = [evaluate(c, assessments.get(c.get("candidate_key")), now, result_version=base) for c in candidates]
     duplicate_checks = duplicate_checks or {}
     indexed = {r["candidate_key"]: r for r in results}
     for result in results:
@@ -345,7 +613,7 @@ def cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=
     for index, result in enumerate(results):
         # Missing identity cannot collapse unrelated unknown candidates.
         groups.setdefault(result["identity_key"] or f"unresolved:{index}", []).append(result)
-    statuses = []
+    statuses, conflicted = [], []
     for group in groups.values():
         group = sorted(group, key=lambda r: bool(r.get("duplicate_check", {}).get("duplicate")))
         # A duplicate with contradictory assessments cannot inflate verified yield.
@@ -353,6 +621,7 @@ def cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=
         statuses.append("unresolved" if conflict else group[0]["status"])
         for index, result in enumerate(group):
             if conflict:
+                conflicted.append(result)
                 result.update(status="unresolved", eligible_for_qualified_promotion=False)
                 result["reasons"].append("duplicate assessments conflict: resolve the same operator/site/task before promotion")
             if index:
@@ -360,16 +629,24 @@ def cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=
     counts = {name: statuses.count(name) for name in ("verified", "unresolved", "rejected")}
     assessed = sum(r["assessment_valid"] for r in results)
     actual = (type(actual_cost_usd) in {int, float} and math.isfinite(actual_cost_usd) and actual_cost_usd >= 0)
-    return {"criteria_version": VERSION, **({"result_version": result_version} if result_version != RESULT_VERSION else {}), "duplicate_checks": duplicate_checks,
-            "candidate_count": len(results), "unique_site_task_candidates": len(groups),
-            "duplicates": len(results) - len(groups), "verified_unique_site_task_candidates": counts["verified"],
-            "unresolved_unique_site_task_candidates": counts["unresolved"], "rejected_unique_site_task_candidates": counts["rejected"],
-            "unresolved_count": sum(r["status"] == "unresolved" for r in results),
-            "rejected_count": sum(r["status"] == "rejected" for r in results),
-            "assessed_count": assessed, "verification_coverage": assessed / len(results) if results else None,
-            "actual_cost_usd": actual_cost_usd if actual else None,
-            "verified_unique_per_usd": counts["verified"] / actual_cost_usd if actual and actual_cost_usd > 0 else None,
-            "results": results}
+    value = {"criteria_version": VERSION, **({"result_version": result_version} if result_version != RESULT_VERSION else {}), "duplicate_checks": duplicate_checks,
+             "candidate_count": len(results), "unique_site_task_candidates": len(groups),
+             "duplicates": len(results) - len(groups), "verified_unique_site_task_candidates": counts["verified"],
+             "unresolved_unique_site_task_candidates": counts["unresolved"], "rejected_unique_site_task_candidates": counts["rejected"],
+             "unresolved_count": sum(r["status"] == "unresolved" for r in results),
+             "rejected_count": sum(r["status"] == "rejected" for r in results),
+             "assessed_count": assessed, "verification_coverage": assessed / len(results) if results else None,
+             "actual_cost_usd": actual_cost_usd if actual else None,
+             "verified_unique_per_usd": counts["verified"] / actual_cost_usd if actual and actual_cost_usd > 0 else None,
+             "results": results}
+    if tiered:
+        index = evidence_index(evidence)
+        for candidate, result in zip(candidates, results):
+            result.update(version=OUTREACH_RESULT_VERSION,
+                          **_tier(result, candidate, index, now, any(result is item for item in conflicted)))
+        value.update(outreach_rule_version=OUTREACH_RULE_VERSION, tier_evidence=evidence_summary(evidence),
+                     outreach_ready_count=sum(r["eligible_for_outreach_ready"] for r in results))
+    return value
 
 
 def compare(runs, now):
