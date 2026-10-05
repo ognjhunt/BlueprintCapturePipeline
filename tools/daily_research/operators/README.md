@@ -737,6 +737,226 @@ for the window (the funnel counts it as `history_rows_untrusted` with
 with in-memory Firestore and a fake object store. No provider, model, session, CRM
 write or send.
 
+## Per-site research line (site screen)
+
+`site-screen.py` runs the per-site research line for ADP-010 partner discovery. The
+owner approved it on 2026-10-05 after a successful 50-site pilot. Each site gets one
+Parallel Task run (processor `core`, $0.025 per completed run; failed runs are not
+billed). The run fills the `blueprint.site-screen.v2` form, with a URL and an exact
+quote for each answer (design v1.1: the facility type and operator and the
+variability signals are added). An optional second stage, the contact screen
+(`blueprint.site-contact.v1`), runs only for sites whose screen is outreach-ready
+(owner decision 2026-10-05, company GCS
+`operations/recovery/2026-10-05/owner-decisions/owner-decision-contact-sources-20261005.json`).
+The code is `tools/daily_research/site_screen.py`, standard library only, and the
+standalone release ships it. Nothing sends, drafts or writes a CRM.
+
+```bash
+RELEASE=/opt/render/project/src/dist/daily-research/release
+COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/site-screen.py"
+OUT=/Users/Shared/blueprint-private/site-screen-20261005  # Durable, outside every Git work tree, never /tmp.
+SPEND="--owner-reference REF --ceiling-usd 15 --max-runs 700"
+BATCH="--batch-size N --seed site-screen-calibration-v1"  # Below the eligible count, at most --max-runs.
+PYTHONPATH=$RELEASE $COMMAND plan --input /PRIVATE/backlog.v1.json.gz $BATCH
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz $BATCH --out $OUT $SPEND
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz $BATCH --out $OUT $SPEND --apply
+PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
+PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
+PYTHONPATH=$RELEASE $COMMAND contact --out $OUT $SPEND --apply
+PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
+PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
+PYTHONPATH=$RELEASE $COMMAND summary --out $OUT
+```
+
+These are manual, owner-approved runs on the owner's machine; `run` and `contact`
+refuse on the daily worker (see the spend gate below). From a checkout, run
+`PYTHONPATH=. python tools/daily_research/operators/site-screen.py` from the
+repository root, with `--key-file` set to a private env file. Start with
+`--max-runs 1`.
+
+- `--input` is a site universe export (`backlog.v1.json.gz`, checked by
+  `site_universe.load_export`), a discovery inventory page
+  (`blueprint.discovery-inventory.v1`), or a JSON list of inventory records and
+  export rows. Sites are screened in file order, which is rank order for an export.
+  Inventory records with disposition `rejected`, `learning` or `duplicate` are
+  refused, and a site listed twice is refused the second time. `plan` counts each
+  refusal by code and estimates the cost of the batch. It reads nothing else.
+- `--batch-size N` (on `plan` and `run`) screens N sites: the first ones in file
+  order, with about one in ten taken instead from below that cut and flagged
+  `calibration: true`, so the ranking's yield can be measured. Calibration sites are
+  those with the lowest `sha256(seed:site_key)`, so one input, size and `--seed` give
+  the same batch on any host; one follows each nine ranked sites. A batch larger than
+  `--max-runs` is refused (`site_screen_batch_exceeds_max_runs`). When every site
+  fits, there is no cut and no calibration site, so choose N below the eligible count
+  that `plan` shows. The flag is never sent to the provider; `summary` counts tiers
+  for ranked and calibration sites separately.
+- On a site universe row with an `osha_ita` or `epa_frs` source and a street, city
+  and state, that government record is the primary source for the exact site
+  address, kept as `{source: "government_record", source_ids, site_id, answer}`.
+  The operator always needs its own quote: the export does not record which source
+  supplied the name or operator (an OpenStreetMap record can), so `source_ids` lists
+  every source of the row. Any other row, and each web-found inventory site, must
+  prove the address with its own quote too.
+- `run` and `contact` are dry runs unless `--apply`. A dry run makes the same
+  admission, writes nothing and calls nothing.
+- The first `--apply` (of either stage) pins `--ceiling-usd`, `--max-runs` and
+  `--owner-reference` in `owner_ceiling.json` (`ceiling_usd`, `max_runs`,
+  `created_at`, `owner_reference`), which is created once. A later invocation of
+  either stage must give the same owner reference and the same or a lower ceiling
+  and run limit; otherwise it refuses with `site_screen_owner_reference_mismatch`,
+  `site_screen_ceiling_above_pin` or `site_screen_max_runs_above_pin`.
+- Every event is fsynced first to the out dir's spend journal, `spend.jsonl` (its
+  first line is the pin), then to the stage's ledger, `<stage>/runs.jsonl`. An
+  `intent` line precedes each create; it records the code's Git commit and whether
+  tracked files were dirty (or a release's manifest commit), and `run` prints the same.
+  Then `created` (with the run id), `refused` (no run exists; a later run tries the
+  site again) or `uncertain` (the outcome is unknown) follows. A site with a run id,
+  or with an unknown outcome, is never submitted again. An interrupted create counts
+  as an unknown outcome.
+- Each command first checks that the pin, the journal and the ledgers agree, and that
+  every kept result and page read has its created run in the ledger. Damage to any
+  one of those files at a time refuses (`site_screen_spend_journal_missing`,
+  `site_screen_spend_journal_mismatch`, `site_screen_owner_ceiling_missing`,
+  `site_screen_owner_ceiling_mismatch`). Matching edits to two of them, or the loss
+  of a whole out dir before any result is kept, are not caught and can reset spend:
+  keep the out dir durable and never edit it by hand. The only repairs are the two
+  crash windows: a pin file whose journal line was written, and a ledger's last
+  event whose journal copy was written; both are completed from the journal.
+- Before each create, the price of each run in either stage that may be billed
+  (completed, in flight, cancelled or of unknown outcome), plus the new run, must be
+  at most the ceiling (above 0, at most $100). All runs of both stages must be at
+  most the run limit (1–5,000). Otherwise the create is refused with
+  `site_screen_spend_ceiling_reached` or `site_screen_max_runs_reached`. Both bound
+  the out dir's total, not one invocation. Only a run observed `failed` frees its
+  price, and it still counts as a run. `--processor` accepts only a processor with a
+  reviewed price (`core`).
+- One out dir holds one owner allowance. A new out dir starts again from zero, so keep
+  the whole campaign in one out dir on durable storage outside every Git work tree,
+  for example `/Users/Shared/blueprint-private/...`. An out dir under `/tmp`,
+  `/private/tmp`, `/var/tmp` or `/var/folders` is refused
+  (`site_screen_out_dir_volatile`): the system prunes them, and a lost ledger means
+  paying again.
+- A create answered 401, 402, 403 or 429, a redirect, or an unreachable provider
+  stops the run (`site_screen_provider_*`, `site_screen_processor_refused`). Other
+  4xx answers refuse that site only (`site_screen_create_rejected`). A 5xx answer, a
+  success without a valid run id, or a connection lost after the request was sent is
+  an unknown outcome: it stops the run, and its price stays committed.
+- `collect` polls each created run every 15 s for up to `--wait-seconds` (default
+  1800, at most 7200). Status and result reads are not billed. It stores each
+  terminal response unchanged in `<stage>/results/<site_key>.json` and records an
+  `observed` line with its SHA-256. A 401 stops it; other read errors are counted and
+  tried again on the next pass.
+- `verify` reads each cited page once with the daily agent's reader (`search.source`,
+  45 s alarm) and keeps the text in `<stage>/evidence/<site_key>.json` with its date.
+  A quote needs at least five words. It is `verified_on_page` when our read of its
+  own URL holds every word of it, in order and as whole words (only case, spacing and
+  punctuation may differ; there is no near match); else `in_citation_excerpt` when a
+  provider citation excerpt cited for that same URL (scheme, `www.`, a trailing slash
+  and the fragment aside) holds it; else `unverified`, or
+  `unverified_page_unreachable` with the read's code. Other levels are `no_quote`,
+  `quote_too_short` and `source_not_allowed`.
+- LinkedIn is never read and never evidence: any URL whose host is `linkedin.com`,
+  `lnkd.in` or a subdomain, or that contains either name (an archive, translation or
+  redirect wrapper), is refused before any connection, on the first request and on
+  every redirect, and its excerpts are ignored. Both forms send
+  `source_policy: {exclude_domains: ["linkedin.com", "lnkd.in"]}`.
+- The input location gives whatever it holds: street, city and state, as in
+  "12 Main St, Springfield, IL 62701", or only the city for the backlog's
+  "Springfield, United States; state not individually established". Its site anchors
+  (`site_anchors`) are a street with a house number; the city followed directly by
+  its state code in capitals or its name, on one line ("Mission, TX"); and the
+  site's distinctive name words with the city as a capitalized place name in one
+  sentence. A city alone never counts, so "our mission" or "e-commerce" never tie a
+  text to Mission, TX or Commerce, CA. `plan` counts the sites with each anchor kind
+  and with none.
+- A proven quote must also name its answer: every significant word of the operator's
+  name (legal forms aside), and that name must match the input's operator (one name's
+  distinctive words, without words such as Manufacturing or Holdings, all in the
+  other), else `operator_mismatch`; for the site, a site anchor, or the street of the
+  provider's own address when that quote holds it and it lies in the input's city
+  and state (only when the input has no street); and a word of the task phrase. The
+  task quote, its page or a same-URL excerpt must name a site anchor (or the proven
+  provider address); otherwise the task is `company_level_task` and does not
+  qualify.
+- `outreach_ready` (rule `blueprint.site-screen-rule.v2`, design v1.1) needs the
+  operator, the exact site and the site task each proven that way, and nothing
+  contradicted: an operator the input does not name (`operator_mismatch`), the site
+  shown closed (`operating_now` `no`, or an answer that is not yes, no or unknown),
+  and, each with a proven quote, an `office` or `mailing`
+  facility, a `contractor` or `tenant` site the input attributes to another operator,
+  `manual_today` `no`, or `existing_automation` `full` (this task at this site fully
+  automated). Partial automation, or automation of other tasks or sites, keeps the
+  site eligible. Every other site is `screened`, with its `blockers`.
+- Each record asks exactly one question, the first of S, M and A whose check is open:
+  S (site link open) "Is <task> done at your <site> site, or somewhere else in the
+  company?"; M (manual workflow open) "Which parts of <task> at <site> still need
+  people, and what has kept them from being automated?"; A "What has kept the
+  remaining <task> work at <site> from being automated so far?". `<site>` is the
+  input city, else the site name. Every other open check (existing automation,
+  freshness, fit, interest) is recorded in `open_checks` and not asked.
+  `variability_signals` is recorded and never required.
+- Records are recomputed from the stored raw results and page reads, under each
+  stage's current rule (`screen_gates` gives the lead-verification gate shape and
+  `evidence_index` the URL-keyed evidence). `verify` writes
+  `<stage>/records/<site_key>.<rule>.json`, and `summary` and `contact` recompute in
+  memory, so a new rule needs no paid run, no page read and no deletion.
+- `contact` creates one run per outreach-ready screen record (recomputed under the
+  current screen rule), in screen order, under the same pinned ceiling and run limit.
+  The form asks for the deciding role, a named current person from a reputable public
+  source, a business email address published verbatim, the channel type, and a
+  contact form or phone URL when no address is published.
+- A person counts only when the person quote (five words or more) contains the name
+  and stands whole-word on our read of the person's page or in a provider excerpt
+  cited for that same URL.
+- An email counts only when all of these hold (rule `blueprint.site-contact-rule.v2`):
+  it is one plain address on the operator's own domain or a subdomain of it, never a
+  free-mail domain; its quote holds the exact address; and our own read of the cited
+  page holds the quote and the whole address. A provider excerpt alone never counts.
+  The operator's domain is that of the page whose proven quote names the operator in
+  the screen (the operator quote's URL), never the bare `website` answer, and never a
+  directory, data broker, job board or applicant tracking, social, map, newswire,
+  government, free-mail or LinkedIn host; the provider is told only that website. The
+  codes are `site_screen_email_free_mail`, `site_screen_operator_domain_unproven`,
+  `site_screen_email_off_operator_domain`, `site_screen_quote_lacks_address` and
+  `site_screen_address_not_on_source`.
+- `collect` checks a completed contact result's email on our own read of its page
+  before anything is stored. Then every address but a verified one is replaced by
+  `[redacted-email]` in the stored result and page reads, so a discarded address is
+  never kept; the decision (level and reason) stays with the page reads.
+- LinkedIn is never read or evidence for a person or an email, including inside an
+  archive or redirect wrapper (`person_source_not_allowed`).
+- The recipient comes from the address itself; the provider's channel label is
+  recorded and ignored. `person_email`: the local part holds a word of at least three
+  letters from a verified person's name. `team_inbox` or `general_inbox`: a role word
+  such as sales or operations (team), or info, contact or press (general). A careers,
+  legal, support or similar inbox, or anyone else's address, gives `none`. The order
+  is `person_email`, `team_inbox`, `general_inbox`, then `none`. A title alone never
+  proves remit, so `decision_remit` is always an open question for a named person.
+  `person_current` (no dated source within 18 months) and `recipient` are added when
+  they are unproven.
+- `summary` prints and writes `summary.json`: for each stage, run counts, answer and
+  quote-level counts by field, claim states, tier counts (by origin and for ranked and
+  calibration sites), blockers, questions, open checks, recipient, person and email
+  levels, and cost. `estimated_cost_usd` counts completed runs; `committed_usd`
+  counts each run that may be billed.
+- The key comes from `PARALLEL_API_KEY`, or from `--key-file` (KEY=VALUE lines,
+  `export` allowed) when one is given. It is never printed or written. `--out` must
+  be outside this repository and outside any Git work tree
+  (`site_screen_out_dir_inside_repository`). A new out dir gets mode 0700, and every
+  file 0600. Only one command at a time can use an out dir (`site_screen_out_dir_busy`).
+- Spend gate. The pinned ceiling and the journal hold for one out dir on one machine.
+  Scheduled use needs the shared `paid_resource_admission` seam first: a
+  `parallel_task` resource class in `PAID_RESOURCE_CLASSES`, an issuer in `src/` (the
+  FindAll `admit_exact_request` pattern), a grant before each create,
+  `scripts/verify_paid_resource_allocator.py` extended to scan
+  `tools/daily_research/`, and ceilings taken from the owner-pinned direction under
+  the worker lease, with one allowance across stages, out dirs and hosts. Until then,
+  `run` and `contact` refuse whenever `BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED` is
+  set, to any value (`site_screen_worker_needs_paid_admission`).
+  Output is counts and stable `site_screen_*` codes only, never site names, people
+  or addresses. The hermetic tests use a fake Task API transport and a fake page
+  reader with synthetic sites.
+
 ## Daily research runtime envelope
 
 The 2026-10-04 owner decision gives each daily research run 60 minutes in total:
