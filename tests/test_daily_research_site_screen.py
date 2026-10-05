@@ -630,7 +630,7 @@ def test_an_out_dir_on_storage_the_system_prunes_is_refused(monkeypatch, root):
     with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_volatile$"):
         ss.Workspace(path, create=True)
     assert not path.exists()
-    assert ss.guard_out_dir("/Users/Shared/blueprint-private/site-screen-synthetic").name == "site-screen-synthetic"
+    assert ss.guard_out_dir("/srv/blueprint-private/site-screen-synthetic").name == "site-screen-synthetic"
 
 
 # --- client: status, result and failed runs -------------------------------------------------
