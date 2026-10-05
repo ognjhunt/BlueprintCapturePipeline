@@ -737,6 +737,100 @@ for the window (the funnel counts it as `history_rows_untrusted` with
 with in-memory Firestore and a fake object store. No provider, model, session, CRM
 write or send.
 
+## Per-site research line (site screen)
+
+`site-screen.py` runs the per-site research line for ADP-010 partner discovery. The
+owner approved it on 2026-10-05 after a successful 50-site pilot. Each site gets one
+Parallel Task run (processor `core`, $0.025 per completed run; failed runs are not
+billed). The run fills the `blueprint.site-screen.v1` form, with a URL and an exact
+quote for each answer. The code is `tools/daily_research/site_screen.py`, standard
+library only, and the standalone release ships it. Nothing sends, drafts or writes
+a CRM.
+
+```bash
+RELEASE=/opt/render/project/src/dist/daily-research/release
+COMMAND="/opt/render/project/src/dist/daily-research/venv/bin/python $RELEASE/tools/daily_research/operators/site-screen.py"
+OUT=/PRIVATE/site-screen-20261005
+PYTHONPATH=$RELEASE $COMMAND plan --input /PRIVATE/backlog.v1.json.gz
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT --ceiling-usd 1.25 --max-runs 50
+PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT --ceiling-usd 1.25 --max-runs 50 --apply
+PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
+PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
+PYTHONPATH=$RELEASE $COMMAND summary --out $OUT
+```
+
+From a checkout, run `PYTHONPATH=. python tools/daily_research/operators/site-screen.py`
+from the repository root, with `--key-file` set to a private env file.
+
+- `--input` is a site universe export (`backlog.v1.json.gz`, checked by
+  `site_universe.load_export`), a discovery inventory page
+  (`blueprint.discovery-inventory.v1`), or a JSON list of inventory records and
+  export rows. Sites are screened in file order, which is rank order for an export.
+  Inventory records with disposition `rejected`, `learning` or `duplicate` are
+  refused, and a site listed twice is refused the second time. `plan` counts each
+  refusal by code and estimates the cost of all sites. It reads nothing else.
+- On a site universe row with an `osha_ita` or `epa_frs` source, that government
+  record is the primary source for the operator (`operator`, else the establishment
+  `name`). When the row also has a street, city and state, it is the primary source
+  for the exact site too. The record is kept as
+  `{source: "government_record", source_ids, site_id, answer}`. Any other row, and
+  each web-found inventory site, must prove both with its own quotes. The export
+  does not record which source supplied each field (an OpenStreetMap record can
+  supply the name), so `source_ids` lists every source of the row.
+- `run` is a dry run unless `--apply`. A dry run makes the same admission and
+  calls nothing. The screen stage has an append-only ledger, `screen/runs.jsonl`.
+  An `intent` line is fsynced before each create. Then `created` (with the run id),
+  `refused` (no run exists; a later run tries the site again) or `uncertain` (the
+  outcome is unknown) follows. A site with a run id, or
+  with an unknown outcome, is never submitted again. An interrupted create counts as
+  an unknown outcome.
+- Before each create, the price of each run that may be billed (completed, in
+  flight, cancelled or of unknown outcome), plus the new run, must be at most
+  `--ceiling-usd` (above 0, at most $100). The stage's runs must be at most
+  `--max-runs` (1–5,000). Otherwise the create is refused with
+  `site_screen_spend_ceiling_reached` or `site_screen_max_runs_reached`. Both bound
+  the stage's total in that out dir, not one invocation. Only a run observed
+  `failed` frees its price, and it still counts as a run. `--processor` accepts only
+  a processor with a reviewed price (`core`).
+- A create answered 401, 402, 403 or 429, a redirect, or an unreachable provider
+  stops the run (`site_screen_provider_*`, `site_screen_processor_refused`). Other
+  4xx answers refuse that site only (`site_screen_create_rejected`). A 5xx answer, a
+  success without a valid run id, or a connection lost after the request was sent is
+  an unknown outcome: it stops the run, and its price stays committed.
+- `collect` polls each created run every 15 s for up to `--wait-seconds` (default
+  1800, at most 7200). Status and result reads are not billed. It stores each
+  terminal response unchanged in `<stage>/results/<site_key>.json` and records an
+  `observed` line with its SHA-256. A 401 stops it; other read errors are counted and
+  tried again on the next pass.
+- `verify` reads each cited page once with the daily agent's reader (`search.source`,
+  45 s alarm) and writes `<stage>/records/<site_key>.json` once. A quote is
+  `verified_on_page`; else `in_citation_excerpt` when one provider citation excerpt
+  for that field holds it; else `unverified`, or `unverified_page_unreachable` with
+  the read's code. A field without a URL and quote is `no_quote`. Matching is exact
+  after NFKC, lower case, plain quotes and dashes, and single spaces. A quote of 40
+  or more characters also matches on its leading or trailing 90 %.
+- `outreach_ready` needs the operator, the exact physical site and the site task
+  each proven by a primary source, with a quote at `verified_on_page` or
+  `in_citation_excerpt`; on site universe rows the government record counts for
+  operator and site. `operating_now` must not be `no` and `existing_automation` must
+  not be `yes`; an answer that is not yes, no or unknown also fails these two
+  checks. Every other site is `screened`. `open_questions` lists what the rule leaves
+  unproven, for the first email: `manual_workflow`, `existing_automation`,
+  `freshness` (the site operating now and the task evidence within 18 months), and
+  `fit` and `interest`, which are always open.
+- `summary` prints and writes `summary.json`: run counts, answer and quote-level
+  counts by field, check and tier counts (also by origin), open questions, and
+  cost. `estimated_cost_usd` counts completed runs; `committed_usd` counts each run
+  that may be billed.
+- The key comes from `PARALLEL_API_KEY`, or from `--key-file` (KEY=VALUE lines,
+  `export` allowed) when one is given. It is never printed or written. `--out` must
+  be outside this repository and outside any Git work tree
+  (`site_screen_out_dir_inside_repository`). A new out dir gets mode 0700, and every
+  file 0600. Only one command at a time can use an out dir (`site_screen_out_dir_busy`).
+  Output is counts and stable `site_screen_*` codes only, never site names or
+  addresses. The hermetic tests use a fake Task API transport and a fake page
+  reader with synthetic sites.
+
 ## Daily research runtime envelope
 
 The 2026-10-04 owner decision gives each daily research run 60 minutes in total:
