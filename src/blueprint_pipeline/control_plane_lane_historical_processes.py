@@ -1,7 +1,8 @@
 """Strict current native process channels after the historical write fence.
 
 This bounded scan cannot replace the owner decision, future-writer fence or
-queue/pin/release checks. Every unreadable, changing or unknown view refuses.
+queue/pin/release checks. Every unreadable, changing or unknown process view refuses.
+Transient PID/FD census churn requires a fresh complete pass within the original budget.
 The invoking worker's held descriptors are skipped only for its actual PID.
 """
 from __future__ import annotations
@@ -19,6 +20,10 @@ from .control_plane_kernel_process import kernel_has_no_user_memory
 
 class HistoricalProcessError(ValueError):
     """Fixed refusal without foreign process contents."""
+
+
+class _DescriptorCensusChanged(HistoricalProcessError):
+    """Incomplete FD membership observation, never permission to skip a PID."""
 
 
 def _require(value, code='process_unknown'):
@@ -295,7 +300,12 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
             if (info.st_dev, info.st_ino) in identities or os.fsencode(target) in os.fsencode(path):
                 channels.add('fd')
         after_names = scan.names(descriptors, 16384)
-        _require(after_names == names)
+        descriptor_census_changed = after_names != names
+        if descriptor_census_changed:
+            # An observed reference is terminal even when descriptors churn.
+            # Otherwise this incomplete observation can only start a fresh
+            # full census; unreadable channels and identity changes still refuse.
+            _require(not channels, 'process_reference')
     finally:
         os.close(descriptors)
     _require(_process_start(scan.read(directory, 'stat', 16384), pid) == started
@@ -315,6 +325,8 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
         else:
             _require((current_root.st_dev, current_root.st_ino) == observed_root,
                      'process_view_unknown')
+    if descriptor_census_changed:
+        raise _DescriptorCensusChanged('historical_generation_process_unknown')
     return channels
 
 
@@ -342,23 +354,37 @@ def refuse_historical_process_references(manifest, *, tick, restore_bounds=None,
         finally:
             os.close(host)
             os.close(own)
-        names = [name for name in scan.names(proc, 10000) if name.isdigit()]
-        _require(len(names) <= 4096)
-        for pid in names:
-            if int(pid) == os.getpid():
-                continue
-            scan.tick()
-            directory = os.open(pid, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                dir_fd=proc)
-            try:
-                channels = _inspect_process(scan, directory, pid, target, identities, namespaces,
-                                            host_namespace[2], root_identity)
-                _require(not channels, 'process_reference')
-            finally:
-                os.close(directory)
-        after = [name for name in scan.names(proc, 10000) if name.isdigit()]
-        _require(after == names)
-        scan.tick()
+        # A process can exit between the census and open, or after inspection;
+        # its descriptor membership can also change during an otherwise readable view.
+        # Discard that incomplete pass, never the process: only a fresh complete
+        # stable census may clear references. Keep the same clock, counters,
+        # mount observations and shared budget across all bounded attempts.
+        for _attempt in range(3):
+            names = [name for name in scan.names(proc, 10000) if name.isdigit()]
+            _require(len(names) <= 4096)
+            for pid in names:
+                if int(pid) == os.getpid():
+                    continue
+                scan.tick()
+                try:
+                    directory = os.open(pid, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                        dir_fd=proc)
+                except FileNotFoundError:
+                    break
+                try:
+                    channels = _inspect_process(scan, directory, pid, target, identities, namespaces,
+                                                host_namespace[2], root_identity)
+                    _require(not channels, 'process_reference')
+                except _DescriptorCensusChanged:
+                    break
+                finally:
+                    os.close(directory)
+            else:
+                after = [name for name in scan.names(proc, 10000) if name.isdigit()]
+                if after == names:
+                    scan.tick()
+                    return
+        _require(False)
     except HistoricalProcessError:
         raise
     except (OSError, ValueError, OverflowError):
