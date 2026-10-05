@@ -64,18 +64,18 @@ def kinds(workspace, stage="screen"):
 
 
 # --- form and inputs ------------------------------------------------------------------------
-def test_screen_form_v2_is_strict_keeps_the_pilot_fields_and_adds_quoted_answers():
+def test_screen_form_v3_is_strict_keeps_the_pilot_fields_and_adds_quoted_answers():
     schema = ss.SCREEN_SCHEMA
     added = {name + suffix for name in ("operator_identity", "site_identity", "facility_type", "facility_operator",
                                         "variability_signals") for suffix in ("", "_url", "_quote")}
-    assert ss.SCREEN == "blueprint.site-screen.v2" and set(schema["properties"]) == PILOT_FIELDS | added
+    assert ss.SCREEN == "blueprint.site-screen.v3" and set(schema["properties"]) == PILOT_FIELDS | added
     assert schema["required"] == list(schema["properties"]) and schema["additionalProperties"] is False
     assert all(set(item) == {"type", "description"} and item["type"] == "string" for item in schema["properties"].values())
     assert ss.FORMS["screen"]["sha256"] == hashlib.sha256(ss.canonical(schema).encode()).hexdigest()
     site = ss.from_inventory(inventory_record(1))
     body = ss.create_body("screen", site, "core")
     assert body == {"processor": "core", "input": site["task_input"],
-                    "metadata": {"site_key": site["site_key"], "form": "blueprint.site-screen.v2"},
+                    "metadata": {"site_key": site["site_key"], "form": "blueprint.site-screen.v3"},
                     "source_policy": {"exclude_domains": ["linkedin.com", "lnkd.in"]},
                     "task_spec": {"output_schema": {"type": "json", "json_schema": schema}}}
     # The provider's metadata limits: string keys of at most 16 and values of at most 512 characters.
@@ -214,6 +214,7 @@ def test_plan_counts_sites_refusals_and_cost_without_any_call():
         "command": "plan", "state": "planned", "form": ss.SCREEN, "sites": 3,
         "by_origin": {"discovery_inventory": 2, "site_universe": 1}, "government_record": {"physical_site": 1},
         "site_anchors": {"usable": 3, "none": 0, "street": 1, "city_state": 3, "site_name_city": 3},
+        "task_focus": None, "by_focus": {},
         "input_refused": {"site_screen_input_location_missing": 1}, "processor": "core", "price_usd": "0.025",
         "batch": {"size": 3, "calibration": 0, "seed": None}, "estimated_cost_usd": "0.075", "provider_calls": 0}
     with pytest.raises(ss.ScreenError, match="^site_screen_processor_price_unknown$"):
@@ -629,7 +630,7 @@ def test_an_out_dir_on_storage_the_system_prunes_is_refused(monkeypatch, root):
     with pytest.raises(ss.ScreenError, match="^site_screen_out_dir_volatile$"):
         ss.Workspace(path, create=True)
     assert not path.exists()
-    assert ss.guard_out_dir("/Users/Shared/blueprint-private/site-screen-synthetic").name == "site-screen-synthetic"
+    assert ss.guard_out_dir("/srv/blueprint-private/site-screen-synthetic").name == "site-screen-synthetic"
 
 
 # --- client: status, result and failed runs -------------------------------------------------
@@ -791,7 +792,7 @@ def screened(tmp_path, answers, *, record=None, pages=None, basis=None, unpublis
 def test_a_web_found_site_with_every_proof_is_outreach_ready_with_one_question(tmp_path):
     record = screened(tmp_path, screen_answers(1))
     assert (record["tier"], record["rule_version"], record["schema_version"]) == (
-        "outreach_ready", "blueprint.site-screen-rule.v2", "blueprint.site-screen.v2")
+        "outreach_ready", "blueprint.site-screen-rule.v2", "blueprint.site-screen.v3")
     assert record["blockers"] == [] and record["task_scope"] == "site"
     assert record["gates"]["states"] == {"operator": "verified_fact", "physical_site": "verified_fact",
                                          "site_task": "verified_fact", "human_workflow": "verified_fact",
@@ -1002,6 +1003,7 @@ def test_summary_counts_fields_claims_tiers_questions_and_cost_without_site_data
     assert screen_report["tiers_by_origin"] == {"discovery_inventory": {"outreach_ready": 1, "screened": 0},
                                                 "site_universe": {"outreach_ready": 0, "screened": 1}}
     assert screen_report["tiers_by_calibration"]["ranked"] == {"outreach_ready": 1, "screened": 1}
+    assert screen_report["tiers_by_focus"] == {"none": {"outreach_ready": 1, "screened": 1}}
     assert screen_report["fields"]["operating_now"] == {"answers": {"yes": 1, "no": 1}, "levels": {"verified_on_page": 2}}
     assert screen_report["physical_site_basis"] == {"site_identity": 1, "government_record": 1}
     assert screen_report["claims"]["physical_site"] == {"verified_fact": 1, "contradicted": 1}
@@ -1119,3 +1121,70 @@ def test_the_default_page_reader_is_the_daily_reader_under_its_alarm(monkeypatch
     assert read("https://operator-1.example/plant") == {"text": "Synthetic page."}
     assert seen == [({"url": "https://operator-1.example/plant"}, {"blocked_domains": ss.NEVER_FETCH})]
     assert alarms == [ss.PAGE_READ_SECONDS]
+
+
+def test_a_task_focus_keeps_rows_with_that_capability_and_names_the_task():
+    focused = universe_row(1, lead_capability="palletizing_depalletizing",
+                           capabilities=["palletizing_depalletizing", "sorting_pick_and_place"])
+    other = universe_row(2, lead_capability="palletizing_depalletizing", capabilities=["palletizing_depalletizing"])
+    sites, refused = ss.load_sites(json.dumps([focused, other]).encode(), focus="sorting_pick_and_place")
+    assert [site["site_key"] for site in sites] == [focused["site_id"]]
+    assert refused == {"site_screen_input_outside_focus": 1}
+    assert sites[0]["task_focus"] == "sorting_pick_and_place"
+    assert sites[0]["task_input"]["task_hint"] == ss.FOCUS_HINTS["sorting_pick_and_place"]
+    # Without a focus the lead capability stays the hint, and the site record is unchanged.
+    (plain,), _ = ss.load_sites(json.dumps([focused]).encode())
+    assert plain["task_input"]["task_hint"] == "palletizing depalletizing" and "task_focus" not in plain
+
+
+def test_a_row_may_carry_its_own_focus_for_a_stratified_batch():
+    tote = universe_row(1, capabilities=["sorting_pick_and_place", "palletizing_depalletizing"],
+                        screen_focus="sorting_pick_and_place")
+    folding = universe_row(2, capabilities=["bimanual_folding"], screen_focus="bimanual_folding")
+    wrong = universe_row(3, capabilities=["palletizing_depalletizing"], screen_focus="hospital_logistics")
+    sites, refused = ss.load_sites(json.dumps([tote, folding, wrong]).encode())
+    assert [site["task_focus"] for site in sites] == ["sorting_pick_and_place", "bimanual_folding"]
+    assert sites[1]["task_input"]["task_hint"] == ss.FOCUS_HINTS["bimanual_folding"]
+    assert refused == {"site_screen_input_outside_focus": 1}
+    plan = ss.plan(json.dumps([tote, folding]).encode())
+    assert plan["by_focus"] == {"sorting_pick_and_place": 1, "bimanual_folding": 1}
+
+
+def test_a_task_focus_refuses_inventory_records_and_a_malformed_focus():
+    raw = json.dumps([inventory_record(1)]).encode()
+    sites, refused = ss.load_sites(raw, focus="sorting_pick_and_place")
+    assert sites == [] and refused == {"site_screen_input_focus_needs_site_universe": 1}
+    for focus in ("", "Sorting", "sorting-pick", "x" * 65, 3):
+        with pytest.raises(ss.ScreenError, match="^site_screen_task_focus_invalid$"):
+            ss.load_sites(raw, focus=focus)
+    bad_row = universe_row(4, capabilities=["sorting_pick_and_place"], screen_focus="Sorting Pick")
+    assert ss.load_sites(json.dumps([bad_row]).encode())[1] == {"site_screen_task_focus_invalid": 1}
+
+
+def test_the_forms_are_open_to_every_robot_form_and_look_for_the_hinted_task_first():
+    """Demand discovery (owner decision 2026-10-05): neither form names a robot form, and the screen
+    looks for the input's task hint before any other task."""
+    for stage in ss.STAGES:
+        text = ss.canonical(ss.FORMS[stage]["json_schema"]).lower()
+        assert not any(word in text for word in ("fixed-arm", "fixed arm", "robot arm")), stage
+    assert "task_hint" in ss.SCREEN_SCHEMA["properties"]["target_task"]["description"]
+    assert (ss.FORMS["screen"]["version"], ss.FORMS["contact"]["version"]) == (
+        "blueprint.site-screen.v3", "blueprint.site-contact.v2")
+
+
+def test_summary_counts_tiers_by_task_focus(tmp_path):
+    ready, closed = screen_answers(1), screen_answers(2, operating_now="no")
+    rows = [inventory_record(1), universe_row(2, capabilities=["bimanual_folding"], screen_focus="bimanual_folding")]
+    workspace, *_ = screen(tmp_path, rows, [ready, closed], {**pages_for(ready), **pages_for(closed)})
+    assert ss.summary(workspace)["screen"]["tiers_by_focus"] == {
+        "bimanual_folding": {"outreach_ready": 0, "screened": 1}, "none": {"outreach_ready": 1, "screened": 0}}
+
+
+def test_run_sends_the_focus_hint_to_the_provider(tmp_path):
+    workspace, _provider, client = workspace_and_client(tmp_path)
+    row = universe_row(1, capabilities=["sorting_pick_and_place"])
+    ss.run(json.dumps([row]).encode(), workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=1,
+           apply=True, focus="sorting_pick_and_place")
+    created = [event for event in workspace.ledger("screen").events() if event["event"] == "intent"]
+    assert created and created[0]["input"]["task_input"]["task_hint"] == ss.FOCUS_HINTS["sorting_pick_and_place"]
+    assert created[0]["input"]["task_focus"] == "sorting_pick_and_place"

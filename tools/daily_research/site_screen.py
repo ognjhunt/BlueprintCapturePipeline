@@ -2,8 +2,8 @@
 
 Owner decision 2026-10-05, after a successful 50-site pilot: each site gets one Parallel Task run
 (processor ``core``, $0.025 per completed run; failed runs are not billed) that fills the versioned
-``blueprint.site-screen.v2`` form, with a URL and an exact quote for every answer. A site whose screen
-is outreach-ready may then get one run of the ``blueprint.site-contact.v1`` form: the deciding role,
+``blueprint.site-screen.v3`` form, with a URL and an exact quote for every answer. A site whose screen
+is outreach-ready may then get one run of the ``blueprint.site-contact.v2`` form: the deciding role,
 a named person and a published business address (owner decision 2026-10-05,
 ``owner-decision-contact-sources-20261005.json``). Nothing here sends, drafts or writes a CRM.
 
@@ -69,8 +69,10 @@ from urllib.parse import unquote, urlsplit
 
 from tools.daily_research.verification import normalized  # Standard library only, like this module.
 
-SCREEN = "blueprint.site-screen.v2"
-CONTACT = "blueprint.site-contact.v1"
+# v3 and v2 name no robot form (demand discovery, owner decision 2026-10-05); the screen looks for the
+# input's task hint first.
+SCREEN = "blueprint.site-screen.v3"
+CONTACT = "blueprint.site-contact.v2"
 INPUT = "blueprint.site-screen.input.v2"
 LEDGER = "blueprint.site-screen.ledger.v1"
 SUMMARY = "blueprint.site-screen.summary.v2"
@@ -220,7 +222,8 @@ NO_LINKEDIN = ("Do not use LinkedIn as the source; a LinkedIn profile may only p
                "release, news story, job post or company page.")
 # The pilot's form, with the operator, the exact site, the facility and its variability added as quoted answers.
 SCREEN_SCHEMA = _form(
-    "Research ONE specific physical site (not the company in general) for a fixed-arm robot design partnership. "
+    "Research ONE specific physical site (not the company in general) for a robot design partnership; any kind "
+    "of robot counts. "
     "Answer only from public sources about this exact site or its operator, quote sources exactly, and prefer "
     "sources from the last 18 months.",
     {"website": _s("The operator's official website URL, or empty."),
@@ -246,9 +249,11 @@ SCREEN_SCHEMA = _form(
      "facility_operator_url": _s(URL), "facility_operator_quote": _s(QUOTE),
      "operating_now": _s("Is this site operating now? " + ANSWER),
      "operating_now_url": _s(URL), "operating_now_quote": _s(QUOTE), "operating_now_date": _s(DATE),
-     "target_task": _s("Short name of a repetitive physical task done at THIS site that a fixed robot arm could take "
-                       "on, for example CNC machine tending, molding press unloading, case palletizing or kitting. "
-                       "Empty if none found."),
+     "target_task": _s("Short name of a repetitive physical task done at THIS site that a robot could take on. "
+                       "Look first for the task the input's task_hint names; if this site shows no evidence of it, "
+                       "name another such task that it does show, for example CNC machine tending, case "
+                       "palletizing, tote picking, trailer unloading, shelf restocking or linen folding. Empty if "
+                       "none found."),
      "target_task_found": _s("Is that task evidenced at this site? " + ANSWER),
      "target_task_url": _s("The best public source URL for this task at THIS site: a job post for work at this site, "
                            "or a page about this site that names its city or street. Empty when unknown."),
@@ -268,7 +273,7 @@ SCREEN_SCHEMA = _form(
      "variability_signals_url": _s(URL), "variability_signals_quote": _s(QUOTE),
      "notes": _s("One or two sentences on what could not be established.")})
 CONTACT_SCHEMA = _form(
-    "For ONE specific physical site, find who would decide on a fixed-arm robot pilot for the named task, and a "
+    "For ONE specific physical site, find who would decide on a robot pilot for the named task, and a "
     "published business route to reach them. Answer only from public sources, quote them exactly, and never "
     "guess a name or an address.",
     {"decision_role": _s("The role that would decide on a robot pilot for this task at this site, for example plant "
@@ -518,9 +523,37 @@ def parse_location(text):
     return _compact({"street": ", ".join(parts) or None, "city": city, "state": state})
 
 
-def from_inventory(record, *, calibration=False):
+# Demand discovery (owner decision 2026-10-05): a batch may aim each site's question at one of its
+# capabilities. The hint tells the provider which task to look for at the site.
+FOCUS = re.compile(r"[a-z][a-z_]{2,63}")
+FOCUS_HINTS = {
+    "fixed_arm_machine_tending": "loading and unloading parts at machines such as CNC machines, lathes or molding presses",
+    "kitting_assembly": "picking parts into kits or doing simple assembly steps",
+    "palletizing_depalletizing": "stacking or unstacking cases or bags on pallets",
+    "sorting_pick_and_place": ("picking items from totes or bins and placing them, such as tote-to-tote transfer, "
+                               "order picking at a pick station or sorter induction"),
+    "mobile_manipulator_case_picking": "moving totes or cases between conveyors, carts, shelves and racks, or picking cases for orders",
+    "truck_trailer_unloading": "unloading or loading boxes from trucks and trailers",
+    "shelf_restocking": "restocking shelves or moving stock between the backroom and the sales floor",
+    "hospital_logistics": "moving supplies, linens, meals or specimens between hospital departments",
+    "food_prep_manipulation": "handling food items in preparation or packing steps",
+    "bimanual_folding": "folding towels, linens or garments",
+    "recycling_sorting": "sorting recyclable materials on a line",
+}
+
+
+def task_focus(value):
+    """A valid capability id for a task focus, or the stable refusal."""
+    if not isinstance(value, str) or not FOCUS.fullmatch(value):
+        raise ScreenError("site_screen_task_focus_invalid")
+    return value
+
+
+def from_inventory(record, *, calibration=False, focus=None):
     """A web-found site from one daily-run discovery inventory record. Its operator and exact site must
     still be proven by the screen's own quotes."""
+    if focus is not None:
+        raise ScreenError("site_screen_input_focus_needs_site_universe")
     if not isinstance(record, dict) or not set(INVENTORY_FIELDS) <= set(record):
         raise ScreenError("site_screen_input_record_invalid")
     disposition = record.get("disposition")
@@ -545,7 +578,7 @@ def from_inventory(record, *, calibration=False):
                                     "task_hint": task, "known_source_urls": list(urls)})}
 
 
-def from_site_universe(row, *, calibration=False):
+def from_site_universe(row, *, calibration=False, focus=None):
     """A site from one site universe export row. With an OSHA ITA or EPA FRS source and a street, city and
     state, that government record is the primary source for the exact site address. The operator still needs
     a quote: the export does not say which source gave the name or operator."""
@@ -566,18 +599,30 @@ def from_site_universe(row, *, calibration=False):
     if GOVERNMENT_SOURCES & set(sources) and street and city and state:
         identity["physical_site"] = {"source": "government_record", "source_ids": sorted(set(sources)),
                                      "site_id": row["site_id"], "answer": address}
-    return {"schema_version": INPUT, "site_key": row["site_id"], "origin": "site_universe", "calibration": calibration,
+    focus = row.get("screen_focus", focus)
+    hint = lead.replace("_", " ") if lead else None
+    if focus is not None:
+        capabilities = row.get("capabilities")
+        if task_focus(focus) not in (capabilities if isinstance(capabilities, list) else []):
+            raise ScreenError("site_screen_input_outside_focus")
+        hint = FOCUS_HINTS.get(focus, focus.replace("_", " "))
+    site = {"schema_version": INPUT, "site_key": row["site_id"], "origin": "site_universe", "calibration": calibration,
             "identity": identity, "address": _compact({"street": street, "city": city, "state": state}),
             "task_input": _compact({"site_name": name, "operator": operator, "location": address,
-                                    "task_hint": lead.replace("_", " ") if lead else None, "naics": naics})}
+                                    "task_hint": hint, "naics": naics})}
+    if focus is not None:
+        site["task_focus"] = focus
+    return site
 
 
-def load_sites(raw):
+def load_sites(raw, focus=None):
     """The site inputs of one input file, in file order, and refusal counts by code.
 
     The file is a site universe export (``backlog.v1.json.gz``, checked by its runtime loader), a
     discovery inventory page, or a JSON list of inventory records and export rows. A site listed twice
     is refused the second time."""
+    if focus is not None:
+        task_focus(focus)
     if not isinstance(raw, (bytes, bytearray)) or not raw:
         raise ScreenError("site_screen_input_invalid")
     if len(raw) > MAX_INPUT_BYTES:
@@ -602,7 +647,7 @@ def load_sites(raw):
     sites, refused, seen = [], Counter(), set()
     for build, record in records:
         try:
-            site = build(record)
+            site = build(record, focus=focus)
         except ScreenError as error:
             refused[str(error)] += 1
             continue
@@ -670,15 +715,16 @@ def anchor_counts(sites):
             **{name: sum(name in kind for kind in kinds) for name in ("street", "city_state", "site_name_city")}}
 
 
-def plan(raw, *, processor=DEFAULT_PROCESSOR, batch_size=None, seed=DEFAULT_SEED):
+def plan(raw, *, processor=DEFAULT_PROCESSOR, batch_size=None, seed=DEFAULT_SEED, focus=None):
     """What one input file holds, the batch ``batch_size`` would screen, and its cost. Reads nothing else."""
-    sites, refused = load_sites(raw)
+    sites, refused = load_sites(raw, focus)
     price = price_of(processor)
     batch = select_batch(sites, batch_size, seed) if batch_size is not None else sites
     return {"command": "plan", "state": "planned", "form": SCREEN, "sites": len(sites),
             "by_origin": dict(Counter(site["origin"] for site in sites)),
             "government_record": {"physical_site": sum("physical_site" in site["identity"] for site in sites)},
-            "site_anchors": anchor_counts(sites),
+            "site_anchors": anchor_counts(sites), "task_focus": focus,
+            "by_focus": dict(Counter(site["task_focus"] for site in sites if "task_focus" in site)),
             "input_refused": dict(refused), "processor": processor, "price_usd": str(price),
             "batch": {"size": len(batch), "calibration": sum(site["calibration"] for site in batch),
                       "seed": seed if batch_size is not None else None},
@@ -1130,11 +1176,11 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
 
 
 def run(raw, workspace, *, client, owner_reference, ceiling_usd, max_runs, processor=DEFAULT_PROCESSOR, apply=False,
-        batch_size=None, seed=DEFAULT_SEED, environ=None):
+        batch_size=None, seed=DEFAULT_SEED, environ=None, focus=None):
     """Screen each site of one input file, or of its ``batch_size`` batch (``select_batch``), that has no run
     yet, within the pinned ceiling and ``max_runs``. A batch never exceeds ``max_runs``."""
     refuse_on_worker(environ)
-    sites, refused = load_sites(raw)
+    sites, refused = load_sites(raw, focus)
     if batch_size is not None:
         if parse_batch_size(batch_size) > parse_max_runs(max_runs):
             raise ScreenError("site_screen_batch_exceeds_max_runs")
@@ -1742,7 +1788,8 @@ def screen_record(site, run_id, result_raw, evidence_raw):
     block = outcome["outreach_ready"]
     return {"schema_version": SCREEN, "rule_version": SCREEN_RULE, "site_key": site["site_key"],
             "origin": site["origin"], "calibration": site.get("calibration") is True, "input": site["task_input"],
-            "address": site.get("address") or {}, "identity": site["identity"], "run_id": run_id,
+            "task_focus": site.get("task_focus"), "address": site.get("address") or {}, "identity": site["identity"],
+            "run_id": run_id,
             "result_sha256": _sha256(result_raw), "evidence_sha256": _sha256(evidence_raw),
             "checked_on": evidence.get("checked_on"), "answers": answers, "verification": verification,
             "choices": choices, "task_scope": gates["site_task_scope"],
@@ -1993,6 +2040,8 @@ def _screen_counts(records):
                                 for origin in sorted({r["origin"] for r in records})},
             "tiers_by_calibration": {name: tiers([r for r in records if r["calibration"] is flag])
                                      for name, flag in (("ranked", False), ("calibration", True))},
+            "tiers_by_focus": {focus: tiers([r for r in records if (r.get("task_focus") or "none") == focus])
+                               for focus in sorted({r.get("task_focus") or "none" for r in records})},
             "fields": {name: {"answers": dict(Counter(r["choices"].get(name) or (
                 "present" if r["answers"][name] else "blank") for r in records)),
                 "levels": dict(Counter(r["verification"][name]["level"] for r in records))} for name in SCREEN_PROOFS},
