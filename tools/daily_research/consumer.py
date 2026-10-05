@@ -830,7 +830,9 @@ class Consumer:
                 feedback = qa_validation_feedback(row, result)
                 if feedback and self.correct_qa(row, feedback, session, deadline) != "decide":
                     return None
-                evidence = self.outreach_evidence(row)
+                # Only a result-v3 row reads evidence before deciding; shadow mode decides exactly as before.
+                tiered = row["packet"].get("lead_verification_result_version") == verification.OUTREACH_RESULT_VERSION
+                evidence = self.outreach_evidence(row) if tiered else None
                 decision = qa_decision(row, result, known, self.clock(), defer_assessment_issues=bool(feedback),
                                        evidence=evidence, admission=self.outreach_admission(row))
                 if late_deadline_cancel:
@@ -842,8 +844,8 @@ class Consumer:
                 if correction:
                     correction.update(state="validated", artifact_file=qa["artifact_file"], artifact_digest=qa["artifact_digest"],
                         evidence_file=qa["evidence_file"], evidence_digest=qa["evidence_digest"])
-                self.record_shadow(row, result, decision, known, evidence)
                 self.ledger.put(row)
+                self.record_shadow(row, result, decision, known)
                 return decision
         reason = "agent_qa_stopped" if self.stopped() else None
         if not workflow(self.ledger.bridge.call("control")):
@@ -875,14 +877,21 @@ class Consumer:
         except Exception:  # noqa: BLE001 - unknown live authority admits nothing
             return 0, "outreach_ready_admission_unavailable"
 
-    def record_shadow(self, row, result, decision, known, evidence):
-        """Shadow mode only: each candidate's tier in row.outreach_ready_shadow, outside every digest-bound artifact."""
+    def record_shadow(self, row, result, decision, known):
+        """Shadow mode only, after the validated decision is durable: each candidate's tier in
+        row.outreach_ready_shadow, outside every digest-bound artifact. Optional; never raises."""
         if row["packet"].get("lead_verification_result_version") == verification.OUTREACH_RESULT_VERSION:
             return
+        evidence = self.outreach_evidence(row)
         record = outreach_ready.bounded_shadow(row, outreach_ready.shadow(row, result, decision, known, evidence, self.clock()),
                                                search.MAX_RECORD)
-        if record is not None:
-            row["outreach_ready_shadow"] = record
+        if record is None:
+            return
+        row["outreach_ready_shadow"] = record
+        try:
+            self.ledger.put(row)
+        except Exception:  # noqa: BLE001 - the decision is already durable; a lost shadow record changes nothing else
+            row.pop("outreach_ready_shadow", None)
 
     @staticmethod
     def check_session(row, session):

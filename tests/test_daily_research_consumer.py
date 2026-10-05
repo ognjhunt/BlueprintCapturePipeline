@@ -1552,3 +1552,22 @@ def test_after_exhausted_corrections_bad_outreach_keys_are_dropped_and_never_blo
     unsupported = {**result, "source_support_verified": False}
     assert qa_decision(row, unsupported, set(), later, defer_assessment_issues=True, evidence=evidence,
                        admission=(50, None))["outreach_ready_keys"] == []
+
+
+def test_shadow_recording_follows_the_durable_decision_and_a_failed_write_changes_nothing(fixture, monkeypatch):
+    consumer, _, ledger, _, _ = fixture
+    puts, original = [], ledger.put
+
+    def put(row):
+        puts.append((row.get("qa", {}).get("state"), "outreach_ready_shadow" in row))
+        if "outreach_ready_shadow" in row:
+            raise RuntimeError("synthetic store failure")
+        return original(row)
+
+    monkeypatch.setattr(ledger, "put", put)
+    assert consumer.step()["state"] == "reviewed"
+    row = ledger.get(DAY)
+    assert row["qa"]["state"] == "validated" and row["review"] == row["qa"]["decision"]
+    assert "outreach_ready_shadow" not in row
+    first = puts.index(("validated", False))
+    assert puts[first + 1] == ("validated", True)  # The shadow write is attempted only after the decision is durable.
