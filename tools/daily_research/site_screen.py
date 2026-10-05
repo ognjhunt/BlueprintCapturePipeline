@@ -2,8 +2,8 @@
 
 Owner decision 2026-10-05, after a successful 50-site pilot: each site gets one Parallel Task run
 (processor ``core``, $0.025 per completed run; failed runs are not billed) that fills the versioned
-``blueprint.site-screen.v2`` form, with a URL and an exact quote for every answer. A site whose screen
-is outreach-ready may then get one run of the ``blueprint.site-contact.v1`` form: the deciding role,
+``blueprint.site-screen.v3`` form, with a URL and an exact quote for every answer. A site whose screen
+is outreach-ready may then get one run of the ``blueprint.site-contact.v2`` form: the deciding role,
 a named person and a published business address (owner decision 2026-10-05,
 ``owner-decision-contact-sources-20261005.json``). Nothing here sends, drafts or writes a CRM.
 
@@ -69,8 +69,10 @@ from urllib.parse import unquote, urlsplit
 
 from tools.daily_research.verification import normalized  # Standard library only, like this module.
 
-SCREEN = "blueprint.site-screen.v2"
-CONTACT = "blueprint.site-contact.v1"
+# v3 and v2 name no robot form (demand discovery, owner decision 2026-10-05); the screen looks for the
+# input's task hint first.
+SCREEN = "blueprint.site-screen.v3"
+CONTACT = "blueprint.site-contact.v2"
 INPUT = "blueprint.site-screen.input.v2"
 LEDGER = "blueprint.site-screen.ledger.v1"
 SUMMARY = "blueprint.site-screen.summary.v2"
@@ -220,7 +222,8 @@ NO_LINKEDIN = ("Do not use LinkedIn as the source; a LinkedIn profile may only p
                "release, news story, job post or company page.")
 # The pilot's form, with the operator, the exact site, the facility and its variability added as quoted answers.
 SCREEN_SCHEMA = _form(
-    "Research ONE specific physical site (not the company in general) for a fixed-arm robot design partnership. "
+    "Research ONE specific physical site (not the company in general) for a robot design partnership; any kind "
+    "of robot counts. "
     "Answer only from public sources about this exact site or its operator, quote sources exactly, and prefer "
     "sources from the last 18 months.",
     {"website": _s("The operator's official website URL, or empty."),
@@ -246,9 +249,11 @@ SCREEN_SCHEMA = _form(
      "facility_operator_url": _s(URL), "facility_operator_quote": _s(QUOTE),
      "operating_now": _s("Is this site operating now? " + ANSWER),
      "operating_now_url": _s(URL), "operating_now_quote": _s(QUOTE), "operating_now_date": _s(DATE),
-     "target_task": _s("Short name of a repetitive physical task done at THIS site that a fixed robot arm could take "
-                       "on, for example CNC machine tending, molding press unloading, case palletizing or kitting. "
-                       "Empty if none found."),
+     "target_task": _s("Short name of a repetitive physical task done at THIS site that a robot could take on. "
+                       "Look first for the task the input's task_hint names; if this site shows no evidence of it, "
+                       "name another such task that it does show, for example CNC machine tending, case "
+                       "palletizing, tote picking, trailer unloading, shelf restocking or linen folding. Empty if "
+                       "none found."),
      "target_task_found": _s("Is that task evidenced at this site? " + ANSWER),
      "target_task_url": _s("The best public source URL for this task at THIS site: a job post for work at this site, "
                            "or a page about this site that names its city or street. Empty when unknown."),
@@ -268,7 +273,7 @@ SCREEN_SCHEMA = _form(
      "variability_signals_url": _s(URL), "variability_signals_quote": _s(QUOTE),
      "notes": _s("One or two sentences on what could not be established.")})
 CONTACT_SCHEMA = _form(
-    "For ONE specific physical site, find who would decide on a fixed-arm robot pilot for the named task, and a "
+    "For ONE specific physical site, find who would decide on a robot pilot for the named task, and a "
     "published business route to reach them. Answer only from public sources, quote them exactly, and never "
     "guess a name or an address.",
     {"decision_role": _s("The role that would decide on a robot pilot for this task at this site, for example plant "
@@ -1783,7 +1788,8 @@ def screen_record(site, run_id, result_raw, evidence_raw):
     block = outcome["outreach_ready"]
     return {"schema_version": SCREEN, "rule_version": SCREEN_RULE, "site_key": site["site_key"],
             "origin": site["origin"], "calibration": site.get("calibration") is True, "input": site["task_input"],
-            "address": site.get("address") or {}, "identity": site["identity"], "run_id": run_id,
+            "task_focus": site.get("task_focus"), "address": site.get("address") or {}, "identity": site["identity"],
+            "run_id": run_id,
             "result_sha256": _sha256(result_raw), "evidence_sha256": _sha256(evidence_raw),
             "checked_on": evidence.get("checked_on"), "answers": answers, "verification": verification,
             "choices": choices, "task_scope": gates["site_task_scope"],
@@ -2034,6 +2040,8 @@ def _screen_counts(records):
                                 for origin in sorted({r["origin"] for r in records})},
             "tiers_by_calibration": {name: tiers([r for r in records if r["calibration"] is flag])
                                      for name, flag in (("ranked", False), ("calibration", True))},
+            "tiers_by_focus": {focus: tiers([r for r in records if (r.get("task_focus") or "none") == focus])
+                               for focus in sorted({r.get("task_focus") or "none" for r in records})},
             "fields": {name: {"answers": dict(Counter(r["choices"].get(name) or (
                 "present" if r["answers"][name] else "blank") for r in records)),
                 "levels": dict(Counter(r["verification"][name]["level"] for r in records))} for name in SCREEN_PROOFS},

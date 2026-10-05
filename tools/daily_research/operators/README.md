@@ -742,10 +742,10 @@ write or send.
 `site-screen.py` runs the per-site research line for ADP-010 partner discovery. The
 owner approved it on 2026-10-05 after a successful 50-site pilot. Each site gets one
 Parallel Task run (processor `core`, $0.025 per completed run; failed runs are not
-billed). The run fills the `blueprint.site-screen.v2` form, with a URL and an exact
+billed). The run fills the `blueprint.site-screen.v3` form, with a URL and an exact
 quote for each answer (design v1.1: the facility type and operator and the
 variability signals are added). An optional second stage, the contact screen
-(`blueprint.site-contact.v1`), runs only for sites whose screen is outreach-ready
+(`blueprint.site-contact.v2`), runs only for sites whose screen is outreach-ready
 (owner decision 2026-10-05, company GCS
 `operations/recovery/2026-10-05/owner-decisions/owner-decision-contact-sources-20261005.json`).
 The code is `tools/daily_research/site_screen.py`, standard library only, and the

@@ -90,7 +90,7 @@ def test_the_contact_form_is_versioned_and_keeps_linkedin_out_of_its_sources():
     assert "Never guess an address or derive one from a name pattern" in schema["properties"]["email"]["description"]
     site = {"site_key": "b" * 64, "task_input": {"operator": "Synthetic Operator 1"}}
     body = ss.create_body("contact", site, "core")
-    assert body["metadata"] == {"site_key": "b" * 64, "form": "blueprint.site-contact.v1"}
+    assert body["metadata"] == {"site_key": "b" * 64, "form": "blueprint.site-contact.v2"}
     assert body["task_spec"] == {"output_schema": {"type": "json", "json_schema": schema}}
     assert ss.FORMS["contact"]["sha256"] != ss.FORMS["screen"]["sha256"]
 
