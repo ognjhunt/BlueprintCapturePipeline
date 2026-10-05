@@ -199,10 +199,15 @@ class AgentJournal:
     def tasks(self, *, active_only: bool = True, limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 1000:
             raise ValueError("agent_task_list_limit_invalid")
-        where = "WHERE state NOT IN ('completed','failed','cancelled')" if active_only else ""
+        query = (
+            "SELECT task_id FROM tasks WHERE state NOT IN ('completed','failed','cancelled') "
+            "ORDER BY updated_at,task_id LIMIT ?"
+            if active_only
+            else "SELECT task_id FROM tasks ORDER BY updated_at,task_id LIMIT ?"
+        )
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT task_id FROM tasks {where} ORDER BY updated_at,task_id LIMIT ?",
+                query,
                 (limit,),
             ).fetchall()
         return [self.task(row["task_id"]) for row in rows]
