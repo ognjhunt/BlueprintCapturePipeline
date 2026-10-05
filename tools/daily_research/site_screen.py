@@ -2,8 +2,10 @@
 
 Owner decision 2026-10-05, after a successful 50-site pilot: each site gets one Parallel Task run
 (processor ``core``, $0.025 per completed run; failed runs are not billed) that fills the versioned
-``blueprint.site-screen.v1`` form, with a URL and an exact quote for every answer. Nothing here sends,
-drafts or writes a CRM.
+``blueprint.site-screen.v1`` form, with a URL and an exact quote for every answer. A site whose screen
+is outreach-ready may then get one run of the ``blueprint.site-contact.v1`` form: the deciding role,
+a named person and a published business address (owner decision 2026-10-05,
+``owner-decision-contact-sources-20261005.json``). Nothing here sends, drafts or writes a CRM.
 
 Inputs are daily-run discovery inventory records or site universe export rows (``load_sites``). On a
 site universe row with an OSHA ITA or EPA FRS source, that government record is the primary source
@@ -17,7 +19,7 @@ outcome) plus the new one must stay at or below the ceiling, and the stage's run
 otherwise the create is refused with a stable code. Only a run observed ``failed`` frees its price.
 
 Verification reads each cited page once with the daily agent's own reader (``search.source``) under
-its wall-time alarm. A quote is ``verified_on_page``; else
+its wall-time alarm, and never reads LinkedIn. A quote is ``verified_on_page``; else
 ``in_citation_excerpt`` when one of the provider's citation excerpts for that field holds it (our read
 failed, or the page shows it only after scripts run); else ``unverified``, or
 ``unverified_page_unreachable`` when our read failed. Matching is exact after normalization; a quote
@@ -45,10 +47,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 SCREEN = "blueprint.site-screen.v1"
+CONTACT = "blueprint.site-contact.v1"
 INPUT = "blueprint.site-screen.input.v1"
 LEDGER = "blueprint.site-screen.ledger.v1"
 SUMMARY = "blueprint.site-screen.summary.v1"
-STAGES = ("screen",)
+STAGES = ("screen", "contact")
 API_HOST, RUNS_PATH = "api.parallel.ai", "/v1/tasks/runs"
 API_KEY_ENV = "PARALLEL_API_KEY"  # The operator reads it; this module only receives the value.
 DEFAULT_PROCESSOR = "core"
@@ -67,10 +70,13 @@ GOVERNMENT_SOURCES = frozenset({"epa_frs", "osha_ita"})  # Site universe source 
 EXCLUDED_DISPOSITIONS = frozenset({"duplicate", "learning", "rejected"})  # Never new opportunities.
 INVENTORY_VERSION = "blueprint.discovery-inventory.v1"  # discovery.INVENTORY_VERSION
 INVENTORY_FIELDS = ("operator", "site", "location", "task_hypothesis", "source_urls")
+NEVER_FETCH = ("linkedin.com", "lnkd.in")  # LinkedIn's terms ban automated access: never read, never evidence.
 PROVEN = frozenset({"verified_on_page", "in_citation_excerpt"})
 STATUSES = frozenset({"queued", "action_required", "running", "completed", "failed", "cancelling", "cancelled"})
 TERMINAL = frozenset({"completed", "failed", "cancelled"})
 TIERS = ("outreach_ready", "screened")
+RECIPIENT_PREFERENCE = ("person_email", "team_inbox", "general_inbox")  # The owner's order; else none.
+CHANNELS = (*RECIPIENT_PREFERENCE, "contact_form", "phone", "none")
 SHA = re.compile(r"[0-9a-f]{64}")
 ATTEMPT = re.compile(r"[0-9a-f]{16}")
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -79,6 +85,7 @@ SOURCE_ID = re.compile(r"[a-z0-9_]{1,64}")
 CODE = re.compile(r"[a-z][a-z0-9_]{2,80}")
 CHOICE = re.compile(r"(yes|no|unknown)\b")
 DAY = re.compile(r"(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?")
+EMAIL = re.compile(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
 SINGLE_QUOTES = re.compile("[\u2018\u2019\u201b']")
 DOUBLE_QUOTES = re.compile('[\u201c\u201d\u201f"]')
 DASHES = re.compile("[\u2010-\u2015-]")
@@ -107,6 +114,10 @@ DATE = "The source's publication or update date as YYYY-MM-DD if shown, else emp
 PRIMARY = ("Use a primary source that owns the fact: the operator's own website, careers or job pages, a "
            "government record, or the operator's own press release or filing. Never use a directory, data broker, "
            "map listing or aggregator.")
+PERSON_SOURCES = ("Use only a reputable public source: the operator's own pages, a press release, local or trade "
+                  "news, a job post, or a conference or association page.")
+NO_LINKEDIN = ("Do not use LinkedIn as the source; a LinkedIn profile may only point you to a confirming press "
+               "release, news story, job post or company page.")
 # The pilot's form, with the operator and the exact site added as quoted primary-source answers.
 SCREEN_SCHEMA = _form(
     "Research ONE specific physical site (not the company in general) for a fixed-arm robot design partnership. "
@@ -139,21 +150,56 @@ SCREEN_SCHEMA = _form(
      "existing_automation_url": _s(URL), "existing_automation_quote": _s(QUOTE),
      "existing_automation_date": _s(DATE),
      "notes": _s("One or two sentences on what could not be established.")})
+CONTACT_SCHEMA = _form(
+    "For ONE specific physical site, find who would decide on a fixed-arm robot pilot for the named task, and a "
+    "published business route to reach them. Answer only from public sources, quote them exactly, and never "
+    "guess a name or an address.",
+    {"decision_role": _s("The role that would decide on a robot pilot for this task at this site, for example plant "
+                         "manager, general manager, operations or manufacturing engineering manager, or the owner or "
+                         "president at a small firm. For a large multi-site operator, also name the corporate "
+                         "automation or innovation team."),
+     "person_name": _s("The full name of a named current person in that role, or empty. " + PERSON_SOURCES + " "
+                       + NO_LINKEDIN),
+     "person_title": _s("That person's title exactly as the source states it, or empty."),
+     "person_url": _s("The page that names this person in this role, or empty. " + NO_LINKEDIN),
+     "person_quote": _s("An exact sentence copied verbatim from that page that contains the person's full name, or "
+                        "empty."),
+     "person_date": _s(DATE),
+     "email": _s("A business email address that is itself published verbatim on a public page: the person's "
+                 "published business address, a team inbox, a press or media contact, or a general business inbox. "
+                 "Prefer the person's address, then a team inbox, then a general inbox. Never guess an address or "
+                 "derive one from a name pattern; leave it empty when none is published. " + NO_LINKEDIN),
+     "email_url": _s("The page that publishes this exact address, or empty. " + NO_LINKEDIN),
+     "email_quote": _s("An exact sentence copied verbatim from that page that contains the exact address, or empty."),
+     "channel_type": _s("One of: person_email, team_inbox, general_inbox, contact_form, phone, none. Use "
+                        "person_email, team_inbox or general_inbox only for the published address in email; "
+                        "otherwise contact_form or phone when the operator publishes one, else none."),
+     "channel_url": _s("When no email address is published, the URL of the operator's contact form or phone page; "
+                       "else empty."),
+     "notes": _s("One or two sentences on what could not be established.")})
 FORMS = {stage: {"version": version, "json_schema": schema,
                  "sha256": hashlib.sha256(canonical(schema).encode()).hexdigest()}
-         for stage, version, schema in (("screen", SCREEN, SCREEN_SCHEMA),)}
+         for stage, version, schema in (("screen", SCREEN, SCREEN_SCHEMA), ("contact", CONTACT, CONTACT_SCHEMA))}
 # Quoted screen answers: name -> (answer field, date field). Each also has <name>_url and <name>_quote.
 SCREEN_PROOFS = {"operator_identity": ("operator_identity", None), "site_identity": ("site_identity", None),
                  "operating_now": ("operating_now", "operating_now_date"),
                  "target_task": ("target_task_found", "target_task_date"),
                  "manual_today": ("manual_today", "manual_today_date"),
                  "existing_automation": ("existing_automation", "existing_automation_date")}
+PERSON_FIELDS = frozenset({"person_name", "person_title", "person_url", "person_quote", "person_date"})
+EMAIL_FIELDS = frozenset({"email", "email_url", "email_quote"})
 SCREEN_QUESTIONS = {
     "manual_workflow": "Do people still do this task by hand at the site today?",
     "existing_automation": "Does the site already use robots or other automation for this task?",
     "freshness": "Is the site operating now, and is the task evidence still current?",
     "fit": "Do the parts, cycle times and cell layout suit a fixed robot arm?",
     "interest": "Would the site take part in a fixed-arm robot design partnership?",
+}
+CONTACT_QUESTIONS = {
+    "decision_remit": "Does this person decide on a robot pilot for this task at this site? A title does not prove it.",
+    "decision_maker": "Who decides on a robot pilot for this task at this site?",
+    "person_current": "Does this person still hold this role?",
+    "recipient": "Which published business address reaches the decision maker?",
 }
 
 
@@ -728,7 +774,7 @@ def _submit(workspace, stage, sites, *, client, ceiling_usd, max_runs, processor
         ledger.append(_event(stage, "created", key, attempt=attempt, run_id=run["run_id"], status=status))
         state[key].update(state="created", status=status)
         counts["created"] += 1
-    return {"command": "run", "stage": stage, "form": FORMS[stage]["version"],
+    return {"command": "run" if stage == "screen" else "contact", "stage": stage, "form": FORMS[stage]["version"],
             "apply": apply, "state": "stopped" if stop else "complete" if apply else "planned", "stop": stop,
             "sites": len(sites), **counts, "refused": dict(refused), "runs": run_count(state),
             "committed_usd": str(committed_usd(state)), "ceiling_usd": str(ceiling), "max_runs": limit,
@@ -742,6 +788,36 @@ def run(raw, workspace, *, client, ceiling_usd, max_runs, processor=DEFAULT_PROC
         result = _submit(workspace, "screen", sites, client=client, ceiling_usd=ceiling_usd, max_runs=max_runs,
                          processor=processor, apply=apply, input_sha256=_sha256(bytes(raw)))
     return {**result, "input_refused": dict(refused)}
+
+
+def contact_input(record):
+    """What a contact run is told: the proven operator and site, the task and the website."""
+    identity, answers, given = record["identity"], record["answers"], record["input"]
+    operator = (identity.get("operator") or {}).get("answer") or answers.get("operator_identity") or given.get("operator")
+    address = (identity.get("physical_site") or {}).get("answer") or answers.get("site_identity")
+    return _compact({"operator": operator, "site_name": given.get("site_name"), "site_address": address,
+                     "location": given.get("location"), "target_task": answers.get("target_task"),
+                     "website": answers.get("website")})
+
+
+def contact_sites(workspace):
+    """One contact input per outreach-ready screen record, in the order the screen stage submitted them."""
+    sites = []
+    for key in dict.fromkeys(event["site_key"] for event in workspace.ledger("screen").events()
+                             if event["event"] == "intent"):
+        path = workspace.path("screen", "records", key)
+        record = _json(path.read_bytes()) if path.exists() else None
+        if isinstance(record, dict) and record.get("tier") == "outreach_ready":
+            sites.append({"schema_version": INPUT, "site_key": key, "origin": record["origin"], "identity": {},
+                          "task_input": contact_input(record)})
+    return sites
+
+
+def contact(workspace, *, client, ceiling_usd, max_runs, processor=DEFAULT_PROCESSOR, apply=False):
+    """The contact stage: one run per outreach-ready site, under its own ledger, ceiling and ``max_runs``."""
+    with workspace.lock():
+        return _submit(workspace, "contact", contact_sites(workspace), client=client, ceiling_usd=ceiling_usd,
+                       max_runs=max_runs, processor=processor, apply=apply)
 
 
 def _stored_status(raw):
@@ -816,6 +892,25 @@ def contains(quote, text):
     return len(quote) >= NEAR_EXACT_CHARACTERS and (quote[:span] in text or quote[-span:] in text)
 
 
+def _has_name(name, text):
+    """True when the normalized name stands as whole words in the normalized text."""
+    name = normalize(name)
+    return bool(name) and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text) is not None
+
+
+def addresses(text):
+    """Every email address in normalized text, as whole tokens: a longer address never matches a shorter one."""
+    tokens = EMAIL.findall(text)
+    return set(tokens) | {token.lstrip("'`") for token in tokens}
+
+
+def email_address(value):
+    """The provider's address, normalized, or None when it is not one plain address."""
+    text = normalize(value)
+    text = (text[7:] if text.startswith("mailto:") else text).strip("<> ")
+    return text if EMAIL.fullmatch(text) else None
+
+
 def _host(url):
     """The host of an http(s) URL (a bare host is read as https), or None."""
     try:
@@ -826,21 +921,28 @@ def _host(url):
     return host if parts.scheme in {"http", "https"} and host else None
 
 
+def never_fetch(url):
+    """True for a LinkedIn URL: linkedin.com, any subdomain of it, or its lnkd.in links."""
+    host = _host(url) or ""
+    return any(host == domain or host.endswith("." + domain) for domain in NEVER_FETCH)
+
+
 def public_page_reader(seconds=PAGE_READ_SECONDS):
-    """The daily agent's own public-page reader, ``search.source``, under its wall-time alarm."""
+    """The daily agent's own public-page reader, ``search.source``, under its wall-time alarm. It refuses a
+    NEVER_FETCH host on the first request and on every redirect, before any connection."""
     if threading.current_thread() is not threading.main_thread():
         raise ScreenError("site_screen_page_reader_needs_main_thread")  # The alarm is a main-thread signal.
     from tools.daily_research import search  # Standard library only, like this module.
 
     def read(url):
         with search.bounded_request(seconds):
-            page = search.source({"url": url})
+            page = search.source({"url": url}, blocked_domains=NEVER_FETCH)
         return {"text": page["text"]}
     return read
 
 
 class Pages:
-    """The page reads of one verify pass: each URL is read once."""
+    """The page reads of one verify pass: each URL is read once, and a LinkedIn URL never."""
 
     def __init__(self, reader):
         self.reader, self.cache, self.reads = reader, {}, 0
@@ -852,16 +954,19 @@ class Pages:
 
     def _read(self, url):
         if _host(url) is None:
-            return "unreachable", "site_screen_page_url_invalid"
+            return "unreachable", "site_screen_page_url_invalid", set()
+        if never_fetch(url):
+            return "unreachable", "site_screen_page_not_allowed", set()
         self.reads += 1
         try:
             page = self.reader(url)
         except Exception as error:  # noqa: BLE001 - a failed read is an observation, kept as a stable code
             code = str(error)
-            return "unreachable", code if CODE.fullmatch(code) else "site_screen_page_read_failed"
+            return "unreachable", code if CODE.fullmatch(code) else "site_screen_page_read_failed", set()
         if not isinstance(page, dict) or not isinstance(page.get("text"), str):
-            return "unreachable", "site_screen_page_read_failed"
-        return "ok", normalize(page["text"])
+            return "unreachable", "site_screen_page_read_failed", set()
+        text = normalize(page["text"])
+        return "ok", text, addresses(text)
 
 
 def output_of(result):
@@ -876,13 +981,13 @@ def output_of(result):
             [entry for entry in basis if isinstance(entry, dict)] if isinstance(basis, list) else [])
 
 
-def excerpts(basis, fields):
+def excerpts(basis, fields, *, linkedin=True):
     """The normalized citation excerpts of the basis entries for ``fields``. Each is matched on its own."""
     found = []
     for entry in basis:
         citations = entry.get("citations") if entry.get("field") in fields else None
         for citation in citations if isinstance(citations, list) else ():
-            if not isinstance(citation, dict):
+            if not isinstance(citation, dict) or not linkedin and never_fetch(citation.get("url") or ""):
                 continue
             notes = citation.get("excerpts")
             found += [normalize(note) for note in notes if isinstance(note, str) and note.strip()] if isinstance(
@@ -890,15 +995,23 @@ def excerpts(basis, fields):
     return found
 
 
-def quote_level(url, quote, notes, pages):
-    """One quoted answer's level, and the read's code when our read failed."""
+def quote_level(url, quote, notes, pages, *, name=None, address=None):
+    """One quoted answer's level, and the read's code when our read failed.
+
+    ``name`` (a person) and ``address`` (an email) must also stand verbatim on the page, or in the excerpt,
+    that holds the quote, so a near-exact match never vouches for them."""
     if not url or not quote:
         return "no_quote", None
     quote = normalize(quote)
-    state, text = pages(url)
-    if state == "ok" and contains(quote, text):
+
+    def holds(text, found=None):
+        return (contains(quote, text) and (name is None or _has_name(name, text))
+                and (address is None or address in (addresses(text) if found is None else found)))
+
+    state, text, found = pages(url)
+    if state == "ok" and holds(text, found):
         return "verified_on_page", None
-    if any(contains(quote, note) for note in notes):
+    if any(holds(note) for note in notes):
         return "in_citation_excerpt", None
     return ("unverified", None) if state == "ok" else ("unverified_page_unreachable", text)
 
@@ -976,8 +1089,86 @@ def screen_record(site, run_id, result, pages, today):
             "open_questions": screen_questions(answers, levels, choices, today), "verified_on": today.isoformat()}
 
 
+def _person(text, basis, pages, today):
+    name, url, quote = text["person_name"], text["person_url"], text["person_quote"]
+    if not name:
+        return {"verified": False, "level": "no_person"}
+    if never_fetch(url):
+        level, code = "person_source_not_allowed", None
+    elif quote and not _has_name(name, normalize(quote)):
+        level, code = "unverified", "site_screen_quote_lacks_name"
+    else:
+        level, code = quote_level(url, quote, excerpts(basis, PERSON_FIELDS, linkedin=False), pages, name=name)
+        level, code = ("unverified", "site_screen_quote_missing") if level == "no_quote" else (level, code)
+    if level not in PROVEN:
+        return {"verified": False, "level": level, **({"reason": code} if code else {})}
+    return {"verified": True, "level": level, "name": name, "title": text["person_title"] or None, "url": url,
+            "date": text["person_date"] or None, "current": _fresh(text["person_date"], today)}
+
+
+def _email(text, basis, pages):
+    raw, url, quote = text["email"], text["email_url"], text["email_quote"]
+    if not raw:
+        return {"verified": False, "level": "no_email", "discarded": False}
+    address = email_address(raw)
+    if address is None:
+        level, code = "unverified", "site_screen_email_invalid"
+    elif never_fetch(url):
+        level, code = "person_source_not_allowed", None
+    elif quote and address not in addresses(normalize(quote)):
+        level, code = "unverified", "site_screen_quote_lacks_address"
+    else:
+        level, code = quote_level(url, quote, excerpts(basis, EMAIL_FIELDS, linkedin=False), pages, address=address)
+        level, code = ("unverified", "site_screen_quote_missing") if level == "no_quote" else (level, code)
+    if level not in PROVEN:
+        # Discarded: the address stays only in the raw provider response, never in this record.
+        return {"verified": False, "level": level, "discarded": True, **({"reason": code} if code else {})}
+    return {"verified": True, "level": level, "discarded": False, "address": address, "url": url}
+
+
+def recipient(channel, email_verified, person_verified):
+    """The recipient kind in the owner's preference order (a person's email, a team inbox, a general inbox)
+    or none. A verified address is needed, and for person_email a verified person too."""
+    if not email_verified or channel not in RECIPIENT_PREFERENCE or channel == "person_email" and not person_verified:
+        return "none"
+    return channel
+
+
+def recipient_rank(kind):
+    """Sort key in the owner's preference order; none sorts last."""
+    return RECIPIENT_PREFERENCE.index(kind) if kind in RECIPIENT_PREFERENCE else len(RECIPIENT_PREFERENCE)
+
+
+def contact_questions(person, kind):
+    """A title alone never proves remit, so a named person's remit is always an open question."""
+    names = ["decision_remit" if person["verified"] else "decision_maker"]
+    if person["verified"] and not person["current"]:
+        names.append("person_current")
+    if kind == "none":
+        names.append("recipient")
+    return [{"check": name, "question": CONTACT_QUESTIONS[name]} for name in names]
+
+
+def contact_record(site, run_id, result, pages, today):
+    """One site's verified contact. Only a proven person and a proven address are kept; the raw provider
+    response keeps everything else."""
+    content, basis = output_of(result)
+    text = {field: _string(content.get(field)) for field in CONTACT_SCHEMA["properties"]}
+    person, email = _person(text, basis, pages, today), _email(text, basis, pages)
+    channel = re.sub(r"[\s-]+", "_", text["channel_type"].lower())
+    channel = channel if channel in CHANNELS else "none"
+    kind = recipient(channel, email["verified"], person["verified"])
+    channel_url = text["channel_url"] if _public_url(text["channel_url"]) and not never_fetch(text["channel_url"]) else None
+    return {"schema_version": CONTACT, "site_key": site["site_key"], "origin": site["origin"],
+            "input": site["task_input"], "run_id": run_id, "decision_role": text["decision_role"] or None,
+            "person": person, "email": email, "channel": {"type": channel, "url": channel_url},
+            "recipient": {"kind": kind, "rank": recipient_rank(kind),
+                          "address": email.get("address") if kind != "none" else None},
+            "open_questions": contact_questions(person, kind), "verified_on": today.isoformat()}
+
+
 def verify(workspace, *, reader=None, today=None):
-    """Write the verified record of each stored completed result once. Counts only."""
+    """Write the verified record of each stored completed result once, screen stage first. Counts only."""
     today = today or datetime.now(timezone.utc).date()
     pages = Pages(reader if reader is not None else public_page_reader())
     counts = {stage: Counter({"written": 0, "kept": 0}) for stage in STAGES}
@@ -991,11 +1182,13 @@ def verify(workspace, *, reader=None, today=None):
                     counts[stage]["kept"] += 1
                     continue
                 result = _json(workspace.path(stage, "results", key).read_bytes())
-                record = screen_record(site["input"], site["run_id"], result, pages, today)
+                build = screen_record if stage == "screen" else contact_record
+                record = build(site["input"], site["run_id"], result, pages, today)
                 _write_once(path, (json.dumps(record, indent=1, sort_keys=True) + "\n").encode())
                 counts[stage]["written"] += 1
-                counts[stage][record["tier"]] += 1
-    return {"command": "verify", "state": "complete", "screen": dict(counts["screen"]), "page_reads": pages.reads}
+                counts[stage][record["tier"] if stage == "screen" else "recipient_" + record["recipient"]["kind"]] += 1
+    return {"command": "verify", "state": "complete", "screen": dict(counts["screen"]),
+            "contact": dict(counts["contact"]), "page_reads": pages.reads}
 
 
 # --- summary --------------------------------------------------------------------------------
@@ -1023,9 +1216,20 @@ def _screen_counts(records):
             "open_questions": dict(Counter(q["check"] for r in records for q in r["open_questions"]))}
 
 
+def _contact_counts(records):
+    return {"records": len(records),
+            "recipients": {kind: sum(r["recipient"]["kind"] == kind for r in records)
+                           for kind in (*RECIPIENT_PREFERENCE, "none")},
+            "person_levels": dict(Counter(r["person"]["level"] for r in records)),
+            "email_levels": dict(Counter(r["email"]["level"] for r in records)),
+            "emails_discarded": sum(r["email"]["discarded"] for r in records),
+            "channels": dict(Counter(r["channel"]["type"] for r in records)),
+            "open_questions": dict(Counter(q["check"] for r in records for q in r["open_questions"]))}
+
+
 def summary(workspace):
-    """Counts by field, check and tier, and cost; also written to summary.json. Never names, addresses or
-    quotes."""
+    """Counts by field, check, tier and recipient, and cost, for both stages; also written to summary.json.
+    Never names, addresses or quotes."""
     report = {"schema_version": SUMMARY, "command": "summary", "state": "complete"}
     billed = committed = Decimal("0")
     for stage in STAGES:
@@ -1036,7 +1240,7 @@ def summary(workspace):
         stage_committed = committed_usd(sites)
         billed, committed = billed + stage_billed, committed + stage_committed
         report[stage] = {"form": FORMS[stage]["version"], "runs": _runs(sites),
-                         **_screen_counts(records),
+                         **(_screen_counts(records) if stage == "screen" else _contact_counts(records)),
                          "estimated_cost_usd": str(stage_billed), "committed_usd": str(stage_committed)}
     report.update(estimated_cost_usd=str(billed), committed_usd=str(committed))
     path = workspace.root / "summary.json"

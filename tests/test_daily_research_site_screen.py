@@ -449,14 +449,19 @@ def test_excerpts_come_only_from_the_basis_entries_of_that_field(tmp_path):
     assert records[key]["tier"] == "outreach_ready"
 
 
-def test_each_page_is_read_once_per_verify(tmp_path):
+def test_each_page_is_read_once_per_verify_and_never_from_linkedin(tmp_path):
     shared = "https://operator-1.example/plant"
-    answers = screen_answers(1, operator_identity_url=shared, site_identity_url=shared)
+    answers = screen_answers(1, operator_identity_url=shared, site_identity_url=shared,
+                             manual_today_url="https://www.linkedin.com/jobs/view/synthetic")
     pages = {shared: answers["operator_identity_quote"] + " " + answers["site_identity_quote"],
-             **pages_for(answers, ["operating_now", "target_task", "manual_today"])}
-    _, _, reader, records = screen(tmp_path, [inventory_record(1)], [answers], pages)
-    assert sorted(reader.requested) == sorted(pages)
-    assert [record["tier"] for record in records.values()] == ["outreach_ready"]
+             **pages_for(answers, ["operating_now", "target_task"])}
+    key = ss.from_inventory(inventory_record(1))["site_key"]
+    citation = {"url": answers["manual_today_url"], "excerpts": [answers["manual_today_quote"]]}
+    _, _, reader, records = screen(tmp_path, [inventory_record(1)], [answers], pages,
+                                   basis={key: [{"field": "manual_today", "citations": [citation]}]})
+    assert sorted(reader.requested) == sorted({shared, answers["operating_now_url"], answers["target_task_url"]})
+    # The screen never reads LinkedIn; the provider's own excerpt can still place the quote.
+    assert records[key]["verification"]["manual_today"] == {"level": "in_citation_excerpt"}
 
 
 # --- the outreach-ready rule and open questions ---------------------------------------------
@@ -558,6 +563,7 @@ def test_summary_counts_fields_checks_tiers_and_cost_without_site_data(tmp_path)
                                                   "physical_site": {"web_quote": 1, "government_record": 1}}
     assert report["screen"]["checks"]["not_closed"] == 1 and report["screen"]["open_questions"]["fit"] == 2
     assert (report["estimated_cost_usd"], report["committed_usd"]) == ("0.050", "0.050")
+    assert report["contact"]["runs"]["sites"] == 0 and report["contact"]["records"] == 0
     assert json.loads((workspace.root / "summary.json").read_text()) == report
     text = ss.canonical(report)
     assert not any(value in text for value in SITE_STRINGS)
@@ -667,5 +673,5 @@ def test_the_default_page_reader_is_the_daily_reader_under_its_alarm(monkeypatch
         "text": "Synthetic page.", "links": ["/x"], "raw_sha256": "0" * 64})
     read = ss.public_page_reader()
     assert read("https://operator-1.example/plant") == {"text": "Synthetic page."}
-    assert seen == [({"url": "https://operator-1.example/plant"}, {})]
+    assert seen == [({"url": "https://operator-1.example/plant"}, {"blocked_domains": ss.NEVER_FETCH})]
     assert alarms == [ss.PAGE_READ_SECONDS]

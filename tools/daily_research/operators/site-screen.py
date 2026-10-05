@@ -1,11 +1,11 @@
-"""Owner command for the per-site research line (site screen).
+"""Owner command for the per-site research line (site screen) and its contact stage.
 
-plan reads only the input file. run is a dry run unless --apply; with --apply it creates Parallel Task
-runs, each admitted first against the out dir's append-only ledger, --ceiling-usd and --max-runs.
-collect reads run status and results (reads are not billed), verify reads the cited public pages and
-summary reads the out dir. The out dir must be outside every repository. Output is counts and stable
-codes only, never site names or addresses. The key comes from PARALLEL_API_KEY, or from --key-file
-(KEY=VALUE lines); it is never printed or written. No CRM write, draft or send.
+plan reads only the input file. run and contact are dry runs unless --apply; with --apply they create
+Parallel Task runs, each admitted first against the out dir's append-only ledger, --ceiling-usd and
+--max-runs. collect reads run status and results (reads are not billed), verify reads the cited public
+pages and summary reads the out dir. The out dir must be outside every repository. Output is counts and
+stable codes only, never site names, people or addresses. The key comes from PARALLEL_API_KEY, or from
+--key-file (KEY=VALUE lines); it is never printed or written. No CRM write, draft or send.
 """
 import argparse
 import os
@@ -45,20 +45,23 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
     planner = commands.add_parser("plan", help="Count sites, refusals and cost in one input file")
     planner.add_argument("--input", required=True, type=Path)
     planner.add_argument("--processor", default=site_screen.DEFAULT_PROCESSOR)
-    spender = commands.add_parser("run", help="Screen each site of --input that has no run yet; a dry run unless --apply")
-    spender.add_argument("--input", required=True, type=Path)
-    spender.add_argument("--out", required=True, type=Path, help="Private directory outside every repository")
-    spender.add_argument("--ceiling-usd", required=True, help="Spend ceiling for this stage in this out dir")
-    spender.add_argument("--max-runs", required=True, type=int, help="Run ceiling for this stage in this out dir")
-    spender.add_argument("--processor", default=site_screen.DEFAULT_PROCESSOR)
-    spender.add_argument("--key-file", type=Path, help="KEY=VALUE file holding PARALLEL_API_KEY")
-    spender.add_argument("--apply", action="store_true")
+    for name, text in (("run", "Screen each site of --input that has no run yet"),
+                       ("contact", "Find a contact route for each outreach-ready site")):
+        spender = commands.add_parser(name, help=text + "; a dry run unless --apply")
+        if name == "run":
+            spender.add_argument("--input", required=True, type=Path)
+        spender.add_argument("--out", required=True, type=Path, help="Private directory outside every repository")
+        spender.add_argument("--ceiling-usd", required=True, help="Spend ceiling for this stage in this out dir")
+        spender.add_argument("--max-runs", required=True, type=int, help="Run ceiling for this stage in this out dir")
+        spender.add_argument("--processor", default=site_screen.DEFAULT_PROCESSOR)
+        spender.add_argument("--key-file", type=Path, help="KEY=VALUE file holding PARALLEL_API_KEY")
+        spender.add_argument("--apply", action="store_true")
     collector = commands.add_parser("collect", help="Store each run's terminal result")
     collector.add_argument("--out", required=True, type=Path)
     collector.add_argument("--wait-seconds", type=int, default=site_screen.COLLECT_WAIT_SECONDS)
     collector.add_argument("--key-file", type=Path)
     for name, text in (("verify", "Check every quote against its cited page"),
-                       ("summary", "Counts by field, check and tier, and cost")):
+                       ("summary", "Counts by field, check, tier and recipient, and cost")):
         commands.add_parser(name, help=text).add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
 
@@ -75,6 +78,10 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
         result = site_screen.run(raw, site_screen.Workspace(args.out, create=True), client=task_client,
                                  ceiling_usd=args.ceiling_usd, max_runs=args.max_runs, processor=args.processor,
                                  apply=args.apply)
+    elif args.command == "contact":
+        workspace = site_screen.Workspace(args.out)
+        result = site_screen.contact(workspace, client=client(), ceiling_usd=args.ceiling_usd,
+                                     max_runs=args.max_runs, processor=args.processor, apply=args.apply)
     elif args.command == "collect":
         workspace = site_screen.Workspace(args.out)
         result = site_screen.collect(workspace, client=client(), wait_seconds=args.wait_seconds,

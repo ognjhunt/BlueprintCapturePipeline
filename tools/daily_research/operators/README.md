@@ -743,9 +743,12 @@ write or send.
 owner approved it on 2026-10-05 after a successful 50-site pilot. Each site gets one
 Parallel Task run (processor `core`, $0.025 per completed run; failed runs are not
 billed). The run fills the `blueprint.site-screen.v1` form, with a URL and an exact
-quote for each answer. The code is `tools/daily_research/site_screen.py`, standard
-library only, and the standalone release ships it. Nothing sends, drafts or writes
-a CRM.
+quote for each answer. An optional second stage, the contact screen
+(`blueprint.site-contact.v1`), runs only for sites whose screen is outreach-ready
+(owner decision 2026-10-05, company GCS
+`operations/recovery/2026-10-05/owner-decisions/owner-decision-contact-sources-20261005.json`).
+The code is `tools/daily_research/site_screen.py`, standard library only, and the
+standalone release ships it. Nothing sends, drafts or writes a CRM.
 
 ```bash
 RELEASE=/opt/render/project/src/dist/daily-research/release
@@ -754,6 +757,9 @@ OUT=/PRIVATE/site-screen-20261005
 PYTHONPATH=$RELEASE $COMMAND plan --input /PRIVATE/backlog.v1.json.gz
 PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT --ceiling-usd 1.25 --max-runs 50
 PYTHONPATH=$RELEASE $COMMAND run --input /PRIVATE/backlog.v1.json.gz --out $OUT --ceiling-usd 1.25 --max-runs 50 --apply
+PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
+PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
+PYTHONPATH=$RELEASE $COMMAND contact --out $OUT --ceiling-usd 0.50 --max-runs 20 --apply
 PYTHONPATH=$RELEASE $COMMAND collect --out $OUT
 PYTHONPATH=$RELEASE $COMMAND verify --out $OUT
 PYTHONPATH=$RELEASE $COMMAND summary --out $OUT
@@ -777,11 +783,11 @@ from the repository root, with `--key-file` set to a private env file.
   each web-found inventory site, must prove both with its own quotes. The export
   does not record which source supplied each field (an OpenStreetMap record can
   supply the name), so `source_ids` lists every source of the row.
-- `run` is a dry run unless `--apply`. A dry run makes the same admission and
-  calls nothing. The screen stage has an append-only ledger, `screen/runs.jsonl`.
-  An `intent` line is fsynced before each create. Then `created` (with the run id),
-  `refused` (no run exists; a later run tries the site again) or `uncertain` (the
-  outcome is unknown) follows. A site with a run id, or
+- `run` and `contact` are dry runs unless `--apply`. A dry run makes the same
+  admission and calls nothing. Each stage has its own append-only ledger,
+  `<stage>/runs.jsonl`. An `intent` line is fsynced before each create. Then
+  `created` (with the run id), `refused` (no run exists; a later run tries the site
+  again) or `uncertain` (the outcome is unknown) follows. A site with a run id, or
   with an unknown outcome, is never submitted again. An interrupted create counts as
   an unknown outcome.
 - Before each create, the price of each run that may be billed (completed, in
@@ -808,7 +814,9 @@ from the repository root, with `--key-file` set to a private env file.
   for that field holds it; else `unverified`, or `unverified_page_unreachable` with
   the read's code. A field without a URL and quote is `no_quote`. Matching is exact
   after NFKC, lower case, plain quotes and dashes, and single spaces. A quote of 40
-  or more characters also matches on its leading or trailing 90 %.
+  or more characters also matches on its leading or trailing 90 %. The verifier
+  never fetches LinkedIn (`linkedin.com`, any subdomain of it, or `lnkd.in`), on the
+  first request or on any redirect.
 - `outreach_ready` needs the operator, the exact physical site and the site task
   each proven by a primary source, with a quote at `verified_on_page` or
   `in_citation_excerpt`; on site universe rows the government record counts for
@@ -818,17 +826,33 @@ from the repository root, with `--key-file` set to a private env file.
   unproven, for the first email: `manual_workflow`, `existing_automation`,
   `freshness` (the site operating now and the task evidence within 18 months), and
   `fit` and `interest`, which are always open.
-- `summary` prints and writes `summary.json`: run counts, answer and quote-level
-  counts by field, check and tier counts (also by origin), open questions, and
-  cost. `estimated_cost_usd` counts completed runs; `committed_usd` counts each run
-  that may be billed.
+- `contact` creates one run per outreach-ready screen record, in screen order,
+  under its own ledger, ceiling and run limit. The form asks for the deciding role,
+  a named current person from a reputable public source, a business email address
+  published verbatim, the channel type, and a contact form or phone URL when no
+  address is published. A person counts only when the person quote contains the
+  name and the page, or the field's citation excerpt, shows the quote and the name.
+  An email counts only when the email quote contains the exact address and the
+  address stands whole and verbatim on the cited page or in the field's citation
+  excerpt. Any other address is discarded: the record keeps its level, never the
+  address. A `person_url` or `email_url` on LinkedIn is refused as
+  `person_source_not_allowed`, and a LinkedIn citation excerpt is not evidence.
+- `recipient` follows the owner's order: `person_email` (it also needs a verified
+  person), then `team_inbox`, then `general_inbox`, else `none`. A title alone never
+  proves remit, so `decision_remit` is always an open question for a named person.
+  `person_current` (no dated source within 18 months) and `recipient` are added when
+  they are unproven.
+- `summary` prints and writes `summary.json`: for each stage, run counts, answer and
+  quote-level counts by field, check and tier counts (also by origin), recipient,
+  person and email levels, open questions, and cost. `estimated_cost_usd` counts
+  completed runs; `committed_usd` counts each run that may be billed.
 - The key comes from `PARALLEL_API_KEY`, or from `--key-file` (KEY=VALUE lines,
   `export` allowed) when one is given. It is never printed or written. `--out` must
   be outside this repository and outside any Git work tree
   (`site_screen_out_dir_inside_repository`). A new out dir gets mode 0700, and every
   file 0600. Only one command at a time can use an out dir (`site_screen_out_dir_busy`).
-  Output is counts and stable `site_screen_*` codes only, never site names or
-  addresses. The hermetic tests use a fake Task API transport and a fake page
+  Output is counts and stable `site_screen_*` codes only, never site names, people
+  or addresses. The hermetic tests use a fake Task API transport and a fake page
   reader with synthetic sites.
 
 ## Daily research runtime envelope

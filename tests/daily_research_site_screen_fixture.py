@@ -1,7 +1,7 @@
 """Hermetic fixtures for the site screen tests: a fake Parallel Task API and a fake page reader.
 
-Every company, site and address here is synthetic, and hosts use the reserved ``.example`` top-level
-domain.
+Every company, site, person, address and email here is synthetic. Hosts use the reserved ``.example``
+top-level domain, and person names carry a fixture marker word.
 """
 import json
 import re
@@ -13,8 +13,11 @@ from tools.daily_research.search import ToolFailure
 
 KEY = "synthetic-parallel-key-7f3a9c41"  # Never a real key; the tests check it never leaves the client.
 TODAY = date(2026, 10, 5)
+PERSON = "Avery Placeholder"
+OTHER_PERSON = "Jordan Fixture"
+PEOPLE = (PERSON, OTHER_PERSON)
 # Strings that identify a synthetic site; command output must never contain them.
-SITE_STRINGS = ("Synthetic Works", "Synthetic Operator", "Example Road", "Fixture City", ".example")
+SITE_STRINGS = ("Synthetic Works", "Synthetic Operator", "Example Road", "Fixture City", ".example", PERSON)
 
 
 class FakeProvider:
@@ -23,7 +26,7 @@ class FakeProvider:
 
     def __init__(self):
         self.calls, self.runs = [], {}
-        self.outputs = {}  # site_key -> {"content": ..., "basis": [...]}
+        self.outputs, self.contacts = {}, {}  # site_key -> {"content": ..., "basis": [...]} per form
         self.final, self.progress = {}, {}  # site_key -> terminal status / statuses reported before it
         self.create_answers, self.read_answers = [], []  # Scripted answers used first: (status, body) or an error.
 
@@ -43,7 +46,7 @@ class FakeProvider:
             return 202, json.dumps({"run_id": run_id, "status": "queued", "is_active": True}).encode()
         match = re.fullmatch(r"/v1/tasks/runs/(trun_\d{4})(/result\?timeout=30)?", path)
         request = self.runs[match.group(1)]
-        key = request["metadata"]["site_key"]
+        key, form = request["metadata"]["site_key"], request["metadata"]["form"]
         waiting = self.progress.get(key)
         status = waiting.pop(0) if waiting and not match.group(2) else self.final.get(key, "completed")
         run = {"run_id": match.group(1), "status": status, "is_active": status not in ss.TERMINAL}
@@ -51,11 +54,12 @@ class FakeProvider:
             return 200, json.dumps(run).encode()
         if status != "completed":
             return 404, b'{"detail": "Run failed or run id not found"}'
-        output = self.outputs[key]
+        output = (self.outputs if form == ss.SCREEN else self.contacts)[key]
         return 200, json.dumps({"run": run, "output": {"type": "json", **output}}).encode()
 
-    def creates(self):
-        return [json.loads(call["body"]) for call in self.calls if call["method"] == "POST"]
+    def creates(self, form=None):
+        return [json.loads(call["body"]) for call in self.calls if call["method"] == "POST"
+                and (form is None or json.loads(call["body"])["metadata"]["form"] == form)]
 
 
 class FakePages:
@@ -127,10 +131,25 @@ def screen_answers(number, **changes):
     return value
 
 
+def contact_answers(number, **changes):
+    """A complete contact form answer for site ``number``: a named person and their published address."""
+    site = f"https://operator-{number}.example"
+    value = {
+        "decision_role": "Plant manager", "person_name": PERSON, "person_title": "Plant Manager",
+        "person_url": f"{site}/team", "person_quote": f"{PERSON} leads the machining plant as plant manager.",
+        "person_date": "2026-06-01",
+        "email": f"plant.lead@operator-{number}.example", "email_url": f"{site}/team",
+        "email_quote": f"Write to plant.lead@operator-{number}.example for plant questions.",
+        "channel_type": "person_email", "channel_url": "", "notes": "No direct phone line is published.",
+    }
+    value.update(changes)
+    return value
+
+
 def pages_for(answers, stems=None):
-    """Pages that hold each listed proof's quote among other text (default: every screen proof)."""
+    """Pages that hold each listed proof's quote among other text (default: every proof of the answers' form)."""
     if stems is None:
-        stems = tuple(ss.SCREEN_PROOFS)
+        stems = tuple(ss.SCREEN_PROOFS) if "target_task" in answers else ("person", "email")
     pages = {}
     for stem in stems:
         url, quote = answers.get(stem + "_url"), answers.get(stem + "_quote")
