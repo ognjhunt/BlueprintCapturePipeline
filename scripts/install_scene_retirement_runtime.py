@@ -235,9 +235,18 @@ def _copy(path, destination, expected, deadline):
         os.close(parent)
 
 
-def _partial_tree(path, rows, sources, deadline, prefix=Path('.'), depth=0):
+def _partial_tree(path, rows, sources, deadline, prefix=Path('.'), depth=0, _directories=None):
     """Check the entire incomplete snapshot before completing any copy."""
     _require(depth <= 32 and time.monotonic() <= deadline)
+    if _directories is None:
+        # Every retained directory must lead to a declared leaf. Compute those
+        # exact prefixes once instead of scanning all SDK rows per directory.
+        _directories = set()
+        for name in rows:
+            _require(time.monotonic() <= deadline)
+            while '/' in name:
+                name = name.rpartition('/')[0]
+                _directories.add(name)
     fd = _open(path, directory=True)
     try:
         before = os.fstat(fd)
@@ -248,8 +257,8 @@ def _partial_tree(path, rows, sources, deadline, prefix=Path('.'), depth=0):
             key = str(prefix / name)
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
-                _require(any(value.startswith(key + '/') for value in rows))
-                _partial_tree(child, rows, sources, deadline, prefix / name, depth + 1)
+                _require(key in _directories)
+                _partial_tree(child, rows, sources, deadline, prefix / name, depth + 1, _directories)
             else:
                 _require(key in rows)
                 _prefix(sources[key], child, rows[key], deadline)

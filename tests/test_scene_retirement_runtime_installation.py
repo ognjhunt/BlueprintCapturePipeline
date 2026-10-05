@@ -92,6 +92,54 @@ def test_existing_identical_snapshot_is_reused_without_republication(tmp_path, m
     assert (before.st_dev, before.st_ino, before.st_mtime_ns) == (after.st_dev, after.st_ino, after.st_mtime_ns)
 
 
+def test_partial_sdk_directory_validation_scans_manifest_once(tmp_path, monkeypatch):
+    import time
+    module, _, deps = fixture(tmp_path, monkeypatch)
+    names = [f'package_{index}' for index in range(48)]
+    names += ['package-name', 'package.name', 'package[0]', 'space name', 'μpackage']
+    for name in names:
+        directory = deps / name / 'nested'
+        directory.mkdir(parents=True)
+        (directory / '__init__.py').write_bytes(b'# protected SDK\n')
+    rows, sources = {}, {}
+    deadline = time.monotonic() + 10
+    module._tree(deps, Path('.'), rows, sources, deadline)
+    class CountedRows(dict):
+        scans = 0
+        def __iter__(self):
+            self.scans += 1
+            return super().__iter__()
+    counted = CountedRows(rows)
+    module._partial_tree(deps, counted, sources, deadline)
+    assert counted.scans == 1
+
+
+@pytest.mark.parametrize('change', ['unknown-directory', 'prefix-collision', 'symlink', 'changed-prefix'])
+def test_partial_sdk_directory_index_preserves_refusals(tmp_path, monkeypatch, change):
+    import time
+    module, _, deps = fixture(tmp_path, monkeypatch)
+    directory = deps / 'package' / 'nested'
+    directory.mkdir(parents=True)
+    leaf = directory / '__init__.py'
+    leaf.write_bytes(b'# protected SDK\n')
+    rows, sources = {}, {}
+    deadline = time.monotonic() + 10
+    module._tree(deps, Path('.'), rows, sources, deadline)
+    if change == 'unknown-directory':
+        (deps / 'foreign').mkdir()
+    elif change == 'prefix-collision':
+        (deps / 'pack').mkdir()
+    elif change == 'symlink':
+        (deps / 'foreign').symlink_to(directory, target_is_directory=True)
+    else:
+        leaf.write_bytes(b'# altered SDK\n')
+    before = leaf.read_bytes()
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module._partial_tree(deps, rows, sources, deadline)
+    assert leaf.read_bytes() == before
+    assert not module._BOOT_ROOT.exists()
+
+
 def test_unknown_or_changed_installed_runtime_is_preserved(tmp_path, monkeypatch):
     module, source, deps = fixture(tmp_path, monkeypatch)
     module.prepare(source, deps)
