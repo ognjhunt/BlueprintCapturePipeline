@@ -116,6 +116,9 @@ class FirestoreLedger:
         control = getattr(self, "leased_control", None) or self.bridge.call("control")
         return control.get("site_universe") if isinstance(control, dict) else None
 
+    def team_universe_snapshot(self):
+        return self.bridge.call("team_universe_snapshot")
+
     def outreach_ready_control(self):
         # Top-level company control like site_universe; the run start's leased control read is
         # reused when there is one. Absent or disabled, the run is in shadow mode.

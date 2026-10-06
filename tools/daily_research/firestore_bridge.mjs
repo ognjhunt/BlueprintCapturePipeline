@@ -117,6 +117,18 @@ async function suBounded(fn,ms) {
   catch(error) {throw error instanceof Refusal && suCode(error.message)?error:new Refusal('site_universe_object_unavailable');}
   finally {clearTimeout(timer);}
 }
+// Private qualified robot-team evidence: no provider or contact authority.
+const TU_PREFIX='operations/research/team-universe/', TU_MAX_BYTES=4*1024*1024, TU_EXPORT='blueprint.team-evidence-export.v1';
+const TU_PIN_FIELDS=['approval_reference','assessed_on','audit_sha256','bytes','enabled','generation','ranked_sha256','schema_version','scope_sha256','sha256','uri','version'];
+const tuUri=hash=>`gs://${CLEANUP_BUCKET}/${TU_PREFIX}${hash}/evidence.v1.json`;
+function tuPinProblem(pin) {
+  if(!keysAre(pin,TU_PIN_FIELDS) || pin.schema_version!=='blueprint.team-evidence-pin.v1' || pin.enabled!==true
+      || !['sha256','ranked_sha256','audit_sha256','scope_sha256'].every(k=>hexOK(pin[k]))
+      || pin.uri!==tuUri(pin.sha256) || !suGeneration(pin.generation) || !suInt(pin.bytes,1,TU_MAX_BYTES)
+      || !suInt(pin.version,1,1000000) || !dateOK(pin.assessed_on) || !paidText(pin.approval_reference)
+      || /^PENDING/i.test(pin.approval_reference.trim())) return 'team_universe_pin_invalid';
+  return null;
+}
 // Owner direction for outreach-ready hypotheses; mirrors tools/daily_research/outreach_ready.py.
 // A new direction must name the rule this release implements (verification.OUTREACH_RULE_VERSION); a pinned
 // direction of an earlier rule can still be braked, and a fresh set supersedes it.
@@ -340,6 +352,31 @@ export class Store {
       }
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      const teamDigest=row.team_universe===undefined?null:valueHash(row.team_universe);
+      if(prior.exists && (prior.data().team_universe_digest ?? null)!==teamDigest) refuse('team_universe_intent_already_bound');
+      if(row.team_universe?.state==='attached') {
+        const evidence=row.team_universe,pin=evidence.pin;
+        if(tuPinProblem(pin) || !prior.exists && valueHash(pin)!==valueHash(control.team_universe ?? null)) refuse('team_universe_current_pin_changed');
+        const files=(row.create_payload?.environment?.files || []).filter(f=>f.path==='/workspace/inputs/blueprint-team-evidence.json');
+        const raw=files.length===1 && typeof files[0].data==='string' ? Buffer.from(files[0].data,'base64') : null;
+        if(!raw || raw.length>500000 || raw.length!==evidence.bytes || sha(raw)!==evidence.sha256
+            || evidence.sha256!==row.metadata?.team_universe_input_digest) refuse('team_universe_frozen_binding_invalid');
+        let frozen;try {frozen=JSON.parse(raw.toString('utf8'));} catch {refuse('team_universe_frozen_binding_invalid');}
+        if(!keysAre(frozen,['schema_version','run_date','as_of','export_sha256','pin_version','manifest','teams','held_team_keys'])
+            || frozen.schema_version!=='blueprint.team-evidence-input.v1' || frozen.run_date!==row.date
+            || !dateOK(frozen.as_of) || !prior.exists && frozen.as_of!==new Date(this.clock()).toISOString().slice(0,10)
+            || frozen.export_sha256!==pin.sha256 || frozen.pin_version!==pin.version
+            || !Array.isArray(frozen.teams) || !Array.isArray(frozen.held_team_keys)
+            || raw.toString('utf8')!==JSON.stringify(canonicalValue(frozen))) refuse('team_universe_frozen_binding_invalid');
+        const original=Buffer.from(JSON.stringify(canonicalValue({schema_version:TU_EXPORT,manifest:frozen.manifest,teams:frozen.teams})));
+        if(original.length!==pin.bytes || sha(original)!==pin.sha256) refuse('team_universe_frozen_binding_invalid');
+        const asof=Date.parse(frozen.as_of+'T00:00:00Z');
+        const held=frozen.teams.filter(team=>team.status==='capability_prospect' &&
+          !(Number.isFinite(Date.parse(team.assessment?.as_of+'T00:00:00Z')) &&
+            (asof-Date.parse(team.assessment.as_of+'T00:00:00Z'))/86400000>=0 &&
+            (asof-Date.parse(team.assessment.as_of+'T00:00:00Z'))/86400000<=548)).map(team=>team.team_key);
+        if(valueHash(held)!==valueHash(frozen.held_team_keys)) refuse('team_universe_frozen_binding_invalid');
+      }
       if ((row.expansion_profile || null)!==(row.metadata?.expansion_profile || null)
           || row.expansion_profile && row.expansion_profile!=='exa-guarded-v1') refuse('research_expansion_profile_invalid');
       const exa=row.exa_expansion;
@@ -468,7 +505,7 @@ export class Store {
         exa_expansion_intent_digest:exa?.intent_sha256 || null,
         exa_expansion_run_id:exa?.run_id || null,
         exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
-        paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
+        team_universe_digest:teamDigest,paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
         ...(outreachDigest?{outreach_ready_digest:outreachDigest}:{}),...(outreachUnbound?{outreach_ready_unbound:true}:{}),
         findall_claims:findall,findall_unbound:findallUnbound,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
@@ -1023,6 +1060,94 @@ export class Store {
     catch {refuse('paid_expansion_object_missing');}
     if(!Buffer.isBuffer(raw) || sha(raw)!==hash || Number(meta?.size)!==raw.length) refuse('paid_expansion_object_conflict');
     return {uri:paidUri(hash),sha256:hash,bytes:raw.toString('base64'),generation:String(meta.generation)};
+  }
+  teamUniverseFile(hash,generation=null) {
+    if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('team_universe_object_unavailable');
+    return this.archiveBucket.file(`${TU_PREFIX}${hash}/evidence.v1.json`,generation===null?undefined:{generation});
+  }
+  async teamUniverseObjectGet(hash,generation,size=null) {
+    if(!hexOK(hash) || !suGeneration(generation) || !(size===null || suInt(size,1,TU_MAX_BYTES))) refuse('team_universe_pin_invalid');
+    let timer;
+    const read=async()=>{
+      const file=this.teamUniverseFile(hash,generation);let meta,raw;
+      try {[meta]=await file.getMetadata();} catch {refuse('team_universe_object_unavailable');}
+      if(String(meta?.generation)!==generation) refuse('team_universe_object_generation_mismatch');
+      const stored=Number(meta?.size);
+      if(!suInt(stored,1,TU_MAX_BYTES)) refuse('team_universe_object_too_large');
+      if(size!==null && size!==stored) refuse('team_universe_object_digest_mismatch');
+      try {[raw]=await file.download();} catch {refuse('team_universe_object_unavailable');}
+      if(!Buffer.isBuffer(raw) || raw.length!==stored || sha(raw)!==hash) refuse('team_universe_object_digest_mismatch');
+      return {uri:tuUri(hash),sha256:hash,generation,size:raw.length,data:raw.toString('base64')};
+    };
+    try {return await Promise.race([read(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Refusal('team_universe_object_unavailable')),20000);})]);}
+    finally {clearTimeout(timer);}
+  }
+  async teamUniverseObjectPut(hash,encoded) {
+    if(!hexOK(hash) || typeof encoded!=='string') refuse('team_universe_export_invalid');
+    const raw=Buffer.from(encoded,'base64');let value;
+    if(!raw.length || raw.length>TU_MAX_BYTES || sha(raw)!==hash) refuse('team_universe_object_digest_mismatch');
+    try {value=JSON.parse(raw.toString('utf8'));} catch {refuse('team_universe_export_invalid');}
+    if(value?.schema_version!==TU_EXPORT || value.manifest?.distribution!=='internal_only' || !Array.isArray(value.teams) || value.teams.length>10000)
+      refuse('team_universe_export_invalid');
+    let timer;
+    const write=async()=>{
+      const file=this.teamUniverseFile(hash);
+      try {await file.save(raw,{resumable:false,preconditionOpts:{ifGenerationMatch:0},metadata:{contentType:'application/json',cacheControl:'private, no-store',metadata:{sha256:hash}}});}
+      catch(error) {if(Number(error?.code)!==412) refuse('team_universe_object_unavailable');}
+      let meta;try {[meta]=await file.getMetadata();} catch {refuse('team_universe_object_unavailable');}
+      const read=await this.teamUniverseObjectGet(hash,String(meta?.generation),raw.length);
+      return {uri:read.uri,sha256:hash,generation:read.generation,bytes:read.size};
+    };
+    try {return await Promise.race([write(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Refusal('team_universe_object_unavailable')),30000);})]);}
+    finally {clearTimeout(timer);}
+  }
+
+  async teamUniverseSnapshot() {
+    // Read-only and pinned to one object generation. Daily intent freezes these bytes once.
+    const control=(await this.control.get()).data(),pin=control?.team_universe;
+    if(!pin || pin.enabled===false) return {state:'unavailable',code:'team_universe_not_pinned'};
+    const problem=tuPinProblem(pin);if(problem) refuse(problem);
+    const object=await this.teamUniverseObjectGet(pin.sha256,pin.generation,pin.bytes);
+    let value;try {value=JSON.parse(Buffer.from(object.data,'base64').toString('utf8'));} catch {refuse('team_universe_export_invalid');}
+    if(value?.schema_version!==TU_EXPORT || ['ranked_sha256','audit_sha256','scope_sha256','assessed_on'].some(k=>value.manifest?.[k]!==pin[k]))
+      refuse('team_universe_export_binding_invalid');
+    return {state:'available',pin,data:object.data};
+  }
+  async teamUniverseIdle() {
+    const summary=await this.summary();
+    if(summary.unfinished || await this.activeQA() || await this.workItem()) refuse('team_universe_active_research_qa_repair_or_publication');
+    return {idle:true};
+  }
+  async teamUniverseSet(expected,value) {
+    if(!(expected===null || hexOK(expected)) || !value || typeof value!=='object') refuse('team_universe_pin_invalid');
+    // Caller also checks before acquiring; repeat under the exact existing fenced lease.
+    await this.assertLease();await this.teamUniverseIdle();
+    if(value.enabled!==false) {
+      const problem=tuPinProblem(value);if(problem) refuse(problem);
+      const object=await this.teamUniverseObjectGet(value.sha256,value.generation,value.bytes);
+      let exportValue;try {exportValue=JSON.parse(Buffer.from(object.data,'base64').toString('utf8'));} catch {refuse('team_universe_export_invalid');}
+      if(exportValue?.schema_version!==TU_EXPORT || ['ranked_sha256','audit_sha256','scope_sha256','assessed_on'].some(k=>exportValue.manifest?.[k]!==value[k]))
+        refuse('team_universe_export_binding_invalid');
+    }
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();this.fence(control);
+      const prior=control.team_universe;
+      if((prior?.sha256 ?? null)!==expected) refuse('team_universe_pin_conflict');
+      if(value.enabled===false) {
+        if(!prior || valueHash({...prior,enabled:false})!==valueHash(value)) refuse('team_universe_pin_invalid');
+      } else {
+        const problem=tuPinProblem(value);if(problem) refuse(problem);
+        const history=await tx.get(this.db.collection(`${ROOT}/teamUniversePins`).limit(10001));
+        if(history.docs.length>10000) refuse('team_universe_pin_history_limit');
+        const version=history.docs.reduce((max,d)=>Math.max(max,d.data().version ?? 0),0);
+        if(value.version!==Math.max(version,prior?.version ?? 0)+1) refuse('team_universe_pin_version_conflict');
+        const ref=this.db.doc(`${ROOT}/teamUniversePins/${value.version}`);
+        if((await tx.get(ref)).exists) refuse('team_universe_pin_conflict');
+        tx.set(ref,{...value,recorded_at:new Date(this.clock()).toISOString()});
+      }
+      tx.set(this.control,{team_universe:value},{merge:true});
+      return {enabled:value.enabled,sha256:value.sha256,version:value.version,generation:value.generation};
+    });
   }
   suFile(hash,generation=null) {
     if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('site_universe_object_unavailable');
@@ -1999,6 +2124,7 @@ export class Store {
         const value = request.value;
         if (value?.enabled !== false || value?.schema_version !== 'blueprint.research-control.v1') refuse('firestore_init_not_disabled');
         if (Object.hasOwn(value, 'paid_expansion')) refuse('paid_expansion_requires_direction_operation');
+        if (Object.hasOwn(value, 'team_universe')) refuse('team_universe_requires_pin_operation');
         if (Object.hasOwn(value, 'site_universe')) refuse('site_universe_requires_pin_operation');
         if (Object.hasOwn(value, 'outreach_ready')) refuse('outreach_ready_requires_direction_operation');
         if (Object.hasOwn(value, 'screen_admission')) refuse('screen_admission_requires_pin_operation');
@@ -2048,10 +2174,11 @@ export class Store {
             refuse('outreach_ready_requires_direction_operation');
           if (Object.hasOwn(value, 'screen_admission') && valueHash(value.screen_admission ?? null) !== valueHash(control.screen_admission ?? null))
             refuse('screen_admission_requires_pin_operation');
-          const replacement = {...value}; delete replacement.paid_expansion; delete replacement.site_universe; delete replacement.outreach_ready;
+          if (Object.hasOwn(value, 'team_universe') && valueHash(value.team_universe ?? null) !== valueHash(control.team_universe ?? null)) refuse('team_universe_requires_pin_operation');
+          const replacement = {...value}; delete replacement.team_universe; delete replacement.paid_expansion; delete replacement.site_universe; delete replacement.outreach_ready;
           delete replacement.screen_admission;
           tx.set(this.control, {...replacement, cleanup_observation_required:control.cleanup_observation_required===true,
-            lease: control.lease, ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {}),
+            lease: control.lease, ...(control.team_universe ? {team_universe: control.team_universe} : {}), ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {}),
             ...(control.site_universe ? {site_universe: control.site_universe} : {}),
             ...(control.outreach_ready ? {outreach_ready: control.outreach_ready} : {}),
             ...(control.screen_admission ? {screen_admission: control.screen_admission} : {})}); return true;
@@ -2153,6 +2280,11 @@ export class Store {
       case 'paid_expansion_audit': return this.paidExpansionAudit();
       case 'paid_expansion_object_put': return this.paidExpansionObjectPut(request.sha256, request.bytes);
       case 'paid_expansion_object_get': return this.paidExpansionObjectGet(request.sha256);
+      case 'team_universe_snapshot': return this.teamUniverseSnapshot();
+      case 'team_universe_idle': return this.teamUniverseIdle();
+      case 'team_universe_object_get': return this.teamUniverseObjectGet(request.sha256,request.generation,request.size ?? null);
+      case 'team_universe_object_put': return this.teamUniverseObjectPut(request.sha256,request.bytes);
+      case 'team_universe_set': return this.teamUniverseSet(request.expected_sha256,request.value);
       case 'site_universe_object_get': return this.siteUniverseObjectGet(request.sha256,request.generation,request.size ?? null);
       case 'site_universe_object_put': return this.siteUniverseObjectPut(request.sha256,request.bytes);
       case 'site_universe_set': {

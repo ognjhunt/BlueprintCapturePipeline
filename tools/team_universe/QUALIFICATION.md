@@ -8,7 +8,7 @@ MES/analytics/RPA, an inspection camera, a world model or simulation asset is in
 
 Ranking writes `ranked.team-rank.v2.json`. It preserves the old v1 output, raw result/page bytes,
 paid-query schemas, receipt identities and spending protections. It reads no page and calls no
-provider. There is no CRM/Render consumer integration. The private audit is a reviewer assessment;
+provider. The private daily-agent evidence adapter is described in `../daily_research/TEAM_EVIDENCE.md`; it adds no CRM promotion or outreach authority. The private audit is a reviewer assessment;
 its digests and reference are neither owner approval nor authority for a paid run, contact or upload.
 
 ## Independent axes

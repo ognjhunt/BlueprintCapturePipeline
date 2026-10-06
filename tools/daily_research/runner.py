@@ -1175,6 +1175,10 @@ class Runner:
             if universe is not None and universe[1] is not None:
                 plain = deepcopy(body)
                 site_universe.bind(body, universe[0], universe[1], crm_prefix)
+            from tools.daily_research import team_universe
+            team_record, team_raw = team_universe.attach(self.ledger, self.clock().date(), run_date=day)
+            without_teams = deepcopy(body)
+            team_universe.bind(body, team_record, team_raw)
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),
                    "run_key": body["metadata"]["run_key"], "metadata": body["metadata"],
@@ -1217,14 +1221,23 @@ class Runner:
                 row["paid_expansion_grant"] = allocation.grant(control, row, self.clock())
             if universe is not None:
                 row["site_universe"] = universe[0]
+            row["team_universe"] = team_record
             if self.config.get("search_provider") == search.PROFILE:
                 row["search_provider"] = search.PROFILE
                 row["recurring_budget_authority_reference"] = self.config["recurring_budget_authority_reference"]
+                if len(canonical(row).encode()) > search.MAX_INTENT and team_raw is not None:
+                    body = without_teams
+                    team_record, team_raw = {"state": "unavailable", "code": "team_universe_intent_resource_ceiling"}, None
+                    team_universe.bind(body, team_record, team_raw)
+                    body["metadata"]["payload_digest"] = digest(body)
+                    row.update(metadata=body["metadata"], create_payload=body,
+                               team_universe={"state": "unavailable", "code": "team_universe_intent_resource_ceiling"})
                 if universe is not None and len(canonical(row).encode()) > search.MAX_INTENT:
                     # The slice is optional and never stops an intent that fits without it: keep today's
                     # payload, shrink the record to {state, code}, and drop even that when it does not fit.
                     if plain is not None:
                         body = plain
+                        team_universe.bind(body, team_record, team_raw)
                         body["metadata"]["payload_digest"] = digest(body)
                         row.update(metadata=body["metadata"], create_payload=body)
                     row["site_universe"] = site_universe.short(row["site_universe"])
@@ -1891,6 +1904,11 @@ def status_summary(row):
     if row.get("findall_profile"):
         from tools.daily_research import findall
         result["findall_status"] = findall.status(row)
+    if row.get("team_universe") is not None:
+        state = row["team_universe"]
+        result["team_universe"] = {key: state[key] for key in ("state", "code", "sha256", "bytes") if key in state}
+        if state.get("state") == "attached":
+            result["team_universe"].update(export_sha256=state["pin"]["sha256"], pin_version=state["pin"]["version"])
     if row.get("site_universe") is not None:
         result["site_universe"] = site_universe.status(row)
     return result
