@@ -112,13 +112,13 @@
       "expires_on": "2027-08-15",
       "source": "PyPI JSON metadata License 'BSD' retrieved 2026-08-15; ANTLR 4 project BSD-3-Clause"
     },
-    "anyio==4.14.1": {
+    "anyio==4.14.2": {
       "license_expression": "MIT",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
-      "source": "installed distribution metadata License-Expression"
+      "reviewed_on": "2026-10-06",
+      "expires_on": "2027-10-06",
+      "source": "Human approval 2026-10-06 10:12 UTC after exact-version license review; docs/runtime_dependency_license_approval_20261006.md"
     },
     "asciitree==0.3.3": {
       "license_expression": "MIT",
@@ -328,13 +328,13 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution license file and classifier"
     },
-    "google-auth==2.55.2": {
+    "google-auth==2.58.0": {
       "license_expression": "Apache-2.0",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
-      "source": "installed distribution license file and classifier"
+      "reviewed_on": "2026-10-06",
+      "expires_on": "2027-10-06",
+      "source": "Human approval 2026-10-06 10:12 UTC after exact-version license review; docs/runtime_dependency_license_approval_20261006.md"
     },
     "google-cloud-core==2.6.0": {
       "license_expression": "Apache-2.0",
@@ -1056,13 +1056,13 @@
       "expires_on": "2027-08-14",
       "source": "installed distribution metadata License and classifiers"
     },
-    "pyjwt==2.13.0": {
+    "pyjwt==2.15.0": {
       "license_expression": "MIT",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-29",
-      "expires_on": "2027-07-29",
-      "source": "installed distribution metadata License-Expression"
+      "reviewed_on": "2026-10-06",
+      "expires_on": "2027-10-06",
+      "source": "Human approval 2026-10-06 10:12 UTC after exact-version license review; docs/runtime_dependency_license_approval_20261006.md"
     },
     "python-dotenv==1.2.2": {
       "license_expression": "BSD-3-Clause",
@@ -1615,6 +1615,22 @@
       "reviewed_on": "2026-09-26",
       "expires_on": "2027-09-26",
       "source": "Owner-approved 2026-09-26 for internal development-only G1 simulation; embedded wheel license and SHA-256 5971393ade6d5f0577bb18e532b294a2d8ea1a7bd552d0bbc3b064368c8777ab in docs/arm_decision_proof_v1/g1_runtime_dependency_review_2026-09-26.md"
+    },
+    "urllib3==2.8.0": {
+      "license_expression": "MIT",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-10-06",
+      "expires_on": "2027-10-06",
+      "source": "Human approval 2026-10-06 10:12 UTC after exact-version license review; docs/runtime_dependency_license_approval_20261006.md"
+    },
+    "meta-sam-parser==0.0.5": {
+      "license_expression": "LicenseRef-Meta-SAM-2025-11-19",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-10-06",
+      "expires_on": "2027-10-06",
+      "source": "Human approval 2026-10-06 10:12 UTC after exact-version license review; docs/runtime_dependency_license_approval_20261006.md"
     }
   }
 }
