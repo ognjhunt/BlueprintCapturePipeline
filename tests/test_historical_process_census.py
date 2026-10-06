@@ -6,6 +6,7 @@ The disposable systemd acceptance lane remains required for native evidence.
 # Covers: src/blueprint_pipeline/control_plane_lane_historical_processes.py
 import errno
 import os
+import select
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -189,13 +190,15 @@ def descriptor_census(census, monkeypatch):
     descriptor_identity = descriptors.stat().st_ino
     original_names, original_inspect = processes._Scan.names, processes._inspect_process
     census.fd_censuses, census.churn_forever = 0, False
+    census.churn_at_second_census = True
     census.new_fd_target = census.proc.parent
 
     def names(scan, directory, limit):
         if os.fstat(directory).st_ino != descriptor_identity:
             return original_names(scan, directory, limit)
         census.fd_censuses += 1
-        if census.fd_censuses == 2 or census.churn_forever and census.fd_censuses % 2 == 0:
+        if (census.churn_at_second_census and census.fd_censuses == 2
+                or census.churn_forever and census.fd_censuses % 2 == 0):
             previous, current = ('2', '3') if (descriptors / '2').exists() else ('3', '2')
             (descriptors / previous).unlink()
             (descriptors / current).symlink_to(census.new_fd_target)
@@ -278,6 +281,215 @@ def test_fd_churn_does_not_skip_final_process_identity_or_channel_checks(
         run(descriptor_census)
     assert descriptor_census.inspections == ['1', '2']
     assert descriptor_census.fd_censuses == 2
+
+
+@pytest.fixture
+def disappearing_descriptor(descriptor_census, monkeypatch):
+    """An enumerated FD closes before stat, or between stat and readlink."""
+    state = descriptor_census
+    state.churn_at_second_census = False
+    descriptors = state.proc / '2/fd'
+    identity = descriptors.stat().st_ino
+    state.operation, state.error_errno = 'stat', errno.ENOENT
+    state.remove, state.repeat, state.replacement = True, False, None
+    state.failures = []
+    original_stat, original_readlink = os.stat, os.readlink
+    original_names = processes._Scan.names
+
+    def names(scan, directory, limit):
+        result = original_names(scan, directory, limit)
+        return sorted(result, key=int) if os.fstat(directory).st_ino == identity else result
+
+    def disappeared(operation, path, kwargs):
+        directory = kwargs.get('dir_fd')
+        if operation != state.operation or path not in ('2', '3') or directory is None \
+                or os.fstat(directory).st_ino != identity \
+                or state.fd_censuses % 2 != 1 \
+                or state.fd_censuses in state.failures \
+                or state.failures and not state.repeat:
+            return
+        state.failures.append(state.fd_censuses)
+        if state.remove:
+            (descriptors / path).unlink()
+            if state.repeat or state.replacement is not None:
+                (descriptors / ('3' if path == '2' else '2')).symlink_to(
+                    state.replacement or state.proc.parent)
+        raise OSError(state.error_errno, 'fixture descriptor observation unavailable')
+
+    def current_stat(path, *args, **kwargs):
+        disappeared('stat', path, kwargs)
+        return original_stat(path, *args, **kwargs)
+
+    def current_readlink(path, *args, **kwargs):
+        disappeared('readlink', path, kwargs)
+        return original_readlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(processes.os, 'stat', current_stat)
+    monkeypatch.setattr(processes.os, 'readlink', current_readlink)
+    monkeypatch.setattr(processes._Scan, 'names', names)
+    return state
+
+
+@pytest.mark.parametrize('operation', ['stat', 'readlink'])
+def test_disappearing_fd_requires_complete_fresh_census_and_same_shared_budget(
+    disappearing_descriptor, operation,
+):
+    state = disappearing_descriptor
+    state.operation = operation
+    budget = ReferenceCollectionBudget()
+    run(state, budget=budget)
+    assert state.inspections == ['1', '2', '1', '2', '3']
+    assert state.fd_censuses == 4 and state.failures == [1]
+    assert len({id(scan) for scan in state.scans}) == 1
+    assert budget.counts['entries'] == state.scans[0].entries > 12
+    assert budget.counts['raw_bytes'] == state.scans[0].raw_bytes > 3 * len(b'observed')
+
+
+@pytest.mark.parametrize('operation', ['stat', 'readlink'])
+def test_continually_disappearing_fd_exhausts_original_three_complete_attempts(
+    disappearing_descriptor, operation,
+):
+    state = disappearing_descriptor
+    state.operation, state.repeat = operation, True
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] * 3
+    assert state.fd_censuses == 6 and state.failures == [1, 3, 5]
+
+
+@pytest.mark.parametrize('operation', ['stat', 'readlink'])
+def test_enoent_without_missing_fd_in_second_census_cannot_retry(
+    disappearing_descriptor, operation,
+):
+    state = disappearing_descriptor
+    state.operation, state.remove = operation, False
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.fd_censuses == 2
+
+
+@pytest.mark.parametrize('operation', ['stat', 'readlink'])
+@pytest.mark.parametrize('error_errno', [errno.EACCES, errno.EIO, errno.ESRCH])
+def test_other_fd_errors_cannot_retry_or_skip_process(disappearing_descriptor, operation, error_errno):
+    state = disappearing_descriptor
+    state.operation, state.error_errno = operation, error_errno
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.fd_censuses == 1
+
+
+@pytest.mark.parametrize('reference', ['previous_fd', 'cwd', 'same_stat_inode'])
+def test_disappearing_fd_keeps_every_already_observed_reference(disappearing_descriptor, reference):
+    state = disappearing_descriptor
+    selected = state.proc.parent / 'selected'
+    selected.mkdir()
+    state.manifest['target_path'] = str(selected)
+    link = state.proc / '2' / dict(previous_fd='fd/0', cwd='cwd', same_stat_inode='fd/2')[reference]
+    link.unlink()
+    link.symlink_to(selected)
+    if reference == 'same_stat_inode':
+        identity = selected.stat()
+        state.manifest['members'] = [dict(version=[identity.st_dev, identity.st_ino])]
+        state.operation = 'readlink'
+    with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.fd_censuses == 1
+
+
+def test_new_reference_after_fd_disappearance_is_seen_on_fresh_pass(disappearing_descriptor):
+    state = disappearing_descriptor
+    selected = state.proc.parent / 'selected'
+    selected.mkdir()
+    state.manifest['target_path'] = str(selected)
+    state.replacement = selected
+    with pytest.raises(processes.HistoricalProcessError, match='process_reference'):
+        run(state)
+    assert state.inspections == ['1', '2', '1', '2'] and state.fd_censuses == 4
+
+
+@pytest.mark.parametrize('change', ['start_identity', 'namespace', 'missing_stat', 'kernel_proof'])
+def test_disappearing_fd_cannot_skip_final_process_identity(disappearing_descriptor, monkeypatch, change):
+    state = disappearing_descriptor
+    read, namespace = processes._Scan.read, processes._namespace
+
+    def current_read(scan, directory, name, cap=1024**2):
+        if name == 'stat' and state.fd_censuses == 2:
+            if change == 'missing_stat':
+                raise FileNotFoundError(errno.ENOENT, 'fixture process ended')
+            if change == 'start_identity':
+                return read(scan, directory, name, cap).rsplit(b' ', 1)[0] + b' 124'
+        return read(scan, directory, name, cap)
+
+    def current_namespace(*args, **kwargs):
+        if change == 'namespace' and state.fd_censuses == 2:
+            return ('pid:[1]', 'user:[1]', 'mnt:[2]')
+        return namespace(*args, **kwargs)
+
+    monkeypatch.setattr(processes._Scan, 'read', current_read)
+    monkeypatch.setattr(processes, '_namespace', current_namespace)
+    if change == 'kernel_proof':
+        proof = processes.kernel_has_no_user_memory
+        monkeypatch.setattr(processes, 'kernel_has_no_user_memory',
+            lambda *args: state.fd_censuses != 2 and proof(*args))
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.fd_censuses == 2
+
+
+@pytest.mark.parametrize('change', ['mount_bytes', 'root_identity'])
+def test_disappearing_fd_cannot_skip_final_user_filesystem_view(
+    disappearing_descriptor, monkeypatch, change,
+):
+    state = disappearing_descriptor
+    process = state.proc / '2'
+    (process / 'mountinfo').write_bytes(b'fixture mount view')
+    monkeypatch.setattr(processes, 'kernel_has_no_user_memory', lambda *args: False)
+
+    def filesystem_view(scan, directory, view, *args):
+        scan.views[view] = (scan.read(directory, 'mountinfo'), ())
+
+    monkeypatch.setattr(processes, '_known_filesystem_view', filesystem_view)
+    read, current_stat = processes._Scan.read, processes.os.stat
+
+    def final_read(scan, directory, name, cap=1024**2):
+        if name == 'mountinfo' and state.fd_censuses == 2 and change == 'mount_bytes':
+            return b'different fixture mount view'
+        return read(scan, directory, name, cap)
+
+    def final_stat(path, *args, **kwargs):
+        result = current_stat(path, *args, **kwargs)
+        if path == 'root' and state.fd_censuses == 2 and change == 'root_identity':
+            return SimpleNamespace(st_dev=result.st_dev, st_ino=result.st_ino + 1)
+        return result
+
+    monkeypatch.setattr(processes._Scan, 'read', final_read)
+    monkeypatch.setattr(processes.os, 'stat', final_stat)
+    with pytest.raises(processes.HistoricalProcessError, match='process_view_unknown'):
+        run(state)
+    assert state.inspections == ['1', '2'] and state.fd_censuses == 2
+
+
+@pytest.mark.parametrize('limit', ['entries', 'raw_bytes', 'clock'])
+def test_fd_disappearance_cannot_renew_original_scan_budget(disappearing_descriptor, monkeypatch, limit):
+    state = disappearing_descriptor
+    budget, now = ReferenceCollectionBudget(), [0.0]
+    monkeypatch.setattr(processes.time, 'monotonic', lambda: now[0])
+    names = processes._Scan.names
+
+    def final_names(scan, directory, maximum):
+        result = names(scan, directory, maximum)
+        if state.fd_censuses == 2:
+            if limit == 'clock':
+                now[0] = 5.0
+            else:
+                budget.charge(limit, budget.limits[limit] - budget.counts[limit])
+        return result
+
+    monkeypatch.setattr(processes._Scan, 'names', final_names)
+    with pytest.raises(processes.HistoricalProcessError, match='process_unknown'):
+        run(state, budget=budget)
+    assert state.inspections == ['1', '2'] and state.fd_censuses == 2
+    assert len({id(scan) for scan in state.scans}) == 1
 
 
 @pytest.fixture
@@ -403,6 +615,67 @@ def test_corroborated_exit_cannot_renew_original_scan_budget(exiting_process, mo
     assert exiting_process.final_reads == 1
     if kind != 'clock':
         assert budget.failure == 'reference_' + kind + '_limit'
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux retained proc descriptor semantics')
+def test_actual_closed_descriptor_requires_reinspection_of_retained_process(monkeypatch):
+    """Real FD ENOENT and stable follow-up; not native retirement authority."""
+    child = subprocess.Popen([sys.executable, '-c',
+        'import os, sys; fd = os.open("/dev/null", os.O_RDONLY); '
+        'print(fd, flush=True); sys.stdin.readline(); os.close(fd); '
+        'print("closed", flush=True); sys.stdin.readline()'],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    directory = None
+    try:
+        assert child.stdout is not None and child.stdin is not None
+        def line():
+            assert select.select([child.stdout], [], [], 5)[0], 'fixture child response timed out'
+            return child.stdout.readline().strip()
+        slot = line()
+        assert slot.isdecimal()
+        directory = os.open('/proc/' + str(child.pid), os.O_RDONLY | os.O_DIRECTORY)
+        descriptor_identity = os.stat('fd', dir_fd=directory).st_ino
+        scan = processes._Scan(lambda: None)
+        original_names = scan.names
+        closed, fd_censuses = False, 0
+
+        def current_names(directory, limit):
+            nonlocal closed, fd_censuses
+            result = original_names(directory, limit)
+            if os.fstat(directory).st_ino == descriptor_identity:
+                fd_censuses += 1
+                if not closed:
+                    assert slot in result
+                    child.stdin.write('close\n')
+                    child.stdin.flush()
+                    assert line() == 'closed'
+                    closed = True
+            return result
+
+        def filesystem_view(scan, directory, view, *args):
+            scan.views[view] = (scan.read(directory, 'mountinfo'), ())
+
+        monkeypatch.setattr(scan, 'names', current_names)
+        monkeypatch.setattr(processes, '_known_filesystem_view', filesystem_view)
+        root = os.stat('/')
+        namespaces = processes._namespace(directory)
+        args = (scan, directory, str(child.pid), '/fixture/selected', {(0, 0)},
+                namespaces, namespaces[2], (root.st_dev, root.st_ino))
+        with pytest.raises(processes._DescriptorCensusChanged):
+            inspect_process(*args)
+        assert fd_censuses == 2 and closed and child.poll() is None
+        assert inspect_process(*args) == set()
+        assert fd_censuses == 4
+    finally:
+        if directory is not None:
+            os.close(directory)
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=5)
+        if child.stdin is not None:
+            child.stdin.close()
+        if child.stdout is not None:
+            child.stdout.close()
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='Linux retained proc descriptor semantics')
