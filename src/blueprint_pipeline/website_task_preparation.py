@@ -955,6 +955,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         construction_constraints={
             "confirmed_task": task_context["description"],
             "operator_answers": task_context.get("operator_answers") or {},
+            "operator_task_details": task_context.get("operator_task_details") or {},
+            "owner_success_criteria": task_context.get("success_criteria"),
+            "separate_task_items": task_context.get("task_items") or [],
             "task_context_digest": task_context["context_digest"],
             "subject_target_id": subject_entry["target_id"], "destination": destination,
             **({"mechanism": mechanism} if mechanism else {}),
@@ -1050,6 +1053,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                       "claim_scope": CLAIM_CEILING},
         "consent": consent,
     }
+    # A prose target has no verified translation into these development scorers.
+    # Keep the owner's bar visible and refuse a claim that the fixed controls meet it.
+    from .website_task_evidence import owner_success_criteria
+    owner_targets = owner_success_criteria(task_context)
+    if owner_targets["status"] != "not_supplied":
+        blockers.append("website_owner_success_criteria_translation_required")
     if not blockers:
         try:
             intake.validate_request(request, now=now)
@@ -1067,6 +1076,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
+        "owner_success_criteria": owner_targets,
         **({"authoring_provider_terms_reference": terms} if authoring_provider == "anthropic" and
             isinstance(terms, str) else {}),
         "binding": {"task_context_digest": task_context["context_digest"], "task_masks_digest": task_masks["digest"],

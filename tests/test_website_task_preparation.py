@@ -145,6 +145,19 @@ def _compile(tmp_path, overrides=None, **keyword_overrides):
     return preparation.compile_website_scene_preparation(**_arguments(tmp_path, overrides, **keyword_overrides))
 
 
+def test_owner_targets_and_weight_statements_reach_compiler_without_becoming_scorer_claims(tmp_path):
+    context = _task_context()
+    context["success_criteria"] = {"successDefinition": "Arrives intact", "successRate": 95, "cycleTimeSeconds": None, "unknown": False}
+    context["operator_task_details"] = {"item_weight": "about 5 lb, not weighed", "item_make_model": "ACME X2"}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    result = _compile(tmp_path, task_context=context)
+    assert result["status"] == "needs_input"
+    assert "website_owner_success_criteria_translation_required" in result["blockers"]
+    assert result["owner_success_criteria"]["targets"] == context["success_criteria"]
+    assert result["owner_success_criteria"]["scorer_translation_verified"] is False
+    assert "about 5 lb, not weighed" in json.dumps(result)
+
+
 def test_registered_estimates_compile_into_an_intake_ready_request(tmp_path):
     value = _compile(tmp_path)
     assert value["status"] == "intake_ready", value["blockers"]

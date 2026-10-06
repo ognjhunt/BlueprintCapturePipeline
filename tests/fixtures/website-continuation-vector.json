@@ -1,0 +1,84 @@
+{
+  "development_only": true,
+  "brief": {
+    "requestId": "req1",
+    "summary": "Move the carton",
+    "confirmedAtIso": "2026-10-06T00:00:00Z",
+    "operatorAnswers": {},
+    "operatorUnknown": []
+  },
+  "rights": {
+    "derived_scene_generation_allowed": true,
+    "data_licensing_allowed": false,
+    "capture_contributor_payout_eligible": false,
+    "consent_status": "granted",
+    "consent_revoked": false,
+    "consent_scope": [
+      "derived_scene_generation",
+      "robot_evaluation"
+    ],
+    "statement_version": "2026-09-18.v1",
+    "recorded_at_iso": "2026-10-06T00:00:00Z"
+  },
+  "context": {
+    "schema_version": "website_site_task_context.v1",
+    "request_id": "req1",
+    "scene_id": "site-req1",
+    "capture_id": "supplement-5caf2075f3950d5eb491d5384c736bca56977a09",
+    "description": "Move the carton",
+    "confirmed": true,
+    "confirmed_at": "2026-10-06T00:00:00Z",
+    "operator_answers": {},
+    "unresolved": [],
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00Z"
+    },
+    "capture_binding": {
+      "schema_version": "website_capture_continuation.v1",
+      "original_capture_id": "walkthrough-req1",
+      "capture_id": "supplement-5caf2075f3950d5eb491d5384c736bca56977a09",
+      "lineage": [
+        {
+          "supplement": {
+            "parent_capture_id": "walkthrough-req1",
+            "parent_bundle_digest": "sha256:b68b43bab5f45bc403eccb7cd1304159bf791b262b5fb6e7fa5e3e710647501d",
+            "parent_manifest_uri": "gs://synthetic/scenes/site-req1/captures/walkthrough-req1/raw/manifest.json",
+            "coverage_digest": "8a9df0d9f6718f24b883216068e01d3ef4db87d7b3f07225a47f94f14c02bd2f"
+          },
+          "child": {
+            "capture_id": "supplement-5caf2075f3950d5eb491d5384c736bca56977a09",
+            "raw_bundle_digest": "sha256:49946adc2f23fd0797e89c449790dbb9eee390589d239b213256330e2d9d97ca",
+            "raw_manifest_uri": "gs://synthetic/scenes/site-req1/captures/supplement-5caf2075f3950d5eb491d5384c736bca56977a09/raw/manifest.json",
+            "upload_completion_digest": "sha256:d2670cb5d6db3334bff5dab7d99853aa572a5d77bbe20af854529d740443a673",
+            "verification_status": "pending_pipeline_storage_readback",
+            "completion_generation": "123",
+            "completion_record_generation": "123",
+            "manifest_generation": "123"
+          },
+          "parent": {
+            "capture_id": "walkthrough-req1",
+            "raw_bundle_digest": "sha256:b68b43bab5f45bc403eccb7cd1304159bf791b262b5fb6e7fa5e3e710647501d",
+            "raw_manifest_uri": "gs://synthetic/scenes/site-req1/captures/walkthrough-req1/raw/manifest.json",
+            "upload_completion_digest": "sha256:924c4ff48113d552556c901b97e5d339c405c8d72c6ad8a38707a96552779537",
+            "verification_status": "pending_pipeline_storage_readback",
+            "completion_generation": "123",
+            "completion_record_generation": "123",
+            "manifest_generation": "123"
+          }
+        }
+      ],
+      "coordinate_frames_independent": true
+    },
+    "context_digest": "sha256:0af1382e153fd5fbe53644c6db7bf9379f2a7ffcd807f4e32c6d3bb121aaff4a"
+  }
+}

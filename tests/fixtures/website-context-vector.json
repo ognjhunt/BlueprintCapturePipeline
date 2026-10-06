@@ -1,0 +1,137 @@
+{
+  "claim_ceiling": "development_only",
+  "photo_utf8": "synthetic-photo",
+  "brief": {
+    "requestId": "synthetic-contract",
+    "summary": "Move the carton intact",
+    "confirmedAtIso": "2026-10-06T00:00:00Z",
+    "confirmedBy": "synthetic-private-owner",
+    "operatorAnswers": {
+      "item_rigidity": "rigid"
+    },
+    "operatorUnknown": [
+      "cycle"
+    ],
+    "operatorTaskDetails": {
+      "item_weight": "approximately 5 lb, not weighed",
+      "item_make_model": "ACME X2"
+    },
+    "successCriteria": {
+      "successDefinition": "Arrives intact",
+      "successRate": 95,
+      "cycleTimeSeconds": null,
+      "unknown": false
+    }
+  },
+  "inventory": {
+    "requestId": "synthetic-contract",
+    "updatedAtIso": "2026-10-06T00:00:00Z",
+    "items": [
+      {
+        "itemId": "item_box",
+        "label": "Carton",
+        "basis": "operator_added",
+        "locationNote": null,
+        "quantityHint": null,
+        "assetStatus": "pending",
+        "assetDetail": null,
+        "images": [
+          {
+            "imageId": "img1",
+            "storagePath": "scenes/site-synthetic-contract/items/item_box/img1.jpg",
+            "uploadedAtIso": "2026-10-06T00:00:00Z",
+            "source": {
+              "generation": "123",
+              "size_bytes": 15,
+              "crc32c": "AAAAAA==",
+              "sha256": "sha256:fa87dfdcebfc3a806b57b9a1ed4409d6e9fca89afc28a72c942ccb79443703f3"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "rights": {
+    "derived_scene_generation_allowed": true,
+    "data_licensing_allowed": false,
+    "capture_contributor_payout_eligible": false,
+    "consent_status": "granted",
+    "consent_revoked": false,
+    "consent_scope": [
+      "derived_scene_generation",
+      "robot_evaluation"
+    ],
+    "statement_version": "2026-09-18.v1",
+    "recorded_at_iso": "2026-10-06T00:00:00Z"
+  },
+  "context": {
+    "schema_version": "website_site_task_context.v1",
+    "request_id": "synthetic-contract",
+    "scene_id": "site-synthetic-contract",
+    "capture_id": "walkthrough-synthetic-contract",
+    "description": "Move the carton intact",
+    "confirmed": true,
+    "confirmed_at": "2026-10-06T00:00:00Z",
+    "operator_answers": {
+      "item_rigidity": "rigid"
+    },
+    "unresolved": [
+      "cycle"
+    ],
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00Z"
+    },
+    "operator_task_details": {
+      "item_weight": "approximately 5 lb, not weighed",
+      "item_make_model": "ACME X2"
+    },
+    "success_criteria": {
+      "successDefinition": "Arrives intact",
+      "successRate": 95,
+      "cycleTimeSeconds": null,
+      "unknown": false
+    },
+    "task_evidence_provenance": {
+      "item_details": "owner_stated_unverified",
+      "success_criteria": "owner_stated_target",
+      "success_rate_unit": "percent",
+      "cycle_time_unit": "seconds",
+      "physical_measurements_verified": false
+    },
+    "task_items": [
+      {
+        "item_id": "item_box",
+        "label": "Carton",
+        "location_note": null,
+        "quantity_hint": null,
+        "basis": "operator_added",
+        "images": [
+          {
+            "image_id": "img1",
+            "storage_path": "scenes/site-synthetic-contract/items/item_box/img1.jpg",
+            "uploaded_at_iso": "2026-10-06T00:00:00Z",
+            "source": {
+              "generation": "123",
+              "size_bytes": 15,
+              "crc32c": "AAAAAA==",
+              "sha256": "sha256:fa87dfdcebfc3a806b57b9a1ed4409d6e9fca89afc28a72c942ccb79443703f3"
+            },
+            "basis": "owner_supplied_photo",
+            "physical_metrology": false
+          }
+        ]
+      }
+    ],
+    "context_digest": "sha256:b20401b64679bbda07fa2f461584e93802d8d830db500e8420a31ab09b44c8f0"
+  }
+}

@@ -8,7 +8,17 @@ import pytest
 
 from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.common import StageError, PipelineError
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 import blueprint_pipeline.site_package_orchestrator as q
+
+
+def _confirmed_website_task(**identity):
+    context = {**identity, "schema_version": "website_site_task_context.v1",
+               "description": "Pick the box", "confirmed": True,
+               "confirmed_at": "2026-10-06T00:00:00Z",
+               "capture_rights": {"derived_scene_generation_allowed": True}}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    return context
 
 
 def _descriptor(**overrides) -> CaptureDescriptor:
@@ -921,7 +931,7 @@ def test_website_preparation_skips_legacy_privacy_video_and_geometry(tmp_path, m
         capture_source="unknown", capture_modality="video_only", requested_outputs=["preview_simulation"],
         metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
     _patch_pipeline_side_effects(monkeypatch)
-    monkeypatch.setattr(q, "load_current_website_task_context", lambda **_: {"description": "Pick the box", "confirmed": True, "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(q, "load_current_website_task_context", _confirmed_website_task)
     monkeypatch.setattr(q, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
     for name in ("run_privacy_postprocess", "infer_capture_fidelity_review", "_prepare_worldlabs_input_video", "build_geometry_stage_contract"):
         monkeypatch.setattr(q, name, lambda **_: pytest.fail("website must not enter a legacy media stage"))
@@ -1123,7 +1133,7 @@ def test_website_preparation_finishes_only_at_its_native_outbox(tmp_path, monkey
         capture_source="unknown", capture_modality="video_only", requested_outputs=["preview_simulation"],
         metadata={"capture_entry_source": "browser_self_capture", "capture_rights": {"derived_scene_generation_allowed": True}}))
     _patch_pipeline_side_effects(monkeypatch)
-    monkeypatch.setattr(q, "load_current_website_task_context", lambda **_: {"description": "Pick the box", "confirmed": True, "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(q, "load_current_website_task_context", _confirmed_website_task)
     monkeypatch.setattr(q, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
     monkeypatch.setattr(q, "run_clean_plate_stage", lambda **_: {"status": "noop", "privacy_status": "no_people_detected", "privacy_verified": True})
     monkeypatch.setattr(handoff, "prepare_website_scene_handoff", lambda **_: {"status": "intake_ready", "website_intake_outbox": outbox})
