@@ -219,6 +219,16 @@ def person_block(contact, answers, index):
             "current": person["current"]}
 
 
+def domain_proof(domain, proofs):
+    """An operator-domain proof with the page that proves it: for basis operator_quote, the proven operator quote's
+    page and the SHA-256 of the text that holds it; for basis website, the page site_screen read on that domain."""
+    if domain.get("basis") == "operator_quote":
+        operator = next(proof for proof in proofs if proof["claim"] == "operator")
+        return {"domain": domain["domain"], "basis": "operator_quote", "url": operator["url"],
+                "text_sha256": operator["text_sha256"]}
+    return {key: domain[key] for key in ("domain", "basis", "url", "text_sha256")}
+
+
 def published_recipient(contact, record, proofs, workspace):
     """Route 1, 5 or 6: the contact stage's verified published address, with its page and operator-domain proof."""
     email, route = contact["email"], PUBLISHED.get(contact["recipient"]["kind"])
@@ -227,9 +237,7 @@ def published_recipient(contact, record, proofs, workspace):
         return None
     answers, evidence, index = _contact_inputs(workspace, record["site_key"])
     page = (evidence.get("pages") or {}).get(email["url"]) or {}
-    if domain["basis"] == "operator_quote":
-        operator = next(proof for proof in proofs if proof["claim"] == "operator")
-        domain = {**domain, "url": operator["url"], "text_sha256": operator["text_sha256"]}
+    domain = domain_proof(domain, proofs)
     return {"schema_version": RECIPIENT, "route": route, "rank": ROUTES.index(route) + 1, "label": LABELS[route],
             "address": email["address"], "address_source": "published", "operator_domain": domain,
             "published": {"url": email["url"], "quote": answers["email_quote"], "text_sha256": page.get("sha256"),
@@ -244,11 +252,12 @@ def _provider(value):
             and isinstance(value["request_digest"], str) and bool(HEX.fullmatch(value["request_digest"])))
 
 
-def lookup_recipients(lookup, contact, domains):
+def lookup_recipients(lookup, contact, domains, person_proof=None):
     """Routes 2-4 from one provider lookup (provisional schema LOOKUP), or none. A looked-up address counts only with
     provider status valid, on a proven operator domain, never free mail and never a role inbox. Route 2 needs the
-    contact stage's verified, current person under the same name; routes 3 and 4 carry a provider-sourced person,
-    corroborated only by a proven quote on a public page we read (never LinkedIn)."""
+    contact stage's verified, current person under the same name, and carries that person's proven quote
+    (``person_proof``, person_block); routes 3 and 4 carry a provider-sourced person, corroborated only by a proven
+    quote on a public page we read (never LinkedIn)."""
     try:
         if not isinstance(lookup, dict) or lookup.get("schema_version") != LOOKUP or lookup.get("site_key") != contact["site_key"]:
             return []
@@ -261,12 +270,11 @@ def lookup_recipients(lookup, contact, domains):
             return []
         if person.get("source") == "public_quote":
             verified = contact["person"]
-            if (verified.get("verified") is not True or verified.get("current") is not True
-                    or site_screen.words(verified.get("name")) != site_screen.words(person["name"])):
+            if (verified.get("verified") is not True or verified.get("current") is not True or not person_proof
+                    or site_screen.words(verified.get("name")) != site_screen.words(person["name"])
+                    or person_proof.get("name") != verified["name"]):
                 return []
-            route, kept = "quoted_person_looked_up_email", {"source": "public_quote", "name": verified["name"],
-                                                             "title": verified["title"], "url": verified["url"],
-                                                             "level": verified["level"], "date": verified["date"]}
+            route, kept = "quoted_person_looked_up_email", dict(person_proof)
         elif person.get("source") == "provider_sourced" and type(person.get("corroborated")) is bool:
             proof = person.get("corroboration")
             if person["corroborated"] and not (
@@ -319,11 +327,11 @@ def admission_entry(workspace, record, stored, contact, stored_contact, lookup=N
     if contact is not None:
         if not isinstance(stored_contact, dict) or canonical(stored_contact) != canonical(contact):
             _refuse("screen_admission_contact_record_mismatch")
-        _, evidence, _ = _contact_inputs(workspace, record["site_key"])
-        domains = site_screen.operator_domain_proofs(contact_site(record), site_screen.screen_context(
-            workspace, record["site_key"]), (evidence.get("pages") or {}).items())
+        answers, evidence, index = _contact_inputs(workspace, record["site_key"])
+        domains = [domain_proof(item, proofs) for item in site_screen.operator_domain_proofs(contact_site(record),
+                   site_screen.screen_context(workspace, record["site_key"]), (evidence.get("pages") or {}).items())]
         recipient = recipient_choice(published_recipient(contact, record, proofs, workspace),
-                                     lookup_recipients(lookup, contact, domains))
+                                     lookup_recipients(lookup, contact, domains, person_block(contact, answers, index)))
         block = {"run_id": contact["run_id"], "result_sha256": contact["result_sha256"],
                  "evidence_sha256": contact["evidence_sha256"], "rule_version": contact["rule_version"],
                  "checked_on": contact["checked_on"], "decision_role": contact["decision_role"],
@@ -464,8 +472,10 @@ def recipient_problem(value, entry):
             wanted = "public_quote" if route == "quoted_person_looked_up_email" else "provider_sourced"
             if person.get("source") != wanted or not _text(person.get("name"), 200) or not _text(person.get("title"), 200):
                 return code
-            if route == "quoted_person_looked_up_email" and (not _url(person.get("url"))
-                                                              or person.get("level") not in site_screen.PROVEN):
+            if route == "quoted_person_looked_up_email" and (
+                    not _url(person.get("url")) or person.get("level") not in site_screen.PROVEN
+                    or not _text(person.get("quote"), 1200) or not isinstance(person.get("text_sha256"), str)
+                    or not HEX.fullmatch(person["text_sha256"])):
                 return code
             if route == "provider_sourced_corroborated":
                 proof = person.get("corroboration")

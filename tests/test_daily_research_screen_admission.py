@@ -54,6 +54,7 @@ NOBODY = {"person_name": "", "person_title": "", "person_url": "", "person_quote
 TEAM = {"person_name": "", "person_title": "", "person_url": "", "person_quote": "", "person_date": "",
         "channel_type": "team_inbox"}
 FOCUS_A, FOCUS_B = "fixed_arm_machine_tending", "kitting_assembly"
+FOCUS_C, FOCUS_D = "palletizing_depalletizing", "sorting_pick_and_place"
 
 
 @pytest.fixture(autouse=True)
@@ -320,6 +321,8 @@ def test_a_provisional_lookup_adds_provider_routes_only_with_full_provenance(tmp
         "quoted_person_looked_up_email", 2, "provider_lookup")
     assert recipient["label"] == "looked-up email, quoted person" and recipient["published"] is None
     assert recipient["provider"]["status"] == "valid" and recipient["person"]["url"] == "https://operator-1.example/team"
+    assert recipient["person"]["quote"] == f"{PERSON} leads the machining plant as plant manager."
+    assert sa.HEX.fullmatch(recipient["person"]["text_sha256"]) and recipient["person"]["source"] == "public_quote"
     corroboration = {"url": "https://operator-1.example/news", "quote": f"{PERSON} runs the plant.", "level": "verified_on_page",
                      "text_sha256": "a" * 64}
     for person, route in (({"source": "provider_sourced", "name": "Jordan Fixture", "title": "Operations Lead",
@@ -671,15 +674,33 @@ GOVERNMENT = "https://records.synthetic.gov/facility/3"
 
 def golden(tmp_path, monkeypatch):
     """One acknowledged admission as the WebApp reads it (Store.screenSnapshot), with the CRM sheet and the control
-    pins: a published person email, a team inbox, a government-proven operator whose domain contact rule v3 proves
-    from the website, and a site with no published contact. Fixed clocks only."""
+    pins, covering every recipient route: a published person email, a team inbox, a government-proven operator whose
+    domain contact rule v3 proves from the website (general inbox), a site with no contact, and the three provider
+    lookup routes (quoted person, provider-sourced corroborated and not). Fixed clocks only."""
     monkeypatch.setattr(ss, "_now", lambda: "2026-10-05T20:00:00+00:00")
     world = World(tmp_path)
     try:
-        _, keys, bundle, admission_id = pinned(world, tmp_path, [
+        quoted = {**NOBODY, "person_name": PERSON, "person_title": "Plant Manager",
+                  "person_url": "https://operator-5.example/team",
+                  "person_quote": f"{PERSON} leads the machining plant as plant manager.", "person_date": "2026-06-01"}
+        workspace, keys = prepared(tmp_path / "out", [
             (1, FOCUS_A, {}), (2, FOCUS_A, team(2)), (3, FOCUS_B, general(3), {"operator_identity_url": GOVERNMENT}),
-            (4, FOCUS_B, None)])
-        assert world.step() == {"state": "screen_admission_acknowledged", "rows": 4, "duplicates": 0}
+            (4, FOCUS_B, None), (5, FOCUS_C, quoted), (6, FOCUS_C, None), (7, FOCUS_D, None)])
+        provider = {"name": "synthetic-provider", "status": "valid", "score": 97, "checked_at": "2026-10-05T12:00:00+00:00",
+                    "request_digest": "c" * 64}
+        lookup(workspace, keys[4], address="avery.placeholder@operator-5.example", provider=provider,
+               person={"source": "public_quote", "name": PERSON, "title": "Plant Manager"})
+        lookup(workspace, keys[5], address="jordan.fixture@operator-6.example", provider=provider,
+               person={"source": "provider_sourced", "name": "Jordan Fixture", "title": "Operations Lead",
+                       "corroborated": True, "corroboration": {
+                           "url": "https://operator-6.example/news", "level": "verified_on_page", "text_sha256": "a" * 64,
+                           "quote": "Jordan Fixture, operations lead, runs the Fixture City plant every day."}})
+        lookup(workspace, keys[6], address="riley.example@operator-7.example", provider=provider,
+               person={"source": "provider_sourced", "name": "Riley Example", "title": "Plant Superintendent",
+                       "corroborated": False})
+        _, admission_id, generation = world.admission(workspace)
+        assert world.pin(admission_id, generation)["state"] == "pinned"
+        assert world.step() == {"state": "screen_admission_acknowledged", "rows": 7, "duplicates": 0}
         control = world.bridge.call("control")
         return {"admission_id": admission_id, "site_keys": keys,
                 "snapshot": world.bridge.call("screen_snapshot", admission_id=admission_id),
@@ -695,7 +716,8 @@ def test_the_webapp_golden_snapshot_is_this_package_output(tmp_path, monkeypatch
     value = golden(tmp_path, monkeypatch)
     routes = [(result["recipient"] or {}).get("route") for result in json.loads(base64.b64decode(
         value["snapshot"]["bundle"]))["results"]]
-    assert routes == ["published_person_email", "published_team_inbox", "published_general_inbox", None]
+    assert routes == ["published_person_email", "published_team_inbox", "published_general_inbox", None,
+                      "quoted_person_looked_up_email", "provider_sourced_corroborated", "provider_sourced_uncorroborated"]
     if os.environ.get("BLUEPRINT_REGENERATE_SCREEN_GOLDEN") == "1":
         GOLDEN.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n")
     assert json.loads(GOLDEN.read_text()) == value
