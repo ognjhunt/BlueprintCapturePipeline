@@ -25,6 +25,79 @@ import time
 import urllib.parse
 import urllib.request
 
+# Standalone receive deadlines match artifact_http_transport.py.
+import http.client
+import urllib.error
+
+class _DeadlineSocket:
+    """Clamp every raw receive, including status/header/chunk line refills."""
+
+    def __init__(self, socket, deadline: float, maximum_timeout: float):
+        self._socket, self._deadline, self._maximum_timeout = socket, deadline, maximum_timeout
+
+    def __getattr__(self, name):
+        return getattr(self._socket, name)
+
+    def _remaining(self):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("controlled_http_response_timeout")
+        return min(remaining,self._maximum_timeout)
+
+    def recv_into(self, target, *args):
+        self._socket.settimeout(self._remaining())
+        result = self._socket.recv_into(target, *args)
+        self._remaining()
+        return result
+
+    def sendall(self, data, *args):
+        self._socket.settimeout(self._remaining())
+        self._socket.sendall(data, *args)
+        self._remaining()
+
+    def makefile(self, *args, **kwargs):
+        stream = self._socket.makefile(*args, **kwargs)
+        raw = getattr(stream, "raw", None)
+        if raw is None or getattr(raw, "_sock", None) is not self._socket:
+            stream.close()
+            raise ValueError("controlled_http_response_reader_invalid")
+        raw._sock = self
+        return stream
+
+class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, deadline, **kwargs):
+        self._deadline = deadline
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        remaining = self._deadline-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('artifact_transfer_deadline')
+        # urllib reuses the initial timeout across redirect requests. Clamp
+        # each fresh connection to the remaining budget before TCP/TLS setup.
+        self.timeout = min(self.timeout,remaining)
+        super().connect()
+        self.sock = _DeadlineSocket(self.sock,self._deadline,self.timeout)
+
+class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, deadline, context):
+        super().__init__(context=context)
+        self.deadline = deadline
+
+    def https_open(self, request):
+        return self.do_open(lambda *args, **kwargs: _DeadlineHTTPSConnection(
+            *args, deadline=self.deadline, **kwargs), request, context=self._context)
+
+class _ClosingHTTPErrorProcessor(urllib.request.HTTPErrorProcessor):
+    def http_response(self, request, response):
+        try:
+            return super().http_response(request, response)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise
+
+    https_response = http_response
+
 IMAGE_SHA = "sha256:28dc36f977d4a078ee410caf08f595d91f95185a00e0d4e7970c2d11f7358738"
 LAYER_SHA = "sha256:de25e09c332152ccf749d454abe78b777530344e99d25580d6d204d64bd00619"
 LAYER_BYTES = 2_633_977_898
@@ -104,38 +177,132 @@ def verify_retained_guest_disk(layer, base, *, expected_sha256, expected_layer_b
     return expected
 
 
+class _RegistryNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        raise ValueError("g1_vm_cpu_registry_control_redirect")
+
+    def http_error_302(self,request,response,code,message,headers):
+        try:
+            raise ValueError('g1_vm_cpu_registry_control_redirect')
+        finally:
+            response.close()
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+
+class _AnonymousBlobRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+                or parsed.port not in {None,443} or parsed.fragment
+                or any(ord(char) < 32 or ord(char) == 127 for char in url)):
+            raise ValueError("g1_vm_cpu_blob_redirect_invalid")
+        # Registry/CDN delegation preserves the immutable asset, not bearer
+        # authority. Every hop is a fresh anonymous GET, even to the registry.
+        if request.get_method() != 'GET':
+            raise ValueError("g1_vm_cpu_blob_redirect_invalid")
+        return urllib.request.Request(url, headers={
+            'Accept':'application/vnd.docker.distribution.manifest.v2+json'}, method='GET')
+
+    def http_error_302(self,request,response,code,message,headers):
+        try:
+            location = headers.get('location') or headers.get('uri')
+            if not isinstance(location,str) or len(location) > 65536:
+                raise ValueError('g1_vm_cpu_blob_redirect_location_invalid')
+            target = urllib.parse.urljoin(request.full_url,location)
+            redirected = self.redirect_request(request,response,code,message,headers,target)
+            visited = getattr(request,'redirect_dict',{})
+            if visited.get(target,0) >= self.max_repeats or len(visited) >= self.max_redirections:
+                raise ValueError('g1_vm_cpu_blob_redirect_limit')
+            visited[target] = visited.get(target,0)+1
+            redirected.redirect_dict = visited
+        finally:
+            # urllib's default handler drains an unbounded redirect body with
+            # read(). A fresh GET needs no old body, so close without reading.
+            response.close()
+        return self.parent.open(redirected,timeout=request.timeout)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+
 def _registry_request(path, token):
-    return urllib.request.Request("https://registry-1.docker.io/v2/vastai/kvm/" + path,
-                                  headers={"Authorization": "Bearer " + token,
-                                           "Accept": "application/vnd.docker.distribution.manifest.v2+json"})
+    if path not in {'manifests/'+IMAGE_SHA, 'blobs/'+LAYER_SHA}:
+        raise ValueError("g1_vm_cpu_registry_path_invalid")
+    request = urllib.request.Request("https://registry-1.docker.io/v2/vastai/kvm/" + path,
+        headers={"Accept":"application/vnd.docker.distribution.manifest.v2+json"})
+    # urllib's ordinary headers propagate to redirected requests. Bind this
+    # bearer to the initial exact registry request in addition to the handler.
+    request.add_unredirected_header('Authorization','Bearer '+token)
+    return request
+
+
+def _response_chunk(response, amount, deadline):
+    if time.monotonic() >= deadline:
+        raise ValueError("g1_vm_cpu_download_bound_exceeded")
+    if response.fp is None:
+        return b''
+    sock = response.fp.raw._sock
+    sock.settimeout(min(getattr(sock,'_maximum_timeout',45),max(.001,deadline-time.monotonic())))
+    result = response.read1(amount)
+    if time.monotonic() >= deadline:
+        raise ValueError("g1_vm_cpu_download_bound_exceeded")
+    return result
+
+
+def _bounded_registry_data(opener, request, limit, deadline):
+    with opener.open(request,timeout=min(30,max(.001,deadline-time.monotonic()))) as response:
+        if response.status != 200:
+            raise ValueError("g1_vm_cpu_registry_response_invalid")
+        encoded = bytearray()
+        while True:
+            chunk = _response_chunk(response,min(65536,limit+1-len(encoded)),deadline)
+            if not chunk:
+                break
+            if len(encoded)+len(chunk) > limit:
+                raise ValueError("g1_vm_cpu_registry_data_oversized")
+            encoded.extend(chunk)
+        return bytes(encoded)
 
 
 def download_layer(path):
     require_capacity(path.parent, additional_bytes=LAYER_BYTES + DISK_BYTES + OVERLAY_LIMIT + LOG_LIMIT)
-    query = urllib.parse.urlencode({"service": "registry.docker.io", "scope": "repository:vastai/kvm:pull"})
-    with urllib.request.urlopen("https://auth.docker.io/token?" + query, timeout=30) as response:
-        token = json.load(response)["token"]
-    with urllib.request.urlopen(_registry_request("manifests/" + IMAGE_SHA, token), timeout=30) as response:
-        encoded = response.read(2 * 1024**2 + 1)
-    if len(encoded) > 2 * 1024**2 or "sha256:" + hashlib.sha256(encoded).hexdigest() != IMAGE_SHA:
+    deadline = time.monotonic()+900
+    control = urllib.request.build_opener(urllib.request.ProxyHandler({}),_RegistryNoRedirect(),
+        _DeadlineHTTPSHandler(deadline,None),_ClosingHTTPErrorProcessor())
+    query = urllib.parse.urlencode({"service":"registry.docker.io","scope":"repository:vastai/kvm:pull"})
+    encoded_token = _bounded_registry_data(control,'https://auth.docker.io/token?'+query,128*1024,deadline)
+    token_data = json.loads(encoded_token)
+    token = token_data.get('token') if type(token_data) is dict else None
+    if (type(token) is not str or not 0 < len(token) <= 16384
+            or any(ord(char) < 33 or ord(char) > 126 for char in token)):
+        raise ValueError("g1_vm_cpu_registry_token_invalid")
+    encoded = _bounded_registry_data(control,_registry_request('manifests/'+IMAGE_SHA,token),2*1024**2,deadline)
+    if "sha256:" + hashlib.sha256(encoded).hexdigest() != IMAGE_SHA:
         raise ValueError("g1_vm_cpu_manifest_binding_invalid")
     manifest = json.loads(encoded)
-    if not any(row.get("digest") == LAYER_SHA and row.get("size") == LAYER_BYTES for row in manifest["layers"]):
+    if not any(row.get("digest") == LAYER_SHA and type(row.get('size')) is int
+               and row['size'] == LAYER_BYTES for row in manifest["layers"]):
         raise ValueError("g1_vm_cpu_layer_not_in_manifest")
     (path.parent / "image-manifest.json").write_bytes(encoded)
-    started, count, reported = time.monotonic(), 0, 0
-    with urllib.request.urlopen(_registry_request("blobs/" + LAYER_SHA, token), timeout=45) as response, path.open("xb") as output:
+    count,reported = 0,0
+    blobs = urllib.request.build_opener(urllib.request.ProxyHandler({}),_AnonymousBlobRedirect(),
+        _DeadlineHTTPSHandler(deadline,None),_ClosingHTTPErrorProcessor())
+    with blobs.open(_registry_request('blobs/'+LAYER_SHA,token),timeout=min(45,max(.001,deadline-time.monotonic()))) as response, path.open('xb') as output:
+        if response.status != 200:
+            raise ValueError("g1_vm_cpu_registry_response_invalid")
         while True:
-            chunk = response.read(4 * 1024**2)
+            chunk = _response_chunk(response,min(4*1024**2,LAYER_BYTES+1-count),deadline)
             if not chunk:
                 break
             count += len(chunk)
-            if count > LAYER_BYTES or time.monotonic() - started > 900:
+            if count > LAYER_BYTES:
                 raise ValueError("g1_vm_cpu_download_bound_exceeded")
-            require_capacity(path.parent, additional_bytes=LAYER_BYTES - count + DISK_BYTES + OVERLAY_LIMIT + LOG_LIMIT)
+            require_capacity(path.parent,additional_bytes=LAYER_BYTES-count+DISK_BYTES+OVERLAY_LIMIT+LOG_LIMIT)
             output.write(chunk)
-            if count - reported >= 128 * 1024**2:
-                print(json.dumps({"stage": "immutable_layer_download", "bytes": count, "expected": LAYER_BYTES}), flush=True)
+            if count-reported >= 128*1024**2:
+                print(json.dumps({"stage":"immutable_layer_download","bytes":count,"expected":LAYER_BYTES}),flush=True)
                 reported = count
     path.chmod(0o400)
     if count != LAYER_BYTES or file_sha(path) != LAYER_SHA:

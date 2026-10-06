@@ -12,7 +12,189 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+import urllib.parse
 import zipfile
+
+
+
+# Standalone artifact transport: definitions match artifact_http_transport.py.
+import http.client
+import math
+import urllib.error
+import urllib.parse
+import time
+
+class _DeadlineSocket:
+    """Clamp every raw receive, including status/header/chunk line refills."""
+
+    def __init__(self, socket, deadline: float, maximum_timeout: float):
+        self._socket, self._deadline, self._maximum_timeout = socket, deadline, maximum_timeout
+
+    def __getattr__(self, name):
+        return getattr(self._socket, name)
+
+    def _remaining(self):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("controlled_http_response_timeout")
+        return min(remaining,self._maximum_timeout)
+
+    def recv_into(self, target, *args):
+        self._socket.settimeout(self._remaining())
+        result = self._socket.recv_into(target, *args)
+        self._remaining()
+        return result
+
+    def sendall(self, data, *args):
+        self._socket.settimeout(self._remaining())
+        self._socket.sendall(data, *args)
+        self._remaining()
+
+    def makefile(self, *args, **kwargs):
+        stream = self._socket.makefile(*args, **kwargs)
+        raw = getattr(stream, "raw", None)
+        if raw is None or getattr(raw, "_sock", None) is not self._socket:
+            stream.close()
+            raise ValueError("controlled_http_response_reader_invalid")
+        raw._sock = self
+        return stream
+
+class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, deadline, **kwargs):
+        self._deadline = deadline
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        remaining = self._deadline-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('artifact_transfer_deadline')
+        # urllib reuses the initial timeout across redirect requests. Clamp
+        # each fresh connection to the remaining budget before TCP/TLS setup.
+        self.timeout = min(self.timeout,remaining)
+        super().connect()
+        self.sock = _DeadlineSocket(self.sock,self._deadline,self.timeout)
+
+class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, deadline, context):
+        super().__init__(context=context)
+        self.deadline = deadline
+
+    def https_open(self, request):
+        return self.do_open(lambda *args, **kwargs: _DeadlineHTTPSConnection(
+            *args, deadline=self.deadline, **kwargs), request, context=self._context)
+
+class _ClosingHTTPErrorProcessor(urllib.request.HTTPErrorProcessor):
+    def http_response(self, request, response):
+        try:
+            return super().http_response(request, response)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise
+
+    https_response = http_response
+
+def _artifact_https_url(url):
+    if not isinstance(url,str) or len(url) > 65536 or any(ord(c) < 32 or ord(c) == 127 for c in url):
+        raise ValueError('artifact_https_url_invalid')
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        admitted = (parsed.scheme == 'https' and bool(parsed.hostname) and not parsed.username
+                    and not parsed.password and parsed.port in {None,443} and not parsed.fragment)
+    except ValueError:
+        admitted = False
+    if not admitted:
+        raise ValueError('artifact_https_url_invalid')
+    return url
+
+
+class _AnonymousArtifactRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,request,response,code,message,headers,url):
+        if request.get_method() != 'GET' or request.data is not None:
+            raise ValueError('artifact_redirect_method_refused')
+        _artifact_https_url(url)
+        # Location is fresh anonymous HTTPS authority. Never copy source
+        # headers, body, URL userinfo or the original query onto that target.
+        return urllib.request.Request(url,headers={'Accept':'application/octet-stream'})
+
+
+    def http_error_302(self,request,response,code,message,headers):
+        try:
+            location = headers.get('location') or headers.get('uri')
+            if not isinstance(location,str) or len(location) > 65536:
+                raise ValueError('artifact_redirect_location_invalid')
+            target = urllib.parse.urljoin(request.full_url,location)
+            redirected = self.redirect_request(request,response,code,message,headers,target)
+            visited = getattr(request,'redirect_dict',{})
+            if visited.get(target,0) >= self.max_repeats or len(visited) >= self.max_redirections:
+                raise ValueError('artifact_redirect_limit')
+            visited[target] = visited.get(target,0)+1
+            redirected.redirect_dict = visited
+        finally:
+            # urllib's default handler drains an unbounded redirect body with
+            # read(). A fresh GET needs no old body, so close without reading.
+            response.close()
+        return self.parent.open(redirected,timeout=request.timeout)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+def artifact_deadline(maximum_seconds,*,deadline=None):
+    now = time.monotonic()
+    if (type(maximum_seconds) not in {int,float} or not math.isfinite(maximum_seconds) or maximum_seconds <= 0
+            or deadline is not None and (type(deadline) not in {int,float} or not math.isfinite(deadline))):
+        raise ValueError('artifact_deadline_invalid')
+    result = min(now+maximum_seconds,deadline) if deadline is not None else now+maximum_seconds
+    if result <= now:
+        raise TimeoutError('artifact_transfer_deadline')
+    return result
+
+
+def open_artifact_response(url,*,deadline,socket_timeout,headers=None):
+    _artifact_https_url(url)
+    if (type(deadline) not in {int,float} or not math.isfinite(deadline)
+            or type(socket_timeout) not in {int,float} or not math.isfinite(socket_timeout) or socket_timeout <= 0):
+        raise ValueError('artifact_deadline_invalid')
+    remaining = deadline-time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('artifact_transfer_deadline')
+    headers = {} if headers is None else dict(headers)
+    if any(not isinstance(key,str) or key.lower() not in {'accept','user-agent'} or not isinstance(value,str) or len(value) > 4096
+           or any(ord(c) < 32 or ord(c) == 127 for c in value) for key,value in headers.items()):
+        raise ValueError('artifact_headers_invalid')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+        _DeadlineHTTPSHandler(deadline,None),_AnonymousArtifactRedirect(),_ClosingHTTPErrorProcessor())
+    response = opener.open(urllib.request.Request(url,headers=headers),timeout=min(socket_timeout,remaining))
+    try:
+        if not 200 <= response.status < 300:
+            raise ValueError('artifact_response_status_invalid')
+        _artifact_https_url(response.url)
+        if time.monotonic() >= deadline:
+            raise TimeoutError('artifact_transfer_deadline')
+    except BaseException:
+        response.close()
+        raise
+    return response
+
+
+def artifact_chunks(response,*,deadline,maximum_bytes,chunk_bytes=1024**2):
+    if (type(maximum_bytes) is not int or maximum_bytes < 0 or type(chunk_bytes) is not int or chunk_bytes <= 0
+            or type(deadline) not in {int,float} or not math.isfinite(deadline)):
+        raise ValueError('artifact_stream_bound_invalid')
+    count = 0
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError('artifact_transfer_deadline')
+        # read1 makes at most one raw body read; the admitted socket also clamps
+        # each status/header/chunk framing receive to this same deadline.
+        chunk = response.read1(min(chunk_bytes,maximum_bytes+1-count))
+        if time.monotonic() >= deadline:
+            raise TimeoutError('artifact_transfer_deadline')
+        if not chunk:
+            break
+        if len(chunk)+count > maximum_bytes:
+            raise ValueError('artifact_stream_oversized')
+        count += len(chunk)
+        yield chunk
 
 
 _PHASE = "start"
@@ -31,18 +213,20 @@ def _sha(path):
     return "sha256:" + value.hexdigest()
 
 
-def _download(url, path, digest, limit):
-    # URLs come only from the admitted allocator environment or pinned model
-    # constants below. They are never printed or included in result artifacts.
-    with urllib.request.urlopen(url, timeout=180) as response, path.open("xb") as target:
-        size = 0
-        for chunk in iter(lambda: response.read(1024 * 1024), b""):
-            size += len(chunk)
-            if size > limit:
-                raise ValueError("website_worker_download_oversized")
-            target.write(chunk)
+def _download(url,path,digest,limit,*,_deadline=None):
+    # Admitted capability query remains on its HTTPS origin; redirect requests
+    # are fresh anonymous HTTPS. Never print URLs or include them in receipts.
+    deadline = artifact_deadline(180,deadline=_deadline)
+    try:
+        with open_artifact_response(url,deadline=deadline,socket_timeout=180) as response, path.open('xb') as target:
+            for chunk in artifact_chunks(response,deadline=deadline,maximum_bytes=limit):
+                target.write(chunk)
+    except ValueError as exc:
+        if str(exc) == 'artifact_stream_oversized':
+            raise ValueError('website_worker_download_oversized') from exc
+        raise
     if _sha(path) != digest:
-        raise ValueError("website_worker_download_digest_mismatch")
+        raise ValueError('website_worker_download_digest_mismatch')
 
 
 def install_runtime(root):
@@ -144,6 +328,20 @@ def _failure_code(exc):
     return "worker_exception"
 
 
+class _CapabilityNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        raise ValueError("website_worker_capability_redirect")
+
+    def http_error_302(self,request,response,code,message,headers):
+        try:
+            raise ValueError('website_worker_capability_redirect')
+        finally:
+            response.close()
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+
 def _report_failure(exc):
     """Return a small bound failure artifact through the admitted output URL."""
     payload = {
@@ -157,10 +355,21 @@ def _report_failure(exc):
         "source_commit_sha": os.environ["BLUEPRINT_SOURCE_COMMIT"],
     }
     raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    request = urllib.request.Request(os.environ["BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL"],
-                                     data=raw, method="PUT")
-    with urllib.request.urlopen(request, timeout=30):
-        pass
+    url = os.environ["BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL"]
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+            or parsed.fragment or any(ord(char) < 32 or ord(char) == 127 for char in url)
+            or len(raw) > 8192):
+        raise ValueError("website_worker_failure_transport_invalid")
+    request = urllib.request.Request(url,data=raw,method="PUT")
+    # This admitted capability permits only the exact PUT. Explicit refusal
+    # preserves that scope even if HTTP redirect behavior changes later.
+    deadline = artifact_deadline(30)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),_CapabilityNoRedirect(),
+        _DeadlineHTTPSHandler(deadline,None),_ClosingHTTPErrorProcessor())
+    with opener.open(request,timeout=min(30,max(.001,deadline-time.monotonic()))) as response:
+        if not 200 <= response.status < 300:
+            raise ValueError("website_worker_failure_transport_invalid")
     print("BLUEPRINT_WEBSITE_MAPANYTHING_BOOTSTRAP_FAILURE:" + payload["phase"] + ":" + payload["code"])
 
 
