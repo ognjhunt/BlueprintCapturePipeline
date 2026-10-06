@@ -224,6 +224,12 @@ def test_actual_systemd_calendar_preserves_seven_am_across_dst(base, next_utc):
     assert next_utc in run.stdout
 
 
+def test_release_packages_the_screen_admission_module():
+    # render imports screen_admission for the scheduler step, and site-screen.py runs its owner commands.
+    for name in ("screen_admission.py", "site_screen.py", "operators/site-screen.py", "contact_lookup.py", "operators/contact-lookup.py"):
+        assert name in FILES and (SOURCE / PREFIX / name).is_file()
+
+
 def test_release_packages_the_site_universe_module_and_owner_command():
     # runner imports site_universe, so the isolated export test above also proves the module is packaged.
     for name in ("site_universe.py", "operators/site-universe-backlog.py"):

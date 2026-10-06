@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tools.daily_research import screen_admission
 from tools.daily_research.consumer import Consumer, workflow
 from tools.daily_research.firestore import (
     Bridge,
@@ -713,9 +714,14 @@ def scheduler(stopped, *, bridge_factory=Bridge, clock=lambda: datetime.now(time
                             cleanup = cleanup_completed(bridge, Path(root), stopped=stopped.is_set)
                             if cleanup["state"] in {"cleanup_completed", "cleanup_pending"}:
                                 emit(cleanup)
+                        # Host-owned site-screen admission: only when the daily work is idle, under the lease.
+                        admission = screen_admission.step(bridge, now=clock(), root=Path(root)) if (
+                            control.get("screen_admission") is not None and not stopped.is_set()) else None
                     emit(result)
+                    if admission is not None:
+                        emit(admission)
                     retry_at = clock() + timedelta(minutes=5) if cleanup["state"] == "cleanup_pending" or result.get("state") in {
-                        "creation_unresolved", "running", "cancel_pending", "collecting"} else None
+                        "creation_unresolved", "running", "cancel_pending", "collecting"} or screen_admission.retry(admission) else None
                 elif (workflow(control) or control.get("cleanup_policy", {}).get("enabled") is True) and (not retry_at or clock() >= retry_at):
                     with tempfile.TemporaryDirectory(prefix="blueprint-research-") as root:
                         if workflow(control):

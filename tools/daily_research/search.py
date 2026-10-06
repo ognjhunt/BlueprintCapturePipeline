@@ -197,7 +197,7 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools(publication_profile=None, history_profile=None, expansion_profile=None, findall_profile=None):
+def tools(publication_profile=None, history_profile=None, expansion_profile=None, findall_profile=None, *, team_evidence=False):
     declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
@@ -215,6 +215,9 @@ def tools(publication_profile=None, history_profile=None, expansion_profile=None
                         "properties": {"url": {"type": "string"}}, "required": ["url"]}},
     ]
 
+    from tools.daily_research import team_universe
+    if team_evidence:
+        declared.extend(team_universe.tools())
     if publication_profile == "agent-owned-v1":
         from tools.daily_research.publication import tools as publication_tools
         declared.extend(publication_tools())
@@ -538,10 +541,12 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     if phase == "publication":
         from tools.daily_research.consumer import qa_deadline
         deadline = qa_deadline(row, {}).timestamp()
-    from tools.daily_research import expansion, history, publication
+    from tools.daily_research import expansion, history, publication, team_universe
     early_publication = ({publication.INSPECT, publication.PUBLISH}
                          if row.get("publication_profile") == publication.PROFILE and phase != "publication" else set())
     admitted_names = {SEARCH, READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
+    if team_universe.reader_attached(row):
+        admitted_names.add(team_universe.READ)
     admitted_names |= early_publication
     expansion_names = {expansion.START, expansion.READ} if row.get("expansion_profile") == expansion.PROFILE else set()
     admitted_names |= expansion_names
@@ -616,6 +621,8 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                         if action["name"] in early_publication:
                             result = {"ok": False, "error": {"code": "publication_requires_review",
                                 "guidance": "Finish research and QA validation first. Then inspect destinations and choose publication in this same session."}}
+                        elif action["name"] == team_universe.READ:
+                            result = team_universe.execute(row, action.get("arguments"))
                         elif action["name"] in history.NAMES:
                             result = history.execute(ledger, row, action["name"], action.get("arguments"))
                         elif action["name"] in expansion_names:
@@ -639,7 +646,7 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
                         output = canonical(result)
                     if len(output.encode()) > MAX_RESPONSE:
                         raise ToolFailure("research_tool_result_too_large_no_truncation")
-                    outcome = {"success": result["ok"] if action["name"] in history.NAMES | early_publication | expansion_names | findall_names else True, "output": output}
+                    outcome = {"success": result["ok"] if action["name"] in {team_universe.READ} | history.NAMES | early_publication | expansion_names | findall_names else True, "output": output}
                     if outcome["success"] is False:
                         failure = result.get("error") or {"code": result.get("reason") or "research_tool_unavailable_no_replay"}
                         if not result.get("error") and result.get("action"):

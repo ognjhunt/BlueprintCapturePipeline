@@ -71,13 +71,14 @@ class Bridge:
 
 
 class FirestoreLedger:
-    def __init__(self, bridge):
+    def __init__(self, bridge, *, lease_scope=None):
         self.bridge = bridge
+        self.lease_scope = lease_scope
         self.leased_control = None
 
     @contextmanager
     def lock(self):
-        self.bridge.call("acquire")
+        self.bridge.call("acquire", **({"scope": self.lease_scope} if self.lease_scope is not None else {}))
         # Every control writer needs this lease, so a control read made under it stays current
         # until release (only the lease field itself renews). It is never reused across leases.
         self.leased_control = {}
@@ -115,6 +116,9 @@ class FirestoreLedger:
         # Absent or disabled, the runner reads nothing more.
         control = getattr(self, "leased_control", None) or self.bridge.call("control")
         return control.get("site_universe") if isinstance(control, dict) else None
+
+    def team_universe_snapshot(self):
+        return self.bridge.call("team_universe_snapshot")
 
     def outreach_ready_control(self):
         # Top-level company control like site_universe; the run start's leased control read is
