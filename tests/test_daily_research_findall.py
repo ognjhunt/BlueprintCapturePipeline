@@ -912,6 +912,8 @@ def test_the_read_bound_is_the_remaining_phase_time_when_that_is_shorter(runtime
     started(runtime)
     timers = []
     monkeypatch.setattr(client, "result", watch(timers, "get_provider", client.result))
+    # This test is about the read bound; without this, the wrap-up reply would answer the call first.
+    monkeypatch.setattr(search, "WRAP_UP_SECONDS", 0)
     state["now"] = NOW + timedelta(seconds=1200 - 30)  # 30 s of research remain.
     respond(runtime, action(findall.RESULT, "call_read", {"findall_id": RUN_ID}))
     assert reply(runtime)[0]["success"] is True
