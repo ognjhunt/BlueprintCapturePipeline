@@ -64,6 +64,10 @@ def deployer(tmp_path):
         "_SourceClosingHTTPErrorProcessor",
         "_SourceNoRedirect",
         "_source_response_opener",
+        "_source_connection_remaining",
+        "_source_resolve_addresses",
+        "_source_validated_resolver_result",
+        "_source_create_deadline_connection",
         "_scene_source_snappy",
         "_scene_source_selector_bytes",
         "_scene_source_delivery",
@@ -73,7 +77,8 @@ def deployer(tmp_path):
         "_bootstrap_scene_retirement_installer",
     }
     definitions = [
-        node for node in tree.body if isinstance(node, (ast.FunctionDef,ast.ClassDef)) and node.name in names
+        node for node in tree.body if (isinstance(node, (ast.FunctionDef,ast.ClassDef)) and node.name in names)
+        or (isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id.startswith('_SOURCE_') for target in node.targets))
     ]
     namespace = {
         "Path": Path,
@@ -84,6 +89,7 @@ def deployer(tmp_path):
         "re": re,
         "stat": stat,
         "subprocess": subprocess,
+        "sys": sys,
         "signal": signal,
         "time": time,
         "base64": base64,
@@ -91,6 +97,9 @@ def deployer(tmp_path):
         "fcntl": __import__("fcntl"),
         "math": __import__("math"),
         "http": __import__("http"),
+        "functools": __import__("functools"),
+        "selectors": __import__("selectors"),
+        "socket": socket,
         "ControlPlaneDeployError": ValueError,
         "_SCENE_RUNTIME_OWNER": os.getuid(),
         "_SCENE_RUNTIME_BOOT_ROOT": tmp_path / "runtime",
@@ -560,6 +569,10 @@ def test_wrapper_embeds_the_same_admission_before_first_privileged_execution():
         "_SourceClosingHTTPErrorProcessor",
         "_SourceNoRedirect",
         "_source_response_opener",
+        "_source_connection_remaining",
+        "_source_resolve_addresses",
+        "_source_validated_resolver_result",
+        "_source_create_deadline_connection",
         "_scene_source_snappy",
         "_scene_source_selector_bytes",
         "_scene_source_delivery",
@@ -964,14 +977,15 @@ def test_actual_source_application_dispatch_closes_and_bounds_all_http_framing(
             super().__init__(*args,**kwargs)
             responses.append(self)
     monkeypatch.setattr(http.client.HTTPConnection,'response_class',TracedResponse)
-    monkeypatch.setattr(http.client.HTTPSConnection,'connect',lambda connection:setattr(connection,'sock',Peer(connection.timeout)))
     monkeypatch.setattr(time,'monotonic',lambda:clock[0])
     if consumer == 'api':
         namespace = deployer(tmp_path)
+        monkeypatch.setattr(namespace['_SourceDeadlineHTTPSConnection'],'connect',lambda connection:setattr(connection,'sock',namespace['_SourceDeadlineSocket'](Peer(connection.timeout),connection._deadline,connection.timeout)))
         def execute():
             return namespace['_scene_source_delivery'](COMMIT,deadline=10)
     else:
         module = installer()
+        monkeypatch.setattr(module._SourceDeadlineHTTPSConnection,'connect',lambda connection:setattr(connection,'sock',module._SourceDeadlineSocket(Peer(connection.timeout),connection._deadline,connection.timeout)))
         module._OWNER = os.getuid()
         module._FREE_FLOOR = 0
         module._sdk_root = lambda:tmp_path/'sdk'
@@ -998,22 +1012,36 @@ def test_source_transports_clamp_connection_timeout_before_any_late_connect(tmp_
     namespace = deployer(tmp_path) if consumer == 'api' else vars(installer())
     clock,calls = [95.0],[]
     monkeypatch.setattr(time,'monotonic',lambda:clock[0])
-    def connect(connection):
-        calls.append(connection.timeout)
-        connection.sock = object()
-    monkeypatch.setattr(http.client.HTTPSConnection,'connect',connect)
+    class Peer:
+        def settimeout(self,value):
+            assert value == 5
+        def setsockopt(self,*args):
+            pass
+        def do_handshake(self):
+            pass
+    class Context:
+        def wrap_socket(self,peer,**kwargs):
+            assert kwargs['do_handshake_on_connect'] is False
+            return peer
+    def connect(address, timeout, source_address, *, deadline):
+        calls.append(deadline)
+        return namespace['_SourceDeadlineSocket'](Peer(),deadline,30)
+    monkeypatch.setitem(namespace,'_source_create_deadline_connection',connect)
     connection = namespace['_SourceDeadlineHTTPSConnection']('synthetic.invalid',deadline=100,timeout=30)
+    connection._context = Context()
     connection.connect()
-    assert calls == [5] and connection.sock._maximum_timeout == 5
+    assert calls == [100] and connection.sock._remaining() == 5
     clock[0] = 100
-    with pytest.raises(TimeoutError,match='source_transfer_deadline'):
+    with pytest.raises(TimeoutError,match='controlled_http_response_timeout'):
         namespace['_SourceDeadlineHTTPSConnection']('synthetic.invalid',deadline=100,timeout=30).connect()
-    assert calls == [5]
+    assert calls == [100]
 
 
 def test_source_transports_are_embedded_identically_without_new_bandit_suppressions():
     names = {'_SourceDeadlineSocket','_SourceDeadlineHTTPSConnection','_SourceDeadlineHTTPSHandler',
-             '_SourceClosingHTTPErrorProcessor','_SourceNoRedirect','_source_response_opener'}
+             '_SourceClosingHTTPErrorProcessor','_SourceNoRedirect','_source_response_opener',
+             '_source_connection_remaining','_source_resolve_addresses','_source_validated_resolver_result',
+             '_source_create_deadline_connection'}
     def definitions(raw):
         return {node.name:ast.dump(node,include_attributes=False) for node in ast.parse(raw).body
                 if isinstance(node,(ast.FunctionDef,ast.ClassDef)) and node.name in names}
