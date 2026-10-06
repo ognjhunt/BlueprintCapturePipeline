@@ -1034,6 +1034,84 @@ repository root, with `--key-file` set to a private env file. Start with
   or addresses. The hermetic tests use a fake Task API transport and a fake page
   reader with synthetic sites.
 
+## Contact lookup (FullEnrich)
+
+`contact-lookup.py` looks up a provider-verified work email for a real person at each
+contact site of a site-screen out dir. Owner decisions 2026-10-05, company GCS
+`operations/recovery/2026-10-05/owner-decisions/`:
+`owner-decision-contact-provider-lookup-20261005.json` (amends
+`owner-decision-contact-sources-20261005.json`) and
+`owner-decision-provider-sourced-person-20261005.json`. One provider: FullEnrich API v2
+(`app.fullenrich.com`). The code is `tools/daily_research/contact_lookup.py`, standard
+library only. Nothing sends, drafts or writes a CRM; the founder sends every email himself.
+
+```bash
+OUT=/PRIVATE/site-screen-out-dir   # The site-screen out dir: durable, outside every Git work tree, never /tmp.
+KEYS=/PRIVATE/fullenrich.env       # One line: FULLENRICH_API_KEY=...
+SPEND="--owner-reference owner-decision-contact-provider-lookup-20261005 --max-credits 50 --max-calls 100"
+SEARCH="--person-search owner-decision-provider-sourced-person-20261005"  # Optional: provider_sourced people.
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH --apply
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py summary --out "$OUT"
+```
+
+Run from the repository root after the site screen's `contact`, `collect` and `verify`, with an
+interpreter that has no `tools` package of its own in site-packages (one shadows this
+repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has none.
+
+- Who is looked up, per contact record (recomputed under the current contact rule), in
+  contact order: a site with a published, verified person email is left alone
+  (`published_person_email`); a site without an operator domain proven by the screen is
+  skipped (`operator_domain_unproven`). A named person the contact stage proved by a
+  quote, with a dated source at most 18 months old, gets one work-email enrichment
+  (`quoted_person`); an undated or older one is `person_not_current`. Otherwise, only
+  with `--person-search` naming the decision above (anything else refuses with
+  `contact_lookup_person_search_reference_invalid`), one people search on the operator's
+  domain for the listed roles (`TITLES`: owner, president, general manager, plant
+  manager, operations manager or director, engineering or automation manager) keeps the
+  first person FullEnrich places at that domain now (`is_current` true, or no end date)
+  in a listed role, and that person gets one enrichment (`provider_sourced`). The
+  employment field relied on is recorded; a past employer never counts. The pages the
+  site screen already read and kept are checked for the person with their title and the
+  operator (`corroboration`, true or false; no new read, never LinkedIn).
+- An email counts only when FullEnrich marks it `DELIVERABLE` (`HIGH_PROBABILITY` is its
+  catch-all estimate, and `CATCH_ALL` and `INVALID` do not count either), it is on the
+  operator's domain or a subdomain, never free mail, its local part names the person
+  (never a role inbox), and the enrichment's own profile, where it gives one, names the
+  same person at the operator now. Only `contact.work_emails` is requested; personal
+  emails and phones are never asked for or kept, and a rejected address is never written.
+- Spend. The first `--apply` pins `--owner-reference`, `--max-credits` (FullEnrich
+  credits) and `--max-calls` in `lookup/owner_ceiling.json`, once; later runs may only
+  lower them (`contact_lookup_credits_above_pin`, `contact_lookup_calls_above_pin`,
+  `contact_lookup_owner_reference_mismatch`). Pin the whole allowance for this out dir.
+  An `intent` is fsynced to `lookup/spend.jsonl` before every call. Admission counts
+  answered calls at their reported credits and calls of unknown outcome or unread result
+  at their most (a search 1.25: five people at 0.25; an enrichment 1), and stops with
+  `contact_lookup_credit_ceiling_reached` or `contact_lookup_max_calls_reached`. One
+  search per domain and one enrichment per person and domain are never sent twice. A
+  401, 402, 403, 429, a redirect or no connection stops the run unbilled, and so does
+  an enrichment FullEnrich ends unbilled (out of credits, rate limited, cancelled); a
+  later run may send those again. A 5xx, a lost connection or an unreadable answer may be
+  billed, so it is never sent again and its most stays committed.
+- Results. An enrichment is asynchronous: `--apply` reads started ones every 10 s for up
+  to `--wait-seconds` (default 120; reads are not billed), and a later `--apply` reads
+  the rest (`state: pending` until then). Without `--apply` the run admits the same calls
+  and sends and writes nothing; it counts the searches, as their enrichments depend on
+  the answers.
+- Records. `lookup/records/<site_key>.contact-lookup-rule.v1.json` holds each site's
+  lookup (`source: provider_lookup`, `label: looked_up`, FullEnrich's own `status`, its
+  `valid` or `not_valid` mapping, the person with `sourcing` and proof, and the address
+  only when usable) and its `recipient` from `contact_lookup.choose_recipient`, a pure
+  function for the admission step: 1 published person email, 2 looked-up person email,
+  3 published team inbox, 4 published general inbox, 5 none, each with its source and
+  labels. `contact_lookup.load` reads the records without taking the out dir lock.
+- `summary` recomputes every record from the journal alone and writes
+  `lookup/summary.json`. Output is counts and stable `contact_lookup_*` codes only, never
+  names or addresses. Every file is 0600 in 0700 folders. The key comes only from
+  `--key-file`; it is never printed or written. The command refuses on the daily worker
+  (`contact_lookup_worker_needs_paid_admission`). The hermetic tests use a fake FullEnrich
+  transport and synthetic sites.
+
 ## Daily research runtime envelope
 
 The 2026-10-04 owner decision gives each daily research run 60 minutes in total:

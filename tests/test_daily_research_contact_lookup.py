@@ -288,8 +288,12 @@ def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_list
                                                      "company_domain": "operator-1.example",
                                                      "start_at": "2022-03-15T00:00:00Z"}
     corroboration = person["corroboration"]
-    assert corroboration["corroborated"] is corroborating
-    assert (corroboration["url"] == "https://operator-1.example/news") is corroborating
+    if corroborating:  # Our own read, kept by the site screen: the page, its sentence and the page text's digest.
+        page = json.loads(workspace.path("screen", "evidence", key).read_text())["pages"]["https://operator-1.example/news"]
+        assert corroboration == {"corroborated": True, "url": "https://operator-1.example/news", "quote": sentence,
+                                 "level": "verified_on_page", "text_sha256": page["sha256"]}
+    else:
+        assert corroboration == {"corroborated": False, "url": None, "quote": None, "level": None, "text_sha256": None}
     recipient = cl.load(workspace)[key]["recipient"]
     assert (recipient["rank"], recipient["labels"]) == (
         2, ["looked_up", "provider_sourced", "corroborated" if corroborating else "uncorroborated"])
@@ -318,7 +322,7 @@ def test_the_first_apply_pins_the_ceilings_and_a_later_run_may_only_lower_them(t
 
 
 def test_every_call_is_admitted_and_journaled_before_it_is_sent(tmp_path):
-    workspace, keys = site_screen_out(tmp_path, [quoted(1), quoted(2), quoted(3)])
+    workspace, _ = site_screen_out(tmp_path, [quoted(1), quoted(2), quoted(3)])
     api = FakeFullEnrich()
     for number in (1, 2, 3):
         api.emails[("Avery", "Placeholder", f"operator-{number}.example")] = (
@@ -370,6 +374,21 @@ def test_a_started_enrichment_is_read_until_it_finishes_and_never_started_again(
     second = lookup(workspace, api)
     assert (second["state"], second["calls"]["made"], second["pending_results"]) == ("complete", 0, 0)
     assert len(api.posts("/api/v2/contact/enrich/bulk")) == 1 and cl.load(workspace)[key]["lookups"][0]["usable"] is True
+
+
+@pytest.mark.parametrize("ended", ["CREDITS_INSUFFICIENT", "RATE_LIMIT", "CANCELED"])
+def test_an_enrichment_that_ends_unbilled_is_sent_again_by_a_later_run(tmp_path, ended):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    who = ("Avery", "Placeholder", "operator-1.example")
+    api.emails[who], api.waiting[who] = (ADDRESS, "DELIVERABLE", profile(PERSON)), [ended]
+    first = lookup(workspace, api)
+    assert (first["state"], first["credits"]["committed"]) == ("complete", "0")
+    (found,) = cl.load(workspace)[key]["lookups"]
+    assert (found["usable"], found["provider"]["outcome"], found["reason"]) == (
+        False, "refused", "contact_lookup_enrichment_" + ended.lower())
+    lookup(workspace, api)
+    assert len(api.posts("/api/v2/contact/enrich/bulk")) == 2 and cl.load(workspace)[key]["lookups"][0]["usable"] is True
 
 
 def test_a_damaged_journal_or_pin_refuses(tmp_path):
@@ -475,7 +494,7 @@ def test_contact_lookup_imports_only_the_standard_library_and_the_site_screen():
 
 def test_every_person_and_host_in_these_tests_is_synthetic():
     source = Path(__file__).read_text()
-    hosts = set(re.findall(r"https://([^/\"'\s]+)", source)) | set(re.findall(r"@([A-Za-z0-9.-]+\.[a-z]+)", source))
+    hosts = set(re.findall(r"https://([A-Za-z0-9.-]+)", source)) | set(re.findall(r"[\w.+-]@([A-Za-z0-9.-]+\.[a-z]+)", source))
     refused = {"www.linkedin.com", "gmail.com", "operator-1.example.net", "records.synthetic.gov"}  # Refusal fixtures.
     assert hosts and all(host.endswith(".example") or host in refused for host in hosts), hosts
     names = set(re.findall(r'searched\("([A-Z][a-z]+ [A-Z][a-z]+)"', source)) | set(fixture.PEOPLE)
