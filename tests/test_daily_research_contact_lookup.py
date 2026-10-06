@@ -1,0 +1,501 @@
+"""Hermetic contact lookup: a fake FullEnrich transport, fake pages and a synthetic site-screen out dir. No network."""
+import ast
+import importlib.util
+import json
+import re
+import stat
+import sys
+from pathlib import Path
+
+import pytest
+
+from tests import daily_research_site_screen_fixture as fixture
+from tests.daily_research_site_screen_fixture import (
+    KEY,
+    OTHER_PERSON,
+    OWNER,
+    PERSON,
+    SITE_STRINGS,
+    TODAY,
+    FakePages,
+    contact_answers,
+    inventory_record,
+    pages_for,
+    screen,
+    screen_answers,
+)
+from tools.daily_research import contact_lookup as cl
+from tools.daily_research import site_screen as ss
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("contact_lookup_operator", ROOT / "tools/daily_research/operators/contact-lookup.py")
+operator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(operator)
+
+FULLENRICH_KEY = "synthetic-fullenrich-key-5d2c8e41"  # Never a real key; the tests check it never leaves the client.
+LOOKUP_OWNER = "owner-decision-synthetic-lookup-20261005"
+NOBODY = {"person_name": "", "person_title": "", "person_url": "", "person_quote": "", "person_date": ""}
+UNPUBLISHED = {"email": "", "email_url": "", "email_quote": "", "channel_type": "none"}
+ADDRESS = "avery.placeholder@operator-1.example"
+FOUND = "jordan.fixture@operator-1.example"
+
+
+@pytest.fixture(autouse=True)
+def hermetic(monkeypatch):
+    """pytest's tmp_path is on storage the out-dir guard refuses, a shell may set the worker flag, and Git is slow."""
+    monkeypatch.setattr(ss, "VOLATILE_ROOTS", ())
+    monkeypatch.delenv(ss.WORKER_FLAG, raising=False)
+    monkeypatch.setattr(ss, "code_state", lambda root=None: {"commit": "0" * 40, "dirty": False, "source": "git"})
+
+
+class FakeFullEnrich:
+    """FullEnrich's API v2 behind FullEnrichClient's transport seam. ``people`` answers a search by company domain,
+    ``emails`` an enrichment by (first name, last name, domain) with (email, status, profile), and ``waiting`` holds
+    the answers a result read gets before it is finished. Every request is recorded."""
+
+    def __init__(self):
+        self.calls, self.people, self.emails, self.waiting, self.jobs, self.scripted = [], {}, {}, {}, {}, []
+
+    def __call__(self, method, path, *, headers, body, timeout):
+        request = json.loads(body) if body is not None else None
+        self.calls.append({"method": method, "path": path, "headers": dict(headers), "body": request})
+        if self.scripted:
+            answer = self.scripted.pop(0)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+        if (method, path) == ("POST", "/api/v2/people/search"):
+            hits = self.people.get(request["current_company_domains"][0]["value"], [])
+            return 200, json.dumps({"people": hits, "metadata": {"total": len(hits), "credits": 0.25 * len(hits),
+                                                                  "offset": 0}}).encode()
+        if (method, path) == ("POST", "/api/v2/contact/enrich/bulk"):
+            job = f"00000000-0000-4000-8000-{len(self.jobs) + 1:012d}"
+            self.jobs[job] = request["data"][0]
+            return 200, json.dumps({"enrichment_id": job}).encode()
+        job = path.removeprefix("/api/v2/contact/enrich/bulk/")
+        assert method == "GET" and job in self.jobs, path
+        item = self.jobs[job]
+        who = (item["first_name"], item["last_name"], item["domain"])
+        if self.waiting.get(who):
+            answer = self.waiting[who].pop(0)
+            return answer if isinstance(answer, tuple) else (200, json.dumps(
+                {"id": job, "status": answer, "cost": {"credits": 0}, "data": []}).encode())
+        email, status, profile = self.emails.get(who, (None, None, None))
+        info = {"most_probable_work_email": {"email": email, "status": status} if email else None,
+                "work_emails": [{"email": email, "status": status}] if email else [],
+                # Never asked for: the lookup must keep none of it.
+                "personal_emails": [{"email": "avery@personal-mail.example", "status": "DELIVERABLE"}],
+                "most_probable_phone": {"number": "+1 555-010-0199"}, "phones": [{"number": "+1 555-010-0199"}]}
+        return 200, json.dumps({"id": job, "name": "synthetic", "status": "FINISHED", "cost": {"credits": 1 if email else 0},
+                                "data": [{"input": {"first_name": item["first_name"], "last_name": item["last_name"],
+                                                    "company_domain": item["domain"]},
+                                          "custom": item.get("custom", {}), "contact_info": info,
+                                          "profile": profile}]}).encode()
+
+    def posts(self, path):
+        return [call["body"] for call in self.calls if call["method"] == "POST" and call["path"] == path]
+
+
+def profile(name, domain="operator-1.example", **job):
+    return {"id": "p-1", "full_name": name, "employment": {"current": {
+        "title": "Plant Manager", "is_current": True, "start_at": "2022-03-15T00:00:00Z",
+        "company": {"id": "c-1", "name": "Synthetic Operator 1", "domain": domain}, **job}}}
+
+
+def searched(name, title="Plant Manager", domain="operator-1.example", **job):
+    """One people search hit: a current job at ``domain`` unless ``job`` changes it."""
+    first, last = name.split()
+    current = {"title": title, "seniority": "Manager", "is_current": True, "start_at": "2022-03-15T00:00:00Z",
+               "company": {"id": "c-1", "name": "Synthetic Operator 1", "domain": domain}, **job}
+    return {"id": f"p-{first.lower()}", "full_name": name, "first_name": first, "last_name": last,
+            "location": {"country": "United States", "country_code": "US", "city": "Fixture City", "region": "Texas"},
+            "social_profiles": {"professional_network": {"url": "https://www.linkedin.com/in/synthetic-profile"}},
+            "employment": {"current": current, "all": [current]}}
+
+
+class Clock:
+    def __init__(self):
+        self.now, self.sleeps = 0.0, []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def quoted(number, **changes):
+    """A contact answer with a named current person proven on their page and no published address."""
+    return contact_answers(number, **{**UNPUBLISHED, **changes})
+
+
+def nobody(number):
+    return contact_answers(number, **NOBODY, **UNPUBLISHED)
+
+
+def site_screen_out(tmp_path, contacts, *, kept=None, screen_changes=None):
+    """A site-screen out dir with one outreach-ready site per contact answer, its contact run collected and verified.
+    ``kept`` adds text to pages the screen keeps; ``screen_changes`` changes one site's screen answers."""
+    records = [inventory_record(number) for number in range(1, len(contacts) + 1)]
+    answers = [screen_answers(number, **(screen_changes or {}).get(number, {})) for number in range(1, len(contacts) + 1)]
+    pages = {url: text for answer in answers for url, text in pages_for(answer).items()}
+    pages.update({url: pages[url] + " " + text for url, text in (kept or {}).items()})
+    workspace, provider, _, _ = screen(tmp_path, records, answers, pages)
+    keys = [ss.from_inventory(record)["site_key"] for record in records]
+    for key, content in zip(keys, contacts):
+        provider.contacts[key] = {"content": content, "basis": []}
+    client = ss.TaskClient(KEY, transport=provider)
+    ss.contact(workspace, client=client, owner_reference=OWNER, ceiling_usd="5", max_runs=100, apply=True)
+    reader = FakePages({url: text for answer in contacts for url, text in pages_for(answer).items()})
+    ss.collect(workspace, client=client, reader=reader, today=TODAY, wait_seconds=0)
+    ss.verify(workspace, reader=reader, today=TODAY)
+    return workspace, keys
+
+
+def lookup(workspace, api, **options):
+    clock = options.pop("clock", None) or Clock()
+    settings = {"owner_reference": LOOKUP_OWNER, "max_credits": "20", "max_calls": 50, "apply": True, "wait_seconds": 0,
+                "monotonic": clock.monotonic, "sleep": clock.sleep, **options}
+    return cl.lookup(workspace, client=cl.FullEnrichClient(FULLENRICH_KEY, transport=api), **settings)
+
+
+def stored(workspace):
+    return b"".join(path.read_bytes() for path in sorted((workspace.root / cl.FOLDER).rglob("*")) if path.is_file())
+
+
+# --- the quoted person ----------------------------------------------------------------------------
+def test_a_quoted_person_gets_one_enrichment_and_a_deliverable_email_is_kept(tmp_path):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    api.emails[("Avery", "Placeholder", "operator-1.example")] = (ADDRESS, "DELIVERABLE", profile(PERSON))
+    result = lookup(workspace, api)
+    assert (result["state"], result["calls"]["made"], result["credits"]["committed"]) == ("complete", 1, "1")
+    start, read = api.calls
+    assert (start["method"], start["path"], read["method"]) == ("POST", "/api/v2/contact/enrich/bulk", "GET")
+    assert start["headers"]["Authorization"] == "Bearer " + FULLENRICH_KEY
+    (item,) = start["body"]["data"]
+    assert item == {"first_name": "Avery", "last_name": "Placeholder", "domain": "operator-1.example",
+                    "company_name": "Synthetic Operator 1", "enrich_fields": ["contact.work_emails"],
+                    "custom": {"call": item["custom"]["call"]}}
+    records = cl.load(workspace)
+    record = json.loads(json.dumps(records[key]))
+    assert (record["schema_version"], record["rule_version"]) == (cl.RECORD, "blueprint.contact-lookup-rule.v1")
+    (found,) = record["lookups"]
+    provider = found.pop("provider")
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00", provider.pop("checked_at"))
+    assert provider.pop("request_digest") == item["custom"]["call"] and re.fullmatch(r"[0-9a-f]{64}", item["custom"]["call"])
+    assert provider == {"name": "fullenrich", "status": "DELIVERABLE", "verification": "valid", "score": None,
+                        "outcome": "finished", "enrichment_id": "00000000-0000-4000-8000-000000000001", "credits": "1"}
+    assert found == {"source": "provider_lookup", "label": "looked_up", "usable": True, "reason": None,
+                     "address": ADDRESS, "operator_domain": "operator-1.example",
+                     "person": {"name": PERSON, "title": "Plant Manager", "location": None, "sourcing": "quoted_person",
+                                "proof": {"source": "site_contact", "url": "https://operator-1.example/team",
+                                          "level": "verified_on_page", "date": "2026-06-01", "current": True},
+                                "corroboration": None}}
+    recipient = record["recipient"]
+    assert (recipient["rank"], recipient["choice"], recipient["kind"], recipient["source"], recipient["labels"],
+            recipient["address"]) == (2, "looked_up_person_email", "person_email", "provider_lookup",
+                                      ["looked_up", "quoted_person"], ADDRESS)
+    # Never asked for and never kept: personal addresses and phones.
+    assert b"personal-mail" not in stored(workspace) and b"555-010" not in stored(workspace)
+    again = lookup(workspace, api)
+    assert len(api.calls) == 2 and again["calls"]["made"] == 0 and cl.load(workspace) == records
+
+
+@pytest.mark.parametrize("email, status, found_profile, reason", [
+    (ADDRESS, "HIGH_PROBABILITY", profile(PERSON), "contact_lookup_status_not_valid"),  # A catch-all guess.
+    (ADDRESS, "CATCH_ALL", profile(PERSON), "contact_lookup_status_not_valid"),
+    (ADDRESS, "INVALID", profile(PERSON), "contact_lookup_status_not_valid"),
+    ("avery.placeholder@operator-1.example.net", "DELIVERABLE", profile(PERSON), "contact_lookup_off_operator_domain"),
+    ("avery.placeholder@gmail.com", "DELIVERABLE", profile(PERSON), "contact_lookup_free_mail"),
+    ("info@operator-1.example", "DELIVERABLE", profile(PERSON), "contact_lookup_role_inbox"),
+    ("j.smith@operator-1.example", "DELIVERABLE", profile(PERSON), "contact_lookup_address_not_personal"),
+    (ADDRESS, "DELIVERABLE", profile(OTHER_PERSON), "contact_lookup_person_mismatch"),
+    (ADDRESS, "DELIVERABLE", profile(PERSON, domain="other-operator.example"),
+     "contact_lookup_person_not_current_at_operator"),
+    (None, None, None, "contact_lookup_email_not_found"),
+])
+def test_only_a_deliverable_email_for_the_same_person_on_the_operator_domain_is_kept(tmp_path, email, status,
+                                                                                     found_profile, reason):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    api.emails[("Avery", "Placeholder", "operator-1.example")] = (email, status, found_profile)
+    lookup(workspace, api)
+    record = cl.load(workspace)[key]
+    (found,) = record["lookups"]
+    assert (found["usable"], found["address"], found["reason"], found["provider"]["status"]) == (False, None, reason, status)
+    assert record["recipient"]["choice"] == "none"
+    if email:
+        assert email.encode() not in stored(workspace)  # A rejected address is never written.
+
+
+def test_only_a_named_current_person_on_a_proven_operator_domain_is_looked_up(tmp_path):
+    contacts = [quoted(1), quoted(2, person_date="2024-01-10"), nobody(3), contact_answers(4), quoted(5)]
+    workspace, keys = site_screen_out(tmp_path, contacts, screen_changes={
+        5: {"operator_identity_url": "https://records.synthetic.gov/facility/5"}})  # A government page proves no domain.
+    api = FakeFullEnrich()
+    result = lookup(workspace, api)
+    assert [body["data"][0]["domain"] for body in api.posts("/api/v2/contact/enrich/bulk")] == ["operator-1.example"]
+    assert result["skipped"] == {"person_not_current": 1, "no_verified_person": 1, "published_person_email": 1,
+                                 "operator_domain_unproven": 1}
+    records = cl.load(workspace)
+    published = records[keys[3]]["recipient"]
+    assert (published["rank"], published["source"], published["labels"], published["address"]) == (
+        1, "published", ["published"], "avery.placeholder@operator-4.example")
+    assert records[keys[1]]["lookups"] == [] and records[keys[1]]["skipped"] == "person_not_current"
+
+
+# --- the provider-sourced person ------------------------------------------------------------------
+def test_people_search_stays_off_unless_the_run_names_the_owner_decision(tmp_path):
+    workspace, _ = site_screen_out(tmp_path, [nobody(1)])
+    api = FakeFullEnrich()
+    off = lookup(workspace, api)
+    assert api.calls == [] and off["person_search"] is False and off["skipped"] == {"no_verified_person": 1}
+    for reference in ("owner-decision-synthetic-20261005", cl.PERSON_SEARCH_DECISION + "-draft", "PENDING"):
+        with pytest.raises(ss.ScreenError, match="^contact_lookup_person_search_reference_invalid$"):
+            lookup(workspace, api, person_search=reference)
+    assert api.calls == [] and cl.PERSON_SEARCH_DECISION == "owner-decision-provider-sourced-person-20261005"
+
+
+@pytest.mark.parametrize("corroborating", [True, False])
+def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_listed_role(tmp_path, corroborating):
+    sentence = f"{OTHER_PERSON}, plant manager of Synthetic Operator 1, opened the new lathe cell this spring."
+    kept = {"https://operator-1.example/news": sentence} if corroborating else None
+    workspace, (key,) = site_screen_out(tmp_path, [nobody(1)], kept=kept)
+    api = FakeFullEnrich()
+    api.people["operator-1.example"] = [
+        # A past employee whose current job is elsewhere: the company filter can match a previous employer.
+        searched("Casey Placeholder", domain="other-operator.example"),
+        searched("Riley Fixture", is_current=False, end_at="2024-01-31T00:00:00Z"),  # Ended at the operator.
+        searched("Morgan Fixture", title="Vice President of Sales"),  # Not a listed role.
+        searched(OTHER_PERSON),
+    ]
+    api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
+    result = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)
+    (search,) = api.posts("/api/v2/people/search")
+    assert search["current_company_domains"] == [{"value": "operator-1.example", "exact_match": True}]
+    assert [title["value"] for title in search["current_position_titles"]] == list(cl.TITLES)
+    assert search["limit"] == cl.SEARCH_LIMIT
+    assert [body["data"][0]["first_name"] for body in api.posts("/api/v2/contact/enrich/bulk")] == ["Jordan"]
+    assert (result["calls"]["made"], result["credits"]["committed"]) == (2, "2")  # Four people at 0.25, one email.
+    (found,) = cl.load(workspace)[key]["lookups"]
+    person = found["person"]
+    assert (found["usable"], found["address"], person["sourcing"], person["name"], person["title"], person["location"]) == (
+        True, FOUND, "provider_sourced", OTHER_PERSON, "Plant Manager", "Fixture City, Texas, United States")
+    assert person["proof"]["source"] == "fullenrich_people_search"
+    assert person["proof"]["current_employment"] == {"field": "employment.current.is_current",
+                                                     "company_domain": "operator-1.example",
+                                                     "start_at": "2022-03-15T00:00:00Z"}
+    corroboration = person["corroboration"]
+    if corroborating:  # Our own read, kept by the site screen: the page, its sentence and the page text's digest.
+        page = json.loads(workspace.path("screen", "evidence", key).read_text())["pages"]["https://operator-1.example/news"]
+        assert corroboration == {"corroborated": True, "url": "https://operator-1.example/news", "quote": sentence,
+                                 "level": "verified_on_page", "text_sha256": page["sha256"]}
+    else:
+        assert corroboration == {"corroborated": False, "url": None, "quote": None, "level": None, "text_sha256": None}
+    recipient = cl.load(workspace)[key]["recipient"]
+    assert (recipient["rank"], recipient["labels"]) == (
+        2, ["looked_up", "provider_sourced", "corroborated" if corroborating else "uncorroborated"])
+    assert b"linkedin" not in stored(workspace) and b"Casey" not in stored(workspace)
+
+
+# --- spend: pin, journal, never twice -------------------------------------------------------------
+def test_the_first_apply_pins_the_ceilings_and_a_later_run_may_only_lower_them(tmp_path):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    dry = lookup(workspace, api, apply=False)
+    assert (dry["state"], dry["calls"]["would_make"], dry["pin"]["state"]) == ("planned", 1, "would_create")
+    assert api.calls == [] and not (workspace.root / cl.FOLDER).exists()
+    lookup(workspace, api)
+    pin = json.loads((workspace.root / cl.FOLDER / "owner_ceiling.json").read_text())
+    assert {name: pin[name] for name in ("schema_version", "owner_reference", "max_credits", "max_calls")} == {
+        "schema_version": cl.OWNER_CEILING, "owner_reference": LOOKUP_OWNER, "max_credits": "20", "max_calls": 50}
+    for changes, code in (({"max_credits": "21"}, "contact_lookup_credits_above_pin"),
+                          ({"max_calls": 51}, "contact_lookup_calls_above_pin"),
+                          ({"owner_reference": "owner-decision-synthetic-other"}, "contact_lookup_owner_reference_mismatch"),
+                          ({"max_credits": "0"}, "contact_lookup_credits_invalid"),
+                          ({"max_calls": True}, "contact_lookup_calls_invalid")):
+        with pytest.raises(ss.ScreenError, match=f"^{code}$"):
+            lookup(workspace, api, **changes)
+    assert lookup(workspace, api, max_credits="2", max_calls=5)["pin"]["state"] == "pinned"
+
+
+def test_every_call_is_admitted_and_journaled_before_it_is_sent(tmp_path):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1), quoted(2), quoted(3)])
+    api = FakeFullEnrich()
+    for number in (1, 2, 3):
+        api.emails[("Avery", "Placeholder", f"operator-{number}.example")] = (
+            f"avery.placeholder@operator-{number}.example", "DELIVERABLE", None)
+    result = lookup(workspace, api, max_credits="2")
+    assert (result["state"], result["stop"], result["calls"]["made"]) == ("stopped", "contact_lookup_credit_ceiling_reached", 2)
+    events = [json.loads(line) for line in (workspace.root / cl.FOLDER / "spend.jsonl").read_text().splitlines()]
+    assert [event["event"] for event in events] == ["pinned", "intent", "created", "intent", "created", "answered", "answered"]
+    assert {event["owner_reference"] for event in events if event["event"] == "intent"} == {LOOKUP_OWNER}
+    assert lookup(workspace, api, max_credits="2", max_calls=2)["stop"] == "contact_lookup_max_calls_reached"
+    assert len(api.posts("/api/v2/contact/enrich/bulk")) == 2
+
+
+@pytest.mark.parametrize("answer, code, retried", [
+    ((401, b'{"code": "error.api.key"}'), "contact_lookup_provider_auth_refused", True),
+    ((429, b'{"code": "error.rate.limit"}'), "contact_lookup_provider_rate_limited", True),
+    ((302, b""), "contact_lookup_provider_redirect_refused", True),
+    (ss.TransportError("synthetic", sent=False), "contact_lookup_provider_unreachable", True),
+    ((503, b"upstream"), "contact_lookup_outcome_unknown", False),
+    (ss.TransportError("synthetic", sent=True), "contact_lookup_outcome_unknown", False),
+    ((200, b'{"no": "id"}'), "contact_lookup_response_invalid", False),
+])
+def test_a_refusal_stops_and_is_tried_later_but_a_lookup_that_may_exist_is_never_sent_again(tmp_path, answer, code,
+                                                                                            retried):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    api.scripted = [answer]
+    result = lookup(workspace, api)
+    assert (result["state"], result["stop"]) == ("stopped", code)
+    events = [json.loads(line)["event"] for line in (workspace.root / cl.FOLDER / "spend.jsonl").read_text().splitlines()]
+    assert events == ["pinned", "intent", "refused" if retried else "uncertain"]
+    again = lookup(workspace, api)
+    assert len(api.posts("/api/v2/contact/enrich/bulk")) == (2 if retried else 1)
+    assert again["credits"]["committed"] == ("0" if retried else "1")  # An unknown outcome keeps its most committed.
+
+
+def test_a_started_enrichment_is_read_until_it_finishes_and_never_started_again(tmp_path):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    who = ("Avery", "Placeholder", "operator-1.example")
+    api.emails[who] = (ADDRESS, "DELIVERABLE", profile(PERSON))
+    api.waiting[who] = [(400, b'{"message": "Enrichment not ready, try again in 30 seconds"}'), "IN_PROGRESS",
+                        "IN_PROGRESS"]
+    clock = Clock()
+    first = lookup(workspace, api, wait_seconds=20, clock=clock)
+    assert (first["state"], first["pending_results"], clock.sleeps) == ("pending", 1, [10, 10])
+    assert cl.load(workspace)[key]["lookups"][0]["reason"] == "contact_lookup_result_pending"
+    assert cl.load(workspace)[key]["recipient"]["choice"] == "none"
+    second = lookup(workspace, api)
+    assert (second["state"], second["calls"]["made"], second["pending_results"]) == ("complete", 0, 0)
+    assert len(api.posts("/api/v2/contact/enrich/bulk")) == 1 and cl.load(workspace)[key]["lookups"][0]["usable"] is True
+
+
+@pytest.mark.parametrize("ended", ["CREDITS_INSUFFICIENT", "RATE_LIMIT", "CANCELED"])
+def test_an_enrichment_that_ends_unbilled_is_sent_again_by_a_later_run(tmp_path, ended):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    who = ("Avery", "Placeholder", "operator-1.example")
+    api.emails[who], api.waiting[who] = (ADDRESS, "DELIVERABLE", profile(PERSON)), [ended]
+    first = lookup(workspace, api)
+    assert (first["state"], first["credits"]["committed"]) == ("complete", "0")
+    (found,) = cl.load(workspace)[key]["lookups"]
+    assert (found["usable"], found["provider"]["outcome"], found["reason"]) == (
+        False, "refused", "contact_lookup_enrichment_" + ended.lower())
+    lookup(workspace, api)
+    assert len(api.posts("/api/v2/contact/enrich/bulk")) == 2 and cl.load(workspace)[key]["lookups"][0]["usable"] is True
+
+
+def test_a_damaged_journal_or_pin_refuses(tmp_path):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    lookup(workspace, api)
+    folder = workspace.root / cl.FOLDER
+    journal, pin = (folder / "spend.jsonl").read_bytes(), (folder / "owner_ceiling.json").read_bytes()
+    (folder / "spend.jsonl").unlink()
+    with pytest.raises(ss.ScreenError, match="^contact_lookup_journal_missing$"):
+        lookup(workspace, api)
+    (folder / "spend.jsonl").write_bytes(journal.replace(b'"max_credits":"20"', b'"max_credits":"99"', 1))
+    with pytest.raises(ss.ScreenError, match="^contact_lookup_owner_ceiling_mismatch$"):
+        lookup(workspace, api)
+    (folder / "spend.jsonl").write_bytes(b"\n".join(journal.split(b"\n")[:1] + journal.split(b"\n")[2:]))
+    with pytest.raises(ss.ScreenError, match="^contact_lookup_journal_invalid$"):  # An answer without its intent.
+        lookup(workspace, api)
+    (folder / "spend.jsonl").write_bytes(journal + b'{"torn')  # A crash mid-line is sealed and skipped.
+    assert lookup(workspace, api)["calls"]["made"] == 0 and pin == (folder / "owner_ceiling.json").read_bytes()
+
+
+# --- the recipient hand-off -----------------------------------------------------------------------
+def contact_record(kind, address=None):
+    return {"email": {"verified": address is not None}, "recipient": {"kind": kind, "address": address}}
+
+
+def looked_up(sourcing="quoted_person", *, usable=True, corroborated=None):
+    person = {"name": OTHER_PERSON, "title": "Plant Manager", "sourcing": sourcing,
+              "corroboration": None if corroborated is None else {"corroborated": corroborated}}
+    return {"source": "provider_lookup", "label": "looked_up", "usable": usable, "address": FOUND if usable else None,
+            "person": person, "provider": {"name": "fullenrich", "status": "DELIVERABLE" if usable else "CATCH_ALL",
+                                            "verification": "valid" if usable else "not_valid"}}
+
+
+@pytest.mark.parametrize("record, lookups, rank, choice, labels", [
+    (contact_record("person_email", ADDRESS), [looked_up()], 1, "published_person_email", ["published"]),
+    (contact_record("team_inbox", "sales@operator-1.example"), [looked_up()], 2, "looked_up_person_email",
+     ["looked_up", "quoted_person"]),
+    (contact_record("general_inbox", "info@operator-1.example"), [looked_up("provider_sourced", corroborated=False)], 2,
+     "looked_up_person_email", ["looked_up", "provider_sourced", "uncorroborated"]),
+    (contact_record("team_inbox", "sales@operator-1.example"), [looked_up(usable=False)], 3, "published_team_inbox",
+     ["published"]),
+    (contact_record("general_inbox", "info@operator-1.example"), [], 4, "published_general_inbox", ["published"]),
+    (contact_record("none"), [looked_up(usable=False)], 5, "none", []),
+    ({"recipient": "damaged"}, [{"usable": True, "address": FOUND}], 5, "none", []),  # Malformed input chooses nothing.
+])
+def test_the_recipient_follows_the_owner_order_and_carries_its_labels(record, lookups, rank, choice, labels):
+    before = json.dumps([record, lookups], sort_keys=True)
+    recipient = cl.choose_recipient(record, lookups)
+    assert (recipient["schema_version"], recipient["rank"], recipient["choice"], recipient["labels"]) == (
+        cl.RECIPIENT, rank, choice, labels)
+    assert recipient["kind"] == {1: "person_email", 2: "person_email", 3: "team_inbox", 4: "general_inbox"}.get(rank, "none")
+    assert recipient["source"] == {1: "published", 2: "provider_lookup", 3: "published", 4: "published"}.get(rank, "none")
+    assert json.dumps([record, lookups], sort_keys=True) == before  # Pure: the inputs are unchanged.
+
+
+# --- the owner command ----------------------------------------------------------------------------
+def test_the_command_prints_counts_only_keeps_the_key_private_and_writes_private_files(tmp_path, capsys):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1), nobody(2)])
+    capsys.readouterr()
+    api = FakeFullEnrich()
+    api.emails[("Avery", "Placeholder", "operator-1.example")] = (ADDRESS, "DELIVERABLE", profile(PERSON))
+    api.people["operator-2.example"] = [searched(OTHER_PERSON, domain="operator-2.example")]
+    api.emails[("Jordan", "Fixture", "operator-2.example")] = (
+        "jordan.fixture@operator-2.example", "DELIVERABLE", profile(OTHER_PERSON, domain="operator-2.example"))
+    key_file = tmp_path / "private.env"
+    key_file.write_text(f"# owner-only\nOTHER_KEY=unrelated\nexport FULLENRICH_API_KEY=\"{FULLENRICH_KEY}\"\n")
+    spend = ["lookup", "--out", str(workspace.root), "--owner-reference", LOOKUP_OWNER, "--max-credits", "50",
+             "--max-calls", "20", "--key-file", str(key_file), "--wait-seconds", "0",
+             "--person-search", cl.PERSON_SEARCH_DECISION]
+    assert operator.main(spend, transport=api)["state"] == "planned" and api.calls == []
+    assert operator.main([*spend, "--apply"], transport=api)["state"] == "complete"
+    report = operator.main(["summary", "--out", str(workspace.root)])
+    assert report["recipients"]["looked_up_person_email"] == 2 and report["people"] == {
+        "quoted_person": 1, "provider_sourced": 1, "corroborated": 0, "uncorroborated": 1}
+    assert report["enrichments"]["usable"] == 2 and report["credits"]["used"] == "2.25"
+    output = capsys.readouterr().out
+    assert len(output.splitlines()) == 3 and all(json.loads(line) for line in output.splitlines())
+    assert FULLENRICH_KEY not in output and "@" not in output
+    assert not any(value in output for value in (*SITE_STRINGS, OTHER_PERSON, "Fixture", "Placeholder"))
+    assert {call["headers"]["Authorization"] for call in api.calls} == {"Bearer " + FULLENRICH_KEY}
+    assert FULLENRICH_KEY.encode() not in stored(workspace) and "withheld" in repr(cl.FullEnrichClient(FULLENRICH_KEY))
+    folder = workspace.root / cl.FOLDER
+    for path in (folder, *folder.rglob("*")):
+        assert stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600), path
+    key_file.write_text("# FULLENRICH_API_KEY=commented-out\n")
+    with pytest.raises(ss.ScreenError, match="^contact_lookup_api_key_missing$"):
+        operator.main(spend, transport=api)
+    with pytest.raises(ss.ScreenError, match="^contact_lookup_key_file_unreadable$"):
+        operator.main([*spend[:-6], "--key-file", str(tmp_path / "missing.env"), *spend[-4:]], transport=api)
+    with pytest.raises(ss.ScreenError, match="^contact_lookup_worker_needs_paid_admission$"):
+        operator.main(spend, transport=api, environ={ss.WORKER_FLAG: "1"})
+
+
+def test_contact_lookup_imports_only_the_standard_library_and_the_site_screen():
+    tree = ast.parse((ROOT / "tools/daily_research/contact_lookup.py").read_text())
+    modules = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    assert modules - {"tools.daily_research"} <= set(sys.stdlib_module_names)
+    assert {(node.module, alias.name) for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+            for alias in node.names if node.module == "tools.daily_research"} == {("tools.daily_research", "site_screen")}
+
+
+def test_every_person_and_host_in_these_tests_is_synthetic():
+    source = Path(__file__).read_text()
+    hosts = set(re.findall(r"https://([A-Za-z0-9.-]+)", source)) | set(re.findall(r"[\w.+-]@([A-Za-z0-9.-]+\.[a-z]+)", source))
+    refused = {"www.linkedin.com", "gmail.com", "operator-1.example.net", "records.synthetic.gov"}  # Refusal fixtures.
+    assert hosts and all(host.endswith(".example") or host in refused for host in hosts), hosts
+    names = set(re.findall(r'searched\("([A-Z][a-z]+ [A-Z][a-z]+)"', source)) | set(fixture.PEOPLE)
+    assert names and all(name.split()[-1] in {"Placeholder", "Fixture"} for name in names), names
