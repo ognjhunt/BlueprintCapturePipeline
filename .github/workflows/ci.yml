@@ -656,7 +656,17 @@ jobs:
   supply-chain:
     name: SBOM, license, and provenance contract
     needs: [impacted-gate, lint, typecheck, sast, source-governance, dependency-security, container-contract]
-    if: github.event_name == 'push'
+    # impacted-gate validates optional native/full skips. An implicit success()
+    # here propagates those ancestor skips and silently omits release signing.
+    if: >-
+      !cancelled() && github.event_name == 'push' &&
+      needs.impacted-gate.result == 'success' &&
+      needs.lint.result == 'success' &&
+      needs.typecheck.result == 'success' &&
+      needs.sast.result == 'success' &&
+      needs.source-governance.result == 'success' &&
+      needs.dependency-security.result == 'success' &&
+      needs.container-contract.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read

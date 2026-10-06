@@ -92,6 +92,35 @@ def test_final_gate_refuses_missing_requested_full_evidence():
     assert step['env']['FULL_REQUIRED'] == '${{ needs.impact.outputs.requires_full_suite }}'
 
 
+def test_release_signing_accepts_validated_optional_skips_but_requires_every_gate():
+    import yaml
+
+    jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    job = jobs['supply-chain']
+    required = {'impacted-gate', 'lint', 'typecheck', 'sast', 'source-governance',
+                'dependency-security', 'container-contract'}
+    assert set(job['needs']) == required
+    condition = job['if'].replace('${{', '').replace('}}', '').strip()
+    # GitHub adds success() unless a status function is explicit. This must
+    # override skipped optional ancestors, while cancellation still refuses.
+    assert '!cancelled()' in condition
+    assert 'always()' not in condition
+    assert 'success()' not in condition
+    for event in ('push', 'pull_request', 'workflow_dispatch'):
+        for cancelled in (False, True):
+            for gate in sorted(required):
+                for result in ('success', 'failure', 'skipped', 'cancelled'):
+                    observed = condition.replace('!cancelled()', repr(not cancelled))
+                    observed = observed.replace('github.event_name', repr(event))
+                    for name in required:
+                        value = result if name == gate else 'success'
+                        observed = observed.replace(f'needs.{name}.result', repr(value))
+                    observed = observed.replace('&&', ' and ')
+                    assert 'needs.' not in observed
+                    expected = event == 'push' and not cancelled and result == 'success'
+                    assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
 def _run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(ROOT / "scripts" / name), *args],
@@ -243,7 +272,10 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
         match = re.search(rf"(?ms)^  {re.escape(job)}:\n(.*?)(?=^  \S|\Z)", workflow)
         assert match is not None, job
         job_block = match.group(1)
-        assert "if: github.event_name == 'push'" in job_block, job
+        if job == 'supply-chain':
+            assert "github.event_name == 'push' &&" in job_block
+        else:
+            assert "if: github.event_name == 'push'" in job_block, job
 
 
 def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
