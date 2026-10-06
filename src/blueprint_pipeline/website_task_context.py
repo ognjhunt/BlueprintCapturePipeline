@@ -6,14 +6,17 @@ confirmation. The authenticated snapshot is retained as derived run evidence.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
-from .safe_outbound_http import pinned_api_policy, request as safe_request
+from .safe_outbound_http import pinned_api_policy
+from .safe_outbound_http import request as safe_request
 from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 from .website_capture_entry import is_website_entry_source
@@ -34,6 +37,58 @@ def validate_website_task_context(
         raise ValueError("website_task_context_not_confirmed")
     if not isinstance(value.get("description"), str) or not value["description"].strip():
         raise ValueError("website_task_context_description_missing")
+    details = value.get("operator_task_details")
+    if details is not None and (not isinstance(details, Mapping) or any(key not in {"item_weight", "item_make_model"}
+            or not isinstance(item, str) for key, item in details.items())):
+        raise ValueError("website_task_context_item_details_invalid")
+    criteria = value.get("success_criteria")
+    if criteria is not None:
+        if not isinstance(criteria, Mapping) or set(criteria) != {"successDefinition", "successRate", "cycleTimeSeconds", "unknown"}:
+            raise ValueError("website_task_context_success_criteria_invalid")
+        if type(criteria["unknown"]) is not bool or (criteria["successDefinition"] is not None and not isinstance(criteria["successDefinition"], str)):
+            raise ValueError("website_task_context_success_criteria_invalid")
+        for key in ("successRate", "cycleTimeSeconds"):
+            number = criteria[key]
+            if number is not None and (isinstance(number, bool) or not isinstance(number, (int, float))
+                    or not math.isfinite(number) or number < 0 or (key == "successRate" and number > 100)):
+                raise ValueError("website_task_context_success_criteria_invalid")
+    items = value.get("task_items")
+    if items is not None:
+        if not isinstance(items, list) or len(items) > 100:
+            raise ValueError("website_task_context_items_invalid")
+        identifiers = []
+        for item in items:
+            if not isinstance(item, Mapping) or not isinstance(item.get("item_id"), str) or not isinstance(item.get("label"), str):
+                raise ValueError("website_task_context_items_invalid")
+            identifiers.append(item["item_id"])
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", item["item_id"]) or not isinstance(item.get("images"), list):
+                raise ValueError("website_task_context_items_invalid")
+            for image in item["images"]:
+                prefix = f"scenes/{scene_id}/items/{item['item_id']}/"
+                name = image.get("storage_path", "") if isinstance(image, Mapping) else ""
+                if not isinstance(name, str) or not name.startswith(prefix) or any(part in {"", ".", ".."} for part in name.split("/")):
+                    raise ValueError("website_item_source_outside_site")
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("website_task_context_items_invalid")
+    continuation = value.get("capture_binding")
+    if continuation is not None:
+        if (not isinstance(continuation, Mapping) or continuation.get("schema_version") != "website_capture_continuation.v1"
+                or continuation.get("capture_id") != capture_id or continuation.get("original_capture_id") != f"walkthrough-{request_id}"
+                or continuation.get("coordinate_frames_independent") is not True
+                or not isinstance(continuation.get("lineage"), list) or not 1 <= len(continuation["lineage"]) <= 8):
+            raise ValueError("website_task_context_continuation_invalid")
+        expected = capture_id
+        seen = set()
+        for entry in continuation["lineage"]:
+            if (not isinstance(entry, Mapping) or entry.get("child", {}).get("capture_id") != expected or expected in seen
+                    or entry.get("supplement", {}).get("parent_capture_id") != entry.get("parent", {}).get("capture_id")
+                    or entry.get("supplement", {}).get("parent_bundle_digest") != entry.get("parent", {}).get("raw_bundle_digest")
+                    or entry.get("supplement", {}).get("parent_manifest_uri") != entry.get("parent", {}).get("raw_manifest_uri")):
+                raise ValueError("website_task_context_continuation_invalid")
+            seen.add(expected)
+            expected = entry["parent"]["capture_id"]
+        if expected != f"walkthrough-{request_id}":
+            raise ValueError("website_task_context_continuation_invalid")
     return dict(value)
 
 
@@ -50,7 +105,7 @@ def load_current_website_task_context(
 def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Use the existing signed transport for private preparation control data."""
     if operation not in {"task-context", "scene-sponsorship", "prepared-scene", "visual-scene",
-                         "preparation-spend", "preparation-settlement", "agent-execution-offer"}:
+                         "preparation-spend", "preparation-settlement", "agent-execution-offer", "task-item-evidence"}:
         raise ValueError("website_control_operation_invalid")
     configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:
@@ -101,6 +156,7 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                                      retained_admission: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
+
     from .paid_resource_admission import require_paid_resource_admission
     if (resource_class, provider) not in {("evaluator_api", "meta"), ("evaluator_api", "google"), ("openai_api_candidate", "openai"),
                                          ("provider_reconstruction_api", "world_labs"), ("gpu_render", "vast")}:

@@ -119,6 +119,22 @@ def read_consent_state(capture_root: Path) -> Dict[str, Any]:
     ``"unknown"`` (blocked); missing sources are ``"unknown"``.
     """
     root = Path(capture_root).expanduser()
+    # Website withdrawal is a current controller tombstone, separate from the
+    # immutable historical consent in raw manifests. It covers late supplements.
+    if root.parent.name == "captures" and root.parent.parent.name.startswith("site-"):
+        marker = root.parent.parent / "website_withdrawal/tombstone.json"
+        if marker.exists():
+            payload = _read_json(marker)
+            from .decision_evidence_contracts import canonical_digest
+            valid = (payload.get("schema_version") == "website_capture_withdrawal_tombstone.v1"
+                     and payload.get("scene_id") == root.parent.parent.name
+                     and payload.get("request_id") == root.parent.parent.name[5:]
+                     and payload.get("digest") == canonical_digest(payload, digest_field="digest"))
+            return {"state": "revoked" if valid else "unknown", "consent_revoked": valid,
+                    "consent_status": "revoked" if valid else "unknown",
+                    "consent_revoked_at": payload.get("consent_revoked_at") if valid else None,
+                    "malformed_consent_fields": [] if valid else ["website_withdrawal_tombstone_invalid"],
+                    "source_path": str(marker)}
     for relative in _CONSENT_SOURCE_RELATIVES:
         payload = _read_json(root / relative)
         if not payload:

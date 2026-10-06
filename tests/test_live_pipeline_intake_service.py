@@ -114,6 +114,7 @@ def test_nonce_store_refuses_when_secure_mode_cannot_be_installed(
 ) -> None:
     root = tmp_path / "shared-nonce-store"
     root.mkdir(mode=0o755)
+    root.chmod(0o755)  # A restrictive runner umask must not skip this refusal path.
     monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(root))
     monkeypatch.setattr(
         Path,
@@ -123,6 +124,35 @@ def test_nonce_store_refuses_when_secure_mode_cannot_be_installed(
 
     with pytest.raises(RuntimeError, match="^intake_nonce_store_permission_install_failed$"):
         service._nonce_store_dir()
+
+
+def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path, monkeypatch):
+    from blueprint_pipeline.consent_takedown import read_consent_state
+    root = tmp_path / "scenes/site-req1/captures/walkthrough-req1"
+    _write_json(root / "raw/manifest.json", {"site_submission_id": "req1", "scene_id": "site-req1",
+        "capture_id": "walkthrough-req1", "consent_status": "granted"})
+    (root / "raw/video.mp4").write_bytes(b"synthetic-media")
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, "synthetic-token")
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / "work"))
+    monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON", json.dumps({"test-client": {"req1": str(root)}}))
+    monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, "false")
+    client = TestClient(create_app())
+    payload = {"schema_version": "website_capture_withdrawal.v1", "request_id": "req1", "scene_id": "site-req1",
+        "capture_id": "walkthrough-req1", "withdrawal_id": "withdrawal-req1", "requested_at_iso": "2026-10-06T00:00:00Z"}
+    def post(value, nonce, actor="test-client"):
+        body = json.dumps(value)
+        return client.post("/website-capture-withdrawals", content=body,
+            headers=_signed_intake_headers("synthetic-token", body, nonce=nonce, client_id=actor))
+    assert client.post("/website-capture-withdrawals", json=payload).status_code == 401
+    assert post(payload, "foreign-actor", "other-client").status_code == 403
+    assert post({**payload, "request_id": "other"}, "foreign-site").status_code == 403
+    assert post({**payload, "capture_root": str(tmp_path)}, "caller-root").status_code == 409
+    accepted = post(payload, "ack-first")
+    assert accepted.status_code == 200
+    assert accepted.json()["deletion_confirmed"] is False
+    assert post(payload, "ack-replay").json() == accepted.json()
+    assert read_consent_state(root)["state"] == "revoked"
+    assert (root / "raw/video.mp4").read_bytes() == b"synthetic-media"
 
 
 def _capture_root(tmp_path: Path) -> Path:
