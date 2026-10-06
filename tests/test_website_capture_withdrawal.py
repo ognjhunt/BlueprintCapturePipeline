@@ -311,11 +311,16 @@ def test_cloud_proof_requires_bound_retained_plan_and_positive_absence(tmp_path,
     apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=plan["digest"], authorize_cloud_deletion=True)
     path = proof_path(root, cloud=True)
     value = json.loads(path.read_text())
-    if fault == "schema": value["schema_version"] = "unknown"
-    elif fault == "tombstone": value["tombstone_digest"] = "sha256:" + "f" * 64
-    elif fault == "bucket": value["bucket"] = "foreign"
-    elif fault == "false_absence": value["all_object_versions_absence_observed"] = False
-    else: value["plan_digest"] = "sha256:" + "f" * 64
+    if fault == "schema":
+        value["schema_version"] = "unknown"
+    elif fault == "tombstone":
+        value["tombstone_digest"] = "sha256:" + "f" * 64
+    elif fault == "bucket":
+        value["bucket"] = "foreign"
+    elif fault == "false_absence":
+        value["all_object_versions_absence_observed"] = False
+    else:
+        value["plan_digest"] = "sha256:" + "f" * 64
     value["digest"] = canonical_digest(value, digest_field="digest")
     path.write_text(json.dumps(value))
     with pytest.raises((ValueError, FileNotFoundError)):
