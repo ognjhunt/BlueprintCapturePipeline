@@ -972,12 +972,14 @@ repository root, with `--key-file` set to a private env file. Start with
   outreach-ready rule v1.2 (see [RENDER.md](../RENDER.md#outreach-ready-tier)): S
   (site link open) "Is <task> done at <site>, or somewhere else in the company?"; M
   (manual workflow open) "Which parts of <task> at <site> still need people, and what
-  has kept them from being automated?"; A (proven partial automation) "What has kept
-  the rest of <task> at <site> from being automated so far?"; else U "Is any of <task>
+  has kept them from being automated?"; else U "Is any of <task>
   at <site> automated today, or is it all done by hand?". `<site>` is "your <City>
   site" from the address city, else "your <name> site" for a short input site name,
-  else "this site". Every other open check (existing automation, freshness, fit,
-  interest) is recorded in `open_checks` and not asked.
+  else "this site". The provider's "partial" choice also includes automation of
+  other tasks/sites, so it cannot supply the exact task/site premise of template A.
+  The shared builder retains A only for explicitly validated exact partial scope;
+  screen records keep that premise open with U. Every other open check (existing
+  automation, freshness, fit, interest) is recorded in `open_checks` and not asked.
   `variability_signals` is recorded and never required.
 - Records are recomputed from the stored raw results and page reads, under each
   stage's current rule (`screen_gates` gives the lead-verification gate shape and

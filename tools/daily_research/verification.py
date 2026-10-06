@@ -664,9 +664,9 @@ def outreach_gates(result, candidate, index, *, conflict=False):
             "duplicate": bool(result.get("duplicate_of")) or isinstance(check, dict) and check.get("duplicate") is True,
             "conflict": conflict is True, "valid_until": assessment.get("valid_until"), "states": states, "facts": facts,
             "facility": facility_gates(assessment, indexed, index), "task": candidate.get("task"), "site": candidate.get("site"),
-            # v1.2: the question's city, and its automation evidence: a contradicted counterevidence records
-            # automation (of part of this task, other tasks or other sites) that does not block.
-            "location": candidate.get("location"), "partial_automation": states["counterevidence"] == "contradicted"}
+            # Counterevidence may refer to another task or site. This assessment has no exact
+            # task/site partial-automation proof field, so new questions must keep that premise open.
+            "location": candidate.get("location"), "partial_automation": False}
 
 
 def open_checks(states, valid_until):
@@ -803,7 +803,8 @@ def outreach_tier(gates, now, rule_version=OUTREACH_RULE_VERSION):
     freshness), not a duplicate or conflict. A contradicted claim blocks: a closed site is a
     contradicted physical_site, and only a contradicted human_workflow (the exact task at
     this site shown fully automated) is an automation block. Other automation evidence,
-    including a contradicted counterevidence, changes the question, not the eligibility. A
+    including a contradicted counterevidence, does not change eligibility or establish
+    partial automation of this exact task/site. A
     proven office or mailing-only address, or a site run by a contractor or tenant rather
     than the named operator, blocks. Exactly one question is asked (outreach_question), by
     precedence S, M, then A or U. Anything else, including any defect here, is none.

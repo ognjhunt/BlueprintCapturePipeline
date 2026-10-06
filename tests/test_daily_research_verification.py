@@ -370,11 +370,11 @@ def test_shared_outreach_tier_golden_file_is_recomputed_exactly():
                 "question_mark_in_task"}
     assert required <= names[V11] and required <= names[V12]
     assert "question_uses_raw_task_and_site" in names[V11] and "question_normalizes_task_and_site" in names[V12]
-    for rule, letters in ((V11, {"S", "M", "A"}), (V12, {"S", "M", "A", "U"})):
+    for rule, letters in ((V11, {"S", "M", "A"}), (V12, {"S", "M", "U"})):
         templates = {name for case in document["cases"] if case["rule_version"] == rule for r in case["expected"]
                      for question in r["outreach_ready"]["open_questions"] for name in WEBAPP_TEMPLATES[rule]
                      if question.startswith(WEBAPP_TEMPLATES[rule][name].split("{")[0])}
-        assert templates == letters, rule  # Every template of each rule is exercised.
+        assert templates == letters, rule  # Every automatically derived template is exercised; explicit A is in the wording vectors.
 
 
 def test_shared_question_wording_vectors_and_tables_are_recomputed_exactly():
@@ -475,7 +475,7 @@ def test_open_workflow_or_fit_states_stay_outreach_ready_until_contradicted(clai
     assert block["open_questions"] == [webapp_question(template, case["candidates"][0], V12)]
 
 
-def test_a_contradicted_counterevidence_changes_the_question_not_the_eligibility():
+def test_automation_elsewhere_keeps_the_question_neutral_and_the_eligibility():
     case = tier_cases()[0]
     assert case["rule_version"] == V12
     claims, counter = case["assessments"]["golden-1"]["claims"], case["assessments"]["golden-1"]["counterevidence"]
@@ -485,8 +485,8 @@ def test_a_contradicted_counterevidence_changes_the_question_not_the_eligibility
     counter.update(status="contradicted", reason="Synthetic partial automation elsewhere")
     result = tiered(case)["results"][0]
     assert result["tier"] == "outreach_ready" and result["outreach_ready"]["blockers"] == []
-    assert result["outreach_ready"]["open_questions"] == [webapp_question("A", case["candidates"][0], V12)]
-    assert result["outreach_ready"]["open_questions"][0].startswith("What has kept the rest of manual case picking")
+    assert result["outreach_ready"]["open_questions"] == [webapp_question("U", case["candidates"][0], V12)]
+    assert result["outreach_ready"]["open_questions"][0].startswith("Is any of manual case picking")
     claims["human_workflow"]["status"] = "contradicted"
     assert tiered(case)["results"][0]["outreach_ready"]["blockers"] == ["human_workflow_contradicted"]
 
@@ -573,8 +573,8 @@ def test_exactly_one_question_by_precedence_with_open_checks_the_webapp_derives(
                 continue
             assert block["blockers"] == [] and block["open_checks"] == webapp_open_checks(result["assessment"])
             candidate = next(c for c in case["candidates"] if c["candidate_key"] == result["candidate_key"])
-            # The WebApp reads automation evidence from the assessment alone: a contradicted counterevidence.
-            partial = result["assessment"]["counterevidence"]["status"] == "contradicted"
+            # The assessment's broad counterevidence status cannot establish exact task/site partial scope.
+            partial = False
             rule = case["rule_version"]
             template = ("S" if "site_link" in block["open_checks"] else "M" if "manual_workflow" in block["open_checks"]
                         else "A" if partial or rule == V11 else "U")

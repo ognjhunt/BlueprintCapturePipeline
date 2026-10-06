@@ -95,7 +95,7 @@
       "us",
       "usa"
     ],
-    "trailing_marks": ".,;:!?\u2026\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u061f\u060c\u061b ",
+    "trailing_marks": ".,;:!?…。，；：！？؟،؛ ",
     "short_site_name": {
       "words": 4,
       "characters": 40
@@ -165,19 +165,19 @@
         "expected": "kitting"
       },
       {
-        "task": "\u00c9l picking",
-        "expected": "\u00e9l picking"
+        "task": "Él picking",
+        "expected": "él picking"
       },
       {
-        "task": "Pallet wrapping\u2026",
+        "task": "Pallet wrapping…",
         "expected": "pallet wrapping"
       },
       {
-        "task": "Box folding\uff1f",
+        "task": "Box folding？",
         "expected": "box folding"
       },
       {
-        "task": "Bin packing \u061f",
+        "task": "Bin packing ؟",
         "expected": "bin packing"
       },
       {
@@ -410,9 +410,9 @@
       },
       {
         "site": "North plant",
-        "location": "D\u2019IBERVILLE, MS",
-        "expected_city": "D\u2019IBERVILLE",
-        "expected": "your D\u2019Iberville site"
+        "location": "D’IBERVILLE, MS",
+        "expected_city": "D’IBERVILLE",
+        "expected": "your D’Iberville site"
       }
     ],
     "questions": [
@@ -4543,7 +4543,7 @@
     {
       "name": "automation_elsewhere_manual_verified",
       "rule_version": "blueprint.outreach-ready-rule.v1.2",
-      "note": "Automation of another site does not block. With the manual workflow verified, that automation evidence (a contradicted counterevidence) asks template A.",
+      "note": "Automation of another site does not block and cannot establish partial automation of this task/site. With the manual workflow verified, template U stays neutral.",
       "now": "2026-10-05T12:00:00+00:00",
       "candidates": [
         {
@@ -4727,7 +4727,7 @@
               "interest"
             ],
             "open_questions": [
-              "What has kept the rest of manual case picking for outbound orders at your Testville site from being automated so far?"
+              "Is any of manual case picking for outbound orders at your Testville site automated today, or is it all done by hand?"
             ],
             "blockers": []
           }

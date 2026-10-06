@@ -1132,7 +1132,7 @@ test('the question and open checks are exactly what Blueprint-WebApp derives fro
   for(const [assessment,checks,template] of [
     [{...claims('inference','unresolved'),valid_until:null},['site_link','manual_workflow','freshness','existing_automation','fit','interest'],'S'],
     [{...claims('verified_fact','unresolved'),valid_until:'2030-01-01T00:00:00Z'},CHECKS,'M'],
-    [{...claims('verified_fact','verified_fact'),valid_until:null,...automation},['freshness','existing_automation','fit','interest'],'A'],
+    [{...claims('verified_fact','verified_fact'),valid_until:null,...automation},['freshness','existing_automation','fit','interest'],'U'],
     [{...claims('verified_fact','verified_fact'),valid_until:null},['freshness','existing_automation','fit','interest'],'U'],
     [{...claims('verified_fact','verified_fact'),valid_until:null,counterevidence:{status:'checked'}},['freshness','existing_automation','fit','interest'],'U']]) {
     assert.deepEqual(openChecks(assessment),checks);assert.equal(firstQuestion(checks,c,assessment),TEMPLATES[template]);

@@ -209,14 +209,16 @@ Blueprint-WebApp re-derives rows published under v1.1, with v1.1 wording. Its
   cited usable non-vendor source whose quote is in retained text). Automation is a
   block only when the exact task at this site is shown fully automated (a
   contradicted human workflow). Other automation evidence, including a contradicted
-  counterevidence, changes the question and not the eligibility.
+  counterevidence, does not change eligibility or establish partial automation of
+  this exact task/site.
 - Open checks, in order: `site_link` (site task not `verified_fact`),
   `manual_workflow` (human workflow not `verified_fact`), `freshness` (`valid_until`
   null), then `existing_automation`, `fit` and `interest`. Exactly one question
   (`verification.outreach_question`), by precedence S (site link open), M (manual
-  workflow open), A (manual workflow verified and automation evidence recorded: a
-  contradicted counterevidence), else U (automation unknown or none shown), word for
-  word:
+  workflow open), else U (exact-task/site partial automation unknown), word for
+  word. A requires an explicitly validated exact-task/site partial-automation
+  premise. The assessment's counterevidence can describe other tasks/sites, so
+  daily QA and publication use U even when that status is contradicted:
   - S: "Is <task> done at <site>, or somewhere else in the company?"
   - M: "Which parts of <task> at <site> still need people, and what has kept them
     from being automated?"

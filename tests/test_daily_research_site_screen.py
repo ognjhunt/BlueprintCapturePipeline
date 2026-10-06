@@ -923,13 +923,18 @@ def test_review_p8_an_unproven_contradiction_never_blocks(tmp_path, changes):
     assert record["tier"] == "outreach_ready", record["blockers"]
 
 
-def test_partial_automation_keeps_the_site_and_asks_question_a(tmp_path):
+@pytest.mark.parametrize("quote", [
+    "A robot cell tends two of the twelve lathes at the plant.",
+    "A robot cell palletizes finished cartons at another company plant.",
+])
+def test_broad_partial_automation_keeps_the_site_and_asks_neutrally(tmp_path, quote):
     partial = screen_answers(1, existing_automation="partial", existing_automation_url="https://operator-1.example/robots",
-                             existing_automation_quote="A robot cell tends two of the twelve lathes at the plant.")
+                             existing_automation_quote=quote)
     record = screened(tmp_path, partial)
     assert (record["tier"], record["question_template"], record["gates"]["states"]["counterevidence"]) == (
-        "outreach_ready", "A", "checked")
-    assert record["question"] == "What has kept the rest of CNC machine tending at your Fixture City site from being automated so far?"
+        "outreach_ready", "U", "checked")
+    assert record["gates"]["partial_automation"] is False
+    assert record["question"] == "Is any of CNC machine tending at your Fixture City site automated today, or is it all done by hand?"
     # A proven "no" shows no automation: U.
     none = screen_answers(1, existing_automation="no", existing_automation_url="https://operator-1.example/robots",
                           existing_automation_quote="No robots or automated loaders are used on the lathes at the plant.")

@@ -21,7 +21,8 @@ export const HYPOTHESIS_LABEL='Hypothesis', HYPOTHESIS_MATURITY='Outreach-ready:
 export const HYPOTHESIS_HEADING='Hypothesis, not verified';
 // Rule v1.2, exactly as verification.outreach_question and Blueprint-WebApp derive them from the assessment:
 // open checks in rule order, then exactly one question, by precedence S (site link open), then M (manual
-// workflow open), then A (automation evidence: a contradicted counterevidence), else U. <task> is questionTask
+// workflow open), else U. Counterevidence may concern another task/site, so it cannot justify A's
+// exact task/site partial-automation premise. <task> is questionTask
 // and <site> sitePhrase; the shared golden file's question_wording pins these mirrors of verification.py.
 export const QUESTION_TEMPLATES={
   S:(task,site)=>`Is ${task} done at ${site}, or somewhere else in the company?`,
@@ -88,8 +89,10 @@ export const openChecks=assessment=>[...(assessment?.claims?.site_task?.status!=
   ...(assessment?.valid_until===null?['freshness']:[]),'existing_automation','fit','interest'];
 export const questionTemplate=(checks,partialAutomation=false)=>checks.includes('site_link')?'S'
   :checks.includes('manual_workflow')?'M':partialAutomation===true?'A':'U';
-export const firstQuestion=(checks,candidate,assessment)=>QUESTION_TEMPLATES[questionTemplate(checks,
-  assessment?.counterevidence?.status==='contradicted')](questionTask(candidate.task),sitePhrase(candidate.site,candidate.location));
+// Counterevidence may describe automation of another task/site; the assessment has no validated
+// exact task/site partial-automation scope. Keep the question neutral, as verification.outreach_gates.
+export const firstQuestion=(checks,candidate,_assessment)=>QUESTION_TEMPLATES[questionTemplate(checks)](
+  questionTask(candidate.task),sitePhrase(candidate.site,candidate.location));
 // The form #855 records for valid_until (its ISO_TIMESTAMP); outreach_ready.VALID_UNTIL mirrors it.
 const VALID_UNTIL=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const NOTION_BATCH_BLOCKS = 90, NOTION_REQUEST_BYTES = 450000;

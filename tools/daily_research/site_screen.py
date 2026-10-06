@@ -1707,7 +1707,9 @@ def screen_gates(site, answers, choices, verification, index, *, valid):
     name, city = site_label(site)
     return {"eligible_for_qualified_promotion": False, "assessment_valid": valid, "identity_present": True,
             "duplicate": False, "conflict": False, "valid_until": None, "states": states, "facts": facts,
-            "task": answers["target_task"], "site": name, "location": city, "partial_automation": automation == "partial",
+            # The provider's "partial" answer also includes automation at other tasks/sites.
+            # Its quote alone has no validated exact task/site partial scope, so ask neutrally.
+            "task": answers["target_task"], "site": name, "location": city, "partial_automation": False,
             "site_task_scope": scope, "flags": flags}
 
 
@@ -1717,8 +1719,8 @@ def outreach_tier(gates):
     outreach_ready: operator, physical_site and site_task are verified_fact with proofs, the result is valid,
     and nothing is contradicted. Anything else, including any defect here, is none. The question is
     verification.outreach_question (rule v1.2): S while the site link is open, else M while the manual
-    workflow is open, else A when a proven answer shows partial automation and U when it is unknown or none is
-    shown. Its site is "your <City> site" from the address city, else the input site name, else "this site".
+    workflow is open, else U: the provider's broad "partial" answer cannot establish automation of this
+    exact task at this site. Its site is "your <City> site" from the address city, else the input site name, else "this site".
     Every other open check is recorded, not asked."""
     block = {"rule_version": SCREEN_RULE, "proving_sources": [], "open_checks": [], "question": None,
              "question_template": None, "blockers": []}
@@ -1870,11 +1872,13 @@ def address_role(address, person):
     local = address.partition("@")[0]
     parts, letters = set(re.findall(r"[a-z]+", local)), "".join(re.findall(r"[a-z]+", local))
     names = [word for word in words(person.get("name")).split() if len(word) >= 3] if person["verified"] else []
-    if any(name in letters for name in names):
-        return "person"
+    # A shared or forbidden role inbox never becomes a person's address just because a
+    # verified person's surname also names that role (for example Sales or Info).
     for role, vocabulary in (("refused", REFUSED_INBOX), ("team", TEAM_INBOX), ("general", GENERAL_INBOX)):
         if parts & vocabulary:
             return role
+    if any(name in letters for name in names):
+        return "person"
     return "unknown"
 
 
