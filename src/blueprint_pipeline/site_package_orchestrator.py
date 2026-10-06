@@ -4418,30 +4418,10 @@ def run_qualification_pipeline(
         ensure_dir(pipeline_dir)
         if is_website_entry_source(descriptor.metadata.get("capture_entry_source")):
             stage = "website_task_context"
-            from .consent_takedown import read_consent_state
-            local_consent = read_consent_state(capture_root)
-            if local_consent["state"] == "revoked" or (
-                    local_consent.get("source_path", "") and "website_withdrawal/tombstone.json" in local_consent["source_path"]):
-                raise ValueError("website_capture_withdrawn")
-            task_context = load_current_website_task_context(
-                request_id=str(descriptor.site_submission_id or descriptor.metadata.get("site_submission_id") or ""),
-                scene_id=scene_id, capture_id=capture_id,
-            )
-            write_json(pipeline_dir / "website_task_context.json", task_context)
-            from .website_task_evidence import ingest_website_task_evidence, publish_website_item_evidence
-            task_evidence = ingest_website_task_evidence(task_context=task_context, bucket=bucket,
-                output_root=pipeline_dir / "website_task_evidence" / task_context["context_digest"][7:])
-            publish_website_item_evidence(task_context=task_context, evidence=task_evidence)
-            sponsorship = load_website_scene_sponsorship(task_context=task_context, now=time.time())
-            write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
-            descriptor = CaptureDescriptor.from_dict({
-                **descriptor.to_dict(),
-                "metadata": {**descriptor.metadata, "site_task_context": task_context,
-                             "site_task_evidence": task_evidence,
-                             "website_scene_execution_authority": sponsorship,
-                             "capture_rights": dict(task_context.get("capture_rights") or {}),
-                             "task_statement": task_context["description"]},
-            })
+            from .website_task_evidence import prepare_website_task_descriptor
+            descriptor = prepare_website_task_descriptor(
+                descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir, bucket=bucket,
+                load_task_context=load_current_website_task_context, load_sponsorship=load_website_scene_sponsorship)
         downstream_requested_lanes = _requested_downstream_lanes(
             descriptor=descriptor,
             requested_lanes=requested_lanes,

@@ -5,7 +5,23 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
+from .common import read_json_any
+from .live_pipeline_intake_runtime_controls import _string
 from .website_capture_withdrawal import acknowledge_withdrawal
+
+
+def register_server_website_withdrawal_routes(app: FastAPI, *, require_admission: Callable,
+                                             manifest_path_provider: Callable[[], Path],
+                                             resolve_client_root: Callable[..., Path | None]) -> None:
+    def resolve_root(payload: Mapping[str, Any], client_id: str) -> Path | None:
+        # Read only the server's manifest and authenticated client scope.
+        path = manifest_path_provider()
+        manifest = read_json_any(path) if path.is_file() else {}
+        manifest_root = _string(manifest.get("capture_root")) if isinstance(manifest, Mapping) else ""
+        return resolve_client_root(
+            payload={**payload, "site_submission_id": payload.get("request_id")}, client_id=client_id,
+            manifest_capture_root=Path(manifest_root).expanduser().absolute() if manifest_root else None)
+    register_website_withdrawal_routes(app, require_admission=require_admission, resolve_root=resolve_root)
 
 
 def register_website_withdrawal_routes(app: FastAPI, *, require_admission: Callable,

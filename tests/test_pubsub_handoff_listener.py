@@ -39,6 +39,7 @@ from blueprint_pipeline.pubsub_handoff_listener import (
     stage_handoff_capture,
 )
 from tests.test_qualification_coverage_edges import (
+    _confirmed_website_task,
     _descriptor as _qualification_descriptor,
     _patch_pipeline_side_effects,
     _write_descriptor,
@@ -1576,9 +1577,7 @@ def test_a_held_preparation_stage_is_recognized_as_an_authority_ending(tmp_path,
     storage_root = tmp_path / "gcs"
     descriptor_uri = _website_qualification_descriptor(storage_root)
     _patch_pipeline_side_effects(monkeypatch)
-    monkeypatch.setattr(orchestrator, "load_current_website_task_context", lambda **_: {
-        "description": "Pick the box", "confirmed": True,
-        "capture_rights": {"derived_scene_generation_allowed": True}})
+    monkeypatch.setattr(orchestrator, "load_current_website_task_context", _confirmed_website_task)
     monkeypatch.setattr(orchestrator, "load_website_scene_sponsorship", lambda **_: {"sponsor": "blueprint"})
     monkeypatch.setattr(orchestrator, "run_clean_plate_stage", lambda **_: {
         "status": "noop", "privacy_status": "no_people_detected", "privacy_verified": True})

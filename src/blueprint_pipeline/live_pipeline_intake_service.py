@@ -2602,18 +2602,9 @@ def create_app() -> FastAPI:
         work_dir_provider=_work_dir,
     )
 
-    from .website_capture_withdrawal_http import register_website_withdrawal_routes
-
-    def website_withdrawal_root(payload: Mapping[str, Any], client_id: str) -> Path | None:
-        # Existing client scopes apply; absence of a scope never broadens this
-        # route to a caller-selected filesystem path.
-        path = _manifest_path()
-        manifest = read_json_any(path) if path.is_file() else {}
-        manifest_root = _string(_mapping(manifest).get("capture_root"))
-        return _server_capture_root_for_client(payload={**payload, "site_submission_id": payload.get("request_id")}, client_id=client_id,
-            manifest_capture_root=Path(manifest_root).expanduser().absolute() if manifest_root else None)
-
-    register_website_withdrawal_routes(app, require_admission=_require_admission, resolve_root=website_withdrawal_root)
+    from .website_capture_withdrawal_http import register_server_website_withdrawal_routes
+    register_server_website_withdrawal_routes(app, require_admission=_require_admission,
+        manifest_path_provider=_manifest_path, resolve_client_root=_server_capture_root_for_client)
 
     @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_admission)])
     async def intake_job_request(request: Request) -> Dict[str, Any]:

@@ -5,10 +5,13 @@ from pathlib import Path
 
 import pytest
 
+import blueprint_pipeline.website_task_evidence as module
+from blueprint_pipeline.capture_bridge import CaptureDescriptor
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.website_task_evidence import (
     ingest_website_task_evidence,
     owner_success_criteria,
+    prepare_website_task_descriptor,
 )
 
 
@@ -22,6 +25,50 @@ def test_consumes_exact_webapp_projection_vector(tmp_path):
     assert receipt["operator_task_details"] == vector["brief"]["operatorTaskDetails"]
     assert receipt["success_criteria"]["targets"] == vector["brief"]["successCriteria"]
     assert Path(receipt["items"][0]["images"][0]["path"]).read_bytes() == b"synthetic-photo"
+
+
+def test_preparation_descriptor_retains_actual_signed_evidence_before_sponsorship(tmp_path, monkeypatch):
+    context, data = task()
+    descriptor = CaptureDescriptor(schema_version="v1", scene_id=context["scene_id"],
+        capture_id=context["capture_id"], capture_source="unknown", capture_tier="candidate",
+        raw_prefix_uri="gs://bucket/raw", frames_index_uri="gs://bucket/raw/frames.json",
+        site_submission_id=context["request_id"], metadata={"unchanged": "retained"})
+    calls = []
+    monkeypatch.setattr(module, "_download", lambda bucket, image, target: target.write_bytes(data))
+    def publish(**request):
+        calls.append(request["operation"])
+        return {"ok": True, "evidence_digest": request["payload"]["evidence_digest"]}
+    monkeypatch.setattr(module, "website_webapp_request", publish)
+    def sponsor(**kwargs):
+        assert kwargs["task_context"] == context
+        calls.append("sponsorship")
+        return {"sponsor": "synthetic"}
+    result = prepare_website_task_descriptor(descriptor=descriptor, capture_root=tmp_path / "capture",
+        pipeline_dir=tmp_path / "pipeline", bucket="bucket", load_task_context=lambda **_: context,
+        load_sponsorship=sponsor)
+    evidence = result.metadata["site_task_evidence"]
+    assert calls == ["task-item-evidence", "sponsorship"]
+    assert result.metadata["unchanged"] == "retained"
+    assert result.metadata["site_task_context"] == context
+    assert evidence["operator_task_details"] == context["operator_task_details"]
+    assert evidence["success_criteria"]["targets"] == context["success_criteria"]
+    assert Path(evidence["items"][0]["images"][0]["path"]).read_bytes() == data
+    assert json.loads((tmp_path / "pipeline/website_task_context.json").read_text()) == context
+
+
+def test_local_revocation_stops_preparation_before_signed_read_or_sponsorship(tmp_path):
+    raw = tmp_path / "capture/raw"
+    raw.mkdir(parents=True)
+    (raw / "rights_consent.json").write_text(json.dumps({"consent_status": "revoked"}))
+    descriptor = CaptureDescriptor(schema_version="v1", scene_id="site-req1", capture_id="walkthrough-req1",
+        capture_source="unknown", capture_tier="candidate", raw_prefix_uri="gs://bucket/raw",
+        frames_index_uri="gs://bucket/raw/frames.json")
+    def forbidden(**_):
+        pytest.fail("revoked source cannot reach owner read or sponsored processing")
+    with pytest.raises(ValueError, match="website_capture_withdrawn"):
+        prepare_website_task_descriptor(descriptor=descriptor, capture_root=raw.parent,
+            pipeline_dir=tmp_path / "pipeline", bucket="bucket", load_task_context=forbidden,
+            load_sponsorship=forbidden)
 
 
 def task():

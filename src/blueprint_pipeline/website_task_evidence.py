@@ -5,13 +5,43 @@ import hashlib
 import os
 import re
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from .capture_bridge import CaptureDescriptor
 from .common import write_json
+from .consent_takedown import read_consent_state
 from .decision_evidence_contracts import canonical_digest
 from .website_task_context import validate_website_task_context, website_webapp_request
+
+
+def prepare_website_task_descriptor(*, descriptor: CaptureDescriptor, capture_root: Path,
+                                    pipeline_dir: Path, bucket: str,
+                                    load_task_context: Callable[..., dict[str, Any]],
+                                    load_sponsorship: Callable[..., dict[str, Any]]) -> CaptureDescriptor:
+    """Bind current owner evidence before preparation or sponsored processing."""
+    consent = read_consent_state(capture_root)
+    if consent["state"] == "revoked" or "website_withdrawal/tombstone.json" in (consent.get("source_path") or ""):
+        raise ValueError("website_capture_withdrawn")
+    context = load_task_context(
+        request_id=str(descriptor.site_submission_id or descriptor.metadata.get("site_submission_id") or ""),
+        scene_id=descriptor.scene_id, capture_id=descriptor.capture_id,
+    )
+    write_json(pipeline_dir / "website_task_context.json", context)
+    evidence = ingest_website_task_evidence(task_context=context, bucket=bucket,
+        output_root=pipeline_dir / "website_task_evidence" / context["context_digest"][7:])
+    publish_website_item_evidence(task_context=context, evidence=evidence)
+    sponsorship = load_sponsorship(task_context=context, now=time.time())
+    write_json(pipeline_dir / "website_scene_sponsorship.json", sponsorship)
+    return CaptureDescriptor.from_dict({
+        **descriptor.to_dict(),
+        "metadata": {**descriptor.metadata, "site_task_context": context,
+                     "site_task_evidence": evidence, "website_scene_execution_authority": sponsorship,
+                     "capture_rights": dict(context.get("capture_rights") or {}),
+                     "task_statement": context["description"]},
+    })
 
 
 def owner_success_criteria(context: Mapping[str, Any]) -> dict[str, Any]:
