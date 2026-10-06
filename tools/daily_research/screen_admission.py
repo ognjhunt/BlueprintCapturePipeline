@@ -225,8 +225,10 @@ def domain_proof(domain, proofs):
     return {key: domain[key] for key in ("domain", "basis", "url", "text_sha256")}
 
 
-def published_recipient(contact, record, proofs, workspace):
+def published_recipient(contact, record, proofs, workspace, *, today=None):
     """Route 1, 5 or 6: the contact stage's verified published address, with its page and operator-domain proof."""
+    if contact_lookup.choose_recipient(contact, today=today).get("source") != "published":
+        return None
     email, route = contact["email"], PUBLISHED.get(contact["recipient"]["kind"])
     domain = email.get("operator_domain")
     if route is None or email.get("verified") is not True or not isinstance(domain, dict):
@@ -254,7 +256,7 @@ def _provider(value):
                     for key in ("lookup_sha256", "record_sha256")))
 
 
-def lookup_recipients(record, contact, domains, person_proof=None):
+def lookup_recipients(record, contact, domains, person_proof=None, *, today=None):
     """The final contact_lookup selector, enriched with the screen's retained public/domain proofs.
     Cached recipients never grant admission: choose_recipient rechecks the current contact and lookup evidence.
     FullEnrich DELIVERABLE is retained alongside verification=valid; an unavailable score stays None."""
@@ -262,7 +264,7 @@ def lookup_recipients(record, contact, domains, person_proof=None):
         if (not isinstance(record, dict) or record.get("schema_version") != contact_lookup.RECORD
                 or record.get("rule_version") != contact_lookup.RULE or record.get("site_key") != contact["site_key"]):
             return []
-        selected = contact_lookup.choose_recipient(contact, record.get("lookups", ()))
+        selected = contact_lookup.choose_recipient(contact, record.get("lookups", ()), today=today)
         if selected.get("source") != "provider_lookup":
             return []
         lookup = next(item for item in record["lookups"] if item.get("address") == selected["address"]
@@ -308,7 +310,7 @@ def recipient_choice(published, looked_up=()):
     return min(choices, key=lambda item: item["rank"]) if choices else None
 
 
-def admission_entry(workspace, record, stored, contact, stored_contact, lookup=None):
+def admission_entry(workspace, record, stored, contact, stored_contact, lookup=None, *, today=None):
     """One bundle result from one outreach-ready screen record and its contact record, both recomputed and equal to
     their derived files; any difference, or a defect, refuses with a stable code."""
     if not isinstance(stored, dict) or canonical(stored) != canonical(record):
@@ -330,8 +332,8 @@ def admission_entry(workspace, record, stored, contact, stored_contact, lookup=N
         answers, evidence, index = _contact_inputs(workspace, record["site_key"])
         domains = [domain_proof(item, proofs) for item in site_screen.operator_domain_proofs(contact_site(record),
                    site_screen.screen_context(workspace, record["site_key"]), (evidence.get("pages") or {}).items())]
-        recipient = recipient_choice(published_recipient(contact, record, proofs, workspace),
-                                     lookup_recipients(lookup, contact, domains, person_block(contact, answers, index)))
+        recipient = recipient_choice(published_recipient(contact, record, proofs, workspace, today=today),
+                                     lookup_recipients(lookup, contact, domains, person_block(contact, answers, index), today=today))
         block = {"run_id": contact["run_id"], "result_sha256": contact["result_sha256"],
                  "evidence_sha256": contact["evidence_sha256"], "rule_version": contact["rule_version"],
                  "checked_on": contact["checked_on"], "decision_role": contact["decision_role"],
@@ -400,7 +402,8 @@ def build(workspace, *, direction_sha256, direction_generation, per_focus=DEFAUL
         states, pin = workspace.states()
         if pin is None:
             _refuse("screen_admission_out_dir_unpinned")
-        loaded = contact_lookup.load(workspace, states=states) if lookups is None else None
+        as_of = contact_lookup.utc_today()
+        loaded = contact_lookup.load(workspace, states=states, today=as_of) if lookups is None else None
         lookup_for = (lambda key: loaded.get(key)) if lookups is None else lookups
         screens = site_screen.stage_records(workspace, states, "screen")
         contacts = site_screen.stage_records(workspace, states, "contact")
@@ -414,7 +417,7 @@ def build(workspace, *, direction_sha256, direction_generation, per_focus=DEFAUL
                 continue
             try:
                 entries.append(admission_entry(workspace, record, stored.get(key), contacts.get(key),
-                                               stored_contacts.get(key), lookup_for(key)))
+                                               stored_contacts.get(key), lookup_for(key), today=as_of))
             except AdmissionError as error:
                 if keys is not None and key in keys:
                     raise

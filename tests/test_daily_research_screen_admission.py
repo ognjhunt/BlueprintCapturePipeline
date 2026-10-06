@@ -62,6 +62,7 @@ def hermetic(monkeypatch):
     """pytest's tmp_path is on storage the out-dir guard refuses, a shell may set the worker flag, and Git is slow."""
     monkeypatch.setattr(ss, "VOLATILE_ROOTS", (), raising=False)
     monkeypatch.delenv("BLUEPRINT_DAILY_RESEARCH_WORKER_ENABLED", raising=False)
+    monkeypatch.setattr(sa.contact_lookup, "utc_today", lambda: TODAY)
     monkeypatch.setattr(ss, "code_state", lambda root=None: {"commit": "0" * 40, "dirty": False, "source": "git"},
                         raising=False)
 
@@ -747,12 +748,12 @@ def test_default_admission_recomputes_lookup_records_from_current_states(tmp_pat
     workspace, _ = prepared(tmp_path, [(1, FOCUS_A, {})])
     load = sa.contact_lookup.load
     seen = []
-    def read(current, *, states):
-        seen.append(states)
-        return load(current, states=states)
+    def read(current, *, states, today):
+        seen.append((states, today))
+        return load(current, states=states, today=today)
     monkeypatch.setattr(sa.contact_lookup, "load", read)
     bundle, _, _ = sa.build(workspace, direction_sha256=DIRECTION_SHA, direction_generation=DIRECTION_GENERATION)
-    assert len(seen) == 1 and seen[0]["contact"]
+    assert len(seen) == 1 and seen[0][0]["contact"] and seen[0][1] == TODAY
     assert bundle["results"][0]["recipient"]["route"] == "published_person_email"
 
 
@@ -775,3 +776,25 @@ def test_final_provider_loader_keeps_status_employment_and_refuses_tampering(tmp
     changed = json.loads(json.dumps(recipient))
     changed["address"] = "sales@operator-1.example"
     assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
+
+
+def test_published_person_loader_refuses_role_or_noncurrent_proof(tmp_path):
+    workspace, _ = prepared(tmp_path, [(1, FOCUS_A, {})])
+    entry = built(workspace)[0]["results"][0]
+    recipient = entry["recipient"]
+    changed = json.loads(json.dumps(recipient))
+    changed["address"] = "plant.team@operator-1.example"
+    changed["published"]["quote"] = "Business inquiries: plant.team@operator-1.example"
+    assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
+    changed = json.loads(json.dumps(recipient))
+    changed["person"]["current"] = False
+    assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
+
+
+def test_admission_rechecks_published_person_date_and_allows_provider_fallback(tmp_path, monkeypatch):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, {})])
+    monkeypatch.setattr(sa.contact_lookup, "utc_today", lambda: TODAY + timedelta(days=549))
+    assert built(workspace)[0]["results"][0]["recipient"] is None
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={"source": "provider_sourced",
+           "name": "Jordan Fixture", "title": "Operations Manager", "corroborated": False})
+    assert built(workspace)[0]["results"][0]["recipient"]["route"] == "provider_sourced_uncorroborated"
