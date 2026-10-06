@@ -674,6 +674,11 @@ def test_interrupted_public_cache_write_resumes_exact_prefix_without_replacement
     )
     inode = pending.stat().st_ino
     assert pending.read_bytes() == canonical(value)[:20]
+    # A normal read may update access time on a relatime filesystem. Force an
+    # old access time so this retry exercises that metadata change reliably.
+    selected = pending.with_name(".public-selected-proof.sha256")
+    selected_stat = selected.stat()
+    os.utime(selected, ns=(0, selected_stat.st_mtime_ns))
     monkeypatch.setattr(os, "write", write)
     namespace["_scene_source_delivery"](COMMIT, deadline=time.monotonic() + 10)
     target = pending.with_name("source-sha256-manifest.json")
