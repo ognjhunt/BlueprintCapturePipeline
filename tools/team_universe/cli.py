@@ -72,11 +72,13 @@ def build_parser():
     for name, text in (("verify", "Check every quote against its cited page; write the records and the team list"),
                        ("summary", "Counts by stage, field, route and tier, and cost")):
         commands.add_parser(name, help=text).add_argument("--out", required=True, type=Path)
-    ranker = commands.add_parser("rank", help="Rank the teams: beta_candidate, prospect or insufficient")
+    ranker = commands.add_parser("rank", help="Qualify teams using a snapshot-bound private audit, then rank")
     ranker.add_argument("--out", required=True, type=Path)
     ranker.add_argument("--family-weights", required=True, type=Path,
                         help="Private per-family weights file, or a site screen summary.json")
     ranker.add_argument("--config", type=Path, help="A blueprint.team-rank.v1 config (default: the reviewed one)")
+    ranker.add_argument("--audit", type=Path,
+                        help="Private blueprint.team-manual-eligibility-audit.v1; absent => no qualified teams")
     return parser
 
 
@@ -120,9 +122,10 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
     elif args.command == "rank":
         config = read_file(args.config, "team_universe_rank_config_unreadable") if args.config else None
         weights_raw = read_file(args.family_weights, "team_universe_family_weights_unreadable")
-        result = team_rank.rank(tu.TeamWorkspace(args.out), weights_raw, config_raw=config)
+        audit = read_file(args.audit, "team_universe_audit_unreadable") if args.audit else None
+        result = team_rank.rank(tu.TeamWorkspace(args.out), weights_raw, config_raw=config, audit_raw=audit, today=today)
     else:
-        result = tu.summary(tu.TeamWorkspace(args.out))
+        result = tu.summary(tu.TeamWorkspace(args.out), today=today)
     print(ss.canonical(result))
     return result
 

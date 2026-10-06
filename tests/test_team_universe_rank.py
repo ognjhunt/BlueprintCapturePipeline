@@ -39,7 +39,7 @@ def config(**changes):
 
 
 def assess(record, *, weights_raw=None, **changes):
-    return tr.assess(record, tr.load_config(config(**changes) if changes else None), tr.load_weights(weights_raw or weights()))
+    return tr._source_score(record, tr.load_config(config(**changes) if changes else None), tr.load_weights(weights_raw or weights()))
 
 
 # --- the strict config --------------------------------------------------------------------------
@@ -132,7 +132,7 @@ def test_a_site_screen_summary_gives_the_weights_by_its_outreach_ready_sites():
         tr.load_weights(json.dumps(unfocused).encode())
 
 
-# --- the rule -----------------------------------------------------------------------------------
+# --- legacy source-priority scoring (never an eligibility gate) -----------------------------------------------------------------------------------
 def test_a_fully_evidenced_early_stage_open_team_with_a_policy_is_a_beta_candidate(record):
     outcome = assess(record)
     assert (outcome["tier"], outcome["score"], outcome["blockers"]) == ("beta_candidate", 100.0, [])
@@ -209,23 +209,26 @@ def test_rank_writes_a_private_ranked_file_of_prospects_and_returns_counts_only(
                  company(4, source_quote="A palletizing startup raised a seed round to build its robots.")]
     workspace, *_ = pipeline(tmp_path, answers, discovery=discovery)
     result = tr.rank(workspace, weights())
-    assert result["tiers"] == {"beta_candidate": 1, "prospect": 1, "insufficient": 2}
+    assert result["tiers"] == {"beta_candidate": 0, "capability_prospect": 0, "reference_only": 0, "pending": 3, "insufficient": 1}
     assert (result["teams"], result["screened"], result["weights_source"]) == (4, 3, "weights_file")
-    assert result["blockers"] == {"contact_route_missing": 1, "identity_not_verified": 1, "not_screened": 1}
+    assert result["blockers"]["offering_not_audited"] == 3
+    assert result["blockers"]["evaluation_compatibility_not_verified"] == 3
+    assert result["blockers"]["not_screened"] == 1
     assert not any(value in ss.canonical(result) for value in FIXTURE_STRINGS)
     path = workspace.root / tu.RANKED_NAME
     assert path.stat().st_mode & 0o777 == 0o600
     ranked = json.loads(path.read_text())
     assert ranked["schema_version"] == tr.RANKED and ranked["config_sha256"] == tr.load_config()["sha256"]
-    assert ranked["claim_boundary"] == {"teams_are_prospects": True, "relationship_implied": False,
-                                        "contact_is_published_business_route_only": True, "nothing_sent": True}
+    assert ranked["claim_boundary"] == tr.CLAIM_BOUNDARY
+    assert not ranked["claim_boundary"]["evaluation_or_contact_authorized"]
     rows = ranked["teams"]
     assert [row["domain"] for row in rows] == [f"synthbot-{number}.example" for number in (1, 2, 3, 4)]
-    assert [row["tier"] for row in rows] == ["beta_candidate", "prospect", "insufficient", "insufficient"]
-    assert all(row["status"] == "prospect" for row in rows)
+    assert [row["tier"] for row in rows] == ["pending", "pending", "pending", "insufficient"]
+    assert all(row["status"] == row["tier"] for row in rows)
     assert rows[0]["contact"] == {"route": "role_inbox", "address": "partnerships@synthbot-1.example",
                                   "url": "https://synthbot-1.example/contact"}
-    assert rows[0]["task_families"] == ["palletizing_depalletizing"] and rows[3]["screen"] is None
+    assert rows[0]["task_families"] == [] and rows[3]["screen"] is None
+    assert rows[0]["source_claimed_task_families"] == ["palletizing_depalletizing"]
     assert rows[3]["blockers"] == ["not_screened"] and rows[3]["discovery"]["proven"] is False
 
 
