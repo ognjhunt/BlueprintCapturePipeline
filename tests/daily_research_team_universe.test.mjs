@@ -11,7 +11,7 @@ const sha=raw=>createHash('sha256').update(raw).digest('hex');
 async function fixture() {
   const db=new MemoryFirestore(),bucket=new FakeBucket(),store=new Store(db,()=>Date.parse('2026-10-05T18:00:00Z'),undefined,null,null,null,null,false,bucket);
   db.values.set(ROOT,{schema_version:'blueprint.research-control.v1',enabled:true,config:{synthetic:'preserved'}});
-  await store.acquire();
+  await store.acquire('research_release');
   const raw=bytes({schema_version:'blueprint.team-evidence-export.v1',manifest:{distribution:'internal_only',
     ranked_sha256:'a'.repeat(64),audit_sha256:'b'.repeat(64),scope_sha256:'c'.repeat(64),assessed_on:'2026-10-05'},teams:[]});
   const stored=await store.teamUniverseObjectPut(sha(raw),raw.toString('base64'));

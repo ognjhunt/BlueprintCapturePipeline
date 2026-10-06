@@ -734,8 +734,9 @@ def read_object(bridge, admission_id, generation, size=None):
 
 
 def idle(bridge):
-    """True when no daily row is unfinished and no QA, repair or publication is active or queued."""
-    return not bridge.call("summary").get("unfinished") and not bridge.call("active_qa") and not bridge.call("work_item")
+    """True when daily/QA/publication work is idle and the communications lap is explicitly drained."""
+    return (not bridge.call("summary").get("unfinished") and not bridge.call("active_qa")
+            and not bridge.call("work_item") and bridge.call("communications_lap_idle") is True)
 
 
 @contextmanager
@@ -744,7 +745,7 @@ def lease(bridge, sleep=time.sleep, monotonic=time.monotonic, wait=LEASE_WAIT_SE
     deadline = monotonic() + wait
     while True:
         try:
-            bridge.call("acquire")
+            bridge.call("acquire", scope="research_release")
             break
         except Refusal as exc:
             if str(exc) != "runner_overlap" or monotonic() >= deadline:
@@ -760,7 +761,8 @@ def lease(bridge, sleep=time.sleep, monotonic=time.monotonic, wait=LEASE_WAIT_SE
 # again, or a refusal a later pass can clear. Any other refusal waits for a control change (a new pin or direction).
 RETRY_STATES = frozenset({"screen_admission_waiting", "screen_admission_write_uncertain",
                           "screen_admission_replan_required"})
-TRANSIENT = frozenset({"runner_overlap", "firestore_lease_lost", "firestore_bridge_deadline", "firestore_bridge_unavailable",
+TRANSIENT = frozenset({"runner_overlap", "communications_worker_lap_active", "firestore_lease_lost",
+                       "firestore_bridge_deadline", "firestore_bridge_unavailable",
                        "canonical_crm_read_unavailable", "crm_snapshot_missing_incomplete_or_stale",
                        "screen_admission_object_unavailable", "screen_admission_crm_changed",
                        "screen_admission_crm_duplicate_changed", "screen_admission_state_changed",
@@ -807,7 +809,7 @@ def _step(bridge, *, now, root):
         return {"state": "screen_admission_acknowledged", "rows": known.get("rows"), "duplicates": known.get("duplicates")}
     if not idle(bridge):
         return {"state": "screen_admission_waiting", "error": "screen_admission_daily_work_active"}
-    ledger = FirestoreLedger(bridge)
+    ledger = FirestoreLedger(bridge, lease_scope="research_release")
     with ledger.lock():
         if not idle(bridge):
             return {"state": "screen_admission_waiting", "error": "screen_admission_daily_work_active"}

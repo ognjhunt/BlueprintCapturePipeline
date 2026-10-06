@@ -27,6 +27,20 @@ only `control.team_universe`, appends a monotonic version receipt, then reads ba
 bypass, new credential, provider, paid flag, schedule or outreach setting. A source/release repin and
 team-data pin must use separate explicit lease ownership; no unrelated control fields change.
 
+Screen CRM publication and team pinning also share the communications lap contract with WebApp's
+`server/agents/communications-release-lease.ts`. Its durable document is
+`blueprintCommunications/default/intakeState/workerLap`, schema
+`blueprint.communications-worker-lap.v1`. Scoped bridge acquisition (`scope=research_release`)
+reads that exact document, including its absence, in the same transaction that writes the canonical
+`blueprintDailyResearch/sites-first` lease with a `research-release:` owner. Web's lap claim reads
+that same control transactionally and refuses a live release owner. Ordinary daily acquisition
+retains its previous ownership and behavior. Final screen/team control transactions recheck the lap.
+A lap's expired lease never establishes drain: only a valid `complete` record with the worker owner,
+positive generation, integer start/renewal/completion timestamps and `until=0` permits publication.
+Malformed, unknown and unsettled records remain blocked. These reciprocal guards must actually be
+installed in both runtimes and verified before relying on the fence; older code does not provide it.
+This contract does not authorize an old-code bootstrap, activation, provider call or manual drain.
+
 For a new daily intent, `FirestoreLedger.team_universe_snapshot` reads the exact generation once.
 The host validates all safe fields, source digests, structural proof anchors and currentness before
 freezing `/workspace/inputs/blueprint-team-evidence.json`, its SHA256 and pin in that durable intent.

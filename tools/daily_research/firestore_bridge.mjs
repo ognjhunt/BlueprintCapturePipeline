@@ -9,6 +9,20 @@ import {contactResearchContext,claimContactResearch,finishContactResearchSafely}
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
 export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
+export const COMMUNICATIONS_WORKER_LAP = 'blueprintCommunications/default/intakeState/workerLap';
+const RELEASE_OWNER_PREFIX = 'research-release:';
+const communicationsLapDrained = snapshot => {
+  if (!snapshot.exists) return true;
+  const lap = snapshot.data(), lease = lap?.lease;
+  // An expired or malformed active lap still owns unfinished work. Only the
+  // matching worker's explicit completion/zero-expiry record establishes drain.
+  return lap?.schema_version === 'blueprint.communications-worker-lap.v1' && lap.phase === 'complete'
+    && typeof lease?.owner === 'string' && /^communications-worker-lap:[a-zA-Z0-9-]{1,80}$/.test(lease.owner)
+    && Number.isSafeInteger(lease.generation) && lease.generation >= 1
+    && Number.isSafeInteger(lease.until) && lease.until === 0
+    && Number.isSafeInteger(lap.startedAt) && Number.isSafeInteger(lap.renewedAt)
+    && Number.isSafeInteger(lap.completedAt);
+};
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
 const TERMINAL = ['awaiting_review', 'reviewed', 'completed', 'failed', 'cancelled'];
 const CLEANUP_BUCKET = 'blueprint-8c1ca.appspot.com';
@@ -216,7 +230,7 @@ function paidDirectionProblem(d,control) {
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
     terminalCollectionReceipt = null, schedulerStopped = false, archiveBucket = null) {
-    this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
+    this.db = db; this.clock = clock; this.owner = owner; this.defaultOwner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
     this.publisher = publisher;
@@ -236,21 +250,48 @@ export class Store {
     if (!lease || lease.owner !== this.owner || lease.generation !== this.generation || lease.expires_at_ms <= this.clock())
       refuse('firestore_lease_lost');
   }
-  async acquire() {
-    this.generation = await this.transaction(async tx => {
+  async communicationsLapIdle() {
+    return communicationsLapDrained(await this.db.doc(COMMUNICATIONS_WORKER_LAP).get());
+  }
+  async publicationFence(tx, control) {
+    this.fence(control);
+    if (!this.owner.startsWith(RELEASE_OWNER_PREFIX)) refuse('research_release_lease_required');
+    if (!Number.isSafeInteger(control.lease.generation) || control.lease.generation < 1
+        || !Number.isSafeInteger(control.lease.expires_at_ms)) refuse('firestore_lease_lost');
+    // A direct absent-document read is part of the write transaction's read
+    // set: a concurrent first lap claim conflicts, rather than escaping a query.
+    if (!communicationsLapDrained(await tx.get(this.db.doc(COMMUNICATIONS_WORKER_LAP))))
+      refuse('communications_worker_lap_active');
+  }
+  async acquire(scope = null) {
+    if (scope !== null && scope !== 'research_release') refuse('firestore_lease_scope_invalid');
+    const owner = scope === 'research_release' && !this.defaultOwner.startsWith(RELEASE_OWNER_PREFIX)
+      ? RELEASE_OWNER_PREFIX + this.defaultOwner : this.defaultOwner;
+    const generation = await this.transaction(async tx => {
       const snap = await tx.get(this.control);
       if (!snap.exists) refuse('firestore_control_missing');
       const control = snap.data(), lease = control.lease;
+      if (owner.startsWith(RELEASE_OWNER_PREFIX) && (!Number.isSafeInteger(this.clock())
+          || lease && (!Number.isSafeInteger(lease.expires_at_ms)
+            || !Number.isSafeInteger(lease.generation) || lease.generation < 1
+            || lease.generation >= Number.MAX_SAFE_INTEGER))) refuse('firestore_lease_invalid');
       if (lease && lease.expires_at_ms > this.clock()) refuse('runner_overlap');
+      if (owner.startsWith(RELEASE_OWNER_PREFIX)
+          && !communicationsLapDrained(await tx.get(this.db.doc(COMMUNICATIONS_WORKER_LAP))))
+        refuse('communications_worker_lap_active');
       const generation = (lease?.generation || 0) + 1;
-      tx.set(this.control, {lease: {owner: this.owner, generation, expires_at_ms: this.clock() + LEASE_MS}}, {merge: true});
+      if (owner.startsWith(RELEASE_OWNER_PREFIX) && !Number.isSafeInteger(this.clock() + LEASE_MS))
+        refuse('firestore_lease_invalid');
+      tx.set(this.control, {lease: {owner, generation, expires_at_ms: this.clock() + LEASE_MS}}, {merge: true});
       return generation;
     });
+    this.owner = owner; this.generation = generation;
     return true;
   }
   async renew() {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
+      if (this.owner.startsWith(RELEASE_OWNER_PREFIX)) await this.publicationFence(tx, control);
       tx.set(this.control, {lease: {...control.lease, expires_at_ms: this.clock() + LEASE_MS}}, {merge: true});
     });
     return true;
@@ -1115,7 +1156,8 @@ export class Store {
   }
   async teamUniverseIdle() {
     const summary=await this.summary();
-    if(summary.unfinished || await this.activeQA() || await this.workItem()) refuse('team_universe_active_research_qa_repair_or_publication');
+    if(summary.unfinished || await this.activeQA() || await this.workItem() || !await this.communicationsLapIdle())
+      refuse('team_universe_active_research_qa_repair_or_publication');
     return {idle:true};
   }
   async teamUniverseSet(expected,value) {
@@ -1130,7 +1172,7 @@ export class Store {
         refuse('team_universe_export_binding_invalid');
     }
     return this.transaction(async tx=>{
-      const control=(await tx.get(this.control)).data();this.fence(control);
+      const control=(await tx.get(this.control)).data();await this.publicationFence(tx,control);
       const prior=control.team_universe;
       if((prior?.sha256 ?? null)!==expected) refuse('team_universe_pin_conflict');
       if(value.enabled===false) {
@@ -1343,7 +1385,7 @@ export class Store {
       await this.screenAdmissionObjectGet(c.admission_id,c.generation,c.bytes);
     }
     return this.transaction(async tx=>{
-      const control=(await tx.get(this.control)).data(); this.fence(control);
+      const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
       const prior=control.screen_admission ?? null;
       if((prior?.current?.admission_id ?? null)!==expected) refuse('screen_admission_control_conflict');
       const meta=prior && fresh?(await tx.get(this.saRef(prior.current.admission_id))).data():null;
@@ -1392,7 +1434,7 @@ export class Store {
       site_keys:state.payload.entries.map(e=>e.site_key),identities:state.payload.entries.map(e=>e.identity),
       rows:state.plan.sheet_rows.length,duplicates:state.payload.duplicates.length,updated_at:new Date(this.clock()).toISOString()};
     await this.transaction(async tx=>{
-      const control=(await tx.get(this.control)).data(); this.fence(control);
+      const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
       const prior=(await tx.get(ref)).data();
       if((prior?.blob ?? null)!==expected || prior?.claimed) refuse('screen_admission_state_changed');
       tx.set(ref,fields);
@@ -1401,6 +1443,9 @@ export class Store {
   }
   async screenAdmissionPublish(request) {
     await this.assertLease();
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();await this.publicationFence(tx,control);
+    });
     const id=request?.admission_id,generation=request?.generation;
     if(!hexOK(id) || !suGeneration(generation) || !request.direction || typeof request.direction!=='object'
         || request.payload!==undefined && !hexOK(request.crm_values_sha256)) refuse('screen_admission_request_invalid');
@@ -1438,7 +1483,7 @@ export class Store {
       const current=await this.crmReader();
       if(valueHash(current?.values ?? null)!==valueHash(state.plan.crm_values)) {
         await this.transaction(async tx=>{
-          const control=(await tx.get(this.control)).data(); this.fence(control);
+          const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
           const now=(await tx.get(ref)).data();
           if(now?.blob!==meta.blob || now.claimed) refuse('screen_admission_state_changed');
           tx.set(ref,{state:'replan'},{merge:true});
@@ -1446,7 +1491,7 @@ export class Store {
         return {state:'replan_required',...counts(meta)};
       }
       await this.transaction(async tx=>{
-        const control=(await tx.get(this.control)).data(); this.fence(control); this.screenGate(control,request);
+        const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control); this.screenGate(control,request);
         const now=(await tx.get(ref)).data();
         if(now?.blob!==meta.blob || now.claimed || now.state!=='planned') refuse('screen_admission_state_changed');
         tx.set(ref,{claimed:state.plan.request_digest,claimed_at:new Date(this.clock()).toISOString()},{merge:true});
@@ -1454,7 +1499,9 @@ export class Store {
       // One write; whatever it answers, the outcome is then only read back (a lost reply may still have landed).
       try {
         await this.publisher.writeScreen(state.payload,state.plan,{beforeWrite:async()=>{
-          const control=(await this.control.get()).data(); this.fence(control); this.screenGate(control,request);
+          await this.transaction(async tx=>{
+            const control=(await tx.get(this.control)).data();await this.publicationFence(tx,control);this.screenGate(control,request);
+          });
         }});
       } catch { /* uncertain until the readback shows the rows */ }
       try {receipt=await this.publisher.reconcileScreen(state.payload,state.plan);} catch {return pending;}
@@ -1463,7 +1510,7 @@ export class Store {
     const done={...state,receipt,acknowledged_at:new Date(this.clock()).toISOString()};
     const hash=await this.blobPut(Buffer.from(JSON.stringify(done)).toString('base64'));
     return this.transaction(async tx=>{
-      const control=(await tx.get(this.control)).data(); this.fence(control);
+      const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
       const itemRef=this.db.doc(`${ROOT}/screenWorkItems/${id}`),now=(await tx.get(ref)).data(),item=await tx.get(itemRef);
       if(now?.state==='acknowledged') return {state:'acknowledged',...counts(now)};
       if(now?.blob!==meta.blob || item.exists) refuse('screen_admission_state_changed');
@@ -2184,7 +2231,8 @@ export class Store {
             ...(control.screen_admission ? {screen_admission: control.screen_admission} : {})}); return true;
         });
       }
-      case 'acquire': return this.acquire();
+      case 'acquire': return this.acquire(request.scope ?? null);
+      case 'communications_lap_idle': return this.communicationsLapIdle();
       case 'renew': return this.renew();
       case 'release': return this.release();
       case 'assert_lease': return this.assertLease();

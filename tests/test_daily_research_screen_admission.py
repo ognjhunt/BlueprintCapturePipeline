@@ -469,6 +469,14 @@ class World:
     def rows(self):
         return self.read("sheet")[5:]
 
+    def communications_lap(self, record):
+        """Inject a synthetic durable lap, then load it through the real bridge."""
+        self.bridge.close()
+        documents = dict(self.read("firestore", []))
+        documents["blueprintCommunications/default/intakeState/workerLap"] = record
+        self.write("firestore", list(documents.items()))
+        self.bridge = Bridge(script=self.script)
+
 
 @pytest.fixture
 def world(tmp_path):
@@ -536,7 +544,7 @@ def test_the_worker_writes_labelled_rows_once_with_markers_then_hands_off_to_the
     with pytest.raises(Refusal, match="firestore_lease_lost"):  # Publishing needs the worker lease.
         world.bridge.call("screen_admission_publish", admission_id=admission_id, generation="1", direction={})
     control = world.bridge.call("control")
-    world.bridge.call("acquire")
+    world.bridge.call("acquire", scope="research_release")
     try:
         repeated = world.bridge.call("screen_admission_publish", admission_id=admission_id,
                                      generation=control["screen_admission"]["current"]["generation"],
@@ -564,6 +572,48 @@ def test_the_worker_waits_for_idle_daily_work_and_never_writes_under_an_active_r
         world.bridge.call("release")
     assert world.step() == {"state": "screen_admission_waiting", "error": "screen_admission_daily_work_active"}
     assert sa.retry(world.step()) is True and world.rows() == [] and world.read("puts") is None
+
+
+def test_expired_communications_lap_blocks_rows_until_explicit_full_completion(world, tmp_path):
+    pinned(world, tmp_path, [(1, FOCUS_A, {})])
+    at = int(NOW.timestamp() * 1000)
+    record = {"schema_version": "blueprint.communications-worker-lap.v1", "phase": "active",
+              "lease": {"owner": "communications-worker-lap:synthetic", "generation": 1, "until": at - 1},
+              "startedAt": at - 1000, "renewedAt": at - 500, "completedAt": None}
+    world.communications_lap(record)
+    assert world.step() == {"state": "screen_admission_waiting", "error": "screen_admission_daily_work_active"}
+    assert sa.retry(world.step()) and world.rows() == [] and world.read("puts") is None
+    # Merely changing phase/expiry is insufficient: the full producer record
+    # must contain the explicit integer completion time.
+    record.update(phase="complete", lease={**record["lease"], "until": 0})
+    world.communications_lap(record)
+    assert not sa.idle(world.bridge) and world.read("puts") is None
+    record["completedAt"] = at
+    world.communications_lap(record)
+    assert sa.idle(world.bridge)
+    assert world.step() == {"state": "screen_admission_acknowledged", "rows": 1, "duplicates": 0}
+    assert world.read("puts") == 1
+
+
+def test_a_lap_admitted_between_idle_and_acquire_is_a_retryable_refusal(world, tmp_path):
+    pinned(world, tmp_path, [(1, FOCUS_A, {})])
+    actual = world.bridge
+    at = int(NOW.timestamp() * 1000)
+    record = {"schema_version": "blueprint.communications-worker-lap.v1", "phase": "active",
+              "lease": {"owner": "communications-worker-lap:synthetic", "generation": 1, "until": at + 1000},
+              "startedAt": at, "renewedAt": at, "completedAt": None}
+
+    class RacingBridge:
+        def call(self, op, **fields):
+            if op == "acquire":
+                assert fields == {"scope": "research_release"}
+                world.communications_lap(record)
+                return world.bridge.call(op, **fields)
+            return actual.call(op, **fields)
+
+    result = sa.step(RacingBridge(), now=NOW, root=world.root)
+    assert result == {"state": "screen_admission_blocked", "error": "communications_worker_lap_active"}
+    assert sa.retry(result) and world.rows() == [] and world.read("puts") is None
 
 
 def test_crm_duplicates_and_earlier_admissions_are_never_written_again(world, tmp_path):
@@ -632,7 +682,7 @@ def test_the_brakes_stop_the_admission_before_any_write(world, tmp_path):
     assert sa.disable(world.bridge, apply=True, sleep=lambda _: None)["state"] == "disabled"
     assert world.step() == {"state": "screen_admission_disabled"} and world.read("puts") is None
     current = world.bridge.call("control")["screen_admission"]["current"]
-    world.bridge.call("acquire")
+    world.bridge.call("acquire", scope="research_release")
     try:
         world.bridge.call("screen_admission_set", expected_admission_id=admission_id,
                           value={"enabled": True, "current": current}, supersede_uncertain=False)

@@ -74,7 +74,7 @@ def test_wrong_generation_hash_approval_and_configure_cannot_change_pin(fixture)
     with pytest.raises(te.TeamEvidenceError):
         operator.pin(bridge, sha256=stored["sha256"], generation=stored["generation"], approval_reference="PENDING", today=TODAY)
     pinned = setpin(fixture, stored, apply=True)["pin"]
-    bridge.call("acquire")
+    bridge.call("acquire", scope="research_release")
     try:
         with pytest.raises(Refusal, match="requires_pin_operation"):
             bridge.call("configure", value={**bridge.call("control"), "team_universe": {**pinned, "version": 100}})
