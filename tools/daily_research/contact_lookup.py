@@ -48,6 +48,7 @@ import secrets
 import ssl
 import time
 from collections import Counter
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from tools.daily_research import site_screen as ss  # Standard library only, like this module.
@@ -192,6 +193,23 @@ class FullEnrichClient:
             raise Refused("contact_lookup_provider_auth_refused")
         return status, raw
 
+    def balance(self):
+        """One unbilled credit-balance GET. Return only the finite balance; never upstream text."""
+        try:
+            status, raw = self._send("GET", "/api/v2/account/credits")
+        except ss.TransportError:
+            raise LookupFailure("contact_lookup_balance_unavailable") from None
+        if status in STOPPING:
+            raise Refused(STOPPING[status])
+        if status != 200:
+            raise LookupFailure("contact_lookup_balance_unavailable")
+        value = ss._json(raw)
+        balance = _credits(value.get("balance")) if isinstance(value, dict) else None
+        if balance is None:
+            raise LookupFailure("contact_lookup_balance_invalid")
+        return {"command": "balance", "state": "complete", "provider": PROVIDER,
+                "credits_available": amount(balance), "checked_at": ss._now()}
+
 
 # --- people, titles and addresses ----------------------------------------------------------------
 def name_parts(name):
@@ -229,7 +247,8 @@ def holds_title(text, title):
 def on_domain(domain, operator_domains):
     """True for an operator domain or a subdomain of one."""
     domain = _text(domain).lower().rstrip(".")
-    return bool(domain) and any(domain == item or domain.endswith("." + item) for item in operator_domains)
+    return bool(domain) and isinstance(operator_domains, (list, tuple)) and any(
+        isinstance(item, str) and item and (domain == item or domain.endswith("." + item)) for item in operator_domains)
 
 
 def verification(status):
@@ -251,9 +270,9 @@ def accept_address(address, status, operator_domains, name):
         return None, "contact_lookup_free_mail"
     if not on_domain(domain, operator_domains):
         return None, "contact_lookup_off_operator_domain"
-    role = ss.address_role(address, {"verified": True, "name": name})
-    if role in ("team", "general", "refused"):
+    if ss.address_role(address, {"verified": False}) in ("team", "general", "refused"):
         return None, "contact_lookup_role_inbox"
+    role = ss.address_role(address, {"verified": True, "name": name})
     if role != "person":
         return None, "contact_lookup_address_not_personal"
     return address, None
@@ -264,7 +283,8 @@ def profile_check(profile, name, operator_domains):
     now (no end date, not marked past, company on the operator's domain); else the code."""
     if not isinstance(profile, dict):
         return None
-    full = _text(profile.get("full_name"))
+    full = _text(profile.get("full_name")) or " ".join(
+        part for part in (_text(profile.get("first_name")), _text(profile.get("last_name"))) if part)
     if full and not same_person(full, name):
         return "contact_lookup_person_mismatch"
     employment = profile.get("employment") if isinstance(profile.get("employment"), dict) else {}
@@ -272,7 +292,16 @@ def profile_check(profile, name, operator_domains):
     if isinstance(current, dict):
         company = current.get("company") if isinstance(current.get("company"), dict) else {}
         if (company.get("domain") and not on_domain(company.get("domain"), operator_domains)
-                or current.get("is_current") is False or current.get("end_at")):
+                or current.get("is_current") is not None and current.get("is_current") is not True
+                or current.get("end_at")):
+            return "contact_lookup_person_not_current_at_operator"
+        if not company.get("domain") and isinstance(employment.get("all"), list) and employment["all"]:
+            job, _ = current_job(profile, operator_domains)
+            if job is None:
+                return "contact_lookup_person_not_current_at_operator"
+    elif isinstance(employment.get("all"), list) and employment["all"]:
+        job, _ = current_job(profile, operator_domains)
+        if job is None:
             return "contact_lookup_person_not_current_at_operator"
     return None
 
@@ -283,7 +312,9 @@ def current_job(person, operator_domains):
     employment = person.get("employment") if isinstance(person.get("employment"), dict) else {}
     every = employment.get("all") if isinstance(employment.get("all"), list) else []
     for where, job in [("employment.current", employment.get("current")), *(("employment.all", job) for job in every)]:
-        if not isinstance(job, dict) or job.get("end_at") or job.get("is_current") is False:
+        if (not isinstance(job, dict) or job.get("end_at")
+                or job.get("is_current") is not None and job.get("is_current") is not True
+                or where == "employment.all" and job.get("is_current") is not True):
             continue
         company = job.get("company") if isinstance(job.get("company"), dict) else {}
         if on_domain(company.get("domain"), operator_domains):
@@ -461,7 +492,7 @@ class Book:
     deleted journal, an edited pin or an answer without its intent refuses, so spend is never reset by damage to one
     file; matching edits to both, or the loss of the whole folder, are not caught."""
 
-    def __init__(self, workspace):
+    def __init__(self, workspace, *, readonly=False):
         self.root = workspace.root / FOLDER
         self.pin_path, self.journal = self.root / "owner_ceiling.json", Journal(self.root / "spend.jsonl")
         events, self.pin = self.journal.events(), self._pin()
@@ -476,7 +507,8 @@ class Book:
         if self.pin is None:
             if body:
                 raise LookupFailure("contact_lookup_owner_ceiling_missing")
-            ss._write_once(self.pin_path, (ss.canonical(head["pin"]) + "\n").encode())  # The pin's own crash window.
+            if not readonly:
+                ss._write_once(self.pin_path, (ss.canonical(head["pin"]) + "\n").encode())  # The pin's own crash window.
             self.pin = head["pin"]
         if self.pin != head["pin"]:
             raise LookupFailure("contact_lookup_owner_ceiling_mismatch")
@@ -621,12 +653,16 @@ def seal_result(status, raw, key, call, person, site):
         return None
     if state not in ENDED:
         raise LookupFailure("contact_lookup_result_invalid")
+    if state == "UNKNOWN":
+        return None  # The existing enrichment may still cost its maximum. Only GET may be tried again.
     cost = value.get("cost") if isinstance(value.get("cost"), dict) else {}
     credits = _credits(cost.get("credits"))
     observation = {"outcome": state.lower(), "status": None, "address": None, "checked_at": ss._now()}
     if state != "FINISHED":
-        if not credits:  # Ended unbilled (no credits left, a rate limit, a cancel): a later run may send it again.
+        if credits == Decimal(0):  # An explicit zero cost proves this ended unbilled.
             return {"event": "refused", "code": "contact_lookup_enrichment_" + state.lower()}
+        if credits is None:
+            raise LookupFailure("contact_lookup_result_invalid")
         return {"event": "answered", "credits": amount(credits),
                 "observation": {**observation, "reason": "contact_lookup_enrichment_" + state.lower()}}
     data = value.get("data")
@@ -656,13 +692,18 @@ def seal_result(status, raw, key, call, person, site):
 
 
 # --- sites and people -----------------------------------------------------------------------------
-def lookup_site(workspace, contact, screen):
+def utc_today():
+    return date.fromisoformat(ss._now()[:10])
+
+
+def lookup_site(workspace, contact, screen, *, today=None):
     """What a lookup needs from one site's contact and screen records. The operator's domains are the contact
     record's own when its rule gives them, else the screen's (the domain whose page proved the operator)."""
     domains = contact["operator_domains"] if isinstance(contact.get("operator_domains"), list) else screen["operator_domains"]
     domains = [item.lower() for item in domains if isinstance(item, str) and item and item.lower() not in ss.FREE_MAIL]
     published = contact.get("recipient") if isinstance(contact.get("recipient"), dict) else {}
     email = contact.get("email") if isinstance(contact.get("email"), dict) else {}
+    content, _ = ss.output_of(ss._json(workspace.path("contact", "results", contact["site_key"]).read_bytes()))
     kept = []
     for stage in ("screen", "contact"):  # Our own earlier reads; LinkedIn was never read.
         path = workspace.path(stage, "evidence", contact["site_key"])
@@ -674,10 +715,11 @@ def lookup_site(workspace, contact, screen):
             "person": contact["person"] if isinstance(contact.get("person"), dict) else {},
             "published_person_email": published.get("kind") == "person_email" and email.get("verified") is True,
             "operator": _text(screen["answers"].get("operator_identity")) or _text(screen["input"].get("operator")),
-            "operator_domains": domains, "operator_domain": domains[0] if domains else None, "kept_pages": kept}
+            "operator_domains": domains, "operator_domain": domains[0] if domains else None, "kept_pages": kept,
+            "person_quote": _text(content.get("person_quote"), 1200), "today": today or utc_today()}
 
 
-def lookup_sites(workspace, states):
+def lookup_sites(workspace, states, *, today=None):
     """One lookup input per contact record with a screen record, in contact order, and how many could not be read."""
     contacts = ss.stage_records(workspace, states, "contact")
     screens = ss.stage_records(workspace, states, "screen")
@@ -685,7 +727,7 @@ def lookup_sites(workspace, states):
     for key in states["contact"]:
         if key in contacts and key in screens:
             try:
-                sites.append(lookup_site(workspace, contacts[key], screens[key]))
+                sites.append(lookup_site(workspace, contacts[key], screens[key], today=today))
             except (AttributeError, KeyError, TypeError, ValueError):
                 unreadable += 1  # A record this rule cannot read is never looked up.
     return sites, unreadable
@@ -697,8 +739,10 @@ def quoted_person(site):
     if (person.get("verified") is not True or person.get("level") not in ss.PROVEN
             or name_parts(person.get("name")) is None):
         return None, "no_verified_person"
-    if person.get("current") is not True:
+    if person.get("current") is not True or not ss._fresh(person.get("date"), site.get("today") or utc_today()):
         return None, "person_not_current"
+    if not holds_title(site.get("person_quote", ""), person.get("title")):
+        return None, "person_role_unproven"
     return {"name": person["name"], "title": person.get("title"), "location": None, "sourcing": "quoted_person",
             "proof": {"source": "site_contact", "url": person.get("url"), "level": person["level"],
                       "date": person.get("date"), "current": True}, "corroboration": None}, None
@@ -805,6 +849,10 @@ def result(site, person, key, call):
     status = observation.get("status")
     valid = verification(status) if call["state"] == "answered" else "not_valid"
     address = observation.get("address") if valid == "valid" and not observation.get("reason") else None
+    if address is not None:
+        address, reason = accept_address(address, status, site["operator_domains"], person["name"])
+        if reason:
+            observation = {**observation, "reason": reason}
     usable = isinstance(address, str)
     pending = {"created": ("pending", "contact_lookup_result_pending"), "unknown": ("unknown", "contact_lookup_outcome_unknown"),
                "refused": ("refused", "contact_lookup_not_sent")}.get(call["state"], (None, None))
@@ -818,14 +866,22 @@ def result(site, person, key, call):
             "address": address if usable else None, "operator_domain": site["operator_domain"], "person": person}
 
 
-def usable_lookup(lookup):
-    """True for a looked-up email that may be used: valid, usable, a plain address, and a labelled person."""
+def usable_lookup(lookup, *, operator_domains=None):
+    """Recheck the provider status, person label and business address at the admission boundary."""
     if not isinstance(lookup, dict) or lookup.get("source") != "provider_lookup" or lookup.get("usable") is not True:
         return False
     provider, person, address = lookup.get("provider"), lookup.get("person"), lookup.get("address")
-    return (isinstance(provider, dict) and provider.get("verification") == "valid" and isinstance(address, str)
-            and ss.email_address(address) == address and isinstance(person, dict)
-            and person.get("sourcing") in ("quoted_person", "provider_sourced") and isinstance(person.get("name"), str))
+    if (not isinstance(provider, dict) or provider.get("name") != PROVIDER
+            or provider.get("verification") != "valid" or verification(provider.get("status")) != "valid"
+            or not isinstance(person, dict) or person.get("sourcing") not in ("quoted_person", "provider_sourced")
+            or name_parts(person.get("name")) is None):
+        return False
+    domain = lookup.get("operator_domain")
+    if not isinstance(domain, str) or not domain:
+        return False
+    domains = operator_domains if isinstance(operator_domains, (list, tuple)) else [domain]
+    kept, _ = accept_address(address, provider["status"], domains, person["name"])
+    return kept is not None and kept == address and on_domain(domain, domains)
 
 
 def _choice(rank, *, address=None, lookup=None):
@@ -854,12 +910,20 @@ def choose_recipient(contact_record, lookups=()):
     record = contact_record if isinstance(contact_record, dict) else {}
     published = record.get("recipient") if isinstance(record.get("recipient"), dict) else {}
     email = record.get("email") if isinstance(record.get("email"), dict) else {}
-    address = published.get("address") if email.get("verified") is True and isinstance(published.get("address"), str) else None
-    kind = published.get("kind") if address else None
+    address = published.get("address") if email.get("verified") is True else None
+    address = address if isinstance(address, str) and ss.email_address(address) == address else None
+    person = record.get("person") if isinstance(record.get("person"), dict) else {}
+    person = {"verified": person.get("verified") is True, "name": _text(person.get("name"))}
+    role = ss.address_role(address, {"verified": False}) if address else None
+    if address and role == "unknown":
+        role = ss.address_role(address, person)
+    kind = {"person": "person_email", "team": "team_inbox", "general": "general_inbox"}.get(role)
+    if email.get("address") != address or email.get("level") != "verified_on_page" or published.get("kind") != kind:
+        address, kind = None, None
     if kind == "person_email":
         return _choice(1, address=address)
     for lookup in lookups if isinstance(lookups, (list, tuple)) else ():
-        if usable_lookup(lookup):
+        if usable_lookup(lookup, operator_domains=record.get("operator_domains")):
             return _choice(2, lookup=lookup)
     if kind in ("team_inbox", "general_inbox"):
         return _choice(3 if kind == "team_inbox" else 4, address=address)
@@ -889,15 +953,14 @@ def write_records(book, sites):
     return built
 
 
-def load(workspace):
-    """The lookup records the last lookup or summary wrote, by site key. It takes no lock, so the admission step may
-    call it while it holds the out dir."""
-    folder, rule, found = workspace.root / FOLDER / "records", RULE.removeprefix("blueprint."), {}
-    for path in sorted(folder.glob(f"*.{rule}.json")) if folder.is_dir() else ():
-        record = ss._json(path.read_bytes())
-        if isinstance(record, dict) and record.get("rule_version") == RULE:
-            found[path.name.split(".")[0]] = record
-    return found
+def load(workspace, *, states=None, today=None):
+    """Recompute lookup records from the durable journal and current site evidence. The admission caller holds the
+    out-dir lock and may pass its already-reconciled states. This function takes no lock, writes no lookup artifacts
+    and calls no provider; Workspace.states may reconcile its own crash window. Cached records are not authority."""
+    if states is None:
+        states, _ = workspace.states()
+    sites, _ = lookup_sites(workspace, states, today=today)
+    return records(Book(workspace, readonly=True), sites)
 
 
 # --- commands -------------------------------------------------------------------------------------
@@ -923,7 +986,7 @@ def _recipients(built):
 
 
 def lookup(workspace, *, client, owner_reference, max_credits, max_calls, person_search=None, apply=False,
-           wait_seconds=WAIT_SECONDS, monotonic=time.monotonic, sleep=time.sleep, environ=None):
+           wait_seconds=WAIT_SECONDS, monotonic=time.monotonic, sleep=time.sleep, environ=None, today=None):
     """Look up a work email for each contact site that needs one, within the pinned ceilings; a dry run unless
     ``apply``. A dry run admits the same calls and writes and sends nothing; it counts only the searches of sites
     without a person, as their enrichments depend on the answers. Counts only."""
@@ -935,7 +998,7 @@ def lookup(workspace, *, client, owner_reference, max_credits, max_calls, person
         raise LookupFailure("contact_lookup_client_missing")
     with workspace.lock():
         states, _ = workspace.states()
-        sites, unreadable = lookup_sites(workspace, states)
+        sites, unreadable = lookup_sites(workspace, states, today=today)
         book = Book(workspace)
         bounds = limits(book.pin, owner_reference, max_credits, max_calls)
         pinned = "pinned" if book.pin else "created" if apply else "would_create"

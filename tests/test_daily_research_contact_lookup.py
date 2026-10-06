@@ -46,6 +46,7 @@ def hermetic(monkeypatch):
     monkeypatch.setattr(ss, "VOLATILE_ROOTS", ())
     monkeypatch.delenv(ss.WORKER_FLAG, raising=False)
     monkeypatch.setattr(ss, "code_state", lambda root=None: {"commit": "0" * 40, "dirty": False, "source": "git"})
+    monkeypatch.setattr(cl, "utc_today", lambda: TODAY)
 
 
 class FakeFullEnrich:
@@ -412,13 +413,16 @@ def test_a_damaged_journal_or_pin_refuses(tmp_path):
 
 # --- the recipient hand-off -----------------------------------------------------------------------
 def contact_record(kind, address=None):
-    return {"email": {"verified": address is not None}, "recipient": {"kind": kind, "address": address}}
+    return {"email": {"verified": address is not None, "address": address, "level": "verified_on_page"},
+            "operator_domains": ["operator-1.example"], "person": {"verified": True, "name": PERSON},
+            "recipient": {"kind": kind, "address": address}}
 
 
 def looked_up(sourcing="quoted_person", *, usable=True, corroborated=None):
     person = {"name": OTHER_PERSON, "title": "Plant Manager", "sourcing": sourcing,
               "corroboration": None if corroborated is None else {"corroborated": corroborated}}
     return {"source": "provider_lookup", "label": "looked_up", "usable": usable, "address": FOUND if usable else None,
+            "operator_domain": "operator-1.example",
             "person": person, "provider": {"name": "fullenrich", "status": "DELIVERABLE" if usable else "CATCH_ALL",
                                             "verification": "valid" if usable else "not_valid"}}
 
@@ -443,6 +447,160 @@ def test_the_recipient_follows_the_owner_order_and_carries_its_labels(record, lo
     assert recipient["kind"] == {1: "person_email", 2: "person_email", 3: "team_inbox", 4: "general_inbox"}.get(rank, "none")
     assert recipient["source"] == {1: "published", 2: "provider_lookup", 3: "published", 4: "published"}.get(rank, "none")
     assert json.dumps([record, lookups], sort_keys=True) == before  # Pure: the inputs are unchanged.
+
+
+@pytest.mark.parametrize("changes", [
+    {"provider": {"name": "fullenrich", "status": "CATCH_ALL", "verification": "valid"}},
+    {"provider": {"name": "another-provider", "status": "DELIVERABLE", "verification": "valid"}},
+    {"provider": {"name": "fullenrich", "status": [], "verification": "valid"}},
+    {"address": "jordan.fixture@other-operator.example"},
+    {"address": "info@operator-1.example"},
+    {"address": "jordan.fixture@gmail.com"},
+    {"operator_domain": "other-operator.example"},
+    {"person": {"name": "Jordan", "sourcing": "quoted_person"}},
+])
+def test_admission_rechecks_the_looked_up_status_person_and_current_operator(changes):
+    recipient = cl.choose_recipient(contact_record("general_inbox", "info@operator-1.example"),
+                                    [{**looked_up(), **changes}])
+    assert recipient["choice"] == "published_general_inbox"
+
+
+@pytest.mark.parametrize("changes", [
+    {"recipient": {"kind": "person_email", "address": "info@operator-1.example"}},
+    {"email": {"verified": True, "address": ADDRESS, "level": "in_citation_excerpt"}},
+    {"recipient": {"kind": "person_email", "address": "invalid"}},
+    {"email": {"verified": True, "address": FOUND, "level": "verified_on_page"}},
+])
+def test_admission_does_not_promote_a_malformed_or_mislabelled_published_address(changes):
+    assert cl.choose_recipient({**contact_record("person_email", ADDRESS), **changes})["choice"] == "none"
+
+
+def test_role_inboxes_never_become_person_emails_when_a_name_matches_the_role():
+    assert cl.accept_address("sales@operator-1.example", "DELIVERABLE", ["operator-1.example"],
+                             "Jordan Sales") == (None, "contact_lookup_role_inbox")
+    record = {**contact_record("team_inbox", "sales@operator-1.example"),
+              "person": {"verified": True, "name": "Jordan Sales"}}
+    recipient = cl.choose_recipient(record)
+    assert recipient["choice"] == "published_team_inbox" and recipient["person"] is None
+
+
+def test_malformed_person_or_domains_choose_no_unsupported_address():
+    record = {**contact_record("person_email", ADDRESS), "person": {}}
+    assert cl.choose_recipient(record)["choice"] == "none"
+    record = {**contact_record("none"), "operator_domains": [None, 1, {}]}
+    assert cl.choose_recipient(record, [looked_up()])["choice"] == "none"
+
+
+def test_load_recomputes_from_journal_ignores_cached_tampering_and_is_read_only(tmp_path, monkeypatch):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    api.emails[("Avery", "Placeholder", "operator-1.example")] = (ADDRESS, "DELIVERABLE", profile(PERSON))
+    lookup(workspace, api)
+    record_path = next((workspace.root / cl.FOLDER / "records").glob("*.json"))
+    tampered = json.loads(record_path.read_text())
+    tampered["lookups"][0]["address"] = "avery.placeholder@other-operator.example"
+    record_path.write_text(json.dumps(tampered))
+    before, calls = stored(workspace), len(api.calls)
+    monkeypatch.setattr(workspace, "lock", lambda: pytest.fail("load must reuse the admission caller's lock"))
+    result = cl.load(workspace)
+    assert result[key]["recipient"]["address"] == ADDRESS
+    assert stored(workspace) == before and len(api.calls) == calls
+    (workspace.root / cl.FOLDER / "spend.jsonl").unlink()
+    with pytest.raises(cl.LookupFailure, match="^contact_lookup_journal_missing$"):
+        cl.load(workspace)
+
+
+def test_load_recovers_a_pin_crash_in_memory_without_writing(tmp_path):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
+    book = cl.Book(workspace)
+    book.create_pin(cl.limits(None, LOOKUP_OWNER, "20", 50))
+    book.pin_path.unlink()
+    before = stored(workspace)
+    assert cl.load(workspace)[key]["recipient"]["choice"] == "none"
+    assert not book.pin_path.exists() and stored(workspace) == before
+
+
+def test_current_employment_history_requires_an_explicit_current_flag():
+    person = searched(OTHER_PERSON)
+    history = person["employment"].pop("current")
+    history.pop("is_current")
+    assert cl.candidate(person, ["operator-1.example"])[0] is None
+    history["is_current"] = True
+    found, reason = cl.candidate(person, ["operator-1.example"])
+    assert reason is None and found["current_employment"]["field"] == "employment.all.is_current"
+
+
+def test_enrichment_profile_checks_names_and_employment_history():
+    person = profile(OTHER_PERSON)
+    person["employment"]["all"] = [{**person["employment"].pop("current"), "is_current": False,
+                                     "end_at": "2024-01-31T00:00:00Z"}]
+    assert cl.profile_check(person, OTHER_PERSON, ["operator-1.example"]) == "contact_lookup_person_not_current_at_operator"
+    person["employment"]["current"] = {}
+    assert cl.profile_check(person, OTHER_PERSON, ["operator-1.example"]) == "contact_lookup_person_not_current_at_operator"
+    person = {"first_name": "Avery", "last_name": "Placeholder"}
+    assert cl.profile_check(person, OTHER_PERSON, ["operator-1.example"]) == "contact_lookup_person_mismatch"
+
+
+@pytest.mark.parametrize("value", [1, 0, "true", [], {}])
+def test_current_employment_indicators_must_be_booleans_when_present(value):
+    person = searched(OTHER_PERSON, is_current=value)
+    assert cl.candidate(person, ["operator-1.example"])[0] is None
+    assert cl.profile_check(person, OTHER_PERSON, ["operator-1.example"]) == "contact_lookup_person_not_current_at_operator"
+
+
+def test_quoted_person_source_must_still_be_current_at_lookup_time(tmp_path):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1, person_date="2025-06-01")])
+    api = FakeFullEnrich()
+    result = lookup(workspace, api, today=TODAY.replace(year=2027))
+    assert result["skipped"] == {"person_not_current": 1} and api.calls == []
+
+
+def test_quoted_person_title_must_be_supported_by_the_verified_quote(tmp_path):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1, person_title="Automation Manager")])
+    api = FakeFullEnrich()
+    result = lookup(workspace, api)
+    assert result["skipped"] == {"person_role_unproven": 1} and api.calls == []
+
+
+def test_balance_is_one_get_with_counts_only_output(tmp_path, capsys):
+    key_file = tmp_path / "synthetic-key.env"
+    key_file.write_text("FULLENRICH_API_KEY=" + FULLENRICH_KEY)
+    requests = []
+
+    def transport(method, path, **kwargs):
+        requests.append((method, path))
+        return 200, json.dumps({"balance": 49.25, "ignored": FULLENRICH_KEY}).encode()
+
+    report = operator.main(["balance", "--key-file", str(key_file)], transport=transport)
+    printed = capsys.readouterr().out
+    assert requests == [("GET", "/api/v2/account/credits")]
+    assert report["credits_available"] == "49.25" and FULLENRICH_KEY not in printed
+
+
+@pytest.mark.parametrize("value", [{"balance": True}, {"balance": -1}, {"balance": "Infinity"}, {}, []])
+def test_balance_never_guesses_missing_or_invalid_credits(value):
+    client = cl.FullEnrichClient(FULLENRICH_KEY, transport=lambda *args, **kwargs: (200, json.dumps(value).encode()))
+    with pytest.raises(cl.LookupFailure, match="^contact_lookup_balance_invalid$"):
+        client.balance()
+
+
+@pytest.mark.parametrize("state, credits", [("UNKNOWN", None), ("UNKNOWN", 0), ("CANCELED", None)])
+def test_unknown_or_unproven_unbilled_results_never_allow_another_paid_start(tmp_path, state, credits):
+    workspace, _ = site_screen_out(tmp_path, [quoted(1)])
+    api = FakeFullEnrich()
+    # The first result read must bind the real job ID while leaving billing uncertain.
+    def uncertain_result(method, path, **kwargs):
+        if method == "GET":
+            return 200, json.dumps({"id": path.rsplit("/", 1)[-1], "status": state,
+                                    "cost": {} if credits is None else {"credits": credits}, "data": []}).encode()
+        return api(method, path, **kwargs)
+    client = cl.FullEnrichClient(FULLENRICH_KEY, transport=uncertain_result)
+    options = {"client": client, "owner_reference": LOOKUP_OWNER, "max_credits": "1", "max_calls": 1,
+               "apply": True, "wait_seconds": 0}
+    first, again = cl.lookup(workspace, **options), cl.lookup(workspace, **options)
+    assert first["credits"]["committed"] == again["credits"]["committed"] == "1"
+    assert first["pending_results"] == again["pending_results"] == 1
+    assert len(api.posts(cl.ENRICH_PATH)) == 1 and again["calls"]["made"] == 0
 
 
 # --- the owner command ----------------------------------------------------------------------------
