@@ -1,0 +1,21 @@
+{
+  "schema_version": "controller_withdrawal_vector.v1",
+  "development_only": true,
+  "intake_forward_url": "https://synthetic.example/api/live-pipeline/capture-upload-intakes",
+  "expected_path": "/api/live-pipeline/website-capture-withdrawals",
+  "web_withdrawal": {
+    "requestId": "req1",
+    "sceneId": "site-req1",
+    "captureId": "walkthrough-req1",
+    "requestedAtIso": "2026-10-06T00:00:00Z"
+  },
+  "command": {
+    "schema_version": "website_capture_withdrawal.v1",
+    "request_id": "req1",
+    "scene_id": "site-req1",
+    "capture_id": "walkthrough-req1",
+    "withdrawal_id": "withdrawal-43f49bb5d85630deab0f450bfa0f06b8608bd4eddf7af53f43d22afbfe5c6dfd",
+    "requested_at_iso": "2026-10-06T00:00:00Z"
+  },
+  "command_digest": "sha256:17d2f71869690f2f2519e277e757df0f3368a5787645a704a267c6619b8f05e5"
+}

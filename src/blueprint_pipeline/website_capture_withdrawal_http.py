@@ -10,6 +10,9 @@ from .website_capture_withdrawal import acknowledge_withdrawal
 
 def register_website_withdrawal_routes(app: FastAPI, *, require_admission: Callable,
                                       resolve_root: Callable[[Mapping[str, Any], str], Path | None]) -> None:
+    # The existing Web transport derives /api/live-pipeline from the configured
+    # capture-upload-intakes URL. Both existing base URL shapes use one guard.
+    @app.post("/api/live-pipeline/website-capture-withdrawals", dependencies=[Depends(require_admission)])
     @app.post("/website-capture-withdrawals", dependencies=[Depends(require_admission)])
     async def withdraw(request: Request) -> dict[str, Any]:
         try:

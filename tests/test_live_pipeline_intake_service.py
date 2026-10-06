@@ -126,7 +126,8 @@ def test_nonce_store_refuses_when_secure_mode_cannot_be_installed(
         service._nonce_store_dir()
 
 
-def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path, monkeypatch):
+@pytest.mark.parametrize("route", ["/website-capture-withdrawals", "/api/live-pipeline/website-capture-withdrawals"])
+def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path, monkeypatch, route):
     from blueprint_pipeline.consent_takedown import read_consent_state
     root = tmp_path / "scenes/site-req1/captures/walkthrough-req1"
     _write_json(root / "raw/manifest.json", {"site_submission_id": "req1", "scene_id": "site-req1",
@@ -137,18 +138,20 @@ def test_signed_website_withdrawal_uses_server_scope_and_never_deletes(tmp_path,
     monkeypatch.setenv("BLUEPRINT_LIVE_PIPELINE_CLIENT_ROOTS_JSON", json.dumps({"test-client": {"req1": str(root)}}))
     monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, "false")
     client = TestClient(create_app())
-    payload = {"schema_version": "website_capture_withdrawal.v1", "request_id": "req1", "scene_id": "site-req1",
-        "capture_id": "walkthrough-req1", "withdrawal_id": "withdrawal-req1", "requested_at_iso": "2026-10-06T00:00:00Z"}
+    vector = json.loads((Path(__file__).parent / "fixtures/website-withdrawal-vector.json").read_text())
+    payload = vector["command"]
+    assert vector["expected_path"] == "/api/live-pipeline/website-capture-withdrawals"
     def post(value, nonce, actor="test-client"):
         body = json.dumps(value)
-        return client.post("/website-capture-withdrawals", content=body,
+        return client.post(route, content=body,
             headers=_signed_intake_headers("synthetic-token", body, nonce=nonce, client_id=actor))
-    assert client.post("/website-capture-withdrawals", json=payload).status_code == 401
+    assert client.post(route, json=payload).status_code == 401
     assert post(payload, "foreign-actor", "other-client").status_code == 403
     assert post({**payload, "request_id": "other"}, "foreign-site").status_code == 403
     assert post({**payload, "capture_root": str(tmp_path)}, "caller-root").status_code == 409
     accepted = post(payload, "ack-first")
     assert accepted.status_code == 200
+    assert accepted.json()["command_digest"] == vector["command_digest"]
     assert accepted.json()["deletion_confirmed"] is False
     assert post(payload, "ack-replay").json() == accepted.json()
     assert read_consent_state(root)["state"] == "revoked"
