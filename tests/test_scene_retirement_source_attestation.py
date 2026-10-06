@@ -92,6 +92,7 @@ def deployer(tmp_path):
         "sys": sys,
         "signal": signal,
         "time": time,
+        "tempfile": tempfile,
         "base64": base64,
         "urllib": __import__("urllib"),
         "fcntl": __import__("fcntl"),
@@ -515,6 +516,7 @@ def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
     output = canonical([{"verificationResult": verified}])
     actual = subprocess.Popen
     calls = []
+    cache_paths = []
 
     def crypto_boundary(command, **kwargs):
         assert command[1:3] == ["attestation", "verify"]
@@ -531,6 +533,14 @@ def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
         )
         assert command[command.index("--predicate-type") + 1] == PREDICATE
         assert kwargs["env"]["HOME"] == "/nonexistent"
+        assert kwargs["env"]["GH_CONFIG_DIR"] == "/nonexistent"
+        assert set(kwargs["env"]) == {
+            "PATH", "HOME", "GH_CONFIG_DIR", "GH_HOST", "LC_ALL", "XDG_CACHE_HOME"
+        }
+        cache = Path(kwargs["env"]["XDG_CACHE_HOME"])
+        assert cache.is_dir() and stat.S_IMODE(cache.stat().st_mode) == 0o700
+        (cache / "synthetic-trust-metadata").write_bytes(b"test-only writable cache")
+        cache_paths.append(cache)
         calls.append(command)
         return actual(
             [sys.executable, "-c", "import sys; sys.stdout.buffer.write(" + repr(output) + ")"],
@@ -547,6 +557,55 @@ def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
         with pytest.raises(ValueError, match="deploy_scene_retirement_runtime_unproven"):
             namespace["_scene_source_attestation"](COMMIT, deadline=time.monotonic() + 10)
     assert len(calls) == 1 and not namespace["_SCENE_RUNTIME_BOOT_ROOT"].exists()
+    assert len(cache_paths) == 1 and not cache_paths[0].exists()
+
+
+def test_proof_cache_uses_protected_boot_ancestry_and_still_refuses_service_owned_parent():
+    tree = ast.parse((SCRIPTS / "deploy_control_plane_commit.py").read_bytes())
+    definitions = [node for node in tree.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name)
+                           and target.id in {"_SCENE_RUNTIME_BOOT_ROOT", "_SCENE_SOURCE_ATTESTATIONS"}
+                           for target in node.targets)]
+    constants = {"Path": Path}
+    exec(compile(ast.Module(body=definitions, type_ignores=[]), str(SCRIPTS), "exec"), constants)
+    declared = constants["_SCENE_SOURCE_ATTESTATIONS"] / COMMIT
+    service_state = Path("/var/lib/blueprint/pipeline-control-plane")
+
+    class Ancestry:
+        O_RDONLY, O_DIRECTORY = os.O_RDONLY, os.O_DIRECTORY
+        O_NOFOLLOW, O_CLOEXEC = os.O_NOFOLLOW, os.O_CLOEXEC
+
+        def __init__(self):
+            self.paths = {}
+            self.closed = []
+
+        def open(self, part, flags, *, dir_fd=None):
+            path = Path(part) if dir_fd is None else self.paths[dir_fd] / part
+            if path.name == "source-attestations":
+                raise FileNotFoundError(path.name)
+            fd = len(self.paths) + 1
+            self.paths[fd] = path
+            return fd
+
+        def fstat(self, fd):
+            uid = 1234 if self.paths[fd] == service_state else 0
+            return os.stat_result((stat.S_IFDIR | 0o750, fd, 1, 2, uid, uid, 0, 0, 0, 0))
+
+        def close(self, fd):
+            self.closed.append(fd)
+
+    namespace = deployer(Path("/synthetic/source-test"))
+    filesystem = Ancestry()
+    namespace.update(os=filesystem, _SCENE_RUNTIME_OWNER=0)
+    assert namespace["_scene_source_selected_proof"](declared, deadline=time.monotonic()+10) is None
+    assert service_state not in filesystem.paths.values()
+    assert set(filesystem.closed) == set(filesystem.paths)
+    filesystem = Ancestry()
+    namespace["os"] = filesystem
+    with pytest.raises(ValueError, match="deploy_scene_retirement_runtime_unproven"):
+        namespace["_scene_source_selected_proof"](
+            service_state / "source-attestations" / COMMIT, deadline=time.monotonic()+10)
+    assert set(filesystem.closed) == set(filesystem.paths)
 
 
 def test_wheel_redirect_is_refused_before_following_another_origin():

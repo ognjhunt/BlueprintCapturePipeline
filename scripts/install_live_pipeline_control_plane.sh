@@ -130,13 +130,14 @@ else
   /usr/bin/python3 -I -S - "${REPO_ROOT}" <<'PY_RUNTIME'
 from __future__ import annotations
 import functools, http.client, selectors, socket, urllib.error
-import base64, fcntl, hashlib, json, math, os, pathlib, re, signal, stat, subprocess, sys, time, urllib.parse, urllib.request
+import base64, fcntl, hashlib, json, math, os, pathlib, re, signal, stat, subprocess, sys, tempfile, time, urllib.parse, urllib.request
 Path = pathlib.Path
 ControlPlaneDeployError = ValueError
 _SCENE_RUNTIME_BOOT_ROOT = Path("/usr/lib/blueprint/scene-retirement-runtime")
 _SCENE_RUNTIME_OWNER = 0
 _SCENE_RUNTIME_INSTALL_SECONDS = 900
-_SCENE_SOURCE_ATTESTATIONS = Path("/var/lib/blueprint/pipeline-control-plane/source-attestations")
+# The service-owned state directory cannot be an ancestor of root-admitted proof.
+_SCENE_SOURCE_ATTESTATIONS = _SCENE_RUNTIME_BOOT_ROOT / "source-attestations"
 _SCENE_SOURCE_GH = Path("/usr/bin/gh")
 
 _SOURCE_MAX_RESOLVER_BYTES = 64 * 1024
@@ -758,6 +759,7 @@ def _scene_source_attestation(source_commit: str, *, deadline: float, _proof_roo
             raise ControlPlaneDeployError(error)
     require(re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None and time.monotonic() <= deadline)
     held, identities = [], []
+    verifier_cache = None
     def identity(info):
         return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
                 info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
@@ -809,9 +811,13 @@ def _scene_source_attestation(source_commit: str, *, deadline: float, _proof_roo
                    '--source-ref', 'refs/heads/main', '--source-digest', source_commit,
                    '--signer-digest', source_commit, '--deny-self-hosted-runners',
                    '--digest-alg', 'sha256', '--predicate-type', 'https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1', '--limit', '1', '--format', 'json']
+        # Sigstore initializes authenticated trust metadata in a writable cache.
+        # Keep it private and disposable; HOME/config remain credential-free.
+        verifier_cache = tempfile.TemporaryDirectory(prefix='blueprint-source-verifier-')
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, pass_fds=(manifest_fd, bundle_fd, gh_fd), start_new_session=True,
-            env={'PATH':'/usr/bin:/bin', 'HOME':'/nonexistent', 'GH_CONFIG_DIR':'/nonexistent', 'GH_HOST':'github.com', 'LC_ALL':'C'})
+            env={'PATH':'/usr/bin:/bin', 'HOME':'/nonexistent', 'GH_CONFIG_DIR':'/nonexistent', 'GH_HOST':'github.com', 'LC_ALL':'C',
+                 'XDG_CACHE_HOME':verifier_cache.name})
         output, errors = bytearray(), bytearray()
         verify_deadline = min(deadline, time.monotonic()+120)
         try:
@@ -907,6 +913,8 @@ def _scene_source_attestation(source_commit: str, *, deadline: float, _proof_roo
     finally:
         for fd in reversed(held):
             os.close(fd)
+        if verifier_cache is not None:
+            verifier_cache.cleanup()
 
 def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str, *, deadline: float,
                                          destination: Path | None = None) -> dict[str, Path]:
