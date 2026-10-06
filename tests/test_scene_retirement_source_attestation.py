@@ -469,7 +469,7 @@ def test_missing_host_verifier_refuses_before_network_or_candidate_execution(tmp
 
 
 @pytest.mark.parametrize(
-    "change", ["none", "paired", "paired-reverse", "wrong-selector", "duplicate-selector", "extra-subject", "certificate", "timestamp", "subject", "predicate", "wrong-contract", "wrong-repo", "wrong-commit"]
+    "change", ["none", "paired", "paired-reverse", "wrong-selector", "duplicate-selector", "extra-subject", "certificate", "timestamp", "subject", "predicate", "wrong-contract", "wrong-repo", "wrong-commit", "snapshot-replaced", "snapshot-modified"]
 )
 def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
     tmp_path, monkeypatch, change
@@ -539,7 +539,25 @@ def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
         }
         cache = Path(kwargs["env"]["XDG_CACHE_HOME"])
         assert cache.is_dir() and stat.S_IMODE(cache.stat().st_mode) == 0o700
+        bundle_path = Path(command[command.index("--bundle") + 1])
+        assert bundle_path.name == "source-provenance.sigstore.json"
+        assert bundle_path.parent.parent == Path("/proc/self/fd")
+        proof_directory_fd = int(bundle_path.parent.name)
+        assert proof_directory_fd in kwargs["pass_fds"]
+        assert stat.S_IMODE(os.fstat(proof_directory_fd).st_mode) == 0o700
+        assert os.fstat(proof_directory_fd).st_uid == os.getuid()
+        assert bundle_path.read_bytes() == b"{}"
+        assert stat.S_IMODE(bundle_path.stat().st_mode) == 0o400
+        assert bundle_path.stat().st_nlink == 1
         (cache / "synthetic-trust-metadata").write_bytes(b"test-only writable cache")
+        if change == "snapshot-replaced":
+            bundle_path.unlink()
+            bundle_path.write_bytes(b"{}")
+            bundle_path.chmod(0o400)
+        elif change == "snapshot-modified":
+            bundle_path.chmod(0o600)
+            bundle_path.write_bytes(b"{ }")
+            bundle_path.chmod(0o400)
         cache_paths.append(cache)
         calls.append(command)
         return actual(

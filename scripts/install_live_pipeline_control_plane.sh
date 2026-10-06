@@ -804,8 +804,35 @@ def _scene_source_attestation(source_commit: str, *, deadline: float, _proof_roo
         bundle, bundle_fd = protected_read(root / 'source-provenance.sigstore.json', 32*1024*1024)
         for fd in (manifest_fd, bundle_fd):
             os.lseek(fd, 0, os.SEEK_SET)
+        # gh selects the bundle parser by suffix: a bare /proc/self/fd/N is
+        # refused before crypto. Give the admitted bytes a .json name through
+        # a pinned private directory; retain original proof and copy identities.
+        verifier_cache = tempfile.TemporaryDirectory(prefix='blueprint-source-verifier-')
+        proof_directory = Path(verifier_cache.name) / 'proof'
+        proof_directory.mkdir(mode=0o700)
+        proof_directory_fd = os.open(proof_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        held.append(proof_directory_fd)
+        proof_info = os.fstat(proof_directory_fd)
+        require(stat.S_ISDIR(proof_info.st_mode) and proof_info.st_uid == _SCENE_RUNTIME_OWNER
+                and stat.S_IMODE(proof_info.st_mode) == 0o700)
+        proof_copy_fd = os.open('source-provenance.sigstore.json',
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=proof_directory_fd)
+        held.append(proof_copy_fd)
+        view = memoryview(bundle)
+        while view:
+            require(time.monotonic() <= deadline)
+            written = os.write(proof_copy_fd, view)
+            require(written > 0)
+            view = view[written:]
+        os.fsync(proof_copy_fd)
+        os.fchmod(proof_copy_fd, 0o400)
+        proof_copy_info = os.fstat(proof_copy_fd)
+        require(stat.S_ISREG(proof_copy_info.st_mode) and proof_copy_info.st_uid == _SCENE_RUNTIME_OWNER
+                and proof_copy_info.st_nlink == 1 and proof_copy_info.st_size == len(bundle))
+        identities.extend(((proof_directory_fd, os.fstat(proof_directory_fd)), (proof_copy_fd, proof_copy_info)))
         command = [f'/proc/self/fd/{gh_fd}', 'attestation', 'verify', f'/proc/self/fd/{manifest_fd}',
-                   '--bundle', f'/proc/self/fd/{bundle_fd}', '--repo', 'ognjhunt/BlueprintCapturePipeline', '--hostname', 'github.com',
+                   '--bundle', f'/proc/self/fd/{proof_directory_fd}/source-provenance.sigstore.json',
+                   '--repo', 'ognjhunt/BlueprintCapturePipeline', '--hostname', 'github.com',
                    '--cert-identity', 'https://github.com/ognjhunt/BlueprintCapturePipeline/.github/workflows/ci.yml@refs/heads/main',
                    '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com',
                    '--source-ref', 'refs/heads/main', '--source-digest', source_commit,
@@ -813,9 +840,8 @@ def _scene_source_attestation(source_commit: str, *, deadline: float, _proof_roo
                    '--digest-alg', 'sha256', '--predicate-type', 'https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1', '--limit', '1', '--format', 'json']
         # Sigstore initializes authenticated trust metadata in a writable cache.
         # Keep it private and disposable; HOME/config remain credential-free.
-        verifier_cache = tempfile.TemporaryDirectory(prefix='blueprint-source-verifier-')
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, pass_fds=(manifest_fd, bundle_fd, gh_fd), start_new_session=True,
+            stderr=subprocess.PIPE, pass_fds=(manifest_fd, bundle_fd, gh_fd, proof_directory_fd), start_new_session=True,
             env={'PATH':'/usr/bin:/bin', 'HOME':'/nonexistent', 'GH_CONFIG_DIR':'/nonexistent', 'GH_HOST':'github.com', 'LC_ALL':'C',
                  'XDG_CACHE_HOME':verifier_cache.name})
         output, errors = bytearray(), bytearray()
