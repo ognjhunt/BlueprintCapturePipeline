@@ -740,7 +740,7 @@ write or send.
 ## Outreach-ready hypothesis direction
 
 `outreach-ready-direction.py` is the only switch for outreach-ready hypotheses in
-daily QA (ADP-010 partner discovery; owner decision 2026-10-05; design v1.1). Without
+daily QA (ADP-010 partner discovery; owner decision 2026-10-05; design v1.1, rule v1.2). Without
 an enabled `daily_qa` direction every run is in shadow mode: the row, create payload,
 packet, QA input, review, publication payloads and status output are byte-identical
 to a release without the feature. After publication completes, the tier is recorded
@@ -795,12 +795,16 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
 - Admitted keys publish only through the row's existing publication path
   (agent-owned in production): Sheets rows with Verification `Hypothesis` and
   Notion entries labelled "Hypothesis, not verified", each with exactly one
-  question (template S, M or A). A hypothesis that is malformed or no longer current
+  question (template S, M, A or U). A hypothesis that is malformed or no longer current
   at publication is left out on its own reason; it never blocks that day's verified
   rows. Nothing authorizes a send.
 - Enable a direction only after the WebApp release that accepts result v3 and the
-  v1.1 `hypotheses` payloads (#855) is deployed. An older WebApp refuses every day
+  v1.2 `hypotheses` payloads (#855, #862) is deployed. An older WebApp refuses every day
   whose payload contains hypotheses, including that day's verified rows.
+- A direction names the rule of the release that set it (`rule_version`). After a
+  release that changes the rule (v1.1 to v1.2), run `set --apply` from that release:
+  until then `show` reports the pinned direction as unverified and every run is in
+  shadow mode with `outreach_ready_direction_invalid`. `disable --apply` still brakes it.
 
 The hermetic tests use the real bridge with in-memory Firestore and a fake object
 store. No provider, model, session, CRM write or send.
@@ -955,7 +959,7 @@ repository root, with `--key-file` set to a private env file. Start with
   task quote, its page or a same-URL excerpt must name a site anchor (or the proven
   provider address); otherwise the task is `company_level_task` and does not
   qualify.
-- `outreach_ready` (rule `blueprint.site-screen-rule.v2`, design v1.1) needs the
+- `outreach_ready` (rule `blueprint.site-screen-rule.v3`, design v1.1) needs the
   operator, the exact site and the site task each proven that way, and nothing
   contradicted: an operator the input does not name (`operator_mismatch`), the site
   shown closed (`operating_now` `no`, or an answer that is not yes, no or unknown),
@@ -964,13 +968,18 @@ repository root, with `--key-file` set to a private env file. Start with
   `manual_today` `no`, or `existing_automation` `full` (this task at this site fully
   automated). Partial automation, or automation of other tasks or sites, keeps the
   site eligible. Every other site is `screened`, with its `blockers`.
-- Each record asks exactly one question, the first of S, M and A whose check is open:
-  S (site link open) "Is <task> done at your <site> site, or somewhere else in the
-  company?"; M (manual workflow open) "Which parts of <task> at <site> still need
-  people, and what has kept them from being automated?"; A "What has kept the
-  remaining <task> work at <site> from being automated so far?". `<site>` is the
-  input city, else the site name. Every other open check (existing automation,
-  freshness, fit, interest) is recorded in `open_checks` and not asked.
+- Each record asks exactly one question, `verification.outreach_question` under
+  outreach-ready rule v1.2 (see [RENDER.md](../RENDER.md#outreach-ready-tier)): S
+  (site link open) "Is <task> done at <site>, or somewhere else in the company?"; M
+  (manual workflow open) "Which parts of <task> at <site> still need people, and what
+  has kept them from being automated?"; else U "Is any of <task>
+  at <site> automated today, or is it all done by hand?". `<site>` is "your <City>
+  site" from the address city, else "your <name> site" for a short input site name,
+  else "this site". The provider's "partial" choice also includes automation of
+  other tasks/sites, so it cannot supply the exact task/site premise of template A.
+  The shared builder retains A only for explicitly validated exact partial scope;
+  screen records keep that premise open with U. Every other open check (existing
+  automation, freshness, fit, interest) is recorded in `open_checks` and not asked.
   `variability_signals` is recorded and never required.
 - Records are recomputed from the stored raw results and page reads, under each
   stage's current rule (`screen_gates` gives the lead-verification gate shape and
@@ -1033,6 +1042,97 @@ repository root, with `--key-file` set to a private env file. Start with
   Output is counts and stable `site_screen_*` codes only, never site names, people
   or addresses. The hermetic tests use a fake Task API transport and a fake page
   reader with synthetic sites.
+
+## Contact lookup (FullEnrich)
+
+`contact-lookup.py` looks up a provider-verified work email for a real person at each
+contact site of a site-screen out dir. Owner decisions 2026-10-05, company GCS
+`operations/recovery/2026-10-05/owner-decisions/`:
+`owner-decision-contact-provider-lookup-20261005.json` (amends
+`owner-decision-contact-sources-20261005.json`) and
+`owner-decision-provider-sourced-person-20261005.json`. One provider: FullEnrich API v2
+(`app.fullenrich.com`). The code is `tools/daily_research/contact_lookup.py`, standard
+library only. Nothing sends, drafts or writes a CRM; the founder sends every email himself.
+
+```bash
+OUT=/PRIVATE/site-screen-out-dir   # The site-screen out dir: durable, outside every Git work tree, never /tmp.
+KEYS=/PRIVATE/fullenrich.env       # One line: FULLENRICH_API_KEY=...
+SPEND="--owner-reference owner-decision-contact-provider-lookup-20261005 --max-credits 50 --max-calls 100"
+SEARCH="--person-search owner-decision-provider-sourced-person-20261005"  # Optional: provider_sourced people.
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH --apply
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py summary --out "$OUT"
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py balance --key-file "$KEYS"
+```
+
+Run from the repository root after the site screen's `contact`, `collect` and `verify`, with an
+interpreter that has no `tools` package of its own in site-packages (one shadows this
+repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has none.
+
+- Who is looked up, per contact record (recomputed under the current contact rule), in
+  contact order: a site with a published, verified person email is left alone
+  (`published_person_email`); a site without an operator domain proven by the screen is
+  skipped (`operator_domain_unproven`). A named person the contact stage proved by a
+  quote, with a dated source at most 18 months old, gets one work-email enrichment
+  (`quoted_person`); an undated or older one is `person_not_current`. Otherwise, only
+  with `--person-search` naming the decision above (anything else refuses with
+  `contact_lookup_person_search_reference_invalid`), one people search on the operator's
+  domain for the listed roles (`TITLES`: owner, president, general manager, plant
+  manager, operations manager or director, engineering or automation manager) keeps the
+  first person FullEnrich places at that domain now (`is_current` true, or no end date
+  in `employment.current`; historical `employment.all` entries need `is_current: true`)
+  in a listed role, and that person gets one enrichment (`provider_sourced`). The
+  employment field relied on is recorded; a past employer never counts. The pages the
+  site screen already read and kept are checked for the person with their title and the
+  operator (`corroboration`, true or false; no new read, never LinkedIn).
+- An email counts only when FullEnrich marks it `DELIVERABLE` (`HIGH_PROBABILITY` is its
+  catch-all estimate, and `CATCH_ALL` and `INVALID` do not count either), it is on the
+  operator's domain or a subdomain, never free mail, its local part names the person
+  (never a role inbox), and the enrichment's own profile, where it gives one, names the
+  same person at the operator now. Only `contact.work_emails` is requested; personal
+  emails and phones are never asked for or kept, and a rejected address is never written.
+- Spend. The first `--apply` pins `--owner-reference`, `--max-credits` (FullEnrich
+  credits) and `--max-calls` in `lookup/owner_ceiling.json`, once; later runs may only
+  lower them (`contact_lookup_credits_above_pin`, `contact_lookup_calls_above_pin`,
+  `contact_lookup_owner_reference_mismatch`). Pin the whole allowance for this out dir.
+  An `intent` is fsynced to `lookup/spend.jsonl` before every call. Admission counts
+  answered calls at their reported credits and calls of unknown outcome or unread result
+  at their most (a search 1.25: five people at 0.25; an enrichment 1), and stops with
+  `contact_lookup_credit_ceiling_reached` or `contact_lookup_max_calls_reached`. One
+  search per domain and one enrichment per person and domain are never sent twice. A
+  401, 402, 403, 429, a redirect or no connection stops the run unbilled, and so does
+  an enrichment FullEnrich ends unbilled (out of credits, rate limited, cancelled); a
+  later run may send those again. A 5xx, a lost connection or an unreadable answer may be
+  billed, so it is never sent again and its most stays committed.
+- Results. An enrichment is asynchronous: `--apply` reads started ones every 10 s for up
+  to `--wait-seconds` (default 120; reads are not billed), and a later `--apply` reads
+  the rest (`state: pending` until then). Without `--apply` the run admits the same calls
+  and sends and writes nothing; it counts the searches, as their enrichments depend on
+  the answers.
+- Records. `lookup/records/<site_key>.contact-lookup-rule.v1.json` holds each site's
+  lookup (`source: provider_lookup`, `label: looked_up`, FullEnrich's own `status`, its
+  `valid` or `not_valid` mapping, the person with `sourcing` and proof, and the address
+  only when usable) and its `recipient` from `contact_lookup.choose_recipient`, a pure
+  function for the admission step: 1 published person email, 2 looked-up person email,
+  3 published team inbox, 4 published general inbox, 5 none, each with its source and
+  labels. `contact_lookup.load(workspace, states=states)` recomputes the records from
+  the durable journal and current site evidence under the admission caller's out dir
+  lock. Cached record files do not authorize recipients. A quoted source must still be
+  within 18 months at lookup time and its verified quote must support the claimed title.
+- `summary` recomputes every record from the journal alone and writes
+  `lookup/summary.json`. Output is counts and stable `contact_lookup_*` codes only, never
+  names or addresses. Every file is 0600 in 0700 folders. The key comes only from
+  `--key-file`; it is never printed or written. The command refuses on the daily worker
+  (`contact_lookup_worker_needs_paid_admission`). The hermetic tests use a fake FullEnrich
+  transport and synthetic sites.
+- `balance` makes one unbilled `GET /api/v2/account/credits` and prints only the finite
+  remaining credit count and check time. It creates no artifact or lookup intent.
+  Read the actual balance before an owner-authorized first pass; a reported free tier
+  is not evidence of the remaining allocation or permission for a paid subscription.
+
+Provider contract references: [data dictionary](https://docs.fullenrich.com/api/v2/general/data-dictionary),
+[enrichment result](https://docs.fullenrich.com/api/v2/contact/enrich/bulk/get),
+[credit balance](https://docs.fullenrich.com/api/v2/account/credits/get).
 
 ## Daily research runtime envelope
 

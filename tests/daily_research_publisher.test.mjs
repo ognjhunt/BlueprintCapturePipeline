@@ -1,7 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {Publisher,planSheets,planNotion,publicationVerification,openChecks,firstQuestion,QUESTION_TEMPLATES} from '../tools/daily_research/publisher.mjs';
+import {Publisher,planSheets,planNotion,publicationVerification,openChecks,firstQuestion,QUESTION_TEMPLATES,questionTask,siteCity,
+  sitePhrase,questionTemplate,STATE_NAMES,COUNTRY_NAMES,TRAILING_MARKS,SMALL_WORDS} from '../tools/daily_research/publisher.mjs';
+import {readFileSync} from 'node:fs';
 import {Store,ROOT} from '../tools/daily_research/firestore_bridge.mjs';
 import {MemoryFirestore} from './fixtures/daily_research/firestore-memory.mjs';
 import {verificationDigest} from '../tools/daily_research/verification-digest.mjs';
@@ -1093,11 +1095,13 @@ test('retains more than100 source-supported candidates through Sheets planning w
 });
 
 // Outreach-ready hypotheses (synthetic): one verified row plus one hypothesis bound by a v3 review.
-const RESULT_V3='blueprint.lead-verification-result.v3', RULE='blueprint.outreach-ready-rule.v1.1';
-// Design v1.1 (Blueprint-WebApp #855): exactly one question, chosen S, then M, then A, with task and site verbatim.
-const TEMPLATES={S:'Is Depositing done at your South site, or somewhere else in the company?',
-  M:'Which parts of Depositing at South still need people, and what has kept them from being automated?',
-  A:'What has kept the remaining Depositing work at South from being automated so far?'};
+const RESULT_V3='blueprint.lead-verification-result.v3', RULE='blueprint.outreach-ready-rule.v1.2';
+// Rule v1.2: exactly one question, chosen S, then M, then A or U, with the task lower-cased ("Depositing" is an
+// ordinary word) and the site as "your <City> site" from the candidate's location (Chicago).
+const TEMPLATES={S:'Is depositing done at your Chicago site, or somewhere else in the company?',
+  M:'Which parts of depositing at your Chicago site still need people, and what has kept them from being automated?',
+  A:'What has kept the rest of depositing at your Chicago site from being automated so far?',
+  U:'Is any of depositing at your Chicago site automated today, or is it all done by hand?'};
 const CHECKS=['manual_workflow','existing_automation','fit','interest'];
 function rebind(r) {
   for(const d of Object.values(r.delivery)) {d.payload_json=JSON.stringify(d.payload);d.payload_digest=sha(d.payload_json);}
@@ -1114,23 +1118,45 @@ function hypothesisRow({validUntil='2030-01-01T00:00:00Z'}={}) {
   Object.assign(second,{status:'unresolved',eligible_for_qualified_promotion:false,tier:'outreach_ready',eligible_for_outreach_ready:true,
     outreach_ready:{...second.outreach_ready,open_checks:CHECKS,open_questions:[TEMPLATES.M]}});
   r.review.outreach_ready_keys=['synthetic-h'];
-  r.outreach_ready={schema_version:'blueprint.outreach-ready-admission.v1',state:'enabled',paths:['daily_qa'],label:'hypothesis',
-    max_rows_per_batch:50,sends_authorized:false};
+  r.outreach_ready={schema_version:'blueprint.outreach-ready-admission.v1',state:'enabled',rule_version:RULE,paths:['daily_qa'],
+    label:'hypothesis',max_rows_per_batch:50,sends_authorized:false};
   const entry={candidate:hypothesis,open_checks:CHECKS,open_questions:[TEMPLATES.M]};
   for(const name of ['sheets','notion']) r.delivery[name].payload={...r.delivery[name].payload,candidates:[verified],hypotheses:[entry]};
   return rebind(r);
 }
 const crmSnapshot=()=>({sheet_id:SHEET,complete:true,values:[['CRM'],[],[],[],headers]});
 
-test('the question and open checks are exactly what Blueprint-WebApp #855 derives from the assessment',()=>{
-  const c={task:'Depositing',site:'South'},claims=(task,workflow)=>({claims:{site_task:{status:task},human_workflow:{status:workflow}}});
+test('the question and open checks are exactly what Blueprint-WebApp derives from the assessment',()=>{
+  const c={task:'Depositing',site:'South',location:'Chicago'},claims=(task,workflow)=>({claims:{site_task:{status:task},human_workflow:{status:workflow}}});
+  const automation={counterevidence:{status:'contradicted'}};
   for(const [assessment,checks,template] of [
     [{...claims('inference','unresolved'),valid_until:null},['site_link','manual_workflow','freshness','existing_automation','fit','interest'],'S'],
     [{...claims('verified_fact','unresolved'),valid_until:'2030-01-01T00:00:00Z'},CHECKS,'M'],
-    [{...claims('verified_fact','verified_fact'),valid_until:null},['freshness','existing_automation','fit','interest'],'A']]) {
-    assert.deepEqual(openChecks(assessment),checks);assert.equal(firstQuestion(checks,c),TEMPLATES[template]);
+    [{...claims('verified_fact','verified_fact'),valid_until:null,...automation},['freshness','existing_automation','fit','interest'],'U'],
+    [{...claims('verified_fact','verified_fact'),valid_until:null},['freshness','existing_automation','fit','interest'],'U'],
+    [{...claims('verified_fact','verified_fact'),valid_until:null,counterevidence:{status:'checked'}},['freshness','existing_automation','fit','interest'],'U']]) {
+    assert.deepEqual(openChecks(assessment),checks);assert.equal(firstQuestion(checks,c,assessment),TEMPLATES[template]);
   }
-  assert.deepEqual(Object.keys(QUESTION_TEMPLATES),['S','M','A']);
+  assert.deepEqual(Object.keys(QUESTION_TEMPLATES),['S','M','A','U']);
+});
+
+test('the question wording mirrors verification.py exactly, by the shared golden file',()=>{
+  const wording=JSON.parse(readFileSync(new URL('./fixtures/daily_research/lead-verification-tier.json',import.meta.url),'utf8')).question_wording;
+  assert.deepEqual(STATE_NAMES,wording.state_names);assert.deepEqual(COUNTRY_NAMES,wording.country_names);
+  assert.equal(TRAILING_MARKS,wording.trailing_marks);assert.deepEqual(wording.short_site_name,{words:4,characters:40});
+  assert.deepEqual(SMALL_WORDS,wording.small_words);
+  for(const vector of wording.tasks) assert.equal(questionTask(vector.task),vector.expected,JSON.stringify(vector));
+  for(const vector of wording.sites) {
+    assert.equal(siteCity(vector.location),vector.expected_city,JSON.stringify(vector));
+    assert.equal(sitePhrase(vector.site,vector.location),vector.expected,JSON.stringify(vector));
+  }
+  const current=wording.questions.filter(vector=>vector.rule_version===RULE);
+  assert.deepEqual([...new Set(current.map(vector=>vector.expected_template))].sort(),['A','M','S','U']);
+  for(const vector of current) {
+    const template=questionTemplate(vector.open_checks,vector.partial_automation);
+    assert.equal(template,vector.expected_template);
+    assert.equal(QUESTION_TEMPLATES[template](questionTask(vector.task),sitePhrase(vector.site,vector.location)),vector.expected);
+  }
 });
 
 test('hypotheses add labelled rows in the existing 19 columns and verified cells stay byte-identical',()=>{
@@ -1165,7 +1191,7 @@ test('hypotheses add labelled rows in the existing 19 columns and verified cells
   assert.ok(text.includes('First email asks: '+TEMPLATES.M+'\nDraft only; no send is authorized.\n'));
 });
 
-for(const change of ['tier','eligible','promotion','version','rule','checks','questions','template','two_questions','order',
+for(const change of ['tier','eligible','promotion','version','rule','rule_frozen','checks','questions','template','two_questions','order',
   'direction','refused','support','sends','path','limit','overlap','expired','valid_until_form','empty','extra','unbound',
   'assessment','duplicate','nonobject','in_crm'])
   test(`a malformed or expired hypothesis (${change}) is withheld on its own list and never blocks the verified row`,async()=>{
@@ -1177,6 +1203,8 @@ for(const change of ['tier','eligible','promotion','version','rule','checks','qu
     if(change==='promotion') result.eligible_for_qualified_promotion=true;
     if(change==='version') result.version='blueprint.lead-verification-result.v2';
     if(change==='rule') result.outreach_ready.rule_version='blueprint.outreach-ready-rule.v1';
+    // A run that froze an earlier rule's direction never publishes its hypotheses under this rule's wording.
+    if(change==='rule_frozen') r.outreach_ready.rule_version='blueprint.outreach-ready-rule.v1.1';
     if(change==='checks') both(h=>{h[0]={...entry,open_checks:['interest']};});
     if(change==='questions') both(h=>{h[0]={...entry,open_questions:['Is Depositing at South still done mostly by hand?']};});
     // The review's own block agrees, but the question is not the one #855 derives (S while no site link is open).

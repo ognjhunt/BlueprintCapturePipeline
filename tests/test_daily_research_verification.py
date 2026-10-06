@@ -312,7 +312,7 @@ def case_evidence(case):
 def tiered(case, version=verification.OUTREACH_RESULT_VERSION):
     return verification.cohort(case["candidates"], case["assessments"], verification.moment(case["now"]),
                                duplicate_checks=case["duplicate_checks"] or None, result_version=version,
-                               evidence=case_evidence(case))
+                               evidence=case_evidence(case), outreach_rule=case["rule_version"])
 
 
 def webapp_open_checks(assessment):
@@ -323,39 +323,108 @@ def webapp_open_checks(assessment):
         ["freshness"] if assessment["valid_until"] is None else []) + ["existing_automation", "fit", "interest"]
 
 
-WEBAPP_TEMPLATES = {  # Blueprint-WebApp #855 OUTREACH_READY_QUESTION_TEMPLATES, word for word.
-    "S": "Is {task} done at your {site} site, or somewhere else in the company?",
-    "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
-    "A": "What has kept the remaining {task} work at {site} from being automated so far?"}
+V11, V12 = verification.LEGACY_OUTREACH_RULE_VERSION, verification.OUTREACH_RULE_VERSION
+WEBAPP_TEMPLATES = {  # Blueprint-WebApp OUTREACH_READY_QUESTION_TEMPLATES by rule version, word for word.
+    V11: {"S": "Is {task} done at your {site} site, or somewhere else in the company?",
+          "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
+          "A": "What has kept the remaining {task} work at {site} from being automated so far?"},
+    V12: {"S": "Is {task} done at {site}, or somewhere else in the company?",
+          "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
+          "A": "What has kept the rest of {task} at {site} from being automated so far?",
+          "U": "Is any of {task} at {site} automated today, or is it all done by hand?"}}
+
+
+def webapp_question(template, candidate, rule_version):
+    """The question Blueprint-WebApp writes: v1.1 with the raw fields, v1.2 with the shared wording helpers."""
+    if rule_version == V11:
+        return WEBAPP_TEMPLATES[V11][template].format(task=candidate["task"], site=candidate["site"])
+    return WEBAPP_TEMPLATES[V12][template].format(task=verification.question_task(candidate["task"]),
+                                                  site=verification.site_phrase(candidate["site"], candidate.get("location")))
 
 
 def test_shared_outreach_tier_golden_file_is_recomputed_exactly():
-    """The WebApp reads the same contract; Python must reproduce every expected result."""
+    """The WebApp reads the same contract; Python must reproduce every expected result under each case's rule."""
     document = json.loads(TIER_FIXTURE.read_text())
-    assert document["fixture_only"] is True and document["rule_version"] == verification.OUTREACH_RULE_VERSION
+    assert document["fixture_only"] is True and document["rule_version"] == V12
+    assert document["rule_versions"] == list(verification.OUTREACH_RULE_VERSIONS) == [V11, V12]
     assert document["result_version"] == verification.OUTREACH_RESULT_VERSION
     assert document["min_quote_words"] == verification.MIN_QUOTE_WORDS
-    assert document["question_templates"] == verification.QUESTION_TEMPLATES == WEBAPP_TEMPLATES
+    assert document["question_templates"] == verification.QUESTION_TEMPLATES_BY_RULE == WEBAPP_TEMPLATES
     assert document["open_checks"] == list(verification.OPEN_CHECKS)
-    names = set()
+    names = {V11: set(), V12: set()}
     for case in document["cases"]:
         result = tiered(case)
         assert [{key: r[key] for key in case["expected"][0]} for r in result["results"]] == case["expected"], case["name"]
         assert result["tier_evidence"] == case["expected_tier_evidence"], case["name"]
+        assert result["outreach_rule_version"] == case["rule_version"]
+        assert all(r["outreach_ready"]["rule_version"] == case["rule_version"] for r in case["expected"]), case["name"]
         if "retained" in case:
             assert sorted({page["url"] for page in case_evidence(case)["pages"]}) == case["expected_credited_urls"], case["name"]
-        names.add(case["name"])
-    assert {"closed_site", "vendor_only_automation_evidence", "expired_assessment", "findall_citation_excerpt",
-            "paraphrased_task_quote", "conflicting_duplicates", "verified_full_proof_path", "company_level_task_inference",
-            "company_level_task_marked_verified", "task_page_names_the_city", "job_post_at_another_site",
-            "automation_elsewhere_manual_verified", "task_fully_automated_at_site", "office_or_mailing_only_facility",
-            "office_claim_unproven", "contractor_operated_site", "facility_field_invalid", "cross_host_redirect",
-            "same_host_redirect", "two_words_after_punctuation", "missing_identity", "assessed_at_in_the_future",
-            "question_mark_in_task"} <= names
-    templates = {question: name for case in document["cases"] for r in case["expected"]
-                 for question in r["outreach_ready"]["open_questions"] for name in "SMA"
-                 if question.startswith(WEBAPP_TEMPLATES[name].split("{")[0])}
-    assert set(templates.values()) == {"S", "M", "A"}  # Every template is exercised.
+        names[case["rule_version"]].add(case["name"])
+    required = {"closed_site", "vendor_only_automation_evidence", "expired_assessment", "findall_citation_excerpt",
+                "paraphrased_task_quote", "conflicting_duplicates", "verified_full_proof_path", "company_level_task_inference",
+                "company_level_task_marked_verified", "task_page_names_the_city", "job_post_at_another_site",
+                "automation_elsewhere_manual_verified", "task_fully_automated_at_site", "office_or_mailing_only_facility",
+                "office_claim_unproven", "contractor_operated_site", "facility_field_invalid", "cross_host_redirect",
+                "same_host_redirect", "two_words_after_punctuation", "missing_identity", "assessed_at_in_the_future",
+                "question_mark_in_task"}
+    assert required <= names[V11] and required <= names[V12]
+    assert "question_uses_raw_task_and_site" in names[V11] and "question_normalizes_task_and_site" in names[V12]
+    for rule, letters in ((V11, {"S", "M", "A"}), (V12, {"S", "M", "U"})):
+        templates = {name for case in document["cases"] if case["rule_version"] == rule for r in case["expected"]
+                     for question in r["outreach_ready"]["open_questions"] for name in WEBAPP_TEMPLATES[rule]
+                     if question.startswith(WEBAPP_TEMPLATES[rule][name].split("{")[0])}
+        assert templates == letters, rule  # Every automatically derived template is exercised; explicit A is in the wording vectors.
+
+
+def test_shared_question_wording_vectors_and_tables_are_recomputed_exactly():
+    wording = json.loads(TIER_FIXTURE.read_text())["question_wording"]
+    assert wording["state_names"] == verification.STATE_NAMES
+    assert wording["country_names"] == sorted(verification.COUNTRY_NAMES)
+    assert wording["trailing_marks"] == verification.TRAILING_MARKS
+    assert wording["short_site_name"] == dict(zip(("words", "characters"), verification.SHORT_SITE_NAME))
+    assert wording["small_words"] == sorted(verification.SMALL_WORDS)
+    for vector in wording["tasks"]:
+        assert verification.question_task(vector["task"]) == vector["expected"], vector
+    for vector in wording["sites"]:
+        assert verification.site_city(vector["location"]) == vector["expected_city"], vector
+        assert verification.site_phrase(vector["site"], vector["location"]) == vector["expected"], vector
+    for vector in wording["questions"]:
+        assert verification.outreach_question(vector["open_checks"], vector["task"], vector["site"], vector["location"],
+                                              partial_automation=vector["partial_automation"],
+                                              rule_version=vector["rule_version"]) == (vector["expected_template"], vector["expected"])
+    assert {v["expected_template"] for v in wording["questions"] if v["rule_version"] == V12} == {"S", "M", "A", "U"}
+
+
+def test_question_wording_fixes_the_task_case_the_site_phrase_and_template_a():
+    """v1.2: the screen output's capitalised task, title-cased city and presupposing template A, fixed."""
+    before = verification.outreach_question(["existing_automation", "fit", "interest"], "Loading and unloading equipment and materials",
+                                            "Odessa", rule_version=V11)
+    assert before == ("A", ("What has kept the remaining Loading and unloading equipment and materials work at Odessa "
+                            "from being automated so far?"))
+    after = verification.outreach_question(["existing_automation", "fit", "interest"], "Loading and unloading equipment and materials",
+                                           "Odessa plant", "ODESSA, TX 79761")
+    assert after == ("U", ("Is any of loading and unloading equipment and materials at your Odessa site automated today, "
+                           "or is it all done by hand?"))
+    assert verification.outreach_question(["existing_automation"], "CNC machine tending", "North plant", "McKinney, TX 75069",
+                                          partial_automation=True) == (
+        "A", "What has kept the rest of CNC machine tending at your McKinney site from being automated so far?")
+    assert verification.site_phrase("Plant", "Grand Prairie Tx 75050") == "your Grand Prairie site"  # Never "Tx 75050".
+    # An ALL CAPS city is title-cased with Mc restored, never "Mckinney"; any other casing is kept exactly.
+    assert [verification.site_phrase("Plant", city) for city in ("MCKINNEY", "MCALLEN, TX", "ISLE OF PALMS, SC", "MACON, GA")] == [
+        "your McKinney site", "your McAllen site", "your Isle of Palms site", "your Macon site"]
+    assert [verification.city_case(city) for city in ("McKinney", "DeSoto", "odessa", "WINSTON-SALEM", "O'FALLON")] == [
+        "McKinney", "DeSoto", "odessa", "Winston-Salem", "O'Fallon"]
+    assert verification.site_phrase("North plant", None) == "your North plant site"
+    assert verification.site_phrase("A synthetic site name of more than four words", None) == "this site"
+    # The signature callers already use still works: no automation flag asks U, and v1.1 still asks A.
+    assert verification.question_template(["existing_automation"]) == "U"
+    assert verification.question_template(["existing_automation"], rule_version=V11) == "A"
+    assert [verification.question_template(c) for c in (["site_link", "manual_workflow"], ["manual_workflow"])] == ["S", "M"]
+    with pytest.raises(ValueError, match="outreach_rule_version_unknown"):
+        verification.outreach_question(["existing_automation"], "Kitting", "North plant", rule_version="blueprint.outreach-ready-rule.v9")
+    with pytest.raises(ValueError, match="outreach_rule_version_unknown"):
+        verification.cohort([], {}, NOW, result_version=verification.OUTREACH_RESULT_VERSION, outreach_rule="blueprint.outreach-ready-rule.v9")
 
 
 def test_v3_keeps_the_v2_result_and_verified_path_byte_for_byte():
@@ -363,7 +432,7 @@ def test_v3_keeps_the_v2_result_and_verified_path_byte_for_byte():
         v2, v3 = tiered(case, verification.DIAGNOSTIC_RESULT_VERSION), tiered(case)
         assert verification.without_tier(v3) == v2, case["name"]
         assert v3.pop("result_version") == verification.OUTREACH_RESULT_VERSION
-        assert v3.pop("outreach_rule_version") == verification.OUTREACH_RULE_VERSION
+        assert v3.pop("outreach_rule_version") == case["rule_version"]
         assert v3.pop("outreach_ready_count") == sum(r["eligible_for_outreach_ready"] for r in v3["results"])
         v3.pop("tier_evidence")
         assert v2.pop("result_version") == verification.DIAGNOSTIC_RESULT_VERSION
@@ -383,7 +452,7 @@ def test_every_other_state_of_a_proven_fact_gives_none(fact, state):
     if fact == "site_task" and state == "inference":
         # Company-level task evidence: outreach-ready with the site link open, asked with template S.
         assert result["tier"] == "outreach_ready" and result["outreach_ready"]["open_checks"][0] == "site_link"
-        assert result["outreach_ready"]["open_questions"][0].startswith("Is Manual case picking for outbound orders done at your")
+        assert result["outreach_ready"]["open_questions"][0].startswith("Is manual case picking for outbound orders done at your Testville site")
         return
     assert result["tier"] == "none" and result["eligible_for_outreach_ready"] is False
     blocker = fact + ("_contradicted" if state == "contradicted" else
@@ -402,17 +471,23 @@ def test_open_workflow_or_fit_states_stay_outreach_ready_until_contradicted(clai
     assert result["tier"] == "outreach_ready" and not result["eligible_for_qualified_promotion"]
     block = result["outreach_ready"]
     assert ("manual_workflow" in block["open_checks"]) is (claim == "human_workflow")
-    template = "M" if claim == "human_workflow" else "A"
-    assert block["open_questions"] == [WEBAPP_TEMPLATES[template].format(task="Manual case picking for outbound orders",
-                                                                         site="Fixture DC 4, 100 Example Way")]
+    template = "M" if claim == "human_workflow" else "U"  # No automation evidence shown: U, not A.
+    assert block["open_questions"] == [webapp_question(template, case["candidates"][0], V12)]
 
 
-def test_a_contradicted_counterevidence_changes_the_question_not_the_eligibility():
+def test_automation_elsewhere_keeps_the_question_neutral_and_the_eligibility():
     case = tier_cases()[0]
-    case["assessments"]["golden-1"]["counterevidence"].update(status="contradicted", reason="Synthetic partial automation elsewhere")
+    assert case["rule_version"] == V12
+    claims, counter = case["assessments"]["golden-1"]["claims"], case["assessments"]["golden-1"]["counterevidence"]
+    claims["human_workflow"].update(status="verified_fact", source_refs=["S2"])
+    claims["plausible_fit"].update(status="unresolved", source_refs=[])  # Not the full-proof verified path.
+    assert tiered(case)["results"][0]["outreach_ready"]["open_questions"] == [webapp_question("U", case["candidates"][0], V12)]
+    counter.update(status="contradicted", reason="Synthetic partial automation elsewhere")
     result = tiered(case)["results"][0]
     assert result["tier"] == "outreach_ready" and result["outreach_ready"]["blockers"] == []
-    case["assessments"]["golden-1"]["claims"]["human_workflow"]["status"] = "contradicted"
+    assert result["outreach_ready"]["open_questions"] == [webapp_question("U", case["candidates"][0], V12)]
+    assert result["outreach_ready"]["open_questions"][0].startswith("Is any of manual case picking")
+    claims["human_workflow"]["status"] = "contradicted"
     assert tiered(case)["results"][0]["outreach_ready"]["blockers"] == ["human_workflow_contradicted"]
 
 
@@ -498,9 +573,13 @@ def test_exactly_one_question_by_precedence_with_open_checks_the_webapp_derives(
                 continue
             assert block["blockers"] == [] and block["open_checks"] == webapp_open_checks(result["assessment"])
             candidate = next(c for c in case["candidates"] if c["candidate_key"] == result["candidate_key"])
-            template = "S" if "site_link" in block["open_checks"] else "M" if "manual_workflow" in block["open_checks"] else "A"
-            assert template == verification.question_template(block["open_checks"])
-            assert block["open_questions"] == [WEBAPP_TEMPLATES[template].format(task=candidate["task"], site=candidate["site"])]
+            # The assessment's broad counterevidence status cannot establish exact task/site partial scope.
+            partial = False
+            rule = case["rule_version"]
+            template = ("S" if "site_link" in block["open_checks"] else "M" if "manual_workflow" in block["open_checks"]
+                        else "A" if partial or rule == V11 else "U")
+            assert template == verification.question_template(block["open_checks"], partial, rule)
+            assert block["open_questions"] == [webapp_question(template, candidate, rule)]
             assert block["open_questions"][0].count("?") == 1 and block["open_questions"][0].endswith("?")
 
 
