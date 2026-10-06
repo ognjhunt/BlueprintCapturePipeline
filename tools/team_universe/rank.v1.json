@@ -1,0 +1,20 @@
+{
+ "schema_version": "blueprint.team-rank.v1",
+ "points": {
+  "fit": 40,
+  "early_stage": 20,
+  "openness": 20,
+  "policy": 10,
+  "recent_activity": 10
+ },
+ "early_stages": ["pre_seed", "seed", "series_a", "series_b", "stealth"],
+ "openness_signals": ["design_partners", "simulation", "shares_policy", "api_sdk", "seeking_partners"],
+ "openness_full_at": 2,
+ "policy_signals": ["learned_policy", "shares_policy"],
+ "evaluable_signals": ["learned_policy", "shares_policy", "simulation", "api_sdk"],
+ "recent_days": 365,
+ "thresholds": {
+  "beta_candidate": 60,
+  "prospect": 30
+ }
+}

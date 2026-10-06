@@ -1,0 +1,367 @@
+{
+ "schema_version": "blueprint.team-discovery-queries.v1",
+ "query_set": "team-discovery-queries-20261005",
+ "reviewed_on": "2026-10-05",
+ "form": "blueprint.team-discovery.v1",
+ "since": "2024-01-01",
+ "max_companies": 25,
+ "queries": [
+  {
+   "id": "funding-task-machine-tending",
+   "family": "funding_by_task",
+   "task_focus": "fixed_arm_machine_tending",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for machine tending: loading and unloading parts at CNC machines, lathes, presses or molding machines."
+  },
+  {
+   "id": "funding-task-kitting-assembly",
+   "family": "funding_by_task",
+   "task_focus": "kitting_assembly",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for kitting and assembly: picking parts into kits or doing simple assembly steps."
+  },
+  {
+   "id": "funding-task-palletizing",
+   "family": "funding_by_task",
+   "task_focus": "palletizing_depalletizing",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for palletizing: stacking or unstacking cases, bags or totes on pallets."
+  },
+  {
+   "id": "funding-task-tote-order-picking",
+   "family": "funding_by_task",
+   "task_focus": "sorting_pick_and_place",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for tote and order picking: picking items from totes or bins at a pick station, or inducting items onto a sorter."
+  },
+  {
+   "id": "funding-task-mobile-case-picking",
+   "family": "funding_by_task",
+   "task_focus": "mobile_manipulator_case_picking",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for mobile case picking: robots that drive to shelves, racks, carts or conveyors and pick or move cases and totes."
+  },
+  {
+   "id": "funding-task-trailer-unloading",
+   "family": "funding_by_task",
+   "task_focus": "truck_trailer_unloading",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for trailer unloading: unloading or loading boxes from trucks, trailers or shipping containers."
+  },
+  {
+   "id": "funding-task-shelf-restocking",
+   "family": "funding_by_task",
+   "task_focus": "shelf_restocking",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for shelf restocking: putting stock on store shelves or moving stock between a backroom and the sales floor."
+  },
+  {
+   "id": "funding-task-hospital-logistics",
+   "family": "funding_by_task",
+   "task_focus": "hospital_logistics",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for hospital logistics: moving supplies, linens, meals, medications or specimens inside hospitals."
+  },
+  {
+   "id": "funding-task-food-prep",
+   "family": "funding_by_task",
+   "task_focus": "food_prep_manipulation",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for food preparation: handling food items in kitchens, food assembly or food packing."
+  },
+  {
+   "id": "funding-task-laundry-folding",
+   "family": "funding_by_task",
+   "task_focus": "bimanual_folding",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for laundry and folding: handling and folding towels, linens or garments."
+  },
+  {
+   "id": "funding-task-recycling-sorting",
+   "family": "funding_by_task",
+   "task_focus": "recycling_sorting",
+   "robot_form": null,
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robots or robot software for recycling sorting: picking and sorting recyclables or waste on a sorting line."
+  },
+  {
+   "id": "funding-form-fixed-arm",
+   "family": "funding_by_form",
+   "task_focus": null,
+   "robot_form": "fixed_arm",
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build fixed robot arms or collaborative robot arms that work in a workcell."
+  },
+  {
+   "id": "funding-form-mobile-manipulator",
+   "family": "funding_by_form",
+   "task_focus": null,
+   "robot_form": "mobile_manipulator",
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build mobile manipulators: a robot arm on a mobile base."
+  },
+  {
+   "id": "funding-form-humanoid",
+   "family": "funding_by_form",
+   "task_focus": null,
+   "robot_form": "humanoid",
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build humanoid robots for physical work."
+  },
+  {
+   "id": "funding-form-wheeled",
+   "family": "funding_by_form",
+   "task_focus": null,
+   "robot_form": "wheeled",
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build wheeled robots with arms or grippers, including wheeled humanoids."
+  },
+  {
+   "id": "funding-form-bimanual",
+   "family": "funding_by_form",
+   "task_focus": null,
+   "robot_form": "bimanual",
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build bimanual robots with two arms that handle objects together."
+  },
+  {
+   "id": "funding-form-amr-with-arm",
+   "family": "funding_by_form",
+   "task_focus": null,
+   "robot_form": "amr_with_arm",
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build autonomous mobile robots that carry a robot arm."
+  },
+  {
+   "id": "funding-form-software-only",
+   "family": "funding_by_form",
+   "task_focus": null,
+   "robot_form": "software_only",
+   "query": "Robotics companies that announced a pre-seed, seed, Series A or Series B funding round in 2024, 2025 or 2026 and build robot software only: models, policies, perception or control software for robots that other companies make."
+  },
+  {
+   "id": "stealth-emerged-physical-work",
+   "family": "stealth",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics startups that emerged from stealth in 2024, 2025 or 2026 with robots or robot software for physical work in factories, warehouses, stores, hospitals, kitchens, laundries or recycling plants."
+  },
+  {
+   "id": "stealth-emerged-humanoid-mobile",
+   "family": "stealth",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Humanoid, bimanual and mobile manipulation startups that came out of stealth in 2024, 2025 or 2026."
+  },
+  {
+   "id": "stealth-job-posts",
+   "family": "stealth",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics companies still in stealth mode that are visible through job posts for robot manipulation, robot learning, robot hardware or field deployment roles in 2025 or 2026."
+  },
+  {
+   "id": "stealth-funding-news",
+   "family": "stealth",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Stealth-mode robotics startups named in funding news or investor announcements in 2024, 2025 or 2026."
+  },
+  {
+   "id": "accelerator-yc-robots",
+   "family": "accelerator",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics and physical AI companies in Y Combinator batches from 2024, 2025 and 2026 that build robots or robot software for physical work."
+  },
+  {
+   "id": "accelerator-yc-robot-learning",
+   "family": "accelerator",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robot learning, robot foundation model and robot software companies in Y Combinator batches from 2024, 2025 and 2026."
+  },
+  {
+   "id": "accelerator-techstars",
+   "family": "accelerator",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics companies in Techstars accelerator programs from 2024, 2025 and 2026, including industrial, logistics and robotics programs."
+  },
+  {
+   "id": "accelerator-other-programs",
+   "family": "accelerator",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics startups in other hardware, robotics, manufacturing or logistics accelerator and incubator cohorts from 2024, 2025 and 2026, including university and corporate programs."
+  },
+  {
+   "id": "robot-learning-foundation-models",
+   "family": "robot_learning",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Companies building robot foundation models or generalist robot policies for manipulation that were founded or funded in 2024, 2025 or 2026."
+  },
+  {
+   "id": "robot-learning-vla-policies",
+   "family": "robot_learning",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Startups that train vision-language-action models or learned manipulation policies and offer them to robot makers or robot users."
+  },
+  {
+   "id": "robot-learning-policy-data-infrastructure",
+   "family": "robot_learning",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robot learning companies that sell or license manipulation policies, teleoperation data or training infrastructure for robots."
+  },
+  {
+   "id": "robot-learning-deployed-policies",
+   "family": "robot_learning",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Physical AI startups that deploy learned robot policies in real factories, warehouses, stores, kitchens or laundries."
+  },
+  {
+   "id": "integrator-machine-tending",
+   "family": "integrator",
+   "task_focus": "fixed_arm_machine_tending",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for machine tending: loading and unloading parts at CNC machines, lathes, presses or molding machines, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-kitting-assembly",
+   "family": "integrator",
+   "task_focus": "kitting_assembly",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for kitting and assembly: picking parts into kits or doing simple assembly steps, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-palletizing",
+   "family": "integrator",
+   "task_focus": "palletizing_depalletizing",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for palletizing: stacking or unstacking cases, bags or totes on pallets, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-tote-order-picking",
+   "family": "integrator",
+   "task_focus": "sorting_pick_and_place",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for tote and order picking: picking items from totes or bins at a pick station, or inducting items onto a sorter, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-mobile-case-picking",
+   "family": "integrator",
+   "task_focus": "mobile_manipulator_case_picking",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for mobile case picking: robots that drive to shelves, racks, carts or conveyors and pick or move cases and totes, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-trailer-unloading",
+   "family": "integrator",
+   "task_focus": "truck_trailer_unloading",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for trailer unloading: unloading or loading boxes from trucks, trailers or shipping containers, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-shelf-restocking",
+   "family": "integrator",
+   "task_focus": "shelf_restocking",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for shelf restocking: putting stock on store shelves or moving stock between a backroom and the sales floor, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-hospital-logistics",
+   "family": "integrator",
+   "task_focus": "hospital_logistics",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for hospital logistics: moving supplies, linens, meals, medications or specimens inside hospitals, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-food-prep",
+   "family": "integrator",
+   "task_focus": "food_prep_manipulation",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for food preparation: handling food items in kitchens, food assembly or food packing, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-laundry-folding",
+   "family": "integrator",
+   "task_focus": "bimanual_folding",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for laundry and folding: handling and folding towels, linens or garments, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "integrator-recycling-sorting",
+   "family": "integrator",
+   "task_focus": "recycling_sorting",
+   "robot_form": null,
+   "query": "Robotics system integrators and automation startups that design and install robots for recycling sorting: picking and sorting recyclables or waste on a sorting line, with customer projects or case studies from 2024, 2025 or 2026."
+  },
+  {
+   "id": "spinout-manipulation-hardware",
+   "family": "university_spinout",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "University spinout companies founded from 2023 to 2026 that build robots for manipulation, picking, assembly or mobile manipulation."
+  },
+  {
+   "id": "spinout-robot-software",
+   "family": "university_spinout",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "University spinout companies founded from 2023 to 2026 that build robot learning, robot perception or robot control software."
+  },
+  {
+   "id": "spinout-lab-founders",
+   "family": "university_spinout",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics startups founded by researchers from university robotics labs that announced a first product, pilot or funding round in 2024, 2025 or 2026."
+  },
+  {
+   "id": "trade-show-automate",
+   "family": "trade_show",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Startups and first-time exhibitors that showed robots or robot software at the Automate show in 2024, 2025 or 2026."
+  },
+  {
+   "id": "trade-show-promat-modex",
+   "family": "trade_show",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics startups that exhibited picking, palletizing, unloading or mobile robots at the ProMat show in 2025 or the MODEX show in 2024 or 2026."
+  },
+  {
+   "id": "trade-show-startup-awards",
+   "family": "trade_show",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics startups that won or were finalists in startup competitions or innovation awards at the Automate, ProMat or MODEX shows in 2024, 2025 or 2026."
+  },
+  {
+   "id": "trade-show-other-shows",
+   "family": "trade_show",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Robotics startups that exhibited at manufacturing, logistics, food processing, healthcare or laundry trade shows in 2024, 2025 or 2026."
+  },
+  {
+   "id": "open-source-policies",
+   "family": "open_source",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Companies or teams that released open-source robot policies, model checkpoints or model weights for manipulation in 2024, 2025 or 2026."
+  },
+  {
+   "id": "open-source-hardware",
+   "family": "open_source",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Companies or teams that released open-source robot hardware, such as low-cost arms, grippers, mobile manipulators or humanoids, in 2024, 2025 or 2026."
+  },
+  {
+   "id": "open-source-datasets-code",
+   "family": "open_source",
+   "task_focus": null,
+   "robot_form": null,
+   "query": "Startups that published robot learning datasets, simulation environments or training code together with their own robots or policies in 2024, 2025 or 2026."
+  }
+ ]
+}
