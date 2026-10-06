@@ -18,7 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,6 +26,7 @@ from .company_policy_session_preparation import prepare_company_policy_session
 from .controlled_policy_configuration import canonical_request_digest
 from .controlled_policy_remote_sandbox import validate_remote_sandbox_bridge
 from .controlled_http_json import read_control_json
+from .bounded_policy_https_server import BoundedPolicyHTTPSServer, bound_policy_request_reads
 
 
 _JOB = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,191}$")
@@ -327,6 +328,10 @@ def serve_manager(*, settings: Mapping[str, Any], token: str,
                   certificate: Path, private_key: Path, firewall: FirewallLease | None = None) -> None:
     manager = SandboxManager(settings, firewall=firewall)
     class Handler(BaseHTTPRequestHandler):
+        def setup(self) -> None:
+            super().setup()
+            bound_policy_request_reads(self)
+
         def log_message(self, *_args: Any) -> None:
             return
 
@@ -363,12 +368,11 @@ def serve_manager(*, settings: Mapping[str, Any], token: str,
             self.end_headers()
             self.wfile.write(data)
 
-    server = ThreadingHTTPServer((str(settings.get("bind_host", "0.0.0.0")),
-        int(settings.get("bind_port", 8444))), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(str(certificate), str(private_key))
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server = BoundedPolicyHTTPSServer((str(settings.get("bind_host", "0.0.0.0")),
+        int(settings.get("bind_port", 8444))), Handler, context=context)
     try:
         server.serve_forever()
     finally:

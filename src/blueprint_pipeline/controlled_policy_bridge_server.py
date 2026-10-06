@@ -12,12 +12,13 @@ import os
 import ssl
 import threading
 from datetime import datetime, timedelta, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .controlled_policy_configuration import canonical_request_digest
 from .controlled_policy_remote_sandbox import validate_remote_sandbox_bridge
+from .bounded_policy_https_server import BoundedPolicyHTTPSServer, bound_policy_request_reads
 
 _MAX_REQUEST = 8 * 1024 * 1024 + 4096
 
@@ -55,11 +56,10 @@ class QualifiedPolicyBridge:
         self.qualification: dict[str, Any] | None = None
         self.result: dict[str, Any] | None = None
         self.calls = 0
-        self.server = HTTPServer((bind_host, bind_port), self._handler())
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(tls_certificate), str(tls_private_key))
-        self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
+        self.server = BoundedPolicyHTTPSServer((bind_host, bind_port), self._handler(), context=context)
 
     def _handler(self):
         owner = self
@@ -67,7 +67,7 @@ class QualifiedPolicyBridge:
         class Handler(BaseHTTPRequestHandler):
             def setup(self) -> None:
                 super().setup()
-                self.connection.settimeout(10)
+                bound_policy_request_reads(self)
 
             def log_message(self, *_args: Any) -> None:
                 # Observations, actions, tokens and endpoints are private.
