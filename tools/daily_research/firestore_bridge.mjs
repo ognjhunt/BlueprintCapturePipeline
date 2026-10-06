@@ -505,7 +505,7 @@ export class Store {
         exa_expansion_intent_digest:exa?.intent_sha256 || null,
         exa_expansion_run_id:exa?.run_id || null,
         exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
-        team_universe_digest:teamDigest,paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
+        ...(row.team_universe===undefined?{}:{team_universe_digest:teamDigest}),paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
         ...(outreachDigest?{outreach_ready_digest:outreachDigest}:{}),...(outreachUnbound?{outreach_ready_unbound:true}:{}),
         findall_claims:findall,findall_unbound:findallUnbound,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),

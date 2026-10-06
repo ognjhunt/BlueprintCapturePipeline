@@ -30,15 +30,20 @@ team-data pin must use separate explicit lease ownership; no unrelated control f
 For a new daily intent, `FirestoreLedger.team_universe_snapshot` reads the exact generation once.
 The host validates all safe fields, source digests, structural proof anchors and currentness before
 freezing `/workspace/inputs/blueprint-team-evidence.json`, its SHA256 and pin in that durable intent.
-The existing search profile exposes the free `blueprint_read_team_evidence` tool. It reads only those
+Only a run with a successfully frozen attachment exposes the free `blueprint_read_team_evidence`
+tool in its search profile. It reads only those
 frozen bytes, optionally filtering an exact stable `team_key` or task family. Byte-based pagination
 preserves every canonical row; there is no recommendation quota. Recommendations record stable ID,
 rationale, cited hardware/task/offering proof URLs and hashes, date/freshness and remaining unknowns
 in existing findings/next-action strings. Tool results have ordinary durable receipts and add no paid
 search request. A separately recorded currentness hold keeps expired historical offerings visible.
 
-An absent, unavailable, invalid, stale or oversized input produces an actionable supply gap and
-ordinary authorized research. It never fabricates eligible supply or blocks an otherwise valid run.
+An unconfigured or disabled pin preserves the exact legacy intent, tool registry, row, store and
+status; `show` diagnoses that host state. A configured but unavailable, invalid or oversized input
+records an actionable supply gap and continues ordinary authorized research without adding the
+reader. Expired physical proofs in a valid historical export remain attached but explicitly held
+and never eligible for recommendation. Neither path fabricates eligible supply or blocks an
+otherwise valid run.
 Byte/schema resource ceilings apply, and the pin plan exercises the actual bounded freeze before
 claiming ready. Current pins cannot rewrite older intents or their frozen team input. `show` and the
 normal runner status report only pin/digest/state/counts, never private team rows. Dataset semantic

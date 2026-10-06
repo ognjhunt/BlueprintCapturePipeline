@@ -197,7 +197,7 @@ def bounded_request(seconds):
         signal.signal(signal.SIGALRM, previous_handler)
 
 
-def tools(publication_profile=None, history_profile=None, expansion_profile=None, findall_profile=None):
+def tools(publication_profile=None, history_profile=None, expansion_profile=None, findall_profile=None, *, team_evidence=False):
     declared = [
         {"type": "function", "name": SEARCH,
          "defer_loading": False,
@@ -216,7 +216,8 @@ def tools(publication_profile=None, history_profile=None, expansion_profile=None
     ]
 
     from tools.daily_research import team_universe
-    declared.extend(team_universe.tools())
+    if team_evidence:
+        declared.extend(team_universe.tools())
     if publication_profile == "agent-owned-v1":
         from tools.daily_research.publication import tools as publication_tools
         declared.extend(publication_tools())
@@ -543,7 +544,9 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     from tools.daily_research import expansion, history, publication, team_universe
     early_publication = ({publication.INSPECT, publication.PUBLISH}
                          if row.get("publication_profile") == publication.PROFILE and phase != "publication" else set())
-    admitted_names = {SEARCH, READ, team_universe.READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
+    admitted_names = {SEARCH, READ} | (history.NAMES if row.get("history_profile") == history.PROFILE else set())
+    if team_universe.reader_attached(row):
+        admitted_names.add(team_universe.READ)
     admitted_names |= early_publication
     expansion_names = {expansion.START, expansion.READ} if row.get("expansion_profile") == expansion.PROFILE else set()
     admitted_names |= expansion_names

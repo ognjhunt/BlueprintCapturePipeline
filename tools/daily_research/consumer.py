@@ -978,10 +978,12 @@ class Consumer:
         if row.get("findall_profile") is not None:
             from tools.daily_research import findall
             findall.check_binding(row)
+        from tools.daily_research import team_universe
+        team_evidence = team_universe.reader_attached(row)
         if row.get("mcp_profile") and row["create_payload"]["agent"]["tools"] != (
-                search.tools(row.get("publication_profile"), row.get("history_profile"), row.get("expansion_profile"), row.get("findall_profile"))
+                search.tools(row.get("publication_profile"), row.get("history_profile"), row.get("expansion_profile"), row.get("findall_profile"), team_evidence=team_evidence)
                 + search.mcp_tools(row["mcp_binding"], row["mcp_profile"])):
             raise Refusal("research_mcp_binding_changed")
-        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"), row.get("findall_profile"))
+        check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"), row.get("findall_profile"), team_evidence=team_evidence)
         if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
             raise Refusal("session_search_instructions_mismatch")

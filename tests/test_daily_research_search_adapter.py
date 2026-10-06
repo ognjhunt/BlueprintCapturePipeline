@@ -91,7 +91,7 @@ def test_search_defaults_are_fast_high_and_have_no_model_substitution():
         "query": "primary evidence", "max_results": 10,
         "search_type": "fast", "search_context_size": "high"}
     declarations = search.tools()
-    assert {tool["name"] for tool in declarations} == {search.SEARCH, search.READ, "blueprint_read_team_evidence"}
+    assert {tool["name"] for tool in declarations} == {search.SEARCH, search.READ}
     assert all(tool["type"] == "function" for tool in declarations)
     assert all(tool["parameters"]["additionalProperties"] is False for tool in declarations)
     assert "No native-search fallback" in search.instructions()

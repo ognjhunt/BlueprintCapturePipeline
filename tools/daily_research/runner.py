@@ -834,7 +834,7 @@ def check_mcp_vault_binding(row, session):
 
 
 def check_agent(agent, search_provider=None, publication_profile=None, history_profile=None, mcp_profile=None, mcp_binding=None, expansion_profile=None,
-                findall_profile=None):
+                findall_profile=None, *, team_evidence=False):
     if (expansion_profile not in (None, "exa-guarded-v1") or expansion_profile
             and (search_provider != search.PROFILE or mcp_profile == search.MCP_RESEARCH_PROFILE)):
         raise Refusal("research_expansion_profile_invalid")
@@ -853,7 +853,7 @@ def check_agent(agent, search_provider=None, publication_profile=None, history_p
         except (search.ToolFailure, TypeError):
             raise Refusal("research_mcp_configuration_invalid") from None
     if search_provider == search.PROFILE:
-        expected_tools = search.tools(publication_profile, history_profile, expansion_profile, findall_profile) + mcp_tools
+        expected_tools = search.tools(publication_profile, history_profile, expansion_profile, findall_profile, team_evidence=team_evidence) + mcp_tools
         actual_tools = agent.get("tools")
         if mcp_profile:
             # Optional empty request headers are absent from SDK HTTP responses.
@@ -1081,7 +1081,7 @@ class Runner:
                                     search_provider=self.config.get("search_provider")), "stream": False,
                     "metadata": {"purpose": "daily_blueprint_sites_research", "run_key": "blueprint-researcher:" + day}}
             if self.config.get("search_provider") == search.PROFILE:
-                body["agent"] = checked["session_agent_override"]
+                body["agent"] = deepcopy(checked["session_agent_override"])
             contact_research = (self.ledger.contact_research_context(day)
                 if self.config.get("search_provider") == search.PROFILE and hasattr(self.ledger, "contact_research_context") else None)
             if contact_research is not None:
@@ -1177,8 +1177,13 @@ class Runner:
                 site_universe.bind(body, universe[0], universe[1], crm_prefix)
             from tools.daily_research import team_universe
             team_record, team_raw = team_universe.attach(self.ledger, self.clock().date(), run_date=day)
+            if not team_universe.configured(team_record):
+                team_record = None
+            elif team_raw is not None and self.config.get("search_provider") != search.PROFILE:
+                team_record, team_raw = {"state": "unavailable", "code": "team_universe_profile_unavailable"}, None
             without_teams = deepcopy(body)
-            team_universe.bind(body, team_record, team_raw)
+            if team_record is not None:
+                team_universe.bind(body, team_record, team_raw)
             body["metadata"]["payload_digest"] = digest(body)
             row = {"date": day, "state": "creating", "started_at": self.clock().isoformat(),
                    "run_key": body["metadata"]["run_key"], "metadata": body["metadata"],
@@ -1221,7 +1226,8 @@ class Runner:
                 row["paid_expansion_grant"] = allocation.grant(control, row, self.clock())
             if universe is not None:
                 row["site_universe"] = universe[0]
-            row["team_universe"] = team_record
+            if team_record is not None:
+                row["team_universe"] = team_record
             if self.config.get("search_provider") == search.PROFILE:
                 row["search_provider"] = search.PROFILE
                 row["recurring_budget_authority_reference"] = self.config["recurring_budget_authority_reference"]
@@ -1237,7 +1243,8 @@ class Runner:
                     # payload, shrink the record to {state, code}, and drop even that when it does not fit.
                     if plain is not None:
                         body = plain
-                        team_universe.bind(body, team_record, team_raw)
+                        if team_record is not None:
+                            team_universe.bind(body, team_record, team_raw)
                         body["metadata"]["payload_digest"] = digest(body)
                         row.update(metadata=body["metadata"], create_payload=body)
                     row["site_universe"] = site_universe.short(row["site_universe"])
@@ -1360,7 +1367,8 @@ class Runner:
             if row.get("findall_profile") is not None:
                 from tools.daily_research import findall
                 findall.check_binding(row)
-            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"), row.get("findall_profile"))
+            from tools.daily_research import team_universe
+            check_agent(session["agent"], row.get("search_provider"), row.get("publication_profile"), row.get("history_profile"), row.get("mcp_profile"), row.get("mcp_binding"), row.get("expansion_profile"), row.get("findall_profile"), team_evidence=team_universe.reader_attached(row))
             if row.get("search_provider") == search.PROFILE and session["agent"].get("instructions") != row["create_payload"]["agent"]["instructions"]:
                 raise Refusal("session_search_instructions_mismatch")
             row["reported_container_size"] = session["environment"].get("container_size")

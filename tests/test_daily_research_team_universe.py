@@ -9,7 +9,9 @@ import pytest
 
 from tests.daily_team_evidence_fixture import TODAY, export, pin, repack
 from tests.test_daily_research_search import fixture as search_fixture
+from tools.daily_research import search
 from tools.daily_research import team_universe as te
+from tools.daily_research.consumer import Consumer
 from tools.daily_research.runner import canonical
 
 
@@ -182,3 +184,53 @@ def test_held_currentness_not_established_is_visible_and_never_recommendable():
     assert te.load(raw, today=TODAY)["teams"]
     result = te.execute(attached(raw), {})
     assert not next(r for r in result["teams"] if r["team_key"] == row["team_key"])["recommendation_eligible"]
+
+
+@pytest.mark.parametrize("snapshot_value", [None, {"state": "unavailable", "code": "team_universe_not_pinned"}])
+def test_unconfigured_or_disabled_keeps_exact_legacy_intent_and_registry(fixture, snapshot_value):
+    runner, api, ledger = fixture
+    ledger.team_universe_snapshot = lambda: snapshot_value
+    row = runner.start_or_resume()
+    assert "team_universe" not in row and "team_universe_input_digest" not in row["metadata"]
+    assert [tool["name"] for tool in api.payloads[0]["agent"]["tools"]] == [search.SEARCH, search.READ]
+    assert "Team evidence is unavailable" not in api.payloads[0]["input"]
+    assert not any(f["path"] == te.PATH for f in api.payloads[0]["environment"]["files"])
+
+
+def test_genuine_frozen_legacy_session_resumes_after_adoption_without_new_reader(fixture):
+    runner, api, ledger = fixture
+    original = runner.start_or_resume()
+    payload = copy.deepcopy(original["create_payload"])
+    assert [tool["name"] for tool in payload["agent"]["tools"]] == [search.SEARCH, search.READ]
+    Consumer.check_session(original, api.get("session", original["session_id"]))
+    def adopted_pin():
+        raise AssertionError("An already charged legacy intent must not read a newly adopted pin")
+    ledger.team_universe_snapshot = adopted_pin
+    resumed = runner.start_or_resume(allow_create=False)
+    Consumer.check_session(resumed, api.get("session", resumed["session_id"]))
+    assert resumed["create_payload"] == payload and len(api.payloads) == 1 and "team_universe" not in resumed
+
+
+@pytest.mark.parametrize("code", ["team_universe_object_unavailable", "team_universe_object_digest_mismatch", "team_universe_evidence_not_current"])
+def test_configured_input_failure_records_precise_gap_without_advertising_reader(fixture, code):
+    from tools.daily_research.runner import Refusal
+    runner, api, ledger = fixture
+    def unavailable():
+        raise Refusal(code)
+    ledger.team_universe_snapshot = unavailable
+    row = runner.start_or_resume()
+    assert row["team_universe"] == {"state": "unavailable", "code": code}
+    assert code in api.payloads[0]["input"] and "continue ordinary research" in api.payloads[0]["input"]
+    assert [tool["name"] for tool in api.payloads[0]["agent"]["tools"]] == [search.SEARCH, search.READ]
+    Consumer.check_session(row, api.get("session", row["session_id"]))
+
+
+@pytest.mark.parametrize("profiles", [(None, None, None, None), ("agent-owned-v1", None, None, None),
+                                     ("agent-owned-v1", "agent-history-v1", "exa-guarded-v1", None)])
+def test_attached_reader_order_agrees_with_profile_tool_contract(profiles):
+    row = attached()
+    value = te.frozen(row)
+    body = {"input": "Synthetic", "metadata": {}, "environment": {"files": []},
+            "agent": {"tools": search.tools(*profiles)}}
+    te.bind(body, row["team_universe"], te.encoded(value))
+    assert body["agent"]["tools"] == search.tools(*profiles, team_evidence=True)

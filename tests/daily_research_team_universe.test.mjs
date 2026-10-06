@@ -33,6 +33,7 @@ function bound(pin,raw) {
 test('old run cannot acquire or replace team binding after pin changes',async()=>{
   const {store,pin}=await fixture();
   await store.put(row());
+  assert.ok(!Object.hasOwn((await store.db.doc(`${ROOT}/runs/2026-10-05`).get()).data(),'team_universe_digest'));
   await assert.rejects(store.put({...row(),team_universe:{state:'unavailable',code:'synthetic'}}),/intent_already_bound/);
   const prior=await store.get('2026-10-05');
   await store.put({...prior,state:'completed',cleanup_required:false});
