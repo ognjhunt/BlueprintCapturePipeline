@@ -190,9 +190,7 @@ def assess(record, config, weights, qualification=None):
         tier = "insufficient"
     elif qualification["offering"] == "reference_only":
         tier = "reference_only"
-    elif not positive or not qualification["current_task_fit"]:
-        tier = "pending"
-    elif record["identity"]["state"] != "verified_fact":
+    elif not positive or not qualification["current_task_fit"] or record["identity"]["state"] != "verified_fact":
         tier = "pending"
     elif not blockers and qualification["evaluation_compatibility"] == "supported":
         tier = "beta_candidate"

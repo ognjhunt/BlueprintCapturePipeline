@@ -118,11 +118,9 @@ def _row_shape(row):
                     and len(set(value)) == len(value)):
                 return False
     evaluation = row.get("evaluation")
-    if evaluation is not None and not (isinstance(evaluation, dict) and set(evaluation) == EVALUATION_KEYS
-                                      and all(_string(evaluation[name]) for name in EVALUATION_KEYS - {"evidence"})
-                                      and _day(evaluation["as_of"]) and _proofs_shape(evaluation["evidence"])):
-        return False
-    return True
+    return evaluation is None or (isinstance(evaluation, dict) and set(evaluation) == EVALUATION_KEYS
+                                  and all(_string(evaluation[name]) for name in EVALUATION_KEYS - {"evidence"})
+                                  and bool(_day(evaluation["as_of"])) and _proofs_shape(evaluation["evidence"]))
 
 
 def load_audit(raw, teams, screens, *, team_list_raw=None, today=None):
