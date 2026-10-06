@@ -11,6 +11,7 @@ on:
       - "tests/test_site_universe_export.py"
       - "tests/test_daily_research_site_screen.py"
       - "tests/test_daily_research_site_contact.py"
+      - "tests/test_daily_research_contact_lookup.py"
       - "tests/daily_research_site_screen_fixture.py"
       - "tools/team_universe/**"
       - "tests/test_team_universe*.py"
@@ -56,6 +57,7 @@ on:
       - "tests/test_site_universe_export.py"
       - "tests/test_daily_research_site_screen.py"
       - "tests/test_daily_research_site_contact.py"
+      - "tests/test_daily_research_contact_lookup.py"
       - "tests/daily_research_site_screen_fixture.py"
       - "tools/team_universe/**"
       - "tests/test_team_universe*.py"
@@ -103,10 +105,11 @@ jobs:
     name: Research lifecycle and pinned SDK
     runs-on: ubuntu-latest
     # The complete portable suite includes all recovery/collection guards.
-    # The 862-case suite passed in 7m35s before the eight-minute job ceiling
-    # cancelled lint/receipt checks. Keep the complete no-skip gate and allow
-    # room for CI runtime variance; this does not change business run limits.
-    timeout-minutes: 12
+    # The 2149-case suite took 10m50s-11m for pytest alone on 3.12/3.14;
+    # 3.11 reached 73% before the prior 12-minute job ceiling. Keep complete
+    # no-skip coverage, including setup, Node checks, lint and receipt upload,
+    # with a bounded allowance for runner variance. Business run limits stay fixed.
+    timeout-minutes: 16
     strategy:
       matrix:
         python: ["3.11", "3.12", "3.14"]
@@ -131,13 +134,14 @@ jobs:
       - name: Verify lifecycle, SDK contracts and changed-file lint
         run: |
           node --test tests/daily_research_store.test.mjs tests/daily_research_store_exa_reservation.test.mjs tests/daily_research_worker.test.mjs tests/daily_research_publisher.test.mjs tests/daily_contact_research.test.mjs
-          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_verification.py tests/test_daily_research_inventory.py tests/test_daily_research_site_universe.py tests/test_site_universe_export.py tests/test_daily_research_breadth.py tests/test_daily_research_repair_gaps.py tests/test_daily_research_agent_history.py tests/test_daily_research_agent_publication.py tests/test_daily_research_unattended_cleanup.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_recovery.py tests/test_daily_research_consumer.py tests/test_daily_research_qa_retry.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tests/test_daily_research_search.py tests/test_daily_research_expansion.py tests/test_daily_research_expansion_integration.py tests/test_daily_research_allocation.py tests/test_daily_research_exa_transport.py tests/test_daily_research_findall.py tests/test_daily_research_findall_observe.py tests/test_parallel_findall.py tests/test_parallel_findall_execution.py tests/test_parallel_findall_owner.py tests/test_parallel_findall_admission.py tests/test_daily_research_search_adapter.py tests/test_daily_research_operator*.py tests/test_daily_research_site_screen.py tests/test_daily_research_site_contact.py tests/test_team_universe.py tests/test_team_universe_rank.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
+          "${RUNNER_TEMP}/daily-research-venv/bin/python" -m pytest -q -o addopts= tests/test_daily_research_verification.py tests/test_daily_research_inventory.py tests/test_daily_research_site_universe.py tests/test_site_universe_export.py tests/test_daily_research_breadth.py tests/test_daily_research_repair_gaps.py tests/test_daily_research_agent_history.py tests/test_daily_research_agent_publication.py tests/test_daily_research_unattended_cleanup.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_recovery.py tests/test_daily_research_consumer.py tests/test_daily_research_qa_retry.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tests/test_daily_research_search.py tests/test_daily_research_expansion.py tests/test_daily_research_expansion_integration.py tests/test_daily_research_allocation.py tests/test_daily_research_exa_transport.py tests/test_daily_research_findall.py tests/test_daily_research_findall_observe.py tests/test_parallel_findall.py tests/test_parallel_findall_execution.py tests/test_parallel_findall_owner.py tests/test_parallel_findall_admission.py tests/test_daily_research_search_adapter.py tests/test_daily_research_operator*.py tests/test_daily_research_site_screen.py tests/test_daily_research_site_contact.py tests/test_daily_research_contact_lookup.py tests/test_team_universe.py tests/test_team_universe_rank.py --junitxml="${RUNNER_TEMP}/daily-research-tests.xml"
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/findall.py src/blueprint_pipeline/parallel_findall.py src/blueprint_pipeline/parallel_findall_execution.py src/blueprint_pipeline/parallel_findall_owner.py src/blueprint_pipeline/parallel_findall_admission.py tests/test_daily_research_findall.py tests/test_parallel_findall_owner.py tests/test_parallel_findall_admission.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/allocation.py tools/daily_research/expansion.py tools/daily_research/exa_transport.py tools/daily_research/qa_retry.py tests/test_daily_research_allocation.py tests/test_daily_research_qa_retry.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/recovery.py tests/test_daily_research_recovery.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/site_universe.py tests/test_daily_research_site_universe.py tools/site_universe/export.py tools/site_universe/cli.py tools/site_universe/rank.py tests/test_site_universe_export.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/operators/*.py tests/test_daily_research_operator*.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/site_screen.py tests/test_daily_research_site_screen.py tests/test_daily_research_site_contact.py tests/daily_research_site_screen_fixture.py
+          "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/contact_lookup.py tests/test_daily_research_contact_lookup.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/team_universe/*.py tests/test_team_universe.py tests/test_team_universe_rank.py tests/team_universe_fixture.py
           "${RUNNER_TEMP}/daily-research-venv/bin/ruff" check tools/daily_research/verification.py tools/daily_research/outreach_ready.py tools/daily_research/publication.py tools/daily_research/history.py tests/test_daily_research_verification.py tests/test_daily_research_inventory.py tests/test_daily_research_breadth.py tests/test_daily_research_repair_gaps.py tests/test_daily_research_agent_history.py tests/test_daily_research_agent_publication.py tests/test_daily_research_unattended_cleanup.py tests/daily_research_verification_fixture.py tools/daily_research/adaptive.py tools/daily_research/adaptive_runtime.py tools/daily_research/discovery.py tools/daily_research/capabilities.py tools/daily_research/consumer.py tools/daily_research/runner.py tools/daily_research/knowledge.py tools/daily_research/contracts.py tools/daily_research/freshness.py tools/daily_research/standalone.py tools/daily_research/firestore.py tools/daily_research/render.py tests/test_daily_research_runner.py tests/test_daily_research_knowledge.py tests/test_daily_research_standalone.py tests/test_daily_research_render.py tests/test_daily_research_consumer.py tests/test_daily_research_adaptive.py tests/test_daily_research_adaptive_runtime.py tools/daily_research/search.py tests/test_daily_research_search.py tests/test_daily_research_expansion.py tests/test_daily_research_expansion_integration.py tests/test_daily_research_exa_transport.py tests/test_daily_research_findall.py tests/test_daily_research_search_adapter.py
           python3 - "${RUNNER_TEMP}/daily-research-tests.xml" <<'PYTHON'
