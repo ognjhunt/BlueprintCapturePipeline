@@ -3665,6 +3665,11 @@ def _scene_source_cache_publish(root: Path, raw: bytes, proof: bytes, *, deadlin
             raise ControlPlaneDeployError(error)
     require(root.is_absolute() and '..' not in root.parts and 0 < len(raw) <= 16*1024*1024
             and 0 < len(proof) <= 32*1024*1024 and time.monotonic() <= deadline)
+    def identity(info):
+        # Reading immutable proof bytes may update atime. Bind all mutation and
+        # ownership metadata, including nanosecond mtime/ctime, instead.
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
     def directory(path):
         if path != Path('/'):
             directory(path.parent)
@@ -3704,7 +3709,8 @@ def _scene_source_cache_publish(root: Path, raw: bytes, proof: bytes, *, deadlin
                         require(stat.S_ISREG(before.st_mode) and before.st_uid == _SCENE_RUNTIME_OWNER
                                 and before.st_nlink == 1 and not before.st_mode & 0o022
                                 and before.st_size == len(raw) and os.read(fd,len(raw)+1) == raw
-                                and before == os.fstat(fd) == os.stat(target.name,dir_fd=root_fd,follow_symlinks=False))
+                                and identity(before) == identity(os.fstat(fd))
+                                == identity(os.stat(target.name,dir_fd=root_fd,follow_symlinks=False)))
                     finally:
                         os.close(fd)
                     continue
