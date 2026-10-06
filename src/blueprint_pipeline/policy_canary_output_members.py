@@ -66,9 +66,15 @@ once the host has measured one retained Quick-10 and recorded that it fits
 from __future__ import annotations
 
 import json
+import errno
+import fcntl
+import grp
 import os
+import pwd
 import stat
+import uuid
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -106,6 +112,9 @@ RESOLUTION_FIELD = "provider_output_delivery_resolution"
 MEASUREMENT_SCHEMA = "policy_canary_output_needed_set_measurement.v1"
 MEASUREMENT_PATH = Path(
     "/var/lib/blueprint/pipeline-control-plane/policy-canary-output/needed-set-measurement.v1.json")
+# Redirecting the default for a fixture or a custom caller does not enroll a
+# new shared destination. Only this installer-owned state path has that role.
+_CANONICAL_MEASUREMENT_PATH = MEASUREMENT_PATH
 MEASUREMENT_MAXIMUM_BYTES = 64 * 1024
 _MEASUREMENT_FIELDS = frozenset({
     "schema_version", "contract", "selection_version", "needed_set_budget_bytes", "materialized_members",
@@ -320,23 +329,185 @@ def seal_needed_set_measurement(*, contract: str, materialized_members: int, mat
     return record
 
 
+def _unsafe_measurement_path() -> OSError:
+    return PermissionError(errno.EPERM, "policy_canary_output_measurement_path_unsafe")
+
+
+def _measurement_identity(info: os.stat_result) -> tuple:
+    return info.st_dev, info.st_ino, info.st_uid, info.st_gid, info.st_mode
+
+
+def _measurement_file_identity(info: os.stat_result | None) -> tuple | None:
+    if info is None:
+        return None
+    return (*_measurement_identity(info), info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+@contextmanager
+def _measurement_parent(target: Path, *, canonical: bool):
+    """Hold no-follow ancestry; only an installed canonical state admits shared reads."""
+    state = _CANONICAL_MEASUREMENT_PATH.parent.parent
+    owners = {0, os.geteuid()}
+    reader = None
+    if canonical:
+        try:
+            reader = pwd.getpwnam("blueprint").pw_uid, grp.getgrnam("blueprint").gr_gid
+        except KeyError:
+            raise _unsafe_measurement_path() from None
+        owners = {0, reader[0]}
+        if os.geteuid() not in owners:
+            raise _unsafe_measurement_path()
+    held: list[tuple[Path, int | None, str, int]] = []
+
+    def verify():
+        for directory, parent, name, descriptor in held:
+            info = os.fstat(descriptor)
+            # Root-owned sticky temporary roots permit private fixture children;
+            # every other ancestor must deny unadmitted writers.
+            sticky_root = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in owners
+                    or (info.st_mode & 0o022 and not sticky_root)):
+                raise _unsafe_measurement_path()
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if _measurement_identity(info) != _measurement_identity(named):
+                raise _unsafe_measurement_path()
+            if canonical and directory == state and (
+                    (info.st_uid, info.st_gid) != reader or stat.S_IMODE(info.st_mode) != 0o750):
+                raise _unsafe_measurement_path()
+            if canonical and directory.is_relative_to(state) and directory != state:
+                readable = (info.st_uid == reader[0] and bool(info.st_mode & 0o100)
+                            or info.st_gid == reader[1] and bool(info.st_mode & 0o010)
+                            or bool(info.st_mode & 0o001))
+                if not readable:
+                    raise _unsafe_measurement_path()
+
+    try:
+        descriptor = os.open(target.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        held.append((Path(target.anchor), None, target.anchor, descriptor))
+        verify()
+        directory = Path(target.anchor)
+        for component in target.parent.parts[1:]:
+            directory /= component
+            parent = descriptor
+            try:
+                descriptor = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                     dir_fd=parent)
+            except FileNotFoundError:
+                if canonical and directory in (state, *state.parents):
+                    raise _unsafe_measurement_path() from None
+                verify()
+                os.mkdir(component, 0o755 if canonical else 0o700, dir_fd=parent)
+                descriptor = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                     dir_fd=parent)
+                try:
+                    if os.fstat(descriptor).st_uid != os.geteuid():
+                        raise _unsafe_measurement_path()
+                    os.fchmod(descriptor, 0o755 if canonical else 0o700)
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+            held.append((directory, parent, component, descriptor))
+            verify()
+        yield descriptor, owners if canonical else {os.geteuid()}, verify
+    finally:
+        for _, _, _, descriptor in reversed(held):
+            os.close(descriptor)
+
+
+def _measurement_file(parent: int, name: str, *, mode: int, owners: set[int], descriptor: int | None = None):
+    try:
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        if descriptor is None:
+            return None
+        raise _unsafe_measurement_path() from None
+    if (not stat.S_ISREG(named.st_mode) or named.st_uid not in owners
+            or named.st_nlink != 1 or stat.S_IMODE(named.st_mode) != mode):
+        raise _unsafe_measurement_path()
+    if descriptor is not None and _measurement_file_identity(named) != _measurement_file_identity(os.fstat(descriptor)):
+        raise _unsafe_measurement_path()
+    return named
+
+
+@contextmanager
+def _measurement_write_lock(parent: int, name: str):
+    # All writers use this stable inode; failures never unlink another holder's lock.
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    created = False
+    try:
+        descriptor = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+    except FileExistsError:
+        descriptor = os.open(name, flags, dir_fd=parent)
+    else:
+        created = True
+    try:
+        if created:
+            os.fchmod(descriptor, 0o600)
+        _measurement_file(parent, name, mode=0o600, owners={os.geteuid()}, descriptor=descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _measurement_file(parent, name, mode=0o600, owners={os.geteuid()}, descriptor=descriptor)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def write_needed_set_measurement(record: Mapping[str, Any], path: str | Path | None = None) -> Path:
-    """Replace the record at ``path`` (default ``MEASUREMENT_PATH``) whole; returns the path.
+    """Atomically replace a measurement through held, writer-protected ancestry.
 
-    The file is ``0644`` and a directory this call creates ``0755``, so the
-    dispatcher (``blueprint``) reads the record whoever wrote it; it holds no
-    secret. Raises ``OSError``.
+    Arbitrary mappings and custom destinations are private: new directories
+    ``0700``, files ``0600``. Their contents are not assumed secret-free.
+    Only the exact canonical destination, below verified ``blueprint:blueprint
+    0750`` STATE, retains ``0644``/``0755`` for the existing dispatcher reader.
+    This scopes readership to that installed role; it does not assert group
+    membership or authorize public redistribution. Unsafe incumbents refuse.
     """
-    from .common import write_json
-
-    target = Path(MEASUREMENT_PATH if path is None else path)
-    created = not target.parent.exists()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if created:
-        os.chmod(target.parent, 0o755)
-    write_json(target, dict(record))
-    os.chmod(target, 0o644)
-    return target
+    result = Path(MEASUREMENT_PATH if path is None else path)
+    target = result if result.is_absolute() else Path.cwd() / result
+    if ".." in target.parts or not target.name:
+        raise _unsafe_measurement_path()
+    canonical = target == _CANONICAL_MEASUREMENT_PATH
+    payload = dict(record)
+    content = json.dumps(payload, indent=2).encode("utf-8")
+    if canonical and (len(content) > MEASUREMENT_MAXIMUM_BYTES or not _sealed_measurement(payload)):
+        raise _unsafe_measurement_path()
+    mode = 0o644 if canonical else 0o600
+    with _measurement_parent(target, canonical=canonical) as (parent, owners, verify):
+        with _measurement_write_lock(parent, f".{target.name}.write.lock"):
+            verify()
+            previous = _measurement_file_identity(_measurement_file(parent, target.name, mode=mode, owners=owners))
+            temporary = f".{target.name}.{uuid.uuid4().hex}.tmp"
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                 0o600, dir_fd=parent)
+            try:
+                os.fchmod(descriptor, 0o600)
+                _measurement_file(parent, temporary, mode=0o600, owners={os.geteuid()}, descriptor=descriptor)
+                with os.fdopen(descriptor, "wb", closefd=False) as output:
+                    output.write(content)
+                    output.flush()
+                    os.fsync(descriptor)
+                verify()
+                _measurement_file(parent, temporary, mode=0o600, owners={os.geteuid()}, descriptor=descriptor)
+                os.fchmod(descriptor, mode)
+                _measurement_file(parent, temporary, mode=mode, owners={os.geteuid()}, descriptor=descriptor)
+                verify()
+                if previous != _measurement_file_identity(_measurement_file(parent, target.name, mode=mode, owners=owners)):
+                    raise _unsafe_measurement_path()
+                if previous is None:
+                    # Exclusive publication preserves even a late competing incumbent.
+                    os.link(temporary, target.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                    os.unlink(temporary, dir_fd=parent)
+                else:
+                    # Other permitted writers share the stable lock; unadmitted
+                    # identities cannot replace entries in the checked parent.
+                    os.replace(temporary, target.name, src_dir_fd=parent, dst_dir_fd=parent)
+                _measurement_file(parent, target.name, mode=mode, owners=owners, descriptor=descriptor)
+                verify()
+                os.fsync(parent)
+            finally:
+                os.close(descriptor)
+                # A failed publication retains its unique private temporary;
+                # no stat-to-unlink cleanup can erase a competing replacement.
+    return result
 
 
 def needed_set_measurement_refusal(path: str | Path | None = None) -> str | None:

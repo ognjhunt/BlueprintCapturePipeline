@@ -36,11 +36,16 @@ A proven quote must also name its answer: the operator's name (which must match 
 a site anchor (``site_anchors``: the street, the city followed by its state, or the site name with the
 city; a city alone never counts) or a provider-found address in the input's city, and a word of the task.
 The task quote, its page or a same-URL excerpt must name a site anchor; otherwise the task is only
-``company_level_task``. A contact email's domain comes only from the page that proved the operator.
+``company_level_task``.
 
 A contact email counts only when our own read of its cited page holds its quote and the whole address, on
-the operator's own domain and never free mail; the recipient kind comes from the address itself. Every
-other address is removed from the stored result and page reads before they are written (``seal_contact``).
+the operator's own domain and never free mail; the recipient kind comes from the address itself. The
+operator's domain is that of the page whose proven quote names the operator, or (contact rule v3) the
+registrable domain of the screen's website answer when our own read of a cited page on that domain names the
+operator; the bare website answer alone never counts (``operator_domain_proofs``). Under v3 a quote shorter
+than five words still proves an address that stands as a whole token on our own read of its cited page on the
+operator's domain. Every other address is removed from the stored result and page reads before they are
+written (``seal_contact``), so a rule change never recovers an address an earlier rule discarded.
 
 Records are recomputed from the stored raw results and page reads under ``SCREEN_RULE`` (``screen_gates``
 and ``outreach_tier``, which mirror the in-flight ``verification.outreach_gates`` and ``outreach_tier``),
@@ -85,7 +90,8 @@ EVIDENCE = "blueprint.site-screen.evidence.v1"
 # The rules each stage's records are recomputed under; a derived file's name carries its rule version.
 # v3: the one question is verification.outreach_question, outreach-ready rule v1.2's wording.
 SCREEN_RULE = "blueprint.site-screen-rule.v3"
-CONTACT_RULE = "blueprint.site-contact-rule.v2"
+# v3: website-domain proof uses our own page read; short email quotes count on that own domain.
+CONTACT_RULE = "blueprint.site-contact-rule.v3"
 STAGES = ("screen", "contact")
 API_HOST, RUNS_PATH = "api.parallel.ai", "/v1/tasks/runs"
 API_KEY_ENV = "PARALLEL_API_KEY"  # The operator reads it; this module only receives the value.
@@ -1855,27 +1861,85 @@ def site_domain(url):
     return ".".join(labels[-2:]) if len(labels) >= 2 and all(labels[-2:]) else None
 
 
-def email_check(text, site, index, evidence):
+def on_domain(url, domain):
+    """True when the URL's host is ``domain`` or a subdomain of it."""
+    host = _host(url) if isinstance(url, str) else None
+    return bool(host and domain) and (host == domain or host.endswith("." + domain))
+
+
+NOT_PROSE = re.compile(r"\S+@\S+|\b(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,24}\b(?:/\S*)?", re.IGNORECASE)
+
+
+def prose(text):
+    """Page text without email addresses, URLs and host names, so an address or link that spells the operator's
+    name never stands in for the page naming the operator."""
+    return NOT_PROSE.sub(" ", text if isinstance(text, str) else "")
+
+
+def operator_domain_proofs(site, screen=None, pages=()):
+    """The operator's own domains a contact email may use, each with how it was proven.
+
+    First the domain of the page whose proven quote names the operator in the screen (the input's
+    ``operator_domains``, basis ``operator_quote``). Then, under contact rule v3, the registrable domain of the
+    screen's website answer (basis ``website``) when our own read of a page on that domain or a subdomain, cited by
+    the screen or by this contact, holds the operator's name in its prose (``names_operator`` over ``prose``: an
+    address or link never counts). That domain is never a
+    directory, data broker, job board, social, map, newswire, free-mail, government or LinkedIn host. The bare
+    website answer alone never proves it, and a page elsewhere that names the operator (news, a directory, a
+    government record) sets no domain."""
+    proofs = [{"domain": domain, "basis": "operator_quote"} for domain in site.get("operator_domains") or []]
+    answers = (screen or {}).get("answers") or {}
+    url, operator = _string(answers.get("website")), _string(answers.get("operator_identity"))
+    domain, host = (site_domain(url), _host(url) or "") if url else (None, "")
+    if (not domain or not operator or never_fetch(url) or domain in NOT_OPERATOR_DOMAINS or domain in FREE_MAIL
+            or government_host(host) or any(proof["domain"] == domain for proof in proofs)):
+        return proofs
+    for page_url, page in [*((screen or {}).get("pages") or {}).items(), *pages]:
+        if (on_domain(page_url, domain) and not never_fetch(page_url) and isinstance(page, dict)
+                and page.get("state") == "ok" and isinstance(page.get("text"), str)
+                and names_operator(prose(page["text"]), operator)):
+            return [*proofs, {"domain": domain, "basis": "website", "url": page_url, "text_sha256": page.get("sha256")}]
+    return proofs
+
+
+def short_holding(quote, url, index):
+    """(level, sha256, raw text) of our own read of the quote's URL that holds the quote whole-word, at any
+    length (contact rule v3, email quotes on the operator's own page only)."""
+    phrase, key = words(quote), url_key(url)
+    if key is None or never_fetch(url) or not phrase:
+        return None, None, None
+    for text, sha, raw in index["pages"].get(key, ()):
+        if has_phrase(phrase, text):
+            return "verified_on_page", sha, raw
+    return None, None, None
+
+
+def email_check(text, site, index, evidence, domains=None):
     """The contact's published business address, proven only on our own read of its cited page.
 
-    It must parse as one address on the operator's own domain, the one whose page proved the operator in the
-    screen (operator_domains), or a subdomain of it, never a free-mail domain; its quote must hold the exact
-    address and stand whole-word on that page, where the address must also stand as a whole token. A provider
+    It must parse as one address on one of the operator's own domains (``domains``, from
+    operator_domain_proofs; by default the input's operator quote domains), or a subdomain of it, never a
+    free-mail domain; its quote must hold the exact address and stand whole-word on that page, where the address
+    must also stand as a whole token. A quote of at least MIN_QUOTE_WORDS words may stand on any public page;
+    under contact rule v3 a shorter one counts only on our read of a page on that operator domain. A provider
     excerpt never counts, and LinkedIn never does."""
     raw, url, quote = text["email"], text["email_url"], text["email_quote"]
     if not raw:
         return {"verified": False, "level": "no_email", "discarded": False}
-    address, operators = email_address(raw), site.get("operator_domains") or []
+    if domains is None:
+        domains = operator_domain_proofs(site)
+    address = email_address(raw)
     domain = address.rpartition("@")[2] if address else ""
+    match = next((item for item in domains if domain == item["domain"] or domain.endswith("." + item["domain"])), None)
     if address is None:
         level, code = "unverified", "site_screen_email_invalid"
     elif never_fetch(url) or never_fetch(raw):
         level, code = "person_source_not_allowed", None
     elif domain in FREE_MAIL or site_domain("https://" + domain) in FREE_MAIL:
         level, code = "unverified", "site_screen_email_free_mail"
-    elif not operators:
+    elif not domains:
         level, code = "unverified", "site_screen_operator_domain_unproven"
-    elif not any(domain == operator or domain.endswith("." + operator) for operator in operators):
+    elif match is None:
         level, code = "unverified", "site_screen_email_off_operator_domain"
     elif not _string(quote):
         level, code = "unverified", "site_screen_quote_missing"
@@ -1883,8 +1947,16 @@ def email_check(text, site, index, evidence):
         level, code = "unverified", "site_screen_quote_lacks_address"
     else:
         level, _, page = holding(quote, url, index, kinds=("pages",))
+        short = len(words(quote).split()) < MIN_QUOTE_WORDS and on_domain(url, match["domain"])
+        if level is None and short:
+            level, _, page = short_holding(quote, url, index)
         if level is None:
             item = proof(quote, url, {"pages": index["pages"], "excerpts": {}}, evidence)
+            if short and item["level"] == "quote_too_short":  # Our read of the operator's page lacks it.
+                read = ((evidence.get("pages") or {}).get(_string(url)) or {})
+                item = ({"level": "unverified"} if isinstance(read, dict) and read.get("state") == "ok" else
+                        {"level": "unverified_page_unreachable",
+                         "read": (read.get("code") if isinstance(read, dict) else None) or "site_screen_page_not_read"})
             level, code = item["level"], item.get("read")
         elif address not in addresses(page):
             level, code = "unverified", "site_screen_address_not_on_source"
@@ -1893,7 +1965,8 @@ def email_check(text, site, index, evidence):
     if level != "verified_on_page":
         # Discarded: no stored result, page read or record keeps this address (redact).
         return {"verified": False, "level": level, "discarded": True, **({"reason": code} if code else {})}
-    return {"verified": True, "level": level, "discarded": False, "address": address, "url": url}
+    return {"verified": True, "level": level, "discarded": False, "address": address, "url": url,
+            "operator_domain": match}
 
 
 def address_role(address, person):
@@ -1952,7 +2025,8 @@ def seal_contact(workspace, key, site, raw, pages, today):
         evidence = _evidence(path.read_bytes())
     else:
         evidence = read_evidence("contact", key, result, pages, today)
-        check = email_check(text, site, evidence_index(evidence, basis), evidence)
+        domains = operator_domain_proofs(site, screen_context(workspace, key), (evidence.get("pages") or {}).items())
+        check = email_check(text, site, evidence_index(evidence, basis), evidence, domains)
         evidence = redact({**evidence, "email": {name: check[name] for name in ("level", "reason") if name in check}},
                           check.get("address"))
         _write_once(path, (json.dumps(evidence, sort_keys=True) + "\n").encode())
@@ -1960,9 +2034,22 @@ def seal_contact(workspace, key, site, raw, pages, today):
     return (json.dumps(redact(result, keep), sort_keys=True) + "\n").encode()
 
 
-def contact_record(site, run_id, result_raw, evidence_raw):
-    """One site's contact under CONTACT_RULE, recomputed from its stored result and page reads alone. A discarded
-    address was removed before anything was stored, so its decision is the one kept with the page reads."""
+def screen_context(workspace, key):
+    """The screen answers and our page reads for one site, from its stored screen result and evidence, which
+    contact rule v3 reads for the website domain; None when either is missing."""
+    result, evidence = workspace.path("screen", "results", key), workspace.path("screen", "evidence", key)
+    if not result.exists() or not evidence.exists():
+        return None
+    content, _ = output_of(_json(result.read_bytes()))
+    pages = _evidence(evidence.read_bytes()).get("pages")
+    return {"answers": {field: _string(content.get(field)) for field in SCREEN_SCHEMA["properties"]},
+            "pages": pages if isinstance(pages, dict) else {}}
+
+
+def contact_record(site, run_id, result_raw, evidence_raw, screen=None):
+    """One site's contact under CONTACT_RULE, recomputed from its stored result and page reads alone, and from its
+    screen's answers and page reads (``screen``, screen_context) for the v3 website domain. A discarded address
+    was removed before anything was stored, so its decision is the one kept with the page reads."""
     evidence = _evidence(evidence_raw)
     content, basis = output_of(_json(result_raw))
     text = {field: _string(content.get(field)) for field in CONTACT_SCHEMA["properties"]}
@@ -1972,7 +2059,8 @@ def contact_record(site, run_id, result_raw, evidence_raw):
     person = _person(text, index, evidence, today)
     decision = evidence.get("email") if isinstance(evidence.get("email"), dict) else {}
     if decision.get("level") in (None, "verified_on_page", "no_email"):
-        email = email_check(text, site, index, evidence)
+        domains = operator_domain_proofs(site, screen, (evidence.get("pages") or {}).items())
+        email = email_check(text, site, index, evidence, domains)
     else:
         email = {"verified": False, "level": decision["level"], "discarded": True,
                  **({"reason": decision["reason"]} if decision.get("reason") else {})}
@@ -2002,7 +2090,8 @@ def stage_records(workspace, states, stage):
         evidence = workspace.path(stage, "evidence", key)
         if site.get("status") == "completed" and site.get("observed") and evidence.exists():
             records[key] = RECORDS[stage](site["input"], site["run_id"],
-                                          workspace.path(stage, "results", key).read_bytes(), evidence.read_bytes())
+                                          workspace.path(stage, "results", key).read_bytes(), evidence.read_bytes(),
+                                          **({"screen": screen_context(workspace, key)} if stage == "contact" else {}))
     return records
 
 
@@ -2090,6 +2179,9 @@ def _contact_counts(records):
             "person_levels": dict(Counter(r["person"]["level"] for r in records)),
             "email_levels": dict(Counter(r["email"]["level"] for r in records)),
             "emails_discarded": sum(r["email"]["discarded"] for r in records),
+            "email_reasons": dict(Counter(r["email"]["reason"] for r in records if r["email"].get("reason"))),
+            "operator_domain_basis": dict(Counter(r["email"]["operator_domain"]["basis"] for r in records
+                                                  if r["email"].get("operator_domain"))),
             "channels": dict(Counter(r["channel"]["label"] for r in records)),
             "open_questions": dict(Counter(q["check"] for r in records for q in r["open_questions"]))}
 

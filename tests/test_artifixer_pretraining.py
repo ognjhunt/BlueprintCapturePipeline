@@ -174,8 +174,7 @@ def test_provider_restores_exact_prepared_data_without_api(tmp_path, monkeypatch
         for p in staged.rglob("*"):
             if p.is_file():
                 z.write(p, str(p.relative_to(staged)))
-    import urllib.request
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_k: io.BytesIO(archive.read_bytes()))
+    monkeypatch.setattr(prep, "open_artifact_response", lambda *_a, **_k: io.BytesIO(archive.read_bytes()))
     from blueprint_pipeline import task_evaluation_scene_configuration_diagnostic_checkpoint as checkpoints
     monkeypatch.setattr(checkpoints, "validate_scene_configuration_diagnostic_checkpoint", lambda **_k: {"validated": True})
     out = tmp_path / "provider-output"

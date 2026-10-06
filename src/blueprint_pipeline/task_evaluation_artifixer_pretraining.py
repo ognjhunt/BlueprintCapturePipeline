@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
+from .artifact_http_transport import artifact_chunks, artifact_deadline, open_artifact_response
 
 CPU_PREPARATION_ENV = "BLUEPRINT_ARTIFIXER_CPU_PRETRAINING_ONLY"
 CANDIDATE_SCAN_LIMIT = 4096
@@ -418,7 +419,7 @@ def prepare_semantics_before_gpu(*, bundle_receipt, authority, job_dir, environm
         return result
 
 
-def consume_pretraining_capsule(*, environment, stage_input) -> dict | None:
+def consume_pretraining_capsule(*, environment, stage_input, _deadline=None) -> dict | None:
     """Restore and verify CPU-prepared inputs inside the provider filesystem."""
     url = str(environment.get(CAPSULE_URL_ENV) or "")
     if not url:
@@ -428,17 +429,20 @@ def consume_pretraining_capsule(*, environment, stage_input) -> dict | None:
     expected_bytes = int(environment.get(CAPSULE_BYTES_ENV) or 0)
     _require(expected.startswith("sha256:") and len(expected) == 71
              and 0 < expected_bytes <= MAX_CAPSULE_BYTES and url.startswith("https://"), "transport_invalid")
-    import urllib.request
+    deadline = artifact_deadline(120,deadline=_deadline)
     with tempfile.TemporaryDirectory(prefix="artifixer-pretraining-") as temporary:
         archive = Path(temporary) / "capsule.zip"
-        with urllib.request.urlopen(url, timeout=120) as response, archive.open("wb") as target:
-            remaining = expected_bytes
-            while remaining:
-                block = response.read(min(1024**2, remaining))
-                _require(bool(block), "download_truncated")
-                target.write(block)
-                remaining -= len(block)
-            _require(not response.read(1), "download_exceeds_binding")
+        try:
+            with open_artifact_response(url,deadline=deadline,socket_timeout=120) as response, archive.open('wb') as target:
+                count = 0
+                for block in artifact_chunks(response,deadline=deadline,maximum_bytes=expected_bytes):
+                    target.write(block)
+                    count += len(block)
+                _require(count == expected_bytes,'download_truncated')
+        except ValueError as exc:
+            if str(exc) == 'artifact_stream_oversized':
+                raise ValueError('artifixer_pretraining_download_exceeds_binding') from exc
+            raise
         _require(_sha(archive) == expected, "archive_digest_invalid")
         with zipfile.ZipFile(archive) as zipped:
             capsule = json.loads(zipped.read("capsule_manifest.json"))

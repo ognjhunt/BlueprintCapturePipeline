@@ -12,6 +12,7 @@ from __future__ import annotations
 import grp
 import ast
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -88,6 +89,22 @@ def _checkout_git(source, *arguments):
     assert path.is_dir() and not Path(source).is_symlink()
     return ['/usr/bin/git', '--no-replace-objects', '-c', 'safe.directory='+str(path),
             '-C', str(path), *arguments]
+
+
+def _fixture_source_manifest(builder, source, contracts, commit, *, deadline):
+    """Scope test-only builder Git commands to the two exact fixture roots."""
+    run = builder._run_bounded
+    roots = {str(Path(path).resolve(strict=True)) for path in (source,contracts)}
+    def scoped(command, **kwargs):
+        assert command[:3] == ['git','--no-replace-objects','-C']
+        path = str(Path(command[3]).resolve(strict=True))
+        assert path in roots
+        return run(_checkout_git(path,*command[4:]), **kwargs)
+    builder._run_bounded = scoped
+    try:
+        return builder.build_manifest(source,contracts,commit,deadline=deadline)
+    finally:
+        builder._run_bounded = run
 
 
 def _copy_protected(source, target):
@@ -222,6 +239,32 @@ def test_actual_default_off_root_bootstrap_drops_blueprint_uid_and_all_caps():
     assert receipt['default_off'] and receipt['authority_issued'] is False
 
 
+def _native_fixture_source_driver():
+    """Test-only source authority; no production CLI, env or crypto fallback."""
+    return """import importlib.util,json,os,sys,time
+from pathlib import Path
+assert os.getuid()==os.geteuid()==0 and sys.flags.isolated and sys.flags.no_site
+installer,source,commit,contracts,manifest=map(Path,sys.argv[1:])
+commit=str(commit)
+spec=importlib.util.spec_from_file_location('native_installer_under_test',installer)
+module=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+raw=manifest.read_bytes()
+value=json.loads(raw)
+assert raw==(json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False)+'\\n').encode()
+assert value['sources'][0]['commit']==commit
+assert value['sources'][1]['commit']=='7708a4e4c5dedeeb39cc73d3f6869304de295b81'
+def fixture_admission(manifest_path,bundle_path,verifier_path,expected_commit,deadline):
+    assert expected_commit==commit and time.monotonic()<=deadline
+    assert manifest.read_bytes()==raw
+    return value
+module._admitted_source_manifest=fixture_admission
+result=module.prepare_deployment(source,source_commit=commit,contracts_checkout=contracts)
+assert result['authority_issued'] is False and result['cleanup_enabled'] is False
+print(json.dumps(result,sort_keys=True))
+"""
+
+
 def _enabled_sdk_native_phase():
     """Actual ABI/locked artifacts, rolling selector and ordinary-UID imports."""
     assert sys.platform == 'linux' and os.getuid() == os.geteuid() == 0
@@ -271,20 +314,49 @@ def _enabled_sdk_native_phase():
         installer = root/'installer.py'
         blob = subprocess.check_output(_checkout_git(source, 'cat-file', 'blob', commit+':scripts/install_scene_retirement_runtime.py'), env={'PATH':'/usr/bin:/bin','GIT_NO_LAZY_FETCH':'1','GIT_ALLOW_PROTOCOL':'','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'},timeout=10)
         assert 0 < len(blob) <= 1024*1024
-        oid = _native(_checkout_git(source, 'rev-parse', commit+':scripts/install_scene_retirement_runtime.py')).strip()
-        assert hashlib.sha1(b'blob '+str(len(blob)).encode()+b'\0'+blob).hexdigest() == oid
+        # The CI checkout is fixture authority, never a cryptographic main
+        # release admission. Preserve the production refusal before any SDK.
         installer.write_bytes(blob)
         installer.chmod(0o644)
         command = ['/usr/bin/python3','-I','-S',str(installer),'--source',str(source),
             '--source-commit',commit,'--locked-sdk','--contracts-checkout',str(contracts)]
+        refused = subprocess.run(command,stdin=subprocess.DEVNULL,capture_output=True,
+            timeout=30,env={'PATH':'/usr/bin:/bin','LC_ALL':'C'})
+        assert refused.returncode == 2 and refused.stdout == b'' and len(refused.stderr) <= 4096
+        assert b'scene_retirement_runtime_phase:source_attestation' in refused.stderr
+        assert b'scene_retirement_runtime_failure:validation' in refused.stderr
+        assert not any(path.exists() or path.is_symlink() for path in (_RUNTIME,_BOOT,sdk_inputs))
+        # Generate canonical raw-byte SHA256 inventories from the two exact
+        # checkout fixtures. Signing stays AFTER the required native gate.
+        helper = root/'fixture_manifest_builder.py'
+        helper.write_bytes(subprocess.check_output(_checkout_git(source,'cat-file','blob',
+            commit+':scripts/release_source_manifest.py'),env={'PATH':'/usr/bin:/bin',
+            'GIT_NO_LAZY_FETCH':'1','GIT_ALLOW_PROTOCOL':'','GIT_CONFIG_NOSYSTEM':'1',
+            'GIT_CONFIG_GLOBAL':'/dev/null'},timeout=10))
+        helper.chmod(0o644)
+        spec = importlib.util.spec_from_file_location('native_fixture_manifest_builder',helper)
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        raw_manifest = _fixture_source_manifest(builder,source,contracts,commit,deadline=time.monotonic()+120)
+        admitted = builder.validate_manifest_bytes(raw_manifest,commit)
+        row = builder.source_inventory(admitted,'ognjhunt/BlueprintCapturePipeline',commit)['scripts/install_scene_retirement_runtime.py']
+        assert row['size'] == len(blob) and row['sha256'] == hashlib.sha256(blob).hexdigest()
+        fixture_manifest = root/'fixture-source-manifest.json'
+        fixture_manifest.write_bytes(raw_manifest)
+        fixture_manifest.chmod(0o644)
+        driver = root/'fixture-source-authority.py'
+        driver.write_text(_native_fixture_source_driver())
+        driver.chmod(0o644)
+        command = ['/usr/bin/python3','-I','-S',str(driver),str(installer),str(source),commit,
+                   str(contracts),str(fixture_manifest)]
         prepared = json.loads(_native(command,timeout=310))
         assert prepared['status'] == 'prepared' and prepared['source_commit'] == commit
         assert prepared['authority_issued'] is False and prepared['cleanup_enabled'] is False
-        # A second genuine deployment invocation exercises the atomic rolling
-        # source/SDK cohort. Each invocation shares one 900s installation ceiling;
-        # this bounded native fixture retains its stricter 310s test watchdog.
-        refreshed = json.loads(_native(['/usr/bin/python3','-I','-S',str(_BOOT/'runtime_installer.py'),
-            *command[4:]],timeout=310))
+        # Only the source-admission boundary is intercepted by the test driver;
+        # real locked SDK/copy/rolling/ABI/UID/systemd behavior remains exercised.
+        # Each invocation retains its stricter 310s native fixture watchdog.
+        refreshed = json.loads(_native([*command[:4],str(_BOOT/'runtime_installer.py'),
+            *command[5:]],timeout=310))
         assert refreshed['status'] == 'refreshed' and refreshed['source_commit'] == commit
         current = json.loads((_BOOT/'CURRENT.json').read_bytes())
         runtime = Path(current['runtime_root'])
@@ -388,7 +460,9 @@ def _enabled_sdk_native_phase():
         assert 'ProtectHome=yes' in _native(['/usr/bin/systemctl','show',unit,'--property=ProtectHome'])
         print(json.dumps(dict(status='passed',actual_systemd=True,actual_system_abi=abi,
             locked_sdk_packages=len(packages),current_selected=True,actual_enabled_imports=True,
-            kernel_uid=account.pw_uid,kernel_caps_zero=True,retirement_action_executed=False)),flush=True)
+            kernel_uid=account.pw_uid,kernel_caps_zero=True,retirement_action_executed=False,
+            source_authority='hermetic_fixture_sha256',cryptographic_main_release_admission_proven=False,
+            production_missing_proof_refused=True)),flush=True)
     finally:
         if unit_path in installed_units:
             _native(['/usr/bin/systemctl','stop',unit])
@@ -432,6 +506,8 @@ def test_actual_locked_system_sdk_current_selection_and_enabled_service_imports(
     assert receipt['status']=='passed' and receipt['kernel_uid']!=0 and receipt['locked_sdk_packages']>80
     assert receipt['current_selected'] and receipt['actual_enabled_imports'] and receipt['kernel_caps_zero']
     assert receipt['retirement_action_executed'] is False
+    assert receipt['source_authority']=='hermetic_fixture_sha256'
+    assert receipt['cryptographic_main_release_admission_proven'] is False and receipt['production_missing_proof_refused']
 
 
 if __name__ == '__main__':
@@ -450,6 +526,36 @@ def test_native_fixture_git_access_is_scoped_to_exact_checkout(tmp_path):
         "safe.directory=" + str(source.resolve()), "-C", str(source.resolve()),
         "cat-file", "blob", "a" * 40 + ":installer.py"]
     assert "safe.directory=*" not in command
+
+
+def test_native_fixture_manifest_git_access_is_scoped_and_restored(tmp_path):
+    import types
+    source,contracts = tmp_path/'source',tmp_path/'contracts'
+    source.mkdir()
+    contracts.mkdir()
+    calls = []
+    def original(command,**kwargs):
+        calls.append((command,kwargs))
+        return b'fixture raw Git data'
+    builder = types.SimpleNamespace(_run_bounded=original)
+    def build(*args,**kwargs):
+        for path in (source,contracts):
+            assert builder._run_bounded(['git','--no-replace-objects','-C',str(path),
+                'cat-file','blob','a'*40],deadline=kwargs['deadline'],stdout_cap=1024) == b'fixture raw Git data'
+        return b'canonical fixture manifest'
+    builder.build_manifest = build
+    deadline = time.monotonic()+10
+    assert _fixture_source_manifest(builder,source,contracts,'a'*40,deadline=deadline) == b'canonical fixture manifest'
+    assert builder._run_bounded is original and len(calls) == 2
+    for path,(command,kwargs) in zip((source,contracts),calls,strict=True):
+        assert command == _checkout_git(path,'cat-file','blob','a'*40)
+        assert kwargs == {'deadline':deadline,'stdout_cap':1024}
+    def failed(*args,**kwargs):
+        raise ValueError('fixture failed')
+    builder.build_manifest = failed
+    with pytest.raises(ValueError,match='fixture failed'):
+        _fixture_source_manifest(builder,source,contracts,'a'*40,deadline=deadline)
+    assert builder._run_bounded is original
 
 
 @pytest.mark.parametrize('preexisting', [False, True])
@@ -534,3 +640,16 @@ def test_enabled_native_fixture_installs_entire_fixed_continuous_cohort(tmp_path
         assert path.read_bytes() == (source / 'deploy/systemd' / path.name).read_bytes()
         assert path.stat().st_mode & 0o777 == 0o644
         assert (path.stat().st_dev, path.stat().st_ino) == identity
+
+
+def test_native_source_driver_intercepts_only_fixture_admission_and_reports_no_signing_proof():
+    driver = _native_fixture_source_driver()
+    compile(driver,'native-fixture-source-authority','exec')
+    patched = [node for node in ast.walk(ast.parse(driver)) if isinstance(node,ast.Assign)
+        and any(isinstance(target,ast.Attribute) and isinstance(target.value,ast.Name)
+                and target.value.id=='module' for target in node.targets)]
+    assert len(patched)==1 and patched[0].targets[0].attr=='_admitted_source_manifest'
+    assert 'module.prepare_deployment(' in driver and 'contracts_checkout=contracts' in driver
+    source=Path(__file__).read_text()
+    assert "cryptographic_main_release_admission_proven=False" in source
+    assert "production_missing_proof_refused=True" in source

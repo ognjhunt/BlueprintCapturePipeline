@@ -63,7 +63,7 @@ def evaluator_provider_probe_script(common_start: str) -> str:
         "zip_rc=$?; "
         "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
         'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/evaluator_provider_runtime_output.zip"; then '
-        "echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; cat /tmp/blueprint_provider_upload_response.json; "
+        "blueprint_upload_read_response || exit 86; blueprint_upload_cleanup || exit 86; echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; "
         "else upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_upload_failed:$upload_rc; fi; "
         "echo BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED; "
         "fi; fi; fi; fi; "

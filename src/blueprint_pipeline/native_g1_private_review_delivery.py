@@ -7,12 +7,13 @@ record and does not upgrade a simulated result into physical evidence.
 from __future__ import annotations
 
 import argparse
-import errno
 import json
 import os
 import shutil
+import stat
 import tempfile
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -46,6 +47,70 @@ def _relative(value: str) -> Path:
     ):
         raise ValueError("g1_review_delivery_artifact_path_invalid")
     return Path(*pure.parts)
+
+
+def _private_output(path: Path, *, directory: bool) -> None:
+    metadata = path.lstat()
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if (
+        not expected_type(metadata.st_mode) or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != (0o700 if directory else 0o600)
+        or (not directory and metadata.st_nlink != 1)
+    ):
+        raise ValueError("g1_review_delivery_private_permissions_invalid")
+
+
+def _private_parents(path: Path, *, stage: Path) -> None:
+    # mkdir(parents=True) applies its mode only to the leaf; every component
+    # here must deny inherited group readership, independent of caller umask.
+    parent = stage
+    _private_output(parent, directory=True)
+    for component in path.relative_to(stage).parts:
+        parent = parent / component
+        try:
+            parent.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        else:
+            descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                if os.fstat(descriptor).st_uid != os.geteuid():
+                    raise ValueError("g1_review_delivery_private_permissions_invalid")
+                os.fchmod(descriptor, 0o700)
+            finally:
+                os.close(descriptor)
+        _private_output(parent, directory=True)
+
+
+@contextmanager
+def _private_writer(path: Path):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, 'wb', closefd=False) as output:
+            yield output
+    finally:
+        os.close(descriptor)
+
+
+def _private_copy(source: Path, destination: Path, *, size: int) -> None:
+    # A source hardlink would preserve its reader modes and mutation authority.
+    # Copy only the admitted byte count into a fresh owner-only inode instead.
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    with os.fdopen(descriptor, 'rb') as input_stream:
+        metadata = os.fstat(input_stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != size:
+            raise ValueError("g1_review_delivery_artifact_identity_invalid")
+        with _private_writer(destination) as output:
+            remaining = size
+            while remaining:
+                block = input_stream.read(min(remaining, 1024 * 1024))
+                if not block:
+                    raise ValueError("g1_review_delivery_staged_identity_invalid")
+                output.write(block)
+                remaining -= len(block)
+            if input_stream.read(1):
+                raise ValueError("g1_review_delivery_staged_identity_invalid")
 
 
 def _media(review: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
@@ -88,8 +153,9 @@ def _existing_review_delivery(
 
     if target.is_symlink() or not target.is_dir():
         raise ValueError("g1_review_delivery_run_already_registered")
-    if (target / "artifacts").is_symlink() or (target / "artifacts/result_delivery").is_symlink():
-        raise ValueError("g1_review_delivery_existing_registry_invalid")
+    for directory in (target, target / 'evidence', target / 'artifacts', target / 'artifacts/result_delivery'):
+        _private_output(directory, directory=True)
+    _private_output(target / 'artifacts/result_delivery/artifact_registry.json', directory=False)
     registry = _read(target / "artifacts/result_delivery/artifact_registry.json")
     expected = _media(review)
     records = registry.get("artifacts")
@@ -105,6 +171,12 @@ def _existing_review_delivery(
         raise ValueError("g1_review_delivery_existing_registry_invalid")
     for (role, row), record in zip(expected, records, strict=True):
         relative = row["relative_path"]
+        expected_path = target / 'evidence' / _relative(relative)
+        _private_output(expected_path, directory=False)
+        for directory in expected_path.parents:
+            if directory == target:
+                break
+            _private_output(directory, directory=True)
         artifact_id = _artifact_id(role, relative, row["sha256"])
         path, resolved = resolve_task_evaluation_result_artifact(
             run_root=target, run_id=run_id, artifact_id=artifact_id,
@@ -150,9 +222,15 @@ def _stage_review_artifacts(
         return _existing_review_delivery(review=review, target=target, run_id=run)
     stage = Path(tempfile.mkdtemp(prefix=f".g1-{run}-", dir=root))
     try:
-        os.chmod(stage, 0o750)
+        descriptor = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            if os.fstat(descriptor).st_uid != os.geteuid():
+                raise ValueError("g1_review_delivery_private_permissions_invalid")
+            os.fchmod(descriptor, 0o700)
+        finally:
+            os.close(descriptor)
         evidence = stage / "evidence"
-        evidence.mkdir(mode=0o750)
+        _private_parents(evidence, stage=stage)
         records: list[dict[str, Any]] = []
         paths: set[str] = set()
         for role, row in _media(review):
@@ -174,15 +252,11 @@ def _stage_review_artifacts(
             ):
                 raise ValueError("g1_review_delivery_artifact_identity_invalid")
             destination = evidence / relative
-            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-            try:
-                os.link(src, destination)
-            except OSError as exc:
-                if exc.errno != errno.EXDEV:
-                    raise
-                shutil.copyfile(src, destination)
+            _private_parents(destination.parent, stage=stage)
+            _private_copy(src, destination, size=size)
             if destination.stat().st_size != size or _sha256(destination) != digest:
                 raise ValueError("g1_review_delivery_staged_identity_invalid")
+            _private_output(destination, directory=False)
             records.append({
                 "artifact_id": _artifact_id(role, relative_text, digest),
                 "role": role,
@@ -201,8 +275,9 @@ def _stage_review_artifacts(
         }
         registry["registry_digest"] = canonical_digest(registry, digest_field="registry_digest")
         registry_path = stage / "artifacts/result_delivery/artifact_registry.json"
-        registry_path.parent.mkdir(parents=True, mode=0o750)
-        registry_path.write_text(canonical_json(registry) + "\n", encoding="utf-8")
+        _private_parents(registry_path.parent, stage=stage)
+        with _private_writer(registry_path) as output:
+            output.write((canonical_json(registry) + "\n").encode('utf-8'))
         if target.exists() or target.is_symlink():
             raise ValueError("g1_review_delivery_run_already_registered")
         os.rename(stage, target)

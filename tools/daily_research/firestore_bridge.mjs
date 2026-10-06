@@ -3,12 +3,26 @@ import {createHash, randomUUID} from 'node:crypto';
 import {gzipSync, gunzipSync} from 'node:zlib';
 import {createInterface} from 'node:readline';
 import {pathToFileURL} from 'node:url';
-import {livePublisher,publicationVerification,requirePublicationVerification} from './publisher.mjs';
+import {livePublisher,publicationVerification,requirePublicationVerification,screenPayloadProblem} from './publisher.mjs';
 import {verificationDigest} from './verification-digest.mjs';
 import {contactResearchContext,claimContactResearch,finishContactResearchSafely} from './contact_research.mjs';
 
 export const ROOT = 'blueprintDailyResearch/sites-first';
 export const ADAPTIVE_TEST = 'adaptive-discovery-20261001';
+export const COMMUNICATIONS_WORKER_LAP = 'blueprintCommunications/default/intakeState/workerLap';
+const RELEASE_OWNER_PREFIX = 'research-release:';
+const communicationsLapDrained = snapshot => {
+  if (!snapshot.exists) return true;
+  const lap = snapshot.data(), lease = lap?.lease;
+  // An expired or malformed active lap still owns unfinished work. Only the
+  // matching worker's explicit completion/zero-expiry record establishes drain.
+  return lap?.schema_version === 'blueprint.communications-worker-lap.v1' && lap.phase === 'complete'
+    && typeof lease?.owner === 'string' && /^communications-worker-lap:[a-zA-Z0-9-]{1,80}$/.test(lease.owner)
+    && Number.isSafeInteger(lease.generation) && lease.generation >= 1
+    && Number.isSafeInteger(lease.until) && lease.until === 0
+    && Number.isSafeInteger(lap.startedAt) && Number.isSafeInteger(lap.renewedAt)
+    && Number.isSafeInteger(lap.completedAt);
+};
 const MAX_BYTES = 8 * 1024 * 1024, CHUNK = 256 * 1024, LEASE_MS = 180000;
 const TERMINAL = ['awaiting_review', 'reviewed', 'completed', 'failed', 'cancelled'];
 const CLEANUP_BUCKET = 'blueprint-8c1ca.appspot.com';
@@ -117,6 +131,18 @@ async function suBounded(fn,ms) {
   catch(error) {throw error instanceof Refusal && suCode(error.message)?error:new Refusal('site_universe_object_unavailable');}
   finally {clearTimeout(timer);}
 }
+// Private qualified robot-team evidence: no provider or contact authority.
+const TU_PREFIX='operations/research/team-universe/', TU_MAX_BYTES=4*1024*1024, TU_EXPORT='blueprint.team-evidence-export.v1';
+const TU_PIN_FIELDS=['approval_reference','assessed_on','audit_sha256','bytes','enabled','generation','ranked_sha256','schema_version','scope_sha256','sha256','uri','version'];
+const tuUri=hash=>`gs://${CLEANUP_BUCKET}/${TU_PREFIX}${hash}/evidence.v1.json`;
+function tuPinProblem(pin) {
+  if(!keysAre(pin,TU_PIN_FIELDS) || pin.schema_version!=='blueprint.team-evidence-pin.v1' || pin.enabled!==true
+      || !['sha256','ranked_sha256','audit_sha256','scope_sha256'].every(k=>hexOK(pin[k]))
+      || pin.uri!==tuUri(pin.sha256) || !suGeneration(pin.generation) || !suInt(pin.bytes,1,TU_MAX_BYTES)
+      || !suInt(pin.version,1,1000000) || !dateOK(pin.assessed_on) || !paidText(pin.approval_reference)
+      || /^PENDING/i.test(pin.approval_reference.trim())) return 'team_universe_pin_invalid';
+  return null;
+}
 // Owner direction for outreach-ready hypotheses; mirrors tools/daily_research/outreach_ready.py.
 // A new direction must name the rule this release implements (verification.OUTREACH_RULE_VERSION); a pinned
 // direction of an earlier rule can still be braked, and a fresh set supersedes it.
@@ -150,6 +176,41 @@ async function orBounded(fn,ms) {
   catch(error) {throw error instanceof Refusal && orCode(error.message)?error:new Refusal('outreach_ready_object_unavailable');}
   finally {clearTimeout(timer);}
 }
+// Host-owned site-screen admission; mirrors tools/daily_research/screen_admission.py. The owner uploads a bundle
+// create-only; admission_set pins exactly that generation; the worker plans, claims, writes and reads back its rows.
+const SA_PREFIX='operations/research/screen-admission/', SA_NAME='bundle.json', SA_MAX_OBJECT=1024*1024, SA_MAX_RECORDS=50;
+const SA_STATE='blueprint.site-screen-admission-state.v1', SA_WORK_ITEM='blueprint.site-screen-work-item.v1';
+const SA_SNAPSHOT='blueprint.site-screen-admission-snapshot.v1';
+const SA_PIN_FIELDS=['admission_id','approval_reference','bytes','direction_sha256','generation','records','uri'];
+const SA_LABELS={published_person_email:'published person email',quoted_person_looked_up_email:'looked-up email, quoted person',
+  provider_sourced_corroborated:'looked-up email, provider-sourced person, corroborated',
+  provider_sourced_uncorroborated:'looked-up email, provider-sourced person, not corroborated',
+  published_team_inbox:'published team inbox',published_general_inbox:'published general inbox'};
+const SA_PERSON_ROUTES=['published_person_email','quoted_person_looked_up_email','provider_sourced_corroborated','provider_sourced_uncorroborated'];
+const saUri=hash=>`gs://${CLEANUP_BUCKET}/${SA_PREFIX}${hash}/${SA_NAME}`;
+const saCode=x=>typeof x==='string' && /^screen_admission_[a-z_]{1,80}$/.test(x);
+function saPinProblem(value) {
+  if(!keysAre(value,['current','enabled']) || typeof value.enabled!=='boolean') return 'screen_admission_pin_invalid';
+  const c=value.current;
+  if(!keysAre(c,SA_PIN_FIELDS) || !hexOK(c.admission_id) || !suGeneration(c.generation) || !suInt(c.bytes,1,SA_MAX_OBJECT)
+      || c.uri!==saUri(c.admission_id) || !suInt(c.records,1,SA_MAX_RECORDS) || !hexOK(c.direction_sha256)
+      || !paidText(c.approval_reference) || /^PENDING/i.test(c.approval_reference.trim())) return 'screen_admission_pin_invalid';
+  return null;
+}
+async function saBounded(fn,ms) {
+  let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Refusal('screen_admission_object_unavailable')),ms);});
+  try {return await Promise.race([fn(),deadline]);}
+  catch(error) {throw error instanceof Refusal && saCode(error.message)?error:new Refusal('screen_admission_object_unavailable');}
+  finally {clearTimeout(timer);}
+}
+// Sheets columns E, F and H for one bundle recipient (screen_admission.contact_cells).
+function saContactCells(recipient) {
+  if(!recipient) return {name:'',details:'',source_url:''};
+  const person=recipient.person || {};
+  return {name:SA_PERSON_ROUTES.includes(recipient.route)?person.name || '':'',details:`${recipient.address} (${recipient.label})`,
+    source_url:recipient.published?.url || person.corroboration?.url || person.url || ''};
+}
 function paidDirectionProblem(d,control) {
   if(!keysAre(d,PAID_FIELDS) || d.schema_version!==PAID_DIRECTION) return 'paid_expansion_direction_invalid';
   if(paidMicros(d.per_run_limit_usd)===null) return 'paid_expansion_limit_invalid';
@@ -169,7 +230,7 @@ function paidDirectionProblem(d,control) {
 export class Store {
   constructor(db, clock = () => Date.now(), owner = randomUUID(), crmReader = null, publisher = null, learning = null,
     terminalCollectionReceipt = null, schedulerStopped = false, archiveBucket = null) {
-    this.db = db; this.clock = clock; this.owner = owner; this.generation = null;
+    this.db = db; this.clock = clock; this.owner = owner; this.defaultOwner = owner; this.generation = null;
     this.control = db.doc(ROOT);
     this.crmReader = crmReader;
     this.publisher = publisher;
@@ -179,6 +240,7 @@ export class Store {
     this.archiveBucket = archiveBucket;
     this.siteUniverseReadMs = 20000; this.siteUniverseWriteMs = 30000;
     this.outreachReadyReadMs = 20000; this.outreachReadyWriteMs = 30000;
+    this.screenAdmissionReadMs = 20000;
   }
   async transaction(fn) {
     return this.db.runTransaction(fn, {maxAttempts: 3});
@@ -188,21 +250,48 @@ export class Store {
     if (!lease || lease.owner !== this.owner || lease.generation !== this.generation || lease.expires_at_ms <= this.clock())
       refuse('firestore_lease_lost');
   }
-  async acquire() {
-    this.generation = await this.transaction(async tx => {
+  async communicationsLapIdle() {
+    return communicationsLapDrained(await this.db.doc(COMMUNICATIONS_WORKER_LAP).get());
+  }
+  async publicationFence(tx, control) {
+    this.fence(control);
+    if (!this.owner.startsWith(RELEASE_OWNER_PREFIX)) refuse('research_release_lease_required');
+    if (!Number.isSafeInteger(control.lease.generation) || control.lease.generation < 1
+        || !Number.isSafeInteger(control.lease.expires_at_ms)) refuse('firestore_lease_lost');
+    // A direct absent-document read is part of the write transaction's read
+    // set: a concurrent first lap claim conflicts, rather than escaping a query.
+    if (!communicationsLapDrained(await tx.get(this.db.doc(COMMUNICATIONS_WORKER_LAP))))
+      refuse('communications_worker_lap_active');
+  }
+  async acquire(scope = null) {
+    if (scope !== null && scope !== 'research_release') refuse('firestore_lease_scope_invalid');
+    const owner = scope === 'research_release' && !this.defaultOwner.startsWith(RELEASE_OWNER_PREFIX)
+      ? RELEASE_OWNER_PREFIX + this.defaultOwner : this.defaultOwner;
+    const generation = await this.transaction(async tx => {
       const snap = await tx.get(this.control);
       if (!snap.exists) refuse('firestore_control_missing');
       const control = snap.data(), lease = control.lease;
+      if (owner.startsWith(RELEASE_OWNER_PREFIX) && (!Number.isSafeInteger(this.clock())
+          || lease && (!Number.isSafeInteger(lease.expires_at_ms)
+            || !Number.isSafeInteger(lease.generation) || lease.generation < 1
+            || lease.generation >= Number.MAX_SAFE_INTEGER))) refuse('firestore_lease_invalid');
       if (lease && lease.expires_at_ms > this.clock()) refuse('runner_overlap');
+      if (owner.startsWith(RELEASE_OWNER_PREFIX)
+          && !communicationsLapDrained(await tx.get(this.db.doc(COMMUNICATIONS_WORKER_LAP))))
+        refuse('communications_worker_lap_active');
       const generation = (lease?.generation || 0) + 1;
-      tx.set(this.control, {lease: {owner: this.owner, generation, expires_at_ms: this.clock() + LEASE_MS}}, {merge: true});
+      if (owner.startsWith(RELEASE_OWNER_PREFIX) && !Number.isSafeInteger(this.clock() + LEASE_MS))
+        refuse('firestore_lease_invalid');
+      tx.set(this.control, {lease: {owner, generation, expires_at_ms: this.clock() + LEASE_MS}}, {merge: true});
       return generation;
     });
+    this.owner = owner; this.generation = generation;
     return true;
   }
   async renew() {
     await this.transaction(async tx => {
       const control = (await tx.get(this.control)).data(); this.fence(control);
+      if (this.owner.startsWith(RELEASE_OWNER_PREFIX)) await this.publicationFence(tx, control);
       tx.set(this.control, {lease: {...control.lease, expires_at_ms: this.clock() + LEASE_MS}}, {merge: true});
     });
     return true;
@@ -304,6 +393,31 @@ export class Store {
       }
       if (!prior.exists && (row.state !== 'creating' || control.enabled !== true)) refuse('firestore_create_not_admitted');
       if (prior.exists && !same(prior.data().metadata, row.metadata)) refuse('firestore_intent_conflict');
+      const teamDigest=row.team_universe===undefined?null:valueHash(row.team_universe);
+      if(prior.exists && (prior.data().team_universe_digest ?? null)!==teamDigest) refuse('team_universe_intent_already_bound');
+      if(row.team_universe?.state==='attached') {
+        const evidence=row.team_universe,pin=evidence.pin;
+        if(tuPinProblem(pin) || !prior.exists && valueHash(pin)!==valueHash(control.team_universe ?? null)) refuse('team_universe_current_pin_changed');
+        const files=(row.create_payload?.environment?.files || []).filter(f=>f.path==='/workspace/inputs/blueprint-team-evidence.json');
+        const raw=files.length===1 && typeof files[0].data==='string' ? Buffer.from(files[0].data,'base64') : null;
+        if(!raw || raw.length>500000 || raw.length!==evidence.bytes || sha(raw)!==evidence.sha256
+            || evidence.sha256!==row.metadata?.team_universe_input_digest) refuse('team_universe_frozen_binding_invalid');
+        let frozen;try {frozen=JSON.parse(raw.toString('utf8'));} catch {refuse('team_universe_frozen_binding_invalid');}
+        if(!keysAre(frozen,['schema_version','run_date','as_of','export_sha256','pin_version','manifest','teams','held_team_keys'])
+            || frozen.schema_version!=='blueprint.team-evidence-input.v1' || frozen.run_date!==row.date
+            || !dateOK(frozen.as_of) || !prior.exists && frozen.as_of!==new Date(this.clock()).toISOString().slice(0,10)
+            || frozen.export_sha256!==pin.sha256 || frozen.pin_version!==pin.version
+            || !Array.isArray(frozen.teams) || !Array.isArray(frozen.held_team_keys)
+            || raw.toString('utf8')!==JSON.stringify(canonicalValue(frozen))) refuse('team_universe_frozen_binding_invalid');
+        const original=Buffer.from(JSON.stringify(canonicalValue({schema_version:TU_EXPORT,manifest:frozen.manifest,teams:frozen.teams})));
+        if(original.length!==pin.bytes || sha(original)!==pin.sha256) refuse('team_universe_frozen_binding_invalid');
+        const asof=Date.parse(frozen.as_of+'T00:00:00Z');
+        const held=frozen.teams.filter(team=>team.status==='capability_prospect' &&
+          !(Number.isFinite(Date.parse(team.assessment?.as_of+'T00:00:00Z')) &&
+            (asof-Date.parse(team.assessment.as_of+'T00:00:00Z'))/86400000>=0 &&
+            (asof-Date.parse(team.assessment.as_of+'T00:00:00Z'))/86400000<=548)).map(team=>team.team_key);
+        if(valueHash(held)!==valueHash(frozen.held_team_keys)) refuse('team_universe_frozen_binding_invalid');
+      }
       if ((row.expansion_profile || null)!==(row.metadata?.expansion_profile || null)
           || row.expansion_profile && row.expansion_profile!=='exa-guarded-v1') refuse('research_expansion_profile_invalid');
       const exa=row.exa_expansion;
@@ -432,7 +546,7 @@ export class Store {
         exa_expansion_intent_digest:exa?.intent_sha256 || null,
         exa_expansion_run_id:exa?.run_id || null,
         exa_expansion_terminal_receipt:exa?.terminal_receipt || null,
-        paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
+        ...(row.team_universe===undefined?{}:{team_universe_digest:teamDigest}),paid_expansion_grant_digest:grantDigest,paid_expansion_grant_unbound:unbound,
         ...(outreachDigest?{outreach_ready_digest:outreachDigest}:{}),...(outreachUnbound?{outreach_ready_unbound:true}:{}),
         findall_claims:findall,findall_unbound:findallUnbound,
         ...(row.mcp_profile==='owner-delegated-research-mcp-v1'?{mcp_profile:row.mcp_profile}:{}),
@@ -988,6 +1102,95 @@ export class Store {
     if(!Buffer.isBuffer(raw) || sha(raw)!==hash || Number(meta?.size)!==raw.length) refuse('paid_expansion_object_conflict');
     return {uri:paidUri(hash),sha256:hash,bytes:raw.toString('base64'),generation:String(meta.generation)};
   }
+  teamUniverseFile(hash,generation=null) {
+    if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('team_universe_object_unavailable');
+    return this.archiveBucket.file(`${TU_PREFIX}${hash}/evidence.v1.json`,generation===null?undefined:{generation});
+  }
+  async teamUniverseObjectGet(hash,generation,size=null) {
+    if(!hexOK(hash) || !suGeneration(generation) || !(size===null || suInt(size,1,TU_MAX_BYTES))) refuse('team_universe_pin_invalid');
+    let timer;
+    const read=async()=>{
+      const file=this.teamUniverseFile(hash,generation);let meta,raw;
+      try {[meta]=await file.getMetadata();} catch {refuse('team_universe_object_unavailable');}
+      if(String(meta?.generation)!==generation) refuse('team_universe_object_generation_mismatch');
+      const stored=Number(meta?.size);
+      if(!suInt(stored,1,TU_MAX_BYTES)) refuse('team_universe_object_too_large');
+      if(size!==null && size!==stored) refuse('team_universe_object_digest_mismatch');
+      try {[raw]=await file.download();} catch {refuse('team_universe_object_unavailable');}
+      if(!Buffer.isBuffer(raw) || raw.length!==stored || sha(raw)!==hash) refuse('team_universe_object_digest_mismatch');
+      return {uri:tuUri(hash),sha256:hash,generation,size:raw.length,data:raw.toString('base64')};
+    };
+    try {return await Promise.race([read(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Refusal('team_universe_object_unavailable')),20000);})]);}
+    finally {clearTimeout(timer);}
+  }
+  async teamUniverseObjectPut(hash,encoded) {
+    if(!hexOK(hash) || typeof encoded!=='string') refuse('team_universe_export_invalid');
+    const raw=Buffer.from(encoded,'base64');let value;
+    if(!raw.length || raw.length>TU_MAX_BYTES || sha(raw)!==hash) refuse('team_universe_object_digest_mismatch');
+    try {value=JSON.parse(raw.toString('utf8'));} catch {refuse('team_universe_export_invalid');}
+    if(value?.schema_version!==TU_EXPORT || value.manifest?.distribution!=='internal_only' || !Array.isArray(value.teams) || value.teams.length>10000)
+      refuse('team_universe_export_invalid');
+    let timer;
+    const write=async()=>{
+      const file=this.teamUniverseFile(hash);
+      try {await file.save(raw,{resumable:false,preconditionOpts:{ifGenerationMatch:0},metadata:{contentType:'application/json',cacheControl:'private, no-store',metadata:{sha256:hash}}});}
+      catch(error) {if(Number(error?.code)!==412) refuse('team_universe_object_unavailable');}
+      let meta;try {[meta]=await file.getMetadata();} catch {refuse('team_universe_object_unavailable');}
+      const read=await this.teamUniverseObjectGet(hash,String(meta?.generation),raw.length);
+      return {uri:read.uri,sha256:hash,generation:read.generation,bytes:read.size};
+    };
+    try {return await Promise.race([write(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Refusal('team_universe_object_unavailable')),30000);})]);}
+    finally {clearTimeout(timer);}
+  }
+
+  async teamUniverseSnapshot() {
+    // Read-only and pinned to one object generation. Daily intent freezes these bytes once.
+    const control=(await this.control.get()).data(),pin=control?.team_universe;
+    if(!pin || pin.enabled===false) return {state:'unavailable',code:'team_universe_not_pinned'};
+    const problem=tuPinProblem(pin);if(problem) refuse(problem);
+    const object=await this.teamUniverseObjectGet(pin.sha256,pin.generation,pin.bytes);
+    let value;try {value=JSON.parse(Buffer.from(object.data,'base64').toString('utf8'));} catch {refuse('team_universe_export_invalid');}
+    if(value?.schema_version!==TU_EXPORT || ['ranked_sha256','audit_sha256','scope_sha256','assessed_on'].some(k=>value.manifest?.[k]!==pin[k]))
+      refuse('team_universe_export_binding_invalid');
+    return {state:'available',pin,data:object.data};
+  }
+  async teamUniverseIdle() {
+    const summary=await this.summary();
+    if(summary.unfinished || await this.activeQA() || await this.workItem() || !await this.communicationsLapIdle())
+      refuse('team_universe_active_research_qa_repair_or_publication');
+    return {idle:true};
+  }
+  async teamUniverseSet(expected,value) {
+    if(!(expected===null || hexOK(expected)) || !value || typeof value!=='object') refuse('team_universe_pin_invalid');
+    // Caller also checks before acquiring; repeat under the exact existing fenced lease.
+    await this.assertLease();await this.teamUniverseIdle();
+    if(value.enabled!==false) {
+      const problem=tuPinProblem(value);if(problem) refuse(problem);
+      const object=await this.teamUniverseObjectGet(value.sha256,value.generation,value.bytes);
+      let exportValue;try {exportValue=JSON.parse(Buffer.from(object.data,'base64').toString('utf8'));} catch {refuse('team_universe_export_invalid');}
+      if(exportValue?.schema_version!==TU_EXPORT || ['ranked_sha256','audit_sha256','scope_sha256','assessed_on'].some(k=>exportValue.manifest?.[k]!==value[k]))
+        refuse('team_universe_export_binding_invalid');
+    }
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();await this.publicationFence(tx,control);
+      const prior=control.team_universe;
+      if((prior?.sha256 ?? null)!==expected) refuse('team_universe_pin_conflict');
+      if(value.enabled===false) {
+        if(!prior || valueHash({...prior,enabled:false})!==valueHash(value)) refuse('team_universe_pin_invalid');
+      } else {
+        const problem=tuPinProblem(value);if(problem) refuse(problem);
+        const history=await tx.get(this.db.collection(`${ROOT}/teamUniversePins`).limit(10001));
+        if(history.docs.length>10000) refuse('team_universe_pin_history_limit');
+        const version=history.docs.reduce((max,d)=>Math.max(max,d.data().version ?? 0),0);
+        if(value.version!==Math.max(version,prior?.version ?? 0)+1) refuse('team_universe_pin_version_conflict');
+        const ref=this.db.doc(`${ROOT}/teamUniversePins/${value.version}`);
+        if((await tx.get(ref)).exists) refuse('team_universe_pin_conflict');
+        tx.set(ref,{...value,recorded_at:new Date(this.clock()).toISOString()});
+      }
+      tx.set(this.control,{team_universe:value},{merge:true});
+      return {enabled:value.enabled,sha256:value.sha256,version:value.version,generation:value.generation};
+    });
+  }
   suFile(hash,generation=null) {
     if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('site_universe_object_unavailable');
     return this.archiveBucket.file(`${SU_PREFIX}${hash}/${SU_NAME}`,generation===null?undefined:{generation});
@@ -1127,6 +1330,207 @@ export class Store {
       tx.set(this.control,{...control,outreach_ready:{enabled:true,current:entry}});
       return {enabled:true,sha256:entry.sha256,generation:entry.generation,version:entry.version};
     });
+  }
+  // --- host-owned site-screen admission (screen_admission.py) ---------------------------------------------------
+  saFile(hash,generation=null) {
+    if(!this.archiveBucket || this.archiveBucket.name!==CLEANUP_BUCKET) refuse('screen_admission_object_unavailable');
+    return this.archiveBucket.file(`${SA_PREFIX}${hash}/${SA_NAME}`,generation===null?undefined:{generation});
+  }
+  async saRead(hash,generation,size) {
+    // Exactly the pinned generation: generation, size and SHA-256 before any use.
+    const missing=error=>Number(error?.code)===404?'screen_admission_object_missing':'screen_admission_object_unavailable';
+    const file=this.saFile(hash,generation);let meta,raw;
+    try {[meta]=await file.getMetadata();} catch(error) {refuse(missing(error));}
+    if(String(meta?.generation)!==generation) refuse('screen_admission_object_generation_mismatch');
+    const stored=Number(meta?.size);
+    if(!Number.isSafeInteger(stored) || stored<1 || stored>SA_MAX_OBJECT) refuse('screen_admission_object_too_large');
+    if(size!==null && stored!==size) refuse('screen_admission_object_digest_mismatch');
+    try {[raw]=await file.download();} catch(error) {refuse(missing(error));}
+    if(!Buffer.isBuffer(raw) || raw.length!==stored || sha(raw)!==hash) refuse('screen_admission_object_digest_mismatch');
+    return {uri:saUri(hash),sha256:hash,generation,size:raw.length,data:raw.toString('base64')};
+  }
+  async screenAdmissionObjectGet(hash,generation,size) {
+    if(!hexOK(hash) || !suGeneration(generation) || !(size===null || suInt(size,1,SA_MAX_OBJECT)))
+      refuse('screen_admission_pin_invalid');
+    return saBounded(()=>this.saRead(hash,generation,size),this.screenAdmissionReadMs);
+  }
+  saRef(id) {return this.db.doc(`${ROOT}/screenAdmissions/${id}`);}
+  saSummary(meta) {
+    if(!meta) return null;
+    return {state:meta.claimed && meta.state!=='acknowledged'?'claimed':meta.state,claimed:!!meta.claimed,
+      rows:meta.rows ?? null,duplicates:meta.duplicates ?? null};
+  }
+  async screenAdmissionGet(id) {
+    if(!hexOK(id)) refuse('screen_admission_id_invalid');
+    const snap=await this.saRef(id).get();
+    return snap.exists?this.saSummary(snap.data()):null;
+  }
+  async screenAdmissionHistory() {
+    // Earlier admissions for the worker's dedupe: only acknowledged ones wrote rows; any other row is in the CRM itself.
+    const snaps=await this.db.collection(`${ROOT}/screenAdmissions`).limit(1001).get();
+    if(snaps.docs.length>1000) refuse('screen_admission_history_limit');
+    return snaps.docs.filter(s=>s.data().state==='acknowledged').map(s=>({admission_id:s.id,state:'acknowledged',
+      site_keys:s.data().site_keys || [],identities:s.data().identities || []}));
+  }
+  async screenAdmissionSet(expected,value,supersedeUncertain=false) {
+    // The only writer of control.screen_admission: a compare-and-swap under the fenced lease. A new pin names exactly
+    // an uploaded generation; the same pin may only be braked or re-enabled. A pin whose claimed write has no readback
+    // is replaced only with the owner's explicit supersede flag.
+    if(!(expected===null || hexOK(expected)) || typeof supersedeUncertain!=='boolean') refuse('screen_admission_request_invalid');
+    const problem=saPinProblem(value);
+    if(problem) refuse(problem);
+    const c=value.current,fresh=expected===null || c.admission_id!==expected;
+    if(fresh) {
+      if(!value.enabled) refuse('screen_admission_pin_invalid');
+      await this.screenAdmissionObjectGet(c.admission_id,c.generation,c.bytes);
+    }
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
+      const prior=control.screen_admission ?? null;
+      if((prior?.current?.admission_id ?? null)!==expected) refuse('screen_admission_control_conflict');
+      const meta=prior && fresh?(await tx.get(this.saRef(prior.current.admission_id))).data():null;
+      if(!fresh && valueHash(prior.current)!==valueHash(c)) refuse('screen_admission_control_conflict');
+      if(meta?.claimed && meta.state!=='acknowledged' && !supersedeUncertain) refuse('screen_admission_current_write_uncertain');
+      tx.set(this.control,{...control,screen_admission:value});
+      return {enabled:value.enabled,admission_id:c.admission_id,generation:c.generation};
+    });
+  }
+  saDirectionRecord(control) {
+    const entry=control.outreach_ready.current,d=entry.direction,s=d.scope;
+    return {sha256:entry.sha256,generation:entry.generation,uri:entry.uri,version:entry.version,rule_version:d.rule_version,
+      paths:[...s.paths],label:s.label,max_rows_per_batch:s.max_rows_per_batch,sends_authorized:false,
+      effective_from:d.effective_from,expires_at:d.expires_at,approval_reference:d.approval_reference};
+  }
+  screenGate(control,request) {
+    // The live pin and the live owner direction, rechecked before every plan, claim and write: the brake on either
+    // stops the admission at once (a claimed write is only read back).
+    const pin=control?.screen_admission,c=pin?.current;
+    if(saPinProblem(pin) || pin.enabled!==true || c.admission_id!==request.admission_id || c.generation!==request.generation)
+      refuse('screen_admission_not_pinned');
+    const or=control.outreach_ready,entry=or?.current,d=entry?.direction;
+    if(or?.enabled!==true || !d || orDirectionProblem(d,control) || pythonHash(d)!==entry.sha256 || entry.sha256!==c.direction_sha256
+        || valueHash(this.saDirectionRecord(control))!==valueHash(request.direction ?? null)) refuse('screen_admission_direction_changed');
+    if(!d.scope.paths.includes('site_screen')) refuse('screen_admission_path_not_directed');
+    const now=this.clock();
+    if(!(paidStamp(d.effective_from)<=now && now<paidStamp(d.expires_at))) refuse('screen_admission_direction_expired');
+  }
+  saBundleBinding(bundle,payload) {
+    // Every row the worker asks for comes from the pinned bundle: each result is written or named a duplicate, and each
+    // entry repeats its result's digest, candidate, question and recipient cells exactly.
+    const results=Array.isArray(bundle?.results)?bundle.results:[],named=new Map(results.map(r=>[r?.site_key,r]));
+    const listed=[...payload.entries.map(e=>e.site_key),...payload.duplicates.map(d=>d.site_key)];
+    if(results.length!==listed.length || new Set(listed).size!==listed.length || listed.some(key=>!named.has(key)))
+      refuse('screen_admission_payload_binding_invalid');
+    for(const entry of payload.entries) {
+      const r=named.get(entry.site_key),c=r.candidate || {};
+      if(entry.result_digest!==r.result_digest || entry.question!==r.hypothesis?.question
+          || ['organization','site','location','task','task_url','checked_on'].some(key=>entry[key]!==c[key])
+          || valueHash(entry.contact)!==valueHash(saContactCells(r.recipient))) refuse('screen_admission_payload_binding_invalid');
+    }
+  }
+  async saPut(ref,state,status,expected) {
+    const hash=await this.blobPut(Buffer.from(JSON.stringify(state)).toString('base64'));
+    const fields={admission_id:state.admission_id,blob:hash,state:status,claimed:null,
+      site_keys:state.payload.entries.map(e=>e.site_key),identities:state.payload.entries.map(e=>e.identity),
+      rows:state.plan.sheet_rows.length,duplicates:state.payload.duplicates.length,updated_at:new Date(this.clock()).toISOString()};
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
+      const prior=(await tx.get(ref)).data();
+      if((prior?.blob ?? null)!==expected || prior?.claimed) refuse('screen_admission_state_changed');
+      tx.set(ref,fields);
+    });
+    return fields;
+  }
+  async screenAdmissionPublish(request) {
+    await this.assertLease();
+    await this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data();await this.publicationFence(tx,control);
+    });
+    const id=request?.admission_id,generation=request?.generation;
+    if(!hexOK(id) || !suGeneration(generation) || !request.direction || typeof request.direction!=='object'
+        || request.payload!==undefined && !hexOK(request.crm_values_sha256)) refuse('screen_admission_request_invalid');
+    if(typeof this.publisher?.prepareScreen!=='function') refuse('screen_admission_publisher_unavailable');
+    const control=(await this.control.get()).data(); this.fence(control); this.screenGate(control,request);
+    const ref=this.saRef(id),counts=meta=>({rows:meta.rows,duplicates:meta.duplicates});
+    let meta=(await ref.get()).data() || null;
+    if(meta?.state==='acknowledged') return {state:'acknowledged',...counts(meta)};
+    let state=meta?JSON.parse(Buffer.from(await this.blobGet(meta.blob),'base64').toString('utf8')):null;
+    if(state && (state.schema_version!==SA_STATE || state.admission_id!==id || state.generation!==generation))
+      refuse('screen_admission_state_invalid');
+    if(!meta || meta.state==='replan' && !meta.claimed) {
+      if(request.payload===undefined) refuse('screen_admission_payload_required');
+      const problem=screenPayloadProblem(request.payload,id);
+      if(problem) refuse(problem);
+      const object=await this.screenAdmissionObjectGet(id,generation,null);
+      let bundle;try {bundle=JSON.parse(Buffer.from(object.data,'base64').toString('utf8'));} catch {refuse('screen_admission_bundle_invalid');}
+      this.saBundleBinding(bundle,request.payload);
+      const bundleBlob=await this.blobPut(object.data);
+      let plan;
+      try {plan=await this.publisher.prepareScreen(request.payload,request.crm_values_sha256);}
+      catch(error) {throw new Refusal(saCode(error?.message) || /^publication_[a-z_]+$/.test(error?.message || '')?error.message:'screen_admission_plan_unavailable');}
+      state={schema_version:SA_STATE,admission_id:id,generation,bundle_blob:bundleBlob,direction:request.direction,
+        approval_reference:control.screen_admission.current.approval_reference,payload:request.payload,plan,
+        planned_at:new Date(this.clock()).toISOString()};
+      meta=await this.saPut(ref,state,'planned',meta?.blob ?? null);
+    }
+    const pending={state:'write_uncertain',...counts(meta)};
+    let receipt;
+    try {receipt=await this.publisher.reconcileScreen(state.payload,state.plan);}
+    catch(error) {throw new Refusal(/^(?:publication|screen_admission)_[a-z_]+$/.test(error?.message || '')?error.message:'screen_admission_readback_unavailable');}
+    if(!receipt) {
+      if(meta.claimed) return pending;  // A claimed write is reconciled by reading only, never written again.
+      // Before the claim: the CRM must still be exactly the plan's; otherwise a fresh plan, since nothing was written.
+      const current=await this.crmReader();
+      if(valueHash(current?.values ?? null)!==valueHash(state.plan.crm_values)) {
+        await this.transaction(async tx=>{
+          const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
+          const now=(await tx.get(ref)).data();
+          if(now?.blob!==meta.blob || now.claimed) refuse('screen_admission_state_changed');
+          tx.set(ref,{state:'replan'},{merge:true});
+        });
+        return {state:'replan_required',...counts(meta)};
+      }
+      await this.transaction(async tx=>{
+        const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control); this.screenGate(control,request);
+        const now=(await tx.get(ref)).data();
+        if(now?.blob!==meta.blob || now.claimed || now.state!=='planned') refuse('screen_admission_state_changed');
+        tx.set(ref,{claimed:state.plan.request_digest,claimed_at:new Date(this.clock()).toISOString()},{merge:true});
+      });
+      // One write; whatever it answers, the outcome is then only read back (a lost reply may still have landed).
+      try {
+        await this.publisher.writeScreen(state.payload,state.plan,{beforeWrite:async()=>{
+          await this.transaction(async tx=>{
+            const control=(await tx.get(this.control)).data();await this.publicationFence(tx,control);this.screenGate(control,request);
+          });
+        }});
+      } catch { /* uncertain until the readback shows the rows */ }
+      try {receipt=await this.publisher.reconcileScreen(state.payload,state.plan);} catch {return pending;}
+      if(!receipt) return pending;
+    }
+    const done={...state,receipt,acknowledged_at:new Date(this.clock()).toISOString()};
+    const hash=await this.blobPut(Buffer.from(JSON.stringify(done)).toString('base64'));
+    return this.transaction(async tx=>{
+      const control=(await tx.get(this.control)).data(); await this.publicationFence(tx,control);
+      const itemRef=this.db.doc(`${ROOT}/screenWorkItems/${id}`),now=(await tx.get(ref)).data(),item=await tx.get(itemRef);
+      if(now?.state==='acknowledged') return {state:'acknowledged',...counts(now)};
+      if(now?.blob!==meta.blob || item.exists) refuse('screen_admission_state_changed');
+      tx.set(ref,{...now,blob:hash,state:'acknowledged',acknowledged_at:done.acknowledged_at});
+      tx.set(itemRef,{schema_version:SA_WORK_ITEM,admission_id:id,stage:'completed',state_blob:hash,bundle_blob:state.bundle_blob,
+        sheets_receipt:receipt.reference,rows:now.rows,duplicates:now.duplicates,completed_at:done.acknowledged_at,
+        owner:'blueprint-communications-agent',scope:'hypothesis_draft_only_no_send',sends_authorized:false});
+      return {state:'acknowledged',...counts(now)};
+    });
+  }
+  async screenSnapshot(id) {
+    // The WebApp's read of one completed admission: the work item, the acknowledged state and the bundle bytes. Reads only.
+    if(!hexOK(id)) refuse('screen_admission_id_invalid');
+    const item=await this.db.doc(`${ROOT}/screenWorkItems/${id}`).get(),meta=(await this.saRef(id).get()).data();
+    if(!item.exists) refuse('screen_admission_work_item_missing');
+    if(meta?.state!=='acknowledged' || meta.blob!==item.data().state_blob) refuse('screen_admission_snapshot_binding_invalid');
+    const state=JSON.parse(Buffer.from(await this.blobGet(meta.blob),'base64').toString('utf8'));
+    if(state.admission_id!==id || state.bundle_blob!==item.data().bundle_blob || state.bundle_blob!==id)
+      refuse('screen_admission_snapshot_binding_invalid');
+    return {schema_version:SA_SNAPSHOT,admission_id:id,work_item:item.data(),state,bundle:await this.blobGet(state.bundle_blob)};
   }
   async workItem() {
     const queue=this.db.collection(`${ROOT}/workItems`);
@@ -1767,8 +2171,10 @@ export class Store {
         const value = request.value;
         if (value?.enabled !== false || value?.schema_version !== 'blueprint.research-control.v1') refuse('firestore_init_not_disabled');
         if (Object.hasOwn(value, 'paid_expansion')) refuse('paid_expansion_requires_direction_operation');
+        if (Object.hasOwn(value, 'team_universe')) refuse('team_universe_requires_pin_operation');
         if (Object.hasOwn(value, 'site_universe')) refuse('site_universe_requires_pin_operation');
         if (Object.hasOwn(value, 'outreach_ready')) refuse('outreach_ready_requires_direction_operation');
+        if (Object.hasOwn(value, 'screen_admission')) refuse('screen_admission_requires_pin_operation');
         return this.transaction(async tx => {
           const snap = await tx.get(this.control);
           if (snap.exists) refuse('firestore_control_already_exists');
@@ -1805,7 +2211,7 @@ export class Store {
           refuse('firestore_control_binding_invalid');
         return this.transaction(async tx => {
           const control = (await tx.get(this.control)).data(); this.fence(control);
-          // Only paid_expansion_set, site_universe_set and outreach_ready_set write their owner sections;
+          // Only paid_expansion_set, site_universe_set, outreach_ready_set and screen_admission_set write their owner sections;
           // a full replace keeps them.
           if (Object.hasOwn(value, 'paid_expansion') && valueHash(value.paid_expansion ?? null) !== valueHash(control.paid_expansion ?? null))
             refuse('paid_expansion_requires_direction_operation');
@@ -1813,14 +2219,20 @@ export class Store {
             refuse('site_universe_requires_pin_operation');
           if (Object.hasOwn(value, 'outreach_ready') && valueHash(value.outreach_ready ?? null) !== valueHash(control.outreach_ready ?? null))
             refuse('outreach_ready_requires_direction_operation');
-          const replacement = {...value}; delete replacement.paid_expansion; delete replacement.site_universe; delete replacement.outreach_ready;
+          if (Object.hasOwn(value, 'screen_admission') && valueHash(value.screen_admission ?? null) !== valueHash(control.screen_admission ?? null))
+            refuse('screen_admission_requires_pin_operation');
+          if (Object.hasOwn(value, 'team_universe') && valueHash(value.team_universe ?? null) !== valueHash(control.team_universe ?? null)) refuse('team_universe_requires_pin_operation');
+          const replacement = {...value}; delete replacement.team_universe; delete replacement.paid_expansion; delete replacement.site_universe; delete replacement.outreach_ready;
+          delete replacement.screen_admission;
           tx.set(this.control, {...replacement, cleanup_observation_required:control.cleanup_observation_required===true,
-            lease: control.lease, ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {}),
+            lease: control.lease, ...(control.team_universe ? {team_universe: control.team_universe} : {}), ...(control.paid_expansion ? {paid_expansion: control.paid_expansion} : {}),
             ...(control.site_universe ? {site_universe: control.site_universe} : {}),
-            ...(control.outreach_ready ? {outreach_ready: control.outreach_ready} : {})}); return true;
+            ...(control.outreach_ready ? {outreach_ready: control.outreach_ready} : {}),
+            ...(control.screen_admission ? {screen_admission: control.screen_admission} : {})}); return true;
         });
       }
-      case 'acquire': return this.acquire();
+      case 'acquire': return this.acquire(request.scope ?? null);
+      case 'communications_lap_idle': return this.communicationsLapIdle();
       case 'renew': return this.renew();
       case 'release': return this.release();
       case 'assert_lease': return this.assertLease();
@@ -1916,6 +2328,11 @@ export class Store {
       case 'paid_expansion_audit': return this.paidExpansionAudit();
       case 'paid_expansion_object_put': return this.paidExpansionObjectPut(request.sha256, request.bytes);
       case 'paid_expansion_object_get': return this.paidExpansionObjectGet(request.sha256);
+      case 'team_universe_snapshot': return this.teamUniverseSnapshot();
+      case 'team_universe_idle': return this.teamUniverseIdle();
+      case 'team_universe_object_get': return this.teamUniverseObjectGet(request.sha256,request.generation,request.size ?? null);
+      case 'team_universe_object_put': return this.teamUniverseObjectPut(request.sha256,request.bytes);
+      case 'team_universe_set': return this.teamUniverseSet(request.expected_sha256,request.value);
       case 'site_universe_object_get': return this.siteUniverseObjectGet(request.sha256,request.generation,request.size ?? null);
       case 'site_universe_object_put': return this.siteUniverseObjectPut(request.sha256,request.bytes);
       case 'site_universe_set': {
@@ -1928,6 +2345,15 @@ export class Store {
         if (!Object.hasOwn(request, 'expected_sha256')) refuse('outreach_ready_request_invalid');
         return this.outreachReadySet(request.expected_sha256, request.value);
       }
+      case 'screen_admission_object_get': return this.screenAdmissionObjectGet(request.sha256,request.generation,request.size ?? null);
+      case 'screen_admission_set': {
+        if (!Object.hasOwn(request, 'expected_admission_id')) refuse('screen_admission_request_invalid');
+        return this.screenAdmissionSet(request.expected_admission_id, request.value, request.supersede_uncertain ?? false);
+      }
+      case 'screen_admission_get': return this.screenAdmissionGet(request.admission_id);
+      case 'screen_admission_history': return this.screenAdmissionHistory();
+      case 'screen_admission_publish': return this.screenAdmissionPublish(request);
+      case 'screen_snapshot': return this.screenSnapshot(request.admission_id);
       default: refuse('firestore_operation_invalid');
     }
   }

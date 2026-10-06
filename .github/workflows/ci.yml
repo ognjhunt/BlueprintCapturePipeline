@@ -655,6 +655,7 @@ jobs:
 
   supply-chain:
     name: SBOM, license, and provenance contract
+    needs: [impacted-gate, lint, typecheck, sast, source-governance, dependency-security, container-contract]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -703,6 +704,39 @@ jobs:
             --output-dir "${{ runner.temp }}/blueprint-ci/supply-chain" \
             "${artifact_args[@]}"
 
+      - name: Checkout pinned public Contracts source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ognjhunt/BlueprintContracts
+          ref: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+          path: .source-contracts
+          persist-credentials: false
+
+      - name: Build canonical privileged source SHA256 manifest
+        id: source-manifest
+        run: |
+          manifest_sha256="$(uv run python scripts/release_source_manifest.py build \
+            --pipeline-root "${GITHUB_WORKSPACE}" \
+            --contracts-root "${GITHUB_WORKSPACE}/.source-contracts" \
+            --source-commit "${GITHUB_SHA}" \
+            --selector-output "${{ runner.temp }}/blueprint-ci/supply-chain/source-commit-selector.json" \
+            --output "${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json")"
+          printf 'sha256=%s\n' "${manifest_sha256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Keyless attest privileged source manifest on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: attest-source
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          # The selector's digest is derived from the exact commit, so public
+          # attestation lookup survives Actions artifact/run retention.
+          # Only strict verification of the manifest grants source admission.
+          subject-path: |
+            ${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json
+            ${{ runner.temp }}/blueprint-ci/supply-chain/source-commit-selector.json
+          predicate-path: ${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json
+          predicate-type: https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1
+
       - name: Keyless attest distribution provenance on main
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: attest-provenance
@@ -727,11 +761,28 @@ jobs:
         env:
           PROVENANCE_BUNDLE_PATH: ${{ steps.attest-provenance.outputs.bundle-path }}
           SBOM_BUNDLE_PATH: ${{ steps.attest-sbom.outputs.bundle-path }}
+          SOURCE_BUNDLE_PATH: ${{ steps.attest-source.outputs.bundle-path }}
         run: |
           cp "${PROVENANCE_BUNDLE_PATH}" \
             "${{ runner.temp }}/blueprint-ci/supply-chain/distribution-provenance.sigstore.json"
           cp "${SBOM_BUNDLE_PATH}" \
             "${{ runner.temp }}/blueprint-ci/supply-chain/distribution-sbom.sigstore.json"
+          cp "${SOURCE_BUNDLE_PATH}" \
+            "${{ runner.temp }}/blueprint-ci/supply-chain/source-provenance.sigstore.json"
+
+      # Optional short-lived evidence for people inspecting this run. Runtime
+      # admission obtains the bundle by its deterministic selector subject;
+      # neither this artifact name nor artifact availability grants authority.
+      - name: Publish public source attestation digest locator
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.attest-source.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-sha256-${{ github.sha }}-${{ steps.source-manifest.outputs.sha256 }}
+          path: |
+            ${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json
+            ${{ runner.temp }}/blueprint-ci/supply-chain/source-provenance.sigstore.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload supply-chain evidence
         if: always()

@@ -36,20 +36,29 @@ printf 200
     (fake / "sleep").chmod(0o755)
     env = {"PATH": f"{fake}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", "TEST_ROOT": str(tmp_path), "CUT": str(cut)}
     fragment = provider_output_upload_shell_fragment(scratch_root=str(tmp_path))
-    result = subprocess.run(["bash", "-c", fragment + 'blueprint_upload_put https://fixture.invalid "$1"',
+    consumer = '''blueprint_upload_put https://fixture.invalid "$1"; upload_rc=$?
+if [ "$upload_rc" = 0 ]; then
+  blueprint_upload_read_response || exit 86
+  blueprint_upload_cleanup || exit 86
+fi
+exit "$upload_rc"
+'''
+    result = subprocess.run(["bash", "-c", fragment + consumer,
         "test", str(source)], env=env, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "partial").read_bytes() == payload[:cut]
     assert (tmp_path / "delivered").read_bytes() == source.read_bytes() == payload
     assert hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(payload).digest()
     assert result.stdout.count(b"TRANSPORT_RETRY") == 1
-    assert (tmp_path / "blueprint_provider_upload_response.json").is_file()
+    [scratch] = tmp_path.glob('.blueprint-provider-upload.*')
+    assert scratch.stat().st_mode & 0o777 == 0o700
+    assert sum(p.stat().st_size for p in scratch.iterdir()) <= 3
 
 
 def test_acknowledgement_without_durable_completion_is_not_success(tmp_path):
     from tests.test_vast_provider_transfer_upload import _run_upload_with_fake_transport
-    (tmp_path / "blueprint_provider_upload_response.json").mkdir()
-    result, attempts = _run_upload_with_fake_transport(tmp_path=tmp_path, outcomes=[(0, "200")])
+    result, attempts = _run_upload_with_fake_transport(tmp_path=tmp_path, outcomes=[(0, "200")],
+        transport_environment={'BLUEPRINT_TEST_BLOCK_COMPLETION': '1'})
     assert "UPLOAD_RC:86" in result.stdout
     assert len(attempts) == 1
     assert (tmp_path / "provider-output.zip").read_bytes() == b"immutable-provider-output"

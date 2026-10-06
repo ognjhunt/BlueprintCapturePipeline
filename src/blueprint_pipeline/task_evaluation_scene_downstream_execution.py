@@ -148,7 +148,7 @@ def launches(context, activations, *, work_budget=None):
         work_budget = getattr(context, "work_budget", None)
     if work_budget is not None:
         _work(work_budget)
-    profiles, available_profiles, requests, request_launch, observations, bound = {}, {}, {}, {}, context.rows(), {}
+    profiles, available_profiles, request_index, request_launch, observations, bound = {}, {}, {}, {}, context.rows(), {}
     for row in (_work_items(context.decoded['launch_profiles'], work_budget) if work_budget is not None else context.decoded['launch_profiles']):
         profile, proof = row
         p = PurePosixPath(proof['path'])
@@ -198,7 +198,7 @@ def launches(context, activations, *, work_budget=None):
             kind = 'launch_workspace' if proof['path'] == launch_path else 'terminal_index_workspace'
             context.member(directory, kind, {'intent_id': context.intent_id, 'attempt_id': attempt,
                                              'launch_id': request['launch_id'], 'run_id': request['run_id']}, sources)
-        requests.setdefault(request['request_digest'], []).append(row)
+        request_index.setdefault(request['request_digest'], []).append(row)
         request_launch.setdefault(request['launch_id'], []).append(row)
         observations.append(c.observation(row, status='matched_retained_bytes' if reason is None else 'kept_unresolved', reason=reason,
                                           launch_id=request['launch_id'], run_id=request['run_id'], source_provenance=sources, **_work_kwargs(work_budget)))
@@ -218,7 +218,7 @@ def launches(context, activations, *, work_budget=None):
                                         'launch_receipt.json', **_work_kwargs(work_budget)), 'launch_receipt_identity_invalid', **_work_kwargs(work_budget))
         for field in (_work_items(('request_digest', 'launch_profile_digest'), work_budget) if work_budget is not None else ('request_digest', 'launch_profile_digest')):
             c.require(c.matches(value.get(field), **_work_kwargs(work_budget)), 'launch_receipt_invalid', **_work_kwargs(work_budget))
-        selected = requests.get(value['request_digest'], [])
+        selected = request_index.get(value['request_digest'], [])
         for request, _ in (_work_items(selected, work_budget) if work_budget is not None else selected):
             c.require(all(value.get(k) == request[k] for k in (_work_items(('launch_id', 'run_id', 'source_commit', 'launch_profile_digest'), work_budget) if work_budget is not None else ('launch_id', 'run_id', 'source_commit', 'launch_profile_digest')))
                       and proof['path'] == c.child(context.roots['launch_execution_root'], request['launch_id'], 'launch_receipt.json', **_work_kwargs(work_budget)), 'launch_receipt_identity_invalid', **_work_kwargs(work_budget))

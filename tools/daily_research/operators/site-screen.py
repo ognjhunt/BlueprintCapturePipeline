@@ -6,23 +6,34 @@ pins, the spend journal and the ledgers. collect reads run status and results (r
 verify reads the cited public pages and summary reads the out dir. The out dir must be on durable storage
 outside every repository and outside /tmp. run and contact refuse on the daily worker. Output is counts
 and stable codes only, never site names, people or addresses. The key comes from PARALLEL_API_KEY, or
-from --key-file (KEY=VALUE lines); it is never printed or written. No CRM write, draft or send.
+from --key-file (KEY=VALUE lines); it is never printed or written. None of these writes a CRM, drafts or sends.
+
+The host-owned admission (tools/daily_research/screen_admission.py) moves outreach-ready records into the CRM as
+Hypothesis rows and on to WebApp drafting; nothing sends. admit runs on the owner's machine: a dry run unless
+--apply, which keeps the bundle in the out dir, uploads it create-only with the owner's existing gcloud login and
+reads it back. admission-show, admission-pin and admission-disable run in the Render worker shell with the existing
+worker identity: show only reads; pin and disable are dry runs unless --apply and write only control.screen_admission
+through the fenced compare-and-swap. The worker writes the rows itself, only while the daily work is idle.
 """
 import argparse
+import re
 import time
 from pathlib import Path
 
-from tools.daily_research import site_screen
+from tools.daily_research import screen_admission, site_screen
+from tools.daily_research.runner import Refusal
 from tools.daily_research.site_screen import ScreenError
 
-OK_STATES = frozenset({"planned", "complete", "pending"})
+OK_STATES = frozenset({"planned", "complete", "pending", "uploaded", "pinned", "disabled", "already_disabled", "unset",
+                       "enabled"})
+ADMISSION_COMMANDS = frozenset({"admission-show", "admission-pin", "admission-disable"})
 
 
 api_key = site_screen.read_api_key  # PARALLEL_API_KEY from --key-file, else from the environment.
 
 
 def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time.monotonic, sleep=time.sleep,
-         today=None):
+         today=None, bridge_factory=None, objects=None, clock=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     planner = commands.add_parser("plan", help="Count sites, refusals and cost in one input file")
@@ -56,7 +67,30 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
     for name, text in (("verify", "Check every quote against its cited page"),
                        ("summary", "Counts by field, check, tier and recipient, and cost")):
         commands.add_parser(name, help=text).add_argument("--out", required=True, type=Path)
+    admitter = commands.add_parser("admit", help="Build an admission bundle of outreach-ready sites; upload it with --apply")
+    admitter.add_argument("--out", required=True, type=Path)
+    admitter.add_argument("--direction-sha256", required=True, help="control.outreach_ready sha256 (outreach-ready-direction.py show)")
+    admitter.add_argument("--direction-generation", required=True, help="Its object generation (the same show)")
+    admitter.add_argument("--per-focus", type=int, default=screen_admission.DEFAULT_PER_FOCUS,
+                          help="At most this many sites per task family (default 2)")
+    admitter.add_argument("--keys", help="Exactly these comma-separated site keys instead of --per-focus")
+    admitter.add_argument("--max-records", type=int, default=screen_admission.MAX_RECORDS)
+    admitter.add_argument("--apply", action="store_true")
+    commands.add_parser("admission-show", help="The pinned admission, its object, direction and state (worker shell)")
+    pinner = commands.add_parser("admission-pin", help="Pin one uploaded bundle (worker shell); a dry run unless --apply")
+    pinner.add_argument("--admission-id", required=True)
+    pinner.add_argument("--generation", required=True)
+    pinner.add_argument("--approval-reference", required=True, help="The owner decision record")
+    pinner.add_argument("--expect-current", help="Current admission id from admission-show, or none")
+    pinner.add_argument("--supersede-uncertain", action="store_true",
+                        help="Replace a pinned admission whose claimed write was never read back")
+    pinner.add_argument("--during-active-run", action="store_true")
+    pinner.add_argument("--apply", action="store_true")
+    commands.add_parser("admission-disable", help="The brake (worker shell); a dry run unless --apply").add_argument(
+        "--apply", action="store_true")
     args = parser.parse_args(argv)
+    if args.command in ADMISSION_COMMANDS:
+        return admission_command(args, bridge_factory=bridge_factory, clock=clock, sleep=sleep, monotonic=monotonic)
 
     def client():
         key = api_key(args.key_file, environ)
@@ -86,17 +120,56 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
                                      wait_seconds=args.wait_seconds, monotonic=monotonic, sleep=sleep)
     elif args.command == "verify":
         result = site_screen.verify(site_screen.Workspace(args.out), reader=reader, today=today)
+    elif args.command == "admit":
+        keys = screen_admission.parse_keys(args.keys) if args.keys is not None else None
+        result = screen_admission.admit(site_screen.Workspace(args.out), direction_sha256=args.direction_sha256,
+                                        direction_generation=args.direction_generation, per_focus=args.per_focus,
+                                        keys=keys, max_records=args.max_records, apply=args.apply, objects=objects)
     else:
         result = site_screen.summary(site_screen.Workspace(args.out))
     print(site_screen.canonical(result))
     return result
 
 
+def admission_command(args, *, bridge_factory=None, clock=None, sleep=time.sleep, monotonic=time.monotonic):
+    """The worker-shell admission commands, through the existing worker identity (the bridge)."""
+    from datetime import datetime, timezone
+
+    # The worker's bridge, only for these commands.
+    from tools.daily_research.firestore import Bridge
+
+    now = (clock or (lambda: datetime.now(timezone.utc)))()
+    bridge = (bridge_factory or Bridge)()
+    try:
+        if args.command == "admission-show":
+            result = screen_admission.show(bridge, now=now)
+        elif args.command == "admission-pin":
+            result = screen_admission.pin(bridge, admission_id=args.admission_id, generation=args.generation,
+                                          approval_reference=args.approval_reference, expect=args.expect_current,
+                                          supersede_uncertain=args.supersede_uncertain, apply=args.apply,
+                                          during_active_run=args.during_active_run, now=now, sleep=sleep,
+                                          monotonic=monotonic)
+        else:
+            result = screen_admission.disable(bridge, apply=args.apply, sleep=sleep, monotonic=monotonic)
+        print(site_screen.canonical(result))
+        return result
+    finally:
+        bridge.close()
+
+
+def error_code(error):
+    """A stable code for the command output: a site-screen or admission code, or a bridge refusal code."""
+    code = str(error)
+    if isinstance(error, (ScreenError, Refusal)) and re.fullmatch(r"[a-z][a-z_]{2,99}", code):
+        return code
+    return "site_screen_operation_unavailable"
+
+
 if __name__ == "__main__":
     try:
         outcome = main()
     except Exception as error:  # noqa: BLE001 - stable codes only; never provider, key or site text
-        code = str(error) if isinstance(error, ScreenError) else "site_screen_operation_unavailable"
+        code = error_code(error)
         print(site_screen.canonical({"state": "blocked", "error": code}))
         raise SystemExit(1) from None
     raise SystemExit(0 if outcome.get("state") in OK_STATES else 1)

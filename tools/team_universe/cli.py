@@ -79,6 +79,11 @@ def build_parser():
     ranker.add_argument("--config", type=Path, help="A blueprint.team-rank.v1 config (default: the reviewed one)")
     ranker.add_argument("--audit", type=Path,
                         help="Private blueprint.team-manual-eligibility-audit.v1; absent => no qualified teams")
+    exporter = commands.add_parser("export", help="Project the current reviewed qualification into private daily-agent evidence; offline")
+    exporter.add_argument("--out", required=True, type=Path)
+    exporter.add_argument("--audit", required=True, type=Path)
+    exporter.add_argument("--destination", required=True, type=Path)
+    exporter.add_argument("--config", type=Path)
     return parser
 
 
@@ -119,6 +124,17 @@ def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time
                             monotonic=monotonic, sleep=sleep)
     elif args.command == "verify":
         result = tu.verify(tu.TeamWorkspace(args.out), reader=reader, today=today)
+    elif args.command == "export":
+        from tools.team_universe import evidence_export
+        raw = evidence_export.build(tu.TeamWorkspace(args.out), read_file(args.audit, "team_universe_audit_unreadable"),
+            today=today, config_raw=read_file(args.config, "team_universe_rank_config_unreadable") if args.config else None)
+        # Exclusive private output, never overwrite raw/audit or an earlier export.
+        import os
+        ss.guard_out_dir(args.destination.parent)
+        descriptor = os.open(args.destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(raw)
+        result = {"command": "export", "state": "complete", "sha256": ss._sha256(raw), "bytes": len(raw)}
     elif args.command == "rank":
         config = read_file(args.config, "team_universe_rank_config_unreadable") if args.config else None
         weights_raw = read_file(args.family_weights, "team_universe_family_weights_unreadable")

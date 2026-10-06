@@ -18,7 +18,10 @@ import pytest
 
 import blueprint_pipeline.vast_provider_adapter as vpa
 import blueprint_pipeline.vast_cuda_runtime_probe as vcrp
-from blueprint_pipeline.vast_args_payload_transport import VAST_ARGS_GZIP_BASE64_MARKER
+from blueprint_pipeline.vast_args_payload_transport import (
+    VAST_ARGS_GZIP_BASE64_MARKER,
+    VAST_ARGS_STR_SAFE_MAX_BYTES,
+)
 from blueprint_pipeline.paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     build_paid_lane_admission,
@@ -3313,8 +3316,10 @@ def test_vast_adapter_mocked_isaac_uses_args_mode_required_env_and_disk(
             assert "onstart" not in payload
             assert "args" not in payload
             assert payload["args_str"].startswith("bash -lc ")
-            assert "BLUEPRINT_VAST_ISAAC_SMOKE_OK" in payload["args_str"]
-            assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in payload["args_str"]
+            assert len(payload["args_str"].encode("utf-8")) <= VAST_ARGS_STR_SAFE_MAX_BYTES
+            startup_program = _decoded_compressed_script(payload["args_str"])
+            assert "BLUEPRINT_VAST_ISAAC_SMOKE_OK" in startup_program
+            assert "BLUEPRINT_VAST_ARGS_LOG_HOLD_STARTED" in startup_program
             assert payload["env"]["ACCEPT_EULA"] == "Y"
             assert payload["env"]["PRIVACY_CONSENT"] == "Y"
             assert payload["env"]["NVIDIA_DRIVER_CAPABILITIES"] == "all"

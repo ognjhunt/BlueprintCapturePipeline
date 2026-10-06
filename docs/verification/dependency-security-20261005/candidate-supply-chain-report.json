@@ -1,0 +1,27 @@
+{
+  "artifact_subject_count": 2,
+  "blockers": [
+    "license_review_missing:anyio==4.14.2",
+    "license_review_missing:google-auth==2.58.0",
+    "license_review_missing:meta-sam-parser==0.0.5",
+    "license_review_missing:pyjwt==2.15.0",
+    "license_review_missing:urllib3==2.8.0",
+    "orphaned_license_review:anyio==4.14.1",
+    "orphaned_license_review:google-auth==2.55.2",
+    "orphaned_license_review:pyjwt==2.13.0"
+  ],
+  "claim_boundary": {
+    "container_signature_not_verified_by_this_command": true,
+    "deployed_digest_signature_and_sbom_match_require_live_release_evidence": true,
+    "provenance_is_unsigned_until_external_attestation": true,
+    "sbom_and_provenance_generated": false
+  },
+  "component_count": 95,
+  "generated_at": "2026-10-05T19:42:21.580812+00:00",
+  "image_digest": null,
+  "license_review_count": 95,
+  "repository_sha": "310c0373042f41c3a7e4da70a7da54fe79286ea6",
+  "schema_version": "blueprint.supply_chain_evidence.v1",
+  "signature_status": "external_signature_not_verified",
+  "status": "blocked"
+}

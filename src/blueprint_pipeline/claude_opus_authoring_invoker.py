@@ -48,6 +48,7 @@ _US_GEO_MULTIPLIER = 1.1
 _MAX_IMAGE_TOKENS = 4_784
 _FIXED_INPUT_MARGIN_TOKENS = 4_096
 _MAX_REQUEST_BYTES = 30_000_000  # under the provider's 32 MB request ceiling
+_MAX_MESSAGE_RESPONSE_BYTES = 8 * 1024 * 1024
 _MODEL_INPUT_CONTEXT_TOKENS = 1_000_000
 _UNSUPPORTED_OUTPUT_CONSTRAINTS = frozenset({
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
@@ -57,6 +58,61 @@ _UNSUPPORTED_OUTPUT_CONSTRAINTS = frozenset({
 
 class ClaudeAuthoringBlocked(RuntimeError):
     """The provider, rights, spend, or output boundary failed closed."""
+
+
+class _NoProviderRedirects(urllib_request.HTTPRedirectHandler):
+    def http_error_302(self, req, fp, code, msg, headers):
+        # Refuse without draining an unbounded redirect body or retaining its
+        # socket; opener.open raises before the response context is entered.
+        try:
+            fp.close()
+        finally:
+            raise ClaudeAuthoringBlocked("claude_provider_redirect_refused")
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+def _request_json(req: urllib_request.Request, *, timeout: int,
+                  maximum_bytes: int) -> Mapping[str, Any]:
+    # These two adapters have fixed contracts. Never forward their credentials
+    # to a redirect or a caller-selected host, path, query, or HTTP method.
+    endpoints = {
+        "POST": "https://api.anthropic.com/v1/messages",
+        "GET": f"https://api.anthropic.com/v1/models/{MODEL}",
+    }
+    endpoint = endpoints.get(req.get_method())
+    if endpoint is None or req.full_url != endpoint:
+        raise ClaudeAuthoringBlocked("claude_provider_endpoint_invalid")
+    opener = urllib_request.build_opener(_NoProviderRedirects())
+    with opener.open(req, timeout=timeout) as response:
+        if response.geturl() != endpoint or not 200 <= response.getcode() < 300:
+            raise ClaudeAuthoringBlocked("claude_provider_response_invalid")
+        length = response.headers.get("Content-Length")
+        if length is not None:
+            if not re.fullmatch(r"[0-9]{1,10}", length):
+                raise ClaudeAuthoringBlocked("claude_provider_response_invalid")
+            expected_bytes = int(length)
+            if expected_bytes > maximum_bytes:
+                raise ClaudeAuthoringBlocked("claude_provider_response_bytes_exceeded")
+        else:
+            expected_bytes = None
+        body = bytearray()
+        while True:
+            chunk = response.read(min(64 * 1024, maximum_bytes + 1 - len(body)))
+            if not chunk:
+                break
+            body.extend(chunk)
+            if len(body) > maximum_bytes:
+                raise ClaudeAuthoringBlocked("claude_provider_response_bytes_exceeded")
+        if expected_bytes is not None and len(body) != expected_bytes:
+            raise ClaudeAuthoringBlocked("claude_provider_response_truncated")
+        try:
+            value = json.loads(body)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise ClaudeAuthoringBlocked("claude_provider_response_invalid") from None
+        if not isinstance(value, dict):
+            raise ClaudeAuthoringBlocked("claude_provider_response_invalid")
+        return value
 
 
 @dataclass(frozen=True)
@@ -103,12 +159,11 @@ def _post_message(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
         raise ClaudeAuthoringBlocked("claude_request_bytes_exceeded")
     req = urllib_request.Request(_API_URL, data=body, method="POST", headers={
         "content-type": "application/json", "anthropic-version": "2023-06-01",
-        "x-api-key": key,
     })
+    req.add_unredirected_header("x-api-key", key)
     # urllib has no automatic model retry. Unknown outcomes retain the full
     # reservation and must be reconciled before any same-identity replay.
-    with urllib_request.urlopen(req, timeout=600) as response:
-        return json.load(response)
+    return _request_json(req, timeout=600, maximum_bytes=_MAX_MESSAGE_RESPONSE_BYTES)
 
 
 @contextmanager

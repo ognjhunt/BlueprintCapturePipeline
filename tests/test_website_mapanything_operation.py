@@ -130,7 +130,7 @@ def test_bootstrap_installs_only_bundle_bound_runtime_files(packet, tmp_path, mo
     receipt_path = tmp_path / "receipt.json"
     write_json(receipt_path, receipt)
     source_paths = {"https://transport.example/receipt": receipt_path, "https://transport.example/bundle": bundle}
-    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda url, **_kwargs: source_paths[url].open("rb"))
+    monkeypatch.setattr(bootstrap, "open_artifact_response", lambda url, **_kwargs: source_paths[url].open("rb"))
     for name, value in {
         "BLUEPRINT_RECONSTRUCTION_INPUT_RECEIPT_GET_URL": "https://transport.example/receipt",
         "BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_GET_URL": "https://transport.example/bundle",
@@ -160,12 +160,13 @@ def test_bootstrap_failure_upload_is_bound_and_does_not_send_signed_url(monkeypa
 
     captured = []
     class Response:
+        status = 200
         def __enter__(self):
             return self
         def __exit__(self, *_args):
             return None
-    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda request, **_kwargs: (
-        captured.append(request) or Response()))
+    monkeypatch.setattr(bootstrap.urllib.request,"build_opener",lambda *args:type('Opener',(),{
+        'open':staticmethod(lambda request,**_kwargs:captured.append(request) or Response())})())
     monkeypatch.setenv("BLUEPRINT_RECONSTRUCTION_OUTPUT_BUNDLE_PUT_URL", "https://objects.example/put?secret=hidden")
     monkeypatch.setenv("BLUEPRINT_RECONSTRUCTION_OPERATION_REQUEST_DIGEST", DIGEST)
     monkeypatch.setenv("BLUEPRINT_RECONSTRUCTION_INPUT_BUNDLE_DIGEST", DIGEST)

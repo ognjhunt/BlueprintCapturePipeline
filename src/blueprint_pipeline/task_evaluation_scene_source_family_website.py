@@ -299,17 +299,17 @@ def publication(context, old, *, work_budget=None):
     receipts = context.known('submission_publications', 'task_evaluation_scene_configuration_submission_publication.v1', 'receipt_digest')
     rows = context.rows()
     bound = {r['workspace_path']: r for r in (_work_items(old['seed']['source_attempt_obligations'], work_budget) if work_budget is not None else old['seed']['source_attempt_obligations']) if r['seed_disposition'] == 'matched_retained_bytes'}
-    manifests, requests = {}, {}
+    manifests, request_index = {}, {}
     for row in (_work_items(context.decoded['source_submissions'], work_budget) if work_budget is not None else context.decoded['source_submissions']):
         schema = row[0].get('schema_version')
         if schema == 'task_evaluation_scene_configuration_submission_manifest.v1' and 'files' in row[0]:
             inventory, prefix = _manifest(context, row, **_work_kwargs(work_budget))
             manifests.setdefault((row[1]['sha256'], row[0]['manifest_digest']), []).append((row, inventory, prefix))
         elif schema == 'task_evaluation_launch_preparation_request.v1':
-            requests.setdefault((_work_call(work_budget, c.canonical_digest, row[0]) if work_budget is not None else c.canonical_digest(row[0])), []).append(row)
+            request_index.setdefault((_work_call(work_budget, c.canonical_digest, row[0]) if work_budget is not None else c.canonical_digest(row[0])), []).append(row)
     for copies in (_work_items(manifests.values(), work_budget) if work_budget is not None else manifests.values()):
       for row, inventory, _ in (_work_items(copies, work_budget) if work_budget is not None else copies):
-        for request in (_work_items(requests.get(row[0]['request_digest'], []), work_budget) if work_budget is not None else requests.get(row[0]['request_digest'], [])):
+        for request in (_work_items(request_index.get(row[0]['request_digest'], []), work_budget) if work_budget is not None else request_index.get(row[0]['request_digest'], [])):
             if request[1]['path'].rsplit('/', 1)[0] != row[1]['path'].rsplit('/', 1)[0]:
                 continue
             stack = [request[0]]

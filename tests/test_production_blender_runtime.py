@@ -166,12 +166,11 @@ def test_changed_receipt_archive_identity_refused(tmp_path, monkeypatch):
 def test_download_enforces_stream_size_and_elapsed_time(tmp_path, monkeypatch):
     class Response(io.BytesIO):
         headers = {}
-    monkeypatch.setattr(runtime.urllib.request, "urlopen", lambda *a, **k: Response(b"12345"))
+    monkeypatch.setattr(runtime, "open_artifact_response", lambda *a, **k: Response(b"12345"))
     monkeypatch.setattr(runtime, "MAX_ARCHIVE_BYTES", 4)
     with pytest.raises(runtime.BlenderRuntimeError, match="download_size_limit"):
         runtime._download_archive("https://fixture.invalid", tmp_path / "size.xz")
-    ticks = iter([0, runtime.DOWNLOAD_TIMEOUT_SECONDS + 1])
-    monkeypatch.setattr(runtime.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(runtime, "artifact_deadline", lambda *a, **kw: 0.0)
     with pytest.raises(runtime.BlenderRuntimeError, match="download_time_limit"):
         runtime._download_archive("https://fixture.invalid", tmp_path / "time.xz")
 
@@ -179,12 +178,13 @@ def test_download_enforces_stream_size_and_elapsed_time(tmp_path, monkeypatch):
 def test_download_identifies_installer_to_official_server(tmp_path, monkeypatch):
     class Response(io.BytesIO):
         headers = {"Content-Length": "3"}
-    def urlopen(request, *, timeout):
-        assert request.full_url == runtime.ARCHIVE_URL
-        assert request.get_header("User-agent").startswith("BlueprintCapturePipeline/")
-        assert timeout == 30
+    def open_response(url, *, deadline, socket_timeout, headers):
+        assert url == runtime.ARCHIVE_URL
+        assert headers["User-Agent"].startswith("BlueprintCapturePipeline/")
+        assert 0 < deadline - runtime.time.monotonic() <= 600
+        assert socket_timeout == 30
         return Response(b"abc")
-    monkeypatch.setattr(runtime.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(runtime, "open_artifact_response", open_response)
     target = tmp_path / "archive.xz"
     runtime._download_archive(runtime.ARCHIVE_URL, target)
     assert target.read_bytes() == b"abc"

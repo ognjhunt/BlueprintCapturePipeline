@@ -18,13 +18,15 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Mapping
 
 from .company_policy_session_preparation import prepare_company_policy_session
 from .controlled_policy_configuration import canonical_request_digest
 from .controlled_policy_remote_sandbox import validate_remote_sandbox_bridge
+from .controlled_http_json import read_control_json
+from .bounded_policy_https_server import BoundedPolicyHTTPSServer, bound_policy_request_reads
 
 
 _JOB = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,191}$")
@@ -36,8 +38,8 @@ def _metadata_token() -> str:
         "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
         headers={"Metadata-Flavor": "Google"},
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        value = json.load(response)
+    value = read_control_json(request, origin="http://metadata.google.internal", method="GET",
+                              timeout=10, maximum_bytes=16_384)
     token = value.get("access_token")
     if value.get("token_type") != "Bearer" or not isinstance(token, str) or len(token) < 32:
         raise ValueError("policy_sandbox_manager_vm_identity_unavailable")
@@ -59,12 +61,14 @@ class FirewallLease:
     @staticmethod
     def _request(method: str, url: str, body: Mapping[str, Any] | None = None) -> dict[str, Any]:
         data = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+        if method not in {"GET", "PATCH"}:
+            raise ValueError("policy_sandbox_manager_compute_request_invalid")
         request = urllib.request.Request(url, method=method, data=data, headers={
-            "Authorization": "Bearer " + _metadata_token(),
             "Content-Type": "application/json",
         })
-        with urllib.request.urlopen(request, timeout=30) as response:
-            value = json.load(response)
+        request.add_unredirected_header("Authorization", "Bearer " + _metadata_token())
+        value = read_control_json(request, origin="https://compute.googleapis.com", method=method,
+                                  timeout=30, maximum_bytes=_MAX_BODY)
         if not isinstance(value, dict):
             raise ValueError("policy_sandbox_manager_compute_response_invalid")
         return value
@@ -271,6 +275,13 @@ class SandboxManager:
             "instance_id": instance_id, "outbound_ipv4": str(payload["outbound_ipv4"])}
 
     def _bridge_control(self, session: Path, route: str) -> dict[str, Any]:
+        if route not in {"abort", "terminal"}:
+            raise ValueError("policy_sandbox_manager_bridge_route_invalid")
+        port = self.settings["bridge_bind_port"]
+        if type(port) is str and re.fullmatch(r"[1-9][0-9]{0,4}", port):
+            port = int(port)
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("policy_sandbox_manager_bridge_port_invalid")
         manifest = validate_remote_sandbox_bridge(
             json.loads((session / "bridge-manifest.json").read_text()))
         binding = {key: manifest[key] for key in (
@@ -281,12 +292,12 @@ class SandboxManager:
         # public bridge address, so only its hostname check is inapplicable.
         context.check_hostname = False
         request = urllib.request.Request(
-            f"https://127.0.0.1:{self.settings['bridge_bind_port']}/v1/controlled-policy/{route}",
+            f"https://127.0.0.1:{port}/v1/controlled-policy/{route}",
             method="POST", data=json.dumps(binding, sort_keys=True).encode(),
-            headers={"Authorization": "Bearer " + manifest["bearer_token"],
-                     "Content-Type": "application/json"})
-        with urllib.request.urlopen(request, context=context, timeout=10) as response:
-            result = json.load(response)
+            headers={"Content-Type": "application/json"})
+        request.add_unredirected_header("Authorization", "Bearer " + manifest["bearer_token"])
+        result = read_control_json(request, origin=f"https://127.0.0.1:{port}", method="POST",
+                                   context=context, timeout=10, maximum_bytes=_MAX_BODY, direct=True)
         if not isinstance(result, dict):
             raise ValueError("policy_sandbox_manager_bridge_response_invalid")
         return result
@@ -317,6 +328,10 @@ def serve_manager(*, settings: Mapping[str, Any], token: str,
                   certificate: Path, private_key: Path, firewall: FirewallLease | None = None) -> None:
     manager = SandboxManager(settings, firewall=firewall)
     class Handler(BaseHTTPRequestHandler):
+        def setup(self) -> None:
+            super().setup()
+            bound_policy_request_reads(self)
+
         def log_message(self, *_args: Any) -> None:
             return
 
@@ -353,12 +368,11 @@ def serve_manager(*, settings: Mapping[str, Any], token: str,
             self.end_headers()
             self.wfile.write(data)
 
-    server = ThreadingHTTPServer((str(settings.get("bind_host", "0.0.0.0")),
-        int(settings.get("bind_port", 8444))), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(str(certificate), str(private_key))
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server = BoundedPolicyHTTPSServer((str(settings.get("bind_host", "0.0.0.0")),
+        int(settings.get("bind_port", 8444))), Handler, context=context)
     try:
         server.serve_forever()
     finally:

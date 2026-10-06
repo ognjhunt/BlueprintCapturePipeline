@@ -20,7 +20,7 @@ import tarfile
 import tempfile
 import time
 from typing import Callable
-import urllib.request
+from .artifact_http_transport import artifact_chunks, artifact_deadline, open_artifact_response
 
 VERSION = "5.2.1"
 ARCHIVE_NAME = f"blender-{VERSION}-linux-x64.tar.xz"
@@ -47,25 +47,22 @@ def _digest(path: Path) -> str:
     return result.hexdigest()
 
 
-def _download_archive(url: str, path: Path) -> None:
-    deadline = time.monotonic() + DOWNLOAD_TIMEOUT_SECONDS
-    size = 0
-    request = urllib.request.Request(url, headers={
-        "User-Agent": "BlueprintCapturePipeline/1.0 (portable Blender runtime installer)"
-    })
-    with urllib.request.urlopen(request, timeout=30) as response, path.open("xb") as output:
-        if int(response.headers.get("Content-Length", "0")) > MAX_ARCHIVE_BYTES:
-            raise BlenderRuntimeError("archive_download_size_limit")
-        while True:
-            if time.monotonic() > deadline:
-                raise BlenderRuntimeError("archive_download_time_limit")
-            chunk = response.read(1024**2)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > MAX_ARCHIVE_BYTES:
-                raise BlenderRuntimeError("archive_download_size_limit")
-            output.write(chunk)
+def _download_archive(url: str, path: Path, *, _deadline=None) -> None:
+    try:
+        deadline = artifact_deadline(DOWNLOAD_TIMEOUT_SECONDS,deadline=_deadline)
+        with open_artifact_response(url,deadline=deadline,socket_timeout=30,headers={
+            'User-Agent':'BlueprintCapturePipeline/1.0 (portable Blender runtime installer)'
+        }) as response, path.open('xb') as output:
+            if int(response.headers.get('Content-Length','0')) > MAX_ARCHIVE_BYTES:
+                raise BlenderRuntimeError('archive_download_size_limit')
+            for chunk in artifact_chunks(response,deadline=deadline,maximum_bytes=MAX_ARCHIVE_BYTES):
+                output.write(chunk)
+    except TimeoutError as exc:
+        raise BlenderRuntimeError('archive_download_time_limit') from exc
+    except ValueError as exc:
+        if str(exc) == 'artifact_stream_oversized':
+            raise BlenderRuntimeError('archive_download_size_limit') from exc
+        raise
 
 
 def _safe_extract(archive: Path, destination: Path) -> None:

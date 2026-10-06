@@ -994,17 +994,29 @@ repository root, with `--key-file` set to a private env file. Start with
 - A person counts only when the person quote (five words or more) contains the name
   and stands whole-word on our read of the person's page or in a provider excerpt
   cited for that same URL.
-- An email counts only when all of these hold (rule `blueprint.site-contact-rule.v2`):
+- An email counts only when all of these hold (rule `blueprint.site-contact-rule.v3`):
   it is one plain address on the operator's own domain or a subdomain of it, never a
   free-mail domain; its quote holds the exact address; and our own read of the cited
   page holds the quote and the whole address. A provider excerpt alone never counts.
   The operator's domain is that of the page whose proven quote names the operator in
-  the screen (the operator quote's URL), never the bare `website` answer, and never a
-  directory, data broker, job board or applicant tracking, social, map, newswire,
-  government, free-mail or LinkedIn host; the provider is told only that website. The
-  codes are `site_screen_email_free_mail`, `site_screen_operator_domain_unproven`,
-  `site_screen_email_off_operator_domain`, `site_screen_quote_lacks_address` and
-  `site_screen_address_not_on_source`.
+  the screen (the operator quote's URL; basis `operator_quote`), or (new in v3) the
+  registrable domain of the screen's `website` answer when our own read of a page on
+  that domain or a subdomain, cited by the screen or the contact stage, names the
+  operator in its prose (basis `website`; an address or link that spells the name does
+  not count). The bare `website` answer alone never counts, and a page elsewhere that
+  names the operator (news, a directory, a government record) sets no domain. Neither
+  basis is ever a directory, data broker, job board or applicant tracking, social, map,
+  newswire, government, free-mail or LinkedIn host; the provider is told only the
+  operator-quote website. Also new in v3: a quote of fewer than five words still proves
+  an address that stands as a whole token on our own read of its cited page on the
+  operator's domain; on any other page the five-word minimum stands, and person quotes
+  always keep it. The codes are `site_screen_email_free_mail`,
+  `site_screen_operator_domain_unproven`, `site_screen_email_off_operator_domain`,
+  `site_screen_quote_lacks_address` and `site_screen_address_not_on_source`.
+- A rule change recomputes records from stored results and page reads, but `collect`
+  removed every address a rule of its day discarded (below), so a later rule never
+  recovers one: those sites keep their discarded decision. `summary` counts
+  `email_reasons` and `operator_domain_basis`.
 - `collect` checks a completed contact result's email on our own read of its page
   before anything is stored. Then every address but a verified one is replaced by
   `[redacted-email]` in the stored result and page reads, so a discarded address is
@@ -1043,6 +1055,78 @@ repository root, with `--key-file` set to a private env file. Start with
   or addresses. The hermetic tests use a fake Task API transport and a fake page
   reader with synthetic sites.
 
+## Site-screen admission (host-owned, design section 3)
+
+Outreach-ready site-screen records move into the CRM as rows labelled Hypothesis and on
+to WebApp drafting (owner decisions 2026-10-05, company GCS
+`operations/recovery/2026-10-05/owner-decisions/owner-decision-screen-to-crm-and-contacts-20261005.json`
+and `owner-decision-first-outreach-batch-20261005.json`). Nothing sends: every bundle,
+row, work item and draft is `sends_authorized: false`, and every WebApp send path
+refuses a screen hypothesis. The code is `tools/daily_research/screen_admission.py`.
+
+```bash
+# 1. Render worker shell: a direction that names site_screen (until the expiry you set).
+PYTHONPATH=$RELEASE $PY $RELEASE/tools/daily_research/operators/outreach-ready-direction.py set --paths daily_qa,site_screen --approval-reference REF --apply
+PYTHONPATH=$RELEASE $PY $RELEASE/tools/daily_research/operators/outreach-ready-direction.py show   # sha256 and generation
+# 2. Owner's machine, from a checkout (the out dir is local): build, then upload with your own gcloud login.
+PYTHONPATH=. python tools/daily_research/operators/site-screen.py admit --out $OUT --direction-sha256 SHA --direction-generation GEN
+PYTHONPATH=. python tools/daily_research/operators/site-screen.py admit --out $OUT --direction-sha256 SHA --direction-generation GEN --apply
+# 3. Render worker shell, while the daily work is idle: pin the uploaded generation.
+PYTHONPATH=$RELEASE $PY $RELEASE/tools/daily_research/operators/site-screen.py admission-pin --admission-id ID --generation G --approval-reference REF
+PYTHONPATH=$RELEASE $PY $RELEASE/tools/daily_research/operators/site-screen.py admission-pin --admission-id ID --generation G --approval-reference REF --apply
+PYTHONPATH=$RELEASE $PY $RELEASE/tools/daily_research/operators/site-screen.py admission-show
+PYTHONPATH=$RELEASE $PY $RELEASE/tools/daily_research/operators/site-screen.py admission-disable --apply   # the brake
+```
+
+- `admit` selects outreach-ready screen records: at most `--per-focus` (default 2) per
+  task family, taking sites with a verified recipient first in the owner's order
+  (published person email; quoted person with a provider-verified email;
+  provider-sourced person, corroborated, then not; published team inbox; published
+  general inbox), then screen order; or exactly `--keys`. Each screen record, and its
+  contact record, is recomputed from the stored results and page reads and must equal
+  its derived record file (`screen_admission_record_mismatch`,
+  `screen_admission_contact_record_mismatch`); run `verify` after a rule change.
+- The bundle is canonical JSON: the direction (`sha256`, `generation`, `uri`), a
+  manifest (rules, the out dir's owner-ceiling digest, the selection) and at most 50
+  results. Each result has `result_digest` over its input, answers and checks, the
+  Parallel run id, each proving quote with the SHA-256 of the page text or excerpt that
+  holds it, the record's one question, and the chosen recipient with its label and
+  provenance (the published page and the operator-domain proof, or the provider's
+  `status`, `score`, `checked_at` and `request_digest`). `admission_id` is the SHA-256
+  of the bundle's bytes. Provider lookups use `contact_lookup.load` to recompute the current
+  records from the durable journal, then `choose_recipient` against the current contact.
+  FullEnrich's original `DELIVERABLE` status, unknown score, request/record/lookup digests,
+  and provider employment/source proof are retained; cached recipient JSON grants nothing.
+- `admit --apply` keeps the bundle write-once in `<out>/admissions/<id>.json`, uploads it
+  with `gcloud storage cp --if-generation-match=0` to
+  `gs://blueprint-8c1ca.appspot.com/operations/research/screen-admission/<id>/bundle.json`
+  and reads that generation back. No credential is created or moved: the upload uses
+  the owner's existing gcloud login, and the worker reads the object with its own
+  identity. Output is counts and digests only.
+- `admission-pin` reads exactly that generation through the bridge, runs this package's
+  loader (`load_bundle`: canonical bytes, digests, rules, questions, recipients) and the
+  live direction gate (enabled, the bundle's exact `sha256` and `generation`, naming
+  `site_screen`, effective and unexpired, `max_rows_per_batch` at least the batch), then
+  takes the fenced lease only for the `screen_admission_set` compare-and-swap and reads
+  control back. A pinned admission whose claimed write was never read back blocks a new
+  pin (`screen_admission_current_write_uncertain`) unless `--supersede-uncertain`.
+- The worker processes the pin from its scheduler only when no daily row, QA, repair or
+  publication is active or queued (`screen_admission_waiting`), under its lease. It
+  refreshes the canonical CRM, drops sites the CRM holds (`runner.keys` and the
+  publisher's structural rule) or an earlier acknowledged admission wrote, and the
+  bridge op `screen_admission_publish` plans the rows create-only, claims, writes once
+  and reads back. Each row is labelled `Hypothesis` (G), `Outreach-ready: operator,
+  site, task proven` (Q), carries the recipient with its label in E, F and H, and ends
+  M with `First email asks: <question>` and its marker `[screen:<id>;<result_digest>]`.
+  A CRM change before the claim makes a fresh plan (`screen_admission_replan_required`).
+  A claimed write the readback does not show stays `screen_admission_write_uncertain`
+  and is only read back, never written again.
+- The acknowledged admission writes `screenWorkItems/<id>`; the WebApp reads it with
+  `Store.screenSnapshot` (work item, acknowledged state with the plan and receipt, and
+  the bundle bytes from the blob store) and verifies every digest itself. The hermetic
+  tests use the real bridge with in-memory Firestore, a fake object store and a fake
+  CRM sheet; `tests/fixtures/daily_research/screen-admission-snapshot.json` is the
+  golden snapshot the WebApp tests copy.
 ## Contact lookup (FullEnrich)
 
 `contact-lookup.py` looks up a provider-verified work email for a real person at each

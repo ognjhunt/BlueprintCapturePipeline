@@ -1,0 +1,15 @@
+{
+  "README.md": "51d025e5152e2301ad38e13dcb6653d2b7ef172c1ecb632aad856a774864c305",
+  "anyio-4.14.2-LICENSE": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+  "anyio-4.14.2-metadata.json": "28b2fa6ecaf50ad9af58998d4e6b1a565a5a549b7d821877a8add901968e21df",
+  "before-dependency-security-gate.json": "32adaef53a9f822b15937ff2aaf099c556ce5075aa489b6aafcc353b7b23ff07",
+  "candidate-dependency-security-gate.json": "a4262e66dfcb9e3d0d7882ceee3abf1cc0bc8591c7776825549b7b076aa122e7",
+  "candidate-supply-chain-report.json": "1e38bf2cbc840b9a5309ff06b2eb4c882873ee85929006c10f7b3e435303eaf6",
+  "google-auth-2.58.0-LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "license-continuity.json": "e9d44509be74a86d40650c317f2ca0960991403aead9e18054788a9a2e744f4b",
+  "meta-sam-parser-0.0.5-LICENSE": "4dea99bfaa016e21bc860d73f344236bd1e5c4977d1a9a8fd32f822b500ae1be",
+  "pyjwt-2.15.0-LICENSE": "797a7a20231d4c433e9f1911db1731d06b5828b98f499819a034f7c0f56f5ce5",
+  "pyjwt-2.15.0-metadata.json": "421a498dfc51d8090944699f3c3fd08370f97337c000671cb7e8432ffebef391",
+  "urllib3-2.8.0-LICENSE.txt": "130e3a64d5fdd5d096a752694634a7d9df284469de86e5732100268041e3d686",
+  "urllib3-2.8.0-metadata.json": "ff63a67e088e124163a1bf44f437ae570656dce648193de428ed48222466506c"
+}

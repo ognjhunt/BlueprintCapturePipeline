@@ -29,7 +29,10 @@ def packaged(tmp_path, monkeypatch):
     def no_network(*args, **kwargs):
         pytest.fail("packaged runtime must never download")
     monkeypatch.setattr(blender, "_download_archive", no_network)
-    monkeypatch.setattr(blender.urllib.request, "urlopen", no_network)
+    def no_network_response(*args, **kwargs):
+        pytest.fail("packaged runtime must never open a network response")
+    # install_runtime's default downloader is bound before monkeypatching.
+    monkeypatch.setattr(blender, "open_artifact_response", no_network_response)
     package = tmp_path / "package"
     manifest = runtime.stage_blender_runtime_archive(archive, package)
     return SimpleNamespace(root=tmp_path, package=package, archive=archive, manifest=manifest)
@@ -38,6 +41,11 @@ def packaged(tmp_path, monkeypatch):
 def version_runner(argv, **kwargs):
     assert argv[1:] == ["--background", "--factory-startup", "--version"]
     return subprocess.CompletedProcess(argv, 0, stdout="Blender 5.2.1 LTS\n", stderr="")
+
+
+def test_packaged_network_guard_rejects_the_default_installer_download(packaged):
+    with pytest.raises(pytest.fail.Exception, match="must never open a network response"):
+        blender.install_runtime(packaged.root / "unpackaged-runtime", runner=version_runner)
 
 
 def test_packaged_archive_materializes_and_reuses_verified_version_receipt(packaged):

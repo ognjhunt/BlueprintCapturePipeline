@@ -41,7 +41,7 @@ def wam_terminal_diagnostic_shell_fragment() -> str:
         "PY\n"
         "early_zip_rc=$?; "
         'if [ $early_zip_rc -eq 0 ] && blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/wam_provider_runtime_output.zip"; then '
-        "echo BLUEPRINT_VAST_PROVIDER_EARLY_DIAGNOSTIC_UPLOAD_OK; "
+        "blueprint_upload_read_response || exit 86; blueprint_upload_cleanup || exit 86; echo BLUEPRINT_VAST_PROVIDER_EARLY_DIAGNOSTIC_UPLOAD_OK; "
         "else early_upload_rc=$?; echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:early_diagnostic_upload_failed:$early_upload_rc; fi; "
         "fi; "
     )
