@@ -29,6 +29,7 @@ and rents nothing.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import dataclasses
 import errno
@@ -3131,22 +3132,429 @@ _SCENE_RUNTIME_OWNER = 0
 _SCENE_RUNTIME_INSTALL_SECONDS = 900
 
 
+_SCENE_SOURCE_ATTESTATIONS = Path("/var/lib/blueprint/pipeline-control-plane/source-attestations")
+_SCENE_SOURCE_GH = Path("/usr/bin/gh")
+
+
+def _scene_source_delivery(source_commit: str, *, deadline: float) -> None:
+    """Acquire public proof as untrusted data; this function grants no admission."""
+    error = "deploy_scene_retirement_runtime_unproven"
+    repository = 'ognjhunt/BlueprintCapturePipeline'
+    predicate_type = 'https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1'
+    def require(value):
+        if not value:
+            raise ControlPlaneDeployError(error)
+    require(re.fullmatch('[0-9a-f]{40}', source_commit) is not None)
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, request, response, code, message, headers, url):
+            raise ControlPlaneDeployError(error)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    def fetch(suffix, cap):
+        require(time.monotonic() <= deadline)
+        url = 'https://api.github.com/repos/' + repository + suffix
+        request = urllib.request.Request(url, headers={'Accept':'application/vnd.github+json',
+            'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'Blueprint-source-admission'})
+        with opener.open(request, timeout=min(30, max(.001, deadline-time.monotonic()))) as response:  # nosec B310 - fixed public HTTPS API, no redirects/proxy/credentials, bounded data
+            require(response.status == 200 and response.url == url)
+            body = bytearray()
+            while True:
+                require(time.monotonic() <= deadline)
+                # Each blocking read shares the absolute deadline, including a
+                # slow peer that repeatedly delivers a tiny successful prefix.
+                if response.fp is None:
+                    break
+                response.fp.raw._sock.settimeout(min(30, max(.001, deadline-time.monotonic())))
+                chunk = response.read1(min(65536, cap+1-len(body)))
+                if not chunk:
+                    break
+                require(len(body)+len(chunk) <= cap)
+                body.extend(chunk)
+            require(time.monotonic() <= deadline)
+            return json.loads(body)
+    runs = fetch('/actions/workflows/ci.yml/runs?head_sha='+source_commit+'&event=push&status=success&per_page=20', 2*1024*1024)
+    require(type(runs) is dict and type(runs.get('workflow_runs')) is list)
+    matches = [row for row in runs['workflow_runs'] if type(row) is dict and row.get('head_sha') == source_commit
+        and row.get('head_branch') == 'main' and row.get('event') == 'push' and row.get('status') == 'completed'
+        and row.get('conclusion') == 'success' and row.get('path') == '.github/workflows/ci.yml'
+        and type(row.get('head_repository')) is dict and row['head_repository'].get('full_name') == repository
+        and type(row.get('id')) is int and 0 < row['id'] < 10**20]
+    require(matches)
+    run = max(matches, key=lambda row:row['id'])
+    artifacts = fetch('/actions/runs/'+str(run['id'])+'/artifacts?per_page=100', 2*1024*1024)
+    require(type(artifacts) is dict and type(artifacts.get('total_count')) is int and artifacts['total_count'] <= 100
+            and type(artifacts.get('artifacts')) is list)
+    pattern = re.compile('source-sha256-'+source_commit+'-([0-9a-f]{64})')
+    names = [row['name'] for row in artifacts['artifacts'] if type(row) is dict and row.get('expired') is False
+             and type(row.get('name')) is str and pattern.fullmatch(row['name'])]
+    require(len(names) == 1)
+    digest = pattern.fullmatch(names[0])[1]
+    evidence = fetch('/attestations/sha256:'+digest+'?per_page=20', 48*1024*1024)
+    require(type(evidence) is dict and type(evidence.get('attestations')) is list and 0 < len(evidence['attestations']) <= 20)
+    candidates = []
+    for item in evidence['attestations']:
+        if type(item) is not dict or type(item.get('bundle')) is not dict:
+            continue
+        bundle = item['bundle']
+        envelope = bundle.get('dsseEnvelope')
+        if (type(envelope) is not dict or envelope.get('payloadType') != 'application/vnd.in-toto+json'
+                or type(envelope.get('payload')) is not str):
+            continue
+        require(len(envelope['payload']) <= 32*1024*1024)
+        payload = base64.b64decode(envelope['payload'], validate=True)
+        require(len(payload) <= 24*1024*1024)
+        statement = json.loads(payload)
+        if (type(statement) is not dict or statement.get('_type') != 'https://in-toto.io/Statement/v1'
+                or statement.get('predicateType') != predicate_type or type(statement.get('predicate')) is not dict
+                or type(statement.get('subject')) is not list or len(statement['subject']) != 1
+                or type(statement['subject'][0]) is not dict or statement['subject'][0].get('digest') != {'sha256':digest}):
+            continue
+        raw = (json.dumps(statement['predicate'], sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode()
+        require(0 < len(raw) <= 16*1024*1024 and hashlib.sha256(raw).hexdigest() == digest)
+        proof = (json.dumps(bundle, sort_keys=True, separators=(',', ':'))+'\n').encode()
+        require(len(proof) <= 32*1024*1024)
+        candidates.append((raw, proof))
+    require(candidates)
+    root = _SCENE_SOURCE_ATTESTATIONS / source_commit
+    if all((root/name).exists() for name in ('source-sha256-manifest.json','source-provenance.sigstore.json')):
+        _, retained, _ = _scene_source_attestation(source_commit,deadline=deadline,_proof_root=root)
+        require(hashlib.sha256(retained).hexdigest() == digest)
+        return
+    selection = _scene_source_selected_proof(root, deadline=deadline)
+    selected = None
+    # CI reruns at one SHA legitimately produce several signatures over the
+    # same deterministic subject. List order is only a bounded trial order;
+    # no candidate is admitted until the protected verifier checks its policy.
+    for raw, proof in candidates:
+        require(time.monotonic() <= deadline)
+        if selection is not None and not (hashlib.sha256(proof).hexdigest()+'\n').encode().startswith(selection):
+            continue
+        candidate = root/'candidates'/hashlib.sha256(proof).hexdigest()
+        _scene_source_cache_publish(candidate, raw, proof, deadline=deadline)
+        try:
+            _scene_source_attestation(source_commit, deadline=deadline, _proof_root=candidate)
+        except (ControlPlaneDeployError, OSError, ValueError, subprocess.SubprocessError):
+            require(time.monotonic() <= deadline)
+            continue
+        selected = (raw,proof)
+        break
+    require(selected is not None)
+    _scene_source_cache_publish(root, *selected, deadline=deadline)
+
+
+def _scene_source_selected_proof(root: Path, *, deadline: float) -> bytes | None:
+    """Retain a protected selection across interrupted publication and CI reruns."""
+    error = "deploy_scene_retirement_runtime_unproven"
+    def require(value):
+        if not value:
+            raise ControlPlaneDeployError(error)
+    require(root.is_absolute() and '..' not in root.parts and time.monotonic() <= deadline)
+    held, identities = [], []
+    def identity(info):
+        return (info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid,
+                info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+    try:
+        directory = os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+        held.append(directory)
+        for part in root.parts[1:]:
+            before = os.fstat(directory)
+            require(stat.S_ISDIR(before.st_mode) and before.st_uid in {0,_SCENE_RUNTIME_OWNER}
+                    and not before.st_mode & 0o022)
+            identities.append((directory,before))
+            try:
+                directory = os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory)
+            except FileNotFoundError:
+                return None
+            held.append(directory)
+        before = os.fstat(directory)
+        require(stat.S_ISDIR(before.st_mode) and before.st_uid in {0,_SCENE_RUNTIME_OWNER} and not before.st_mode & 0o022)
+        identities.append((directory,before))
+        for name, complete in (('.public-selected-proof.sha256',True),('.public-selected-proof.sha256.public-pending',False)):
+            try:
+                fd = os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=directory)
+            except FileNotFoundError:
+                continue
+            held.append(fd)
+            before = os.fstat(fd)
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == _SCENE_RUNTIME_OWNER and before.st_nlink == 1
+                    and stat.S_IMODE(before.st_mode) in {0o600,0o444} and 0 <= before.st_size <= 65
+                    and (not complete or before.st_size == 65))
+            raw = os.read(fd,66)
+            require(len(raw) == before.st_size and re.fullmatch(rb'[0-9a-f]{0,64}\n?',raw) is not None
+                    and (b'\n' not in raw or len(raw) == 65)
+                    and identity(before) == identity(os.fstat(fd)) == identity(os.stat(name,dir_fd=directory,follow_symlinks=False)))
+            for retained, original in identities:
+                require(identity(os.fstat(retained)) == identity(original))
+            return raw
+        return None
+    finally:
+        for fd in reversed(held):
+            os.close(fd)
+
+
+def _scene_source_cache_publish(root: Path, raw: bytes, proof: bytes, *, deadline: float) -> None:
+    """Publish bounded proof DATA without issuing source or execution authority."""
+    error = "deploy_scene_retirement_runtime_unproven"
+    def require(value):
+        if not value:
+            raise ControlPlaneDeployError(error)
+    require(root.is_absolute() and '..' not in root.parts and 0 < len(raw) <= 16*1024*1024
+            and 0 < len(proof) <= 32*1024*1024 and time.monotonic() <= deadline)
+    def directory(path):
+        if path != Path('/'):
+            directory(path.parent)
+        if not path.exists() and not path.is_symlink():
+            path.mkdir(mode=0o755)
+        info = path.lstat()
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid in {0,_SCENE_RUNTIME_OWNER} and not info.st_mode & 0o022)
+    directory(root)
+    directories = []
+    root_fd = os.open('/', os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+    directories.append((root_fd,os.fstat(root_fd)))
+    lock = None
+    try:
+        for part in root.parts[1:]:
+            parent = root_fd
+            before = os.stat(part,dir_fd=parent,follow_symlinks=False)
+            require(stat.S_ISDIR(before.st_mode) and before.st_uid in {0,_SCENE_RUNTIME_OWNER} and not before.st_mode & 0o022)
+            root_fd = os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=parent)
+            directories.append((root_fd,before))
+            require(os.fstat(root_fd) == before)
+        lock = os.open('.public-source-proof.lock', os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC, 0o600,dir_fd=root_fd)
+        try:
+            info = os.fstat(lock)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == _SCENE_RUNTIME_OWNER and info.st_nlink == 1
+                    and stat.S_IMODE(info.st_mode) == 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
+            # Bind the selected bundle before any fixed manifest/proof bytes.
+            # Its protected prefix also pins a retry interrupted in this claim.
+            selection = (hashlib.sha256(proof).hexdigest()+'\n').encode()
+            for name, raw in zip(('.public-selected-proof.sha256','source-sha256-manifest.json','source-provenance.sigstore.json'), (selection,raw,proof)):
+                require(time.monotonic() <= deadline)
+                target = root/name
+                if target.exists() or target.is_symlink():
+                    fd = os.open(target.name, os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC,dir_fd=root_fd)
+                    try:
+                        before = os.fstat(fd)
+                        require(stat.S_ISREG(before.st_mode) and before.st_uid == _SCENE_RUNTIME_OWNER
+                                and before.st_nlink == 1 and not before.st_mode & 0o022
+                                and before.st_size == len(raw) and os.read(fd,len(raw)+1) == raw
+                                and before == os.fstat(fd) == os.stat(target.name,dir_fd=root_fd,follow_symlinks=False))
+                    finally:
+                        os.close(fd)
+                    continue
+                pending = root/(name+'.public-pending')
+                flags = os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC
+                try:
+                    os.stat(pending.name,dir_fd=root_fd,follow_symlinks=False)
+                except FileNotFoundError:
+                    flags |= os.O_CREAT|os.O_EXCL
+                fd = os.open(pending.name, flags, 0o600,dir_fd=root_fd)
+                try:
+                    before = os.fstat(fd)
+                    require(stat.S_ISREG(before.st_mode) and before.st_uid == _SCENE_RUNTIME_OWNER and before.st_nlink == 1
+                            and stat.S_IMODE(before.st_mode) in {0o600,0o444} and before.st_size <= len(raw)
+                            and (stat.S_IMODE(before.st_mode) != 0o444 or before.st_size == len(raw))
+                            and os.read(fd,before.st_size) == raw[:before.st_size])
+                    view = memoryview(raw)[before.st_size:]
+                    while view:
+                        require(time.monotonic() <= deadline)
+                        written = os.write(fd, view)
+                        require(written > 0)
+                        view = view[written:]
+                    os.fsync(fd)
+                    os.fchmod(fd,0o444)
+                    require(os.stat(pending.name,dir_fd=root_fd,follow_symlinks=False).st_ino == before.st_ino)
+                    os.link(pending.name,target.name,src_dir_fd=root_fd,dst_dir_fd=root_fd,follow_symlinks=False)
+                    os.unlink(pending.name,dir_fd=root_fd)
+                finally:
+                    os.close(fd)
+            os.fsync(root_fd)
+            for fd, before in directories:
+                current = os.fstat(fd)
+                require(stat.S_ISDIR(current.st_mode) and not current.st_mode & 0o022
+                        and (current.st_dev,current.st_ino,current.st_mode,current.st_uid,current.st_gid)
+                        == (before.st_dev,before.st_ino,before.st_mode,before.st_uid,before.st_gid))
+            require(os.fstat(root_fd).st_ino == root.lstat().st_ino)
+        finally:
+            os.close(lock)
+    finally:
+        for fd, _ in reversed(directories):
+            os.close(fd)
+
+
+def _scene_source_attestation(source_commit: str, *, deadline: float, _proof_root: Path | None = None) -> tuple[dict[str, Any], bytes, bytes]:
+    """Admit signed data with the trusted host tool before executing candidate code."""
+    import selectors
+    error = "deploy_scene_retirement_runtime_unproven"
+    def require(value):
+        if not value:
+            raise ControlPlaneDeployError(error)
+    require(re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None and time.monotonic() <= deadline)
+    held, identities = [], []
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    def protected_read(path, cap, *, executable=False):
+        require(path.is_absolute() and '..' not in path.parts)
+        directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        held.append(directory)
+        for part in path.parts[1:-1]:
+            info = os.fstat(directory)
+            require(stat.S_ISDIR(info.st_mode) and info.st_uid in {0, _SCENE_RUNTIME_OWNER} and not info.st_mode & 0o022)
+            identities.append((directory, info))
+            directory = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            held.append(directory)
+        info = os.fstat(directory)
+        require(stat.S_ISDIR(info.st_mode) and info.st_uid in {0, _SCENE_RUNTIME_OWNER} and not info.st_mode & 0o022)
+        identities.append((directory, info))
+        before = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        require(stat.S_ISREG(before.st_mode) and before.st_uid == _SCENE_RUNTIME_OWNER
+                and not before.st_mode & 0o022 and before.st_nlink >= 1
+                and (executable or before.st_nlink == 1) and 0 < before.st_size <= cap
+                and (not executable or before.st_mode & 0o111))
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+        held.append(fd)
+        require(identity(os.fstat(fd)) == identity(before))
+        identities.append((fd, before))
+        raw = bytearray()
+        if not executable:
+            while len(raw) < before.st_size:
+                require(time.monotonic() <= deadline)
+                block = os.read(fd, min(1024*1024, before.st_size-len(raw)))
+                require(block)
+                raw.extend(block)
+            require(len(raw) == before.st_size and identity(os.fstat(fd)) == identity(before)
+                    == identity(os.stat(path.name, dir_fd=directory, follow_symlinks=False)))
+        return bytes(raw), fd
+    try:
+        root = _SCENE_SOURCE_ATTESTATIONS / source_commit if _proof_root is None else _proof_root
+        _, gh_fd = protected_read(_SCENE_SOURCE_GH, 256*1024*1024, executable=True)
+        if _proof_root is None and not all((root/name).exists() for name in ('source-sha256-manifest.json','source-provenance.sigstore.json')):
+            _scene_source_delivery(source_commit, deadline=deadline)
+        raw, manifest_fd = protected_read(root / 'source-sha256-manifest.json', 16*1024*1024)
+        bundle, bundle_fd = protected_read(root / 'source-provenance.sigstore.json', 32*1024*1024)
+        for fd in (manifest_fd, bundle_fd):
+            os.lseek(fd, 0, os.SEEK_SET)
+        command = [f'/proc/self/fd/{gh_fd}', 'attestation', 'verify', f'/proc/self/fd/{manifest_fd}',
+                   '--bundle', f'/proc/self/fd/{bundle_fd}', '--repo', 'ognjhunt/BlueprintCapturePipeline', '--hostname', 'github.com',
+                   '--cert-identity', 'https://github.com/ognjhunt/BlueprintCapturePipeline/.github/workflows/ci.yml@refs/heads/main',
+                   '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com',
+                   '--source-ref', 'refs/heads/main', '--source-digest', source_commit,
+                   '--signer-digest', source_commit, '--deny-self-hosted-runners',
+                   '--digest-alg', 'sha256', '--predicate-type', 'https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1', '--limit', '1', '--format', 'json']
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, pass_fds=(manifest_fd, bundle_fd, gh_fd), start_new_session=True,
+            env={'PATH':'/usr/bin:/bin', 'HOME':'/nonexistent', 'GH_CONFIG_DIR':'/nonexistent', 'GH_HOST':'github.com', 'LC_ALL':'C'})
+        output, errors = bytearray(), bytearray()
+        verify_deadline = min(deadline, time.monotonic()+120)
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, (output, 64*1024*1024))
+                selector.register(process.stderr, selectors.EVENT_READ, (errors, 65536))
+                while selector.get_map():
+                    require(time.monotonic() <= verify_deadline)
+                    for key, _ in selector.select(min(.1, max(0, verify_deadline-time.monotonic()))):
+                        target, cap = key.data
+                        block = os.read(key.fd, min(65536, cap+1-len(target)))
+                        if block:
+                            require(len(target)+len(block) <= cap)
+                            target.extend(block)
+                        else:
+                            selector.unregister(key.fileobj)
+                require(process.wait(timeout=max(.001, verify_deadline-time.monotonic())) == 0)
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    process.kill()
+            process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
+        for fd, original in identities:
+            require(identity(os.fstat(fd)) == identity(original))
+        proofs = json.loads(output)
+        require(type(proofs) is list and len(proofs) == 1 and type(proofs[0]) is dict)
+        verified = proofs[0].get('verificationResult', {})
+        require(type(verified) is dict)
+        signature = verified.get('signature', {})
+        require(type(signature) is dict and type(signature.get('certificate')) is dict and bool(signature['certificate'])
+                and type(verified.get('verifiedTimestamps')) is list and bool(verified['verifiedTimestamps'])
+                and all(type(value) is dict and value for value in verified['verifiedTimestamps']))
+        statement = verified.get('statement', {})
+        require(type(statement) is dict and statement.get('_type') == 'https://in-toto.io/Statement/v1'
+                and statement.get('predicateType') == 'https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1'
+                and type(statement.get('subject')) is list and len(statement['subject']) == 1
+                and type(statement['subject'][0]) is dict
+                and statement['subject'][0].get('digest') == {'sha256':hashlib.sha256(raw).hexdigest()}
+                and (json.dumps(statement.get('predicate'), sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode() == raw)
+        manifest = json.loads(raw)
+        require(type(manifest) is dict and set(manifest) == {'schema_version', 'sources'}
+                and manifest.get('schema_version') == 'blueprint.source_sha256_manifest.v1'
+                and type(manifest.get('sources')) is list and len(manifest['sources']) == 2
+                and raw == (json.dumps(manifest, sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode())
+        roots = (('src/blueprint_pipeline', 'scripts', 'deploy/systemd', 'uv.lock', 'pyproject.toml'),
+                 ('src/blueprint_contracts', 'blueprint_contracts'))
+        repositories = ('ognjhunt/BlueprintCapturePipeline', 'ognjhunt/BlueprintContracts')
+        commits = (source_commit, '7708a4e4c5dedeeb39cc73d3f6869304de295b81')
+        count = total = 0
+        for source, repository, commit, wanted in zip(manifest['sources'], repositories, commits, roots):
+            require(type(source) is dict and set(source) == {'repository','commit','tree','roots','files'}
+                    and source['repository'] == repository and source['commit'] == commit
+                    and type(source['tree']) is str and re.fullmatch('[0-9a-f]{40}', source['tree'])
+                    and source['roots'] == list(wanted) and type(source['files']) is list and bool(source['files']))
+            previous, present = '', set()
+            for row in source['files']:
+                require(type(row) is dict and set(row) == {'path','git_blob_oid','mode','size','sha256'})
+                path = row['path']
+                require(type(path) is str and path > previous and len(path.encode()) <= 4096
+                        and not path.startswith('/') and '\\' not in path and len(path.split('/')) <= 32
+                        and all(part not in {'','.','..'} for part in path.split('/'))
+                        and not any(ord(char) < 32 or ord(char) == 127 for char in path)
+                        and any(path == root or path.startswith(root+'/') for root in wanted)
+                        and row['mode'] in {'100644','100755'} and type(row['git_blob_oid']) is str
+                        and re.fullmatch('[0-9a-f]{40}',row['git_blob_oid']) and type(row['sha256']) is str
+                        and re.fullmatch('[0-9a-f]{64}',row['sha256']) and type(row['size']) is int
+                        and 0 <= row['size'] <= (16*1024*1024 if path == 'uv.lock' else 1024*1024))
+                previous = path
+                present.add(path)
+                count += 1
+                total += row['size']
+                require(count <= 32768 and total <= 4*1024**3)
+            if repository == repositories[0]:
+                require(all(any(path == root or path.startswith(root+'/') for path in present) for root in wanted)
+                        and {'scripts/install_scene_retirement_runtime.py', 'scripts/deploy_control_plane_commit.py',
+                             'scripts/release_source_manifest.py'} <= present)
+            else:
+                require(any(root+'/__init__.py' in present for root in wanted))
+        pipeline = manifest['sources'][0]
+        require(pipeline.get('repository') == 'ognjhunt/BlueprintCapturePipeline' and pipeline.get('commit') == source_commit
+                and type(pipeline.get('files')) is list and 0 < len(pipeline['files']) <= 32768)
+        return manifest, raw, bundle
+    finally:
+        for fd in reversed(held):
+            os.close(fd)
+
+
 def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str, *, deadline: float,
-                                         destination: Path | None = None) -> None:
+                                         destination: Path | None = None) -> dict[str, Path]:
     """Authenticate installer Git data before the first privileged execution."""
     import fcntl
     import selectors
     error = "deploy_scene_retirement_runtime_unproven"
-    deadline = min(deadline, time.monotonic() + 30)
+    shared_deadline = deadline
     def require(value):
         if not value:
             raise ControlPlaneDeployError(error)
     require(re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None)
     require(source_repo.is_absolute() and ".." not in source_repo.parts and not source_repo.is_symlink())
-    def object_bytes(kind, digest, cap):
+    def object_bytes(digest, cap):
+        deadline = min(shared_deadline, time.monotonic()+30)
         command = ["/usr/bin/git", "--no-replace-objects", "-C", str(source_repo),
                    "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-                   "-c", "safe.directory=" + str(source_repo), "cat-file", kind, digest]
+                   "-c", "safe.directory=" + str(source_repo), "cat-file", "blob", digest]
         environment = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1",
                        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_LAZY_FETCH": "1", "GIT_ALLOW_PROTOCOL": "",
                        "GIT_PROTOCOL_FROM_USER": "0", "GIT_TERMINAL_PROMPT": "0"}
@@ -3175,28 +3583,23 @@ def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str,
             process.stdout.close()
             process.stderr.close()
         raw = bytes(output)
-        require(hashlib.sha1(kind.encode()+b" "+str(len(raw)).encode()+b"\0"+raw).hexdigest() == digest)
         return raw
-    commit = object_bytes("commit", source_commit, 1024*1024)
-    trees = [line[5:] for line in commit.split(b"\n\n",1)[0].splitlines() if line.startswith(b"tree ")]
-    require(len(trees) == 1 and re.fullmatch(rb"[0-9a-f]{40}",trees[0]) is not None)
-    digest = trees[0].decode()
-    for name in ("scripts", "install_scene_retirement_runtime.py"):
-        raw = object_bytes("tree", digest, 1024*1024)
-        offset, rows = 0, {}
-        while offset < len(raw):
-            separator = raw.index(b" ",offset)
-            zero = raw.index(b"\0",separator)
-            mode, leaf = raw[offset:separator], raw[separator+1:zero]
-            require(leaf and leaf not in rows and b"/" not in leaf and leaf not in {b".",b".."}
-                    and zero+21 <= len(raw) and len(rows) < 32768)
-            rows[leaf] = (mode,raw[zero+1:zero+21].hex())
-            offset = zero+21
-        require(name.encode() in rows)
-        mode,digest = rows[name.encode()]
-        require(mode in ({b"40000"} if name == "scripts" else {b"100644",b"100755"}))
-    body = object_bytes("blob", digest, 1024*1024)
-    require(body)
+    manifest, manifest_raw, bundle_raw = _scene_source_attestation(source_commit, deadline=shared_deadline)
+    files = manifest['sources'][0]['files']
+    names = ['scripts/install_scene_retirement_runtime.py', 'scripts/release_source_manifest.py']
+    admitted = {}
+    for name in names:
+        matches = [row for row in files if type(row) is dict and row.get('path') == name]
+        require(len(matches) == 1)
+        row = matches[0]
+        require(set(row) == {'path', 'git_blob_oid', 'mode', 'size', 'sha256'}
+                and row['mode'] in {'100644', '100755'} and type(row['size']) is int and 0 < row['size'] <= 1024*1024
+                and type(row['git_blob_oid']) is str and re.fullmatch('[0-9a-f]{40}', row['git_blob_oid'])
+                and type(row['sha256']) is str and re.fullmatch('[0-9a-f]{64}', row['sha256']))
+        raw = object_bytes(row['git_blob_oid'], row['size'])
+        require(len(raw) == row['size'] and hashlib.sha256(raw).hexdigest() == row['sha256'])
+        admitted[name] = raw
+    body = admitted[names[0]]
     root = destination if destination is not None else _SCENE_RUNTIME_BOOT_ROOT
     def protected_directory(path):
         if not path.exists() and not path.is_symlink():
@@ -3265,13 +3668,22 @@ def _bootstrap_scene_retirement_installer(source_repo: Path, source_commit: str,
             publish(pending,value)
             publish(target,body)
         publish(root/"runtime-installer.json",value)
+        verifier = admitted[names[1]]
+        publish(root/'release_source_manifest.py', verifier)
+        publish(root/'source-manifest-verifier.json', json.dumps({
+            'schema':'scene-retirement-source-manifest-verifier.v1', 'sha256':hashlib.sha256(verifier).hexdigest(),
+            'size':len(verifier)}, sort_keys=True, separators=(',', ':')).encode())
+        publish(root/'source-sha256-manifest.json', manifest_raw)
+        publish(root/'source-provenance.sigstore.json', bundle_raw)
+        return {'source_manifest':root/'source-sha256-manifest.json',
+                'source_attestation':root/'source-provenance.sigstore.json', 'manifest_verifier':root/'release_source_manifest.py'}
     finally:
         os.close(lock)
 
 
 def _scene_runtime_diagnostic(stderr: bytes | str | None, *, phase: str, reason: str) -> dict[str, str]:
     """Admit only bounded fixed markers; child output is never forwarded."""
-    phases = {"signed_release", "build_sdk", "resume_initial_intent", "refresh", "prepare", "publish_installer"}
+    phases = {"source_attestation", "signed_release", "build_sdk", "resume_initial_intent", "refresh", "prepare", "publish_installer"}
     reasons = {"deadline", "validation", "io", "unexpected"}
     if isinstance(stderr, (bytes, str)) and len(stderr) <= 65536:
         text = stderr.decode("ascii", errors="replace") if isinstance(stderr, bytes) else stderr
@@ -3283,10 +3695,15 @@ def _scene_runtime_diagnostic(stderr: bytes | str | None, *, phase: str, reason:
     return {"phase": phase, "reason": reason}
 
 
-def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) -> dict[str, Any]:
+def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str, _deadline: float | None = None) -> dict[str, Any]:
     """Authenticate the selected release installer before exposing new units."""
     # One installation-only origin covers authentication, SDK and durable copy.
-    deadline = time.monotonic() + _SCENE_RUNTIME_INSTALL_SECONDS
+    started = time.monotonic()
+    if _deadline is not None and (type(_deadline) is not float or not math.isfinite(_deadline)):
+        raise ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+    deadline = started + _SCENE_RUNTIME_INSTALL_SECONDS if _deadline is None else min(started + _SCENE_RUNTIME_INSTALL_SECONDS, _deadline)
+    if started > deadline:
+        raise ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
     root = _SCENE_RUNTIME_BOOT_ROOT
     helper = root / "runtime_installer.py"
     error = "deploy_scene_retirement_runtime_unproven"
@@ -3334,14 +3751,17 @@ def _prepare_scene_retirement_runtime(*, source_repo: Path, source_commit: str) 
             verified_installer(root)
         candidate = root / "installers" / source_commit
         phase = "authenticate_installer"
-        _bootstrap_scene_retirement_installer(
+        attestation = _bootstrap_scene_retirement_installer(
             source_repo, source_commit, deadline=deadline, destination=candidate,
         )
         fd = verified_installer(candidate)
         os.lseek(fd, 0, os.SEEK_SET)
         command = ["/usr/bin/python3", "-I", "-S", f"/proc/self/fd/{fd}",
                    "--source", str(source_repo), "--source-commit", source_commit, "--locked-sdk",
-                   "--deadline-monotonic", str(deadline)]
+                   "--deadline-monotonic", str(deadline),
+                   "--source-manifest", str(attestation['source_manifest']),
+                   "--source-attestation", str(attestation['source_attestation']),
+                   "--manifest-verifier", str(attestation['manifest_verifier'])]
         phase = "execute_installer"
         result = subprocess.run(command, pass_fds=(fd,), stdin=subprocess.DEVNULL,
                                 capture_output=True, timeout=max(.001, deadline-time.monotonic()), check=False,

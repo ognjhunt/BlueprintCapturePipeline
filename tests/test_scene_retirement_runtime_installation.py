@@ -28,6 +28,27 @@ def tmp_path():
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/install_scene_retirement_runtime.py'
 
 
+def _synthetic_sha256_inventory(checkout, commit, wanted):
+    """Fixture authority at the crypto boundary; production never builds its own trust."""
+    import hashlib
+    import subprocess
+    rows = []
+    raw = subprocess.check_output(['/usr/bin/git', '-C', str(checkout), 'ls-tree', '-rz', commit])
+    for item in raw.split(b'\0'):
+        if not item:
+            continue
+        head, name = item.split(b'\t', 1)
+        mode, kind, oid = head.decode().split()
+        name = name.decode()
+        if not any(name == root or name.startswith(root+'/') for root in wanted):
+            continue
+        assert kind == 'blob'
+        body = subprocess.check_output(['/usr/bin/git', '-C', str(checkout), 'cat-file', 'blob', oid])
+        rows.append({'path':name, 'git_blob_oid':oid, 'mode':mode,
+                     'size':len(body), 'sha256':hashlib.sha256(body).hexdigest()})
+    return sorted(rows, key=lambda row:row['path'])
+
+
 def fixture(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location('runtime_install_test', SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -47,6 +68,15 @@ def fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(module, '_RUNTIME_ROOT', tmp_path.resolve() / 'installed')
     monkeypatch.setattr(module, '_BOOT_ROOT', tmp_path.resolve() / 'bootstrap')
     monkeypatch.setattr(module, '_FREE_FLOOR', 0)
+    admitted = module._authenticated_git_entries
+    def synthetic_entries(checkout, commit, wanted, deadline, **kwargs):
+        if kwargs.get('source_manifest') is None:
+            repository = kwargs.get('repository', 'ognjhunt/BlueprintCapturePipeline')
+            kwargs['source_manifest'] = {'sources':[{'repository':repository, 'commit':commit,
+                'files':_synthetic_sha256_inventory(checkout, commit, wanted)}]}
+        return admitted(checkout, commit, wanted, deadline, **kwargs)
+    monkeypatch.setattr(module, '_authenticated_git_entries', synthetic_entries)
+    monkeypatch.setattr(module, '_admitted_source_manifest', lambda *args: None)
     return module, source, deps
 
 
@@ -623,7 +653,7 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'raise RuntimeError("uncommitted mutable source")\n')
     phases = []
     result = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent, _progress=phases.append)
-    assert phases == ['signed_release', 'build_sdk', 'prepare', 'publish_installer']
+    assert phases == ['source_attestation', 'signed_release', 'build_sdk', 'prepare', 'publish_installer']
     assert result['status'] == 'prepared'
     assert result['source_commit'] == commit
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
@@ -633,7 +663,7 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     assert result['authority_issued'] is False and result['cleanup_enabled'] is False
     phases.clear()
     repeated = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent, _progress=phases.append)
-    assert phases == ['signed_release', 'build_sdk', 'refresh', 'publish_installer']
+    assert phases == ['source_attestation', 'signed_release', 'build_sdk', 'refresh', 'publish_installer']
     assert repeated['status'] == 'refreshed'
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').read_bytes() == b''
 
@@ -708,7 +738,7 @@ def test_signed_blob_batch_refuses_unproven_headers_and_bytes(tmp_path, monkeypa
         return checked if arguments == ['cat-file', '--batch-check'] else body
     monkeypatch.setattr(module, '_sdk_git_command', command)
     with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
-        module._signed_release_blobs(source, [('100644', digest, 'src/blueprint_pipeline/fixture.py')], time.monotonic()+5)
+        module._signed_release_blobs(source, [('100644', digest, 'src/blueprint_pipeline/fixture.py', len(raw), hashlib.sha256(raw).hexdigest())], time.monotonic()+5)
     if change in {'size-limit', 'wrong-type', 'wrong-id', 'missing', 'extra-header'}:
         assert calls == [['cat-file', '--batch-check']]
     assert not module._BOOT_ROOT.exists() and not module._RUNTIME_ROOT.exists()
@@ -786,12 +816,14 @@ def test_locked_sdk_resumes_hash_bound_download_prefix_under_same_origin(tmp_pat
     class Response:
         status = 200
         url = row['url']
+        fp = type('FP', (), {'raw': type('Raw', (), {
+            '_sock': type('Socket', (), {'settimeout': lambda *args: None})()})()})()
         def __init__(self, fail):
             self.offset = 0
             self.fail = fail
         def __enter__(self): return self
         def __exit__(self, *arguments): return False
-        def read(self, amount):
+        def read1(self, amount):
             if self.fail and self.offset:
                 raise OSError('actual interrupted native download')
             result = raw[self.offset:self.offset + (1 if self.fail else amount)]
@@ -800,7 +832,7 @@ def test_locked_sdk_resumes_hash_bound_download_prefix_under_same_origin(tmp_pat
     def open_response(url, timeout):
         requests.append(url)
         return Response(len(requests) == 1)
-    monkeypatch.setattr(module.urllib.request, 'urlopen', open_response)
+    monkeypatch.setattr(module.urllib.request, 'build_opener', lambda *args: type('Opener', (), {'open':staticmethod(open_response)})())
     deadline = time.monotonic() + 10
     with pytest.raises(OSError, match='actual interrupted'):
         module._sdk_artifact(row, None, deadline)
@@ -830,6 +862,23 @@ def _deployer_runtime_fixture(monkeypatch, tmp_path):
                              for target in node.targets))
     namespace['_SCENE_RUNTIME_INSTALL_SECONDS'] = ast.literal_eval(allowance.value)
     exec(compile(ast.Module(body=definitions, type_ignores=[]), str(SCRIPT), 'exec'), namespace)
+    def synthetic_attestation(commit, *, deadline):
+        # These tests exercise protected publication/execution after crypto
+        # admission, never substitute this fixture for production verification.
+        source = active_source[0]
+        files = _synthetic_sha256_inventory(source, commit, ('scripts',))
+        installer = next(row for row in files if row['path'] == 'scripts/install_scene_retirement_runtime.py')
+        if not any(row['path'] == 'scripts/release_source_manifest.py' for row in files):
+            files.append(installer | {'path':'scripts/release_source_manifest.py'})
+        manifest = {'sources':[{'repository':'ognjhunt/BlueprintCapturePipeline','commit':commit,'files':files}]}
+        return manifest, json.dumps(manifest).encode(), b'{}'
+    active_source = [None]
+    bootstrap = namespace['_bootstrap_scene_retirement_installer']
+    def admitted_bootstrap(source, commit, **kwargs):
+        active_source[0] = source
+        return bootstrap(source, commit, **kwargs)
+    namespace['_bootstrap_scene_retirement_installer'] = admitted_bootstrap
+    namespace['_scene_source_attestation'] = synthetic_attestation
     return namespace
 
 
@@ -1053,7 +1102,7 @@ def test_sdk_preserves_protected_disk_floor_before_native_download_or_payload_wr
         raw = wheel.read_bytes()
         row = {'url': 'https://files.pythonhosted.org/' + wheel.name, 'size': len(raw),
                'hash': 'sha256:' + hashlib.sha256(raw).hexdigest()}
-        monkeypatch.setattr(module.urllib.request, 'urlopen', lambda *a, **kw: pytest.fail('SDK floor refusal must precede native download'))
+        monkeypatch.setattr(module.urllib.request, 'build_opener', lambda *a, **kw: pytest.fail('SDK floor refusal must precede native download'))
         with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
             module._sdk_artifact(row, None, time.monotonic()+5)
         assert not list(module._sdk_root().glob('wheel-artifacts/*/*.pending'))
@@ -1397,7 +1446,10 @@ def test_deploy_installer_failure_preserves_blocker_and_only_fixed_diagnostics(t
     (candidate / 'runtime-installer.json').write_text(json.dumps({
         'schema': 'scene-retirement-runtime-installer.v1',
         'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest(), 'size_bytes': len(raw)}))
-    namespace['_bootstrap_scene_retirement_installer'] = lambda *args, **kwargs: None
+    namespace['_bootstrap_scene_retirement_installer'] = lambda *args, **kwargs: {
+        'source_manifest':candidate/'source-sha256-manifest.json',
+        'source_attestation':candidate/'source-provenance.sigstore.json',
+        'manifest_verifier':candidate/'release_source_manifest.py'}
     private = b'private-canary-path?token=private-canary-credential'
     stderr = (private + b'\nscene_retirement_runtime_phase:build_sdk\n'
               b'scene_retirement_runtime_failure:validation\n'
@@ -1456,13 +1508,13 @@ def test_connected_installation_keeps_one_deadline_through_resume_and_refresh(tm
     phases = []
     def phase(name):
         phases.append(name)
-        now[0] = {'signed_release': 100.0, 'build_sdk': 100.0+(deadline-100.0)/3,
+        now[0] = {'source_attestation': 100.0, 'signed_release': 100.0, 'build_sdk': 100.0+(deadline-100.0)/3,
                   'resume_initial_intent': 100.0+2*(deadline-100.0)/3,
                   'refresh': deadline+1}[name]
     with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
         module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent,
                                   _deadline=supplied, _progress=phase)
-    assert phases == ['signed_release', 'build_sdk', 'resume_initial_intent', 'refresh']
+    assert phases == ['source_attestation', 'signed_release', 'build_sdk', 'resume_initial_intent', 'refresh']
     assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
     assert (module._BOOT_ROOT / 'installation.json').read_bytes() == original_intent
     assert not (module._BOOT_ROOT / 'CURRENT.json').exists()

@@ -744,10 +744,16 @@ def _sdk_append_chunk(output, original, raw, offset, deadline):
         view = view[written:]
 
 
+class _SdkNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, url):
+        raise ValueError(_ERROR)
+
+
 def _sdk_artifact(row, wheelhouse, deadline):
     url = row['url']
     parsed = urllib.parse.urlsplit(url)
     _require(parsed.scheme == 'https' and parsed.hostname == 'files.pythonhosted.org'
+             and parsed.netloc == 'files.pythonhosted.org'
              and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
              and type(row['size']) is int and 0 < row['size'] <= _MAX_BYTES
              and re.fullmatch(r'sha256:[0-9a-f]{64}', row['hash']))
@@ -770,11 +776,20 @@ def _sdk_artifact(row, wheelhouse, deadline):
     fd, before = _sdk_partial(partial, row['size'])
     try:
         digest, count = hashlib.sha256(), 0
-        with urllib.request.urlopen(url, timeout=min(30, max(.001, deadline - time.monotonic()))) as response:
+        # The authenticated lock pins both the exact HTTPS origin and SHA256.
+        # Refuse redirects before contacting their target; do not use ambient
+        # proxy settings or transfer a request to another host first.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _SdkNoRedirect())
+        with opener.open(url, timeout=min(30, max(.001, deadline - time.monotonic()))) as response:  # nosec B310 - exact HTTPS origin, redirects disabled, bounded SHA256-pinned bytes
             _require(response.status == 200 and urllib.parse.urlsplit(response.url).hostname == parsed.hostname)
             while True:
                 _require(time.monotonic() <= deadline)
-                chunk = response.read(min(1024 * 1024, row['size'] + 1 - count))
+                if response.fp is None:
+                    break
+                response.fp.raw._sock.settimeout(min(30, max(.001, deadline - time.monotonic())))
+                # read1 performs one socket read, so a peer delivering tiny
+                # prefixes cannot keep a buffered read alive past the origin.
+                chunk = response.read1(min(1024 * 1024, row['size'] + 1 - count))
                 if not chunk:
                     break
                 count += len(chunk)
@@ -1108,7 +1123,7 @@ def _sdk_git_command(checkout, arguments, deadline, *, cap=1024 * 1024, raw_chec
 
 def _sdk_fetch_contracts(commit, deadline):
     # This fixed repository is public. No root key, mutable credential helper,
-    # user configuration or prompt is needed; the caller verifies Git hashes.
+    # user configuration or prompt is needed; the caller verifies admitted SHA256 bytes.
     _require(type(commit) is str and re.fullmatch('[0-9a-f]{40}', commit))
     root = _sdk_root() / 'git-objects' / commit
     claim = root.parent / (commit + '.claim.json')
@@ -1126,66 +1141,84 @@ def _sdk_fetch_contracts(commit, deadline):
     return root
 
 
-def _authenticated_git_entries(checkout, commit, wanted, deadline, *, raw_checkout=False):
-    raw = _sdk_git_command(checkout, ['cat-file', 'commit', commit], deadline, cap=65536,
-                           raw_checkout=raw_checkout)
-    _require(hashlib.sha1(b'commit ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == commit)
-    trees = re.findall(rb'^tree ([0-9a-f]{40})$', raw, re.MULTILINE)
-    _require(len(trees) == 1)
-    pending, result, count, total = [('', trees[0].decode(), 0)], [], 0, 0
-    while pending:
-        prefix, digest, depth = pending.pop()
-        _require(depth <= 32 and time.monotonic() <= deadline)
-        body = _sdk_git_command(checkout, ['cat-file', 'tree', digest], deadline, cap=1024*1024,
-                                raw_checkout=raw_checkout)
-        total += len(body)
-        _require(total <= 20*1024*1024 and hashlib.sha1(b'tree ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
-        offset, names = 0, set()
-        while offset < len(body):
-            split = body.index(b' ', offset)
-            ending = body.index(b'\0', split + 1)
-            mode, name = body[offset:split].decode('ascii'), body[split+1:ending].decode('utf-8')
-            count += 1
-            _require(count <= _MAX_FILES and name not in names and name not in {'', '.', '..'}
-                     and '/' not in name and '\\' not in name and ending + 21 <= len(body))
-            names.add(name)
-            selected = body[ending+1:ending+21].hex()
-            offset = ending + 21
-            path = prefix + name
-            relevant = any(path == value or path.startswith(value + '/') or value.startswith(path + '/') for value in wanted)
-            if not relevant:
-                continue
-            if mode == '40000':
-                pending.append((path + '/', selected, depth + 1))
-            else:
-                _require(mode in {'100644', '100755'})
-                result.append((mode, selected, path))
-    return sorted(result, key=lambda item: item[2])
+def _authenticated_git_entries(checkout, commit, wanted, deadline, *, raw_checkout=False,
+                               source_manifest=None, repository='ognjhunt/BlueprintCapturePipeline'):
+    """Git IDs select bytes; only the already admitted SHA256 inventory authenticates."""
+    _require(time.monotonic() <= deadline and type(source_manifest) is dict)
+    sources = source_manifest.get('sources')
+    _require(type(sources) is list)
+    selected = [row for row in sources if row.get('repository') == repository and row.get('commit') == commit]
+    _require(len(selected) == 1 and type(selected[0].get('files')) is list)
+    result, names, total = [], set(), 0
+    for row in selected[0]['files']:
+        _require(time.monotonic() <= deadline and type(row) is dict
+                 and set(row) == {'path', 'git_blob_oid', 'mode', 'size', 'sha256'})
+        name, digest, mode, size, sha256 = (row[key] for key in ('path', 'git_blob_oid', 'mode', 'size', 'sha256'))
+        _require(type(name) is str and name and not name.startswith('/') and '\\' not in name
+                 and all(part not in {'', '.', '..'} for part in name.split('/')) and name not in names
+                 and type(digest) is str and re.fullmatch('[0-9a-f]{40}', digest)
+                 and mode in {'100644', '100755'} and type(size) is int and 0 <= size <= _MAX_BYTES
+                 and type(sha256) is str and re.fullmatch('[0-9a-f]{64}', sha256))
+        names.add(name)
+        total += size
+        _require(len(names) <= _MAX_FILES and total <= _MAX_BYTES)
+        if any(name == root or name.startswith(root + '/') for root in wanted):
+            result.append((mode, digest, name, size, sha256))
+    _require([item[2] for item in result] == sorted(item[2] for item in result))
+    return result
 
 
-def _sdk_git_rows(package, checkout, deadline):
+def _admitted_source_manifest(manifest_path, bundle_path, verifier_path, commit, deadline):
+    """Execute only the verifier retained by the already authenticated parent."""
+    _require(all(type(path) is Path or isinstance(path, Path) for path in (manifest_path, bundle_path, verifier_path)))
+    raw, original = _record_bytes(verifier_path, deadline, cap=1024*1024)
+    claim, _ = _record_bytes(verifier_path.parent / 'source-manifest-verifier.json', deadline, cap=4096)
+    value = json.loads(claim)
+    _require(value == {'schema': 'scene-retirement-source-manifest-verifier.v1',
+                      'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)})
+    fd = _open(verifier_path, directory=False)
+    try:
+        _require(_identity(os.fstat(fd)) == _identity(original))
+        # A retained descriptor prevents a path replacement from changing the
+        # already admitted module between the proof and Python's loader read.
+        import importlib.machinery
+        name = '_blueprint_admitted_source_manifest'
+        loader = importlib.machinery.SourceFileLoader(name, f'/proc/self/fd/{fd}')
+        spec = importlib.util.spec_from_loader(name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        _require(_identity(os.fstat(fd)) == _identity(original))
+        manifest = module.verify_manifest_attestation(manifest_path, bundle_path, commit,
+                    gh_executable=Path('/usr/bin/gh'), deadline=deadline)
+        _require(time.monotonic() <= deadline)
+        return manifest
+    finally:
+        os.close(fd)
+
+
+def _sdk_git_rows(package, checkout, deadline, source_manifest=None):
     source = package.get('source', {})
     match = re.fullmatch(r'https://github\.com/ognjhunt/BlueprintContracts\.git\?rev=([0-9a-f]{40})#([0-9a-f]{40})', source.get('git', ''))
     _require(package['name'] == 'blueprint-contracts' and match is not None and match[1] == match[2])
     commit = match[1]
     checkout = Path(checkout) if checkout is not None else _sdk_fetch_contracts(commit, deadline)
-    items = _authenticated_git_entries(checkout, commit, ('src/blueprint_contracts', 'blueprint_contracts'), deadline)
+    items = _authenticated_git_entries(checkout, commit, ('src/blueprint_contracts', 'blueprint_contracts'), deadline,
+        source_manifest=source_manifest, repository='ognjhunt/BlueprintContracts')
     _require(items)
     rows = {}
-    for mode, digest, name in items:
-        if name.startswith('src/'):
-            name = name[4:]
-        _require(name.startswith('blueprint_contracts/') and '..' not in Path(name).parts
-                 and name not in rows and not name.endswith(('.pth', '.pyc', '.pyo')))
-        size = _sdk_git_command(checkout, ['cat-file', '-s', digest], deadline, cap=32)
-        _require(size.strip().isdigit() and int(size) <= 1024 * 1024)
-        body = _sdk_git_command(checkout, ['cat-file', 'blob', digest], deadline, cap=int(size))
-        _require(len(body) == int(size) and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
-        path = _sdk_root() / 'git-inputs' / commit / name
-        _mkdir(path.parent)
-        _record(path, body, deadline)
-        rows[name] = {'size': len(body), 'sha256': hashlib.sha256(body).hexdigest(), 'mode': 0o644,
-                      'source': str(path)}
+    for index in range(0, len(items), 16):
+        blobs = _signed_release_blobs(checkout, items[index:index+16], deadline)
+        for mode, digest, name, size, sha256 in items[index:index+16]:
+            original_name = name
+            if name.startswith('src/'):
+                name = name[4:]
+            _require(name.startswith('blueprint_contracts/') and '..' not in Path(name).parts
+                     and name not in rows and not name.endswith(('.pth', '.pyc', '.pyo')))
+            body = blobs[original_name]
+            path = _sdk_root() / 'git-inputs' / commit / name
+            _mkdir(path.parent)
+            _record(path, body, deadline)
+            rows[name] = {'size': size, 'sha256': sha256, 'mode': 0o644, 'source': str(path)}
     _require('blueprint_contracts/__init__.py' in rows)
     return rows
 
@@ -1239,7 +1272,7 @@ def _sdk_toml(raw, wheelhouse, deadline):
                     del sys.modules[name]
 
 
-def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=None):
+def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=None, _source_manifest=None):
     """Build the locked base production closure for this system ABI, no setup.py."""
     deadline = _installation_deadline(_deadline)
     try:
@@ -1254,7 +1287,7 @@ def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=Non
         for package in selected:
             _require(time.monotonic() <= deadline)
             if 'git' in package.get('source', {}):
-                entries = _sdk_git_rows(package, contracts_checkout, deadline)
+                entries = _sdk_git_rows(package, contracts_checkout, deadline, _source_manifest)
             else:
                 path = _sdk_artifact(_sdk_wheel(package, tools), wheelhouse, deadline)
                 entries = _wheel_entries(path, deadline)
@@ -1288,33 +1321,33 @@ def build_sdk(source, *, wheelhouse=None, contracts_checkout=None, _deadline=Non
 
 def _signed_release_blobs(source, items, deadline):
     """Acquire a small batch; authenticate each bounded blob independently."""
-    _require(0 < len(items) <= 16 and len({name for _, _, name in items}) == len(items))
-    request = b''.join(digest.encode('ascii') + b'\n' for _, digest, _ in items)
+    _require(0 < len(items) <= 16 and len({item[2] for item in items}) == len(items))
+    request = b''.join(digest.encode('ascii') + b'\n' for _, digest, _, _, _ in items)
     checked = _sdk_git_command(source, ['cat-file', '--batch-check'], deadline,
                                cap=len(items) * 80, raw_checkout=True, input_data=request)
     lines = checked.split(b'\n')
     _require(len(lines) == len(items) + 1 and lines[-1] == b'')
     headers, sizes = [], []
-    for (_, digest, name), line in zip(items, lines):
+    for (_, digest, name, expected_size, _), line in zip(items, lines):
         fields = line.split(b' ')
         _require(len(fields) == 3 and fields[:2] == [digest.encode('ascii'), b'blob']
                  and fields[2].isdigit())
         size = int(fields[2])
         limit = 16 * 1024**2 if name == 'uv.lock' else 1024 * 1024
-        _require(0 <= size <= limit and fields[2] == str(size).encode('ascii'))
+        _require(0 <= size <= limit and size == expected_size and fields[2] == str(size).encode('ascii'))
         headers.append(line + b'\n')
         sizes.append(size)
     cap = sum(len(header) + size + 1 for header, size in zip(headers, sizes))
     body = _sdk_git_command(source, ['cat-file', '--batch'], deadline,
                             cap=cap, raw_checkout=True, input_data=request)
     offset, result = 0, {}
-    for (_, digest, name), header, size in zip(items, headers, sizes):
+    for (_, digest, name, _, sha256), header, size in zip(items, headers, sizes):
         _require(time.monotonic() <= deadline and body[offset:offset+len(header)] == header)
         offset += len(header)
         raw = body[offset:offset+size]
         offset += size
         _require(len(raw) == size and body[offset:offset+1] == b'\n'
-                 and hashlib.sha1(b'blob ' + str(size).encode() + b'\0' + raw).hexdigest() == digest)
+                 and hashlib.sha256(raw).hexdigest() == sha256)
         offset += 1
         _require(name not in result)
         result[name] = raw
@@ -1322,12 +1355,12 @@ def _signed_release_blobs(source, items, deadline):
     return result
 
 
-def _signed_release(source, commit, deadline):
+def _signed_release(source, commit, deadline, source_manifest=None):
     """Copy only authenticated Git object bytes, never mutable checkout code."""
     _require(type(commit) is str and re.fullmatch('[0-9a-f]{40}', commit))
     source = Path(source)
     items = _authenticated_git_entries(source, commit, ('src/blueprint_pipeline', 'scripts',
-              'deploy/systemd', 'uv.lock', 'pyproject.toml'), deadline, raw_checkout=True)
+              'deploy/systemd', 'uv.lock', 'pyproject.toml'), deadline, raw_checkout=True, source_manifest=source_manifest)
     _require(items)
     output = _encoded(items)
     root = _sdk_root() / 'release-inputs' / commit
@@ -1340,7 +1373,7 @@ def _signed_release(source, commit, deadline):
     _record(claim, selected, deadline)
     _mkdir(root)
     total, paths = 0, set()
-    for index, (mode, digest, name) in enumerate(items):
+    for index, (mode, digest, name, size, sha256) in enumerate(items):
         if index % 16 == 0:
             missing = [item for item in items[index:index+16]
                        if not (root / item[2]).exists() and not (root / item[2]).is_symlink()]
@@ -1351,16 +1384,15 @@ def _signed_release(source, commit, deadline):
         blob_cap = 16 * 1024**2 if name == 'uv.lock' else 1024 * 1024
         target = root / name
         if target.exists() or target.is_symlink():
-            # The authenticated tree supplies the expected Git blob ID. Prove
-            # retained bytes against it instead of spawning two Git processes
-            # for every already-retained source file on a bounded retry.
+            # Authenticate retained bytes with the signed SHA256 inventory,
+            # avoiding native Git processes for already protected leaves.
             body, _ = _record_bytes(target, deadline, cap=blob_cap, allow_empty=True)
         else:
             body = blobs[name]
             _require(len(body) <= blob_cap)
         total += len(body)
         _require(total <= _MAX_BYTES
-                 and hashlib.sha1(b'blob ' + str(len(body)).encode() + b'\0' + body).hexdigest() == digest)
+                 and len(body) == size and hashlib.sha256(body).hexdigest() == sha256)
         _mkdir(target.parent)
         _record(target, body, deadline, allow_empty=True)
         if mode == '100755':
@@ -1474,16 +1506,19 @@ def _resume_initial_intent(dependencies, deadline):
     prepare(original_source, original_sdk, _deadline=deadline)
 
 
-def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None, _progress=None):
+def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None,
+                       _progress=None, source_manifest=None, source_attestation=None, manifest_verifier=None):
     """Complete root snapshot and ABI SDK before callers expose service units."""
     deadline = _installation_deadline(_deadline)
     def phase(name):
         if _progress is not None:
             _progress(name)
+    phase('source_attestation')
+    manifest = _admitted_source_manifest(source_manifest, source_attestation, manifest_verifier, source_commit, deadline)
     phase('signed_release')
-    protected_source = _signed_release(source, source_commit, deadline)
+    protected_source = _signed_release(source, source_commit, deadline, manifest)
     phase('build_sdk')
-    sdk = build_sdk(protected_source, wheelhouse=wheelhouse, contracts_checkout=contracts_checkout, _deadline=deadline)
+    sdk = build_sdk(protected_source, wheelhouse=wheelhouse, contracts_checkout=contracts_checkout, _deadline=deadline, _source_manifest=manifest)
     _require(time.monotonic() <= deadline)
     current = _BOOT_ROOT / 'CURRENT.json'
     installed = _BOOT_ROOT / 'installation.json'
@@ -1512,6 +1547,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', required=True, type=Path)
     parser.add_argument('--source-commit')
+    parser.add_argument('--source-manifest', type=Path)
+    parser.add_argument('--source-attestation', type=Path)
+    parser.add_argument('--manifest-verifier', type=Path)
     parser.add_argument('--deadline-monotonic', type=float)
     parser.add_argument('--wheelhouse', type=Path)
     parser.add_argument('--contracts-checkout', type=Path)
@@ -1529,7 +1567,8 @@ def main(argv=None):
             _require(arguments.source_commit is not None)
             result = prepare_deployment(arguments.source, source_commit=arguments.source_commit,
                 wheelhouse=arguments.wheelhouse, contracts_checkout=arguments.contracts_checkout,
-                _deadline=deadline, _progress=report_phase)
+                _deadline=deadline, _progress=report_phase, source_manifest=arguments.source_manifest,
+                source_attestation=arguments.source_attestation, manifest_verifier=arguments.manifest_verifier)
         else:
             report_phase('prepare')
             dependencies = dependency_root(arguments.venv) if arguments.venv else arguments.dependencies
