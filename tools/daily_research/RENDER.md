@@ -179,8 +179,13 @@ owner commands are in [operators/README.md](operators/README.md#site-universe-ba
 
 ADP-010 partner discovery, owner decision 2026-10-05 and design v1.1; shadow mode by
 default. `verification.outreach_tier(gates, now)` and `quote_level()` are the one rule
-(`blueprint.outreach-ready-rule.v1.1`) over the existing lead-verification gates. The
-shared golden file is `tests/fixtures/daily_research/lead-verification-tier.json`.
+(`blueprint.outreach-ready-rule.v1.2`) over the existing lead-verification gates. v1.2
+is v1.1 with the question's wording fixed (below); the gates and blocks are unchanged.
+The shared golden file is `tests/fixtures/daily_research/lead-verification-tier.json`.
+Each case names its rule version. It keeps the v1.1 cases unchanged because
+Blueprint-WebApp re-derives rows published under v1.1, with v1.1 wording. Its
+`question_wording` section holds the wording vectors and tables that every mirror
+(`publisher.mjs`, Blueprint-WebApp) copies.
 
 - `verified` is the unchanged full-proof path. `outreach_ready` needs operator and
   physical site as `verified_fact`, and site task as `verified_fact` or `inference`,
@@ -207,17 +212,32 @@ shared golden file is `tests/fixtures/daily_research/lead-verification-tier.json
   counterevidence, changes the question and not the eligibility.
 - Open checks, in order: `site_link` (site task not `verified_fact`),
   `manual_workflow` (human workflow not `verified_fact`), `freshness` (`valid_until`
-  null), then `existing_automation`, `fit` and `interest`. Exactly one question, by
-  precedence S (site link open), M (manual workflow open), then A, word for word:
-  - S: "Is <task> done at your <site> site, or somewhere else in the company?"
+  null), then `existing_automation`, `fit` and `interest`. Exactly one question
+  (`verification.outreach_question`), by precedence S (site link open), M (manual
+  workflow open), A (manual workflow verified and automation evidence recorded: a
+  contradicted counterevidence), else U (automation unknown or none shown), word for
+  word:
+  - S: "Is <task> done at <site>, or somewhere else in the company?"
   - M: "Which parts of <task> at <site> still need people, and what has kept them
     from being automated?"
-  - A: "What has kept the remaining <task> work at <site> from being automated so
-    far?"
+  - A: "What has kept the rest of <task> at <site> from being automated so far?"
+  - U: "Is any of <task> at <site> automated today, or is it all done by hand?"
 
-  `<task>` and `<site>` are the candidate's fields verbatim; a field that adds a
-  second question mark gives `question_not_single`. Blueprint-WebApp #855 derives
-  the same open checks and question from the same assessment.
+  `<task>` is `question_task`: whitespace collapsed, trailing punctuation dropped,
+  and the first letter lower-cased only when the first word is an ordinary
+  capitalised word ("Loading" but not "CNC", "SMT" or "iPhone"). `<site>` is
+  `site_phrase`: "your <City> site" from the location, without its state, ZIP code
+  or country, else "your <name> site" for a site name of at most four words and 40
+  characters, else "this site". An ALL CAPS city is title-cased word by word with
+  Mc restored (MCKINNEY: McKinney) and "of", "la" and the other small words
+  lower-case inside it; any other casing is kept exactly (DeSoto). A task or site
+  that adds a second question mark gives `question_not_single`. v1.1 asked S, M
+  and A only, with the task and site fields verbatim. Blueprint-WebApp derives the
+  same open checks and question from the same assessment.
+- A direction must name the rule this release implements. Under v1.2 a direction
+  naming v1.1 leaves every run in shadow mode with `outreach_ready_direction_invalid`;
+  the brake still applies to it, and a fresh `set --apply` from this release
+  supersedes it with v1.2.
 
 **Shadow mode** (`control.outreach_ready` absent or disabled, or a direction that
 names only `site_screen`): the row, create payload, packet, QA input, review,
@@ -272,8 +292,8 @@ for the intent freezes `outreach_ready_record_too_large`; both keep shadow mode.
   review are not part of what the recovery proves.
 - The brake (`disable --apply`) stops admission at once. It does not stop hypotheses
   that review already bound into the publication payloads.
-- Enable only after the WebApp release that accepts result v3 and v1.1 `hypotheses`
-  payloads (#855) is deployed. The owner command is in
+- Enable only after the WebApp release that accepts result v3 and v1.2 `hypotheses`
+  payloads (#855, #862) is deployed. The owner command is in
   [operators/README.md](operators/README.md#outreach-ready-hypothesis-direction).
 
 ## Stable private consumer contract

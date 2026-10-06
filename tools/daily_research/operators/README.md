@@ -740,7 +740,7 @@ write or send.
 ## Outreach-ready hypothesis direction
 
 `outreach-ready-direction.py` is the only switch for outreach-ready hypotheses in
-daily QA (ADP-010 partner discovery; owner decision 2026-10-05; design v1.1). Without
+daily QA (ADP-010 partner discovery; owner decision 2026-10-05; design v1.1, rule v1.2). Without
 an enabled `daily_qa` direction every run is in shadow mode: the row, create payload,
 packet, QA input, review, publication payloads and status output are byte-identical
 to a release without the feature. After publication completes, the tier is recorded
@@ -795,12 +795,16 @@ PYTHONPATH=$RELEASE $COMMAND disable --apply
 - Admitted keys publish only through the row's existing publication path
   (agent-owned in production): Sheets rows with Verification `Hypothesis` and
   Notion entries labelled "Hypothesis, not verified", each with exactly one
-  question (template S, M or A). A hypothesis that is malformed or no longer current
+  question (template S, M, A or U). A hypothesis that is malformed or no longer current
   at publication is left out on its own reason; it never blocks that day's verified
   rows. Nothing authorizes a send.
 - Enable a direction only after the WebApp release that accepts result v3 and the
-  v1.1 `hypotheses` payloads (#855) is deployed. An older WebApp refuses every day
+  v1.2 `hypotheses` payloads (#855, #862) is deployed. An older WebApp refuses every day
   whose payload contains hypotheses, including that day's verified rows.
+- A direction names the rule of the release that set it (`rule_version`). After a
+  release that changes the rule (v1.1 to v1.2), run `set --apply` from that release:
+  until then `show` reports the pinned direction as unverified and every run is in
+  shadow mode with `outreach_ready_direction_invalid`. `disable --apply` still brakes it.
 
 The hermetic tests use the real bridge with in-memory Firestore and a fake object
 store. No provider, model, session, CRM write or send.
@@ -955,7 +959,7 @@ repository root, with `--key-file` set to a private env file. Start with
   task quote, its page or a same-URL excerpt must name a site anchor (or the proven
   provider address); otherwise the task is `company_level_task` and does not
   qualify.
-- `outreach_ready` (rule `blueprint.site-screen-rule.v2`, design v1.1) needs the
+- `outreach_ready` (rule `blueprint.site-screen-rule.v3`, design v1.1) needs the
   operator, the exact site and the site task each proven that way, and nothing
   contradicted: an operator the input does not name (`operator_mismatch`), the site
   shown closed (`operating_now` `no`, or an answer that is not yes, no or unknown),
@@ -964,13 +968,16 @@ repository root, with `--key-file` set to a private env file. Start with
   `manual_today` `no`, or `existing_automation` `full` (this task at this site fully
   automated). Partial automation, or automation of other tasks or sites, keeps the
   site eligible. Every other site is `screened`, with its `blockers`.
-- Each record asks exactly one question, the first of S, M and A whose check is open:
-  S (site link open) "Is <task> done at your <site> site, or somewhere else in the
-  company?"; M (manual workflow open) "Which parts of <task> at <site> still need
-  people, and what has kept them from being automated?"; A "What has kept the
-  remaining <task> work at <site> from being automated so far?". `<site>` is the
-  input city, else the site name. Every other open check (existing automation,
-  freshness, fit, interest) is recorded in `open_checks` and not asked.
+- Each record asks exactly one question, `verification.outreach_question` under
+  outreach-ready rule v1.2 (see [RENDER.md](../RENDER.md#outreach-ready-tier)): S
+  (site link open) "Is <task> done at <site>, or somewhere else in the company?"; M
+  (manual workflow open) "Which parts of <task> at <site> still need people, and what
+  has kept them from being automated?"; A (proven partial automation) "What has kept
+  the rest of <task> at <site> from being automated so far?"; else U "Is any of <task>
+  at <site> automated today, or is it all done by hand?". `<site>` is "your <City>
+  site" from the address city, else "your <name> site" for a short input site name,
+  else "this site". Every other open check (existing automation, freshness, fit,
+  interest) is recorded in `open_checks` and not asked.
   `variability_signals` is recorded and never required.
 - Records are recomputed from the stored raw results and page reads, under each
   stage's current rule (`screen_gates` gives the lead-verification gate shape and

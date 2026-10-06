@@ -67,7 +67,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from tools.daily_research.verification import normalized  # Standard library only, like this module.
+from tools.daily_research.verification import (  # Standard library only, like this module.
+    STATE_NAMES,
+    normalized,
+    outreach_question,
+)
 
 # v3 and v2 name no robot form (demand discovery, owner decision 2026-10-05); the screen looks for the
 # input's task hint first.
@@ -79,7 +83,8 @@ SUMMARY = "blueprint.site-screen.summary.v2"
 OWNER_CEILING = "blueprint.site-screen.owner-ceiling.v1"
 EVIDENCE = "blueprint.site-screen.evidence.v1"
 # The rules each stage's records are recomputed under; a derived file's name carries its rule version.
-SCREEN_RULE = "blueprint.site-screen-rule.v2"
+# v3: the one question is verification.outreach_question, outreach-ready rule v1.2's wording.
+SCREEN_RULE = "blueprint.site-screen-rule.v3"
 CONTACT_RULE = "blueprint.site-contact-rule.v2"
 STAGES = ("screen", "contact")
 API_HOST, RUNS_PATH = "api.parallel.ai", "/v1/tasks/runs"
@@ -168,17 +173,6 @@ STREET_WORDS = {"street": "st", "road": "rd", "avenue": "ave", "av": "ave", "dri
                 "second": "2nd", "third": "3rd", "fourth": "4th", "fifth": "5th", "sixth": "6th", "seventh": "7th",
                 "eighth": "8th", "ninth": "9th", "tenth": "10th"}
 CITY_WORDS = {"ft": "fort", "mt": "mount", "st": "saint", "pt": "port"}
-STATE_NAMES = {
-    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
-    "CT": "connecticut", "DE": "delaware", "DC": "district of columbia", "FL": "florida", "GA": "georgia",
-    "HI": "hawaii", "ID": "idaho", "IL": "illinois", "IN": "indiana", "IA": "iowa", "KS": "kansas",
-    "KY": "kentucky", "LA": "louisiana", "ME": "maine", "MD": "maryland", "MA": "massachusetts", "MI": "michigan",
-    "MN": "minnesota", "MS": "mississippi", "MO": "missouri", "MT": "montana", "NE": "nebraska", "NV": "nevada",
-    "NH": "new hampshire", "NJ": "new jersey", "NM": "new mexico", "NY": "new york", "NC": "north carolina",
-    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon", "PA": "pennsylvania",
-    "PR": "puerto rico", "RI": "rhode island", "SC": "south carolina", "SD": "south dakota", "TN": "tennessee",
-    "TX": "texas", "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
-    "WI": "wisconsin", "WY": "wyoming"}
 STATE_CODES = {name: code for code, name in STATE_NAMES.items()}
 SHA = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -317,12 +311,6 @@ CHOICES = {"operating_now": ("yes", "no", "unknown"), "target_task": ("yes", "no
            "facility_operator": ("self", "contractor", "tenant", "unknown")}
 PERSON_FIELDS = frozenset({"person_name", "person_title", "person_url", "person_quote", "person_date"})
 EMAIL_FIELDS = frozenset({"email", "email_url", "email_quote"})
-# Exactly one question per site (design v1.1, section 10), the first whose check is open, in this order. A is
-# the last: its check, existing automation, is always open. Every other open check is recorded, not asked.
-QUESTIONS = (("S", "site_link", "Is {task} done at your {site} site, or somewhere else in the company?"),
-             ("M", "manual_workflow",
-              "Which parts of {task} at {site} still need people, and what has kept them from being automated?"),
-             ("A", "existing_automation", "What has kept the remaining {task} work at {site} from being automated so far?"))
 CONTACT_QUESTIONS = {
     "decision_remit": "Does this person decide on a robot pilot for this task at this site? A title does not prove it.",
     "decision_maker": "Who decides on a robot pilot for this task at this site?",
@@ -1648,11 +1636,9 @@ def operator_domains(answers, verification):
 
 
 def site_label(site):
-    """The site's name in a question: its city, else the input site name, else the operator."""
-    city = (site.get("address") or {}).get("city")
-    if city:
-        return city.title() if city.isupper() else city
-    return site["task_input"].get("site_name") or site["task_input"].get("operator") or ""
+    """(site name, city) for the one question's site (verification.site_phrase): the input site name and the
+    address city, exactly as their sources cased them."""
+    return site["task_input"].get("site_name") or "", (site.get("address") or {}).get("city")
 
 
 def screen_gates(site, answers, choices, verification, index, *, valid):
@@ -1718,18 +1704,22 @@ def screen_gates(site, answers, choices, verification, index, *, valid):
              "physical_site": {"primary_sources_usable": bool(place), "proofs": place},
              "site_task": {"primary_sources_usable": scope == "site",
                            "proofs": proofs("site_task", "target_task") if scope == "site" else []}}
+    name, city = site_label(site)
     return {"eligible_for_qualified_promotion": False, "assessment_valid": valid, "identity_present": True,
             "duplicate": False, "conflict": False, "valid_until": None, "states": states, "facts": facts,
-            "task": answers["target_task"], "site": site_label(site), "site_task_scope": scope, "flags": flags}
+            "task": answers["target_task"], "site": name, "location": city, "partial_automation": automation == "partial",
+            "site_task_scope": scope, "flags": flags}
 
 
 def outreach_tier(gates):
-    """SCREEN_RULE over screen_gates: the in-flight verification.outreach_tier, with design v1.1's single
-    question. Replace this with that function once it lands and bump SCREEN_RULE; records are recomputed.
+    """SCREEN_RULE over screen_gates: the in-flight verification.outreach_tier, with its single question.
 
     outreach_ready: operator, physical_site and site_task are verified_fact with proofs, the result is valid,
-    and nothing is contradicted. Anything else, including any defect here, is none. The question is the first
-    of S, M and A (QUESTIONS) whose check is open; every other open check is recorded, not asked."""
+    and nothing is contradicted. Anything else, including any defect here, is none. The question is
+    verification.outreach_question (rule v1.2): S while the site link is open, else M while the manual
+    workflow is open, else A when a proven answer shows partial automation and U when it is unknown or none is
+    shown. Its site is "your <City> site" from the address city, else the input site name, else "this site".
+    Every other open check is recorded, not asked."""
     block = {"rule_version": SCREEN_RULE, "proving_sources": [], "open_checks": [], "question": None,
              "question_template": None, "blockers": []}
     try:
@@ -1751,16 +1741,16 @@ def outreach_tier(gates):
                 blockers.append(name + "_primary_source_unusable")
             elif not facts[name]["proofs"]:
                 blockers.append(name + "_quote_unproven")
-        task, site = gates["task"], gates["site"]
-        if not task or not site:
+        task, site, city = gates["task"], gates["site"], gates["location"]
+        if not task or not (site or city):
             blockers.append("question_task_or_site_missing")
         checks = (["site_link"] if gates["site_task_scope"] != "site" else []) + (
             ["manual_workflow"] if states.get("human_workflow") != "verified_fact" else []) + [
             "existing_automation", "freshness", "fit", "interest"]
         block["open_checks"] = checks
-        if task and site:
-            template, _, text = next(item for item in QUESTIONS if item[1] in checks)
-            block.update(question=text.format(task=task, site=site), question_template=template)
+        if task and (site or city):
+            template, question = outreach_question(checks, task, site, city, partial_automation=gates["partial_automation"] is True)
+            block.update(question=question, question_template=template)
         tier = "none" if blockers else "outreach_ready"
         return {"tier": tier, "eligible_for_outreach_ready": tier == "outreach_ready",
                 "outreach_ready": {**block, "blockers": list(dict.fromkeys(blockers))}}

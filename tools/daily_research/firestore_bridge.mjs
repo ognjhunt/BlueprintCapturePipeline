@@ -118,7 +118,9 @@ async function suBounded(fn,ms) {
   finally {clearTimeout(timer);}
 }
 // Owner direction for outreach-ready hypotheses; mirrors tools/daily_research/outreach_ready.py.
-const OR_DIRECTION='blueprint.outreach-ready-direction.v1', OR_RULE='blueprint.outreach-ready-rule.v1.1';
+// A new direction must name the rule this release implements (verification.OUTREACH_RULE_VERSION); a pinned
+// direction of an earlier rule can still be braked, and a fresh set supersedes it.
+const OR_DIRECTION='blueprint.outreach-ready-direction.v1', OR_RULE='blueprint.outreach-ready-rule.v1.2';
 const OR_PREFIX='operations/research/outreach-ready/', OR_PATHS=['daily_qa','site_screen'], OR_MAX_OBJECT=16*1024;
 const OR_FIELDS=['approval_reference','approved_by','binding','effective_from','expires_at','issued_at','reason',
   'rule_version','schema_version','scope','supersedes','version'];

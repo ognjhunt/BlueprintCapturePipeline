@@ -800,13 +800,14 @@ def screened(tmp_path, answers, *, record=None, pages=None, basis=None, unpublis
 def test_a_web_found_site_with_every_proof_is_outreach_ready_with_one_question(tmp_path):
     record = screened(tmp_path, screen_answers(1))
     assert (record["tier"], record["rule_version"], record["schema_version"]) == (
-        "outreach_ready", "blueprint.site-screen-rule.v2", "blueprint.site-screen.v3")
+        "outreach_ready", "blueprint.site-screen-rule.v3", "blueprint.site-screen.v3")
     assert record["blockers"] == [] and record["task_scope"] == "site"
     assert record["gates"]["states"] == {"operator": "verified_fact", "physical_site": "verified_fact",
                                          "site_task": "verified_fact", "human_workflow": "verified_fact",
                                          "plausible_fit": "unresolved", "counterevidence": "unresolved"}
-    assert record["question_template"] == "A" and record["question"] == (
-        "What has kept the remaining CNC machine tending work at Fixture City from being automated so far?")
+    # Rule v1.2's wording: existing automation is unknown, so U, never A's "the rest"; the site is "your <City> site".
+    assert record["question_template"] == "U" and record["question"] == (
+        "Is any of CNC machine tending at your Fixture City site automated today, or is it all done by hand?")
     assert record["open_checks"] == ["existing_automation", "freshness", "fit", "interest"]
     assert record["variability"] == {"answer": "high-mix batches", "proven": True}
     assert [source["claim"] for source in record["proving_sources"]] == ["operator", "physical_site", "site_task"]
@@ -928,12 +929,31 @@ def test_partial_automation_keeps_the_site_and_asks_question_a(tmp_path):
     record = screened(tmp_path, partial)
     assert (record["tier"], record["question_template"], record["gates"]["states"]["counterevidence"]) == (
         "outreach_ready", "A", "checked")
+    assert record["question"] == "What has kept the rest of CNC machine tending at your Fixture City site from being automated so far?"
+    # A proven "no" shows no automation: U.
+    none = screen_answers(1, existing_automation="no", existing_automation_url="https://operator-1.example/robots",
+                          existing_automation_quote="No robots or automated loaders are used on the lathes at the plant.")
+    assert screened(tmp_path / "none", none)["question_template"] == "U"
+
+
+def test_the_question_cases_the_city_as_a_name_and_lowercases_an_ordinary_task(tmp_path):
+    """Rule v1.2 (the screen output's wording faults): McKinney, never Mckinney; no state or ZIP code in the site."""
+    answers = screen_answers(1, target_task="Loading and unloading CNC lathes")
+    record = screened(tmp_path / "upper", answers, record=universe_row(1, city="FIXTURE CITY"))
+    # A government record's ALL CAPS city reads as a name: title-cased, never left in capitals.
+    assert record["tier"] == "outreach_ready" and record["question"] == (
+        "Is any of loading and unloading CNC lathes at your Fixture City site automated today, or is it all done by hand?")
+    zipped = screened(tmp_path / "zip", screen_answers(1), record=universe_row(1, city="Fixture City TX 75050"))
+    assert "at your Fixture City site" in zipped["question"] and "75050" not in zipped["question"]
+    # Without a city the input's short site name is the site.
+    named = ss.site_label({"task_input": {"site_name": "Synthetic Works 1"}, "address": {}})
+    assert named == ("Synthetic Works 1", None)
 
 
 def test_an_unproven_manual_workflow_asks_question_m(tmp_path):
     record = screened(tmp_path, screen_answers(1, manual_today="unknown", manual_today_url="", manual_today_quote=""))
     assert (record["tier"], record["question_template"]) == ("outreach_ready", "M")
-    assert record["question"] == ("Which parts of CNC machine tending at Fixture City still need people, and what has "
+    assert record["question"] == ("Which parts of CNC machine tending at your Fixture City site still need people, and what has "
                                   "kept them from being automated?")
     assert record["open_checks"] == ["manual_workflow", "existing_automation", "freshness", "fit", "interest"]
 
@@ -986,16 +1006,16 @@ def test_records_carry_their_rule_and_are_recomputed_without_a_read_or_a_run(tmp
     answers = screen_answers(1)
     workspace, provider, reader, records = screen(tmp_path, [inventory_record(1)], [answers], pages_for(answers))
     (key,) = records
-    current = workspace.path("screen", "records", key).with_name(f"{key}.site-screen-rule.v2.json")
+    current = workspace.path("screen", "records", key).with_name(f"{key}.site-screen-rule.v3.json")
     assert current.exists() and json.loads(current.read_text())["rule_version"] == ss.SCREEN_RULE
     calls, reads = len(provider.calls), len(reader.requested)
     current.unlink()
     assert ss.summary(workspace)["screen"]["tiers"] == {"outreach_ready": 1, "screened": 0}
-    monkeypatch.setattr(ss, "SCREEN_RULE", "blueprint.site-screen-rule.v3")
+    monkeypatch.setattr(ss, "SCREEN_RULE", "blueprint.site-screen-rule.v4")
     result = ss.verify(workspace, reader=FakePages({}), today=TODAY)
     assert (result["screen"]["records"], result["screen"]["pages_kept"], result["page_reads"]) == (1, 0, 0)
-    assert json.loads(current.with_name(f"{key}.site-screen-rule.v3.json").read_text())["rule_version"] == (
-        "blueprint.site-screen-rule.v3")
+    assert json.loads(current.with_name(f"{key}.site-screen-rule.v4.json").read_text())["rule_version"] == (
+        "blueprint.site-screen-rule.v4")
     assert (len(provider.calls), len(reader.requested)) == (calls, reads)
 
 
@@ -1015,7 +1035,7 @@ def test_summary_counts_fields_claims_tiers_questions_and_cost_without_site_data
     assert screen_report["fields"]["operating_now"] == {"answers": {"yes": 1, "no": 1}, "levels": {"verified_on_page": 2}}
     assert screen_report["physical_site_basis"] == {"site_identity": 1, "government_record": 1}
     assert screen_report["claims"]["physical_site"] == {"verified_fact": 1, "contradicted": 1}
-    assert screen_report["questions"] == {"A": 1} and screen_report["variability_proven"] == 2
+    assert screen_report["questions"] == {"U": 1} and screen_report["variability_proven"] == 2
     assert (report["estimated_cost_usd"], report["committed_usd"], report["rules"]["screen"]) == (
         "0.050", "0.050", ss.SCREEN_RULE)
     assert json.loads((workspace.root / "summary.json").read_text()) == report
