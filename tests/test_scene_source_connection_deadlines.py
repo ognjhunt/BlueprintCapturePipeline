@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import functools
 import http.client
+import importlib.util
 import json
 import math
 import os
@@ -15,14 +16,12 @@ import subprocess
 import sys
 import threading
 import time
-import types
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 NAMES = {
@@ -34,7 +33,7 @@ NAMES = {
 
 
 @pytest.fixture(params=["deployer", "installer", "shell-bootstrap"])
-def transport(request):
+def transport(request, tmp_path):
     if request.param == "shell-bootstrap":
         shell = (SCRIPTS / "install_live_pipeline_control_plane.sh").read_text()
         raw = shell.split("<<'PY_RUNTIME'\n", 1)[1].split("\nPY_RUNTIME", 1)[0]
@@ -45,11 +44,14 @@ def transport(request):
              if (isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in NAMES)
              or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
                  and target.id.startswith("_SOURCE_") for target in node.targets))]
-    module = types.ModuleType("synthetic_trusted_source_transport")
+    fixture_source = tmp_path / "trusted_source_transport.py"
+    fixture_source.write_text(ast.unparse(ast.Module(body=nodes, type_ignores=[])))
+    spec = importlib.util.spec_from_file_location("synthetic_trusted_source_transport", fixture_source)
+    module = importlib.util.module_from_spec(spec)
     module.__dict__.update({"functools": functools, "http": http, "json": json,
         "math": math, "os": os, "re": re, "selectors": selectors, "socket": socket,
         "subprocess": subprocess, "sys": sys, "time": time, "urllib": urllib})
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), request.param, "exec"), module.__dict__)
+    spec.loader.exec_module(module)
     return module
 
 
