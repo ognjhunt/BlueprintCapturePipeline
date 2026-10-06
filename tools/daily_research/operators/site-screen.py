@@ -9,7 +9,6 @@ and stable codes only, never site names, people or addresses. The key comes from
 from --key-file (KEY=VALUE lines); it is never printed or written. No CRM write, draft or send.
 """
 import argparse
-import os
 import time
 from pathlib import Path
 
@@ -19,24 +18,7 @@ from tools.daily_research.site_screen import ScreenError
 OK_STATES = frozenset({"planned", "complete", "pending"})
 
 
-def api_key(key_file=None, environ=None):
-    """PARALLEL_API_KEY from --key-file when one is given, else from the environment."""
-    if key_file is None:
-        value = (os.environ if environ is None else environ).get(site_screen.API_KEY_ENV, "")
-    else:
-        try:
-            lines = Path(key_file).read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError):
-            raise ScreenError("site_screen_key_file_unreadable") from None
-        value = ""
-        for line in lines:
-            line = line.strip()
-            name, separator, item = line.removeprefix("export ").partition("=")
-            if separator and not line.startswith("#") and name.strip() == site_screen.API_KEY_ENV:
-                value = item.strip().strip("\"'")
-    if not value:
-        raise ScreenError("site_screen_api_key_missing")
-    return value
+api_key = site_screen.read_api_key  # PARALLEL_API_KEY from --key-file, else from the environment.
 
 
 def main(argv=None, *, environ=None, transport=None, reader=None, monotonic=time.monotonic, sleep=time.sleep,

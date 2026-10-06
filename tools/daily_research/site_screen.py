@@ -471,10 +471,32 @@ class TaskClient:
         return value, raw
 
 
-def create_body(stage, site, processor):
+def read_api_key(key_file=None, environ=None):
+    """PARALLEL_API_KEY from ``key_file`` (KEY=VALUE lines; ``export`` and quotes allowed, ``#`` comments
+    ignored) when one is given, else from the environment. The value is returned to the caller only, for
+    TaskClient: it is never logged, printed or written."""
+    if key_file is None:
+        value = (os.environ if environ is None else environ).get(API_KEY_ENV, "")
+    else:
+        try:
+            lines = Path(key_file).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            raise ScreenError("site_screen_key_file_unreadable") from None
+        value = ""
+        for line in lines:
+            line = line.strip()
+            name, separator, item = line.removeprefix("export ").partition("=")
+            if separator and not line.startswith("#") and name.strip() == API_KEY_ENV:
+                value = item.strip().strip("\"'")
+    if not value:
+        raise ScreenError("site_screen_api_key_missing")
+    return value
+
+
+def create_body(stage, site, processor, forms=FORMS):
     """The exact create request: the site's task input, its stable key as metadata, the stage's form, and a
-    source policy that keeps LinkedIn out of the provider's search."""
-    form = FORMS[stage]
+    source policy that keeps LinkedIn out of the provider's search. A sibling line passes its own ``forms``."""
+    form = forms[stage]
     return {"processor": processor, "input": site["task_input"],
             "metadata": {"site_key": site["site_key"], "form": form["version"]},
             "source_policy": SOURCE_POLICY,
@@ -819,9 +841,9 @@ def _pin_valid(pin):
         return False
 
 
-def _check_event(event, stage):
+def _check_event(event, stage, stages=STAGES):
     """One line's shape; anything else is damage. ``stage`` None is the spend journal, which holds the pin
-    and the events of every stage."""
+    and the events of every stage of ``stages`` (a sibling line, such as the team universe, passes its own)."""
     kind = event.get("event") if isinstance(event, dict) else None
     if kind not in EVENT_FIELDS or event.get("schema_version") != LEDGER or not all(
             field in event for field in EVENT_FIELDS[kind]):
@@ -832,7 +854,7 @@ def _check_event(event, stage):
     elif kind == "pinned":
         valid = stage is None and event.get("stage") is None and _pin_valid(event["pin"])
     else:
-        valid = (event.get("stage") in STAGES and (stage is None or event["stage"] == stage)
+        valid = (event.get("stage") in stages and (stage is None or event["stage"] == stage)
                  and isinstance(event.get("site_key"), str) and SHA.fullmatch(event["site_key"])
                  and ("attempt" not in event or isinstance(event["attempt"], str) and ATTEMPT.fullmatch(event["attempt"]))
                  and ("run_id" not in event or isinstance(event["run_id"], str) and RUN_ID.fullmatch(event["run_id"]))
@@ -851,8 +873,8 @@ class Ledger:
     """One append-only JSONL file: a stage's run ledger, or (stage None) the out dir's spend journal. Each line
     is written with one write and fsynced."""
 
-    def __init__(self, path, stage):
-        self.path, self.stage = Path(path), stage
+    def __init__(self, path, stage, stages=STAGES):
+        self.path, self.stage, self.stages = Path(path), stage, stages
 
     def events(self):
         """Every event in order. A torn final line (a write cut short by a crash) is skipped: no step after
@@ -866,7 +888,7 @@ class Ledger:
         for line in lines:
             try:
                 event = json.loads(line)
-                _check_event(event, self.stage)
+                _check_event(event, self.stage, self.stages)
             except (ValueError, ScreenError):
                 event = None
             parsed.append(event)
@@ -993,7 +1015,11 @@ def _same(first, second):
 class Workspace:
     """One out dir: the owner's pinned ceiling, the spend journal, and for each stage a ledger, raw provider
     responses and verified records. Outputs hold prospect data and the ledgers hold spend, so the out dir is
-    never inside this code tree, any Git work tree or storage the system prunes."""
+    never inside this code tree, any Git work tree or storage the system prunes.
+
+    A sibling paid line (the team universe) subclasses it with its own ``stages`` and ``forms``, so the pin, the
+    spend journal, the ledgers, spend admission and ``collect`` are shared rather than copied."""
+    stages, forms = STAGES, FORMS
 
     def __init__(self, path, *, create=False, code_root=CODE_ROOT):
         self.root = guard_out_dir(path, code_root)
@@ -1004,10 +1030,17 @@ class Workspace:
         self.pin_path = self.root / "owner_ceiling.json"
 
     def ledger(self, stage):
-        return Ledger(self.root / stage / "runs.jsonl", stage)
+        return Ledger(self.root / stage / "runs.jsonl", stage, self.stages)
 
     def journal(self):
-        return Ledger(self.root / "spend.jsonl", None)
+        return Ledger(self.root / "spend.jsonl", None, self.stages)
+
+    def create_body(self, stage, site, processor):
+        return create_body(stage, site, processor, self.forms)
+
+    def seal(self, stage, key, site, raw, pages, today):
+        """A completed result as it is stored: a contact result is sealed first (seal_contact)."""
+        return seal_contact(self, key, site, raw, pages, today) if stage == "contact" else raw
 
     def path(self, stage, kind, key):
         return self.root / stage / kind / (key + ".json")
@@ -1048,7 +1081,7 @@ class Workspace:
         return pin
 
     def _has_outputs(self):
-        return any(next((self.root / stage / kind).glob("*.json"), None) for stage in STAGES
+        return any(next((self.root / stage / kind).glob("*.json"), None) for stage in self.stages
                    for kind in ("results", "evidence", "records"))
 
     def states(self):
@@ -1059,11 +1092,11 @@ class Workspace:
         pin file after its journal line, and a ledger's last event after its journal copy. Any other
         difference is refused, so a deleted or edited file never resets spend."""
         journal, pin = self.journal().events(), self._pin()
-        ledgers = {stage: self.ledger(stage).events() for stage in STAGES}
+        ledgers = {stage: self.ledger(stage).events() for stage in self.stages}
         if not journal:
             if pin is not None or any(ledgers.values()) or self._has_outputs():
                 raise ScreenError("site_screen_spend_journal_missing")
-            return {stage: {} for stage in STAGES}, None
+            return {stage: {} for stage in self.stages}, None
         head, body = journal[0], journal[1:]
         if head["event"] != "pinned" or any(event["event"] == "pinned" for event in body):
             raise ScreenError("site_screen_spend_journal_invalid")
@@ -1074,7 +1107,7 @@ class Workspace:
             pin = head["pin"]
         if pin != head["pin"]:
             raise ScreenError("site_screen_owner_ceiling_mismatch")
-        for stage in STAGES:
+        for stage in self.stages:
             mine = [event for event in body if event["stage"] == stage]
             if _same(mine, ledgers[stage]):
                 continue
@@ -1083,8 +1116,8 @@ class Workspace:
                 ledgers[stage] = mine
                 continue
             raise ScreenError("site_screen_spend_journal_mismatch")
-        states = {stage: fold(ledgers[stage]) for stage in STAGES}
-        for stage in STAGES:  # A kept result or page read needs its created run, or spend was reset around it.
+        states = {stage: fold(ledgers[stage]) for stage in self.stages}
+        for stage in self.stages:  # A kept result or page read needs its created run, or spend was reset around it.
             for kind in ("results", "evidence"):
                 for path in sorted((self.root / stage / kind).glob("*.json")):
                     if states[stage].get(path.stem, {}).get("state") != "created":
@@ -1119,7 +1152,7 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
     if apply and pin is None:
         pin = workspace.create_pin(ceiling, limit, reference)
     shown = pin or {"ceiling_usd": str(ceiling), "max_runs": limit, "owner_reference": reference}
-    state, others = states[stage], [states[name] for name in STAGES if name != stage]
+    state, others = states[stage], [states[name] for name in workspace.stages if name != stage]
     counts = Counter({name: 0 for name in ("created", "would_create", "already_created", "outcome_unknown",
                                            "outcome_unknown_kept_out")})
     refused, stop = Counter(), None
@@ -1141,11 +1174,11 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
         attempt = secrets.token_hex(8)
         workspace.append(stage, _event(stage, "intent", key, attempt=attempt, processor=processor,
                                        price_usd=str(price), ceiling_usd=str(ceiling), max_runs=limit,
-                                       form_sha256=FORMS[stage]["sha256"], input=site, input_sha256=input_sha256,
+                                       form_sha256=workspace.forms[stage]["sha256"], input=site, input_sha256=input_sha256,
                                        code=code))
         state[key] = {"state": "unknown", "price_usd": str(price)}
         try:
-            run = client.create(create_body(stage, site, processor))
+            run = client.create(workspace.create_body(stage, site, processor))
         except ProviderRefused as error:
             workspace.append(stage, _event(stage, "refused", key, attempt=attempt, code=str(error),
                                            http_status=error.status))
@@ -1165,7 +1198,7 @@ def _submit(workspace, stage, sites, states, pin, *, client, owner_reference, ce
         state[key].update(state="created", status=status)
         counts["created"] += 1
     every = [state, *others]
-    return {"command": "run" if stage == "screen" else "contact", "stage": stage, "form": FORMS[stage]["version"],
+    return {"command": "run" if stage == "screen" else "contact", "stage": stage, "form": workspace.forms[stage]["version"],
             "apply": apply, "state": "stopped" if stop else "complete" if apply else "planned", "stop": stop,
             "sites": len(sites), **counts, "refused": dict(refused),
             "runs": sum(run_count(sites) for sites in every),
@@ -1245,7 +1278,7 @@ def collect(workspace, *, client, reader=None, today=None, wait_seconds=COLLECT_
     with workspace.lock():
         deadline = monotonic() + wait_seconds
         states, _ = workspace.states()
-        for stage in STAGES:
+        for stage in workspace.stages:
             for key, site in states[stage].items():
                 if site["state"] != "created" or site["observed"]:
                     continue
@@ -1271,8 +1304,8 @@ def collect(workspace, *, client, reader=None, today=None, wait_seconds=COLLECT_
                         raise
                     read_errors[str(error)] += 1
                     continue
-                if stage == "contact" and run_value["status"] == "completed":
-                    raw = seal_contact(workspace, key, site["input"], raw, pages, today)
+                if run_value["status"] == "completed":
+                    raw = workspace.seal(stage, key, site["input"], raw, pages, today)
                 _write_once(workspace.path(stage, "results", key), raw)
                 workspace.append(stage, _event(stage, "observed", key, run_id=run_id, status=run_value["status"],
                                                result_sha256=_sha256(raw)))
