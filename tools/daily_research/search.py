@@ -61,6 +61,13 @@ BUDGET_EXHAUSTED = {"code": "research_tool_budget_exhausted",
                     "guidance": "This run's tool budget for this phase is used up. Do not call more tools. "
                                 "Write the final output now from the evidence already retained, and record "
                                 "the remaining promising branches as unresolved for the next run."}
+# The last stretch of research (at most a quarter of its window) is for writing the output: the hard time guard
+# cancels a turn that is still searching, and its evidence never reaches QA (2026-10-06).
+WRAP_UP_SECONDS = 600
+TIME_NEARLY_UP = {"code": "research_tool_time_nearly_up",
+                  "guidance": "This run's research time is nearly up. Do not call more tools. Write the final "
+                              "output now from the evidence already retained, and record the remaining promising "
+                              "branches as unresolved for the next run."}
 
 
 class ToolFailure(ValueError):
@@ -541,6 +548,8 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
     if phase == "publication":
         from tools.daily_research.consumer import qa_deadline
         deadline = qa_deadline(row, {}).timestamp()
+    research_window = phase_runtime_seconds(row, {}, "research")
+    wrap_up_at = deadline - min(WRAP_UP_SECONDS, research_window / 4) if phase == "research" else None
     from tools.daily_research import expansion, history, publication, team_universe
     early_publication = ({publication.INSPECT, publication.PUBLISH}
                          if row.get("publication_profile") == publication.PROFILE and phase != "publication" else set())
@@ -582,13 +591,18 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             executed = sum(c.get("budget_exhausted") is not True for c in calls.values())
             exhausted = (executed >= MAX_CALLS - reserve_calls
                          or used >= MAX_EVIDENCE - reserve_bytes - MAX_RESPONSE - 20000)
+            # Near the end of research every new call is told to finish; that is never a refusal.
+            time_up = wrap_up_at is not None and clock().timestamp() >= wrap_up_at
             # Each phase has its own grace replies, so research cannot use up QA's.
-            grace = sum(c.get("budget_exhausted") is True and c.get("phase") == phase for c in calls.values())
+            grace = sum(c.get("budget_exhausted") is True and not c.get("time_up") and c.get("phase") == phase
+                        for c in calls.values())
             if exhausted and (grace >= BUDGET_GRACE_CALLS or used >= MAX_EVIDENCE - 20000):
                 raise Refusal("research_tool_evidence_resource_ceiling")
             prior = {"request_digest": digest(binding), "request": binding, "phase": phase, "attempted": False}
-            if exhausted:
+            if exhausted or time_up:
                 prior["budget_exhausted"] = True
+            if time_up and not exhausted:
+                prior["time_up"] = True
             calls[cid] = prior
             if (len(canonical(binding).encode()) > 10000 or len(canonical(calls).encode()) > MAX_CALL_RECORDS
                     or len(canonical(row).encode()) > MAX_RECORD):
@@ -605,8 +619,8 @@ def respond(row, session, ledger, api, *, phase, clock, stopped=lambda: False):
             if prior.get("budget_exhausted") is True:
                 # No provider call: a small fixed reply that asks the agent to finish.
                 # It is recorded like any result, so a replay returns the same bytes.
-                outcome = {"success": False, "error": canonical(BUDGET_EXHAUSTED),
-                           "output": canonical({"ok": False, "error": BUDGET_EXHAUSTED})}
+                reply = TIME_NEARLY_UP if prior.get("time_up") is True else BUDGET_EXHAUSTED
+                outcome = {"success": False, "error": canonical(reply), "output": canonical({"ok": False, "error": reply})}
             # Expansion's whole-run claim, rather than a model call ID, owns
             # the paid start. Re-entering it can only recover the original ACK
             # or read that same run; it never repeats an uncertain submission.

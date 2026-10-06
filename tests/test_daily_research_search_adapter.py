@@ -626,6 +626,8 @@ def test_absolute_request_alarm_covers_blocked_dns_and_restores_signal_handler(m
         raise AssertionError("request alarm failed to interrupt DNS")
 
     monkeypatch.setattr(socket, "getaddrinfo", blocked_dns)
+    # This test is about the request alarm; without this, the wrap-up reply would answer the call first.
+    monkeypatch.setattr(search, "WRAP_UP_SECONDS", 0)
     value, ledger = row(), MemoryLedger()
     api = ToolAPI(ledger)
     api.application_tool = search.ApplicationTools()
@@ -729,6 +731,30 @@ def test_call_budget_fails_soft_reserves_qa_and_keeps_a_hard_stop(monkeypatch):
         respond(value, [action(cid="call_7", tid="turn_qa")], ledger, api, phase="qa")
     assert {call["phase"] for call in value["application_tool_calls"].values()} == {"research", "qa"}
     assert value["application_tool_usage"]["attempted_search_requests"] == 3
+
+
+def time_reply(reply):
+    error = json.loads(reply["error"])
+    return reply["success"] is False and error["code"] == "research_tool_time_nearly_up" and "final output" in error["guidance"]
+
+
+def test_research_is_told_to_finish_before_its_time_runs_out(monkeypatch):
+    """2026-10-06: research ran into the hard time guard mid-search and lost the day's output. Inside the last
+    quarter of a short window (at most WRAP_UP_SECONDS), each new research call gets a recorded finish-now reply
+    instead of executing; it never turns into the budget refusal, and QA keeps its own time."""
+    monkeypatch.setattr(search, "BUDGET_GRACE_CALLS", 1)
+    value, ledger = row(), MemoryLedger()  # A 60-second research window: its last 15 seconds are wrap-up time.
+    api = ToolAPI(ledger)
+    respond(value, [action()], ledger, api, clock=lambda: NOW + timedelta(seconds=44))
+    assert len(api.executions) == 1 and api.replies[-1][1]["success"] is True
+    late = lambda: NOW + timedelta(seconds=46)
+    for number in range(2, 5):  # More than the grace limit: a time reply is never a refusal.
+        respond(value, [action(cid=f"call_{number}")], ledger, api, clock=late)
+        assert len(api.executions) == 1 and time_reply(api.replies[-1][1])
+    respond(value, [action(cid="call_4")], ledger, api, clock=late)
+    assert len(api.executions) == 1 and api.replies[-1] == api.replies[-2]
+    respond(value, [action(cid="call_5", tid="turn_qa")], ledger, api, phase="qa", clock=late)
+    assert len(api.executions) == 2 and api.replies[-1][1]["success"] is True
 
 
 def test_research_grace_replies_do_not_use_up_qa_grace(monkeypatch):
