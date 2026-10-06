@@ -11,12 +11,14 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Mapping
 
+from .controlled_http_json import fixed_response_opener, read_bounded_response, read_control_json
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ID = re.compile(r"model_[0-9a-f-]{36}\Z")
@@ -50,8 +52,8 @@ def _service_account_token() -> str:
         "service-accounts/default/token",
         headers={"Metadata-Flavor": "Google"},
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        value = json.load(response)
+    value = read_control_json(request, origin="http://169.254.169.254", method="GET",
+                              timeout=10, maximum_bytes=16_384)
     token = value.get("access_token") if isinstance(value, dict) else None
     if not isinstance(token, str) or not token:
         raise ValueError("policy_model_worker_identity_unavailable")
@@ -64,12 +66,17 @@ def _download(artifact: Mapping[str, object], *, bucket: str, object_name: str) 
     generation = artifact["storage_generation"]
     url = (f"https://storage.googleapis.com/storage/v1/b/{encoded_bucket}/o/"
            f"{encoded_object}?alt=media&generation={generation}")
-    request = urllib.request.Request(url, headers={
-        "Authorization": "Bearer " + _service_account_token(),
-        "Accept": "application/octet-stream",
-    })
-    with urllib.request.urlopen(request, timeout=45) as response:
-        raw = response.read(_MAX_BYTES + 1)
+    request = urllib.request.Request(url, headers={"Accept": "application/octet-stream"})
+    request.add_unredirected_header("Authorization", "Bearer " + _service_account_token())
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "storage.googleapis.com" or parsed.fragment:
+        raise ValueError("policy_model_download_origin_invalid")
+    deadline = time.monotonic() + 45
+    opener = fixed_response_opener(deadline=deadline)
+    with opener.open(request, timeout=45) as response:
+        if response.geturl() != url or response.getcode() != 200:
+            raise ValueError("policy_model_download_origin_invalid")
+        raw = read_bounded_response(response, deadline=deadline, maximum_bytes=_MAX_BYTES)
     if (len(raw) != artifact["size_bytes"]
             or "sha256:" + hashlib.sha256(raw).hexdigest() != artifact["sha256"]):
         raise ValueError("policy_model_download_digest_mismatch")

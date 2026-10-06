@@ -24,6 +24,7 @@ from blueprint_pipeline.company_policy_sandbox_executor import (
     execute_company_policy_sandbox_preobservation,
 )
 from blueprint_pipeline.controlled_policy_bridge_server import QualifiedPolicyBridge
+from blueprint_pipeline.controlled_http_json import read_control_json
 from blueprint_pipeline.controlled_policy_configuration import canonical_request_digest
 from blueprint_pipeline.policy_model_onnx import validate_model_task_binding
 
@@ -47,8 +48,8 @@ class BlueprintArtifactRegistryBroker:
         request = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
             headers={"Metadata-Flavor": "Google"})
-        with urllib.request.urlopen(request, timeout=5) as response:
-            token = json.loads(response.read(4096))
+        token = read_control_json(request, origin="http://metadata.google.internal", method="GET",
+                                  timeout=5, maximum_bytes=4096)
         if (token.get("token_type") != "Bearer" or not isinstance(token.get("access_token"), str)
                 or len(token["access_token"]) < 32 or int(token.get("expires_in", 0)) < 60):
             raise ValueError("controlled_policy_worker_token_invalid")

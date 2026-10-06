@@ -12,21 +12,22 @@ from urllib import request as urllib_request
 
 from .claude_opus_authoring_invoker import (
     ClaudeAuthoringBlocked, MODEL, _INPUT_RATE, _MODEL_INPUT_CONTEXT_TOKENS,
-    _OUTPUT_RATE, _US_GEO_MULTIPLIER, _scoped_key,
+    _OUTPUT_RATE, _US_GEO_MULTIPLIER, _request_json, _scoped_key,
 )
 from .decision_evidence_contracts import canonical_digest
 
 _MODEL_URL = f"https://api.anthropic.com/v1/models/{MODEL}"
 _PUBLISHED_PRICE_URL = "https://platform.claude.com/docs/en/models/opus-5-5/overview"
 _AUTHOR_OUTPUT_CEILING = 12_000
+_MAX_MODEL_RESPONSE_BYTES = 1024 * 1024
 
 
 def _get_model(key: str) -> Mapping[str, Any]:
     request = urllib_request.Request(_MODEL_URL, method="GET", headers={
-        "anthropic-version": "2023-06-01", "x-api-key": key,
+        "anthropic-version": "2023-06-01",
     })
-    with urllib_request.urlopen(request, timeout=15) as response:
-        return json.load(response)
+    request.add_unredirected_header("x-api-key", key)
+    return _request_json(request, timeout=15, maximum_bytes=_MAX_MODEL_RESPONSE_BYTES)
 
 
 def preflight(*, fetch: Callable[[str], Mapping[str, Any]] = _get_model) -> dict[str, Any]:
