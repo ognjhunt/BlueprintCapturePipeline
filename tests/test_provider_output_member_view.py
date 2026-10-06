@@ -366,8 +366,10 @@ def test_plan_records_the_needed_set_measurement_that_lets_auto_delivery_stream(
                                  "members": printed["members"]}
     assert record["quick10_shape"] == {"aggregate": True, "cell_results": 10, "startup_preflight": True}
     assert record["needed_set_budget_bytes"] == output_members.NEEDED_SET_BUDGET_BYTES
-    # Readable by the dispatcher (``blueprint``) whoever wrote it; it holds no secret.
-    assert stat.S_IMODE(fixed.stat().st_mode) == 0o644
+    # This redirected fixture is a custom destination, with no installed
+    # canonical STATE reader contract; even archive basenames remain private.
+    assert stat.S_IMODE(fixed.stat().st_mode) == 0o600
+    assert stat.S_IMODE(fixed.parent.stat().st_mode) == 0o700
     assert output_members.needed_set_measurement_refusal() is None
 
     # An explicit path. A needed set over the budget is recorded as measured, and the gate downloads.
@@ -378,6 +380,7 @@ def test_plan_records_the_needed_set_measurement_that_lets_auto_delivery_stream(
     assert json.loads(capsys.readouterr().out)["needed_set_measurement"]["needed_set_reason"] == (
         "auto_needed_set_over_budget")
     assert output_members.needed_set_measurement_refusal(explicit) == "auto_needed_set_over_budget"
+    assert stat.S_IMODE(explicit.stat().st_mode) == 0o600
 
     # An archive the index would refuse records nothing and leaves the host's record untouched.
     refused = _retained_zip(tmp_path / "refused.zip", {**members, "a\\b.json": b"{}"})
