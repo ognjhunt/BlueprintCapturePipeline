@@ -16,7 +16,6 @@ worker identity: show only reads; pin and disable are dry runs unless --apply an
 through the fenced compare-and-swap. The worker writes the rows itself, only while the daily work is idle.
 """
 import argparse
-import os
 import re
 import time
 from pathlib import Path
