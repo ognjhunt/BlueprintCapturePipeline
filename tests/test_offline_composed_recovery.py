@@ -84,8 +84,15 @@ printf 200
     (fake_bin / "date").chmod(0o755)
     (fake_bin / "sleep").write_text("#!/bin/bash\nexit 0\n")
     (fake_bin / "sleep").chmod(0o755)
+    consumer = '''blueprint_upload_put https://fixture.invalid/immutable "$1"; upload_rc=$?
+if [ "$upload_rc" = 0 ]; then
+  blueprint_upload_read_response || exit 86
+  blueprint_upload_cleanup || exit 86
+fi
+exit "$upload_rc"
+'''
     command = ["bash", "-c", provider_output_upload_shell_fragment(scratch_root=str(tmp_path))
-        + 'blueprint_upload_put https://fixture.invalid/immutable "$1"', "offline", str(source)]
+        + consumer, "offline", str(source)]
     env = {"PATH": f"{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin", "TEST_ROOT": str(tmp_path)}
     first = subprocess.run(command, env=env, capture_output=True)
     assert first.returncode == 56

@@ -558,6 +558,10 @@ if ! blueprint_upload_put "$OUTPUT_PUT_URL" "$ITERATION_ROOT/provider_runtime_ou
   echo BLUEPRINT_SCENE_WARM_BLOCKED:output_upload_failed
   exit 76
 fi
+if ! blueprint_upload_cleanup; then
+  echo BLUEPRINT_SCENE_WARM_BLOCKED:output_upload_cleanup_unproven
+  exit 86
+fi
 chmod -R a-w "$ITERATION_ROOT/runtime" "$ITERATION_ROOT/output"
 echo BLUEPRINT_SCENE_WARM_PROVIDER_OUTPUT_UPLOAD_OK
 """

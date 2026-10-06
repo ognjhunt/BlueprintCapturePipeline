@@ -977,6 +977,8 @@ def test_remote_iteration_is_fixed_immutable_reflink_overlay() -> None:
     assert "BLUEPRINT_SCENE_WARM_BLOCKED:overlay_download_failed" in script
     assert "BLUEPRINT_SCENE_WARM_BLOCKED:output_upload_failed" in script
     assert "blueprint_upload_put" in script
+    assert 'if ! blueprint_upload_cleanup; then' in script
+    assert 'cat /tmp/blueprint_provider_upload_response.json' not in script
     assert "output_expansion_invalid" in script
     assert "iteration_gc_unproven" in script
     assert "iteration_disk_capacity_insufficient" in script
