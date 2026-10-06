@@ -309,14 +309,29 @@ def _inspect_process(scan, directory, pid, target, identities, namespaces, host_
                           dir_fd=directory)
     try:
         names = scan.names(descriptors, 16384)
+        missing_descriptor = None
         for name in names:
             scan.tick()
             _require(re.fullmatch('[0-9]+', name))
-            info = os.stat(name, dir_fd=descriptors)
-            path = os.readlink(name, dir_fd=descriptors)
-            if (info.st_dev, info.st_ino) in identities or os.fsencode(target) in os.fsencode(path):
+            try:
+                info = os.stat(name, dir_fd=descriptors)
+                # Preserve an inode reference even if the subsequent link read
+                # races with closure of this descriptor.
+                if (info.st_dev, info.st_ino) in identities:
+                    channels.add('fd')
+                path = os.readlink(name, dir_fd=descriptors)
+            except FileNotFoundError as error:
+                _require(error.errno == errno.ENOENT)
+                _require(not channels, 'process_reference')
+                missing_descriptor = name
+                break
+            if os.fsencode(target) in os.fsencode(path):
                 channels.add('fd')
         after_names = scan.names(descriptors, 16384)
+        # A failed FD observation alone is not membership or process-exit proof.
+        # Corroborate disappearance on the same retained FD directory, then run
+        # every final process/view check before discarding this entire pass.
+        _require(missing_descriptor is None or missing_descriptor not in after_names)
         descriptor_census_changed = after_names != names
         if descriptor_census_changed:
             # An observed reference is terminal even when descriptors churn.
