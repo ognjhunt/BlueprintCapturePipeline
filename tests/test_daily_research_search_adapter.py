@@ -747,7 +747,9 @@ def test_research_is_told_to_finish_before_its_time_runs_out(monkeypatch):
     api = ToolAPI(ledger)
     respond(value, [action()], ledger, api, clock=lambda: NOW + timedelta(seconds=44))
     assert len(api.executions) == 1 and api.replies[-1][1]["success"] is True
-    late = lambda: NOW + timedelta(seconds=46)
+    def late():
+        return NOW + timedelta(seconds=46)
+
     for number in range(2, 5):  # More than the grace limit: a time reply is never a refusal.
         respond(value, [action(cid=f"call_{number}")], ledger, api, clock=late)
         assert len(api.executions) == 1 and time_reply(api.replies[-1][1])
