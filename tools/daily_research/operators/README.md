@@ -1084,10 +1084,10 @@ PYTHONPATH=$RELEASE $PY $RELEASE/tools/daily_research/operators/site-screen.py a
   holds it, the record's one question, and the chosen recipient with its label and
   provenance (the published page and the operator-domain proof, or the provider's
   `status`, `score`, `checked_at` and `request_digest`). `admission_id` is the SHA-256
-  of the bundle's bytes. Provider lookups are read only from
-  `contact/lookup/<site_key>.json` in the provisional schema
-  `blueprint.site-contact-lookup.v1` until `tools/daily_research/contact_lookup.py`
-  lands; anything else is ignored and the published contacts are used.
+  of the bundle's bytes. Provider lookups use `contact_lookup.load` to recompute the current
+  records from the durable journal, then `choose_recipient` against the current contact.
+  FullEnrich's original `DELIVERABLE` status, unknown score, request/record/lookup digests,
+  and provider employment/source proof are retained; cached recipient JSON grants nothing.
 - `admit --apply` keeps the bundle write-once in `<out>/admissions/<id>.json`, uploads it
   with `gcloud storage cp --if-generation-match=0` to
   `gs://blueprint-8c1ca.appspot.com/operations/research/screen-admission/<id>/bundle.json`

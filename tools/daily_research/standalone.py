@@ -11,7 +11,7 @@ from pathlib import Path
 
 FILES = (
     "README.md", "RENDER.md", "KNOWLEDGE.md", "SKILLS.md", "ADAPTIVE.md", "standalone.py", "runner.py", "knowledge.py",
-    "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "verification.py", "recovery.py", "qa_retry.py", "adaptive.py", "adaptive_runtime.py", "search.py", "allocation.py", "expansion.py", "exa_transport.py", "findall.py", "SEARCH.md", "site_universe.py", "outreach_ready.py", "site_screen.py", "screen_admission.py",
+    "contracts.py", "freshness.py", "capabilities.py", "discovery.py", "verification.py", "recovery.py", "qa_retry.py", "adaptive.py", "adaptive_runtime.py", "search.py", "allocation.py", "expansion.py", "exa_transport.py", "findall.py", "SEARCH.md", "site_universe.py", "outreach_ready.py", "site_screen.py", "screen_admission.py", "contact_lookup.py",
     "history.py", "adaptive-test.config.example.json", "adaptive-daily.config.example.json", "perplexity-daily.config.example.json",
     "consumer.py", "publication.py", "publisher.mjs", "verification-digest.mjs", "requirements.txt", "standalone.config.example.json",
     "capabilities/blueprint-evidence-qualification/SKILL.md",
@@ -25,7 +25,7 @@ FILES = (
     "operators/research-oct2-control.py", "operators/research-perplexity-canary.py",
     "operators/research-perplexity-canary.mjs", "operators/paid-expansion-direction.py", "operators/site-universe-backlog.py",
     "operators/outreach-ready-direction.py",
-    "operators/site-screen.py",
+    "operators/site-screen.py", "operators/contact-lookup.py",
     "operators/README.md",
 )
 PREFIX = "tools/daily_research/"

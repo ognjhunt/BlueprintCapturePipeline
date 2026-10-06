@@ -100,6 +100,11 @@ def prepared(tmp_path, sites):
 
 
 def built(workspace, **options):
+    if "lookups" not in options:
+        def read_synthetic(key):
+            path = workspace.root / "synthetic-lookups" / (key + ".json")
+            return json.loads(path.read_text()) if path.exists() else None
+        options["lookups"] = read_synthetic
     return sa.build(workspace, direction_sha256=options.pop("sha", DIRECTION_SHA),
                     direction_generation=options.pop("generation", DIRECTION_GENERATION), **options)
 
@@ -298,17 +303,31 @@ def test_gcloud_upload_is_create_only_and_reads_back_the_stored_generation(tmp_p
 
 
 def lookup(workspace, key, **changes):
-    value = {"schema_version": sa.LOOKUP, "site_key": key, "address": "avery.placeholder@operator-1.example",
-             "provider": {"name": "synthetic-provider", "status": "valid", "score": 96,
+    value = {"schema_version": "blueprint.site-contact-lookup.v1", "site_key": key, "address": "avery.placeholder@operator-1.example",
+             "provider": {"name": "fullenrich", "status": "valid", "score": 96,
                           "checked_at": "2026-10-05T12:00:00Z", "request_digest": "c" * 64},
              "person": {"source": "public_quote", "name": PERSON, "title": "Plant Manager"}}
     value.update(changes)
-    folder = workspace.root.joinpath(*sa.LOOKUP_FOLDER)
+    person = value["person"]
+    provider = value["provider"]
+    current = {"name": person.get("name"), "title": person.get("title"), "sourcing":
+               "quoted_person" if person.get("source") == "public_quote" else "provider_sourced",
+               "proof": {"source": "fullenrich_people_search", "request_digest": "d" * 64,
+               "current_employment": {"field": "employment.current.is_current",
+               "company_domain": value["address"].rpartition("@")[2], "start_at": None}}, "corroboration": {"corroborated": person.get("corroborated", False),
+               **(person.get("corroboration") or {})}}
+    item = {"source": "provider_lookup", "usable": True, "address": value["address"], "person": current,
+            "operator_domain": value["address"].rpartition("@")[2], "provider": {**provider,
+            "status": "DELIVERABLE" if provider.get("status") == "valid" else "CATCH_ALL",
+            "verification": provider.get("status"), "score": None}}
+    value = {"schema_version": "blueprint.contact-lookup.v1" if value["schema_version"] == "blueprint.site-contact-lookup.v1" else "invalid",
+             "rule_version": "blueprint.contact-lookup-rule.v1", "site_key": key, "lookups": [item]}
+    folder = workspace.root / "synthetic-lookups"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{key}.json").write_text(json.dumps(value))
 
 
-def test_a_provisional_lookup_adds_provider_routes_only_with_full_provenance(tmp_path):
+def test_final_lookup_adds_provider_routes_only_with_full_provenance(tmp_path):
     # The contact stage verified the person but published only a team inbox.
     person_and_team = {**team(1), "person_name": PERSON, "person_title": "Plant Manager",
                        "person_url": "https://operator-1.example/team",
@@ -323,7 +342,7 @@ def test_a_provisional_lookup_adds_provider_routes_only_with_full_provenance(tmp
     assert recipient["provider"]["status"] == "valid" and recipient["person"]["url"] == "https://operator-1.example/team"
     assert recipient["person"]["quote"] == f"{PERSON} leads the machining plant as plant manager."
     assert sa.HEX.fullmatch(recipient["person"]["text_sha256"]) and recipient["person"]["source"] == "public_quote"
-    corroboration = {"url": "https://operator-1.example/news", "quote": f"{PERSON} runs the plant.", "level": "verified_on_page",
+    corroboration = {"url": "https://operator-1.example/news", "quote": "Jordan Fixture is the Operations Lead who runs the plant.", "level": "verified_on_page",
                      "text_sha256": "a" * 64}
     for person, route in (({"source": "provider_sourced", "name": "Jordan Fixture", "title": "Operations Lead",
                             "corroborated": True, "corroboration": corroboration}, "provider_sourced_corroborated"),
@@ -332,7 +351,7 @@ def test_a_provisional_lookup_adds_provider_routes_only_with_full_provenance(tmp
         lookup(workspace, key, address="jordan.fixture@operator-1.example", person=person)
         assert built(workspace)[0]["results"][0]["recipient"]["route"] == route
     # Anything short of full provenance falls back to the published team inbox.
-    for changes in ({"provider": {"name": "synthetic-provider", "status": "accept_all", "score": 96,
+    for changes in ({"provider": {"name": "fullenrich", "status": "accept_all", "score": 96,
                                   "checked_at": "2026-10-05T12:00:00Z", "request_digest": "c" * 64}},
                     {"address": "sales@operator-1.example"}, {"address": "avery.placeholder@gmail.com"},
                     {"address": "avery.placeholder@another-operator.example"},
@@ -435,7 +454,7 @@ class World:
 
     def admission(self, workspace, **options):
         sha, generation = options.pop("direction", None) or self.direct()
-        bundle, raw, report = sa.build(workspace, direction_sha256=sha, direction_generation=generation, **options)
+        bundle, raw, report = built(workspace, sha=sha, generation=generation, **options)
         return bundle, report["admission_id"], self.upload(raw)
 
     def pin(self, admission_id, generation, **changes):
@@ -686,7 +705,7 @@ def golden(tmp_path, monkeypatch):
         workspace, keys = prepared(tmp_path / "out", [
             (1, FOCUS_A, {}), (2, FOCUS_A, team(2)), (3, FOCUS_B, general(3), {"operator_identity_url": GOVERNMENT}),
             (4, FOCUS_B, None), (5, FOCUS_C, quoted), (6, FOCUS_C, None), (7, FOCUS_D, None)])
-        provider = {"name": "synthetic-provider", "status": "valid", "score": 97, "checked_at": "2026-10-05T12:00:00+00:00",
+        provider = {"name": "fullenrich", "status": "valid", "score": 97, "checked_at": "2026-10-05T12:00:00+00:00",
                     "request_digest": "c" * 64}
         lookup(workspace, keys[4], address="avery.placeholder@operator-5.example", provider=provider,
                person={"source": "public_quote", "name": PERSON, "title": "Plant Manager"})
@@ -722,3 +741,37 @@ def test_the_webapp_golden_snapshot_is_this_package_output(tmp_path, monkeypatch
         GOLDEN.write_text(json.dumps(value, indent=1, sort_keys=True) + "\n")
     assert json.loads(GOLDEN.read_text()) == value
     assert named({key: item for key, item in value.items() if key != "snapshot"}) != []  # Synthetic names only.
+
+
+def test_default_admission_recomputes_lookup_records_from_current_states(tmp_path, monkeypatch):
+    workspace, _ = prepared(tmp_path, [(1, FOCUS_A, {})])
+    load = sa.contact_lookup.load
+    seen = []
+    def read(current, *, states):
+        seen.append(states)
+        return load(current, states=states)
+    monkeypatch.setattr(sa.contact_lookup, "load", read)
+    bundle, _, _ = sa.build(workspace, direction_sha256=DIRECTION_SHA, direction_generation=DIRECTION_GENERATION)
+    assert len(seen) == 1 and seen[0]["contact"]
+    assert bundle["results"][0]["recipient"]["route"] == "published_person_email"
+
+
+def test_final_provider_loader_keeps_status_employment_and_refuses_tampering(tmp_path):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, team(1))])
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={"source": "provider_sourced",
+           "name": "Jordan Fixture", "title": "Operations Manager", "corroborated": False})
+    entry = built(workspace)[0]["results"][0]
+    recipient = entry["recipient"]
+    assert recipient["provider"]["verification_status"] == "DELIVERABLE"
+    assert recipient["provider"]["score"] is None
+    assert recipient["person"]["proof"]["current_employment"]["company_domain"] == "operator-1.example"
+    for field, value in (("verification_status", None), ("name", "other-provider")):
+        changed = json.loads(json.dumps(recipient))
+        changed["provider"][field] = value
+        assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
+    changed = json.loads(json.dumps(recipient))
+    changed["person"]["proof"]["current_employment"]["field"] = "employment.all.end_at_absent"
+    assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
+    changed = json.loads(json.dumps(recipient))
+    changed["address"] = "sales@operator-1.example"
+    assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"

@@ -226,7 +226,7 @@ def test_actual_systemd_calendar_preserves_seven_am_across_dst(base, next_utc):
 
 def test_release_packages_the_screen_admission_module():
     # render imports screen_admission for the scheduler step, and site-screen.py runs its owner commands.
-    for name in ("screen_admission.py", "site_screen.py", "operators/site-screen.py"):
+    for name in ("screen_admission.py", "site_screen.py", "operators/site-screen.py", "contact_lookup.py", "operators/contact-lookup.py"):
         assert name in FILES and (SOURCE / PREFIX / name).is_file()
 
 

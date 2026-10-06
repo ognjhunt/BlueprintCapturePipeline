@@ -41,20 +41,16 @@ import subprocess
 import time
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 
-from tools.daily_research import outreach_ready, runner, site_screen, verification
+from tools.daily_research import contact_lookup, outreach_ready, runner, site_screen, verification
 from tools.daily_research.runner import Refusal, canonical
 
 BUNDLE = "blueprint.site-screen-admission.v1"
 PAYLOAD = "blueprint.site-screen-sheets-payload.v1"
 RECIPIENT = "blueprint.site-screen-recipient.v1"
 OPERATION = "blueprint.site-screen-admission-operation.v1"
-# Provisional: tools/daily_research/contact_lookup.py (branch claude/contact-lookup-20261005) owns the final schema of
-# provider lookups. Until it merges, a lookup counts only in exactly this shape (``lookup_recipients``); else none.
-LOOKUP = "blueprint.site-contact-lookup.v1"
-LOOKUP_FOLDER = ("contact", "lookup")
 BUCKET = outreach_ready.BUCKET
 OBJECT_PREFIX = "operations/research/screen-admission/"
 OBJECT_NAME = "bundle.json"
@@ -247,65 +243,66 @@ def published_recipient(contact, record, proofs, workspace):
 
 def _provider(value):
     fields = {"name", "status", "score", "checked_at", "request_digest"}
-    return (isinstance(value, dict) and set(value) == fields and _text(value["name"], 80) and value["status"] == "valid"
-            and type(value["score"]) is int and 0 <= value["score"] <= 100 and _text(value["checked_at"], 64)
-            and isinstance(value["request_digest"], str) and bool(HEX.fullmatch(value["request_digest"])))
+    return (isinstance(value, dict) and set(value) == fields | {"verification_status", "lookup_sha256", "record_sha256"} and value["name"] == "fullenrich" and value["status"] == "valid"
+            and (value["score"] is None or type(value["score"]) is int and 0 <= value["score"] <= 100) and _text(value["checked_at"], 64)
+            and isinstance(value["request_digest"], str) and bool(HEX.fullmatch(value["request_digest"]))
+            and value.get("verification_status") == "DELIVERABLE"
+            and all(isinstance(value.get(key), str) and HEX.fullmatch(value[key])
+                    for key in ("lookup_sha256", "record_sha256")))
 
 
-def lookup_recipients(lookup, contact, domains, person_proof=None):
-    """Routes 2-4 from one provider lookup (provisional schema LOOKUP), or none. A looked-up address counts only with
-    provider status valid, on a proven operator domain, never free mail and never a role inbox. Route 2 needs the
-    contact stage's verified, current person under the same name, and carries that person's proven quote
-    (``person_proof``, person_block); routes 3 and 4 carry a provider-sourced person, corroborated only by a proven
-    quote on a public page we read (never LinkedIn)."""
+def lookup_recipients(record, contact, domains, person_proof=None):
+    """The final contact_lookup selector, enriched with the screen's retained public/domain proofs.
+    Cached recipients never grant admission: choose_recipient rechecks the current contact and lookup evidence.
+    FullEnrich DELIVERABLE is retained alongside verification=valid; an unavailable score stays None."""
     try:
-        if not isinstance(lookup, dict) or lookup.get("schema_version") != LOOKUP or lookup.get("site_key") != contact["site_key"]:
+        if (not isinstance(record, dict) or record.get("schema_version") != contact_lookup.RECORD
+                or record.get("rule_version") != contact_lookup.RULE or record.get("site_key") != contact["site_key"]):
             return []
-        address, provider, person = site_screen.email_address(lookup.get("address")), lookup.get("provider"), lookup.get("person")
-        local = (address or "").partition("@")[0]
-        domain = next((item for item in domains if address and _on_domain(address, item["domain"])), None)
-        if (address is None or domain is None or not _provider(provider) or address.rpartition("@")[2] in site_screen.FREE_MAIL
-                or set(re.findall(r"[a-z]+", local)) & ROLE_WORDS or not isinstance(person, dict)
-                or not _text(person.get("name"), 200) or not _text(person.get("title"), 200)):
+        selected = contact_lookup.choose_recipient(contact, record.get("lookups", ()))
+        if selected.get("source") != "provider_lookup":
             return []
-        if person.get("source") == "public_quote":
-            verified = contact["person"]
-            if (verified.get("verified") is not True or verified.get("current") is not True or not person_proof
-                    or site_screen.words(verified.get("name")) != site_screen.words(person["name"])
-                    or person_proof.get("name") != verified["name"]):
+        lookup = next(item for item in record["lookups"] if item.get("address") == selected["address"]
+                      and contact_lookup.usable_lookup(item))
+        address, person, raw = selected["address"], lookup["person"], lookup["provider"]
+        domain = next((item for item in domains if _on_domain(address, item["domain"])), None)
+        if domain is None or lookup.get("operator_domain") != domain["domain"]:
+            return []
+        provider = {"name": raw["name"], "status": raw["verification"], "score": raw.get("score"),
+                    "verification_status": raw["status"], "checked_at": raw["checked_at"],
+                    "request_digest": raw["request_digest"], "lookup_sha256": runner.digest(lookup),
+                    "record_sha256": runner.digest(record)}
+        if not _provider(provider):
+            return []
+        if person["sourcing"] == "quoted_person":
+            if (contact["person"].get("current") is not True or not person_proof
+                    or site_screen.words(person_proof["name"]) != site_screen.words(person["name"])):
                 return []
             route, kept = "quoted_person_looked_up_email", dict(person_proof)
-        elif person.get("source") == "provider_sourced" and type(person.get("corroborated")) is bool:
-            proof = person.get("corroboration")
-            if person["corroborated"] and not (
-                    isinstance(proof, dict) and proof.get("level") in site_screen.PROVEN and _text(proof.get("quote"), 1200)
+        elif person["sourcing"] == "provider_sourced":
+            proof = person.get("corroboration") or {}
+            corroborated = proof.get("corroborated") is True
+            if corroborated and not (proof.get("level") in site_screen.PROVEN and _text(proof.get("quote"), 1200)
                     and site_screen._public_url(proof.get("url")) and not site_screen.never_fetch(proof.get("url"))
                     and isinstance(proof.get("text_sha256"), str) and HEX.fullmatch(proof["text_sha256"])):
                 return []
-            route = "provider_sourced_corroborated" if person["corroborated"] else "provider_sourced_uncorroborated"
+            route = "provider_sourced_corroborated" if corroborated else "provider_sourced_uncorroborated"
             kept = {"source": "provider_sourced", "name": person["name"], "title": person["title"],
-                    "corroborated": person["corroborated"],
-                    "corroboration": {key: proof[key] for key in ("url", "quote", "level", "text_sha256")}
-                    if person["corroborated"] else None}
+                    "corroborated": corroborated, "proof": person["proof"], "corroboration":
+                    {key: proof[key] for key in ("url", "quote", "level", "text_sha256")} if corroborated else None}
         else:
             return []
-    except (AttributeError, KeyError, TypeError):
+    except (AttributeError, KeyError, TypeError, StopIteration):
         return []
     return [{"schema_version": RECIPIENT, "route": route, "rank": ROUTES.index(route) + 1, "label": LABELS[route],
              "address": address, "address_source": "provider_lookup", "operator_domain": domain, "published": None,
-             "person": kept, "provider": dict(provider)}]
+             "person": kept, "provider": provider}]
 
 
 def recipient_choice(published, looked_up=()):
     """The first available recipient in the owner's order (ROUTES), or None."""
     choices = [item for item in (published, *looked_up) if item]
     return min(choices, key=lambda item: item["rank"]) if choices else None
-
-
-def read_lookup(workspace, key):
-    """A stored provider lookup for one site (provisional location contact/lookup/<site_key>.json), or None."""
-    path = workspace.root.joinpath(*LOOKUP_FOLDER, key + ".json")
-    return site_screen._json(path.read_bytes()) if path.is_file() else None
 
 
 def admission_entry(workspace, record, stored, contact, stored_contact, lookup=None):
@@ -396,11 +393,12 @@ def build(workspace, *, direction_sha256, direction_generation, per_focus=DEFAUL
         _refuse("screen_admission_per_focus_invalid")
     if type(max_records) is not int or not 1 <= max_records <= MAX_RECORDS:
         _refuse("screen_admission_max_records_invalid")
-    lookups = lookups or (lambda key: read_lookup(workspace, key))
     with workspace.lock():
         states, pin = workspace.states()
         if pin is None:
             _refuse("screen_admission_out_dir_unpinned")
+        loaded = contact_lookup.load(workspace, states=states) if lookups is None else None
+        lookup_for = (lambda key: loaded.get(key)) if lookups is None else lookups
         screens = site_screen.stage_records(workspace, states, "screen")
         contacts = site_screen.stage_records(workspace, states, "contact")
         stored = {record.get("site_key"): record for record in workspace.records("screen") if isinstance(record, dict)}
@@ -413,7 +411,7 @@ def build(workspace, *, direction_sha256, direction_generation, per_focus=DEFAUL
                 continue
             try:
                 entries.append(admission_entry(workspace, record, stored.get(key), contacts.get(key),
-                                               stored_contacts.get(key), lookups(key)))
+                                               stored_contacts.get(key), lookup_for(key)))
             except AdmissionError as error:
                 if keys is not None and key in keys:
                     raise
@@ -467,7 +465,8 @@ def recipient_problem(value, entry):
         if route in LOOKUP_ROUTES:
             if (value["address_source"] != "provider_lookup" or value["published"] is not None
                     or not _provider(value["provider"]) or not isinstance(person, dict)
-                    or set(re.findall(r"[a-z]+", address.partition("@")[0])) & ROLE_WORDS):
+                    or set(re.findall(r"[a-z]+", address.partition("@")[0])) & ROLE_WORDS
+                    or site_screen.address_role(address, {"verified": True, "name": person.get("name")}) != "person"):
                 return code
             wanted = "public_quote" if route == "quoted_person_looked_up_email" else "provider_sourced"
             if person.get("source") != wanted or not _text(person.get("name"), 200) or not _text(person.get("title"), 200):
@@ -475,13 +474,28 @@ def recipient_problem(value, entry):
             if route == "quoted_person_looked_up_email" and (
                     not _url(person.get("url")) or person.get("level") not in site_screen.PROVEN
                     or not _text(person.get("quote"), 1200) or not isinstance(person.get("text_sha256"), str)
-                    or not HEX.fullmatch(person["text_sha256"])):
+                    or not HEX.fullmatch(person["text_sha256"]) or person.get("current") is not True
+                    or not site_screen._fresh(person.get("date"), date.fromisoformat(value["provider"]["checked_at"][:10]))
+                    or not site_screen.has_phrase(site_screen.words(person["name"]), site_screen.words(person["quote"]))
+                    or not contact_lookup.holds_title(person["quote"], person["title"])):
                 return code
             if route == "provider_sourced_corroborated":
                 proof = person.get("corroboration")
                 if (person.get("corroborated") is not True or not isinstance(proof, dict) or not _url(proof.get("url"))
                         or proof.get("level") not in site_screen.PROVEN or not _text(proof.get("quote"), 1200)
-                        or not isinstance(proof.get("text_sha256"), str) or not HEX.fullmatch(proof["text_sha256"])):
+                        or not isinstance(proof.get("text_sha256"), str) or not HEX.fullmatch(proof["text_sha256"])
+                        or not site_screen.has_phrase(site_screen.words(person["name"]), site_screen.words(proof["quote"]))
+                        or not contact_lookup.holds_title(proof["quote"], person["title"])):
+                    return code
+            if route in ("provider_sourced_corroborated", "provider_sourced_uncorroborated"):
+                proof = person.get("proof") or {}
+                employment = proof.get("current_employment") or {}
+                if (proof.get("source") != "fullenrich_people_search"
+                        or not isinstance(proof.get("request_digest"), str) or not HEX.fullmatch(proof["request_digest"])
+                        or employment.get("field") not in ("employment.current.is_current", "employment.current.end_at_absent",
+                                                           "employment.all.is_current")
+                        or not isinstance(employment.get("company_domain"), str)
+                        or not _on_domain("person@" + employment["company_domain"], domain["domain"])):
                     return code
             if route == "provider_sourced_uncorroborated" and (person.get("corroborated") is not False
                                                                 or person.get("corroboration") is not None):
