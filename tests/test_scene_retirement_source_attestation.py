@@ -64,6 +64,8 @@ def deployer(tmp_path):
         "_SourceClosingHTTPErrorProcessor",
         "_SourceNoRedirect",
         "_source_response_opener",
+        "_scene_source_snappy",
+        "_scene_source_selector_bytes",
         "_scene_source_delivery",
         "_scene_source_cache_publish",
         "_scene_source_selected_proof",
@@ -176,6 +178,11 @@ def statement(value):
     }
 
 
+def selector_bytes(commit=COMMIT):
+    return canonical({"schema_version": "blueprint.source_commit_selector.v1",
+                      "repository": "ognjhunt/BlueprintCapturePipeline", "source_commit": commit})
+
+
 @pytest.mark.parametrize(
     "change", ["missing", "wrong-repo", "wrong-commit", "unsafe-path", "wrong-sha256", "wrong-size"]
 )
@@ -225,6 +232,7 @@ class Response:
 
     def __init__(self, url, value):
         self.url = url
+        self.headers = {"Content-Type": "application/json"}
         self.body = io.BytesIO(canonical(value))
         self.fp = type(
             "FP",
@@ -246,11 +254,73 @@ class Response:
         return False
 
 
-def public_transport(value, *, change=None, copies=1, reverse=False):
-    digest = hashlib.sha256(canonical(value)).hexdigest()
+def snappy_literal(raw, width=None):
+    """Independent literal-only fixtures from Google's public wire format."""
+    declared, preamble = len(raw), bytearray()
+    while declared >= 128:
+        preamble.append((declared & 127) | 128)
+        declared >>= 7
+    preamble.append(declared)
+    if len(raw) <= 60 and width is None:
+        return bytes(preamble) + bytes([(len(raw)-1) << 2]) + raw
+    width = width or ((len(raw)-1).bit_length()+7)//8
+    return bytes(preamble) + bytes([(59+width) << 2]) + (len(raw)-1).to_bytes(width,'little') + raw
+
+
+@pytest.mark.parametrize("width", [1,2,3,4])
+def test_public_snappy_literal_lengths_are_bounded_and_exact(tmp_path, width):
+    namespace = deployer(tmp_path)
+    raw = b"public bundle bytes " * 5
+    assert namespace["_scene_source_snappy"](snappy_literal(raw,width),deadline=time.monotonic()+5,cap=1024) == raw
+
+
+@pytest.mark.parametrize("copy", [b"\x01\x02",b"\x0e\x02\x00",b"\x0f\x02\x00\x00\x00"])
+def test_public_snappy_overlapping_copy_supports_all_offset_encodings(tmp_path, copy):
+    namespace = deployer(tmp_path)
+    assert namespace["_scene_source_snappy"](b"\x07\x08xab"+copy,deadline=time.monotonic()+5,cap=1024) == b"xababab"
+
+
+@pytest.mark.parametrize("raw", [
+    b"", b"\x80", b"\x80"*5, b"\x80\x08",  # Missing/overlarge declared lengths.
+    b"\x05\x10abc", b"\x01\xf0", b"\x01\xf0\x00",  # Truncated literal/length.
+    b"\x04\x01\x00", b"\x04\x01\x01",  # Zero offset/back-reference before any output.
+    b"\x02\x00x\x01\x01", b"\x01\x00xy",  # Declared output overflow/trailing bytes.
+    b"\x02\x00x\x02", b"\x02\x00x\x03\x01\x00",  # Truncated two/four-byte offsets.
+])
+def test_public_snappy_refuses_malformed_or_expanding_bytes_before_admission(tmp_path, raw):
+    namespace = deployer(tmp_path)
+    with pytest.raises(ValueError,match="deploy_scene_retirement_runtime_unproven"):
+        namespace["_scene_source_snappy"](raw,deadline=time.monotonic()+5,cap=1023)
+
+
+def test_public_snappy_respects_the_same_absolute_install_deadline(tmp_path,monkeypatch):
+    namespace = deployer(tmp_path)
+    raw = snappy_literal(b"prefix")+b"\x00x"*100
+    ticks = iter([0.0,0.0,2.0])
+    monkeypatch.setattr(time,"monotonic",lambda:next(ticks))
+    with pytest.raises(ValueError,match="deploy_scene_retirement_runtime_unproven"):
+        namespace["_scene_source_snappy"](raw,deadline=1.0,cap=1024)
+
+
+def public_transport(value, *, change=None, copies=1, reverse=False, storage="inline"):
     signed = statement(value)
+    commit = value["sources"][0]["commit"]
+    signed["subject"].append({"name": "source-commit-selector.json",
+                              "digest": {"sha256": hashlib.sha256(selector_bytes(commit)).hexdigest()}})
     if change == "subject":
         signed["subject"][0]["digest"] = {"sha256": "0" * 64}
+    elif change == "selector":
+        signed["subject"][1]["digest"] = {"sha256": "0" * 64}
+    elif change == "extra-subject":
+        signed["subject"].append(dict(signed["subject"][1]))
+    elif change == "duplicate-manifest":
+        signed["subject"][1] = dict(signed["subject"][0])
+    elif change == "duplicate-selector":
+        signed["subject"][0] = dict(signed["subject"][1])
+    elif change == "single-subject":
+        signed["subject"].pop()
+    elif change == "predicate-type":
+        signed["predicateType"] = "untrusted/predicate"
     bundle = {
         "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
         "dsseEnvelope": {
@@ -258,38 +328,27 @@ def public_transport(value, *, change=None, copies=1, reverse=False):
             "payload": base64.b64encode(canonical(signed)).decode(),
         },
     }
-    run = {
-        "id": 123,
-        "path": ".github/workflows/ci.yml",
-        "head_sha": COMMIT,
-        "head_branch": "main",
-        "event": "push",
-        "status": "completed",
-        "conclusion": "success",
-        "head_repository": {"full_name": "ognjhunt/BlueprintCapturePipeline"},
-    }
-    if change == "ci":
-        run["conclusion"] = "failure"
     requests = []
+    blob_url = "https://tmaproduction.blob.core.windows.net/attestations/123/2026/10/06/456.json.sn?sig=synthetic-fixture"
 
     def open_request(request, timeout):
         url = request.full_url
         assert 0 < timeout <= 30 and not request.has_header("Authorization")
-        assert url.startswith("https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline/")
         requests.append(url)
-        if "/actions/workflows/" in url:
-            result = {"workflow_runs": [run]}
-        elif "/artifacts?" in url:
-            result = {
-                "total_count": 1,
-                "artifacts": [{"expired": False, "name": "source-sha256-" + COMMIT + "-" + digest}],
-            }
-        else:
-            result = {
-                "attestations": [
-                    {"bundle": bundle | {"synthetic_signature": index}} for index in (reversed(range(copies)) if reverse else range(copies))
-                ]
-            }
+        if url == blob_url:
+            response = Response(url, bundle)
+            if storage == "snappy-url":
+                response.headers["Content-Type"] = "application/x-snappy"
+                response.body = io.BytesIO(snappy_literal(canonical(bundle)))
+            return response
+        assert url.startswith("https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline/")
+        assert "/actions/" not in url, "Actions run/artifact retention must not gate source proof"
+        result = {
+            "attestations": [
+                ({"bundle": bundle | {"synthetic_signature": index}} if storage == "inline" else
+                 {"bundle": None, "bundle_url": blob_url}) for index in (reversed(range(copies)) if reverse else range(copies))
+            ]
+        }
         return Response(url, result)
 
     return open_request, requests
@@ -314,11 +373,11 @@ def test_public_delivery_stages_only_data_and_reuses_exact_protected_bytes(tmp_p
     original = path.stat()
     assert path.read_bytes() == canonical(value) and stat.S_IMODE(original.st_mode) == 0o444
     namespace["_scene_source_delivery"](COMMIT, deadline=time.monotonic() + 10)
-    assert path.stat().st_ino == original.st_ino and len(requests) == 6
+    assert path.stat().st_ino == original.st_ino and len(requests) == 2
     assert not namespace["_SCENE_RUNTIME_BOOT_ROOT"].exists()
 
 
-@pytest.mark.parametrize("change", ["ci", "subject"])
+@pytest.mark.parametrize("change", ["selector", "subject", "extra-subject", "duplicate-manifest", "duplicate-selector", "single-subject", "predicate-type"])
 def test_public_metadata_or_subject_failure_never_publishes(tmp_path, monkeypatch, change):
     namespace = deployer(tmp_path)
     open_request, _ = public_transport(manifest(), change=change)
@@ -327,6 +386,63 @@ def test_public_metadata_or_subject_failure_never_publishes(tmp_path, monkeypatc
         "build_opener",
         lambda *a: type("Opener", (), {"open": staticmethod(open_request)})(),
     )
+    with pytest.raises(ValueError, match="deploy_scene_retirement_runtime_unproven"):
+        namespace["_scene_source_delivery"](COMMIT, deadline=time.monotonic() + 10)
+    assert not namespace["_SCENE_SOURCE_ATTESTATIONS"].exists()
+
+
+@pytest.mark.parametrize("commit", [COMMIT, "b" * 40], ids=["fresh-install", "rollback"])
+@pytest.mark.parametrize("storage", ["inline", "blob-url", "snappy-url"])
+def test_public_source_lookup_survives_deleted_actions_artifacts_and_runs(tmp_path, monkeypatch, commit, storage):
+    namespace = deployer(tmp_path)
+    value = manifest()
+    value["sources"][0]["commit"] = commit
+    open_request, requests = public_transport(value, storage=storage)
+    expected_url = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline/attestations/sha256:" + hashlib.sha256(selector_bytes(commit)).hexdigest() + "?per_page=20"
+
+    def crypto_boundary(source_commit, *, deadline, _proof_root):
+        assert source_commit == commit and time.monotonic() < deadline
+        raw = (_proof_root / "source-sha256-manifest.json").read_bytes()
+        proof = (_proof_root / "source-provenance.sigstore.json").read_bytes()
+        assert raw == canonical(value)
+        return value, raw, proof  # Only the protected crypto boundary can admit this data.
+
+    namespace["_scene_source_attestation"] = crypto_boundary
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a: type("Opener", (), {"open": staticmethod(open_request)})())
+    namespace["_scene_source_delivery"](commit, deadline=time.monotonic() + 10)
+    assert requests[0] == expected_url and len(requests) == (1 if storage == "inline" else 2)
+    assert namespace["_scene_source_selector_bytes"](commit) == selector_bytes(commit)
+    assert (namespace["_SCENE_SOURCE_ATTESTATIONS"] / commit / "source-sha256-manifest.json").read_bytes() == canonical(value)
+    assert not namespace["_SCENE_RUNTIME_BOOT_ROOT"].exists()
+
+
+@pytest.mark.parametrize("url", [
+    "http://tmaproduction.blob.core.windows.net/attestations/123/2026/10/06/456.json.sn",
+    "https://other.invalid/attestations/123/2026/10/06/456.json.sn",
+    "https://credential@tmaproduction.blob.core.windows.net/attestations/123/2026/10/06/456.json.sn",
+    "https://tmaproduction.blob.core.windows.net:443/attestations/123/2026/10/06/456.json.sn",
+    "https://tmaproduction.blob.core.windows.net/attestations/../456.json.sn",
+    "https://tmaproduction.blob.core.windows.net/attestations/123/2026/10/06/456.json.sn#fragment",
+    "https://[malformed/attestations/123/2026/10/06/456.json.sn",
+])
+def test_public_bundle_url_refuses_unsupported_origins_or_paths_before_request(tmp_path, monkeypatch, url):
+    namespace = deployer(tmp_path)
+    calls = []
+    def request(req, timeout):
+        calls.append(req.full_url)
+        assert req.full_url.startswith("https://api.github.com/")
+        return Response(req.full_url, {"attestations": [{"bundle": None, "bundle_url": url}]})
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a: type("Opener", (), {"open": staticmethod(request)})())
+    with pytest.raises(ValueError, match="deploy_scene_retirement_runtime_unproven"):
+        namespace["_scene_source_delivery"](COMMIT, deadline=time.monotonic() + 10)
+    assert len(calls) == 1 and not namespace["_SCENE_SOURCE_ATTESTATIONS"].exists()
+
+
+def test_public_source_locator_candidate_limit_refuses_before_publication(tmp_path, monkeypatch):
+    namespace = deployer(tmp_path)
+    request, _ = public_transport(manifest(), copies=21)
+    namespace["_scene_source_attestation"] = lambda *a, **kw: pytest.fail("response bound precedes crypto")
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a: type("Opener", (), {"open": staticmethod(request)})())
     with pytest.raises(ValueError, match="deploy_scene_retirement_runtime_unproven"):
         namespace["_scene_source_delivery"](COMMIT, deadline=time.monotonic() + 10)
     assert not namespace["_SCENE_SOURCE_ATTESTATIONS"].exists()
@@ -343,7 +459,7 @@ def test_missing_host_verifier_refuses_before_network_or_candidate_execution(tmp
 
 
 @pytest.mark.parametrize(
-    "change", ["none", "certificate", "timestamp", "subject", "predicate", "wrong-contract"]
+    "change", ["none", "paired", "paired-reverse", "wrong-selector", "duplicate-selector", "extra-subject", "certificate", "timestamp", "subject", "predicate", "wrong-contract", "wrong-repo", "wrong-commit"]
 )
 def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
     tmp_path, monkeypatch, change
@@ -352,6 +468,10 @@ def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
     value = manifest()
     if change == "wrong-contract":
         value["sources"][1]["commit"] = "f" * 40
+    elif change == "wrong-repo":
+        value["sources"][0]["repository"] = "other/repository"
+    elif change == "wrong-commit":
+        value["sources"][0]["commit"] = "f" * 40
     root = namespace["_SCENE_SOURCE_ATTESTATIONS"] / COMMIT
     root.mkdir(parents=True)
     (root / "source-sha256-manifest.json").write_bytes(canonical(value))
@@ -364,6 +484,17 @@ def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
         "verifiedTimestamps": [{"timestamp": "synthetic"}],
         "statement": statement(value),
     }
+    if change in {"paired", "paired-reverse", "wrong-selector", "duplicate-selector", "extra-subject"}:
+        verified["statement"]["subject"].append({"name": "source-commit-selector.json",
+            "digest": {"sha256": hashlib.sha256(selector_bytes()).hexdigest()}})
+        if change == "paired-reverse":
+            verified["statement"]["subject"].reverse()
+        elif change == "wrong-selector":
+            verified["statement"]["subject"][1]["digest"] = {"sha256": "0" * 64}
+        elif change == "duplicate-selector":
+            verified["statement"]["subject"][0] = verified["statement"]["subject"][1]
+        elif change == "extra-subject":
+            verified["statement"]["subject"].append(verified["statement"]["subject"][1])
     if change == "certificate":
         verified["signature"]["certificate"] = {}
     elif change == "timestamp":
@@ -398,7 +529,7 @@ def test_direct_bootstrap_crypto_and_policy_refusal_preserves_no_installer(
         )
 
     monkeypatch.setattr(subprocess, "Popen", crypto_boundary)
-    if change == "none":
+    if change in {"none", "paired", "paired-reverse"}:
         admitted, raw, _ = namespace["_scene_source_attestation"](
             COMMIT, deadline=time.monotonic() + 10
         )
@@ -429,6 +560,8 @@ def test_wrapper_embeds_the_same_admission_before_first_privileged_execution():
         "_SourceClosingHTTPErrorProcessor",
         "_SourceNoRedirect",
         "_source_response_opener",
+        "_scene_source_snappy",
+        "_scene_source_selector_bytes",
         "_scene_source_delivery",
         "_scene_source_cache_publish",
         "_scene_source_selected_proof",

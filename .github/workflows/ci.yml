@@ -719,6 +719,7 @@ jobs:
             --pipeline-root "${GITHUB_WORKSPACE}" \
             --contracts-root "${GITHUB_WORKSPACE}/.source-contracts" \
             --source-commit "${GITHUB_SHA}" \
+            --selector-output "${{ runner.temp }}/blueprint-ci/supply-chain/source-commit-selector.json" \
             --output "${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json")"
           printf 'sha256=%s\n' "${manifest_sha256}" >> "${GITHUB_OUTPUT}"
 
@@ -727,7 +728,12 @@ jobs:
         id: attest-source
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
-          subject-path: ${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json
+          # The selector's digest is derived from the exact commit, so public
+          # attestation lookup survives Actions artifact/run retention.
+          # Only strict verification of the manifest grants source admission.
+          subject-path: |
+            ${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json
+            ${{ runner.temp }}/blueprint-ci/supply-chain/source-commit-selector.json
           predicate-path: ${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json
           predicate-type: https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1
 
@@ -764,8 +770,9 @@ jobs:
           cp "${SOURCE_BUNDLE_PATH}" \
             "${{ runner.temp }}/blueprint-ci/supply-chain/source-provenance.sigstore.json"
 
-      # Public metadata is only a locator. Consumers authenticate the embedded
-      # manifest through the public attestation bundle and strict signer policy.
+      # Optional short-lived evidence for people inspecting this run. Runtime
+      # admission obtains the bundle by its deterministic selector subject;
+      # neither this artifact name nor artifact availability grants authority.
       - name: Publish public source attestation digest locator
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.attest-source.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

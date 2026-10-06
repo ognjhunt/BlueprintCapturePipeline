@@ -68,6 +68,15 @@ def canonical_manifest_bytes(manifest: dict[str, Any]) -> bytes:
     return (json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def source_commit_selector_bytes(expected_commit: str) -> bytes:
+    """Known lookup bytes, never source authentication or execution authority."""
+    _require(isinstance(expected_commit, str) and _HEX40.fullmatch(expected_commit) is not None,
+             "source selector commit refused")
+    return canonical_manifest_bytes({"schema_version": "blueprint.source_commit_selector.v1",
+                                     "repository": PIPELINE_REPOSITORY,
+                                     "source_commit": expected_commit})
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -294,12 +303,20 @@ def attestation_command(gh_executable: Path, manifest_path: Path, bundle_path: P
             "--predicate-type", PREDICATE_TYPE, "--limit", "1", "--format", "json"]
 
 
-def _bound_statement(statement: Any, manifest_raw: bytes) -> None:
+def _bound_statement(statement: Any, manifest_raw: bytes, expected_commit: str) -> None:
     _require(isinstance(statement, dict) and statement.get("_type") == "https://in-toto.io/Statement/v1"
              and statement.get("predicateType") == PREDICATE_TYPE, "source statement type refused")
     subjects = statement.get("subject")
-    _require(isinstance(subjects, list) and len(subjects) == 1 and isinstance(subjects[0], dict)
-             and subjects[0].get("digest") == {"sha256": hashlib.sha256(manifest_raw).hexdigest()}, "source manifest subject digest mismatch")
+    manifest_digest = {"sha256": hashlib.sha256(manifest_raw).hexdigest()}
+    selector_digest = {"sha256": hashlib.sha256(source_commit_selector_bytes(expected_commit)).hexdigest()}
+    # Previously retained single-subject proofs remain valid. New proofs have
+    # exactly one manifest and its deterministic selector, in either order.
+    _require(isinstance(subjects, list) and len(subjects) in {1, 2}
+             and all(isinstance(subject, dict) for subject in subjects)
+             and sum(subject.get("digest") == manifest_digest for subject in subjects) == 1
+             and (len(subjects) == 1 or
+                  sum(subject.get("digest") == selector_digest for subject in subjects) == 1),
+             "source manifest subject digest mismatch")
     _require(isinstance(statement.get("predicate"), dict)
              and canonical_manifest_bytes(statement["predicate"]) == manifest_raw, "source predicate and subject bytes differ")
 
@@ -324,12 +341,12 @@ def extract_untrusted_manifest(bundle_raw: bytes, expected_commit: str, expected
     _require(isinstance(statement, dict) and isinstance(statement.get("predicate"), dict), "source manifest predicate missing")
     raw = canonical_manifest_bytes(statement["predicate"])
     validate_manifest_bytes(raw, expected_commit)
-    _bound_statement(statement, raw)
+    _bound_statement(statement, raw, expected_commit)
     _require(hashlib.sha256(raw).hexdigest() == expected_digest, "source manifest locator binding refused")
     return raw
 
 
-def _verified_subject(raw: bytes, manifest_raw: bytes) -> None:
+def _verified_subject(raw: bytes, manifest_raw: bytes, expected_commit: str) -> None:
     results = _parse_json(raw)
     _require(isinstance(results, list) and len(results) == 1, "missing or ambiguous verified attestation")
     result = results[0].get("verificationResult") if isinstance(results[0], dict) else None
@@ -340,7 +357,7 @@ def _verified_subject(raw: bytes, manifest_raw: bytes) -> None:
              and bool(signature["certificate"]), "missing verified signing certificate")
     _require(isinstance(timestamps, list) and bool(timestamps)
              and all(isinstance(value, dict) and bool(value) for value in timestamps), "missing trusted signing timestamp")
-    _bound_statement(result.get("statement"), manifest_raw)
+    _bound_statement(result.get("statement"), manifest_raw, expected_commit)
 
 
 def verify_manifest_attestation(manifest_path: Path, bundle_path: Path, expected_commit: str, *,
@@ -374,7 +391,7 @@ def verify_manifest_attestation(manifest_path: Path, bundle_path: Path, expected
                 handle.write(data)
         result = _run_bounded(attestation_command(gh_executable, snapshot, proof, expected_commit),
                               deadline=deadline, stdout_cap=MAX_VERIFY_OUTPUT_BYTES)
-        _verified_subject(result, raw)
+        _verified_subject(result, raw, expected_commit)
         _require(_read_regular(snapshot, MAX_MANIFEST_BYTES)[0] == raw
                  and _read_regular(proof, MAX_BUNDLE_BYTES)[0] == bundle, "verification snapshot changed")
     _require(_read_regular(manifest_path, MAX_MANIFEST_BYTES) == (raw, identity)
@@ -391,6 +408,7 @@ def main() -> int:
     builder.add_argument("--contracts-root", type=Path, required=True)
     builder.add_argument("--source-commit", required=True)
     builder.add_argument("--output", type=Path, required=True)
+    builder.add_argument("--selector-output", type=Path)
     verifier = subparsers.add_parser("verify")
     verifier.add_argument("--manifest", type=Path, required=True)
     verifier.add_argument("--bundle", type=Path, required=True)
@@ -402,6 +420,9 @@ def main() -> int:
             raw = build_manifest(args.pipeline_root, args.contracts_root, args.source_commit)
             with args.output.open("xb") as handle:
                 handle.write(raw)
+            if args.selector_output is not None:
+                with args.selector_output.open("xb") as handle:
+                    handle.write(source_commit_selector_bytes(args.source_commit))
             print(hashlib.sha256(raw).hexdigest())
         else:
             verify_manifest_attestation(args.manifest, args.bundle, args.source_commit,

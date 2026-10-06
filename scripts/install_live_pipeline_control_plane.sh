@@ -232,6 +232,74 @@ def _source_response_opener(deadline,*,error):
         _SourceNoRedirect(error),_SourceDeadlineHTTPSHandler(deadline,None),_SourceClosingHTTPErrorProcessor())
 
 
+def _scene_source_snappy(raw: bytes, *, deadline: float, cap: int) -> bytes:
+    """Bound GitHub's raw Snappy bundle encoding; decoded bytes stay untrusted.
+
+    Format: https://github.com/google/snappy/blob/main/format_description.txt
+    No framed streams, allocation from unchecked lengths, or external codec.
+    """
+    error = "deploy_scene_retirement_runtime_unproven"
+    def require(value):
+        if not value:
+            raise ControlPlaneDeployError(error)
+    require(type(raw) is bytes and 0 < len(raw) <= 32*1024*1024 and 0 < cap <= 32*1024*1024)
+    declared, cursor = 0, 0
+    for shift in range(0,35,7):
+        require(cursor < len(raw) and time.monotonic() <= deadline)
+        value = raw[cursor]
+        cursor += 1
+        declared |= (value & 127) << shift
+        if value < 128:
+            break
+    else:
+        raise ControlPlaneDeployError(error)
+    require(0 < declared <= cap)
+    output = bytearray()
+    while cursor < len(raw):
+        require(time.monotonic() <= deadline)
+        tag = raw[cursor]
+        cursor += 1
+        kind = tag & 3
+        if kind == 0:
+            length = tag >> 2
+            if length >= 60:
+                count = length-59
+                require(cursor+count <= len(raw))
+                length = int.from_bytes(raw[cursor:cursor+count],'little')
+                cursor += count
+            length += 1
+            require(len(output)+length <= declared and cursor+length <= len(raw))
+            output.extend(raw[cursor:cursor+length])
+            cursor += length
+        else:
+            count = 1 if kind == 1 else 2 if kind == 2 else 4
+            require(cursor+count <= len(raw))
+            offset = int.from_bytes(raw[cursor:cursor+count],'little')
+            cursor += count
+            if kind == 1:
+                offset |= (tag & 224) << 3
+                length = 4+((tag >> 2) & 7)
+            else:
+                length = 1+(tag >> 2)
+            require(0 < offset <= len(output) and len(output)+length <= declared)
+            start = len(output)-offset
+            # Snappy copies may overlap. Read only a <=64-byte seed instead
+            # of duplicating the entire output for a large back-reference.
+            seed = bytes(output[start:start+min(length,offset)])
+            output.extend((seed*((length+len(seed)-1)//len(seed)))[:length])
+    require(len(output) == declared and time.monotonic() <= deadline)
+    return bytes(output)
+
+
+def _scene_source_selector_bytes(source_commit: str) -> bytes:
+    """Derive public lookup data without executing any candidate source."""
+    if type(source_commit) is not str or re.fullmatch('[0-9a-f]{40}', source_commit) is None:
+        raise ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+    return (json.dumps({'schema_version':'blueprint.source_commit_selector.v1',
+        'repository':'ognjhunt/BlueprintCapturePipeline', 'source_commit':source_commit},
+        sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode()
+
+
 def _scene_source_delivery(source_commit: str, *, deadline: float) -> None:
     """Acquire public proof as untrusted data; this function grants no admission."""
     error = "deploy_scene_retirement_runtime_unproven"
@@ -242,9 +310,12 @@ def _scene_source_delivery(source_commit: str, *, deadline: float) -> None:
             raise ControlPlaneDeployError(error)
     require(re.fullmatch('[0-9a-f]{40}', source_commit) is not None)
     opener = _source_response_opener(deadline,error=error)
-    def fetch(suffix, cap):
+    transfer_remaining = [48*1024*1024]
+    decoded_remaining = [48*1024*1024]
+    def fetch(url, cap, *, blob=False):
         require(time.monotonic() <= deadline)
-        url = 'https://api.github.com/repos/' + repository + suffix
+        cap = min(cap, transfer_remaining[0])
+        require(cap > 0)
         request = urllib.request.Request(url, headers={'Accept':'application/vnd.github+json',
             'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'Blueprint-source-admission'})
         with opener.open(request, timeout=min(30, max(.001, deadline-time.monotonic()))) as response:
@@ -262,32 +333,52 @@ def _scene_source_delivery(source_commit: str, *, deadline: float) -> None:
                     break
                 require(len(body)+len(chunk) <= cap)
                 body.extend(chunk)
+                transfer_remaining[0] -= len(chunk)
             require(time.monotonic() <= deadline)
-            return json.loads(body)
-    runs = fetch('/actions/workflows/ci.yml/runs?head_sha='+source_commit+'&event=push&status=success&per_page=20', 2*1024*1024)
-    require(type(runs) is dict and type(runs.get('workflow_runs')) is list)
-    matches = [row for row in runs['workflow_runs'] if type(row) is dict and row.get('head_sha') == source_commit
-        and row.get('head_branch') == 'main' and row.get('event') == 'push' and row.get('status') == 'completed'
-        and row.get('conclusion') == 'success' and row.get('path') == '.github/workflows/ci.yml'
-        and type(row.get('head_repository')) is dict and row['head_repository'].get('full_name') == repository
-        and type(row.get('id')) is int and 0 < row['id'] < 10**20]
-    require(matches)
-    run = max(matches, key=lambda row:row['id'])
-    artifacts = fetch('/actions/runs/'+str(run['id'])+'/artifacts?per_page=100', 2*1024*1024)
-    require(type(artifacts) is dict and type(artifacts.get('total_count')) is int and artifacts['total_count'] <= 100
-            and type(artifacts.get('artifacts')) is list)
-    pattern = re.compile('source-sha256-'+source_commit+'-([0-9a-f]{64})')
-    names = [row['name'] for row in artifacts['artifacts'] if type(row) is dict and row.get('expired') is False
-             and type(row.get('name')) is str and pattern.fullmatch(row['name'])]
-    require(len(names) == 1)
-    digest = pattern.fullmatch(names[0])[1]
-    evidence = fetch('/attestations/sha256:'+digest+'?per_page=20', 48*1024*1024)
+            raw = bytes(body)
+            if blob:
+                content_type = response.headers.get('Content-Type','').split(';',1)[0].lower()
+                if content_type == 'application/x-snappy':
+                    raw = _scene_source_snappy(raw,deadline=deadline,cap=min(32*1024*1024,decoded_remaining[0]))
+                else:
+                    require(content_type in {'application/json','application/vnd.dev.sigstore.bundle.v0.3+json'})
+            require(len(raw) <= decoded_remaining[0])
+            decoded_remaining[0] -= len(raw)
+            return json.loads(raw)
+    # GitHub's digest-addressed attestation API retains signed statements
+    # independently of Actions artifacts. The known selector is a second
+    # subject of the manifest attestation; it supplies no source authority.
+    selector_digest = hashlib.sha256(_scene_source_selector_bytes(source_commit)).hexdigest()
+    evidence = fetch('https://api.github.com/repos/'+repository+'/attestations/sha256:'+selector_digest+'?per_page=20', 48*1024*1024)
     require(type(evidence) is dict and type(evidence.get('attestations')) is list and 0 < len(evidence['attestations']) <= 20)
     candidates = []
     for item in evidence['attestations']:
-        if type(item) is not dict or type(item.get('bundle')) is not dict:
+        if type(item) is not dict:
             continue
-        bundle = item['bundle']
+        bundle = item.get('bundle')
+        if type(bundle) is not dict:
+            # The documented API can omit inline bytes and return a fresh
+            # Azure blob URL. Restrict its origin/path before any request;
+            # never follow redirects or forward authorization/proxy state.
+            url = item.get('bundle_url')
+            if type(url) is not str or len(url) > 16384 or any(ord(char) < 33 or ord(char) == 127 for char in url):
+                continue
+            try:
+                location = urllib.parse.urlsplit(url)
+            except ValueError:
+                continue
+            if (location.scheme != 'https' or location.netloc != 'tmaproduction.blob.core.windows.net'
+                    or location.fragment or not re.fullmatch(
+                        r'/attestations/[0-9]+/[0-9]{4}/[0-9]{2}/[0-9]{2}/[0-9]+\.json\.sn',location.path)):
+                continue
+            try:
+                bundle = fetch(url,32*1024*1024,blob=True)
+            except (OSError, ValueError):
+                # Do not expose temporary signed query strings in errors.
+                require(time.monotonic() <= deadline)
+                continue
+            if type(bundle) is not dict:
+                continue
         envelope = bundle.get('dsseEnvelope')
         if (type(envelope) is not dict or envelope.get('payloadType') != 'application/vnd.in-toto+json'
                 or type(envelope.get('payload')) is not str):
@@ -298,19 +389,22 @@ def _scene_source_delivery(source_commit: str, *, deadline: float) -> None:
         statement = json.loads(payload)
         if (type(statement) is not dict or statement.get('_type') != 'https://in-toto.io/Statement/v1'
                 or statement.get('predicateType') != predicate_type or type(statement.get('predicate')) is not dict
-                or type(statement.get('subject')) is not list or len(statement['subject']) != 1
-                or type(statement['subject'][0]) is not dict or statement['subject'][0].get('digest') != {'sha256':digest}):
+                or type(statement.get('subject')) is not list or len(statement['subject']) != 2
+                or not all(type(subject) is dict for subject in statement['subject'])):
             continue
         raw = (json.dumps(statement['predicate'], sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode()
-        require(0 < len(raw) <= 16*1024*1024 and hashlib.sha256(raw).hexdigest() == digest)
+        require(0 < len(raw) <= 16*1024*1024)
+        digest = hashlib.sha256(raw).hexdigest()
+        if (sum(subject.get('digest') == {'sha256':digest} for subject in statement['subject']) != 1
+                or sum(subject.get('digest') == {'sha256':selector_digest} for subject in statement['subject']) != 1):
+            continue
         proof = (json.dumps(bundle, sort_keys=True, separators=(',', ':'))+'\n').encode()
         require(len(proof) <= 32*1024*1024)
         candidates.append((raw, proof))
     require(candidates)
     root = _SCENE_SOURCE_ATTESTATIONS / source_commit
     if all((root/name).exists() for name in ('source-sha256-manifest.json','source-provenance.sigstore.json')):
-        _, retained, _ = _scene_source_attestation(source_commit,deadline=deadline,_proof_root=root)
-        require(hashlib.sha256(retained).hexdigest() == digest)
+        _scene_source_attestation(source_commit,deadline=deadline,_proof_root=root)
         return
     selection = _scene_source_selected_proof(root, deadline=deadline)
     selected = None
@@ -573,11 +667,15 @@ def _scene_source_attestation(source_commit: str, *, deadline: float, _proof_roo
                 and type(verified.get('verifiedTimestamps')) is list and bool(verified['verifiedTimestamps'])
                 and all(type(value) is dict and value for value in verified['verifiedTimestamps']))
         statement = verified.get('statement', {})
+        subjects = statement.get('subject') if type(statement) is dict else None
+        manifest_digest = {'sha256':hashlib.sha256(raw).hexdigest()}
+        selector_digest = {'sha256':hashlib.sha256(_scene_source_selector_bytes(source_commit)).hexdigest()}
         require(type(statement) is dict and statement.get('_type') == 'https://in-toto.io/Statement/v1'
                 and statement.get('predicateType') == 'https://github.com/ognjhunt/BlueprintCapturePipeline/attestations/source-sha256-manifest/v1'
-                and type(statement.get('subject')) is list and len(statement['subject']) == 1
-                and type(statement['subject'][0]) is dict
-                and statement['subject'][0].get('digest') == {'sha256':hashlib.sha256(raw).hexdigest()}
+                and type(subjects) is list and len(subjects) in {1,2}
+                and all(type(subject) is dict for subject in subjects)
+                and sum(subject.get('digest') == manifest_digest for subject in subjects) == 1
+                and (len(subjects) == 1 or sum(subject.get('digest') == selector_digest for subject in subjects) == 1)
                 and (json.dumps(statement.get('predicate'), sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode() == raw)
         manifest = json.loads(raw)
         require(type(manifest) is dict and set(manifest) == {'schema_version', 'sources'}

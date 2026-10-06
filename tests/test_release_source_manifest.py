@@ -219,6 +219,71 @@ def test_verifier_uses_all_strict_crypto_flags_and_protected_snapshots(sources, 
     assert _verify(sources, evidence)["sources"][0]["commit"] == sources[2]
 
 
+def _paired_verified(raw, commit):
+    result = _verified(raw)
+    result[0]["verificationResult"]["statement"]["subject"].append({
+        "name": "source-commit-selector.json",
+        "digest": {"sha256": hashlib.sha256(source.source_commit_selector_bytes(commit)).hexdigest()},
+    })
+    return result
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_verifier_admits_only_exact_commit_selector_and_manifest_pair(
+    sources, evidence, monkeypatch, reverse
+):
+    result = _paired_verified(evidence[0], sources[2])
+    if reverse:
+        result[0]["verificationResult"]["statement"]["subject"].reverse()
+
+    def crypto_boundary(command, **kwargs):
+        assert command[3] != str(evidence[1])  # Protected manifest snapshot is still the subject.
+        assert command[command.index("--source-digest") + 1] == sources[2]
+        assert command[command.index("--signer-digest") + 1] == sources[2]
+        assert "--deny-self-hosted-runners" in command
+        return json.dumps(result).encode()
+
+    monkeypatch.setattr(source, "_run_bounded", crypto_boundary)
+    assert _verify(sources, evidence)["sources"][0]["commit"] == sources[2]
+
+
+@pytest.mark.parametrize("fault", ["extra", "duplicate-manifest", "duplicate-selector", "wrong-selector", "wrong-repo", "wrong-commit"])
+def test_verifier_refuses_arbitrary_or_misbound_second_subject(sources, evidence, monkeypatch, fault):
+    result = _paired_verified(evidence[0], sources[2])
+    subjects = result[0]["verificationResult"]["statement"]["subject"]
+    if fault == "extra":
+        subjects.append(copy.deepcopy(subjects[1]))
+    elif fault == "duplicate-manifest":
+        subjects[1] = copy.deepcopy(subjects[0])
+    elif fault == "duplicate-selector":
+        subjects[0] = copy.deepcopy(subjects[1])
+    else:
+        selector = json.loads(source.source_commit_selector_bytes(sources[2]))
+        if fault == "wrong-repo":
+            selector["repository"] = "other/repository"
+        elif fault == "wrong-commit":
+            selector["source_commit"] = "f" * 40
+        else:
+            selector["schema_version"] = "untrusted.selector"
+        subjects[1]["digest"]["sha256"] = hashlib.sha256(source.canonical_manifest_bytes(selector)).hexdigest()
+    monkeypatch.setattr(source, "_run_bounded", lambda *a, **kw: json.dumps(result).encode())
+    with pytest.raises(source.ManifestError, match="subject digest"):
+        _verify(sources, evidence)
+
+
+def test_builder_emits_deterministic_selector_without_changing_manifest_digest(sources, tmp_path, monkeypatch, capsys):
+    manifest_path, selector_path = tmp_path / "source.json", tmp_path / "selector.json"
+    monkeypatch.setattr(sys, "argv", ["release_source_manifest.py", "build", "--pipeline-root", str(sources[0]),
+        "--contracts-root", str(sources[1]), "--source-commit", sources[2], "--output", str(manifest_path),
+        "--selector-output", str(selector_path)])
+    assert source.main() == 0
+    assert selector_path.read_bytes() == source.source_commit_selector_bytes(sources[2])
+    assert json.loads(selector_path.read_bytes()) == {"repository": source.PIPELINE_REPOSITORY,
+        "schema_version": "blueprint.source_commit_selector.v1", "source_commit": sources[2]}
+    assert capsys.readouterr().out.strip() == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert manifest_path.read_bytes() == _manifest(sources)
+
+
 @pytest.mark.parametrize("mutation", [
     lambda value: value.clear(),
     lambda value: value.append(copy.deepcopy(value[0])),
@@ -303,8 +368,13 @@ def test_ci_attests_source_after_unchanged_security_and_license_gates():
     source_attest = next(step for step in steps if step.get("id") == "attest-source")
     assert source_attest["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
     assert source_attest["uses"] == "actions/attest@a1948c3f048ba23858d222213b7c278aabede763"
-    assert source_attest["with"]["subject-path"].endswith("/source-sha256-manifest.json")
-    assert source_attest["with"]["predicate-path"] == source_attest["with"]["subject-path"]
+    assert source_attest["with"]["subject-path"].splitlines() == [
+        "${{ runner.temp }}/blueprint-ci/supply-chain/source-sha256-manifest.json",
+        "${{ runner.temp }}/blueprint-ci/supply-chain/source-commit-selector.json",
+    ]
+    assert source_attest["with"]["predicate-path"] == source_attest["with"]["subject-path"].splitlines()[0]
+    build_step = next(step for step in steps if step.get("id") == "source-manifest")
+    assert '--selector-output "${{ runner.temp }}/blueprint-ci/supply-chain/source-commit-selector.json"' in build_step["run"]
     assert source_attest["with"]["predicate-type"] == source.PREDICATE_TYPE
     license_step = next(step for step in steps if "build_supply_chain_evidence.py" in step.get("run", ""))
     assert steps.index(license_step) < steps.index(source_attest)
@@ -334,6 +404,20 @@ def test_public_bundle_embeds_exact_candidate_but_extraction_does_not_authentica
         raise source.ManifestError("unsigned candidate refused by trusted crypto")
     monkeypatch.setattr(source, "_run_bounded", refuse)
     with pytest.raises(source.ManifestError, match="unsigned"):
+        _verify(sources, evidence)
+
+
+def test_paired_public_candidate_is_still_untrusted_until_crypto_admission(sources, evidence, monkeypatch):
+    raw = evidence[0]
+    statement = _paired_verified(raw, sources[2])[0]["verificationResult"]["statement"]
+    bundle = json.dumps({"dsseEnvelope": {"payloadType": "application/vnd.in-toto+json",
+        "payload": base64.b64encode(json.dumps(statement).encode()).decode()}}).encode()
+    assert source.extract_untrusted_manifest(bundle, sources[2], hashlib.sha256(raw).hexdigest()) == raw
+    evidence[2].write_bytes(bundle)
+    def refuse(*a, **kw):
+        raise source.ManifestError("synthetic unsigned pair refused")
+    monkeypatch.setattr(source, "_run_bounded", refuse)
+    with pytest.raises(source.ManifestError, match="unsigned pair"):
         _verify(sources, evidence)
 
 
