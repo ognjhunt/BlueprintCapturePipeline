@@ -15,21 +15,84 @@ const normalized = x => String(x || '').normalize('NFKC').toLowerCase().replace(
 const identity = x => [x.organization,x.site||x.location,x.location||x.site,x.task].map(normalized).join('\n');
 const NOTION_PARENT_PAGE_LIMIT = 100, NOTION_READ_BUDGET_MS = 25000;
 // Outreach-ready hypotheses (verification.py result v3, outreach_ready.py). Labelled rows, never verified ones.
-const OUTREACH_RESULT='blueprint.lead-verification-result.v3', OUTREACH_RULE='blueprint.outreach-ready-rule.v1.1';
+const OUTREACH_RESULT='blueprint.lead-verification-result.v3', OUTREACH_RULE='blueprint.outreach-ready-rule.v1.2';
 // The WebApp recomputes these cells (Blueprint-WebApp #855): Sheets column G and Q; each Notion entry heading.
 export const HYPOTHESIS_LABEL='Hypothesis', HYPOTHESIS_MATURITY='Outreach-ready: operator, site, task proven';
 export const HYPOTHESIS_HEADING='Hypothesis, not verified';
-// Design v1.1, exactly as Blueprint-WebApp #855 derives them from the assessment: open checks in rule
-// order, then exactly one question, by precedence S (site link open), then M (manual workflow open), then A.
+// Rule v1.2, exactly as verification.outreach_question and Blueprint-WebApp derive them from the assessment:
+// open checks in rule order, then exactly one question, by precedence S (site link open), then M (manual
+// workflow open), else U. Counterevidence may concern another task/site, so it cannot justify A's
+// exact task/site partial-automation premise. <task> is questionTask
+// and <site> sitePhrase; the shared golden file's question_wording pins these mirrors of verification.py.
 export const QUESTION_TEMPLATES={
-  S:(task,site)=>`Is ${task} done at your ${site} site, or somewhere else in the company?`,
+  S:(task,site)=>`Is ${task} done at ${site}, or somewhere else in the company?`,
   M:(task,site)=>`Which parts of ${task} at ${site} still need people, and what has kept them from being automated?`,
-  A:(task,site)=>`What has kept the remaining ${task} work at ${site} from being automated so far?`};
+  A:(task,site)=>`What has kept the rest of ${task} at ${site} from being automated so far?`,
+  U:(task,site)=>`Is any of ${task} at ${site} automated today, or is it all done by hand?`};
+export const STATE_NAMES={AL:'alabama',AK:'alaska',AZ:'arizona',AR:'arkansas',CA:'california',CO:'colorado',
+  CT:'connecticut',DE:'delaware',DC:'district of columbia',FL:'florida',GA:'georgia',HI:'hawaii',ID:'idaho',
+  IL:'illinois',IN:'indiana',IA:'iowa',KS:'kansas',KY:'kentucky',LA:'louisiana',ME:'maine',MD:'maryland',
+  MA:'massachusetts',MI:'michigan',MN:'minnesota',MS:'mississippi',MO:'missouri',MT:'montana',NE:'nebraska',
+  NV:'nevada',NH:'new hampshire',NJ:'new jersey',NM:'new mexico',NY:'new york',NC:'north carolina',ND:'north dakota',
+  OH:'ohio',OK:'oklahoma',OR:'oregon',PA:'pennsylvania',PR:'puerto rico',RI:'rhode island',SC:'south carolina',
+  SD:'south dakota',TN:'tennessee',TX:'texas',UT:'utah',VT:'vermont',VA:'virginia',WA:'washington',
+  WV:'west virginia',WI:'wisconsin',WY:'wyoming'};
+export const COUNTRY_NAMES=['canada','mexico','uk','united kingdom','united states','united states of america','us','usa'];
+export const TRAILING_MARKS='.,;:!?\u2026\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u061f\u060c\u061b ';
+export const SMALL_WORDS=['and','de','del','du','la','le','of','or','the'];
+const QUESTION_ZIP='[0-9]{5}(?:-[0-9]{4})?';
+const STATE_TAIL=new RegExp(`(?:^| )(?:(?:${[...new Set([...Object.keys(STATE_NAMES),...Object.values(STATE_NAMES)])]
+  .sort((a,b)=>b.length-a.length).join('|')})(?: ${QUESTION_ZIP})?|${QUESTION_ZIP})$`,'i');
+const collapsed=x=>typeof x==='string'?x.replace(/[ \t\n\r\f\v]+/g,' ').replace(/^ +| +$/g,''):'';
+const trimMarks=x=>{let end=x.length;while(end>0 && TRAILING_MARKS.includes(x[end-1])) end--;return x.slice(0,end);};
+const placeKey=x=>collapsed(x.replaceAll('.','')).toLowerCase();
+const hasLetter=x=>/\p{L}/u.test(x);
+export function questionTask(task) {
+  let value=trimMarks(collapsed(task));
+  const word=[...value.split(' ',1)[0]],letters=word.filter(ch=>/\p{L}/u.test(ch));
+  if(word.length && /^\p{Lu}$/u.test(word[0]) && letters.length>=2 && letters.slice(1).every(ch=>/^\p{Ll}$/u.test(ch)))
+    value=word[0].toLowerCase()+value.slice(word[0].length);
+  return value;
+}
+export function siteCity(location) {
+  if(typeof location!=='string') return null;
+  let parts=location.split(';')[0].split(',').map(collapsed).filter(Boolean),stated=false;
+  while(parts.length && COUNTRY_NAMES.includes(placeKey(parts.at(-1)))) parts.pop();
+  while(parts.length && new RegExp(`^${QUESTION_ZIP}$`).test(parts.at(-1))) {parts.pop();stated=true;}
+  if(parts.length && (Object.hasOwn(STATE_NAMES,placeKey(parts.at(-1)).toUpperCase())
+      || Object.values(STATE_NAMES).includes(placeKey(parts.at(-1))))) {parts.pop();stated=true;}
+  else if(parts.length && STATE_TAIL.test(parts.at(-1))) {parts[parts.length-1]=parts.at(-1).replace(STATE_TAIL,'').replace(/ +$/,'');stated=true;}
+  parts=parts.map(trimMarks).filter(Boolean);
+  const city=parts.length?(stated?parts.at(-1):parts[0]):null;
+  return !city || /[0-9]/.test(city) || !hasLetter(city)?null:city;
+}
+export function cityCase(city) {
+  if(!/\p{Lu}/u.test(city) || /\p{Ll}/u.test(city)) return city;
+  return city.split(' ').map((word,index)=>word.split('-').map((part,position)=>{
+    const letters=[...part.toLowerCase()];
+    if((index || position) && SMALL_WORDS.includes(letters.join(''))) return letters.join('');
+    if(letters.length) letters[0]=letters[0].toUpperCase();
+    if(letters.length>2 && (letters[0]+letters[1]==='Mc' || "'\u2019".includes(letters[1]))) letters[2]=letters[2].toUpperCase();
+    return letters.join('');
+  }).join('-')).join(' ');
+}
+export function sitePhrase(site,location) {
+  const city=siteCity(location);
+  if(city) return `your ${cityCase(city)} site`;
+  const name=typeof site==='string'?trimMarks(collapsed(site.split(',')[0])):'';
+  if(name && !'0123456789'.includes(name[0]) && name.split(' ').length<=4 && [...name].length<=40 && hasLetter(name))
+    return name.toLowerCase()==='site' || name.toLowerCase().endsWith(' site')?`your ${name}`:`your ${name} site`;
+  return 'this site';
+}
 export const openChecks=assessment=>[...(assessment?.claims?.site_task?.status!=='verified_fact'?['site_link']:[]),
   ...(assessment?.claims?.human_workflow?.status!=='verified_fact'?['manual_workflow']:[]),
   ...(assessment?.valid_until===null?['freshness']:[]),'existing_automation','fit','interest'];
-export const firstQuestion=(checks,candidate)=>QUESTION_TEMPLATES[checks.includes('site_link')?'S'
-  :checks.includes('manual_workflow')?'M':'A'](candidate.task,candidate.site);
+export const questionTemplate=(checks,partialAutomation=false)=>checks.includes('site_link')?'S'
+  :checks.includes('manual_workflow')?'M':partialAutomation===true?'A':'U';
+// Counterevidence may describe automation of another task/site; the assessment has no validated
+// exact task/site partial-automation scope. Keep the question neutral, as verification.outreach_gates.
+export const firstQuestion=(checks,candidate,_assessment)=>QUESTION_TEMPLATES[questionTemplate(checks)](
+  questionTask(candidate.task),sitePhrase(candidate.site,candidate.location));
 // The form #855 records for valid_until (its ISO_TIMESTAMP); outreach_ready.VALID_UNTIL mirrors it.
 const VALID_UNTIL=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const NOTION_BATCH_BLOCKS = 90, NOTION_REQUEST_BYTES = 450000;
@@ -74,7 +137,7 @@ function hypothesisEligibility(row,candidates,hypotheses,now,withheld=null) {
   const shared=[];
   if(withheld) shared.push(`Hypotheses on this row are withheld from publication (${withheld}); the verified rows publish without them.`);
   if(!Array.isArray(keys) || row.review?.source_support_verified!==true
-      || row.packet?.lead_verification_result_version!==OUTREACH_RESULT || frozen?.state!=='enabled'
+      || row.packet?.lead_verification_result_version!==OUTREACH_RESULT || frozen?.state!=='enabled' || frozen.rule_version!==OUTREACH_RULE
       || frozen.sends_authorized!==false || !Array.isArray(frozen.paths) || !frozen.paths.includes('daily_qa')
       || !Number.isSafeInteger(frozen.max_rows_per_batch) || entries.length>frozen.max_rows_per_batch
       || !isDeepStrictEqual(entries.map(h=>h?.candidate?.candidate_key),keys))
@@ -88,7 +151,7 @@ function hypothesisEligibility(row,candidates,hypotheses,now,withheld=null) {
     try {bound=!!assessment && result.candidate_digest===verificationDigest(c)
       && result.assessment_digest===verificationDigest(assessment)
       && assessment.candidate_digest===result.candidate_digest && !aliasInvalid(assessment);
-      checks=openChecks(assessment);question=firstQuestion(checks,c);}catch {}
+      checks=openChecks(assessment);question=firstQuestion(checks,c,assessment);}catch {}
     if(!h || typeof h!=='object' || Array.isArray(h) || !key || seen.has(key) || verified.has(key) || !bound
         || Object.keys(h).sort().join(',')!=='candidate,open_checks,open_questions'
         || !row.packet.candidates?.some(p=>isDeepStrictEqual(p,c))

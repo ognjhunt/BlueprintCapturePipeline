@@ -1246,7 +1246,7 @@ def test_qa_receives_the_frozen_site_universe_block_and_one_sentence(tmp_path):
 SHADOW_IDENTITY = ROOT / "tests/fixtures/daily_research/outreach-ready-shadow-identity.json"
 PAGE_URL = "https://fixture.example/site-task"
 QUOTE = "Synthetic operator runs this exact physical site where humans perform this task."
-# Names the fixture candidate's street and city, so its site_task is tied to this facility (rule v1.1).
+# Names the fixture candidate's street and city, so its site_task is tied to this facility (rule v1.1 and later).
 PAGE_TEXT = "Operations at North plant, 123 Main St, Chicago\n" + QUOTE + "\nCareers"
 SOUTH = {"organization": "Second Synthetic Plant", "organization_url": "https://www.second.example/",
          "site": "South plant, 9 Elm St", "location": "Springfield, Illinois, US", "task": "Manual tray loading"}
@@ -1439,7 +1439,9 @@ def hypothesis_qa(api, *, listed=True, keys=None, accepted=(), change=None):
 
 
 def question(template, candidate):
-    return verification.QUESTION_TEMPLATES[template].format(task=candidate["task"], site=candidate["site"])
+    """Rule v1.2's wording: the task as question_task writes it and the site as site_phrase does."""
+    return verification.QUESTION_TEMPLATES[template].format(task=verification.question_task(candidate["task"]),
+                                                            site=verification.site_phrase(candidate["site"], candidate["location"]))
 
 
 @pytest.fixture
@@ -1471,7 +1473,7 @@ def test_enabled_direction_publishes_rule_proven_keys_only_as_labelled_hypothese
     result = row["review"]["lead_verification"]["results"][0]
     assert result["tier"] == "outreach_ready" and result["status"] == "unresolved"
     assert result["eligible_for_qualified_promotion"] is False
-    assert result["outreach_ready"]["rule_version"] == "blueprint.outreach-ready-rule.v1.1"
+    assert result["outreach_ready"]["rule_version"] == "blueprint.outreach-ready-rule.v1.2"
     assert [p["level"] for p in result["outreach_ready"]["proving_sources"]] == ["verified_on_page"] * 3
     hypotheses = row["delivery"]["sheets"]["payload"]["hypotheses"]
     assert hypotheses == row["delivery"]["notion"]["payload"]["hypotheses"] and len(hypotheses) == 1
@@ -1733,7 +1735,7 @@ def test_a_hypothesis_that_expires_before_publication_never_blocks_the_verified_
     entry = row["delivery"]["sheets"]["payload"]["hypotheses"][0]
     if variant == "nullexpiry":
         assert entry["open_checks"] == ["freshness", "existing_automation", "fit", "interest"]
-        assert entry["open_questions"] == [question("A", south)]
+        assert entry["open_questions"] == [question("U", south)]  # No automation evidence: U.
     later = NOW + timedelta(seconds=200)
     consumer.clock = lambda: later
     bridge.call("test_clock", now=int(later.timestamp() * 1000))
@@ -1745,7 +1747,7 @@ def test_a_hypothesis_that_expires_before_publication_never_blocks_the_verified_
         assert row["delivery"]["notion"]["plan"]["hypothesis_keys"] == []
     else:
         assert [r[6] for r in rows] == ["Needs recheck", "Hypothesis"]
-        assert rows[1][12].split("\n")[0] == "First email asks: " + question("A", south)
+        assert rows[1][12].split("\n")[0] == "First email asks: " + question("U", south)
 
 
 def test_a_retried_review_after_the_hypothesis_expired_still_binds_and_publishes_the_verified_row(mixed, monkeypatch):

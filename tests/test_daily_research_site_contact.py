@@ -402,3 +402,13 @@ def test_every_fixture_person_and_host_is_synthetic():
     hosts = set(re.findall(r"https://([^/\"'\s]+)", source)) | set(re.findall(r"@([A-Za-z0-9.{}-]+)", source))
     assert hosts and all(host.endswith(".example") for host in hosts)
     assert all(name.split()[-1] in {"Placeholder", "Fixture"} for name in fixture.PEOPLE)
+
+
+@pytest.mark.parametrize("address,name,expected", [
+    ("sales@operator.example", "Ann Sales", "team"),
+    ("info@operator.example", "Bob Info", "general"),
+    ("support@operator.example", "Chris Support", "refused"),
+    ("ann.sales@operator.example", "Ann Sales", "team"),
+])
+def test_role_inboxes_take_precedence_over_a_matching_person_name(address, name, expected):
+    assert ss.address_role(address, {"verified": True, "name": name}) == expected

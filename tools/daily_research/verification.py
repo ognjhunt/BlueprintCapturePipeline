@@ -4,7 +4,7 @@ The agent judges source meaning and exact site/task linkage. This harness binds
 that judgment to retained evidence, enforces the transition and exposes gaps.
 Public research never grants commercial, consent, robot or deployment authority.
 The only I/O is retained_evidence's injected read of digest-checked tool results.
-The outreach tier (blueprint.outreach-ready-rule.v1.1) is one pure derivation over
+The outreach tier (blueprint.outreach-ready-rule.v1.2) is one pure derivation over
 these gates: a hypothesis label for drafting, never verification or send authority.
 """
 from __future__ import annotations
@@ -26,7 +26,11 @@ DIAGNOSTIC_RESULT_VERSION = "blueprint.lead-verification-result.v2"
 # eligible_for_qualified_promotion keep their v2 meaning: the verified path is unchanged.
 OUTREACH_RESULT_VERSION = "blueprint.lead-verification-result.v3"
 # v1.1 (design section 10): a site link check, one question, facility blocks, automation as a question.
-OUTREACH_RULE_VERSION = "blueprint.outreach-ready-rule.v1.1"
+# v1.2: the same tier with the question's wording fixed (question_task, site_phrase, template U). A
+# direction must name exactly this version. v1.1 is kept only to re-derive rows published under it.
+OUTREACH_RULE_VERSION = "blueprint.outreach-ready-rule.v1.2"
+LEGACY_OUTREACH_RULE_VERSION = "blueprint.outreach-ready-rule.v1.1"
+OUTREACH_RULE_VERSIONS = (LEGACY_OUTREACH_RULE_VERSION, OUTREACH_RULE_VERSION)
 EVIDENCE_VERSION = "blueprint.outreach-ready-evidence.v1"
 FACTS = ("operator", "physical_site", "site_task", "human_workflow")
 CLAIMS = (*FACTS, "plausible_fit")
@@ -45,12 +49,43 @@ EVIDENCE_PHASES = frozenset({"research", "repair", "qa"})
 # Open checks in rule order; the last three are always open (Blueprint-WebApp #855 derives the same list).
 OPEN_CHECKS = ("site_link", "manual_workflow", "freshness", "existing_automation", "fit", "interest")
 # Exactly one question: the missing fact whose answer would change the decision, by precedence S
-# (site link open), then M (manual workflow open), then A. Word for word; {task} and {site} are the
-# candidate's task and site fields verbatim. The other open checks are recorded and stay unasked.
+# (site link open), then M (manual workflow open), then A (manual workflow verified and partial
+# automation evidenced), else U (automation unknown or none shown). Word for word; {task} is
+# question_task(task) and {site} is site_phrase(site, location). The other open checks stay unasked.
 QUESTION_TEMPLATES = {
+    "S": "Is {task} done at {site}, or somewhere else in the company?",
+    "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
+    "A": "What has kept the rest of {task} at {site} from being automated so far?",
+    "U": "Is any of {task} at {site} automated today, or is it all done by hand?"}
+# v1.1, word for word, with the candidate's task and site fields verbatim; never used for a new row.
+LEGACY_QUESTION_TEMPLATES = {
     "S": "Is {task} done at your {site} site, or somewhere else in the company?",
     "M": "Which parts of {task} at {site} still need people, and what has kept them from being automated?",
     "A": "What has kept the remaining {task} work at {site} from being automated so far?"}
+QUESTION_TEMPLATES_BY_RULE = {LEGACY_OUTREACH_RULE_VERSION: LEGACY_QUESTION_TEMPLATES, OUTREACH_RULE_VERSION: QUESTION_TEMPLATES}
+# The question's site: a city without its state, ZIP code or country (site_city, city_case). STATE_NAMES is
+# shared with site_screen. Each mirror (publisher.mjs, Blueprint-WebApp) copies these tables.
+STATE_NAMES = {
+    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
+    "CT": "connecticut", "DE": "delaware", "DC": "district of columbia", "FL": "florida", "GA": "georgia",
+    "HI": "hawaii", "ID": "idaho", "IL": "illinois", "IN": "indiana", "IA": "iowa", "KS": "kansas",
+    "KY": "kentucky", "LA": "louisiana", "ME": "maine", "MD": "maryland", "MA": "massachusetts", "MI": "michigan",
+    "MN": "minnesota", "MS": "mississippi", "MO": "missouri", "MT": "montana", "NE": "nebraska", "NV": "nevada",
+    "NH": "new hampshire", "NJ": "new jersey", "NM": "new mexico", "NY": "new york", "NC": "north carolina",
+    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon", "PA": "pennsylvania",
+    "PR": "puerto rico", "RI": "rhode island", "SC": "south carolina", "SD": "south dakota", "TN": "tennessee",
+    "TX": "texas", "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
+    "WI": "wisconsin", "WY": "wyoming"}
+COUNTRY_NAMES = frozenset({"us", "usa", "united states", "united states of america", "canada", "mexico", "uk",
+                           "united kingdom"})
+SPACES = re.compile(r"[ \t\n\r\f\v]+")  # ASCII whitespace only, as every mirror reads it.
+TRAILING_MARKS = ".,;:!?\u2026\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u061f\u060c\u061b "
+ZIP_TAIL = r"[0-9]{5}(?:-[0-9]{4})?"  # ASCII digits and case only, as every mirror reads them.
+STATE_TAIL = re.compile(r"(?:^| )(?:(?:" + "|".join(sorted({*STATE_NAMES, *STATE_NAMES.values()}, key=len, reverse=True))
+                        + r")(?: " + ZIP_TAIL + r")?|" + ZIP_TAIL + r")$", re.IGNORECASE | re.ASCII)
+SHORT_SITE_NAME = (4, 40)  # At most four words and 40 characters.
+# Words kept lower-case inside an ALL CAPS city that city_case title-cases: Isle of Palms, Prairie du Chien.
+SMALL_WORDS = frozenset({"and", "de", "del", "du", "la", "le", "of", "or", "the"})
 # Optional assessment fields (design v1.1 section 10.2), each {"value", "source_refs", "reason"}. A
 # blocking value blocks the tier only when proven: a cited, usable, non-vendor source whose quote is
 # found in retained text. Absent or "unknown" changes nothing; a malformed field gives none.
@@ -628,7 +663,10 @@ def outreach_gates(result, candidate, index, *, conflict=False):
             "identity_present": bool(result.get("identity_key")),
             "duplicate": bool(result.get("duplicate_of")) or isinstance(check, dict) and check.get("duplicate") is True,
             "conflict": conflict is True, "valid_until": assessment.get("valid_until"), "states": states, "facts": facts,
-            "facility": facility_gates(assessment, indexed, index), "task": candidate.get("task"), "site": candidate.get("site")}
+            "facility": facility_gates(assessment, indexed, index), "task": candidate.get("task"), "site": candidate.get("site"),
+            # Counterevidence may refer to another task or site. This assessment has no exact
+            # task/site partial-automation proof field, so new questions must keep that premise open.
+            "location": candidate.get("location"), "partial_automation": False}
 
 
 def open_checks(states, valid_until):
@@ -638,13 +676,123 @@ def open_checks(states, valid_until):
         ["freshness"] if valid_until is None else []) + ["existing_automation", "fit", "interest"]
 
 
-def question_template(checks):
-    """S while the site link is open, else M while the manual workflow is open, else A."""
-    return "S" if "site_link" in checks else "M" if "manual_workflow" in checks else "A"
+def question_template(checks, partial_automation=False, rule_version=OUTREACH_RULE_VERSION):
+    """S while the site link is open, else M while the manual workflow is open, else A when partial automation
+    is evidenced and U when it is unknown or none is shown. v1.1 asks A in both of those cases."""
+    if "site_link" in checks:
+        return "S"
+    if "manual_workflow" in checks:
+        return "M"
+    return "A" if partial_automation is True or rule_version == LEGACY_OUTREACH_RULE_VERSION else "U"
 
 
-def outreach_tier(gates, now):
-    """blueprint.outreach-ready-rule.v1.1. site_screen imports this; never copy it.
+def _collapsed(value):
+    return SPACES.sub(" ", value).strip(" ") if isinstance(value, str) else ""
+
+
+def question_task(task):
+    """The task as the question writes it: whitespace collapsed, trailing punctuation dropped, and the first
+    letter lower-cased only when the first word is an ordinary capitalised word ("Loading" but not "CNC",
+    "SMT", "iPhone" or "McKinney"): an upper-case letter, then at least one more letter, all lower-case."""
+    value = _collapsed(task).rstrip(TRAILING_MARKS)
+    word = value.split(" ", 1)[0]
+    letters = [char for char in word if unicodedata.category(char).startswith("L")]
+    if (word and unicodedata.category(word[0]) == "Lu" and len(letters) >= 2
+            and all(unicodedata.category(char) == "Ll" for char in letters[1:])):
+        value = value[0].lower() + value[1:]
+    return value
+
+
+def _place(value):
+    """A location part compared with the state and country names: lower-case, without dots."""
+    return _collapsed(value.replace(".", "")).lower()
+
+
+def site_city(location):
+    """The city of a location or address, as the source wrote it (site_phrase applies city_case), or None.
+
+    A "City, Region[, Country]" location gives its first part. An address that ends in a state, ZIP code
+    or both ("12 Main St, Springfield, IL 62701", "GRAND PRAIRIE TX 75050") gives the part before them. A
+    trailing country is dropped, a note after a semicolon is ignored, and only one state is removed, so
+    "New York, NY" keeps New York. A part with a digit is never a city.
+    """
+    if not isinstance(location, str):
+        return None
+    parts = [part for part in (_collapsed(item) for item in location.split(";")[0].split(",")) if part]
+    while parts and _place(parts[-1]) in COUNTRY_NAMES:
+        parts.pop()
+    stated = False
+    while parts and re.fullmatch(ZIP_TAIL, parts[-1]):
+        parts.pop()
+        stated = True
+    if parts and (_place(parts[-1]).upper() in STATE_NAMES or _place(parts[-1]) in STATE_NAMES.values()):
+        parts.pop()
+        stated = True
+    elif parts and STATE_TAIL.search(parts[-1]):
+        parts[-1] = STATE_TAIL.sub("", parts[-1]).rstrip(" ")
+        stated = True
+    parts = [part for part in (item.rstrip(TRAILING_MARKS) for item in parts) if part]
+    city = (parts[-1] if stated else parts[0]) if parts else None
+    if not city or re.search("[0-9]", city) or not any(unicodedata.category(char).startswith("L") for char in city):
+        return None
+    return city
+
+
+def city_case(city):
+    """A city as the question writes it. Mixed or lower casing is the source's own and is kept exactly
+    (McKinney, DeSoto). An ALL CAPS city, as government records write it, is title-cased word by word and
+    hyphen part by part, Mc and a letter-apostrophe prefix restored (MCKINNEY -> McKinney, O'FALLON ->
+    O'Fallon; Mac is left alone, so Macon stays Macon), with SMALL_WORDS lower-case inside the name."""
+    categories = {unicodedata.category(char) for char in city}
+    if "Lu" not in categories or "Ll" in categories:
+        return city
+    words = []
+    for index, word in enumerate(city.split(" ")):
+        parts = []
+        for position, part in enumerate(word.split("-")):
+            letters = list(part.lower())
+            if (index or position) and "".join(letters) in SMALL_WORDS:
+                parts.append("".join(letters))
+                continue
+            if letters:
+                letters[0] = letters[0].upper()
+            if len(letters) > 2 and letters[0] + letters[1] == "Mc" or len(letters) > 2 and letters[1] in "'\u2019":
+                letters[2] = letters[2].upper()
+            parts.append("".join(letters))
+        words.append("-".join(parts))
+    return " ".join(words)
+
+
+def site_phrase(site, location=None):
+    """The question's site: "your <City> site" (city_case of site_city of ``location``), else "your <name>
+    site" for a short site name (the first part of ``site``, at most four words and 40 characters, not a
+    street address; one ending in "site" is not doubled), else "this site". Daily QA passes the candidate's
+    site and location fields, and the site screen the input site name and the address city."""
+    city = site_city(location)
+    if city:
+        return f"your {city_case(city)} site"
+    name = _collapsed(site.split(",")[0]).rstrip(TRAILING_MARKS) if isinstance(site, str) else ""
+    words, characters = SHORT_SITE_NAME
+    if (name and name[0] not in "0123456789" and len(name.split(" ")) <= words and len(name) <= characters
+            and any(unicodedata.category(char).startswith("L") for char in name)):
+        return f"your {name}" if name.lower() == "site" or name.lower().endswith(" site") else f"your {name} site"
+    return "this site"
+
+
+def outreach_question(checks, task, site, location=None, *, partial_automation=False, rule_version=OUTREACH_RULE_VERSION):
+    """(template, question): the one question, word for word, under ``rule_version``. v1.2 writes
+    question_task(task) and site_phrase(site, location); v1.1 writes the task and site fields verbatim.
+    site_screen and every mirror build the question this way; never copy it."""
+    template = question_template(checks, partial_automation, rule_version)
+    if rule_version == LEGACY_OUTREACH_RULE_VERSION:
+        return template, LEGACY_QUESTION_TEMPLATES[template].format(task=task, site=site)
+    if rule_version != OUTREACH_RULE_VERSION:
+        raise ValueError("outreach_rule_version_unknown")
+    return template, QUESTION_TEMPLATES[template].format(task=question_task(task), site=site_phrase(site, location))
+
+
+def outreach_tier(gates, now, rule_version=OUTREACH_RULE_VERSION):
+    """blueprint.outreach-ready-rule.v1.2 (``rule_version`` v1.1 re-derives a row published under it).
 
     verified: the unchanged full-proof path. outreach_ready: operator and physical_site are
     verified_fact and site_task is verified_fact or inference, each from usable primary
@@ -655,12 +803,13 @@ def outreach_tier(gates, now):
     freshness), not a duplicate or conflict. A contradicted claim blocks: a closed site is a
     contradicted physical_site, and only a contradicted human_workflow (the exact task at
     this site shown fully automated) is an automation block. Other automation evidence,
-    including a contradicted counterevidence, changes the question, not the eligibility. A
+    including a contradicted counterevidence, does not change eligibility or establish
+    partial automation of this exact task/site. A
     proven office or mailing-only address, or a site run by a contractor or tenant rather
-    than the named operator, blocks. Exactly one question is asked, by precedence S, M, A.
-    Anything else, including any defect here, is none.
+    than the named operator, blocks. Exactly one question is asked (outreach_question), by
+    precedence S, M, then A or U. Anything else, including any defect here, is none.
     """
-    block = {"rule_version": OUTREACH_RULE_VERSION, "proving_sources": [], "open_checks": [],
+    block = {"rule_version": rule_version, "proving_sources": [], "open_checks": [],
              "open_questions": [], "blockers": []}
     try:
         facts, states = gates["facts"], gates["states"]
@@ -694,10 +843,11 @@ def outreach_tier(gates, now):
         task, site = gates["task"], gates["site"]
         checks = open_checks(states, valid_until)
         question = None
-        if not text(task) or not text(site):
+        if not text(task) or not text(site) or rule_version != LEGACY_OUTREACH_RULE_VERSION and not text(question_task(task)):
             blockers.append("question_task_or_site_missing")
         else:
-            question = QUESTION_TEMPLATES[question_template(checks)].format(task=task, site=site)
+            _, question = outreach_question(checks, task, site, gates.get("location"),
+                                            partial_automation=gates.get("partial_automation") is True, rule_version=rule_version)
             if question.count("?") != 1:
                 blockers.append("question_not_single")
         if blockers:
@@ -710,11 +860,11 @@ def outreach_tier(gates, now):
                 "outreach_ready": {**block, "proving_sources": [], "blockers": ["tier_computation_unavailable"]}}
 
 
-def _tier(result, candidate, index, now, conflict):
+def _tier(result, candidate, index, now, conflict, rule_version=OUTREACH_RULE_VERSION):
     try:
-        return outreach_tier(outreach_gates(result, candidate, index, conflict=conflict), now)
+        return outreach_tier(outreach_gates(result, candidate, index, conflict=conflict), now, rule_version)
     except Exception:  # noqa: BLE001 - a malformed record is tier none, never a QA failure
-        return outreach_tier({}, now)
+        return outreach_tier({}, now, rule_version)
 
 
 def evidence_summary(evidence):
@@ -758,13 +908,16 @@ def packet_candidates(packet):
 
 
 def cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=None, *, result_version=DIAGNOSTIC_RESULT_VERSION,
-           evidence=None):
+           evidence=None, outreach_rule=OUTREACH_RULE_VERSION):
     """Apply identical criteria to the entire supplied discovery cohort.
 
     v3 adds each candidate's outreach tier after the duplicate and conflict pass, from
-    ``evidence`` (retained_evidence output; None or unavailable proves no quote).
+    ``evidence`` (retained_evidence output; None or unavailable proves no quote), under
+    ``outreach_rule`` (the current rule; v1.1 only re-derives a row published under it).
     """
     tiered = result_version == OUTREACH_RESULT_VERSION
+    if tiered and outreach_rule not in OUTREACH_RULE_VERSIONS:
+        raise ValueError("outreach_rule_version_unknown")
     base = DIAGNOSTIC_RESULT_VERSION if tiered else result_version
     results = [evaluate(c, assessments.get(c.get("candidate_key")), now, result_version=base) for c in candidates]
     duplicate_checks = duplicate_checks or {}
@@ -828,8 +981,8 @@ def cohort(candidates, assessments, now, actual_cost_usd=None, duplicate_checks=
         index = evidence_index(evidence)
         for candidate, result in zip(candidates, results):
             result.update(version=OUTREACH_RESULT_VERSION,
-                          **_tier(result, candidate, index, now, any(result is item for item in conflicted)))
-        value.update(outreach_rule_version=OUTREACH_RULE_VERSION, tier_evidence=evidence_summary(evidence),
+                          **_tier(result, candidate, index, now, any(result is item for item in conflicted), outreach_rule))
+        value.update(outreach_rule_version=outreach_rule, tier_evidence=evidence_summary(evidence),
                      outreach_ready_count=sum(r["eligible_for_outreach_ready"] for r in results))
     return value
 
