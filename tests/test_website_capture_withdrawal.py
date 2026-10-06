@@ -29,6 +29,10 @@ def fixture(tmp_path, request_id="req1"):
     return root, command
 
 
+def proof_path(root, cloud=False):
+    return next((root.parent.parent / "website_withdrawal" / ("cloud_verifications" if cloud else "verifications")).glob("*.json"))
+
+
 class FakeStorage:
     bucket_name = "synthetic"
     def __init__(self):
@@ -250,6 +254,14 @@ def test_unplanned_quarantine_is_preserved_when_source_is_concurrently_recreated
     assert len(candidates) == 1
     assert candidates[0].read_bytes() == b"unplanned candidate"
     assert inspect_withdrawal(capture_root=root)["local_cleanup_verified"] is False
+    monkeypatch.setattr(os, "rename", original)
+    authorized_recovery = plan_local_cleanup(capture_root=root)
+    assert any(row["path"].startswith("website_withdrawal/quarantine/") for row in authorized_recovery["files"])
+    with pytest.raises(ValueError):
+        apply_local_cleanup(capture_root=root, expected_plan_digest=authorized_recovery["digest"])
+    assert apply_local_cleanup(capture_root=root, expected_plan_digest=authorized_recovery["digest"], authorize_local_deletion=True)["local_cleanup_verified"] is True
+    assert not source.exists()
+    assert not candidates[0].exists()
 
 
 def test_directory_substitution_cannot_delete_outside_site(tmp_path, monkeypatch):
@@ -285,7 +297,7 @@ def test_cleanup_proof_cannot_be_replayed_from_another_site(tmp_path):
     for path in (receiver / "raw").iterdir():
         path.unlink()
     (receiver.parent.parent / "website_withdrawal/local_cleanup_verified.json").write_bytes(
-        (donor.parent.parent / "website_withdrawal/local_cleanup_verified.json").read_bytes())
+        proof_path(donor).read_bytes())
     with pytest.raises(ValueError):
         inspect_withdrawal(capture_root=receiver)
 
@@ -297,7 +309,7 @@ def test_cloud_proof_requires_bound_retained_plan_and_positive_absence(tmp_path,
     storage = FakeStorage()
     plan = plan_cloud_cleanup(capture_root=root, storage=storage)
     apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=plan["digest"], authorize_cloud_deletion=True)
-    path = root.parent.parent / "website_withdrawal/cloud_object_absence_verified.json"
+    path = proof_path(root, cloud=True)
     value = json.loads(path.read_text())
     if fault == "schema": value["schema_version"] = "unknown"
     elif fault == "tombstone": value["tombstone_digest"] = "sha256:" + "f" * 64
@@ -333,3 +345,37 @@ def test_malformed_hold_refuses_deletion_instead_of_inferencing_release(tmp_path
     with pytest.raises(ValueError):
         apply_local_cleanup(capture_root=root, expected_plan_digest=plan["digest"], authorize_local_deletion=True)
     assert (root / "raw/video.mp4").exists()
+
+
+@pytest.mark.parametrize("cloud", [False, True])
+def test_explicit_new_plan_handles_late_sources_without_rewriting_audit_history(tmp_path, cloud):
+    root, command = fixture(tmp_path)
+    acknowledge_withdrawal(capture_root=root, command=command)
+    storage = FakeStorage()
+    if cloud:
+        first = plan_cloud_cleanup(capture_root=root, storage=storage)
+        apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=first["digest"], authorize_cloud_deletion=True)
+        storage.rows = [{"name": "scenes/site-req1/late.jpg", "generation": "999", "size": 1, "crc32c": "AAAAAA=="}]
+    else:
+        first = plan_local_cleanup(capture_root=root)
+        apply_local_cleanup(capture_root=root, expected_plan_digest=first["digest"], authorize_local_deletion=True)
+        (root / "raw/late.jpg").write_bytes(b"late synthetic bytes")
+    journal = root.parent.parent / "website_withdrawal"
+    retained = {str(path.relative_to(journal)): path.read_bytes() for path in journal.rglob("*.json")}
+    if cloud:
+        second = plan_cloud_cleanup(capture_root=root, storage=storage)
+        with pytest.raises(ValueError):
+            apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=second["digest"])
+        result = apply_cloud_cleanup(capture_root=root, storage=storage, expected_plan_digest=second["digest"], authorize_cloud_deletion=True)
+        assert result["cloud_object_absence_verified"] is True
+        assert len(storage.deleted) == 2
+    else:
+        second = plan_local_cleanup(capture_root=root)
+        with pytest.raises(ValueError):
+            apply_local_cleanup(capture_root=root, expected_plan_digest=second["digest"])
+        result = apply_local_cleanup(capture_root=root, expected_plan_digest=second["digest"], authorize_local_deletion=True)
+        assert result["local_cleanup_verified"] is True
+        assert not (root / "raw/late.jpg").exists()
+    assert first["digest"] != second["digest"]
+    for relative, data in retained.items():
+        assert (journal / relative).read_bytes() == data

@@ -125,6 +125,23 @@ def _files(site: Path) -> list[dict[str, Any]]:
     return files
 
 
+def _cleanup_files(site: Path, journal: Path) -> list[dict[str, Any]]:
+    files = _files(site)
+    # Displaced payloads remain customer data, separate from retained audit.
+    # A new exact plan may authorize them; an old plan may never adopt them.
+    quarantine = journal / "quarantine"
+    if quarantine.is_symlink():
+        raise ValueError("website_cleanup_symlink_forbidden")
+    for path in sorted(quarantine.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("website_cleanup_symlink_forbidden")
+        if path.is_file():
+            metadata = path.stat()
+            files.append({"path": str(path.relative_to(site)), "sha256": _sha256_file(path), "size": metadata.st_size,
+                          "device": metadata.st_dev, "inode": metadata.st_ino, "mtime_ns": metadata.st_mtime_ns})
+    return files
+
+
 def _retained_plan(site: Path, journal: Path, proof: Mapping[str, Any], tombstone: Mapping[str, Any], *, cloud: bool) -> dict[str, Any]:
     plan_digest = proof.get("plan_digest")
     if (not isinstance(plan_digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", plan_digest)
@@ -136,7 +153,8 @@ def _retained_plan(site: Path, journal: Path, proof: Mapping[str, Any], tombston
             or plan.get("schema_version") != ("website_capture_cloud_cleanup_plan.v1" if cloud else "website_capture_local_cleanup_plan.v1")
             or plan.get("site_root") != str(site) or plan.get("tombstone_digest") != tombstone["digest"]):
         raise ValueError("website_cleanup_verification_plan_invalid")
-    intent = _read(journal / ("cloud_cleanup_intent.json" if cloud else "cleanup_intent.json"))
+    intent_path = journal / ("cloud_intents" if cloud else "intents") / f"{plan_digest[7:]}.json"
+    intent = _read(intent_path if intent_path.exists() else journal / ("cloud_cleanup_intent.json" if cloud else "cleanup_intent.json"))
     if intent.get("plan_digest") != plan_digest or intent.get("tombstone_digest") != tombstone["digest"]:
         raise ValueError("website_cleanup_verification_intent_invalid")
     if cloud:
@@ -158,6 +176,19 @@ def _retained_plan(site: Path, journal: Path, proof: Mapping[str, Any], tombston
     return plan
 
 
+def _latest_observation(site: Path, journal: Path, tombstone: Mapping[str, Any], *, cloud: bool) -> dict[str, Any] | None:
+    from .capture_lifecycle import _parse_time
+    legacy = journal / ("cloud_object_absence_verified.json" if cloud else "local_cleanup_verified.json")
+    paths = ([legacy] if legacy.exists() else []) + list((journal / ("cloud_verifications" if cloud else "verifications")).glob("*.json"))
+    observations = []
+    for path in paths:
+        proof = _read(path)
+        _retained_plan(site, journal, proof, tombstone, cloud=cloud)
+        timestamp = _parse_time(proof["observed_at_iso"], code="website_cleanup_observation_time_invalid").timestamp() if proof.get("observed_at_iso") else 0
+        observations.append((timestamp, proof["digest"], proof))
+    return max(observations, key=lambda row: row[:2])[2] if observations else None
+
+
 def _pending_payloads(journal: Path) -> bool:
     directory = journal / "quarantine"
     return directory.is_symlink() or any(path.is_symlink() or path.is_file() for path in directory.rglob("*"))
@@ -171,18 +202,14 @@ def _inspection(site: Path, journal: Path, current_cloud_storage: Any | None = N
             or tombstone.get("capture_id") != f"walkthrough-{site.name[5:]}"
             or tombstone.get("consent_revoked") is not True):
         raise ValueError("website_withdrawal_tombstone_changed")
-    verified_path = journal / "local_cleanup_verified.json"
-    verified = _read(verified_path) if verified_path.exists() else None
-    if verified:
-        _retained_plan(site, journal, verified, tombstone, cloud=False)
+    verified = _latest_observation(site, journal, tombstone, cloud=False)
     hold_path = journal / "legal_hold.json"
     hold = _read(hold_path) if hold_path.exists() else None
     if hold is not None and type(hold.get("legal_hold")) is not bool:
         raise ValueError("website_cleanup_legal_hold_unknown")
     held = hold is not None and hold["legal_hold"] is True
     local_complete = bool(verified and not _files(site) and not _pending_payloads(journal))
-    cloud_path = journal / "cloud_object_absence_verified.json"
-    cloud = _read(cloud_path) if cloud_path.exists() else None
+    cloud = _latest_observation(site, journal, tombstone, cloud=True)
     cloud_plan = _retained_plan(site, journal, cloud, tombstone, cloud=True) if cloud else None
     cloud_current = bool(cloud and current_cloud_storage and current_cloud_storage.bucket_name == cloud_plan["bucket"]
                          and not _cloud_objects(site, current_cloud_storage)
@@ -269,7 +296,7 @@ def apply_cloud_cleanup(*, capture_root: Path, storage: Any, expected_plan_diges
         current = _cloud_objects(site, storage)
         if any(planned.get((row["name"], row["generation"])) != row for row in current):
             raise ValueError("website_cleanup_cloud_source_changed")
-        _persist(journal / "cloud_cleanup_intent.json", {"plan_digest": expected_plan_digest,
+        _persist(journal / "cloud_intents" / f"{expected_plan_digest[7:]}.json", {"plan_digest": expected_plan_digest,
                     "tombstone_digest": receipt["tombstone_digest"], "bucket": storage.bucket_name})
         for row in current:
             # The provider may delete and then lose its response. Replay lists
@@ -283,8 +310,9 @@ def apply_cloud_cleanup(*, capture_root: Path, storage: Any, expected_plan_diges
                         "provider_copies_deleted": False, "physical_provider_storage_erasure_proven": False,
                         "observed_at_iso": datetime.now(timezone.utc).isoformat()}
         verification["digest"] = canonical_digest(verification, digest_field="digest")
-        if not (journal / "cloud_object_absence_verified.json").exists():
-            _persist(journal / "cloud_object_absence_verified.json", verification)
+        verification_path = journal / "cloud_verifications" / f"{expected_plan_digest[7:]}.json"
+        if not verification_path.exists():
+            _persist(verification_path, verification)
         return _inspection(site, journal, current_cloud_storage=storage)
 
 
@@ -320,7 +348,7 @@ def plan_local_cleanup(*, capture_root: Path) -> dict[str, Any]:
     with _lock(site) as journal:
         receipt = _inspection(site, journal)
         value = {"schema_version": "website_capture_local_cleanup_plan.v1", "tombstone_digest": receipt["tombstone_digest"],
-                 "site_root": str(site), "files": _files(site), "retained_audit_records": True,
+                 "site_root": str(site), "files": _cleanup_files(site, journal), "retained_audit_records": True,
                  "provider_cleanup_included": False, "cloud_storage_cleanup_included": False}
         value["digest"] = canonical_digest(value, digest_field="digest")
         _persist(journal / "plans" / f"{value['digest'][7:]}.json", value)
@@ -347,6 +375,8 @@ def _delete_local_generation(site: Path, journal: Path, row: Mapping[str, Any], 
     relative = Path(row["path"])
     if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
         raise ValueError("website_cleanup_plan_path_invalid")
+    if relative.parts[0] == "website_withdrawal" and (len(relative.parts) < 3 or relative.parts[1] != "quarantine"):
+        raise ValueError("website_cleanup_retained_audit_forbidden")
     source_descriptor = _directory(site / relative.parent)
     candidate_parent = journal / "quarantine" / plan_digest[7:] / relative.parent
     if any(path.is_symlink() for path in (candidate_parent, *candidate_parent.parents)):
@@ -412,13 +442,16 @@ def apply_local_cleanup(*, capture_root: Path, expected_plan_digest: str, author
         if plan.get("site_root") != str(site) or plan.get("tombstone_digest") != receipt["tombstone_digest"]:
             raise ValueError("website_cleanup_plan_binding_mismatch")
         planned = {row["path"]: row for row in plan["files"]}
-        current = _files(site)
+        candidate_prefix = f"website_withdrawal/quarantine/{expected_plan_digest[7:]}/"
+        # Same-plan moved generations are validated by the anchored candidate
+        # reader below. Other quarantined bytes need their own explicit plan.
+        current = [row for row in _cleanup_files(site, journal) if not row["path"].startswith(candidate_prefix)]
         # Missing planned files are crash/replay progress. Replacements are never deleted.
         if any(planned.get(row["path"]) != row for row in current):
             raise ValueError("website_cleanup_source_changed")
         intent = {"schema_version": "website_capture_local_cleanup_intent.v1", "plan_digest": expected_plan_digest,
                   "tombstone_digest": receipt["tombstone_digest"]}
-        _persist(journal / "cleanup_intent.json", intent)
+        _persist(journal / "intents" / f"{expected_plan_digest[7:]}.json", intent)
         if receipt["local_cleanup_verified"]:
             return receipt
         for row in plan["files"]:
@@ -427,9 +460,12 @@ def apply_local_cleanup(*, capture_root: Path, expected_plan_digest: str, author
             raise ValueError("website_cleanup_new_files_pending")
         verification = {"schema_version": "website_capture_local_cleanup_verified.v1", "plan_digest": expected_plan_digest,
                         "tombstone_digest": receipt["tombstone_digest"], "absence_observed": True,
-                        "planned_file_count": len(plan["files"]), "retained_audit_records": True}
+                        "planned_file_count": len(plan["files"]), "retained_audit_records": True,
+                        "observed_at_iso": datetime.now(timezone.utc).isoformat()}
         verification["digest"] = canonical_digest(verification, digest_field="digest")
-        _persist(journal / "local_cleanup_verified.json", verification)
+        verification_path = journal / "verifications" / f"{expected_plan_digest[7:]}.json"
+        if not verification_path.exists():
+            _persist(verification_path, verification)
         return _inspection(site, journal)
 
 
