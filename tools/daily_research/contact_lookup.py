@@ -701,8 +701,7 @@ def lookup_site(workspace, contact, screen, *, today=None):
     record's own when its rule gives them, else the screen's (the domain whose page proved the operator)."""
     domains = contact["operator_domains"] if isinstance(contact.get("operator_domains"), list) else screen["operator_domains"]
     domains = [item.lower() for item in domains if isinstance(item, str) and item and item.lower() not in ss.FREE_MAIL]
-    published = contact.get("recipient") if isinstance(contact.get("recipient"), dict) else {}
-    email = contact.get("email") if isinstance(contact.get("email"), dict) else {}
+    today = today or utc_today()
     content, _ = ss.output_of(ss._json(workspace.path("contact", "results", contact["site_key"]).read_bytes()))
     kept = []
     for stage in ("screen", "contact"):  # Our own earlier reads; LinkedIn was never read.
@@ -713,10 +712,10 @@ def lookup_site(workspace, contact, screen, *, today=None):
                  and page.get("state") == "ok" and isinstance(page.get("text"), str) and not ss.never_fetch(url)]
     return {"site_key": contact["site_key"], "contact": contact,
             "person": contact["person"] if isinstance(contact.get("person"), dict) else {},
-            "published_person_email": published.get("kind") == "person_email" and email.get("verified") is True,
+            "published_person_email": choose_recipient(contact, today=today)["choice"] == "published_person_email",
             "operator": _text(screen["answers"].get("operator_identity")) or _text(screen["input"].get("operator")),
             "operator_domains": domains, "operator_domain": domains[0] if domains else None, "kept_pages": kept,
-            "person_quote": _text(content.get("person_quote"), 1200), "today": today or utc_today()}
+            "person_quote": _text(content.get("person_quote"), 1200), "today": today}
 
 
 def lookup_sites(workspace, states, *, today=None):
@@ -902,18 +901,21 @@ def _choice(rank, *, address=None, lookup=None):
             "provider": {name: provider.get(name) for name in ("name", "status", "checked_at", "request_digest")}}
 
 
-def choose_recipient(contact_record, lookups=()):
+def choose_recipient(contact_record, lookups=(), *, today=None):
     """The admission hand-off's recipient for one site, in the owner's order: 1 a published, verified person email;
     2 a looked-up person email (``quoted_person`` or ``provider_sourced``, FullEnrich DELIVERABLE); 3 a published team
     inbox; 4 a published general inbox; 5 none. Pure: it reads only its arguments, and a malformed one chooses
-    nothing from it. Every choice carries its source (published, provider_lookup or none) and labels."""
+    nothing from it. Admission supplies ``today`` to recheck the source date against its current UTC day.
+    Every choice carries its source (published, provider_lookup or none) and labels."""
     record = contact_record if isinstance(contact_record, dict) else {}
     published = record.get("recipient") if isinstance(record.get("recipient"), dict) else {}
     email = record.get("email") if isinstance(record.get("email"), dict) else {}
     address = published.get("address") if email.get("verified") is True else None
     address = address if isinstance(address, str) and ss.email_address(address) == address else None
     person = record.get("person") if isinstance(record.get("person"), dict) else {}
-    person = {"verified": person.get("verified") is True, "name": _text(person.get("name"))}
+    current = person.get("current") is True and (today is None or ss._fresh(person.get("date"), today))
+    person = {"verified": person.get("verified") is True and current,
+              "name": _text(person.get("name"))}
     role = ss.address_role(address, {"verified": False}) if address else None
     if address and role == "unknown":
         role = ss.address_role(address, person)
@@ -942,7 +944,7 @@ def records(book, sites):
                 lookups.append(result(site, person, key, book.calls[key]))
         built[site["site_key"]] = {"schema_version": RECORD, "rule_version": RULE, "site_key": site["site_key"],
                                    "operator_domain": site["operator_domain"], "skipped": code, "lookups": lookups,
-                                   "recipient": choose_recipient(site["contact"], lookups)}
+                                   "recipient": choose_recipient(site["contact"], lookups, today=site["today"])}
     return built
 
 

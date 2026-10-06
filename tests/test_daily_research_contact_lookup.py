@@ -414,7 +414,7 @@ def test_a_damaged_journal_or_pin_refuses(tmp_path):
 # --- the recipient hand-off -----------------------------------------------------------------------
 def contact_record(kind, address=None):
     return {"email": {"verified": address is not None, "address": address, "level": "verified_on_page"},
-            "operator_domains": ["operator-1.example"], "person": {"verified": True, "name": PERSON},
+            "operator_domains": ["operator-1.example"], "person": {"verified": True, "current": True, "name": PERSON},
             "recipient": {"kind": kind, "address": address}}
 
 
@@ -482,6 +482,37 @@ def test_role_inboxes_never_become_person_emails_when_a_name_matches_the_role():
               "person": {"verified": True, "name": "Jordan Sales"}}
     recipient = cl.choose_recipient(record)
     assert recipient["choice"] == "published_team_inbox" and recipient["person"] is None
+
+
+@pytest.mark.parametrize("current", [False, None, "true", 1])
+def test_published_person_must_still_be_current_and_can_fall_back_to_a_verified_lookup(current):
+    record = {**contact_record("person_email", ADDRESS),
+              "person": {"verified": True, "current": current, "name": PERSON}}
+    assert cl.choose_recipient(record)["choice"] == "none"
+    assert cl.choose_recipient(record, [looked_up()])["choice"] == "looked_up_person_email"
+
+
+def test_a_stale_published_person_does_not_prevent_authorized_people_search(tmp_path):
+    workspace, _ = site_screen_out(tmp_path, [contact_answers(1, person_date="2020-06-01")])
+    api = FakeFullEnrich()
+    api.people["operator-1.example"] = [searched(OTHER_PERSON)]
+    api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
+    result = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)
+    assert result["calls"]["made"] == 2 and result["recipients"]["looked_up_person_email"] == 1
+
+
+def test_published_person_source_is_rechecked_at_the_admission_day(tmp_path):
+    workspace, (key,) = site_screen_out(tmp_path, [contact_answers(1, person_date="2025-06-01")])
+    states, _ = workspace.states()
+    contact = ss.stage_records(workspace, states, "contact")[key]
+    assert contact["person"]["current"] is True
+    later = TODAY.replace(year=2027)
+    assert cl.choose_recipient(contact, today=later)["choice"] == "none"
+    api = FakeFullEnrich()
+    api.people["operator-1.example"] = [searched(OTHER_PERSON)]
+    api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
+    report = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION, today=later)
+    assert report["calls"]["made"] == 2 and report["recipients"]["looked_up_person_email"] == 1
 
 
 def test_malformed_person_or_domains_choose_no_unsupported_address():
