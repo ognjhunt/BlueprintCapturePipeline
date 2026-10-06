@@ -1,6 +1,7 @@
 """ADP-010 day-7 control calls share DNS, TCP, TLS, and parser deadlines."""
 from __future__ import annotations
 
+import http.client
 import selectors
 import socket
 import ssl
@@ -81,12 +82,43 @@ def assert_transport_timeout(error):
     assert isinstance(error.value.reason, TimeoutError)
 
 
+def read_complete_request(tls, *, headers_received=None):
+    """Consume this fixture's entire request before responding or closing TLS."""
+    deadline = time.monotonic() + 2
+    raw = bytearray()
+
+    def receive(count):
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, "synthetic request deadline elapsed"
+        tls.settimeout(remaining)
+        chunk = tls.recv(count)
+        assert chunk, "synthetic request was truncated"
+        assert time.monotonic() < deadline, "synthetic request deadline elapsed"
+        return chunk
+
+    while b"\r\n\r\n" not in raw:
+        raw.extend(receive(min(4096, 8193 - len(raw))))
+        assert len(raw) <= 8192, "synthetic request headers exceeded bound"
+    header, _separator, body = raw.partition(b"\r\n\r\n")
+    lengths = [line.partition(b":")[2].strip() for line in header.split(b"\r\n")[1:]
+               if line.partition(b":")[0].lower() == b"content-length"]
+    assert len(lengths) == 1 and lengths[0].isdigit(), "synthetic request length invalid"
+    length = int(lengths[0])
+    assert length <= 64, "synthetic request body exceeded bound"
+    if headers_received is not None:
+        headers_received.set()
+    while len(body) < length:
+        body.extend(receive(length - len(body)))
+    assert len(body) == length, "synthetic request body length mismatch"
+    return bytes(header) + b"\r\n\r\n" + bytes(body)
+
+
 def test_real_https_json_uses_verified_peer_and_original_method(tls_contexts):
     server, client = tls_contexts
 
     def respond(peer, _stop, observed):
         with server.wrap_socket(peer, server_side=True) as tls:
-            observed["request"] = tls.recv(4096)
+            observed["request"] = read_complete_request(tls)
             body = b'{"ok":true}'
             tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n" + body)
 
@@ -98,7 +130,39 @@ def test_real_https_json_uses_verified_peer_and_original_method(tls_contexts):
                                            maximum_bytes=64, context=client, direct=True) == {"ok": True}
     assert observed["request"].startswith(b"PATCH /control HTTP/1.1\r\n")
     assert b"Authorization: Bearer synthetic\r\n" in observed["request"]
+    assert observed["request"].partition(b"\r\n\r\n")[2] == b"{}"
     assert client.check_hostname and client.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_real_success_peer_waits_for_separately_delivered_tls_request_body(tls_contexts):
+    server, client = tls_contexts
+    headers_received = threading.Event()
+
+    def respond(peer, _stop, observed):
+        with server.wrap_socket(peer, server_side=True) as tls:
+            observed["request"] = read_complete_request(tls, headers_received=headers_received)
+            tls.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok":true}')
+
+    with local_peer(respond) as (port, observed):
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as peer:
+            with client.wrap_socket(peer, server_hostname="localhost") as tls:
+                header = (b"PATCH /control HTTP/1.1\r\nHost: localhost\r\n"
+                          b"Authorization: Bearer synthetic\r\nContent-Length: 2\r\n\r\n")
+                tls.sendall(header)
+                assert headers_received.wait(1)
+                tls.settimeout(0.1)
+                with pytest.raises(TimeoutError):
+                    tls.recv(1)
+                tls.settimeout(2)
+                tls.sendall(b"{")
+                tls.sendall(b"}")
+                response = http.client.HTTPResponse(tls)
+                try:
+                    response.begin()
+                    assert response.status == 200 and response.read() == b'{"ok":true}'
+                finally:
+                    response.close()
+    assert observed["request"] == header + b"{}"
 
 
 def test_real_https_still_rejects_wrong_certificate_hostname(tls_contexts):
