@@ -3,6 +3,7 @@
 import ast
 import base64
 import hashlib
+import http.client
 import importlib.util
 import io
 import json
@@ -11,6 +12,7 @@ from pathlib import Path
 import re
 import signal
 import stat
+import socket
 import subprocess
 import sys
 import time
@@ -56,6 +58,12 @@ def installer():
 def deployer(tmp_path):
     tree = ast.parse((SCRIPTS / "deploy_control_plane_commit.py").read_bytes())
     names = {
+        "_SourceDeadlineSocket",
+        "_SourceDeadlineHTTPSConnection",
+        "_SourceDeadlineHTTPSHandler",
+        "_SourceClosingHTTPErrorProcessor",
+        "_SourceNoRedirect",
+        "_source_response_opener",
         "_scene_source_delivery",
         "_scene_source_cache_publish",
         "_scene_source_selected_proof",
@@ -63,7 +71,7 @@ def deployer(tmp_path):
         "_bootstrap_scene_retirement_installer",
     }
     definitions = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names
+        node for node in tree.body if isinstance(node, (ast.FunctionDef,ast.ClassDef)) and node.name in names
     ]
     namespace = {
         "Path": Path,
@@ -80,6 +88,7 @@ def deployer(tmp_path):
         "urllib": __import__("urllib"),
         "fcntl": __import__("fcntl"),
         "math": __import__("math"),
+        "http": __import__("http"),
         "ControlPlaneDeployError": ValueError,
         "_SCENE_RUNTIME_OWNER": os.getuid(),
         "_SCENE_RUNTIME_BOOT_ROOT": tmp_path / "runtime",
@@ -414,6 +423,12 @@ def test_wrapper_embeds_the_same_admission_before_first_privileged_execution():
     original = ast.parse(source)
     wrapper = ast.parse(embedded)
     names = {
+        "_SourceDeadlineSocket",
+        "_SourceDeadlineHTTPSConnection",
+        "_SourceDeadlineHTTPSHandler",
+        "_SourceClosingHTTPErrorProcessor",
+        "_SourceNoRedirect",
+        "_source_response_opener",
         "_scene_source_delivery",
         "_scene_source_cache_publish",
         "_scene_source_selected_proof",
@@ -425,12 +440,12 @@ def test_wrapper_embeds_the_same_admission_before_first_privileged_execution():
     left = {
         node.name: ast.dump(node, include_attributes=False)
         for node in original.body
-        if isinstance(node, ast.FunctionDef) and node.name in names
+        if isinstance(node, (ast.FunctionDef,ast.ClassDef)) and node.name in names
     }
     right = {
         node.name: ast.dump(node, include_attributes=False)
         for node in wrapper.body
-        if isinstance(node, ast.FunctionDef) and node.name in names
+        if isinstance(node, (ast.FunctionDef,ast.ClassDef)) and node.name in names
     }
     assert left == right
     assert "sha1(" not in embedded and "sha1(" not in source
@@ -668,8 +683,6 @@ def test_existing_selected_proof_never_switches_or_admits_an_unknown_proof(
 
 def framed_http_response(url, body, framing):
     """Actual HTTPResponse framing/EOF, with an in-memory socket only."""
-    import http.client
-
     class Socket:
         def settimeout(self, value):
             assert 0 < value <= 30
@@ -755,3 +768,132 @@ def test_sdk_artifact_real_http_framing_survives_closed_fp(tmp_path, monkeypatch
     )
     result = module._sdk_artifact(row, None, time.monotonic() + 10)
     assert result.read_bytes() == raw
+
+
+@pytest.mark.parametrize("consumer",["api","sdk"])
+@pytest.mark.parametrize("fault",["redirect","error","status","header","body","chunk","trailer"])
+def test_actual_source_application_dispatch_closes_and_bounds_all_http_framing(
+    tmp_path,monkeypatch,consumer,fault
+):
+    """Unmodified urllib/HTTPResponse/SocketIO; only connect supplies fake sockets."""
+    clock,calls,responses = [0.0],[],[]
+    body = b'tiny synthetic SDK bytes' if consumer == 'sdk' else b'{"workflow_runs":[]}'
+    ordinary = b'Content-Length: '+str(len(body)).encode()+b'\r\n\r\n'+body
+    if fault == 'redirect':
+        prefix = b'HTTP/1.1 302 Synthetic\r\nLocation: https://other.invalid/a\r\nContent-Length: 9\r\n\r\nforbidden'
+        suffix = b''
+    elif fault == 'error':
+        prefix = b'HTTP/1.1 401 Synthetic\r\nContent-Length: 9\r\n\r\nforbidden'
+        suffix = b''
+    elif fault == 'status':
+        prefix,suffix = b'',b'HTTP/1.1 200 OK\r\n'+ordinary
+    elif fault == 'header':
+        prefix,suffix = b'HTTP/1.1 200 OK\r\n',b'X-Slow: drip\r\n'+ordinary
+    elif fault == 'body':
+        prefix = b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(body)).encode()+b'\r\n\r\n'
+        suffix = body
+    elif fault == 'chunk':
+        prefix = b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n'
+        suffix = b'1;slow=metadata\r\nx\r\n0\r\n\r\n'
+    else:
+        prefix = b'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n'
+        suffix = b'X-Slow-Trailer: drip\r\n\r\n'
+    class Peer:
+        def __init__(self,timeout):
+            self.prefix,self.suffix = prefix,bytearray(suffix)
+            self.timeouts,self.request,self.timeout = [],bytearray(),timeout
+            calls.append(self)
+        def settimeout(self,value):
+            self.timeout = value
+            self.timeouts.append(value)
+        def sendall(self,value,*args):
+            self.request.extend(value)
+        def recv_into(self,target,*args):
+            if self.prefix:
+                count = len(self.prefix)
+                target[:count],self.prefix = self.prefix,b''
+                return count
+            if self.timeout < 4:
+                clock[0] += self.timeout
+                raise TimeoutError('synthetic source remaining raw budget')
+            clock[0] += 4
+            target[0] = self.suffix.pop(0)
+            return 1
+        def makefile(self,*args,**kwargs):
+            return io.BufferedReader(socket.SocketIO(self,'r'))
+        def _decref_socketios(self):
+            pass
+        def close(self):
+            pass
+    actual = http.client.HTTPConnection.response_class
+    class TracedResponse(actual):
+        def __init__(self,*args,**kwargs):
+            super().__init__(*args,**kwargs)
+            responses.append(self)
+    monkeypatch.setattr(http.client.HTTPConnection,'response_class',TracedResponse)
+    monkeypatch.setattr(http.client.HTTPSConnection,'connect',lambda connection:setattr(connection,'sock',Peer(connection.timeout)))
+    monkeypatch.setattr(time,'monotonic',lambda:clock[0])
+    if consumer == 'api':
+        namespace = deployer(tmp_path)
+        def execute():
+            return namespace['_scene_source_delivery'](COMMIT,deadline=10)
+    else:
+        module = installer()
+        module._OWNER = os.getuid()
+        module._FREE_FLOOR = 0
+        module._sdk_root = lambda:tmp_path/'sdk'
+        row = {'url':'https://files.pythonhosted.org/fixture.whl','size':len(body),
+               'hash':'sha256:'+hashlib.sha256(body).hexdigest()}
+        def execute():
+            return module._sdk_artifact(row,None,10)
+    exception = urllib.error.HTTPError if fault == 'error' else ValueError if fault == 'redirect' else TimeoutError
+    with pytest.raises(exception) as held:
+        execute()
+    assert len(calls) == 1 and len(responses) == 1 and responses[0].closed
+    if fault == 'error':
+        assert held.value.fp.closed
+    elif fault not in {'error','redirect'}:
+        distinct = [value for index,value in enumerate(calls[0].timeouts)
+                    if index == 0 or value != calls[0].timeouts[index-1]]
+        assert clock[0] == 10 and distinct == [10,6,2]
+    assert b'Authorization:' not in calls[0].request
+    assert not (tmp_path/'runtime').exists()
+
+
+@pytest.mark.parametrize("consumer",["api","sdk"])
+def test_source_transports_clamp_connection_timeout_before_any_late_connect(tmp_path,monkeypatch,consumer):
+    namespace = deployer(tmp_path) if consumer == 'api' else vars(installer())
+    clock,calls = [95.0],[]
+    monkeypatch.setattr(time,'monotonic',lambda:clock[0])
+    def connect(connection):
+        calls.append(connection.timeout)
+        connection.sock = object()
+    monkeypatch.setattr(http.client.HTTPSConnection,'connect',connect)
+    connection = namespace['_SourceDeadlineHTTPSConnection']('synthetic.invalid',deadline=100,timeout=30)
+    connection.connect()
+    assert calls == [5] and connection.sock._maximum_timeout == 5
+    clock[0] = 100
+    with pytest.raises(TimeoutError,match='source_transfer_deadline'):
+        namespace['_SourceDeadlineHTTPSConnection']('synthetic.invalid',deadline=100,timeout=30).connect()
+    assert calls == [5]
+
+
+def test_source_transports_are_embedded_identically_without_new_bandit_suppressions():
+    names = {'_SourceDeadlineSocket','_SourceDeadlineHTTPSConnection','_SourceDeadlineHTTPSHandler',
+             '_SourceClosingHTTPErrorProcessor','_SourceNoRedirect','_source_response_opener'}
+    def definitions(raw):
+        return {node.name:ast.dump(node,include_attributes=False) for node in ast.parse(raw).body
+                if isinstance(node,(ast.FunctionDef,ast.ClassDef)) and node.name in names}
+    deployed = definitions((SCRIPTS/'deploy_control_plane_commit.py').read_text())
+    assert len(deployed) == len(names)
+    assert definitions((SCRIPTS/'install_scene_retirement_runtime.py').read_text()) == deployed
+    shell = (SCRIPTS/'install_live_pipeline_control_plane.sh').read_text()
+    embedded = shell.split("<<'PY_RUNTIME'\n",1)[1].split('\nPY_RUNTIME',1)[0]
+    assert definitions(embedded) == deployed
+    from collections import Counter
+    for name in ('install_scene_retirement_runtime.py','deploy_control_plane_commit.py','install_live_pipeline_control_plane.sh'):
+        baseline = subprocess.check_output(['/usr/bin/git','show',
+            '20159f08a9470b26e8c1f988f39fa076ff82fb7f:scripts/'+name],cwd=SCRIPTS.parent).decode()
+        def comments(raw):
+            return Counter(line[line.index('# nosec'):].strip() for line in raw.splitlines() if '# nosec' in line)
+        assert not comments((SCRIPTS/name).read_text())-comments(baseline)

@@ -29,6 +29,7 @@ and rents nothing.
 from __future__ import annotations
 
 import argparse
+import http.client
 import base64
 import contextlib
 import dataclasses
@@ -51,6 +52,99 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import sys
+
+class _SourceDeadlineSocket:
+    """Clamp every raw receive, including status/header/chunk line refills."""
+
+    def __init__(self, socket, deadline: float, maximum_timeout: float):
+        self._socket, self._deadline, self._maximum_timeout = socket, deadline, maximum_timeout
+
+    def __getattr__(self, name):
+        return getattr(self._socket, name)
+
+    def _remaining(self):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("controlled_http_response_timeout")
+        return min(remaining,self._maximum_timeout)
+
+    def recv_into(self, target, *args):
+        self._socket.settimeout(self._remaining())
+        result = self._socket.recv_into(target, *args)
+        self._remaining()
+        return result
+
+    def sendall(self, data, *args):
+        self._socket.settimeout(self._remaining())
+        self._socket.sendall(data, *args)
+        self._remaining()
+
+    def makefile(self, *args, **kwargs):
+        stream = self._socket.makefile(*args, **kwargs)
+        raw = getattr(stream, "raw", None)
+        if raw is None or getattr(raw, "_sock", None) is not self._socket:
+            stream.close()
+            raise ValueError("controlled_http_response_reader_invalid")
+        raw._sock = self
+        return stream
+
+class _SourceDeadlineHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, deadline, **kwargs):
+        self._deadline = deadline
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        remaining = self._deadline-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('source_transfer_deadline')
+        # urllib reuses the initial timeout across redirect requests. Clamp
+        # each fresh connection to the remaining budget before TCP/TLS setup.
+        self.timeout = min(self.timeout,remaining)
+        super().connect()
+        self.sock = _SourceDeadlineSocket(self.sock,self._deadline,self.timeout)
+
+class _SourceDeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, deadline, context):
+        super().__init__(context=context)
+        self.deadline = deadline
+
+    def https_open(self, request):
+        return self.do_open(lambda *args, **kwargs: _SourceDeadlineHTTPSConnection(
+            *args, deadline=self.deadline, **kwargs), request, context=self._context)
+
+class _SourceClosingHTTPErrorProcessor(urllib.request.HTTPErrorProcessor):
+    def http_response(self, request, response):
+        try:
+            return super().http_response(request, response)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise
+
+    https_response = http_response
+
+class _SourceNoRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self,error):
+        super().__init__()
+        self.error = error
+
+    def redirect_request(self,request,response,code,message,headers,url):
+        raise ValueError(self.error)
+
+    def http_error_302(self,request,response,code,message,headers):
+        try:
+            raise ValueError(self.error)
+        finally:
+            response.close()
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+def _source_response_opener(deadline,*,error):
+    if type(deadline) not in {int,float} or not math.isfinite(deadline) or time.monotonic() >= deadline:
+        raise ValueError(error)
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+        _SourceNoRedirect(error),_SourceDeadlineHTTPSHandler(deadline,None),_SourceClosingHTTPErrorProcessor())
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -3145,16 +3239,13 @@ def _scene_source_delivery(source_commit: str, *, deadline: float) -> None:
         if not value:
             raise ControlPlaneDeployError(error)
     require(re.fullmatch('[0-9a-f]{40}', source_commit) is not None)
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, request, response, code, message, headers, url):
-            raise ControlPlaneDeployError(error)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    opener = _source_response_opener(deadline,error=error)
     def fetch(suffix, cap):
         require(time.monotonic() <= deadline)
         url = 'https://api.github.com/repos/' + repository + suffix
         request = urllib.request.Request(url, headers={'Accept':'application/vnd.github+json',
             'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'Blueprint-source-admission'})
-        with opener.open(request, timeout=min(30, max(.001, deadline-time.monotonic()))) as response:  # nosec B310 - fixed public HTTPS API, no redirects/proxy/credentials, bounded data
+        with opener.open(request, timeout=min(30, max(.001, deadline-time.monotonic()))) as response:
             require(response.status == 200 and response.url == url)
             body = bytearray()
             while True:

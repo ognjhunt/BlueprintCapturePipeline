@@ -7,6 +7,8 @@ its exact protected copy intent. Unknown or changed bytes are preserved and refu
 from __future__ import annotations
 
 import argparse
+import http.client
+import urllib.error
 from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
@@ -26,6 +28,99 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
+
+
+class _SourceDeadlineSocket:
+    """Clamp every raw receive, including status/header/chunk line refills."""
+
+    def __init__(self, socket, deadline: float, maximum_timeout: float):
+        self._socket, self._deadline, self._maximum_timeout = socket, deadline, maximum_timeout
+
+    def __getattr__(self, name):
+        return getattr(self._socket, name)
+
+    def _remaining(self):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("controlled_http_response_timeout")
+        return min(remaining,self._maximum_timeout)
+
+    def recv_into(self, target, *args):
+        self._socket.settimeout(self._remaining())
+        result = self._socket.recv_into(target, *args)
+        self._remaining()
+        return result
+
+    def sendall(self, data, *args):
+        self._socket.settimeout(self._remaining())
+        self._socket.sendall(data, *args)
+        self._remaining()
+
+    def makefile(self, *args, **kwargs):
+        stream = self._socket.makefile(*args, **kwargs)
+        raw = getattr(stream, "raw", None)
+        if raw is None or getattr(raw, "_sock", None) is not self._socket:
+            stream.close()
+            raise ValueError("controlled_http_response_reader_invalid")
+        raw._sock = self
+        return stream
+
+class _SourceDeadlineHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, deadline, **kwargs):
+        self._deadline = deadline
+        super().__init__(*args, **kwargs)
+
+    def connect(self):
+        remaining = self._deadline-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('source_transfer_deadline')
+        # urllib reuses the initial timeout across redirect requests. Clamp
+        # each fresh connection to the remaining budget before TCP/TLS setup.
+        self.timeout = min(self.timeout,remaining)
+        super().connect()
+        self.sock = _SourceDeadlineSocket(self.sock,self._deadline,self.timeout)
+
+class _SourceDeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, deadline, context):
+        super().__init__(context=context)
+        self.deadline = deadline
+
+    def https_open(self, request):
+        return self.do_open(lambda *args, **kwargs: _SourceDeadlineHTTPSConnection(
+            *args, deadline=self.deadline, **kwargs), request, context=self._context)
+
+class _SourceClosingHTTPErrorProcessor(urllib.request.HTTPErrorProcessor):
+    def http_response(self, request, response):
+        try:
+            return super().http_response(request, response)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise
+
+    https_response = http_response
+
+class _SourceNoRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self,error):
+        super().__init__()
+        self.error = error
+
+    def redirect_request(self,request,response,code,message,headers,url):
+        raise ValueError(self.error)
+
+    def http_error_302(self,request,response,code,message,headers):
+        try:
+            raise ValueError(self.error)
+        finally:
+            response.close()
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+def _source_response_opener(deadline,*,error):
+    if type(deadline) not in {int,float} or not math.isfinite(deadline) or time.monotonic() >= deadline:
+        raise ValueError(error)
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+        _SourceNoRedirect(error),_SourceDeadlineHTTPSHandler(deadline,None),_SourceClosingHTTPErrorProcessor())
 
 
 _OWNER = 0
@@ -744,9 +839,9 @@ def _sdk_append_chunk(output, original, raw, offset, deadline):
         view = view[written:]
 
 
-class _SdkNoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, url):
-        raise ValueError(_ERROR)
+class _SdkNoRedirect(_SourceNoRedirect):
+    def __init__(self):
+        super().__init__(_ERROR)
 
 
 def _sdk_artifact(row, wheelhouse, deadline):
@@ -779,8 +874,8 @@ def _sdk_artifact(row, wheelhouse, deadline):
         # The authenticated lock pins both the exact HTTPS origin and SHA256.
         # Refuse redirects before contacting their target; do not use ambient
         # proxy settings or transfer a request to another host first.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _SdkNoRedirect())
-        with opener.open(url, timeout=min(30, max(.001, deadline - time.monotonic()))) as response:  # nosec B310 - exact HTTPS origin, redirects disabled, bounded SHA256-pinned bytes
+        opener = _source_response_opener(deadline,error=_ERROR)
+        with opener.open(url, timeout=min(30, max(.001, deadline - time.monotonic()))) as response:
             _require(response.status == 200 and urllib.parse.urlsplit(response.url).hostname == parsed.hostname)
             while True:
                 _require(time.monotonic() <= deadline)
