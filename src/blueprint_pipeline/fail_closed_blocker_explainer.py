@@ -30,7 +30,7 @@ import builtins
 import linecache
 import types
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Mapping as TypingMapping
 
 MAX_PREDICATE_CHARS = 140
 MAX_FIRED = 8
@@ -169,10 +169,22 @@ class _PurePredicate:
                     value = self.read(node.args[0])
                     expected = node.args[1]
                     names = expected.elts if isinstance(expected, ast.Tuple) else [expected]
-                    if not names or any(not isinstance(item, ast.Name) or item.id not in _TYPES
-                                        or self.name(item.id) is not _TYPES[item.id] for item in names):
+                    if not names:
                         raise _UnsafePredicate
-                    return isinstance(self.data(value), tuple(_TYPES[item.id] for item in names))
+                    expected_types = []
+                    for item in names:
+                        if not isinstance(item, ast.Name):
+                            raise _UnsafePredicate
+                        bound = self.name(item.id)
+                        if bound is Mapping or bound is TypingMapping:
+                            # Only exact dicts satisfy Mapping among the admitted
+                            # builtin data. Never run ABC instance/subclass hooks.
+                            expected_types.append(dict)
+                        elif item.id in _TYPES and bound is _TYPES[item.id]:
+                            expected_types.append(bound)
+                        else:
+                            raise _UnsafePredicate
+                    return isinstance(self.data(value), tuple(expected_types))
             if isinstance(node.func, ast.Attribute) and node.func.attr == 'get' and 1 <= len(node.args) <= 2:
                 value = self.data(self.read(node.func.value))
                 if type(value) is not dict:

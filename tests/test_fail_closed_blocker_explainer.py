@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import textwrap
+from abc import ABCMeta
 from pathlib import Path
 
 import pytest
@@ -166,6 +167,103 @@ def _refusal(tmp_path, source, arguments=()):
     except ValueError as error:
         return scope, error
     raise AssertionError('fixture did not refuse')
+
+
+@pytest.mark.parametrize('module', ['collections.abc', 'typing'])
+@pytest.mark.parametrize('expected', ['RowMapping', '(RowMapping, list)'])
+def test_canonical_mapping_alias_reads_exact_dict_without_abc_hooks(tmp_path, monkeypatch, module, expected):
+    _, error = _refusal(tmp_path, f'''from {module} import Mapping as RowMapping
+def validate(value):
+    if not isinstance(value, {expected}) or value.get('schema_version') != 'envelope.v1':
+        raise ValueError('refused')
+''', ({'schema_version': 'wrong'},))
+    events = []
+    original_instancecheck = ABCMeta.__instancecheck__
+    original_subclasscheck = ABCMeta.__subclasscheck__
+    def instancecheck(cls, value):
+        events.append('instancecheck')
+        return original_instancecheck(cls, value)
+    def subclasscheck(cls, value):
+        events.append('subclasscheck')
+        return original_subclasscheck(cls, value)
+    with monkeypatch.context() as patch:
+        patch.setattr(ABCMeta, '__instancecheck__', instancecheck)
+        patch.setattr(ABCMeta, '__subclasscheck__', subclasscheck)
+        report = explainer.explain_blocker(error)
+    assert events == []
+    assert report['explanations'][0]['fired'] == ["value.get('schema_version') != 'envelope.v1'"]
+    assert report['explanations'][0]['evaluation_errors'] == []
+
+
+@pytest.mark.parametrize(('value', 'expected'), [(True, 'int'), (True, '(RowMapping, int)'), ([], '(RowMapping, list)')])
+def test_mapping_tuple_preserves_ordinary_builtin_subtyping(tmp_path, value, expected):
+    _, error = _refusal(tmp_path, f'''from collections.abc import Mapping as RowMapping
+def validate(value):
+    if isinstance(value, {expected}):
+        raise ValueError('refused')
+''', (value,))
+    report = explainer.explain_blocker(error)
+    assert report['explanations'][0]['fired'] == [f'isinstance(value, {expected})']
+    assert report['explanations'][0]['evaluation_errors'] == []
+
+
+def test_shadowed_mapping_never_dispatches_metaclass_hooks(tmp_path):
+    scope, error = _refusal(tmp_path, '''events = []
+class Meta(type):
+    def __instancecheck__(cls, value):
+        events.append('instancecheck')
+        return False
+    def __subclasscheck__(cls, value):
+        events.append('subclasscheck')
+        return False
+    def __eq__(cls, other):
+        events.append('equality')
+        return False
+    def __hash__(cls):
+        events.append('hash')
+        return 1
+class Mapping(metaclass=Meta):
+    pass
+def validate(value):
+    if not isinstance(value, Mapping) or value.get('schema_version') != 'envelope.v1':
+        raise ValueError('refused')
+''', ({'schema_version': 'wrong'},))
+    before = list(scope['events'])
+    report = explainer.explain_blocker(error)
+    assert before == ['instancecheck']
+    assert scope['events'] == before
+    assert report['explanations'][0]['fired'] == []
+    assert report['explanations'][0]['evaluation_errors'][0].endswith('_UnsafePredicate')
+
+
+@pytest.mark.parametrize('value_type', ['DictSubclass', 'Application'])
+def test_canonical_mapping_still_refuses_application_values_without_hooks(tmp_path, value_type):
+    scope, error = _refusal(tmp_path, f'''from collections.abc import Mapping
+events = []
+class Meta(type):
+    def __eq__(cls, other):
+        events.append('equality')
+        return False
+    def __hash__(cls):
+        events.append('hash')
+        return 1
+class DictSubclass(dict, metaclass=Meta):
+    pass
+class Application(metaclass=Meta):
+    @property
+    def __class__(self):
+        events.append('class-property')
+        return dict
+def validate():
+    value = {value_type}()
+    if not isinstance(value, Mapping) or True:
+        raise ValueError('refused')
+''')
+    before = list(scope['events'])
+    report = explainer.explain_blocker(error)
+    assert scope['events'] == before
+    assert report['explanations'][0]['fired'] == []
+    assert report['explanations'][0]['evaluation_errors'][0].endswith('_UnsafePredicate')
 
 
 def test_diagnostics_never_visit_original_short_circuited_call(tmp_path):
