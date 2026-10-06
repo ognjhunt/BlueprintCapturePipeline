@@ -508,3 +508,11 @@ def test_rule_v3_never_recovers_an_address_an_earlier_rule_discarded(tmp_path):
     assert record["email"] == {"verified": False, "level": "unverified", "discarded": True,
                                "reason": "site_screen_operator_domain_unproven"}
     assert answers["email"].encode() not in stored(workspace, keys[0])
+@pytest.mark.parametrize("address,name,expected", [
+    ("sales@operator.example", "Ann Sales", "team"),
+    ("info@operator.example", "Bob Info", "general"),
+    ("support@operator.example", "Chris Support", "refused"),
+    ("ann.sales@operator.example", "Ann Sales", "team"),
+])
+def test_role_inboxes_take_precedence_over_a_matching_person_name(address, name, expected):
+    assert ss.address_role(address, {"verified": True, "name": name}) == expected

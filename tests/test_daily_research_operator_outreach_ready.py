@@ -21,11 +21,11 @@ NOW = datetime(2026, 10, 5, 18, 30, 15, 123456, tzinfo=timezone.utc)
 APPROVAL = "owner-decision-outreach-ready-synthetic"
 
 
-def bridge_script(tmp_path):
-    script = tmp_path / "bridge.mjs"
+def bridge_script(tmp_path, module=ROOT / "tools/daily_research/firestore_bridge.mjs", name="bridge.mjs"):
+    script = tmp_path / name
     script.write_text("\n".join([
         "import {createInterface} from 'node:readline';",
-        "import {Store, LeaseChannel} from " + json.dumps((ROOT / "tools/daily_research/firestore_bridge.mjs").as_uri()) + ";",
+        "import {Store, LeaseChannel} from " + json.dumps(module.as_uri()) + ";",
         "import {MemoryFirestore} from " + json.dumps((ROOT / "tests/fixtures/daily_research/firestore-memory.mjs").as_uri()) + ";",
         "import {FakeBucket} from " + json.dumps((ROOT / "tests/fixtures/daily_research/fake-bucket.mjs").as_uri()) + ";",
         "const db = new MemoryFirestore(" + json.dumps(str(tmp_path / "firestore.json")) + ");",
@@ -183,6 +183,42 @@ def test_stale_expectation_and_a_racing_writer_are_compare_and_swap_conflicts(fi
     current = bridge.call("control")["outreach_ready"]["current"]
     assert current["direction"]["scope"]["max_rows_per_batch"] == 5 and current["version"] == 2
     assert bridge.call("control")["lease"]["expires_at_ms"] == 0
+
+
+def test_a_direction_pinned_under_rule_v1_1_is_refused_after_the_v1_2_release_braked_or_superseded(tmp_path, monkeypatch):
+    """A direction names the rule of the release that set it. After the v1.2 release, a direction an earlier
+    release pinned (rule v1.1) leaves every run in shadow mode with outreach_ready_direction_invalid; the brake
+    still applies to it, and a fresh set from the v1.2 release supersedes it with rule v1.2."""
+    old = tmp_path / "old-firestore-bridge.mjs"  # The earlier release's bridge: identical except its rule.
+    source = (ROOT / "tools/daily_research/firestore_bridge.mjs").read_text()
+    for name in ("publisher.mjs", "verification-digest.mjs", "contact_research.mjs"):
+        source = source.replace(f"from './{name}'", "from " + json.dumps((ROOT / "tools/daily_research" / name).as_uri()))
+    old.write_text(source.replace(f"OR_RULE='{verification.OUTREACH_RULE_VERSION}'",
+                                  f"OR_RULE='{verification.LEGACY_OUTREACH_RULE_VERSION}'"))
+    control = json.loads((ROOT / "tools/daily_research/render.control.example.json").read_text())
+    with monkeypatch.context() as earlier:
+        earlier.setattr(verification, "OUTREACH_RULE_VERSION", verification.LEGACY_OUTREACH_RULE_VERSION)
+        bridge = Bridge(script=bridge_script(tmp_path, old, "old-bridge.mjs"))
+        bridge.call("init", value=control)
+        first = setting(bridge, operator.BridgeObjects(bridge))
+        bridge.close()
+    assert first["state"] == "applied" and first["direction"]["rule_version"] == verification.LEGACY_OUTREACH_RULE_VERSION
+    bridge = Bridge(script=bridge_script(tmp_path))  # The v1.2 release, on the same Firestore and bucket.
+    objects = operator.BridgeObjects(bridge)
+    try:
+        run = {"run_key": "blueprint-researcher:2026-10-06"}
+        frozen = outreach_ready.freeze(bridge.call("control")["outreach_ready"], run, NOW)
+        assert (frozen["state"], frozen["code"]) == ("refused", "outreach_ready_direction_invalid")
+        shown = operator.show(bridge, objects, now=NOW)
+        assert (shown["state"], shown["current_problem"]) == ("unverified", "outreach_ready_direction_invalid")
+        assert operator.disable(bridge, apply=True, sleep=lambda _: None)["state"] == "disabled"
+        fresh = setting(bridge, objects, now=NOW + timedelta(minutes=1))
+        assert fresh["state"] == "applied" and fresh["direction"]["rule_version"] == verification.OUTREACH_RULE_VERSION
+        assert (fresh["direction"]["version"], fresh["direction"]["supersedes"]) == (2, first["next"]["sha256"])
+        frozen = outreach_ready.freeze(bridge.call("control")["outreach_ready"], run, NOW + timedelta(minutes=2))
+        assert (frozen["state"], frozen["rule_version"]) == ("enabled", verification.OUTREACH_RULE_VERSION)
+    finally:
+        bridge.close()
 
 
 def test_disable_is_an_immediate_brake_and_only_a_new_version_re_enables(fixture):
