@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -191,6 +192,7 @@ def _verify(sources, evidence):
 
 def test_verifier_uses_all_strict_crypto_flags_and_protected_snapshots(sources, evidence, monkeypatch):
     raw, manifest, bundle, gh = evidence
+    caches = []
 
     def verify(command, **kwargs):
         assert command[:3] == [str(gh), "attestation", "verify"]
@@ -213,10 +215,30 @@ def test_verifier_uses_all_strict_crypto_flags_and_protected_snapshots(sources, 
         assert snapshot.read_bytes() == raw
         assert snapshot.parent.stat().st_mode & 0o077 == 0
         assert snapshot.stat().st_mode & 0o222 == 0
+        cache = Path(kwargs["env"]["XDG_CACHE_HOME"])
+        assert cache.parent == snapshot.parent and stat.S_IMODE(cache.stat().st_mode) == 0o700
+        (cache / "synthetic-trust-metadata").write_bytes(b"test-only writable cache")
+        caches.append(cache)
         return json.dumps(_verified(raw)).encode()
 
     monkeypatch.setattr(source, "_run_bounded", verify)
     assert _verify(sources, evidence)["sources"][0]["commit"] == sources[2]
+    assert len(caches) == 1 and not caches[0].exists()
+
+
+def test_verifier_removes_private_cache_after_cryptographic_refusal(sources, evidence, monkeypatch):
+    caches = []
+
+    def refuse(command, **kwargs):
+        cache = Path(kwargs["env"]["XDG_CACHE_HOME"])
+        assert stat.S_IMODE(cache.stat().st_mode) == 0o700
+        caches.append(cache)
+        raise source.ManifestError("cryptographic verification failed")
+
+    monkeypatch.setattr(source, "_run_bounded", refuse)
+    with pytest.raises(source.ManifestError, match="cryptographic verification failed"):
+        _verify(sources, evidence)
+    assert len(caches) == 1 and not caches[0].exists()
 
 
 def _paired_verified(raw, commit):

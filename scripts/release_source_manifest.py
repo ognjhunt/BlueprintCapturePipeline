@@ -157,7 +157,8 @@ def source_inventory(manifest: dict[str, Any], repository: str, commit: str) -> 
 
 
 def _run_bounded(command: list[str], *, deadline: float, stdout_cap: int,
-                 input_data: bytes = b"", cwd: Path | None = None) -> bytes:
+                 input_data: bytes = b"", cwd: Path | None = None,
+                 env: dict[str, str] | None = None) -> bytes:
     """Bound time and both pipes, including during batch object acquisition."""
     _require(time.monotonic() < deadline, "source command deadline expired")
     output = bytearray()
@@ -165,7 +166,7 @@ def _run_bounded(command: list[str], *, deadline: float, stdout_cap: int,
     sent = 0
     try:
         process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     except OSError as exc:
         raise ManifestError("source command or cryptographic verification unavailable") from exc
     try:
@@ -389,8 +390,13 @@ def verify_manifest_attestation(manifest_path: Path, bundle_path: Path, expected
             with path.open("xb") as handle:
                 os.fchmod(handle.fileno(), 0o400)
                 handle.write(data)
+        cache = root / "verifier-cache"
+        cache.mkdir(mode=0o700)
+        # Preserve the caller's existing environment while isolating writable
+        # Sigstore trust metadata from a nonexistent or read-only home cache.
+        environment = dict(os.environ, XDG_CACHE_HOME=str(cache))
         result = _run_bounded(attestation_command(gh_executable, snapshot, proof, expected_commit),
-                              deadline=deadline, stdout_cap=MAX_VERIFY_OUTPUT_BYTES)
+                              deadline=deadline, stdout_cap=MAX_VERIFY_OUTPUT_BYTES, env=environment)
         _verified_subject(result, raw, expected_commit)
         _require(_read_regular(snapshot, MAX_MANIFEST_BYTES)[0] == raw
                  and _read_regular(proof, MAX_BUNDLE_BYTES)[0] == bundle, "verification snapshot changed")
