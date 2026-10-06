@@ -261,6 +261,73 @@ export function planNotion(row,{legacy=false,now=Date.now(),hypothesisKeys,withh
     protocol:'notion-paginated-v1',batches,body_json:batches[0].body_json,request_digest:batches[0].request_digest,...recorded};
 }
 
+// Host-owned site-screen admission (tools/daily_research/screen_admission.py, design section 3). One row per admitted
+// site in the existing 19 columns, labelled Hypothesis exactly like a daily hypothesis row (G, M and Q); E, F and H
+// carry the chosen recipient with its source label. M ends with the row's own marker [screen:<admission_id>;<digest>].
+export const SCREEN_PAYLOAD='blueprint.site-screen-sheets-payload.v1';
+const SCREEN_ENTRY_FIELDS=['checked_on','contact','identity','location','organization','question','result_digest','site',
+  'site_key','task','task_url'];
+const hex64=x=>typeof x==='string' && /^[a-f0-9]{64}$/.test(x);
+const exactKeys=(value,keys)=>!!value && typeof value==='object' && !Array.isArray(value)
+  && JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
+export const screenMarker=(admissionId,resultDigest)=>`[screen:${admissionId};${resultDigest}]`;
+// Python canonical JSON (sorted keys, compact, non-ASCII escaped): runner.digest of the same value.
+export const pythonDigest=value=>{
+  const canonical=item=>Array.isArray(item)?item.map(canonical):item && typeof item==='object'
+    ?Object.fromEntries(Object.keys(item).sort().map(key=>[key,canonical(item[key])])):item;
+  return sha(JSON.stringify(canonical(value)).replace(/[^\x00-\x7F]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0')));
+};
+export function screenPayloadProblem(payload,admissionId) {
+  const text=x=>typeof x==='string' && x.trim()!=='' && x.length<=2000;
+  if(!exactKeys(payload,['admission_id','duplicates','entries','schema_version','sheet_id','tab'])
+      || payload.schema_version!==SCREEN_PAYLOAD || payload.admission_id!==admissionId || !hex64(admissionId)
+      || payload.sheet_id!==SHEET || payload.tab!=='Prospects' || !Array.isArray(payload.entries) || payload.entries.length>50
+      || !Array.isArray(payload.duplicates) || payload.entries.length+payload.duplicates.length>50
+      || payload.entries.length+payload.duplicates.length<1) return 'screen_admission_payload_invalid';
+  const sites=new Set();
+  for(const entry of payload.entries) {
+    if(!exactKeys(entry,SCREEN_ENTRY_FIELDS) || !hex64(entry.site_key) || !hex64(entry.result_digest) || !hex64(entry.identity)
+        || !['organization','site','location','task','task_url','question'].every(key=>text(entry[key]))
+        || !/^\d{4}-\d{2}-\d{2}$/.test(entry.checked_on) || entry.question.indexOf('?')!==entry.question.length-1
+        || !exactKeys(entry.contact,['details','name','source_url'])
+        || !Object.values(entry.contact).every(value=>typeof value==='string' && value.length<=2000) || sites.has(entry.site_key))
+      return 'screen_admission_payload_invalid';
+    sites.add(entry.site_key);
+  }
+  for(const duplicate of payload.duplicates) {
+    if(!exactKeys(duplicate,['code','site_key']) || !hex64(duplicate.site_key) || sites.has(duplicate.site_key)
+        || typeof duplicate.code!=='string' || !/^screen_admission_[a-z_]{1,80}$/.test(duplicate.code)) return 'screen_admission_payload_invalid';
+    sites.add(duplicate.site_key);
+  }
+  return null;
+}
+
+/** The Sheets plan of one screen admission against a fresh CRM snapshot. The publisher's structural duplicate rule
+ * still holds: a row the CRM gained since the worker's dedupe refuses the plan, which is made again on a later pass. */
+export function planScreenSheets(payload,snapshot) {
+  const problem=screenPayloadProblem(payload,payload?.admission_id);
+  if(problem) fail(problem);
+  const values=snapshot.values,used=crmRows(snapshot),ids=used.map(r=>r[0]);
+  const existing=new Set(used.map(r=>identity({organization:r[1],site:r[3],location:r[17],task:r[14]})));
+  const duplicate=c=>existing.has(identity(c)) || used.some(r=>!normalized(r[17])
+      && normalized(r[1])===normalized(c.organization) && normalized(r[3])===normalized(c.site)
+      && normalized(r[14])===normalized(c.task));
+  if(payload.entries.some(duplicate)) fail('screen_admission_crm_duplicate_changed');
+  const prefix=`[screen:${payload.admission_id};`;
+  if(used.some(r=>typeof r[12]==='string' && r[12].includes(prefix))) fail('screen_admission_readback_conflict');
+  let sequence=Math.max(0,...ids.map(id=>Number(id.slice(3))));
+  const rows=payload.entries.map(e=>{
+    if(++sequence>999999) fail('publication_crm_id_capacity');
+    return [`BP-${String(sequence).padStart(6,'0')}`,e.organization,'Facility / site',e.site,e.contact.name,e.contact.details,
+      HYPOTHESIS_LABEL,e.contact.source_url,'unknown',e.task_url,'Research','',
+      `First email asks: ${e.question}\n${screenMarker(payload.admission_id,e.result_digest)}`,'',e.task,'',HYPOTHESIS_MATURITY,
+      e.location,e.checked_on];
+  });
+  const body=JSON.stringify({majorDimension:'ROWS',values:rows});
+  return {destination:'sheets',kind:'screen',admission_id:payload.admission_id,payload_digest:pythonDigest(payload),
+    marker:prefix,body_json:body,request_digest:sha(body),crm_values:values,sheet_rows:rows};
+}
+
 export class Publisher {
   constructor({crmReader,google,notion,clock=Date.now}) {Object.assign(this,{crmReader,google,notion,clock});}
   async sheetsTargetEmpty(range) {
@@ -394,6 +461,40 @@ export class Publisher {
       fail('publication_plan_binding_invalid');
     requirePublicationVerification(row,'notion',this.clock());
     await this.notion(step.number===0?'POST':'PATCH',step.number===0?'/pages':`/blocks/${step.page_id}/children`,JSON.parse(step.body_json));
+  }
+  // Site-screen admission rows (planScreenSheets). Prepare from a fresh CRM read that must equal the snapshot the
+  // worker deduplicated against; write once after the claim; reconcile by reading only.
+  async prepareScreen(payload,crmValuesDigest) {
+    const snapshot=await this.crmReader();
+    if(!hex64(crmValuesDigest) || pythonDigest(snapshot.values)!==crmValuesDigest) fail('screen_admission_crm_changed');
+    const plan=planScreenSheets(payload,snapshot);
+    if(plan.sheet_rows.length) await this.sheetsTargetEmpty(`Prospects!A${snapshot.values.length+1}:S${snapshot.values.length+plan.sheet_rows.length}`);
+    return plan;
+  }
+  validateScreen(payload,plan) {
+    const expected=planScreenSheets(payload,{sheet_id:SHEET,complete:true,values:plan?.crm_values});
+    if(!isDeepStrictEqual(expected,plan)) fail('screen_admission_plan_binding_invalid');
+  }
+  async writeScreen(payload,plan,{beforeWrite}={}) {
+    this.validateScreen(payload,plan);
+    if(!plan.sheet_rows.length) return;
+    const current=await this.crmReader();
+    if(!isDeepStrictEqual(current.values,plan.crm_values)) fail('publication_crm_changed_before_write');
+    const first=plan.crm_values.length+1,last=first+plan.sheet_rows.length-1,range=`Prospects!A${first}:S${last}`;
+    await this.sheetsTargetEmpty(range);
+    if(beforeWrite) await beforeWrite();
+    await this.google('PUT',`/values/${encodeURIComponent(range)}?valueInputOption=RAW`,JSON.parse(plan.body_json));
+  }
+  async reconcileScreen(payload,plan) {
+    this.validateScreen(payload,plan);
+    const snapshot=await this.crmReader(),used=crmRows(snapshot);
+    const marked=snapshot.values.slice(5).filter(r=>typeof r[12]==='string' && r[12].includes(plan.marker));
+    if(!marked.length && plan.sheet_rows.length) return null;
+    if(!isDeepStrictEqual(marked.map(r=>r.slice(0,19)),plan.sheet_rows)) fail('publication_readback_conflict');
+    const ids=used.map(r=>r[0]);
+    if(new Set(ids).size!==ids.length) fail('publication_crm_id_collision');
+    return {destination:'sheets',kind:'screen',admission_id:plan.admission_id,payload_digest:plan.payload_digest,
+      readback_verified:true,reference:`sheets:${SHEET}:Prospects:${plan.sheet_rows.map(r=>r[0]).join(',') || 'no_candidates'}`};
   }
 }
 

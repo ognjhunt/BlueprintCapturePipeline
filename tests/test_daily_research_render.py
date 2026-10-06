@@ -180,6 +180,49 @@ def test_idle_scheduler_does_not_repeat_ledger_work(monkeypatch):
     assert invoked == ["reconcile"] and calls == ["control"] * 4 + ["close"]
 
 
+
+def test_scheduler_runs_a_pinned_screen_admission_after_the_daily_work_and_retries_only_while_it_waits(monkeypatch,
+                                                                                                         capsys):
+    control = {**json.loads((ROOT / "tools/daily_research/render.control.example.json").read_text()),
+               "screen_admission": {"enabled": True, "current": {}}}
+    clock, order, steps = [NOW], [], []
+    results = iter([{"state": "screen_admission_waiting", "error": "screen_admission_daily_work_active"},
+                    {"state": "screen_admission_acknowledged", "rows": 1, "duplicates": 0}])
+
+    class IdleBridge:
+        def call(self, op):
+            assert op == "control"
+            return control
+
+        def close(self):
+            pass
+
+    class Stopped:
+        ticks = 0
+
+        def is_set(self):
+            return self.ticks >= 12
+
+        def wait(self, delay):
+            self.ticks += 1
+            clock[0] += timedelta(seconds=delay)
+
+    monkeypatch.setattr(render, "invoke", lambda *args, **kwargs: order.append("daily") or {"state": "nothing_to_reconcile"})
+
+    def step(bridge, *, now, root):
+        order.append("admission")
+        steps.append(now)
+        return next(results)
+
+    monkeypatch.setattr(render.screen_admission, "step", step)
+    render.scheduler(Stopped(), bridge_factory=IdleBridge, clock=lambda: clock[0])
+    # The daily work runs first in each pass; a waiting admission is tried again five minutes later, then rests.
+    assert order == ["daily", "admission", "daily", "admission"]
+    assert timedelta(minutes=5) <= steps[1] - steps[0] <= timedelta(minutes=6)
+    output = capsys.readouterr().out
+    assert '"state":"screen_admission_waiting"' in output and '"state":"screen_admission_acknowledged"' in output
+
+
 def test_selected_instruction_hash_drift_refuses_before_create():
     api = FakeAPI()
     api.agent["instructions"] = "reviewed instructions"

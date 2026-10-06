@@ -137,13 +137,13 @@ def test_contact_runs_are_idempotent_and_share_the_screen_ceiling(tmp_path):
 def test_a_verified_person_email_is_the_preferred_recipient(tmp_path):
     answers = contact_answers(1)
     _, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers))
-    assert (record["schema_version"], record["rule_version"]) == (ss.CONTACT, "blueprint.site-contact-rule.v2")
+    assert (record["schema_version"], record["rule_version"]) == (ss.CONTACT, "blueprint.site-contact-rule.v3")
     assert record["decision_role"] == "Plant manager"
     assert record["person"] == {"verified": True, "level": "verified_on_page", "name": PERSON, "title": "Plant Manager",
                                 "url": "https://operator-1.example/team", "date": "2026-06-01", "current": True}
     assert record["email"] == {"verified": True, "level": "verified_on_page", "discarded": False,
                                "address": "avery.placeholder@operator-1.example", "url": "https://operator-1.example/team",
-                               "role": "person"}
+                               "role": "person", "operator_domain": {"domain": "operator-1.example", "basis": "operator_quote"}}
     assert record["recipient"] == {"kind": "person_email", "rank": 0, "address": "avery.placeholder@operator-1.example"}
     # A title alone never proves remit, so the remit stays an open question.
     assert [question["check"] for question in record["open_questions"]] == ["decision_remit"]
@@ -200,6 +200,11 @@ def test_a_directory_or_government_page_never_gives_the_operator_domain(tmp_path
     answers = contact_answers(1, email=mail, email_url=operator_url, email_quote=f"Write to {mail} for plant questions.")
     pages = {**pages_for(answers, ["person"]), operator_url: f"Profile. Write to {mail} for plant questions."}
     _workspace, _, (record,), _ = contacted(tmp_path, [answers], pages, screen_changes={"operator_identity_url": operator_url})
+    # The directory or government host never becomes an operator domain. Under contact rule v3 the website answer's
+    # domain is proven by our read of the operator's own about page, so the address on that host is off the domain.
+    assert record["email"]["reason"] == "site_screen_email_off_operator_domain" and record["recipient"]["kind"] == "none"
+    without_site = {"website": "", "operator_identity_url": operator_url}
+    _workspace, _, (record,), _ = contacted(tmp_path / "no-website", [answers], pages, screen_changes=without_site)
     assert record["email"]["reason"] == "site_screen_operator_domain_unproven" and record["recipient"]["kind"] == "none"
 
 
@@ -402,3 +407,104 @@ def test_every_fixture_person_and_host_is_synthetic():
     hosts = set(re.findall(r"https://([^/\"'\s]+)", source)) | set(re.findall(r"@([A-Za-z0-9.{}-]+)", source))
     assert hosts and all(host.endswith(".example") for host in hosts)
     assert all(name.split()[-1] in {"Placeholder", "Fixture"} for name in fixture.PEOPLE)
+
+
+# --- contact rule v3 (blueprint.site-contact-rule.v3) ---------------------------------------------------------
+GOVERNMENT = "https://records.synthetic.gov/facility/1"
+DIRECTORY = "https://www.bigdirectory.example/profile/synthetic-operator-1"
+
+
+def test_rule_v3_a_government_proven_operator_gets_its_website_domain_from_our_read_of_its_own_page(tmp_path):
+    answers = contact_answers(1)
+    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers),
+                                           screen_changes={"operator_identity_url": GOVERNMENT})
+    assert record["rule_version"] == "blueprint.site-contact-rule.v3"
+    # The government page proves the operator but never gives a domain; our read of the operator's own about page,
+    # on the website answer's domain, names the operator.
+    assert record["email"] == {"verified": True, "level": "verified_on_page", "discarded": False,
+                               "address": "avery.placeholder@operator-1.example", "url": "https://operator-1.example/team",
+                               "role": "person", "operator_domain": {
+                                   "domain": "operator-1.example", "basis": "website", "url": "https://operator-1.example/about",
+                                   "text_sha256": record["email"]["operator_domain"]["text_sha256"]}}
+    assert ss.SHA.fullmatch(record["email"]["operator_domain"]["text_sha256"])
+    assert record["recipient"] == {"kind": "person_email", "rank": 0, "address": "avery.placeholder@operator-1.example"}
+    # Under rule v2 (operator quote domains only) the same stored data has no operator domain.
+    contact_input = next(event["input"] for event in workspace.ledger("contact").events() if event["event"] == "intent")
+    assert contact_input["operator_domains"] == []
+    assert ss.operator_domain_proofs(contact_input) == []
+    assert ss.summary(workspace)["contact"]["operator_domain_basis"] == {"website": 1}
+
+
+def test_rule_v3_a_news_or_directory_page_naming_the_operator_never_sets_the_domain(tmp_path, monkeypatch):
+    monkeypatch.setattr(ss, "NOT_OPERATOR_DOMAINS", ss.NOT_OPERATOR_DOMAINS | {"bigdirectory.example"})
+    news = "https://local-news.example/2026/plant-shift"
+    unnamed = {"operator_identity_url": DIRECTORY, "operating_now_url": news,
+               "operating_now_quote": "Synthetic Operator 1 added a second shift at the plant this spring.",
+               "facility_operator_quote": "The machining plant is owned and run for its own customers."}
+    answers = contact_answers(1)
+    _, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers), screen_changes=unnamed)
+    # The directory proves the operator and the news story names it, but no page on the website's own domain does,
+    # and the address on that domain spelling the name is not the page naming the operator.
+    assert record["email"] == {"verified": False, "level": "unverified", "discarded": True,
+                               "reason": "site_screen_operator_domain_unproven"}
+    # A website answer that is itself a directory never sets the domain, even where its page names the operator.
+    mail = "sales@bigdirectory.example"
+    listed = contact_answers(1, email=mail, email_url=DIRECTORY, email_quote=f"For quotes write to {mail} any business day.")
+    pages = {**pages_for(listed, ["person"]), DIRECTORY: f"Synthetic Operator 1. For quotes write to {mail} any business day."}
+    _, _, (record,), _ = contacted(tmp_path / "directory", [listed], pages,
+                                   screen_changes={**unnamed, "website": DIRECTORY})
+    assert record["email"]["reason"] == "site_screen_operator_domain_unproven" and record["recipient"]["kind"] == "none"
+
+
+@pytest.mark.parametrize("site_url, verified", [("https://operator-1.example/contact-us", True),
+                                                ("https://chamber-members.example/list", False)])
+def test_rule_v3_a_short_email_quote_counts_only_on_the_operators_own_page(tmp_path, site_url, verified):
+    mail = "info@operator-1.example"
+    answers = contact_answers(1, email=mail, email_url=site_url, email_quote=mail)
+    assert len(ss.words(mail).split()) < ss.MIN_QUOTE_WORDS
+    pages = {**pages_for(answers, ["person"]), site_url: f"Questions? {mail} Monday to Friday."}
+    workspace, _, (record,), _ = contacted(tmp_path, [answers], pages)
+    if verified:
+        assert record["email"]["verified"] is True and record["recipient"] == {
+            "kind": "general_inbox", "rank": 2, "address": mail}
+    else:
+        assert record["email"] == {"verified": False, "level": "quote_too_short", "discarded": True}
+        assert mail.encode() not in stored(workspace, record["site_key"])
+
+
+def test_rule_v3_a_short_quote_on_the_operators_page_must_still_stand_on_our_read(tmp_path):
+    mail = "info@operator-1.example"
+    answers = contact_answers(1, email=mail, email_url="https://operator-1.example/contact-us", email_quote=mail)
+    pages = {**pages_for(answers, ["person"]), answers["email_url"]: "Questions? Use the form below."}
+    _, _, (record,), _ = contacted(tmp_path, [answers], pages)
+    assert record["email"] == {"verified": False, "level": "unverified", "discarded": True}
+
+
+def test_rule_v3_person_quotes_keep_the_five_word_minimum(tmp_path):
+    answers = contact_answers(1, person_quote=f"{PERSON}, plant manager")
+    _, _, (record,), _ = contacted(tmp_path, [answers], pages_for(answers))
+    assert record["person"] == {"verified": False, "level": "quote_too_short"}
+    assert record["email"]["verified"] is True and record["recipient"]["kind"] == "none"
+
+
+def test_rule_v3_never_recovers_an_address_an_earlier_rule_discarded(tmp_path):
+    """seal_contact removes a discarded address from the stored result and page reads, so recomputing under a
+    later rule keeps that decision. Recovering one needs the result read again, never a rule change."""
+    answers = contact_answers(1)
+    workspace, provider, keys = screened_sites(tmp_path, 1, changes={"operator_identity_url": GOVERNMENT})
+    provider.contacts[keys[0]] = {"content": answers, "basis": []}
+    client = ss.TaskClient(KEY, transport=provider)
+    ss.contact(workspace, client=client, owner_reference=OWNER, ceiling_usd="1", max_runs=10, apply=True)
+    # The page reads and the decision an earlier rule kept before an interruption: discarded, address removed.
+    earlier = {"schema_version": ss.EVIDENCE, "stage": "contact", "site_key": keys[0], "checked_on": TODAY.isoformat(),
+               "pages": {answers["person_url"]: {"state": "ok", "text": ss.REDACTED, "sha256": "0" * 64}},
+               "email": {"level": "unverified", "reason": "site_screen_operator_domain_unproven"}}
+    path = workspace.path("contact", "evidence", keys[0])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(earlier, sort_keys=True) + "\n")
+    ss.collect(workspace, client=client, reader=FakePages(pages_for(answers)), today=TODAY, wait_seconds=0)
+    ss.verify(workspace, reader=FakePages({}), today=TODAY)
+    (record,) = workspace.records("contact")
+    assert record["email"] == {"verified": False, "level": "unverified", "discarded": True,
+                               "reason": "site_screen_operator_domain_unproven"}
+    assert answers["email"].encode() not in stored(workspace, keys[0])
