@@ -232,13 +232,16 @@ def published_recipient(contact, record, proofs, workspace):
     if route is None or email.get("verified") is not True or not isinstance(domain, dict):
         return None
     answers, evidence, index = _contact_inputs(workspace, record["site_key"])
+    person = person_block(contact, answers, index)
+    if route == "published_person_email" and (not person or person.get("current") is not True):
+        return None
     page = (evidence.get("pages") or {}).get(email["url"]) or {}
     domain = domain_proof(domain, proofs)
     return {"schema_version": RECIPIENT, "route": route, "rank": ROUTES.index(route) + 1, "label": LABELS[route],
             "address": email["address"], "address_source": "published", "operator_domain": domain,
             "published": {"url": email["url"], "quote": answers["email_quote"], "text_sha256": page.get("sha256"),
                           "level": email["level"], "checked_on": contact["checked_on"]},
-            "person": person_block(contact, answers, index), "provider": None}
+            "person": person, "provider": None}
 
 
 def _provider(value):
@@ -512,7 +515,13 @@ def recipient_problem(value, entry):
         if person is not None and (person.get("source") != "public_quote" or not _url(person.get("url"))
                                    or person.get("level") not in site_screen.PROVEN or not _text(person.get("name"), 200)):
             return code
-        if route == "published_person_email" and person is None:
+        expected_role = {"published_person_email": "person", "published_team_inbox": "team", "published_general_inbox": "general"}[route]
+        if site_screen.address_role(address, {"verified": bool(person), "name": (person or {}).get("name")}) != expected_role:
+            return code
+        if route == "published_person_email" and (not person or person.get("current") is not True
+                or not site_screen._fresh(person.get("date"), date.fromisoformat(published["checked_on"]))
+                or not site_screen.has_phrase(site_screen.words(person.get("name")), site_screen.words(person.get("quote")))
+                or not contact_lookup.holds_title(person.get("quote", ""), person.get("title", ""))):
             return code
     except (AttributeError, KeyError, TypeError, ValueError):
         return code
