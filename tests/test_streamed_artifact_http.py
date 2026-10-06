@@ -231,18 +231,21 @@ def test_original_socket_timeout_and_earlier_absolute_deadline_are_preserved(mon
 def test_each_late_redirect_connection_clamps_tcp_tls_timeout_before_connect(module,monkeypatch):
     clock,calls = [95],[]
     monkeypatch.setattr(module.time,"monotonic",lambda:clock[0])
+    peer = SimpleNamespace(settimeout=lambda value: calls.append(value))
+    tls = SimpleNamespace(settimeout=lambda value: calls.append(value), do_handshake=lambda: None)
     def connection(self):
         calls.append(self.timeout)
-        self.sock = SimpleNamespace()
-    monkeypatch.setattr(http.client.HTTPSConnection,"connect",connection)
+        self.sock = SimpleNamespace(_socket=peer)
+    monkeypatch.setattr(http.client.HTTPConnection,"connect",connection)
     late = module._DeadlineHTTPSConnection("synthetic.invalid",deadline=100,timeout=30)
+    late._context = SimpleNamespace(wrap_socket=lambda *args, **kwargs: tls)
     late.connect()
-    assert calls == [5] and late.timeout == 5 and late.sock._maximum_timeout == 5
+    assert calls == [5, 5, 5] and late.timeout == 5 and late.sock._maximum_timeout == 5
     clock[0] = 100
     expired = module._DeadlineHTTPSConnection("synthetic.invalid",deadline=100,timeout=30)
     with pytest.raises(TimeoutError,match="artifact_transfer_deadline"):
         expired.connect()
-    assert calls == [5]
+    assert calls == [5, 5, 5]
 
 
 def test_small_native_package_transfer_keeps_exact_size_sha_and_immutable_mode(
@@ -317,3 +320,10 @@ def test_standalone_source_cohorts_embed_the_exact_transport_contract():
         for node in ast.parse(Path(registry.__file__).read_text()).body
         if isinstance(node, ast.ClassDef) and node.name in classes}
     assert actual == classes
+    helpers = {name: value for name, value in definitions.items()
+               if name in {"_artifact_remaining", "_resolve_addresses", "_validated_resolver_result",
+                           "_create_deadline_connection"}}
+    actual_helpers = {node.name: ast.dump(node, include_attributes=False)
+        for node in ast.parse(Path(registry.__file__).read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name in helpers}
+    assert actual_helpers == helpers

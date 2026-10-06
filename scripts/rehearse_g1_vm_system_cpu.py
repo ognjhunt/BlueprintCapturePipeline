@@ -26,8 +26,175 @@ import urllib.parse
 import urllib.request
 
 # Standalone receive deadlines match artifact_http_transport.py.
+import functools
+import selectors
+import socket
+import sys
 import http.client
 import urllib.error
+
+_MAX_RESOLVER_BYTES = 64 * 1024
+_MAX_RESOLVER_ADDRESSES = 256
+
+
+_RESOLVER_SCRIPT = """
+import json, socket, sys
+host, port = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+try:
+    addresses = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    result = ({"addresses": addresses} if len(addresses) <= 256 else
+              {"refusal": "controlled_http_resolution_oversized"})
+except socket.gaierror as error:
+    result = {"error": [error.errno, error.strerror]}
+sys.stdout.buffer.write(json.dumps(result).encode("utf-8"))
+"""
+
+
+def _artifact_remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("artifact_transfer_deadline")
+    return remaining
+
+
+def _resolve_addresses(address, *, deadline):
+    """Bound libc resolution without accumulating uncancellable threads.
+
+    Socket timeouts do not cover getaddrinfo. The isolated child receives only
+    the hostname and port, and is killed and reaped on timeout or interruption.
+    It never receives the URL, headers, credentials, or request body.
+    """
+    _artifact_remaining(deadline)
+    payload = json.dumps(address).encode("utf-8")
+    if len(payload) > 4096:
+        raise ValueError("controlled_http_resolution_oversized")
+    _artifact_remaining(deadline)
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", _RESOLVER_SCRIPT],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        env={},
+    )
+    try:
+        raw = bytearray()
+        written = 0
+        with selectors.DefaultSelector() as selector:
+            os.set_blocking(process.stdin.fileno(), False)
+            os.set_blocking(process.stdout.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE)
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while not process.stdout.closed:
+                events = selector.select(_artifact_remaining(deadline))
+                if not events:
+                    raise TimeoutError("artifact_transfer_deadline")
+                for key, _event in events:
+                    if key.fileobj is process.stdin:
+                        written += os.write(process.stdin.fileno(), payload[written:written + 512])
+                        if written == len(payload):
+                            selector.unregister(process.stdin)
+                            process.stdin.close()
+                    else:
+                        chunk = os.read(process.stdout.fileno(),
+                                        min(8192, _MAX_RESOLVER_BYTES + 1 - len(raw)))
+                        if not chunk:
+                            selector.unregister(process.stdout)
+                            process.stdout.close()
+                        else:
+                            raw.extend(chunk)
+                            if len(raw) > _MAX_RESOLVER_BYTES:
+                                raise ValueError("controlled_http_resolution_oversized")
+                _artifact_remaining(deadline)
+        try:
+            process.wait(timeout=_artifact_remaining(deadline))
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("artifact_transfer_deadline") from None
+        _artifact_remaining(deadline)
+        if process.returncode != 0:
+            raise OSError("controlled_http_resolution_failed")
+        try:
+            result = json.loads(raw)
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            raise ValueError("controlled_http_resolution_invalid") from None
+        _artifact_remaining(deadline)
+        addresses = _validated_resolver_result(result)
+        _artifact_remaining(deadline)
+        return addresses
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.stdin.close()
+        process.stdout.close()
+        process.wait()
+
+
+def _validated_resolver_result(result):
+    if type(result) is not dict:
+        raise ValueError("controlled_http_resolution_invalid")
+    if set(result) == {"refusal"} and result["refusal"] == "controlled_http_resolution_oversized":
+        raise ValueError("controlled_http_resolution_oversized")
+    if set(result) == {"error"}:
+        error = result["error"]
+        if (type(error) is list and len(error) == 2
+                and type(error[0]) is int and type(error[1]) is str):
+            raise socket.gaierror(*error)
+        raise ValueError("controlled_http_resolution_invalid")
+    rows = result.get("addresses")
+    if set(result) != {"addresses"} or type(rows) is not list:
+        raise ValueError("controlled_http_resolution_invalid")
+    if len(rows) > _MAX_RESOLVER_ADDRESSES:
+        raise ValueError("controlled_http_resolution_oversized")
+    addresses = []
+    for row in rows:
+        if type(row) is not list or len(row) != 5:
+            raise ValueError("controlled_http_resolution_invalid")
+        family, kind, protocol, canonical, sockaddr = row
+        if (type(family) is not int or family not in {socket.AF_INET, socket.AF_INET6}
+                or type(kind) is not int or kind != socket.SOCK_STREAM
+                or type(protocol) is not int or protocol not in {0, socket.IPPROTO_TCP}
+                or type(canonical) is not str or type(sockaddr) is not list
+                or len(sockaddr) != (2 if family == socket.AF_INET else 4)
+                or type(sockaddr[0]) is not str or type(sockaddr[1]) is not int
+                or not 0 <= sockaddr[1] <= 65535
+                or any(type(value) is not int or not 0 <= value <= 0xffffffff
+                       for value in sockaddr[2:])):
+            raise ValueError("controlled_http_resolution_invalid")
+        try:
+            socket.inet_pton(family, sockaddr[0])
+        except (OSError, ValueError):
+            raise ValueError("controlled_http_resolution_invalid") from None
+        addresses.append((family, kind, protocol, canonical, tuple(sockaddr)))
+    return addresses
+
+
+def _create_deadline_connection(address, _timeout=None, source_address=None, *, deadline, maximum_timeout):
+    addresses = _resolve_addresses(address, deadline=deadline)
+    sources = (_resolve_addresses(source_address, deadline=deadline)
+               if source_address else None)
+    last_error = None
+    for family, kind, protocol, _canonical, sockaddr in addresses:
+        _artifact_remaining(deadline)
+        peer = socket.socket(family, kind, protocol)
+        try:
+            peer.settimeout(min(_artifact_remaining(deadline), maximum_timeout))
+            if sources:
+                source = next((item[4] for item in sources if item[0] == family), None)
+                if source is None:
+                    raise OSError("controlled_http_source_address_unavailable")
+                peer.bind(source)
+            peer.connect(sockaddr)
+            _artifact_remaining(deadline)
+            # CONNECT status/headers must share the budget before TLS starts.
+            return _DeadlineSocket(peer, deadline, maximum_timeout)
+        except OSError as error:
+            last_error = error
+            peer.close()
+        except BaseException:
+            peer.close()
+            raise
+    _artifact_remaining(deadline)
+    if last_error is not None:
+        raise last_error
+    raise OSError("getaddrinfo returns an empty list")
+
 
 class _DeadlineSocket:
     """Clamp every raw receive, including status/header/chunk line refills."""
@@ -68,16 +235,27 @@ class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, *args, deadline, **kwargs):
         self._deadline = deadline
         super().__init__(*args, **kwargs)
+        self._create_connection = functools.partial(
+            _create_deadline_connection, deadline=deadline, maximum_timeout=self.timeout)
 
     def connect(self):
-        remaining = self._deadline-time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError('artifact_transfer_deadline')
-        # urllib reuses the initial timeout across redirect requests. Clamp
-        # each fresh connection to the remaining budget before TCP/TLS setup.
-        self.timeout = min(self.timeout,remaining)
-        super().connect()
-        self.sock = _DeadlineSocket(self.sock,self._deadline,self.timeout)
+        # DNS, every address attempt and TLS consume the same absolute budget.
+        # Keep the caller's per-operation timeout cap throughout setup and reads.
+        self.timeout = min(self.timeout, _artifact_remaining(self._deadline))
+        try:
+            http.client.HTTPConnection.connect(self)
+            peer = self.sock._socket
+            peer.settimeout(min(self.timeout, _artifact_remaining(self._deadline)))
+            hostname = self._tunnel_host or self.host
+            self.sock = self._context.wrap_socket(peer, server_hostname=hostname,
+                                                 do_handshake_on_connect=False)
+            self.sock.settimeout(min(self.timeout, _artifact_remaining(self._deadline)))
+            self.sock.do_handshake()
+            _artifact_remaining(self._deadline)
+            self.sock = _DeadlineSocket(self.sock, self._deadline, self.timeout)
+        except BaseException:
+            self.close()
+            raise
 
 class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
     def __init__(self, deadline, context):
