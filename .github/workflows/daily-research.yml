@@ -107,10 +107,11 @@ jobs:
     name: Research lifecycle and pinned SDK
     runs-on: ubuntu-latest
     # The complete portable suite includes all recovery/collection guards.
-    # The 862-case suite passed in 7m35s before the eight-minute job ceiling
-    # cancelled lint/receipt checks. Keep the complete no-skip gate and allow
-    # room for CI runtime variance; this does not change business run limits.
-    timeout-minutes: 12
+    # The 2149-case suite took 10m50s-11m for pytest alone on 3.12/3.14;
+    # 3.11 reached 73% before the prior 12-minute job ceiling. Keep complete
+    # no-skip coverage, including setup, Node checks, lint and receipt upload,
+    # with a bounded allowance for runner variance. Business run limits stay fixed.
+    timeout-minutes: 16
     strategy:
       matrix:
         python: ["3.11", "3.12", "3.14"]
