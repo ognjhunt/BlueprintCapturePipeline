@@ -71,6 +71,8 @@ def validate_website_task_context(
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("website_task_context_items_invalid")
     continuation = value.get("capture_binding")
+    if capture_id.startswith("supplement-") and continuation is None:
+        raise ValueError("website_task_context_continuation_invalid")
     if continuation is not None:
         if (not isinstance(continuation, Mapping) or continuation.get("schema_version") != "website_capture_continuation.v1"
                 or continuation.get("capture_id") != capture_id or continuation.get("original_capture_id") != f"walkthrough-{request_id}"
@@ -80,7 +82,8 @@ def validate_website_task_context(
         expected = capture_id
         seen = set()
         for entry in continuation["lineage"]:
-            if (not isinstance(entry, Mapping) or entry.get("child", {}).get("capture_id") != expected or expected in seen
+            if (not isinstance(entry, Mapping) or any(not isinstance(entry.get(key), Mapping) for key in ("child", "parent", "supplement"))
+                    or entry["child"].get("capture_id") != expected or expected in seen
                     or entry.get("supplement", {}).get("parent_capture_id") != entry.get("parent", {}).get("capture_id")
                     or entry.get("supplement", {}).get("parent_bundle_digest") != entry.get("parent", {}).get("raw_bundle_digest")
                     or entry.get("supplement", {}).get("parent_manifest_uri") != entry.get("parent", {}).get("raw_manifest_uri")):

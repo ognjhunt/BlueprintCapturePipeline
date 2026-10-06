@@ -1,5 +1,7 @@
 """Current owner task binding; no network, credentials, or model inference."""
 import json
+from copy import deepcopy
+from pathlib import Path
 from io import BytesIO
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -33,6 +35,31 @@ def test_task_is_bound_to_exact_capture_and_confirmed_content():
         validate({**context(), "capture_id": "walkthrough-other"})
     with pytest.raises(ValueError, match="digest_mismatch"):
         validate({**context(), "description": "Move the unrelated chair"})
+
+
+def test_consumes_actual_web_supplementary_context_and_keeps_independent_frames(monkeypatch):
+    vector = json.loads((Path(__file__).parent / "fixtures/website-continuation-vector.json").read_text())
+    value = vector["context"]
+    calls = []
+    monkeypatch.setattr(module, "website_webapp_request", lambda **kwargs: calls.append(kwargs) or value)
+    loaded = module.load_current_website_task_context(request_id="req1", scene_id="site-req1", capture_id=value["capture_id"])
+    assert loaded == value
+    assert loaded["capture_binding"]["coordinate_frames_independent"] is True
+    assert calls[0]["capture_id"] == value["capture_id"]
+
+
+@pytest.mark.parametrize("fault", ["missing", "malformed_child", "changed_parent"])
+def test_supplementary_context_requires_well_typed_authoritative_continuation(fault):
+    value = deepcopy(json.loads((Path(__file__).parent / "fixtures/website-continuation-vector.json").read_text())["context"])
+    if fault == "missing":
+        value.pop("capture_binding")
+    elif fault == "malformed_child":
+        value["capture_binding"]["lineage"][0]["child"] = "unbound"
+    else:
+        value["capture_binding"]["lineage"][0]["parent"]["capture_id"] = "walkthrough-other"
+    value["context_digest"] = canonical_digest(value, digest_field="context_digest")
+    with pytest.raises(ValueError, match="continuation_invalid"):
+        module.validate_website_task_context(value, request_id="req1", scene_id="site-req1", capture_id=value["capture_id"])
 
 
 def test_refresh_reads_current_confirmation_with_signed_bounded_request(monkeypatch):
