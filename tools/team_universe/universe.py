@@ -6,7 +6,7 @@ ceiling): Blueprint's free invited beta needs robot teams with a policy or a rob
 task. The universe leans on early-stage teams of every kind (software, hardware, full stack), stealth teams and
 funding announcements, not only the large platform companies, which are harder to work with. This is ADP-010
 partner discovery at the partner-phase day-7 gate: robot teams that seek sites or evaluations, by form and task,
-are demand evidence. Every team here is a prospect, never a relationship. Nothing here sends, drafts or writes a
+are demand evidence. Discovery is a candidate list, never robot eligibility or a relationship. Nothing here sends, drafts or writes a
 CRM.
 
 Two paid stages, one Parallel Task run (processor ``core``, $0.025 per completed run; failed runs are not billed)
@@ -67,7 +67,7 @@ DEFAULT_PROCESSOR = ss.DEFAULT_PROCESSOR
 QUERIES_PATH = Path(__file__).resolve().with_name("queries.v1.json")
 # The reviewed query set. An edit of queries.v1.json refuses until it is reviewed and this pin is updated.
 QUERIES_SHA256 = "80740b6c7ffb2913c2c1cd6df2f3b5e7793947ea20c19c4b15a95b504b451e6b"
-RANKED_NAME = "ranked.team-rank.v1.json"  # Written by rank.py; summary counts its tiers.
+RANKED_NAME = "ranked.team-rank.v2.json"  # Audited qualification; v1 derived files are preserved, not consumed.
 MAX_COMPANIES = 25  # Per discovery run; companies beyond it are counted and ignored.
 MAX_QUERIES = 200
 MAX_INPUT_SOURCES = 5  # Discovery source URLs sent with a team's screen.
@@ -962,13 +962,16 @@ def screen_counts(records):
                        for name in PROOFS}}
 
 
-def summary(workspace):
+def summary(workspace, *, today=None):
     """Counts by stage, field, claim and route, and cost, recomputed under each stage's current rule from stored
     results and page reads, plus the tiers of the last rank; also written to summary.json. Never names, domains,
     URLs or quotes, and no page read or provider call."""
     report = {"schema_version": SUMMARY, "command": "summary", "state": "complete",
               "rules": {"discover": DISCOVERY_RULE, "screen": SCREEN_RULE}}
     billed = committed = Decimal(0)
+    from tools.team_universe import qualification as tq
+
+    today = today or datetime.now(timezone.utc).date()
     with workspace.lock():
         states, pin = workspace.states()
         records = {stage: list(stage_records(workspace, states, stage).values()) for stage in STAGES}
@@ -986,13 +989,27 @@ def summary(workspace):
         teams, refused = team_list(records["discover"])
         proven = sum(team["discovery"]["proven"] for team in teams)
         report["teams"] = {"discovered": len(teams), "proven": proven, "unproven": len(teams) - proven,
+                           "proven_meaning": "discovery_quote_names_company_not_robot_eligibility",
                            "refused": dict(refused)}
         path = workspace.root / RANKED_NAME
         ranked = _json(path.read_bytes()) if path.exists() else None
         rows = ranked.get("teams") if isinstance(ranked, dict) and isinstance(ranked.get("teams"), list) else None
-        report["rank"] = None if rows is None else {
-            "teams": len(rows), "tiers": {tier: sum(isinstance(row, dict) and row.get("tier") == tier for row in rows)
-                                          for tier in ("beta_candidate", "prospect", "insufficient")}}
+        scope = tq.scope_manifest(teams, {record["site_key"]: record for record in records["screen"]})
+        current = (rows is not None and ranked.get("schema_version") == "blueprint.team-rank.ranked.v2"
+                   and ranked.get("scope_sha256") == scope["sha256"] and ranked.get("assessed_on") == today.isoformat()
+                   and ranked.get("rules") == {"discover": DISCOVERY_RULE, "screen": SCREEN_RULE,
+                                               "qualification": tq.RULE}
+                   and len(rows) == len(scope["bindings"])
+                   and all(isinstance(row, dict) and isinstance(row.get("team_key"), str) for row in rows)
+                   and {row.get("team_key") for row in rows if isinstance(row, dict)}
+                   == {item["team_key"] for item in scope["bindings"]})
+        report["rank"] = None if ranked is None else {
+            "snapshot_state": "current" if current else "stale_snapshot",
+            "assessed_on": ranked.get("assessed_on") if isinstance(ranked, dict) else None,
+            "teams": len(rows) if current else None,
+            "tiers": {tier: sum(isinstance(row, dict) and row.get("tier") == tier for row in rows)
+                      for tier in ("beta_candidate", "capability_prospect", "reference_only", "pending", "insufficient")}
+            if current else None}
         report.update(estimated_cost_usd=str(billed), committed_usd=str(committed),
                       ceiling_usd=pin["ceiling_usd"] if pin else None, max_runs=pin["max_runs"] if pin else None)
         ss._write_derived(workspace.root / "summary.json", report)

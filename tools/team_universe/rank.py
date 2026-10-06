@@ -1,4 +1,4 @@
-"""Rank screened robot teams for Blueprint's free invited beta (``blueprint.team-rank.v1``). Standard library only.
+"""Qualify and rank screened robot teams (``blueprint.team-rank.ranked.v2``). Standard library only.
 
 The reviewed config (``rank.v1.json``, strictly checked) fixes the points and the thresholds. The per-family weights
 are an input file the owner keeps private, because they come from the private site screen report: how many
@@ -14,31 +14,36 @@ out of 100 with the reviewed config:
 - policy: ``points.policy`` when the team builds or shares a learned policy (``policy_signals``);
 - recent activity: ``points.recent_activity`` when its latest proven dated evidence is at most ``recent_days`` old.
 
-``beta_candidate`` needs a verified identity on the team's own domain, a proven task family with a positive weight,
-a published contact route, a policy or a way to evaluate one (``evaluable_signals``) and at least
-``thresholds.beta_candidate`` points. ``prospect`` needs a verified identity, a proven task family or robot form and
-at least ``thresholds.prospect`` points. Everything else is ``insufficient``: a team not yet screened, an unverified
-or contradicted identity, and any defect in the computation. Every tier is a prospect, never a relationship: nothing
-here contacts a team, and the contact kept is only a published business route.
+Version 1 source/keyword scores are retained for prioritization only. Before scoring, the separately reviewed,
+snapshot-bound private audit must establish an actual physical robot, deployable robot-control stack or robot
+integrator offering, identified hardware and a current physical task. Old screens alone never qualify a team.
+An established offering can be a capability_prospect while Blueprint evaluation compatibility is unknown.
+beta_candidate additionally requires explicit reviewed current embodiment, observation/action interfaces and
+runnable controller under the current evaluation profile. An API, simulation, model or partner invitation never
+establishes evaluation compatibility. References and pending evidence remain distinct. Nothing authorizes a run,
+contacts a team or implies a relationship. Discovery/results/paid-input forms remain immutable version 1.
 """
 import math
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.daily_research import site_screen as ss
+from tools.team_universe import qualification as tq
 from tools.team_universe import universe as tu
 
 RANK = "blueprint.team-rank.v1"
 WEIGHTS = "blueprint.team-family-weights.v1"
-RANKED = "blueprint.team-rank.ranked.v1"
-TIERS = ("beta_candidate", "prospect", "insufficient")
+RANKED = "blueprint.team-rank.ranked.v2"
+TIERS = ("beta_candidate", "capability_prospect", "reference_only", "pending", "insufficient")
 CONFIG_PATH = Path(__file__).resolve().with_name("rank.v1.json")
 POINTS = ("fit", "early_stage", "openness", "policy", "recent_activity")
 CONFIG_KEYS = frozenset({"schema_version", "points", "early_stages", "openness_signals", "openness_full_at",
                          "policy_signals", "evaluable_signals", "recent_days", "thresholds"})
 MAX_WEIGHT = 1_000_000
-CLAIM_BOUNDARY = {"teams_are_prospects": True, "relationship_implied": False,
-                  "contact_is_published_business_route_only": True, "nothing_sent": True}
+CLAIM_BOUNDARY = {"qualification_requires_reviewed_audit": True, "relationship_implied": False,
+                  "contact_is_published_business_route_only": True, "nothing_sent": True,
+                  "evaluation_or_contact_authorized": False}
 
 
 def _ids(value, allowed):
@@ -125,7 +130,7 @@ def _recent(record, days):
     return bool(latest and checked and 0 <= (checked - latest).days <= days)
 
 
-def assess(record, config, weights):
+def _source_score(record, config, weights):
     """One team's score, components, tier and blockers under the config. A team without a screen record is
     insufficient (not_screened), and any defect in the computation is insufficient, never a higher tier."""
     if record is None:
@@ -170,18 +175,46 @@ def assess(record, config, weights):
         return {"tier": "insufficient", "score": 0, "components": None, "blockers": ["rank_computation_unavailable"]}
 
 
-def ranked_row(team, record, config, weights):
+def assess(record, config, weights, qualification=None):
+    """Qualification precedes prioritization; v1 words and scores alone confer no eligibility."""
+    qualification = qualification or tq.qualify(record, None, {})
+    scored = dict(record) if record else None
+    if scored:
+        scored["task"] = {**record["task"], "proven": qualification["task_families"]}
+    outcome = _source_score(scored, config, weights)
+    # The v1 semantic keyword assumptions remain visible as source signals, never admission proof.
+    blockers = [code for code in outcome["blockers"] if code not in ("not_evaluable", "task_family_unproven")]
+    blockers += [code for code in qualification["blockers"] if code not in blockers]
+    positive = qualification["offering"] in tq.POSITIVE
+    if record is None or "rank_computation_unavailable" in blockers:
+        tier = "insufficient"
+    elif qualification["offering"] == "reference_only":
+        tier = "reference_only"
+    elif not positive or not qualification["current_task_fit"] or record["identity"]["state"] != "verified_fact":
+        tier = "pending"
+    elif not blockers and qualification["evaluation_compatibility"] == "supported":
+        tier = "beta_candidate"
+    else:
+        tier = "capability_prospect"
+    return {**outcome, "tier": tier, "blockers": blockers,
+            "evaluable": qualification["evaluation_compatibility"] == "supported"}
+
+
+def ranked_row(team, record, config, weights, qualification=None):
     """One team in the ranked file: its tier and score, the proven evidence behind them, its published contact route
-    and its discovery sources. Always a prospect."""
+    and its discovery sources. A qualification tier is never a relationship."""
     subject = team or record
     found = (team or {}).get("discovery") or (record or {}).get("discovery") or {}
     contact = (record or {}).get("contact") or {}
+    qualification = qualification or tq.qualify(record, None, {})
+    assessment = assess(record, config, weights, qualification)
     return {"team_key": subject["site_key"], "domain": subject["domain"],
             "company": ((record or {}).get("identity") or {}).get("company")
             or (subject.get("task_input") or subject.get("input") or {}).get("company"),
-            "status": "prospect", **assess(record, config, weights),
-            "robot_forms": record["robot_forms"]["proven"] if record else [],
-            "task_families": record["task"]["proven"] if record else [],
+            "status": assessment["tier"], **assessment, "qualification": qualification,
+            "robot_forms": qualification["robot_forms"], "task_families": qualification["task_families"],
+            "source_claimed_robot_forms": record["robot_forms"]["proven"] if record else [],
+            "source_claimed_task_families": record["task"]["proven"] if record else [],
             "stage": {name: record["stage"][name] for name in ("answer", "verified")} if record else None,
             "signals": sorted(name for name, signal in record["signals"].items() if signal["proven"]) if record else [],
             "contact": {name: contact[name] for name in ("route", "address", "url") if name in contact} or None,
@@ -193,27 +226,42 @@ def ranked_row(team, record, config, weights):
             "proving_sources": record["proving_sources"] if record else []}
 
 
-def rank(workspace, weights_raw, *, config_raw=None):
+def rank(workspace, weights_raw, *, config_raw=None, audit_raw=None, today=None):
     """Rank every discovered or screened team under the config and the private weights, and write the ranked file
     (private; names, domains and contact routes included) to the out dir. The result holds counts only. Reads no page
     and calls no provider."""
+    today = today or datetime.now(timezone.utc).date()
     config, weights = load_config(config_raw), load_weights(weights_raw)
     with workspace.lock():
         states, _ = workspace.states()
         teams, _ = tu.team_list(tu.stage_records(workspace, states, "discover").values())
         screens = tu.stage_records(workspace, states, "screen")
+        try:
+            team_list_raw = workspace.teams_path().read_bytes() if audit_raw is not None else None
+        except OSError:
+            raise tu.TeamError("team_universe_audit_snapshot_mismatch") from None
+        audit = tq.load_audit(audit_raw, teams, screens, team_list_raw=team_list_raw, today=today)
+        qualifications = {key: tq.qualify(record, audit["rows"].get(key),
+                                          tu._evidence(workspace.path("screen", "evidence", key).read_bytes()),
+                                          today=today) for key, record in screens.items()}
         listed = {team["site_key"]: team for team in teams}
-        rows = [ranked_row(team, screens.get(key), config, weights) for key, team in listed.items()]
-        rows += [ranked_row(None, record, config, weights) for key, record in screens.items() if key not in listed]
+        rows = [ranked_row(team, screens.get(key), config, weights, qualifications.get(key))
+                for key, team in listed.items()]
+        rows += [ranked_row(None, record, config, weights, qualifications[key])
+                 for key, record in screens.items() if key not in listed]
         rows.sort(key=lambda row: (TIERS.index(row["tier"]), -row["score"], row["domain"]))
         ss._write_derived(workspace.root / tu.RANKED_NAME, {
             "schema_version": RANKED, "rank_config": RANK, "config_sha256": config["sha256"],
             "weights": {"source": weights["source"], "reference": weights["reference"], "sha256": weights["sha256"],
                         "values": weights["weights"]},
-            "rules": {"discover": tu.DISCOVERY_RULE, "screen": tu.SCREEN_RULE}, "claim_boundary": CLAIM_BOUNDARY,
+            "audit": {"sha256": audit["sha256"], "reference": audit["reference"]},
+            "scope_sha256": tq.scope_manifest(teams, screens)["sha256"], "assessed_on": today.isoformat(),
+            "rules": {"discover": tu.DISCOVERY_RULE, "screen": tu.SCREEN_RULE, "qualification": tq.RULE},
+            "claim_boundary": CLAIM_BOUNDARY,
             "teams": rows})
     return {"command": "rank", "state": "complete", "rank_config": RANK, "config_sha256": config["sha256"],
             "weights_source": weights["source"], "weights_sha256": weights["sha256"], "teams": len(rows),
+            "qualification_rule": tq.RULE, "audit_sha256": audit["sha256"],
             "screened": sum(row["screen"] is not None for row in rows),
             "tiers": {tier: sum(row["tier"] == tier for row in rows) for tier in TIERS},
             "blockers": dict(Counter(code for row in rows for code in row["blockers"])), "written": tu.RANKED_NAME}

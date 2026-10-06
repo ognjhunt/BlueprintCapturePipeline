@@ -609,12 +609,13 @@ def test_summary_counts_fields_tiers_and_cost_without_any_team_data(tmp_path):
     tr.rank(workspace, weights())
     report = tu.summary(workspace)
     assert report["schema_version"] == tu.SUMMARY and report["discover"]["runs"]["completed"] == 1
-    assert report["teams"] == {"discovered": 2, "proven": 2, "unproven": 0, "refused": {}}
+    assert report["teams"] == {"discovered": 2, "proven": 2, "unproven": 0, "refused": {},
+                               "proven_meaning": "discovery_quote_names_company_not_robot_eligibility"}
     screen = report["screen"]
     assert screen["records"] == 2 and screen["contact_routes"] == {"role_inbox": 1, "none": 1}
     assert screen["identity"] == {"verified_fact": 2} and screen["task_families"] == {"palletizing_depalletizing": 2}
     assert screen["signals"]["simulation"] == 2 and screen["stages"] == {"seed": 2}
-    assert report["rank"]["tiers"] == {"beta_candidate": 1, "prospect": 1, "insufficient": 0}
+    assert report["rank"]["tiers"] == {"beta_candidate": 0, "capability_prospect": 0, "reference_only": 0, "pending": 2, "insufficient": 0}
     assert (report["estimated_cost_usd"], report["committed_usd"], report["ceiling_usd"]) == ("0.075", "0.075", "5")
     assert json.loads((workspace.root / "summary.json").read_text()) == report
     text = ss.canonical(report)
@@ -675,7 +676,7 @@ def test_the_command_runs_end_to_end_and_prints_counts_only(tmp_path, capsys, mo
     cli.main(["collect", "--out", str(out), "--wait-seconds", "0", "--key-file", str(key_file)], **options)
     assert cli.main(["verify", "--out", str(out)], **options)["screen"]["records"] == 2
     ranked = cli.main(["rank", "--out", str(out), "--family-weights", str(weights_file)], **options)
-    assert ranked["tiers"] == {"beta_candidate": 1, "prospect": 1, "insufficient": 0}
+    assert ranked["tiers"] == {"beta_candidate": 0, "capability_prospect": 0, "reference_only": 0, "pending": 2, "insufficient": 0}
     assert cli.main(["summary", "--out", str(out)])["screen"]["records"] == 2
     output = capsys.readouterr().out
     assert len(output.splitlines()) == 10 and all(json.loads(line) for line in output.splitlines())
@@ -697,7 +698,7 @@ def test_a_failure_prints_one_stable_code_and_never_the_key(tmp_path, capsys):
 # --- packaging ----------------------------------------------------------------------------------
 def test_the_team_universe_imports_only_the_standard_library_and_the_site_screen():
     allowed = set(sys.stdlib_module_names) | {"tools"}
-    for name in ("universe.py", "rank.py", "cli.py", "__main__.py", "__init__.py"):
+    for name in ("universe.py", "rank.py", "qualification.py", "cli.py", "__main__.py", "__init__.py"):
         tree = ast.parse((ROOT / "tools/team_universe" / name).read_text())
         modules = {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
         modules |= {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
