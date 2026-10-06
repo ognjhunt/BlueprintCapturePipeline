@@ -1137,6 +1137,7 @@ SEARCH="--person-search owner-decision-provider-sourced-person-20261005"  # Opti
 PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH
 PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py lookup --out "$OUT" $SPEND --key-file "$KEYS" $SEARCH --apply
 PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py summary --out "$OUT"
+PYTHONPATH=. .venv/bin/python tools/daily_research/operators/contact-lookup.py balance --key-file "$KEYS"
 ```
 
 Run from the repository root after the site screen's `contact`, `collect` and `verify`, with an
@@ -1153,7 +1154,8 @@ repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has no
   `contact_lookup_person_search_reference_invalid`), one people search on the operator's
   domain for the listed roles (`TITLES`: owner, president, general manager, plant
   manager, operations manager or director, engineering or automation manager) keeps the
-  first person FullEnrich places at that domain now (`is_current` true, or no end date)
+  first person FullEnrich places at that domain now (`is_current` true, or no end date
+  in `employment.current`; historical `employment.all` entries need `is_current: true`)
   in a listed role, and that person gets one enrichment (`provider_sourced`). The
   employment field relied on is recorded; a past employer never counts. The pages the
   site screen already read and kept are checked for the person with their title and the
@@ -1188,13 +1190,24 @@ repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has no
   only when usable) and its `recipient` from `contact_lookup.choose_recipient`, a pure
   function for the admission step: 1 published person email, 2 looked-up person email,
   3 published team inbox, 4 published general inbox, 5 none, each with its source and
-  labels. `contact_lookup.load` reads the records without taking the out dir lock.
+  labels. `contact_lookup.load(workspace, states=states)` recomputes the records from
+  the durable journal and current site evidence under the admission caller's out dir
+  lock. Cached record files do not authorize recipients. A quoted source must still be
+  within 18 months at lookup time and its verified quote must support the claimed title.
 - `summary` recomputes every record from the journal alone and writes
   `lookup/summary.json`. Output is counts and stable `contact_lookup_*` codes only, never
   names or addresses. Every file is 0600 in 0700 folders. The key comes only from
   `--key-file`; it is never printed or written. The command refuses on the daily worker
   (`contact_lookup_worker_needs_paid_admission`). The hermetic tests use a fake FullEnrich
   transport and synthetic sites.
+- `balance` makes one unbilled `GET /api/v2/account/credits` and prints only the finite
+  remaining credit count and check time. It creates no artifact or lookup intent.
+  Read the actual balance before an owner-authorized first pass; a reported free tier
+  is not evidence of the remaining allocation or permission for a paid subscription.
+
+Provider contract references: [data dictionary](https://docs.fullenrich.com/api/v2/general/data-dictionary),
+[enrichment result](https://docs.fullenrich.com/api/v2/contact/enrich/bulk/get),
+[credit balance](https://docs.fullenrich.com/api/v2/account/credits/get).
 
 ## Daily research runtime envelope
 

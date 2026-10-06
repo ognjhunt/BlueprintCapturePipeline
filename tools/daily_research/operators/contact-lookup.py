@@ -52,8 +52,15 @@ def main(argv=None, *, environ=None, transport=None, monotonic=time.monotonic, s
     spender.add_argument("--apply", action="store_true")
     commands.add_parser("summary", help="Counts only, recomputed from the journal").add_argument(
         "--out", required=True, type=Path)
+    commands.add_parser("balance", help="Read remaining credits only; no billed call or artifact write").add_argument(
+        "--key-file", required=True, type=Path)
     args = parser.parse_args(argv)
-    if args.command == "lookup":
+    if args.command == "balance":
+        contact_lookup.refuse_on_worker(environ)
+        client = contact_lookup.FullEnrichClient(api_key(args.key_file),
+                                                 **({"transport": transport} if transport is not None else {}))
+        result = client.balance()
+    elif args.command == "lookup":
         contact_lookup.refuse_on_worker(environ)  # Before any file is read or the key is read.
         contact_lookup.person_search_on(args.person_search)
         workspace = site_screen.Workspace(args.out)  # The out dir guard runs before the key is read.
