@@ -836,7 +836,7 @@ def address_units(text, protected=()):
 def role_complement(person, sentence):
     normalized = ss.words(sentence)
     name = ss.words(person["name"])
-    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}", normalized)
+    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current|now|currently|new|recently)\s+){0,5}", normalized)
     if start:
         description = normalized[start.end():]
         for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
@@ -915,6 +915,7 @@ def employment_contradiction(person, sentence, known_names):
         named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
                  if word.isupper() or word[:1].isupper() and word[1:].islower()} - {
             "he", "she", "they", "his", "her", "their", "now", "currently", "still", "also", "recently"}
+        named -= set(title_words(person["title"])) | TITLE_FILLER
         # A full subject immediately before its verb binds the claim despite a date/editorial preamble.
         if re.search(r"\b" + re.escape(name) + r"(?:\s+(?:is|was|has|had|have|been|an?|now|currently|recently))*$",
                      ss.words(subject)):

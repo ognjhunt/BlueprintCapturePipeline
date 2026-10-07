@@ -780,6 +780,11 @@ def test_departure_pronoun_after_a_different_named_person_preserves_scope():
     "Jordan Fixture is Plant Manager at Rival Works.",
     "Jordan Fixture is Plant Manager for Rival Works.",
     "He is Plant Manager at Rival Works.",
+    "Jordan Fixture is now Plant Manager at Rival Works.",
+    "Jordan Fixture is currently Plant Manager at Rival Works.",
+    "Jordan Fixture is the new Plant Manager at Rival Works.",
+    "Jordan Fixture, the Plant Manager, retired.",
+    "Jordan Fixture, the PLANT MANAGER, retired.",
 ])
 def test_explicit_ended_employment_and_same_subject_updates_override_old_role(transition):
     quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
@@ -807,6 +812,15 @@ def test_affirming_target_employment_with_a_determiner_preserves_scope(affirmati
 def test_object_name_mention_does_not_link_another_subjects_departure():
     quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
              "Avery Placeholder thanked Jordan Fixture. She retired.")
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("modifier", ["now", "currently", "the new"])
+def test_current_role_modifiers_preserve_explicit_target_scope(modifier):
+    quote = (f"Jordan Fixture is {modifier} Plant Manager at 1 Example Road, Fixture City, TX "
+             "for Synthetic Operator 1.")
     scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
                                    cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
     assert scope["route"] == "site_contact"
