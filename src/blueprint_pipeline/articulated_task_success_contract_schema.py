@@ -16,9 +16,8 @@ from typing import Any
 from .rigid_task_success_contract_schema import rigid_task_success_contract_schema
 
 SCHEMA_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "schemas"
+    Path(__file__).resolve().parent
+    / "_catalog_schemas"
     / "articulated_task_success_contract.v1.schema.json"
 )
 

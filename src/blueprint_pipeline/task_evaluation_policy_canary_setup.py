@@ -28,7 +28,7 @@ from .articulated_task_success_contract_schema import (
 
 
 SCHEMA_VERSION = "task_evaluation_policy_canary_setup.v1"
-SCHEMA_PATH = Path(__file__).resolve().parents[2] / "docs" / "schemas" / f"{SCHEMA_VERSION}.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parent / "_catalog_schemas" / f"{SCHEMA_VERSION}.schema.json"
 
 
 class TaskEvaluationPolicyCanarySetupError(ValueError):
