@@ -10,9 +10,8 @@ from typing import Any
 
 
 SCHEMA_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "schemas"
+    Path(__file__).resolve().parent
+    / "_catalog_schemas"
     / "rigid_task_success_contract.v1.schema.json"
 )
 

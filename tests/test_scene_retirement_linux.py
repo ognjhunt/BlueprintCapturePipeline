@@ -352,6 +352,14 @@ def _enabled_sdk_native_phase():
         prepared = json.loads(_native(command,timeout=310))
         assert prepared['status'] == 'prepared' and prepared['source_commit'] == commit
         assert prepared['authority_issued'] is False and prepared['cleanup_enabled'] is False
+        # These runtime reads must come from the existing authenticated source
+        # roots, without requiring repository documentation in the generation.
+        for name in ('task_evaluation_policy_canary_setup.v1.schema.json',
+                     'rigid_task_success_contract.v1.schema.json',
+                     'articulated_task_success_contract.v1.schema.json'):
+            expected = subprocess.check_output(_checkout_git(source, 'cat-file', 'blob',
+                commit + ':docs/schemas/' + name), timeout=10)
+            assert (_RUNTIME / 'src/blueprint_pipeline/_catalog_schemas' / name).read_bytes() == expected
         # Only the source-admission boundary is intercepted by the test driver;
         # real locked SDK/copy/rolling/ABI/UID/systemd behavior remains exercised.
         # Each invocation retains its stricter 310s native fixture watchdog.

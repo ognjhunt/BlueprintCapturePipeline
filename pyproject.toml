@@ -476,6 +476,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"blueprint_pipeline" = ["_catalog_schemas/*.schema.json"]
 "blueprint_pipeline._sam_parser_js" = ["runner.mjs", "LICENSE", "README.md", "VENDORED_SOURCE.md", "package.json", "dist/*.js", "dist/*.d.ts"]
 
 [tool.ruff]
