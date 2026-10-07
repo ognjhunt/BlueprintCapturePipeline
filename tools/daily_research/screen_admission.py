@@ -511,6 +511,12 @@ def recipient_problem(value, entry):
                         or responsibility["reason"] not in
                         ("target_site_responsibility_unproven", "target_site_location_mismatch")):
                     return code
+                target = {**responsibility_target(entry), "site_key": entry["site_key"], "kept_pages": [],
+                          "person_quote": person.get("quote") or (person.get("corroboration") or {}).get("quote") or ""}
+                if (contact_lookup.site_responsibility(target, person)["route"] == "hold"
+                        or responsibility["reason"] == "target_site_location_mismatch"
+                        and not set(site_screen.words(person["title"]).split()) & {"owner", "president", "director"}):
+                    return code
             elif responsibility["route"] == "site_contact":
                 scope = responsibility["proof"]
                 target = responsibility_target(entry)

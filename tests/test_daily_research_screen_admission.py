@@ -391,6 +391,35 @@ def test_unknown_site_responsibility_is_a_referral_in_bundle_and_sheet_question(
     assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
 
 
+@pytest.mark.parametrize("reason", ["target_site_responsibility_unproven", "target_site_location_mismatch"])
+@pytest.mark.parametrize("title", ["Plant Manager", "Director"])
+@pytest.mark.parametrize("source", ["public_quote", "provider_sourced"])
+def test_loader_requalifies_quoted_referral_against_retained_facility(tmp_path, reason, title, source):
+    changes = {**team(1), "person_name": PERSON, "person_title": title,
+               "person_url": "https://operator-1.example/team",
+               "person_quote": f"{PERSON} is {title} at Synthetic Operator 1.", "person_date": "2026-06-01"}
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, changes)])
+    person = {"source": source, "name": PERSON, "title": title}
+    if source == "provider_sourced":
+        person.update(corroborated=True, corroboration={"url": "https://operator-1.example/team",
+                      "quote": changes["person_quote"], "level": "verified_on_page", "text_sha256": "a" * 64})
+    lookup(workspace, key, person=person)
+    bundle, _, _ = built(workspace)
+    entry = bundle["results"][0]
+    assert entry["recipient"]["route"] == ("quoted_person_looked_up_email" if source == "public_quote"
+                                           else "provider_sourced_corroborated")
+    person = entry["recipient"]["person"]
+    (person if source == "public_quote" else person["corroboration"])["quote"] = (
+        f"{PERSON} is {title} at Rival and Sons, Fixture City, TX.")
+    person["site_responsibility"]["reason"] = reason
+    raw = canonical(bundle).encode()
+    if title == "Director":
+        assert sa.load_bundle(raw) == bundle
+    else:
+        with pytest.raises(sa.AdmissionError, match="screen_admission_recipient_invalid"):
+            sa.load_bundle(raw)
+
+
 @pytest.mark.parametrize("responsibility", [
     {"site_key": "a" * 64, "status": "unknown", "route": "corporate_referral",
      "reason": "target_site_responsibility_unproven", "proof": None},

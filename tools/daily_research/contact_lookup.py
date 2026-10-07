@@ -855,7 +855,13 @@ def quoted_role_address(person, sentence):
     tokens = list(re.finditer(r"[A-Za-z0-9]+", raw))
     if offset >= len(tokens) or ss.words(" ".join(token.group() for token in tokens)) != ss.words(raw):
         return {}
-    complement = re.split(r"\b(?:and|but|while|whereas|for)\b", raw[tokens[offset].start():], flags=re.IGNORECASE)[0]
+    complement = raw[tokens[offset].start():]
+    for boundary in re.finditer(r"\b(?:and|but|while|whereas|for)\b", complement, re.IGNORECASE):
+        prefix = complement[:boundary.start()].rstrip(" .;")
+        location = ss.parse_location(prefix)
+        if location.get("city") and (location.get("state") or ss.street_anchor(location.get("street"))):
+            complement = prefix
+            break
     address = ss.parse_location(complement.rstrip(" .;"))
     city, state = address.get("city"), address.get("state")
     if (not city or not re.search(ss.city_pattern(city), complement)

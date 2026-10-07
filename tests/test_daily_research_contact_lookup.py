@@ -172,6 +172,8 @@ def stored(workspace):
     "Other Fixture Plant, Other Fixture City, OH",
     "Rival Fixture Works, Fixture City, TX",
     "Said Fixture Works, Fixture City, TX",
+    "Rival and Sons, Fixture City, TX",
+    "Rival and Sons, Fixture City, TX and he discussed the plant",
 ])
 def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_path, assignment):
     workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_quote=f"{PERSON} is Plant Manager at {assignment}.")])
@@ -188,6 +190,15 @@ def test_named_target_or_company_role_keeps_unknown_referral_scope(assignment):
     site["person_quote"] = f"Jordan Fixture is Plant Manager at {assignment}, Fixture City, TX."
     person = {"name": "Jordan Fixture", "title": "Plant Manager", "location": None}
     responsibility = cl.site_responsibility(site, person)
+    assert responsibility["route"] == "corporate_referral" and responsibility["status"] == "unknown"
+
+
+@pytest.mark.parametrize("assignment", ["Synthetic Works and Sons", "Synthetic Works & Sons"])
+def test_named_target_with_conjunction_keeps_unknown_referral_scope(assignment):
+    site = qualification_site()
+    site["task_input"]["site_name"] = "Synthetic Works & Sons"
+    site["person_quote"] = f"Jordan Fixture is Plant Manager at {assignment}, Fixture City, TX."
+    responsibility = cl.site_responsibility(site, {"name": "Jordan Fixture", "title": "Plant Manager"})
     assert responsibility["route"] == "corporate_referral" and responsibility["status"] == "unknown"
 
 
