@@ -617,8 +617,9 @@ def test_legacy_shared_search_is_requalified_without_rebuying_the_search():
     assert person is None and reason == "target_site_location_mismatch"
 
 
-def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home_location():
-    quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+@pytest.mark.parametrize("operator_prefix", ["", "Synthetic Operator 1's "])
+def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home_location(operator_prefix):
+    quote = f"Jordan Fixture is Plant Manager at {operator_prefix}1 Example Road, Fixture City, TX for Synthetic Operator 1."
     site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
     person = searched(OTHER_PERSON)
     person["location"]["city"] = "Other Fixture City"

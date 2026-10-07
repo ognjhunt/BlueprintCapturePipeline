@@ -408,7 +408,8 @@ def test_held_or_another_site_lookup_cannot_replace_the_team_inbox(tmp_path, res
 
 
 @pytest.mark.parametrize("display_location", ["Fixture City, TX", None])
-def test_site_role_loader_uses_retained_physical_proof_when_display_omits_street(tmp_path, display_location):
+@pytest.mark.parametrize("operator_prefix", ["", "Synthetic Operator 1's "])
+def test_site_role_loader_uses_retained_physical_proof_when_display_omits_street(tmp_path, display_location, operator_prefix):
     workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, None)])
     lookup(workspace, key, address="jordan.fixture@operator-1.example", person={
         "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager", "corroborated": False})
@@ -423,7 +424,7 @@ def test_site_role_loader_uses_retained_physical_proof_when_display_omits_street
     entry["recipient"]["person"]["site_responsibility"] = {
         "site_key": key, "status": "verified", "route": "site_contact", "reason": None,
         "proof": {"url": "https://operator-1.example/team", "level": "verified_on_page", "text_sha256": "e" * 64,
-                  "quote": "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX."}}
+                  "quote": f"Jordan Fixture is Plant Manager at {operator_prefix}1 Example Road, Fixture City, TX."}}
     entry["hypothesis"]["question"] = entry["checks"]["question"]
     assert sa.responsibility_target(entry)["address"]["street"] == "1 Example Road"
     assert sa.load_bundle(canonical(bundle).encode()) == bundle
