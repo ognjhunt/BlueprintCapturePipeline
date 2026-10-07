@@ -713,8 +713,10 @@ def lookup_site(workspace, contact, screen, *, today=None):
         pages = evidence.get("pages") if isinstance(evidence, dict) and isinstance(evidence.get("pages"), dict) else {}
         kept += [(url, page["text"], page.get("sha256")) for url, page in sorted(pages.items()) if isinstance(page, dict)
                  and page.get("state") == "ok" and isinstance(page.get("text"), str) and not ss.never_fetch(url)]
+    address = screen.get("address") or {}
+    address = ss.found_address({"address": address}, screen["answers"], screen["verification"]) or address
     return {"site_key": contact["site_key"], "contact": contact,
-            "address": screen.get("address") or {}, "task_input": ss.contact_input(screen),
+            "address": address, "task_input": ss.contact_input(screen),
             "person": contact["person"] if isinstance(contact.get("person"), dict) else {},
             "published_person_email": choose_recipient(contact, today=today)["choice"] == "published_person_email",
             "operator": _text(screen["answers"].get("operator_identity")) or _text(screen["input"].get("operator")),
@@ -782,8 +784,16 @@ def site_role_quote(site, person, sentence):
     role_scope = re.search(r"\b" + re.escape(ss.words(person["name"])) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}"
                            + re.escape(ss.words(person["title"])) + r"\s+(?:at|for|of)\s+", normalized)
     tail = normalized[role_scope.end():] if role_scope else ""
-    # Another clause/person's facility is not this role's scope. Prefer an explicit referral when ambiguous.
-    tail = re.split(r"\b(?:and|but|while|whereas)\b|\b" + re.escape(ss.words(person["title"])) + r"\b", tail)[0]
+    # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
+    names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
+    known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
+    known_names |= {name.replace(" and ", " ") for name in known_names}
+    spans = [match.span() for name in known_names if name
+             for match in re.finditer(r"\b" + re.escape(name) + r"\b", tail)]
+    for boundary in re.finditer(r"\b(?:and|but|while|whereas)\b|\b" + re.escape(ss.words(person["title"])) + r"\b", tail):
+        if not any(start <= boundary.start() < end for start, end in spans):
+            tail = tail[:boundary.start()]
+            break
     address = site.get("address") or {}
     city, state = address.get("city"), address.get("state")
     canonical = ss._canon(tail, ss.CITY_WORDS)
@@ -794,7 +804,7 @@ def site_role_quote(site, person, sentence):
                                        + re.escape(ss.STATE_NAMES.get(state, state).lower()) + r")\b", canonical):
         return False
     # Only the direct role complement can name the facility; a company's HQ or another claim in the sentence cannot.
-    allowed = set(ss.words(site.get("operator", "") + " " + site["task_input"].get("site_name", "")).split())
+    allowed = {word for name in known_names for word in name.split()}
     allowed.update(ss.words(city or "").split())
     allowed.update({"the", "at", "of", "for", "in", "on", "s", "plant", "facility", "site", "factory"})
     street_tail = ss._canon(tail, ss.STREET_WORDS)
@@ -815,17 +825,22 @@ def site_role_quote(site, person, sentence):
             if city and not re.match(city_pattern + r"\b", suffix):
                 continue
         else:
-            exact_name = ss.words(site["task_input"].get("site_name") or "")
+            given_name = site["task_input"].get("site_name") or ""
+            exact_names = {ss.words(given_name), ss.words(given_name.replace("&", " and "))}
+            exact_names |= {name.replace(" and ", " ") for name in exact_names}
             before_city = canonical.partition(ss._canon(anchor["city"], ss.CITY_WORDS))[0]
-            if not (exact_name and (tail.startswith(exact_name + " ") or tail.startswith("the " + exact_name + " "))
+            if not (any(name and (tail.startswith(name + " ") or tail.startswith("the " + name + " "))
+                        for name in exact_names)
                     and set(before_city.split()) <= allowed
                     and ss.has_phrase(ss._canon(anchor["city"], ss.CITY_WORDS), canonical)):
                 continue
         scoped.append(anchor)
-    return bool(role_scope and ss.names_site(sentence, scoped)
-                and not set(normalized.split()) & {"visited", "visits", "visiting", "former", "formerly",
-                                                   "retired", "not", "attended", "attending", "said", "says",
-                                                   "discussed", "discusses", "opened", "opening", "near"})
+    assertion = normalized
+    for name in sorted(known_names | {ss.words(person["name"])}, key=len, reverse=True):
+        if name:
+            assertion = re.sub(r"\b" + re.escape(name) + r"\b", " ", assertion)
+    return bool(role_scope and ss.names_site(sentence, scoped) and not sentence.rstrip().endswith("?")
+                and not set(assertion.split()) & {"former", "formerly", "retired", "not"})
 
 
 def site_responsibility(site, person):

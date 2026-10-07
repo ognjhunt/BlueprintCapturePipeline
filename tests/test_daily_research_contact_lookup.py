@@ -638,6 +638,7 @@ def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home
     "Jordan Fixture is Plant Manager at 1 Example Road, Other Fixture City, TX for Synthetic Operator 1.",
     "Jordan Fixture is Plant Manager of Synthetic Operator 1 whose headquarters are at 1 Example Road, Fixture City, TX.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, OH with customers in Fixture City, TX for Synthetic Operator 1.",
+    "Is Jordan Fixture the Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1?",
 ])
 def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
     site = qualification_site(pages=[("https://operator-1.example/news", quote, "d" * 64)])
@@ -651,6 +652,32 @@ def test_later_site_proven_candidate_wins_over_a_company_referral():
     site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
     chosen, _ = cl.target(site, replay_search(searched(OTHER_PERSON), searched(PERSON)))
     assert chosen["name"] == PERSON and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("field,name,prefix", [
+    ("operator", "Synthetic Smith and Sons", "Synthetic Smith and Sons' "),
+    ("operator", "Synthetic Smith & Sons", "Synthetic Smith and Sons' "),
+    ("site_name", "Synthetic Works and Foundry", "Synthetic Works and Foundry's "),
+])
+def test_known_operator_and_facility_names_preserve_their_conjunctions(field, name, prefix):
+    site = qualification_site()
+    (site if field == "operator" else site["task_input"])[field] = name
+    quote = f"Jordan Fixture is Plant Manager at {prefix}1 Example Road, Fixture City, TX for {site['operator']}."
+    site["kept_pages"] = [("https://operator-1.example/team", quote, "d" * 64)]
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_news_after_an_explicit_site_role_does_not_erase_that_role():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1, "
+             "and said the plant visited another facility this spring.")
+    site = qualification_site(pages=[("https://operator-1.example/news", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
 
 
 def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():
