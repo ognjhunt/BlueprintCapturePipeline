@@ -881,10 +881,21 @@ def employment_sentence(sentence):
                   unicodedata.normalize("NFKC", sentence), flags=re.IGNORECASE)
 
 
+def coordinated_subject(subject, person_name):
+    """An explicit list of named subjects includes the target; role clauses are not subject lists."""
+    groups = [part.strip() for part in re.split(r"\s+and\s+|,", subject, flags=re.IGNORECASE) if part.strip()]
+    if len(groups) < 2 or not any(ss.words(part) == person_name for part in groups):
+        return False
+    return all(ss.words(part) == person_name or 2 <= len(part.split()) <= 5
+               and all(word[:1].isupper() for word in part.split()) for part in groups)
+
+
 def employment_contradiction(person, sentence, known_names):
     """Current-role evidence cannot ignore an explicit same-person employment contradiction."""
     name = ss.words(person["name"])
     sentence = employment_sentence(sentence)
+    if sentence.rstrip().endswith("?"):
+        return False
     role_sentence = re.sub(r"^\s*(?:he|she|they)\b", person["name"], sentence, flags=re.IGNORECASE)
     role_employer, _, role_preposition = role_complement(person, role_sentence)
     if role_preposition and not quoted_role_address(person, role_sentence):
@@ -902,7 +913,9 @@ def employment_contradiction(person, sentence, known_names):
                             r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|step(?:ped|s|ping)?\s+down|no\s+longer)"
                             r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
     cuts = [0] + [match.end() for match in re.finditer(r"\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE)
-                  if not any(start <= match.start() < end for start, end in protected)] + [len(sentence)]
+                  if not any(start <= match.start() < end for start, end in protected)
+                  and not (match.group().lower() == "and" and (ss.words(sentence[:match.start()]) == name
+                           or coordinated_subject(sentence[:match.start()], name)))] + [len(sentence)]
     for start, end in pairwise(cuts):
         clause = sentence[start:end]
         match = next((found for found in employment.finditer(clause)
@@ -910,6 +923,14 @@ def employment_contradiction(person, sentence, known_names):
         if not match:
             continue
         subject = clause[:match.start()].strip()
+        polarity = [found.group().lower() for found in re.finditer(
+            r"\b(?:not|never|may|might|will|would|could|should)\b"
+            r"|\b(?:isn|wasn|hasn|hadn|haven|doesn|didn|don|won|wouldn|shouldn|couldn|can)['’]\s*t\b", subject,
+            re.IGNORECASE) if not any(left <= start + found.start() < right for left, right in protected)]
+        uncertain = any(word in {"may", "might", "will", "would", "could", "should"} for word in polarity)
+        negated = bool(polarity) and not uncertain
+        if uncertain or negated and match.group("departure"):
+            continue
         reported = re.search(r"\b(?:said|stated|reported|confirmed|announced|noted|explained|told|mentioned|recalled)"
                              r"\s+(?:that\s+)?(.+)$", ss.words(subject))
         if reported and not (ss.has_phrase(name, reported.group(1))
@@ -930,7 +951,7 @@ def employment_contradiction(person, sentence, known_names):
         if re.search(r"\b" + re.escape(name) + r"(?:\s+(?:is|was|has|had|have|been|an?|now|currently|recently))*$",
                      ss.words(subject)):
             named = set()
-        if named and not named <= set(name.split()):
+        if named and not named <= set(name.split()) and not coordinated_subject(subject, name):
             continue
         if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
             continue
@@ -949,7 +970,8 @@ def employment_contradiction(person, sentence, known_names):
                     or employer.startswith("for ") and not set(object_text.split()) & {
                         "conference", "meeting", "lunch", "vacation", "trip", "training", "workshop", "airport", "home"}
                     or match.group("departure").lower() == "no longer"
-                    and re.match(r"^(?:works?|worked|serves|employed)\b", employer)):
+                    and (re.match(r"^(?:works?|worked|serves|employed)\b", employer)
+                         or holds_title(employer, person["title"]))):
                 return True
             continue
         ended = re.search(r"\b(?:to|until|through)\s+(?:\w+\s+){0,3}(?:19|20)\d{2}\b", employer)
@@ -957,6 +979,10 @@ def employment_contradiction(person, sentence, known_names):
         employers = {employer, re.sub(r"^(?:the|an?)\s+", "", employer)}
         known_employer = any(entity and (value == entity or value.startswith(entity + " "))
                              for entity in known_names for value in employers)
+        if negated:
+            if known_employer and not past:
+                return True
+            continue
         if match.group("transition"):
             event = re.search(r"\b(?:meeting|conference|lunch|vacation|trip|training|workshop)\b"
                               r"(?:$|\s+(?:at|in|with|for)\b)", employer)
