@@ -775,6 +775,31 @@ def search_body(site):
             "current_position_titles": [{"value": title} for title in TITLES], "limit": SEARCH_LIMIT, "offset": 0}
 
 
+def role_scope_suffix(text, known_names):
+    """An address's direct entity/facility qualifier must belong to this retained operator or site."""
+    remaining = ss.words(text)
+    literals = sorted(known_names | {"united states of america", "united states", "usa", "us"}, key=len, reverse=True)
+    while remaining:
+        literal = next((name for name in literals if name and
+                        (remaining == name or remaining.startswith(name + " "))), None)
+        if literal:
+            remaining = remaining[len(literal):].strip()
+            continue
+        postal = re.match(r"^\d{5}(?:\s+\d{4})?(?:\s|$)", remaining)
+        if postal:
+            remaining = remaining[postal.end():].strip()
+            continue
+        word, _, rest = remaining.partition(" ")
+        if word in {"the", "for", "of", "at", "s", "plant", "facility", "site", "factory"}:
+            remaining = rest
+            continue
+        # A separate news predicate does not erase the preceding explicit role complement.
+        if word in {"said", "says", "announced", "visited", "visits", "discussed"}:
+            return True
+        return False
+    return True
+
+
 def site_role_quote(site, person, sentence):
     """A role tied to this facility, rather than a person's visit or a company-wide name/title match."""
     anchors = ss.site_anchors(site)
@@ -796,6 +821,8 @@ def site_role_quote(site, person, sentence):
             break
     address = site.get("address") or {}
     city, state = address.get("city"), address.get("state")
+    if not city:
+        return False  # A street alone cannot distinguish facilities in different cities.
     canonical = ss._canon(tail, ss.CITY_WORDS)
     if city and not ss.has_phrase(ss._canon(city, ss.CITY_WORDS), canonical):
         return False
@@ -822,7 +849,8 @@ def site_role_quote(site, person, sentence):
             city_pattern = re.escape(ss._canon(city, ss.CITY_WORDS)) if city else ""
             if state:
                 city_pattern += r"\s+(?:" + re.escape(state.lower()) + "|" + re.escape(ss.STATE_NAMES.get(state, state).lower()) + ")"
-            if city and not re.match(city_pattern + r"\b", suffix):
+            location_match = re.match(city_pattern + r"\b", suffix)
+            if not location_match or not role_scope_suffix(suffix[location_match.end():], known_names):
                 continue
         else:
             given_name = site["task_input"].get("site_name") or ""
@@ -833,6 +861,12 @@ def site_role_quote(site, person, sentence):
                         for name in exact_names)
                     and set(before_city.split()) <= allowed
                     and ss.has_phrase(ss._canon(anchor["city"], ss.CITY_WORDS), canonical)):
+                continue
+            location_match = re.search(re.escape(ss._canon(city, ss.CITY_WORDS)) + r"\s+(?:"
+                                       + re.escape((state or "").lower()) + "|"
+                                       + re.escape(ss.STATE_NAMES.get(state, state or "").lower()) + r")\b", canonical) if state else re.search(
+                                           re.escape(ss._canon(city, ss.CITY_WORDS)) + r"\b", canonical)
+            if not location_match or not role_scope_suffix(canonical[location_match.end():], known_names):
                 continue
         scoped.append(anchor)
     assertion = normalized

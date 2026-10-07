@@ -639,9 +639,12 @@ def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home
     "Jordan Fixture is Plant Manager of Synthetic Operator 1 whose headquarters are at 1 Example Road, Fixture City, TX.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, OH with customers in Fixture City, TX for Synthetic Operator 1.",
     "Is Jordan Fixture the Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1?",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX facility of Rival Fixture Corporation.",
 ])
 def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
-    site = qualification_site(pages=[("https://operator-1.example/news", quote, "d" * 64)])
+    text = quote + " Synthetic Operator 1 operates the target plant."
+    site = qualification_site(pages=[("https://operator-1.example/news", text, "d" * 64)])
     person = searched(OTHER_PERSON)
     person["location"]["city"] = "Other Fixture City"
     assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
@@ -678,6 +681,15 @@ def test_news_after_an_explicit_site_role_does_not_erase_that_role():
     person["location"]["city"] = "Other Fixture City"
     chosen, reason = cl.target(site, replay_search(person))
     assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_a_street_without_target_city_does_not_establish_site_responsibility():
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    site["address"].pop("city")
+    chosen, _ = cl.target(site, replay_search(searched(OTHER_PERSON)))
+    assert chosen["site_responsibility"]["status"] == "unknown"
+    assert chosen["site_responsibility"]["route"] == "corporate_referral"
 
 
 def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():
