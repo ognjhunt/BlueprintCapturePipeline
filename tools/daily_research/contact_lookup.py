@@ -902,7 +902,10 @@ def employment_contradiction(person, sentence, known_names):
     if role_preposition and quoted_role_address(person, role_sentence):
         # A street-qualified role can still explicitly name a different employer.
         employer_suffix = re.search(r"\bfor\s+(.+)$", role_employer)
-        role_employer = employer_suffix.group(1) if employer_suffix else ""
+        employer_prefix = re.match(r"(.+?)\s+at\s+\d+\b", role_employer)
+        role_employer = (employer_suffix.group(1) if employer_suffix else employer_prefix.group(1)
+                         if employer_prefix else role_employer
+                         if role_preposition in {"for", "of"} and not re.match(r"^\d+\s", role_employer) else "")
     if role_preposition and role_employer:
         employers = {role_employer, re.sub(r"^(?:the|an?)\s+", "", role_employer)}
         if not any(entity and (value == entity or value.startswith(entity + " "))
