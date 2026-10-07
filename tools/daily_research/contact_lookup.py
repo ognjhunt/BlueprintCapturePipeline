@@ -1210,10 +1210,11 @@ def site_responsibility(site, person):
                     or state and address.get("state") and state != address["state"]
                     or place.get("country") and ss.normalized(place["country"]) not in
                     {"us", "usa", "united states", "united states of america"})
-    corporate = bool(set(title.split()) & {"owner", "president", "director", "vp", "coo"}
-                     or holds_title(title, "chief operating officer"))
+    corporate = bool((set(title.split()) & {"owner", "president", "director", "vp", "coo"}
+                      or holds_title(title, "chief operating officer"))
+                     and not set(title.split()) & {"site", "facility", "plant", "production", "warehouse"})
     return {"site_key": site["site_key"], "status": "unknown",
-            "route": "hold" if mismatch and not corporate else "corporate_referral",
+            "route": "hold" if role_mismatch or mismatch and not corporate else "corporate_referral",
             "reason": "target_site_location_mismatch" if mismatch else "target_site_responsibility_unproven",
             "proof": None}
 

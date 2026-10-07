@@ -1070,13 +1070,23 @@ def test_hash_in_a_retained_operator_name_is_not_an_address_unit():
     assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
 
 
-def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():
-    person = searched(OTHER_PERSON, title="Operations Director")
+@pytest.mark.parametrize("title", ["Operations Director", "VP Operations", "Chief Operating Officer"])
+def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority(title):
+    person = searched(OTHER_PERSON, title=title)
     person["location"]["city"] = "Other Fixture City"
     chosen, _ = cl.target(qualification_site(), replay_search(person))
     assert chosen["site_responsibility"] == {
         "site_key": "site-one", "status": "unknown", "route": "corporate_referral",
         "reason": "target_site_location_mismatch", "proof": None}
+    site = qualification_site()
+    site["person_quote"] = f"{OTHER_PERSON} is {title} at 2 Other Road, Other Fixture City, OH."
+    held, reason = cl.target(site, replay_search(person))
+    assert held is None and reason == "target_site_location_mismatch"
+    for local_title in ("Site Director", "Facility Director", "Plant Director", "Production Director",
+                        "Warehouse Director"):
+        person["employment"]["current"]["title"] = local_title
+        held, reason = cl.target(qualification_site(), replay_search(person))
+        assert held is None and reason == "target_site_location_mismatch"
 
 
 def test_enrichment_profile_checks_names_and_employment_history():
