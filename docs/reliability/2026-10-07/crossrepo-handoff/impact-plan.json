@@ -1,0 +1,60 @@
+{
+  "changed_files": [
+    "docs/reliability/2026-10-07/crossrepo-handoff/final-focused.txt",
+    "docs/reliability/2026-10-07/crossrepo-handoff/lint-delta.json",
+    "docs/reliability/2026-10-07/crossrepo-handoff/native-baseline-main.txt",
+    "docs/reliability/2026-10-07/crossrepo-handoff/offline_pytest.py",
+    "docs/reliability/2026-10-07/crossrepo-handoff/python-environment.txt",
+    "docs/reliability/2026-10-07/crossrepo-handoff/reproduction.txt",
+    "src/blueprint_pipeline/pubsub_handoff_listener.py",
+    "src/blueprint_pipeline/run_e2e.py",
+    "tests/test_handoff_required_stage_results.py",
+    "tests/test_run_e2e.py",
+    "tests/test_run_e2e_coverage.py"
+  ],
+  "protected_risks": [
+    "changed_contract_behavior",
+    "success_claim_fail_closed",
+    "runtime_security_fail_closed",
+    "paid_resource_admission_fail_closed",
+    "ci_release_policy"
+  ],
+  "reasons": [
+    "changed_test:tests/test_handoff_required_stage_results.py",
+    "changed_test:tests/test_run_e2e.py",
+    "changed_test:tests/test_run_e2e_coverage.py",
+    "mapped:src/blueprint_pipeline/pubsub_handoff_listener.py:12",
+    "mapped:src/blueprint_pipeline/run_e2e.py:4",
+    "policy_or_documentation:docs/reliability/2026-10-07/crossrepo-handoff/final-focused.txt",
+    "policy_or_documentation:docs/reliability/2026-10-07/crossrepo-handoff/lint-delta.json",
+    "policy_or_documentation:docs/reliability/2026-10-07/crossrepo-handoff/native-baseline-main.txt",
+    "policy_or_documentation:docs/reliability/2026-10-07/crossrepo-handoff/offline_pytest.py",
+    "policy_or_documentation:docs/reliability/2026-10-07/crossrepo-handoff/python-environment.txt",
+    "policy_or_documentation:docs/reliability/2026-10-07/crossrepo-handoff/reproduction.txt"
+  ],
+  "requires_full_suite": false,
+  "schema_version": "blueprint_impacted_test_plan.v1",
+  "selected_tests": [
+    "tests/test_browser_delivery_handoff_uri.py",
+    "tests/test_capture_generation_birth.py",
+    "tests/test_capture_original_owner_observer.py",
+    "tests/test_capture_reconstruction_auto_trigger.py",
+    "tests/test_deploy_systemd_contract.py",
+    "tests/test_handoff_required_stage_results.py",
+    "tests/test_lane_writer_governance.py::test_reviewed_lane_writer_manifest_is_satisfied",
+    "tests/test_operational_logging.py",
+    "tests/test_paid_resource_admission.py::test_shared_chokepoint_grants_only_exact_admitted_contract",
+    "tests/test_paid_resource_allocator_verifier.py::test_unmanifested_script_mutator_is_rejected",
+    "tests/test_pubsub_handoff_listener.py",
+    "tests/test_release_engineering_contracts.py::test_risk_based_verification_workflows_are_bounded",
+    "tests/test_run_e2e.py",
+    "tests/test_run_e2e_coverage.py",
+    "tests/test_runtime_security_controls.py::test_bounded_service_url_allows_only_loopback_plain_http",
+    "tests/test_scene_retirement_special_lifetimes.py",
+    "tests/test_selected_capture_inputs.py",
+    "tests/test_storage_trigger.py",
+    "tests/test_success_claim_contracts.py::test_freshness_fails_closed_without_any_signal",
+    "tests/test_validate_pubsub_handoff_infra.py",
+    "tests/test_website_scene_workspace_retention.py"
+  ]
+}
