@@ -650,6 +650,10 @@ def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and is employed at Rival Fixture Corporation.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 but recently joined Rival Fixture Corporation.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and moved to Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 but left for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but left Synthetic Operator 1 for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigned from Synthetic Operator 1.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but no longer works for Synthetic Operator 1.",
 ])
 def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
     text = quote + " Synthetic Operator 1 operates the target plant."
@@ -716,7 +720,8 @@ def test_site_role_proof_uses_the_existing_normalized_title_semantics(provider_t
 
 
 @pytest.mark.parametrize("employment", ["works for Synthetic Operator 1", "recently joined Synthetic Operator 1",
-                                         "Avery Placeholder recently joined Rival Fixture Corporation"])
+                                         "Avery Placeholder recently joined Rival Fixture Corporation",
+                                         "Avery Placeholder left for Rival Fixture Corporation"])
 def test_conjunction_can_restate_the_same_employer_without_losing_site_role(employment):
     quote = f"Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 and {employment}."
     site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])

@@ -849,7 +849,8 @@ def site_role_quote(site, person, sentence):
     known_names |= {name.replace(" and ", " ") for name in known_names}
     # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
     employment = re.compile(r"\b(?:(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at|with)\s+"
-                            r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+)", re.IGNORECASE)
+                            r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+"
+                            r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?|no\s+longer)\s+)", re.IGNORECASE)
     for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.IGNORECASE)[1:]:
         match = employment.search(clause)
         if not match:
@@ -863,6 +864,8 @@ def site_role_quote(site, person, sentence):
             continue
         if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
             continue
+        if match.group("departure"):
+            return False
         employer = ss.words(clause[match.end():])
         if not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names):
             return False
