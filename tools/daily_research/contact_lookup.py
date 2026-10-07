@@ -794,15 +794,35 @@ def role_scope_suffix(text, known_names):
             remaining = rest
             continue
         # A separate news predicate does not erase the preceding explicit role complement.
-        if word in {"said", "says", "announced", "visited", "visits", "discussed"}:
-            return True
-        return False
+        return word in {"said", "says", "announced", "visited", "visits", "discussed"}
     return True
+
+
+UNIT = re.compile(r"\b(suite|ste|unit|building|bldg|floor|fl)\s+([a-z0-9-]+)\b", re.I)
+UNIT_KINDS = {"ste": "suite", "bldg": "building", "fl": "floor"}
+
+
+def address_units(text, protected=()):
+    """Unit identity is preserved while placement and standard designator spelling are normalized."""
+    spans = [match.span() for name in protected if name
+             for match in re.finditer(r"\b" + re.escape(name) + r"\b", text)]
+    units = set()
+
+    def strip(match):
+        if any(start <= match.start() < end for start, end in spans):
+            return match.group()
+        kind, value = match.groups()
+        kind = UNIT_KINDS.get(kind.lower(), kind.lower())
+        units.add((kind, value.lower().replace("-", "")))
+        return " "
+    return UNIT.sub(strip, text), units
 
 
 def site_role_quote(site, person, sentence):
     """A role tied to this facility, rather than a person's visit or a company-wide name/title match."""
-    anchors = ss.site_anchors(site)
+    given_address = site.get("address") or {}
+    street, target_units = address_units(ss.words(given_address.get("street") or ""))
+    anchors = ss.site_anchors({**site, "address": {**given_address, "street": street}})
     specific = [item for item in anchors if item["kind"] == "street"] or [
         item for item in anchors if item["kind"] == "site_name_city"]
     normalized = ss.words(sentence)
@@ -822,10 +842,21 @@ def site_role_quote(site, person, sentence):
     known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
-    employment = re.compile(r"\b(?:and|but|while|whereas)\s+(?:(?:he|she|they|" + re.escape(name)
-                            + r")\s+)?(?:works?|worked|is employed|is an? employee|serves)\s+(?:for|by)\s+")
-    for match in employment.finditer(tail):
-        employer = tail[match.end():]
+    employment = re.compile(r"\b(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by)\s+", re.I)
+    for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.I)[1:]:
+        match = employment.search(clause)
+        if not match:
+            continue
+        subject = clause[:match.start()].strip()
+        # An explicitly named different subject grants no facts about this person. Lowercase modifiers do not
+        # introduce a subject; known personal names/pronouns continue the preceding role statement.
+        named = {ss.words(word) for word in re.findall(r"\b[A-Z][a-z]+\b", subject)} - {
+            "he", "she", "they", "now", "currently", "still", "also", "recently"}
+        if named and not named <= set(name.split()):
+            continue
+        if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
+            continue
+        employer = ss.words(clause[match.end():])
         if not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names):
             return False
     spans = [match.span() for name in known_names if name
@@ -834,6 +865,10 @@ def site_role_quote(site, person, sentence):
         if not any(start <= boundary.start() < end for start, end in spans):
             tail = tail[:boundary.start()]
             break
+    tail, quoted_units = address_units(tail, known_names)
+    tail = ss.words(tail)
+    if target_units and quoted_units != target_units:
+        return False
     address = site.get("address") or {}
     city, state = address.get("city"), address.get("state")
     if not city:
@@ -872,7 +907,7 @@ def site_role_quote(site, person, sentence):
             exact_names = {ss.words(given_name), ss.words(given_name.replace("&", " and "))}
             exact_names |= {name.replace(" and ", " ") for name in exact_names}
             before_city = canonical.partition(ss._canon(anchor["city"], ss.CITY_WORDS))[0]
-            if not (any(name and (tail.startswith(name + " ") or tail.startswith("the " + name + " "))
+            if not (any(name and tail.startswith((name + " ", "the " + name + " "))
                         for name in exact_names)
                     and set(before_city.split()) <= allowed
                     and ss.has_phrase(ss._canon(anchor["city"], ss.CITY_WORDS), canonical)):
