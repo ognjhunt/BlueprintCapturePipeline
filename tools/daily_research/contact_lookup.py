@@ -899,7 +899,7 @@ def employment_contradiction(person, sentence, known_names):
         # introduce a subject; known personal names/pronouns continue the preceding role statement.
         named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
                  if word.isupper() or word[:1].isupper() and word[1:].islower()} - {
-            "he", "she", "they", "now", "currently", "still", "also", "recently"}
+            "he", "she", "they", "his", "her", "their", "now", "currently", "still", "also", "recently"}
         if named and not named <= set(name.split()):
             continue
         if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
@@ -1023,12 +1023,22 @@ def site_responsibility(site, person):
     known_names = {ss.words(name.replace("&", " and ")) for name in known_names} | {
         ss.words(name) for name in known_names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
-    for url, text, text_sha256 in site["kept_pages"]:
+    pages = [(url, text, text_sha256, ss.sentences(text)) for url, text, text_sha256 in site["kept_pages"]]
+    # Read all retained evidence before accepting any role proof; page order cannot erase a departure.
+    for _, _, _, sentences in pages:
+        linked = False
+        for sentence in sentences:
+            named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
+            pronoun = bool(re.match(r"\s*(?:he|she|they|his|her|their)\b", sentence, re.IGNORECASE))
+            if (named or linked and pronoun) and employment_contradiction(person, sentence, known_names):
+                return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                        "reason": "target_site_responsibility_unproven", "proof": None}
+            if named:
+                linked = role_complement(person, sentence)[2] is not None
+            elif not pronoun:
+                linked = False
+    for url, text, text_sha256, sentences in pages:
         if not ss.names_operator(text, site["operator"]):
-            continue
-        sentences = ss.sentences(text)
-        if any(ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
-               and employment_contradiction(person, sentence, known_names) for sentence in sentences):
             continue
         for sentence in sentences:
             if site_role_quote(site, person, sentence):

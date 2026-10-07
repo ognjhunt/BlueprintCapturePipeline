@@ -738,6 +738,35 @@ def test_later_same_person_departure_invalidates_page_scope_proof(transition):
     assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
 
 
+@pytest.mark.parametrize("transition", ["Jordan Fixture retired.", "Jordan Fixture was terminated."])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_departure_on_another_retained_page_precedes_all_scope_proofs(transition, reverse):
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    pages = [("https://operator-1.example/team", quote, "d" * 64),
+             ("https://operator-1.example/update", transition, "e" * 64)]
+    person = cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0]
+    scope = cl.site_responsibility(qualification_site(pages=list(reversed(pages)) if reverse else pages), person)
+    assert scope["route"] == "hold" and scope["proof"] is None
+
+
+@pytest.mark.parametrize("transition", ["He retired.", "She was terminated.", "They resigned.",
+                                       "His employment was terminated.", "Her position was terminated."])
+def test_departure_pronoun_linked_to_named_role_invalidates_scope(transition):
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             + transition)
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "hold" and scope["proof"] is None
+
+
+def test_departure_pronoun_after_a_different_named_person_preserves_scope():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             "Avery Placeholder is Operations Director for Rival Works. She retired.")
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact"
+
+
 @pytest.mark.parametrize("name", ["Jordan Fixture", "Jordan Quit", "Jordan Retired"])
 @pytest.mark.parametrize("other", ["Avery Placeholder", "AVERY PLACEHOLDER"])
 @pytest.mark.parametrize("join", [". ", " while "])
