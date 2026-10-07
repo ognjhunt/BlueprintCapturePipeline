@@ -237,8 +237,12 @@ def same_person(first, second):
 
 
 def title_words(title):
-    aliases = {"vp": ("vice", "president"), "coo": ("chief", "operating", "officer")}
-    return [part for word in ss.words(title).split() if word not in TITLE_FILLER
+    normalized = ss.words(title)
+    normalized = re.sub(r"\bv p\b", "vp", normalized)
+    normalized = re.sub(r"\bc o o\b", "coo", normalized)
+    normalized = re.sub(r"\bchief (?:operations|ops) officer\b", "chief operating officer", normalized)
+    aliases = {"vp": ("vice", "president"), "coo": ("chief", "operating", "officer"), "ops": ("operations",)}
+    return [part for word in normalized.split() if word not in TITLE_FILLER
             for part in aliases.get(word, (word,))]
 
 
