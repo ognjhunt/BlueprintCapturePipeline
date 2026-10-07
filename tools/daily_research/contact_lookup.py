@@ -48,6 +48,7 @@ import re
 import secrets
 import ssl
 import time
+import unicodedata
 from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -827,9 +828,12 @@ def site_role_quote(site, person, sentence):
     specific = [item for item in anchors if item["kind"] == "street"] or [
         item for item in anchors if item["kind"] == "site_name_city"]
     normalized = ss.words(sentence)
+    cased = re.sub(r"[^A-Za-z0-9]+", " ", unicodedata.normalize("NFKC", sentence)).strip()
+    if ss.words(cased) != normalized:
+        return False
     name = ss.words(person["name"])
     start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}", normalized)
-    tail, role_scope = "", False
+    tail, role_scope, scope_offset = "", False, 0
     if start:
         description = normalized[start.end():]
         for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
@@ -837,13 +841,15 @@ def site_role_quote(site, person, sentence):
             if (holds_title(role, person["title"])
                     and set(role.split()) <= set(title_words(person["title"])) | TITLE_FILLER):
                 tail, role_scope = description[preposition.end():], True
+                scope_offset = len(normalized[:start.end()].split()) + len(description[:preposition.end()].split())
                 break
     # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
     names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
     known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
-    employment = re.compile(r"\b(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at)\s+", re.IGNORECASE)
+    employment = re.compile(r"\b(?:(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at|with)\s+"
+                            r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+)", re.IGNORECASE)
     for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.IGNORECASE)[1:]:
         match = employment.search(clause)
         if not match:
@@ -866,6 +872,7 @@ def site_role_quote(site, person, sentence):
         if not any(start <= boundary.start() < end for start, end in spans):
             tail = tail[:boundary.start()]
             break
+    cased_scope = " ".join(cased.split()[scope_offset:scope_offset + len(tail.split())])
     tail, quoted_units = address_units(tail, known_names)
     tail = ss.words(tail)
     if target_units and quoted_units != target_units:
@@ -874,6 +881,8 @@ def site_role_quote(site, person, sentence):
     city, state = address.get("city"), address.get("state")
     if not city:
         return False  # A street alone cannot distinguish facilities in different cities.
+    if state and not re.search(ss.city_pattern(city) + r"\s+" + ss.state_pattern(state), cased_scope):
+        return False
     canonical = ss._canon(tail, ss.CITY_WORDS)
     if city and not ss.has_phrase(ss._canon(city, ss.CITY_WORDS), canonical):
         return False
