@@ -1198,8 +1198,7 @@ def site_responsibility(site, person):
         ss.words(name) for name in known_names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     pages = [(url, text, text_sha256, ss.sentences(text)) for url, text, text_sha256 in site["kept_pages"]]
-    role_quotes = [site.get("person_quote") or ""] + [sentence for _, _, _, sentences in pages for sentence in sentences]
-    role_mismatch = any(role_address_mismatch(site, person, sentence, known_names) for sentence in role_quotes)
+    role_mismatch = role_address_mismatch(site, person, site.get("person_quote") or "", known_names)
     if role_mismatch:
         return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
                 "reason": "target_site_location_mismatch", "proof": None}
@@ -1214,6 +1213,17 @@ def site_responsibility(site, person):
                                     r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
                                     employment_sentence(sentence), re.IGNORECASE))
             if named or linked and pronoun:
+                scoped = sentence if named else re.sub(r"^\s*(?:he|she|they)\b", person["name"],
+                                                       employment_sentence(sentence), flags=re.IGNORECASE)
+                if role_address_mismatch(site, person, scoped, known_names):
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_location_mismatch", "proof": None}
+                if (not named and holds_title(sentence, person["title"])
+                        and re.search(r"\b(?:at|for|of)\b", sentence, re.IGNORECASE)
+                        and not quoted_role_address(person, scoped)
+                        and not site_role_quote(site, person, scoped)):
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_responsibility_unproven", "proof": None}
                 contradiction = employment_contradiction(person, sentence, known_names)
                 if contradiction is True:
                     return {"site_key": site["site_key"], "status": "unknown", "route": "hold",

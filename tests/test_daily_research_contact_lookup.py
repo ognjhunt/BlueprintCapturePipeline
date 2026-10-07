@@ -1110,6 +1110,19 @@ def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority
         held, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", same_sentence, "b" * 64)]),
                                 replay_search(person))
         assert held is None and reason == "target_site_location_mismatch"
+    for pronoun in ("He", "She", "They"):
+        continuation = "are" if pronoun == "They" else "is"
+        linked_quote = (matching + f" {pronoun} {continuation} {quoted_title} at "
+                        "2 Other Road, Other Fixture City, OH for Synthetic Operator 1.")
+        held, _ = cl.target(qualification_site(pages=[("https://operator-1.example/team", linked_quote, "c" * 64)]),
+                            replay_search(person))
+        assert held is None
+        if pronoun != "They":
+            linked_match = (matching + f" {pronoun} is {quoted_title} at Synthetic Operator 1's "
+                            "1 Example Road, Fixture City, TX.")
+            chosen, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", linked_match, "c" * 64)]),
+                                       replay_search(person))
+            assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
     departed = f"{OTHER_PERSON} ({quoted_title}) now works for Rival Fixture Corporation."
     departed_site = qualification_site(pages=[("https://operator-1.example/update", departed, "e" * 64)])
     held, _ = cl.target(departed_site, replay_search(person))
