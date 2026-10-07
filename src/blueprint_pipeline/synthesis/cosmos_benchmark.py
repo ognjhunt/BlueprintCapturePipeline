@@ -28,7 +28,8 @@ from .trajectory_augmentation import build_synthetic_trajectory_manifest
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.is_file():
         return {}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    from ..task_evaluation_scene_retirement_generations import read_selected_capture_input_bytes
+    payload = json.loads(read_selected_capture_input_bytes(path))
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 

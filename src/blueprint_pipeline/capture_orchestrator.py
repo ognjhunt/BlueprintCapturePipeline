@@ -185,7 +185,8 @@ def _mapping_value(payload: Mapping[str, Any], key: str) -> Any:
 
 def _read_json_mapping(path: Path) -> Dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        from .task_evaluation_scene_retirement_generations import read_selected_capture_input_bytes
+        payload = json.loads(read_selected_capture_input_bytes(path))
     except (OSError, json.JSONDecodeError):
         return {}
     return dict(payload) if isinstance(payload, Mapping) else {}
@@ -1357,7 +1358,7 @@ def run_capture_pipeline(
     # run_e2e stage ledger, so Cloud Tasks x Cloud Run Job retries would re-run
     # every lane. The lane ledger skips lanes already completed for the same
     # capture input fingerprint. BLUEPRINT_LANE_RESUME_DISABLED=1 disables it.
-    resume_root = descriptor_path.parent
+    resume_root = resolve_local_capture_context(descriptor_path).capture_root
     lane_ledger_fingerprint: Optional[Dict[str, Any]] = None
     if not lane_resume_disabled():
         try:
@@ -1511,7 +1512,7 @@ def run_capture_pipeline(
             evaluation_prep_result = _run_lane_call(
                 selected_lane,
                 run_evaluation_prep_stage,
-                capture_root=descriptor_path.parent,
+                capture_root=resume_root,
                 provider_name="manual",
             )
             if evaluation_prep_result is None:
@@ -1528,7 +1529,7 @@ def run_capture_pipeline(
             _append_lane_result(selected_lane, lane_result)
             continue
         if selected_lane == "simulation_automation":
-            capture_root = descriptor_path.parent
+            capture_root = resume_root
             automation_result = _run_lane_call(
                 selected_lane,
                 build_simulation_automation,
@@ -1651,7 +1652,7 @@ def run_capture_pipeline(
             _append_lane_result(selected_lane, lane_result)
             continue
         if selected_lane == "retrieval_index":
-            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            capture_root = resume_root
             retrieval_result = _run_lane_call(
                 selected_lane,
                 run_retrieval_index_stage,
@@ -1663,7 +1664,7 @@ def run_capture_pipeline(
             _append_lane_result(selected_lane, {"lane": "retrieval_index", **retrieval_result})
             continue
         if selected_lane == "frame_alignment":
-            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            capture_root = resume_root
             alignment_result = _run_lane_call(
                 selected_lane,
                 run_frame_alignment_stage,
@@ -1675,7 +1676,7 @@ def run_capture_pipeline(
             _append_lane_result(selected_lane, {"lane": "frame_alignment", **alignment_result})
             continue
         if selected_lane == "synthesis_coverage_validation":
-            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            capture_root = resume_root
             synthesis_result = _run_lane_call(
                 selected_lane,
                 _run_synthesis_coverage_validation,
@@ -1693,7 +1694,7 @@ def run_capture_pipeline(
         if selected_lane == "cosmos_single_capture_smoke":
             from .synthesis.cosmos_benchmark import run_cosmos_single_capture_smoke_lane
 
-            capture_root = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root).parent
+            capture_root = resume_root
             smoke_result = _run_lane_call(
                 selected_lane,
                 run_cosmos_single_capture_smoke_lane,
@@ -1781,7 +1782,8 @@ def run_capture_synthesis_validation(
     # --- Load descriptor to check world_model_candidate gate ---
     descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, cfg.gcs_root)
     try:
-        descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        from .task_evaluation_scene_retirement_generations import read_selected_capture_input_bytes
+        descriptor = json.loads(read_selected_capture_input_bytes(descriptor_path))
     except (OSError, json.JSONDecodeError) as exc:
         return {"status": "failed", "reason": f"descriptor_unreadable: {exc}"}
 

@@ -18,11 +18,13 @@ completion-marker protocol are untouched by this revision.
 
 from __future__ import annotations
 
+import io
 import json
 import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional
+from .task_evaluation_scene_retirement_access import scene_access, scene_participant
 
 FRAMES_INDEX_SCHEMA_V1 = "frames_index.v1"
 FRAMES_INDEX_SCHEMA_V2 = "frames_index.v2"
@@ -47,11 +49,12 @@ class FramesLayout:
     packaging: str  # "per_object" | "tar"
     frames_dir: Path
     records: List[FrameRecord]
+    capture_root: Optional[Path] = None
 
 
-def _read_index_entries(index_path: Path) -> List[Dict[str, Any]]:
+def _read_index_entries(raw: bytes) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
-    for line in index_path.read_text(encoding="utf-8").splitlines():
+    for line in raw.decode("utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -85,6 +88,7 @@ def _record_from_entry(entry: Mapping[str, Any]) -> FrameRecord:
     )
 
 
+@scene_participant("frames_dir")
 def load_frames_layout(frames_dir: Path) -> FramesLayout:
     """Resolve the frames layout for a capture's local/mounted frames dir.
 
@@ -95,14 +99,28 @@ def load_frames_layout(frames_dir: Path) -> FramesLayout:
     rather than guessing.
     """
 
-    index_path = frames_dir / FRAMES_INDEX_NAME
+    from .task_evaluation_scene_retirement_generations import capture_birth_input_path, capture_birth_input_bytes
+
+    capture_root = (frames_dir.parents[2] if frames_dir.parent.parent.name == "deliveries"
+                    else frames_dir.parent)
+    capture_frames = frames_dir.name == "frames" and capture_root.parent.name == "captures"
+    index_path = (capture_birth_input_path(capture_root, "frames/" + FRAMES_INDEX_NAME)
+                  if capture_frames else frames_dir / FRAMES_INDEX_NAME)
+    selected_root = capture_root if capture_frames and index_path.parent != capture_root / "frames" else None
+    if capture_frames and frames_dir.parent.parent.name == "deliveries" and index_path.parent != frames_dir:
+        raise ValueError("selected frames directory does not match original capture membership")
+    frames_dir = index_path.parent
     if not index_path.is_file():
         raise FileNotFoundError(f"frames index missing: {index_path}")
 
     manifest_path = frames_dir / PACKING_MANIFEST_NAME
     manifest: Optional[Dict[str, Any]] = None
     if manifest_path.is_file():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if selected_root is not None:
+            manifest_path = capture_birth_input_path(selected_root, "frames/" + PACKING_MANIFEST_NAME)
+        manifest = json.loads(capture_birth_input_bytes(selected_root, "frames/" + PACKING_MANIFEST_NAME,
+                                                       expected_path=manifest_path)
+                              if selected_root is not None else manifest_path.read_bytes())
         declared = str(manifest.get("schema_version") or "")
         if declared != FRAMES_INDEX_SCHEMA_V2:
             raise ValueError(
@@ -115,8 +133,16 @@ def load_frames_layout(frames_dir: Path) -> FramesLayout:
                 f"unsupported frames packaging: {declared_packaging!r} (supported: tar)"
             )
 
-    records = [_record_from_entry(entry) for entry in _read_index_entries(index_path)]
+    index_bytes = (capture_birth_input_bytes(selected_root, "frames/" + FRAMES_INDEX_NAME,
+                                           expected_path=index_path)
+                   if selected_root is not None else index_path.read_bytes())
+    records = [_record_from_entry(entry) for entry in _read_index_entries(index_bytes)]
     packed_records = [record for record in records if record.packaging == "tar"]
+    if selected_root is not None and packed_records and manifest is None:
+        # An enrolled packed delivery declares its manifest in membership.
+        # Missing selected bytes must never enter the legacy defensive branch.
+        capture_birth_input_path(selected_root, "frames/" + PACKING_MANIFEST_NAME)
+        raise FileNotFoundError("selected frames packing manifest missing")
 
     if manifest is not None:
         missing_archive = [r.frame_id for r in records if r.packaging != "tar" or not r.archive]
@@ -130,6 +156,7 @@ def load_frames_layout(frames_dir: Path) -> FramesLayout:
             packaging="tar",
             frames_dir=frames_dir,
             records=records,
+            capture_root=selected_root,
         )
 
     if packed_records:
@@ -149,6 +176,7 @@ def load_frames_layout(frames_dir: Path) -> FramesLayout:
             packaging="tar",
             frames_dir=frames_dir,
             records=records,
+            capture_root=selected_root,
         )
 
     return FramesLayout(
@@ -156,35 +184,59 @@ def load_frames_layout(frames_dir: Path) -> FramesLayout:
         packaging="per_object",
         frames_dir=frames_dir,
         records=records,
+        capture_root=selected_root,
     )
 
 
+def _frame_input_bytes(layout: FramesLayout, name: str) -> bytes:
+    if layout.capture_root is None:
+        return (layout.frames_dir / name).read_bytes()
+    from .task_evaluation_scene_retirement_generations import capture_birth_input_bytes
+
+    return capture_birth_input_bytes(layout.capture_root, "frames/" + name,
+                                    expected_path=layout.frames_dir / name)
+
+
+def _frame_archive(layout: FramesLayout, name: str):
+    if layout.capture_root is None:
+        return tarfile.open(layout.frames_dir / name, mode="r:")
+    return tarfile.open(fileobj=io.BytesIO(_frame_input_bytes(layout, name)), mode="r:")
+
+
 def read_frame_bytes(layout: FramesLayout, record: FrameRecord) -> bytes:
+    with scene_access(layout.capture_root or layout.frames_dir):
+        return _read_frame_bytes(layout, record)
+
+
+def _read_frame_bytes(layout: FramesLayout, record: FrameRecord) -> bytes:
     """Return a frame's JPEG bytes regardless of layout."""
 
     if record.packaging == "per_object":
-        frame_path = layout.frames_dir / record.member_name
-        return frame_path.read_bytes()
+        return _frame_input_bytes(layout, record.member_name)
 
     if not record.archive:
         raise ValueError(f"packed frame {record.frame_id} has no archive reference")
-    archive_path = layout.frames_dir / record.archive
-    with tarfile.open(archive_path, mode="r:") as archive:
+    with _frame_archive(layout, record.archive) as archive:
         try:
             member = archive.getmember(record.member_name)
         except KeyError as exc:
             raise FileNotFoundError(
-                f"frame member {record.member_name} missing from {archive_path.name}"
+                f"frame member {record.member_name} missing from {record.archive}"
             ) from exc
         extracted = archive.extractfile(member)
         if extracted is None:
             raise FileNotFoundError(
-                f"frame member {record.member_name} unreadable in {archive_path.name}"
+                f"frame member {record.member_name} unreadable in {record.archive}"
             )
         return extracted.read()
 
 
 def iter_frame_payloads(frames_dir: Path) -> Iterator[tuple[FrameRecord, bytes]]:
+    with scene_access(frames_dir):
+        yield from _iter_frame_payloads(frames_dir)
+
+
+def _iter_frame_payloads(frames_dir: Path) -> Iterator[tuple[FrameRecord, bytes]]:
     """Convenience iterator over (record, jpeg_bytes) for either layout.
 
     For packed captures archives are opened once each, not per frame.
@@ -201,8 +253,7 @@ def iter_frame_payloads(frames_dir: Path) -> Iterator[tuple[FrameRecord, bytes]]
         if record.archive:
             by_archive.setdefault(record.archive, []).append(record)
     for archive_name, records in by_archive.items():
-        archive_path = frames_dir / archive_name
-        with tarfile.open(archive_path, mode="r:") as archive:
+        with _frame_archive(layout, archive_name) as archive:
             for record in records:
                 extracted = archive.extractfile(record.member_name)
                 if extracted is None:

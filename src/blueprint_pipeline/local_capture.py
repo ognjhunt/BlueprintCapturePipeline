@@ -26,7 +26,7 @@ class LocalCaptureContext:
 
     @property
     def descriptor_uri(self) -> str:
-        return f"gs://{self.bucket}/{self.capture_prefix}/capture_descriptor.json"
+        return f"gs://{self.bucket}/{self.capture_prefix}/{self.descriptor_path.relative_to(self.capture_root).as_posix()}"
 
     @property
     def raw_prefix_uri(self) -> str:
@@ -62,11 +62,13 @@ def resolve_local_capture_context(path: str | Path) -> LocalCaptureContext:
         storage_root = Path(*parts[: idx - 1])
 
     capture_root = Path(*parts[: idx + 4])
+    from .task_evaluation_scene_retirement_generations import capture_birth_input_path
+
     return LocalCaptureContext(
         capture_root=capture_root,
         raw_root=capture_root / "raw",
         pipeline_root=capture_root / "pipeline",
-        descriptor_path=capture_root / "capture_descriptor.json",
+        descriptor_path=capture_birth_input_path(capture_root, "capture_descriptor.json"),
         raw_complete_path=capture_root / "raw" / "capture_upload_complete.json",
         storage_root=storage_root,
         bucket=bucket,

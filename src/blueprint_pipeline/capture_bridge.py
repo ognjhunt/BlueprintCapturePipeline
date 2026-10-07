@@ -849,8 +849,8 @@ class CaptureDescriptor:
 
     @classmethod
     def from_file(cls, path: str | Path) -> "CaptureDescriptor":
-        with Path(path).open("r", encoding="utf-8") as f:
-            return cls.from_dict(json.load(f))
+        from .task_evaluation_scene_retirement_generations import read_selected_capture_input_bytes
+        return cls.from_dict(json.loads(read_selected_capture_input_bytes(path)))
 
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {

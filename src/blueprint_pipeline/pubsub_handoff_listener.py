@@ -108,11 +108,6 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
     expected_pipeline_handoff_uri = (
         f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/pipeline_handoff.json"
     )
-    if pipeline_handoff_uri is not None and pipeline_handoff_uri != expected_pipeline_handoff_uri:
-        raise PipelineError(
-            "Pub/Sub handoff pipeline_handoff_uri does not match bucket/scene/capture identity."
-        )
-
     source_finalize = data.get("source_finalize")
     if source_finalize is not None:
         expected_marker = f"scenes/{scene_id}/captures/{capture_id}/raw/capture_upload_complete.json"
@@ -148,6 +143,20 @@ def parse_handoff_payload(payload: bytes | str | Mapping[str, Any]) -> HandoffMe
                 or type(source_membership_selector["sha256"]) is not str
                 or re.fullmatch(r"sha256:[0-9a-f]{64}", source_membership_selector["sha256"]) is None):
             raise PipelineError("Pub/Sub handoff source membership selector invalid.")
+
+    # Selected deliveries use the immutable handoff beside their exact validated
+    # membership record. A URI alone never selects a delivery or another owner.
+    selected_handoff_uri = (
+        f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/deliveries/"
+        f"{delivery_key}/pipeline_handoff.json"
+        if source_membership_selector is not None else None
+    )
+    if pipeline_handoff_uri is not None and pipeline_handoff_uri not in (
+        expected_pipeline_handoff_uri, selected_handoff_uri,
+    ):
+        raise PipelineError(
+            "Pub/Sub handoff pipeline_handoff_uri does not match bucket/scene/capture identity."
+        )
 
     robot_eval_job_request_uri = _optional_string(
         data,
@@ -360,11 +369,10 @@ def _control_plane_handoff_payload(
     pipeline_handoff_uri = handoff.pipeline_handoff_uri or str(
         capture_root / "pipeline_handoff.json"
     )
-    capture_descriptor_uri = (
-        str(capture_root / "capture_descriptor.json")
-        if (capture_root / "capture_descriptor.json").is_file()
-        else None
-    )
+    from .task_evaluation_scene_retirement_generations import capture_birth_input_path
+
+    descriptor_path = capture_birth_input_path(capture_root, "capture_descriptor.json")
+    capture_descriptor_uri = str(descriptor_path) if descriptor_path.is_file() else None
     payload: dict[str, Any] = {
         "bucket": handoff.bucket,
         "scene_id": handoff.scene_id,
