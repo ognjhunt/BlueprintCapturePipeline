@@ -170,6 +170,9 @@ def stored(workspace):
 @pytest.mark.parametrize("assignment", [
     "2 Other Road, Other Fixture City, OH",
     "2 Other Road, Fixture City, TX",
+    "2 Other Road",
+    "2 Other Road, Suite 4",
+    "2 Other Road and he left the conference early",
     "Other Fixture Plant, Other Fixture City, OH",
     "Rival Fixture Works, Fixture City, TX",
     "Said Fixture Works, Fixture City, TX",
@@ -185,7 +188,7 @@ def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_p
     assert record["lookups"] == [] and record["skipped"] == "target_site_location_mismatch"
 
 
-@pytest.mark.parametrize("assignment", ["Synthetic Works", "the Synthetic Works plant", "Synthetic Operator 1"])
+@pytest.mark.parametrize("assignment", ["Synthetic Works", "the Synthetic Works plant", "Synthetic Operator 1", "1 Example Road"])
 @pytest.mark.parametrize("preposition", ["at", "for", "of"])
 def test_named_target_or_company_role_keeps_unknown_referral_scope(assignment, preposition):
     site = qualification_site()
@@ -202,6 +205,17 @@ def test_named_target_with_conjunction_keeps_unknown_referral_scope(assignment):
     site["person_quote"] = f"Jordan Fixture is Plant Manager at {assignment}, Fixture City, TX."
     responsibility = cl.site_responsibility(site, {"name": "Jordan Fixture", "title": "Plant Manager"})
     assert responsibility["route"] == "corporate_referral" and responsibility["status"] == "unknown"
+
+
+@pytest.mark.parametrize("name", ["José García", "Zoë Fixture"])
+def test_unicode_quoted_manager_is_held_before_enrichment(tmp_path, name):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_name=name,
+                                       person_quote=f"{name} is Plant Manager at 2 Other Road, Other City, OH.")])
+    api = FakeFullEnrich()
+    assert lookup(workspace, api)["calls"]["made"] == 0 and api.calls == []
+    assert cl.load(workspace)[key]["skipped"] == "target_site_location_mismatch"
+    assert cl.site_role_quote(qualification_site(), {"name": name, "title": "Plant Manager"},
+                              f"{name} is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1.")
 
 
 def test_a_quoted_person_gets_one_enrichment_and_a_deliverable_email_is_kept(tmp_path):
@@ -759,7 +773,8 @@ def test_site_role_proof_uses_the_existing_normalized_title_semantics(provider_t
 
 @pytest.mark.parametrize("employment", ["works for Synthetic Operator 1", "recently joined Synthetic Operator 1",
                                          "Avery Placeholder recently joined Rival Fixture Corporation",
-                                         "Avery Placeholder left for Rival Fixture Corporation"])
+                                         "Avery Placeholder left for Rival Fixture Corporation",
+                                         "left the conference early", "departed the conference early"])
 def test_conjunction_can_restate_the_same_employer_without_losing_site_role(employment):
     quote = f"Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 and {employment}."
     site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])

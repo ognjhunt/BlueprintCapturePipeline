@@ -852,18 +852,21 @@ def quoted_role_address(person, sentence):
     if preposition is None or set(tail.split()) & {"whose", "which", "headquarters", "hq"}:
         return {}
     raw = unicodedata.normalize("NFKC", sentence)
-    tokens = list(re.finditer(r"[A-Za-z0-9]+", raw))
+    tokens = list(re.finditer(r"[^\W_]+", raw))
     if offset >= len(tokens) or ss.words(" ".join(token.group() for token in tokens)) != ss.words(raw):
         return {}
     complement = raw[tokens[offset].start():]
     for boundary in re.finditer(r"\b(?:and|but|while|whereas|for)\b", complement, re.IGNORECASE):
         prefix = complement[:boundary.start()].rstrip(" .;")
         location = ss.parse_location(prefix)
-        if location.get("city") and (location.get("state") or ss.street_anchor(location.get("street"))):
+        if (location.get("city") and (location.get("state") or ss.street_anchor(location.get("street")))
+                or ss.street_anchor(prefix)):
             complement = prefix
             break
     address = ss.parse_location(complement.rstrip(" .;"))
     city, state = address.get("city"), address.get("state")
+    if not state and (ss.street_anchor(city) or UNIT.fullmatch(city or "")):
+        return {"street": complement.rstrip(" .;")}
     if (not city or not re.search(ss.city_pattern(city), complement)
             or not (state or ss.street_anchor(address.get("street")))):
         return {}
@@ -880,7 +883,7 @@ def site_role_quote(site, person, sentence):
     specific = [item for item in anchors if item["kind"] == "street"] or [
         item for item in anchors if item["kind"] == "site_name_city"]
     normalized = ss.words(sentence)
-    cased = re.sub(r"[^A-Za-z0-9]+", " ", unicodedata.normalize("NFKC", sentence)).strip()
+    cased = re.sub(r"[\W_]+", " ", unicodedata.normalize("NFKC", sentence)).strip()
     if ss.words(cased) != normalized:
         return False
     name = ss.words(person["name"])
@@ -900,15 +903,22 @@ def site_role_quote(site, person, sentence):
         subject = clause[:match.start()].strip()
         # An explicitly named different subject grants no facts about this person. Lowercase modifiers do not
         # introduce a subject; known personal names/pronouns continue the preceding role statement.
-        named = {ss.words(word) for word in re.findall(r"\b[A-Z][a-z]+\b", subject)} - {
+        named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
+                 if word[:1].isupper() and word[1:].islower()} - {
             "he", "she", "they", "now", "currently", "still", "also", "recently"}
         if named and not named <= set(name.split()):
             continue
         if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
             continue
-        if match.group("departure"):
-            return False
         employer = ss.words(clause[match.end():])
+        if match.group("departure"):
+            object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
+            if (any(entity and (object_text == entity or object_text.startswith(entity + " ")) for entity in known_names)
+                    or set(object_text.split()) & {"job", "role", "position", "employment", "corporation", "corp", "inc", "llc"}
+                    or match.group("departure").lower() == "no longer"
+                    and re.match(r"^(?:works?|worked|serves|employed)\b", employer)):
+                return False
+            continue
         if not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names):
             return False
     spans = [match.span() for name in known_names if name
