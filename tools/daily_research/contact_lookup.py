@@ -885,12 +885,19 @@ def employment_contradiction(person, sentence, known_names):
     """Current-role evidence cannot ignore an explicit same-person employment contradiction."""
     name = ss.words(person["name"])
     sentence = employment_sentence(sentence)
+    role_sentence = re.sub(r"^\s*(?:he|she|they)\b", person["name"], sentence, flags=re.IGNORECASE)
+    role_employer, _, role_preposition = role_complement(person, role_sentence)
+    if role_preposition and not quoted_role_address(person, role_sentence):
+        employers = {role_employer, re.sub(r"^(?:the|an?)\s+", "", role_employer)}
+        if not any(entity and (value == entity or value.startswith(entity + " "))
+                   for entity in known_names for value in employers):
+            return True
     protected = [match.span() for entity in known_names | {name} if entity
                  for match in re.finditer(r"\b" + r"[\W_]+".join(re.escape(word) for word in entity.split())
                                          + r"\b", sentence, re.IGNORECASE)]
     employment = re.compile(r"\b(?:(?P<employment>works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves|served)"
                             r"(?:\s+as\s+[^\n.,;:]{1,120}?)?\s+(?:for|by|at|with)\s+"
-                            r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+"
+                            r"|(?P<transition>join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+)"
                             r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?"
                             r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|no\s+longer)"
                             r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
@@ -933,9 +940,18 @@ def employment_contradiction(person, sentence, known_names):
         ended = re.search(r"\b(?:to|until|through)\s+(?:\w+\s+){0,3}(?:19|20)\d{2}\b", employer)
         past = match.group("employment") in {"worked", "served"} or re.search(r"\bwas(?:\s+an?)?$", ss.words(subject))
         employers = {employer, re.sub(r"^(?:the|an?)\s+", "", employer)}
+        known_employer = any(entity and (value == entity or value.startswith(entity + " "))
+                             for entity in known_names for value in employers)
+        if match.group("transition"):
+            event = re.search(r"\b(?:meeting|conference|lunch|vacation|trip|training|workshop)\b"
+                              r"(?:$|\s+(?:at|in|with|for)\b)", employer)
+            employment_like = bool(set(employer.split()) & {
+                "corporation", "corp", "inc", "llc", "ltd", "company", "industries", "works", "manufacturing"}
+                or holds_title(employer, person["title"]))
+            if event or not known_employer and not employment_like:
+                continue
         if (ended and past
-                or not any(entity and (value == entity or value.startswith(entity + " "))
-                           for entity in known_names for value in employers)):
+                or not known_employer):
             return True
     return False
 
@@ -1051,7 +1067,9 @@ def site_responsibility(site, person):
                 return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
                         "reason": "target_site_responsibility_unproven", "proof": None}
             if named:
-                linked = True
+                subject = ss.words(employment_sentence(sentence))
+                person_name = ss.words(person["name"])
+                linked = subject == person_name or subject.startswith(person_name + " ")
             elif not pronoun:
                 linked = False
     for url, text, text_sha256, sentences in pages:
