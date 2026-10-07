@@ -708,6 +708,12 @@ def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigned to join Rival Works.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but left for Acme.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but left for acme.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigned.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigns.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigning.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but quit.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but quits.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but quitting.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but no longer works for Synthetic Operator 1.",
 ])
 def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):

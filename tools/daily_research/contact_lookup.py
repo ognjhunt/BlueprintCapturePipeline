@@ -895,7 +895,8 @@ def site_role_quote(site, person, sentence):
     # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
     employment = re.compile(r"\b(?:(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at|with)\s+"
                             r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+"
-                            r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?|no\s+longer)\s+)", re.IGNORECASE)
+                            r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?|no\s+longer)"
+                            r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
     for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.IGNORECASE)[1:]:
         match = employment.search(clause)
         if not match:
@@ -914,6 +915,7 @@ def site_role_quote(site, person, sentence):
         if match.group("departure"):
             object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
             if (any(entity and (object_text == entity or object_text.startswith(entity + " ")) for entity in known_names)
+                    or match.group("departure").lower().startswith(("resign", "quit"))
                     or set(object_text.split()) & {"job", "role", "position", "employment", "corporation", "corp", "inc", "llc"}
                     or re.match(r"^(?:to\s+)?(?:join|work|serve|be\s+employed)\b", employer)
                     or employer.startswith("for ") and not set(object_text.split()) & {
