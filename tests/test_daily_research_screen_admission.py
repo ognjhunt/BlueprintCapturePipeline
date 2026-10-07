@@ -405,6 +405,31 @@ def test_held_or_another_site_lookup_cannot_replace_the_team_inbox(tmp_path, res
         "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager",
         "corroborated": False, "site_responsibility": responsibility})
     assert built(workspace)[0]["results"][0]["recipient"]["route"] == "published_team_inbox"
+
+
+@pytest.mark.parametrize("display_location", ["Fixture City, TX", None])
+def test_site_role_loader_uses_retained_physical_proof_when_display_omits_street(tmp_path, display_location):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, None)])
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={
+        "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager", "corroborated": False})
+    bundle, _, _ = built(workspace)
+    entry = bundle["results"][0]
+    if display_location is None:
+        entry["input"].pop("location")
+    else:
+        entry["input"]["location"] = display_location
+    entry["candidate"]["location"] = display_location or entry["candidate"]["site"]
+    entry["result_digest"] = sa.result_digest(entry)
+    entry["recipient"]["person"]["site_responsibility"] = {
+        "site_key": key, "status": "verified", "route": "site_contact", "reason": None,
+        "proof": {"url": "https://operator-1.example/team", "level": "verified_on_page", "text_sha256": "e" * 64,
+                  "quote": "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX."}}
+    entry["hypothesis"]["question"] = entry["checks"]["question"]
+    assert sa.responsibility_target(entry)["address"]["street"] == "1 Example Road"
+    assert sa.load_bundle(canonical(bundle).encode()) == bundle
+    entry["checks"]["verification"]["site_identity"]["level"] = "unproven"
+    entry["result_digest"] = sa.result_digest(entry)
+    assert sa.recipient_problem(entry["recipient"], entry) == "screen_admission_recipient_invalid"
     # A published verified person email outranks every looked-up address.
     workspace, (key,) = prepared(tmp_path / "published", [(1, FOCUS_A, {})])
     lookup(workspace, key)

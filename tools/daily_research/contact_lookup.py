@@ -784,11 +784,44 @@ def site_role_quote(site, person, sentence):
     tail = normalized[role_scope.end():] if role_scope else ""
     # Another clause/person's facility is not this role's scope. Prefer an explicit referral when ambiguous.
     tail = re.split(r"\b(?:and|but|while|whereas)\b|\b" + re.escape(ss.words(person["title"])) + r"\b", tail)[0]
-    scoped = [anchor for anchor in specific if
-              (anchor["kind"] == "street" and ss.has_phrase(ss._canon(anchor["street"], ss.STREET_WORDS),
-                                                           ss._canon(tail, ss.STREET_WORDS)))
-              or (anchor["kind"] == "site_name_city" and set(anchor["name"]) <= set(tail.split())
-                  and ss.has_phrase(ss._canon(anchor["city"], ss.CITY_WORDS), ss._canon(tail, ss.CITY_WORDS)))]
+    address = site.get("address") or {}
+    city, state = address.get("city"), address.get("state")
+    canonical = ss._canon(tail, ss.CITY_WORDS)
+    if city and not ss.has_phrase(ss._canon(city, ss.CITY_WORDS), canonical):
+        return False
+    if city and state and not re.search(r"\b" + re.escape(ss._canon(city, ss.CITY_WORDS)) + r"\s+(?:"
+                                       + re.escape(state.lower()) + "|"
+                                       + re.escape(ss.STATE_NAMES.get(state, state).lower()) + r")\b", canonical):
+        return False
+    # Only the direct role complement can name the facility; a company's HQ or another claim in the sentence cannot.
+    allowed = set(ss.words(site.get("operator", "") + " " + site["task_input"].get("site_name", "")).split())
+    allowed.update(ss.words(city or "").split())
+    allowed.update({"the", "at", "of", "for", "in", "on", "s", "plant", "facility", "site", "factory"})
+    street_tail = ss._canon(tail, ss.STREET_WORDS)
+    scoped = []
+    for anchor in specific:
+        if anchor["kind"] == "street":
+            street = ss._canon(anchor["street"], ss.STREET_WORDS)
+            if not ss.has_phrase(street, street_tail):
+                continue
+            prefix, _, _ = street_tail.partition(street)
+            if not set(prefix.split()) <= allowed:
+                continue
+            # Compare the city immediately following this street, not a suffix of another city's name.
+            suffix = ss._canon(" ".join(tail.split()[len(prefix.split()) + len(street.split()):]), ss.CITY_WORDS)
+            city_pattern = re.escape(ss._canon(city, ss.CITY_WORDS)) if city else ""
+            if state:
+                city_pattern += r"\s+(?:" + re.escape(state.lower()) + "|" + re.escape(ss.STATE_NAMES.get(state, state).lower()) + ")"
+            if city and not re.match(city_pattern + r"\b", suffix):
+                continue
+        else:
+            exact_name = ss.words(site["task_input"].get("site_name") or "")
+            before_city = canonical.partition(ss._canon(anchor["city"], ss.CITY_WORDS))[0]
+            if not (exact_name and (tail.startswith(exact_name + " ") or tail.startswith("the " + exact_name + " "))
+                    and set(before_city.split()) <= allowed
+                    and ss.has_phrase(ss._canon(anchor["city"], ss.CITY_WORDS), canonical)):
+                continue
+        scoped.append(anchor)
     return bool(role_scope and ss.names_site(sentence, scoped)
                 and not set(normalized.split()) & {"visited", "visits", "visiting", "former", "formerly",
                                                    "retired", "not", "attended", "attending", "said", "says",

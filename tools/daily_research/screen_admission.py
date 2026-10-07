@@ -322,6 +322,14 @@ def recipient_question(candidate, recipient, question):
     return question
 
 
+def responsibility_target(entry):
+    """The retained physical-site evidence, including a proven street omitted from the CRM display location."""
+    given = {"address": site_screen.parse_location(entry["input"].get("location"))}
+    found = site_screen.found_address(given, entry["answers"], entry["checks"]["verification"])
+    return {"address": found or given["address"],
+            "task_input": {"site_name": entry["input"].get("site_name") or ""}}
+
+
 def admission_entry(workspace, record, stored, contact, stored_contact, lookup=None, *, today=None):
     """One bundle result from one outreach-ready screen record and its contact record, both recomputed and equal to
     their derived files; any difference, or a defect, refuses with a stable code."""
@@ -504,8 +512,7 @@ def recipient_problem(value, entry):
                     return code
             elif responsibility["route"] == "site_contact":
                 scope = responsibility["proof"]
-                target = {"address": site_screen.parse_location(entry["candidate"]["location"]),
-                          "task_input": {"site_name": entry["candidate"]["site"]}}
+                target = responsibility_target(entry)
                 if (responsibility["status"] != "verified" or responsibility["reason"] is not None
                         or not isinstance(scope, dict) or scope.get("level") != "verified_on_page"
                         or not _url(scope.get("url")) or not _text(scope.get("quote"), 1200)

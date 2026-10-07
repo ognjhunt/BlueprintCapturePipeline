@@ -634,6 +634,9 @@ def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home
     "Jordan Fixture is Plant Manager at 2 Example Road, Fixture City, TX for Synthetic Operator 1.",
     "Jordan Fixture is Plant Manager at 2 Example Road and Avery Placeholder is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1.",
     "At 1 Example Road, Fixture City, TX, Jordan Fixture is Plant Manager of the other Synthetic Operator 1 facility.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Other Fixture City, TX for Synthetic Operator 1.",
+    "Jordan Fixture is Plant Manager of Synthetic Operator 1 whose headquarters are at 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, OH with customers in Fixture City, TX for Synthetic Operator 1.",
 ])
 def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
     site = qualification_site(pages=[("https://operator-1.example/news", quote, "d" * 64)])
