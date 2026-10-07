@@ -46,7 +46,7 @@ from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_te
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import EpisodeSpecAgentAdapter, FakeEpisodeSpecAgentAdapter, build_episode_specs
 from .haiku_agents_sdk import MODEL as HAIKU_MODEL
-from .haiku_agents_sdk import sdk_credentials_present, sdk_model
+from .haiku_agents_sdk import sdk_runtime_evidence, sdk_runtime_selection
 from .local_capture import resolve_local_capture_context
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 from .scenario_variation_instantiator import build_scenario_variation_instances
@@ -397,10 +397,8 @@ class AgentsSdkCodexMCPAdapter:
             if self.agents_sdk_available is not None
             else bool(self.executor is not None) or bool(agents_package)
         )
-        model = sdk_model(self.model)
-        provider = "anthropic" if model == HAIKU_MODEL else "openai"
-        api_key_present = sdk_credentials_present(model, openai_api_key=self.openai_api_key,
-                                                 anthropic_api_key=self.anthropic_api_key)
+        model, provider, api_key_present = sdk_runtime_selection(self.model,
+            openai_api_key=self.openai_api_key, anthropic_api_key=self.anthropic_api_key)
         env_allowed = (
             bool(self.live_env_allowed)
             if self.live_env_allowed is not None
@@ -481,15 +479,8 @@ class AgentsSdkCodexMCPAdapter:
                         "summary": "Agents SDK live pipeline operator execution was blocked or failed.",
                     }
                 ],
-                "evidence": {
-                    "openai_agents_sdk_available": bool(agents_available),
-                    "openai_api_key_present": api_key_present if provider == "openai" else False,
-                    "anthropic_api_key_present": api_key_present if provider == "anthropic" else False,
-                    "provider": provider, "model": model,
-                    "cli_allow_live_operator": self.allow_live_operator,
-                    LIVE_AGENTS_SDK_ENV: env_allowed,
-                    **external_action_gates(),
-                },
+                "evidence": sdk_runtime_evidence(model, api_key_present, agents_available,
+                    self.allow_live_operator, env_allowed),
                 "proof_effect": proof_effect(
                     deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
                 ),
@@ -512,15 +503,8 @@ class AgentsSdkCodexMCPAdapter:
             "decisions": operator_ledger["decisions"],
             "operator_ledger": operator_ledger,
             "diagnostics": [],
-            "evidence": {
-                "openai_agents_sdk_available": bool(agents_available),
-                "openai_api_key_present": api_key_present if provider == "openai" else False,
-                "anthropic_api_key_present": api_key_present if provider == "anthropic" else False,
-                "provider": provider, "model": model,
-                "cli_allow_live_operator": self.allow_live_operator,
-                LIVE_AGENTS_SDK_ENV: env_allowed,
-                **external_action_gates(),
-            },
+            "evidence": sdk_runtime_evidence(model, api_key_present, agents_available,
+                self.allow_live_operator, env_allowed),
             "proof_effect": proof_effect(
                 deterministic_artifacts_required=CLAIM_BOUNDARY["proof_upgrade_requires"]
             ),

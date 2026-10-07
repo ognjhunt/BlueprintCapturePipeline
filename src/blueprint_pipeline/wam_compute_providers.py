@@ -399,6 +399,7 @@ class WamComputeLaunchSpec:
     provider_output_get_url_file: str | Path | None = None
     token_file: str | Path | None = None
     secret_env_file: str | Path | None = None
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None
     output_zip_path: str | Path | None = None
     expected_video_count: int = 1
     max_wait_seconds: int = 60
@@ -1571,6 +1572,7 @@ class VastWamComputeProvider(WamComputeProvider):
                 provider_output_get_url_file=spec.provider_output_get_url_file,
                 token_file=spec.token_file,
                 secret_env_file=spec.secret_env_file,
+                runtime_secret_file_paths=spec.runtime_secret_file_paths,
                 output_path=output_path,
                 allow_paid_vast_launch=True,
                 max_hourly_rate=spec.max_hourly_rate_usd,
@@ -1694,6 +1696,11 @@ class RunPodWamComputeProvider(WamComputeProvider):
         allow_paid_launch: bool,
     ) -> WamComputeRunResult:
         ensure_dir(job_dir)
+        if spec.runtime_secret_file_paths:
+            return self._blocked_no_paid_launch(
+                job_dir=job_dir, spec=spec,
+                blockers=["runpod_private_runtime_secret_file_transport_unqualified"],
+            )
         if not allow_paid_launch:
             return self._blocked_no_paid_launch(
                 job_dir=job_dir,

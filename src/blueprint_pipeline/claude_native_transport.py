@@ -81,8 +81,8 @@ def _request_json(req: urllib_request.Request, *, timeout: int,
         return value
 
 
-def _scoped_key() -> str:
-    named = os.environ.get(KEY_FILE_ENV, "")
+def _scoped_key(key_file: str | Path | None = None) -> str:
+    named = str(key_file) if key_file is not None else os.environ.get(KEY_FILE_ENV, "")
     path = Path(named)
     if not named or not path.is_absolute():
         raise ClaudeAuthoringBlocked("claude_key_file_missing")

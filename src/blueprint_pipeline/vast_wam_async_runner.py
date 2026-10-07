@@ -8,6 +8,8 @@ teardown without relying on a long-lived local process.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import sys
@@ -87,6 +89,8 @@ from .vast_provider_adapter import (
     _probe_shell_script,
     _provider_plan,
     _read_secret_file,
+    _runtime_secret_file_values,
+    _scene_configuration_startup_environments,
     _redact_runtime_value,
     _request_logs_and_fetch,
     _resolve_disk_gb,
@@ -248,6 +252,11 @@ def _read_async_state(job_dir: Path) -> dict[str, Any]:
             "max_live_deadline_epoch": _regex_number(state_text, "max_live_deadline_epoch")
             or time.time(),
             "selected_offer": _offer_artifact_summary(selected_offer),
+            # Recovery cannot establish the original private redaction sources.
+            # Keep resource status and teardown available without recording bodies.
+            "private_runtime_secret_files_forwarded": create_manifest.get(
+                "private_runtime_secret_files_forwarded", True
+            ) is not False,
             "selected_hourly_rate_usd": _number(selected_offer.get("hourly_rate_usd"))
             or _regex_number(state_text, "selected_hourly_rate_usd"),
             "target_spend_usd": _regex_number(state_text, "target_spend_usd"),
@@ -324,12 +333,17 @@ def _destroy_vast_instance_with_retry(
     api_key: str,
     attempts: int = 3,
     backoff_seconds: float = 3.0,
+    secret_values: Sequence[str] = (),
+    private_bodies_withheld: bool = False,
 ) -> tuple[bool, list[dict[str, Any]]]:
     return destroy_vast_instance_with_retry(
         instance_id=instance_id,
         api_key=api_key,
         api_call=_api_json,
-        redact_response=_redact_runtime_value,
+        redact_response=lambda response, _secrets: (
+            {"status": "withheld", "reason": "private_runtime_secret_redaction_source_unavailable"}
+            if private_bodies_withheld else _redact_runtime_value(response, [api_key, *secret_values])
+        ),
         attempts=attempts,
         backoff_seconds=backoff_seconds,
         sleeper=time.sleep,
@@ -366,9 +380,12 @@ def destroy_async_vast_wam_run(
             "running",
             instance_ids=[instance_id],
         )
+        private_values, private_bodies_withheld = _private_poll_redaction_values(state)
         continuing_spend, destroy_actions = _destroy_vast_instance_with_retry(
             instance_id=instance_id,
             api_key=api_key,
+            secret_values=private_values,
+            private_bodies_withheld=private_bodies_withheld,
         )
         teardown_actions.extend(destroy_actions)
         _append_phase(
@@ -428,6 +445,7 @@ def create_async_vast_wam_run(
     provider_output_get_url_file: str | Path | None = None,
     token_file: str | Path | None = None,
     secret_env_file: str | Path | None = None,
+    runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     output_path: str | Path | None = None,
     session_budget_ledger: str | Path | None = None,
     allow_paid_vast_launch: bool = False,
@@ -483,6 +501,10 @@ def create_async_vast_wam_run(
         else _vast_session_budget_ledger_path()
     )
     ensure_dir(resolved_job_dir)
+    runtime_secret_values = _runtime_secret_file_values(runtime_secret_file_paths)
+    runtime_secret_file_refs = {
+        str(name): str(path) for name, path in (runtime_secret_file_paths or {}).items()
+    }
     launch_mode = _resolve_launch_mode(
         requested=vast_launch_mode,
         enable_isaac_smoke=False,
@@ -948,6 +970,22 @@ def create_async_vast_wam_run(
             ngc_key="",
             mode="never",
         )
+        probe_env = _probe_env(
+            job_dir=resolved_job_dir,
+            enable_isaac_smoke=False,
+            provider_bundle_url=provider_bundle_url,
+            provider_output_put_url=provider_output_put_url,
+            provider_bundle_inline_base64=_string(
+                inline_bundle_transport.get("inline_provider_bundle_base64")
+            ),
+            provider_bundle_inline_sha256=_string(
+                inline_bundle_transport.get("inline_provider_bundle_sha256")
+            ),
+            runtime_secret_file_values=runtime_secret_values,
+        )
+        private_startup_env: dict[str, str] = {}
+        if runtime_secret_values:
+            probe_env, private_startup_env = _scene_configuration_startup_environments(probe_env)
         create_payload = _create_payload(
             image=selected_container_image,
             label=f"blueprint-vast-wam-async-{int(time.time())}",
@@ -959,23 +997,16 @@ def create_async_vast_wam_run(
                 provider_bundle_kind="wam",
             ),
             disk_gb=resolved_disk_gb,
-            env=_probe_env(
-                job_dir=resolved_job_dir,
-                enable_isaac_smoke=False,
-                provider_bundle_url=provider_bundle_url,
-                provider_output_put_url=provider_output_put_url,
-                provider_bundle_inline_base64=_string(
-                    inline_bundle_transport.get("inline_provider_bundle_base64")
-                ),
-                provider_bundle_inline_sha256=_string(
-                    inline_bundle_transport.get("inline_provider_bundle_sha256")
-                ),
-            ),
+            env=probe_env,
+            private_startup_env=private_startup_env,
             image_login=image_login,
             template_hash_id=None,
         )
         secret_values = [
             api_key,
+            *runtime_secret_values.values(),
+            *(base64.b64encode(value.encode("utf-8")).decode("ascii")
+              for value in runtime_secret_values.values()),
             *_forwarded_secret_values(),
             *secret_values_for_urls,
             _string(inline_bundle_transport.get("inline_provider_bundle_base64")),
@@ -1078,6 +1109,7 @@ def create_async_vast_wam_run(
             timeout_seconds=max(0, startup_poll_seconds),
             poll_interval_seconds=10,
         )
+        status = _redact_runtime_value(status, secret_values)
         log_readable = status.lower() in {"running", "exited", "stopped"}
         _append_phase(
             resolved_job_dir,
@@ -1106,6 +1138,12 @@ def create_async_vast_wam_run(
             "provider_output_get_url_file": output_get_url_file_meta,
             "token_file": str(resolved_token_file),
             "secret_env_file": str(resolved_secret_env_file),
+            "private_runtime_secret_files_forwarded": bool(runtime_secret_values),
+            "private_runtime_secret_file_refs": runtime_secret_file_refs,
+            "private_runtime_secret_fingerprints": {
+                name: hashlib.sha256(value.encode("utf-8")).hexdigest()
+                for name, value in runtime_secret_values.items()
+            },
             "session_budget_ledger": str(resolved_session_budget_ledger),
             "instance_id": instance_id,
             "created_at_epoch": created_epoch,
@@ -1144,7 +1182,7 @@ def create_async_vast_wam_run(
             "preferred_geolocation_regex": resolved_preferred_geolocation_regex,
             "prefer_isaac_rt": prefer_isaac_rt,
             "last_instance_status": status,
-            "instance_observations": observations,
+            "instance_observations": _redact_runtime_value(observations, secret_values),
             "last_instance_payload_redacted": _redact_runtime_value(
                 instance_payload,
                 secret_values,
@@ -1177,6 +1215,7 @@ def create_async_vast_wam_run(
             "schema_version": ASYNC_CREATE_SCHEMA_VERSION,
             "generated_at": generated,
             "status": "instance_created",
+            "private_runtime_secret_files_forwarded": bool(runtime_secret_values),
             "job_dir": str(resolved_job_dir),
             "state_path": str(_state_path(resolved_job_dir)),
             "instance_id": instance_id,
@@ -1258,6 +1297,8 @@ def _write_poll_phase_artifacts(
         and provider_completed_or_blocked
     )
     completion_blockers: list[str] = []
+    if onstart_logs.get("status") == "withheld":
+        completion_blockers.extend(_string_list(onstart_logs.get("blockers")))
     if not provider_started:
         completion_blockers.append("provider_bundle_start_marker_missing")
     if not provider_downloaded:
@@ -1396,6 +1437,30 @@ def _write_poll_phase_artifacts(
     return provider_command
 
 
+def _private_poll_redaction_values(state: Mapping[str, Any]) -> tuple[list[str], bool]:
+    """Revalidate private file references; missing sources withhold provider bodies."""
+    if not state.get("private_runtime_secret_files_forwarded"):
+        return [], False
+    refs = state.get("private_runtime_secret_file_refs")
+    if not isinstance(refs, dict) or not refs:
+        return [], True
+    try:
+        values = _runtime_secret_file_values(refs)
+    except (ValueError, OSError, TypeError):
+        return [], True
+    expected = state.get("private_runtime_secret_fingerprints")
+    actual = {
+        name: hashlib.sha256(value.encode("utf-8")).hexdigest()
+        for name, value in values.items()
+    }
+    if not isinstance(expected, dict) or actual != expected:
+        return [], True
+    return [
+        value for raw in values.values()
+        for value in (raw, base64.b64encode(raw.encode("utf-8")).decode("ascii"))
+    ], False
+
+
 def poll_async_vast_wam_run(
     *,
     job_dir: str | Path,
@@ -1450,8 +1515,10 @@ def poll_async_vast_wam_run(
         token_file = Path(_string(state.get("token_file"))).expanduser().resolve()
         public_base_url = _string(state.get("public_base_url"))
         provider_bundle_url, provider_output_put_url, _token_status = _provider_urls(public_base_url, token_file)
+    private_redaction_values, private_bodies_withheld = _private_poll_redaction_values(state)
     secret_values = [
         api_key,
+        *private_redaction_values,
         *_forwarded_secret_values(),
         *_url_secret_values(provider_bundle_url, provider_output_put_url, provider_output_get_url),
     ]
@@ -1476,24 +1543,32 @@ def poll_async_vast_wam_run(
             DEFAULT_VAST_WAM_CONTAINER_MISSING_MAX_SECONDS,
         ),
     )
-    onstart_logs = _request_logs_and_fetch(
-        instance_id=instance_id,
-        api_key=api_key,
-        output_log_path=resolved_job_dir / "vast_onstart_container.log",
-        secret_values=secret_values,
-        wait_seconds=0,
-        tail_lines=2000,
-        success_markers=[
-            "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED",
-            "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK",
-            "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED",
-            "BLUEPRINT_VAST_ONSTART_DONE",
-        ],
-        max_wait_seconds=effective_max_wait_seconds,
-        retry_interval_seconds=retry_interval_seconds,
-        container_missing_retry_attempts=container_missing_retry_attempts,
-    )
-    heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
+    if private_bodies_withheld:
+        onstart_logs = {
+            "status": "withheld",
+            "blockers": ["private_runtime_secret_redaction_source_unavailable"],
+            "raw_secret_values_recorded": False,
+        }
+        heartbeat_text = ""
+    else:
+        onstart_logs = _request_logs_and_fetch(
+            instance_id=instance_id,
+            api_key=api_key,
+            output_log_path=resolved_job_dir / "vast_onstart_container.log",
+            secret_values=secret_values,
+            wait_seconds=0,
+            tail_lines=2000,
+            success_markers=[
+                "BLUEPRINT_VAST_PROVIDER_BUNDLE_COMPLETED_OR_BLOCKED",
+                "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK",
+                "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED",
+                "BLUEPRINT_VAST_ONSTART_DONE",
+            ],
+            max_wait_seconds=effective_max_wait_seconds,
+            retry_interval_seconds=retry_interval_seconds,
+            container_missing_retry_attempts=container_missing_retry_attempts,
+        )
+        heartbeat_text = Path(onstart_logs["output_log_path"]).read_text(encoding="utf-8")
     output_path = Path(_string(state.get("output_path"))).expanduser().resolve()
     provider_upload_marker_seen = "BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK" in heartbeat_text
     output_download_manifest = _download_provider_output_zip(
@@ -1527,6 +1602,11 @@ def poll_async_vast_wam_run(
             timeout_seconds=30,
         )
         instance_status = _instance_status(status_payload)
+        instance_status = _redact_runtime_value(instance_status, secret_values)
+        if private_bodies_withheld and instance_status.lower() not in {
+            "running", "exited", "stopped", "loading", "created", "unknown", "offline",
+        }:
+            instance_status = "unknown"
     except Exception as exc:
         instance_status = f"status_probe_failed:{type(exc).__name__}"
 
@@ -1556,6 +1636,8 @@ def poll_async_vast_wam_run(
         continuing_spend, teardown_actions = _destroy_vast_instance_with_retry(
             instance_id=instance_id,
             api_key=api_key,
+            secret_values=secret_values,
+            private_bodies_withheld=private_bodies_withheld,
         )
         write_json(
             resolved_job_dir / "vast_teardown_manifest.json",
@@ -1666,7 +1748,10 @@ def poll_async_vast_wam_run(
         "status": "teardown_completed" if not continuing_spend else "running",
         "last_polled_at": generated,
         "last_instance_status": instance_status,
-        "last_instance_payload_redacted": _redact_runtime_value(status_payload, secret_values),
+        "last_instance_payload_redacted": (
+            {"status": "withheld", "reason": "private_runtime_secret_redaction_source_unavailable"}
+            if private_bodies_withheld else _redact_runtime_value(status_payload, secret_values)
+        ),
         "provider_command_status": provider_command.get("status"),
         "provider_command_blockers": provider_command.get("blockers"),
         "continuing_spend_from_this_run": continuing_spend,
@@ -1680,6 +1765,7 @@ def poll_async_vast_wam_run(
         "job_dir": str(resolved_job_dir),
         "instance_id": instance_id,
         "instance_status": instance_status,
+        "private_provider_bodies_withheld": private_bodies_withheld,
         "provider_command_status": provider_command.get("status"),
         "provider_command_blockers": provider_command.get("blockers"),
         "output_zip_present": output_zip_inspection.get("zip_present"),

@@ -16,16 +16,16 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
-import urllib.request
 
 from .common import ensure_dir, write_json
-from .gpu_render_providers import get_render_provider
+from .g1_microwave_groot_finetune_component import REMOTE_FINAL_CHECKPOINT
 from .gear_sonic_isaac_dds_bridge import (
     BRIDGE_HEARTBEAT_PATH,
     BRIDGE_LOG_PATH,
@@ -36,11 +36,11 @@ from .gear_sonic_isaac_dds_bridge import (
     bridge_prepare_script,
     bridge_start_script,
 )
+from .gpu_render_providers import get_render_provider
 from .groot_oscar_digitalocean_closed_loop_job import (
     build_launch_spec,
     build_worker_bootstrap_script,
 )
-from .g1_microwave_groot_finetune_component import REMOTE_FINAL_CHECKPOINT
 from .groot_oscar_runpod_watchdog import arm_watchdog, terminate_canary_resources
 from .groot_oscar_worker_startup_script import qualification_checkpoint_preflight_script
 from .isaac_particlefield_render_job import watch_and_collect
@@ -65,16 +65,24 @@ from .paid_resource_admission import (
     PAID_LANE_ADMISSION_SCHEMA_VERSION,
     require_paid_resource_admission,
 )
+from .single_episode_judge_commands import (
+    _add_flag,
+    _direct_native_judge_transport_blockers,
+    _remove_option,
+    _replace_option,
+    _replace_repeated_option,
+)
 from .single_g1_kitchen_qualification_admission import qualification_pre_spend_preflight
 from .wam_derived_observation_harness import (
     GENERATED_RGB_POLICY_OBSERVATION_BACKEND_KIND,
 )
 from .wam_provider_object_store import (
     SCHEMA_VERSION as OBJECT_STORE_STAGING_SCHEMA_VERSION,
+)
+from .wam_provider_object_store import (
     SIGNED_OUTPUT_ROUND_TRIP_SCHEMA_VERSION,
     signed_output_object_binding_sha256,
 )
-
 
 SCHEMA_VERSION = "single_g1_kitchen_episode_runpod.v1"
 MANIPULATION_POLICY_TASK_COMPATIBILITY_SCHEMA_VERSION = (
@@ -926,43 +934,6 @@ fi
 {SYSTEM_PYTHON} - <<'PY'
 {VAST_BOOTSTRAP_DOWNLOADER_PYTHON.rstrip()}\nPY
 """
-
-
-def _replace_option(command: list[str], option: str, value: str) -> list[str]:
-    result = list(command)
-    if option in result:
-        index = result.index(option)
-        if index + 1 >= len(result):
-            raise ValueError(f"closed_loop_option_value_missing:{option}")
-        result[index + 1] = value
-    else:
-        result.extend([option, value])
-    return result
-
-
-def _replace_repeated_option(command: list[str], option: str, values: list[str]) -> list[str]:
-    result = _remove_option(command, option, takes_value=True)
-    for value in values:
-        result.extend([option, value])
-    return result
-
-
-def _remove_option(command: list[str], option: str, *, takes_value: bool) -> list[str]:
-    result = list(command)
-    while option in result:
-        index = result.index(option)
-        del result[index]
-        if takes_value:
-            if index >= len(result):
-                raise ValueError(f"closed_loop_option_value_missing:{option}")
-            del result[index]
-    return result
-
-
-def _add_flag(command: list[str], option: str) -> list[str]:
-    result = _remove_option(command, option, takes_value=False)
-    result.append(option)
-    return result
 
 
 def _configure_direct_external_evaluators(
@@ -3869,6 +3840,7 @@ def run_single_episode(
             if qualification_checkpoint_restore
             else _load_single_episode_inputs(bundle_path)
         )
+        blockers.extend(_direct_native_judge_transport_blockers(inputs.get("plan") or {}))
         manipulation_policy_task_compatibility = dict(
             inputs.get("manipulation_policy_task_compatibility") or {}
         )

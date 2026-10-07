@@ -41,6 +41,30 @@ def sdk_credentials_present(model: str, *, openai_api_key: str | None = None,
     return bool(openai_api_key if openai_api_key is not None else os.getenv("OPENAI_API_KEY", "").strip())
 
 
+def sdk_runtime_selection(model: str, *, openai_api_key: str | None = None,
+                          anthropic_api_key: str | None = None) -> tuple[str, str, bool]:
+    resolved = sdk_model(model)
+    return resolved, "anthropic" if resolved == MODEL else "openai", sdk_credentials_present(
+        resolved, openai_api_key=openai_api_key, anthropic_api_key=anthropic_api_key,
+    )
+
+
+def sdk_runtime_evidence(model: str, key_present: bool, agents_available: bool,
+                         allow_live_operator: bool, env_allowed: bool) -> dict[str, Any]:
+    from .agent_operator_runtime import external_action_gates
+
+    provider = "anthropic" if model == MODEL else "openai"
+    return {
+        "openai_agents_sdk_available": bool(agents_available),
+        "openai_api_key_present": key_present if provider == "openai" else False,
+        "anthropic_api_key_present": key_present if provider == "anthropic" else False,
+        "provider": provider, "model": model,
+        "cli_allow_live_operator": allow_live_operator,
+        LIVE_AGENTS_SDK_ENV: env_allowed,
+        **external_action_gates(),
+    }
+
+
 def _object(value: Any) -> Any:
     if isinstance(value, dict):
         return SimpleNamespace(**{key: _object(item) for key, item in value.items()})
