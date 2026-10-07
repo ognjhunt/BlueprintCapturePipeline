@@ -22,7 +22,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Mapping, Sequence
@@ -902,30 +901,6 @@ PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES = 2048
 _PUBLIC_CATALOG_VALIDATION_LOCK = Lock()
 
 
-@lru_cache(maxsize=1)
-def _validated_public_launch_profile_catalog(
-    payload: bytes, max_profiles: int,
-) -> dict[str, Any]:
-    """Reuse full validation only for the identical bounded catalog bytes."""
-    value = json.loads(payload.decode("utf-8"))
-    if not isinstance(value, list) or len(value) > max_profiles:
-        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
-    profiles: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in value:
-        descriptor = _mapping(item)
-        blockers = validate_public_launch_profile_descriptor(descriptor)
-        key = (str(descriptor.get("profile_id") or ""), str(descriptor.get("profile_digest") or ""))
-        if blockers or key in seen:
-            raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
-        seen.add(key)
-        profiles.append(descriptor)
-    return {
-        "schema_version": LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION,
-        "profiles": profiles,
-    }
-
-
 def load_public_launch_profile_catalog(
     path_value: str | Path,
     *,
@@ -933,6 +908,8 @@ def load_public_launch_profile_catalog(
     max_profiles: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
 ) -> dict[str, Any]:
     """Read current bytes, fail closed, and isolate callers from cached data."""
+    from .task_evaluation_launch_catalog import _validated_public_launch_profile_catalog
+
     source_input = Path(path_value).expanduser()
     if source_input.is_symlink():
         raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
@@ -947,7 +924,9 @@ def load_public_launch_profile_catalog(
     # the same expensive nested schema validation. Every request still reopens
     # the file; byte changes, removal, symlinks and stricter limits fail closed.
     with _PUBLIC_CATALOG_VALIDATION_LOCK:
-        catalog = _validated_public_launch_profile_catalog(payload, max_profiles)
+        catalog = _validated_public_launch_profile_catalog(
+            payload, max_profiles, validate_public_launch_profile_descriptor,
+        )
     return deepcopy(catalog)
 
 

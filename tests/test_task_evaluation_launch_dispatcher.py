@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher_module
+import blueprint_pipeline.task_evaluation_launch_catalog as catalog_module
 from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
 import blueprint_pipeline.task_evaluation_launch_webapp_sync as webapp_sync_module
 from blueprint_pipeline.decision_evidence_contracts import (
@@ -2824,7 +2825,7 @@ def test_public_catalog_reuses_validation_without_sharing_mutable_results(
     descriptor = public_launch_profile_descriptor(_profile(tmp_path))
     catalog_path = tmp_path / "catalog.json"
     _write(catalog_path, [descriptor])
-    dispatcher_module._validated_public_launch_profile_catalog.cache_clear()
+    catalog_module._validated_public_launch_profile_catalog.cache_clear()
     original = dispatcher_module.validate_public_launch_profile_descriptor
     calls = []
 
@@ -2888,7 +2889,7 @@ def test_public_catalog_concurrent_reads_share_one_validation(
     descriptor = public_launch_profile_descriptor(_profile(tmp_path))
     catalog_path = tmp_path / "catalog.json"
     _write(catalog_path, [descriptor])
-    dispatcher_module._validated_public_launch_profile_catalog.cache_clear()
+    catalog_module._validated_public_launch_profile_catalog.cache_clear()
     original = dispatcher_module.validate_public_launch_profile_descriptor
     entered = threading.Event()
     release = threading.Event()
