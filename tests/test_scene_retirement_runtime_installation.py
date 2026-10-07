@@ -57,6 +57,8 @@ def fixture(tmp_path, monkeypatch):
     (source / 'src/blueprint_pipeline').mkdir(parents=True)
     (source / 'deploy/systemd').mkdir(parents=True)
     (source / 'scripts').mkdir()
+    (source / 'docs/schemas').mkdir(parents=True)
+    (source / 'docs/schemas/fixture.schema.json').write_bytes(b'{"type":"object"}\n')
     (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'# trusted package\n')
     (source / 'deploy/systemd/blueprint-pipeline-intake.service').write_bytes(b'[Service]\nUser=blueprint\n')
     (source / 'scripts/scene_retirement_continuous_bootstrap.py').write_bytes(b'# fixed bootstrap\n')
@@ -645,12 +647,13 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     (source / 'src/blueprint_pipeline/_sam_parser_js').mkdir()
     (source / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').write_bytes(b'')
     subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
-    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'docs', 'uv.lock'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'signed source-shaped fixture'], check=True)
     commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
     # Service-owned checkout bytes may drift; installed root source must come
     # from the exact already-authorized Git object, not these mutable bytes.
     (source / 'src/blueprint_pipeline/__init__.py').write_bytes(b'raise RuntimeError("uncommitted mutable source")\n')
+    (source / 'docs/schemas/fixture.schema.json').write_bytes(b'{"uncommitted":true}\n')
     phases = []
     result = module.prepare_deployment(source, source_commit=commit, wheelhouse=wheel.parent, _progress=phases.append)
     assert phases == ['source_attestation', 'signed_release', 'build_sdk', 'prepare', 'publish_installer']
@@ -658,6 +661,7 @@ def test_connected_deployment_prepares_signed_source_sdk_before_exposing_units(t
     assert result['source_commit'] == commit
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/__init__.py').read_bytes() == b'# trusted package\n'
     assert (module._RUNTIME_ROOT / 'src/blueprint_pipeline/_sam_parser_js/__init__.py').read_bytes() == b''
+    assert (module._RUNTIME_ROOT / 'docs/schemas/fixture.schema.json').read_bytes() == b'{"type":"object"}\n'
     assert (module._RUNTIME_ROOT / 'dependencies/fixture_sdk/__init__.py').read_bytes() == b'value = 1\n'
     assert (module._BOOT_ROOT / 'continuous_bootstrap.py').is_file()
     assert result['authority_issued'] is False and result['cleanup_enabled'] is False
@@ -680,7 +684,7 @@ def test_signed_release_copies_real_lockfile_size_with_exact_git_bytes(tmp_path,
     for index in range(33):
         (source / 'src/blueprint_pipeline' / f'binary_{index}.data').write_bytes(bytes([index]) + b'\0\n')
     subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
-    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'docs', 'uv.lock'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture',
         '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'bounded signed lock'], check=True)
     commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
@@ -889,7 +893,7 @@ def test_first_upgrade_authenticates_installer_data_from_service_owned_release_b
     module, source, _ = fixture(tmp_path, monkeypatch)
     _sdk_wheel_fixture(source, tmp_path / 'wheelhouse')
     subprocess.run(['/usr/bin/git', '-C', str(source), 'init', '-q'], check=True)
-    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'uv.lock'], check=True)
+    subprocess.run(['/usr/bin/git', '-C', str(source), 'add', 'src', 'scripts', 'deploy', 'docs', 'uv.lock'], check=True)
     subprocess.run(['/usr/bin/git', '-C', str(source), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'authorized first upgrade'], check=True)
     commit = subprocess.check_output(['/usr/bin/git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip()
     signed = (source / 'scripts/install_scene_retirement_runtime.py').read_bytes()
@@ -1295,7 +1299,7 @@ def _interrupted_connected_install(tmp_path, monkeypatch):
     def git(*args):
         return subprocess.check_output(['/usr/bin/git', '-C', str(source), *args], stderr=subprocess.DEVNULL).decode().strip()
     git('init', '-q')
-    git('add', 'src', 'scripts', 'deploy', 'uv.lock')
+    git('add', 'src', 'scripts', 'deploy', 'docs', 'uv.lock')
     git('-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial')
     first = git('rev-parse', 'HEAD')
     copy = module._copy
@@ -1541,3 +1545,50 @@ def test_installer_cli_retains_earlier_caller_deadline_for_every_mode(tmp_path, 
     options += ['--source-commit', 'a'*40] if selection == '--locked-sdk' else [str(deps)]
     assert module.main(options) == 0
     assert observed == [150.0]
+
+
+def test_schema_consumer_reads_each_immutable_runtime_generation(tmp_path, monkeypatch):
+    import json
+
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    repository = SCRIPT.parent.parent
+    name = 'rigid_task_success_contract_schema.py'
+    schema_name = 'rigid_task_success_contract.v1.schema.json'
+    (source / 'src/blueprint_pipeline' / name).write_bytes(
+        (repository / 'src/blueprint_pipeline' / name).read_bytes())
+    schema = source / 'docs/schemas' / schema_name
+    original = (repository / 'docs/schemas' / schema_name).read_bytes()
+    schema.write_bytes(original)
+
+    def consume(root):
+        spec = importlib.util.spec_from_file_location('installed_schema_consumer', root / 'src/blueprint_pipeline' / name)
+        consumer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(consumer)
+        assert consumer.SCHEMA_PATH == root / 'docs/schemas' / schema_name
+        return consumer.rigid_task_success_contract_schema()
+
+    module.prepare(source, deps)
+    assert consume(module._RUNTIME_ROOT) == json.loads(original)
+    import hashlib
+    prior_raw = (module._BOOT_ROOT / 'installation.json').read_bytes()
+    prior = {'sha256': 'sha256:' + hashlib.sha256(prior_raw).hexdigest(), 'size_bytes': len(prior_raw)}
+    changed = json.loads(original)
+    changed['$comment'] = 'fixture second authenticated schema generation'
+    schema.write_text(json.dumps(changed))
+    result = module.refresh(source, deps, expected_current=prior)
+    selected = Path(result['runtime_root'])
+    assert consume(selected) == changed
+    assert consume(module._RUNTIME_ROOT) == json.loads(original)
+    assert (module._RUNTIME_ROOT / 'docs/schemas' / schema_name).read_bytes() == original
+
+
+def test_schema_resource_symlink_refuses_runtime_preparation(tmp_path, monkeypatch):
+    module, source, deps = fixture(tmp_path, monkeypatch)
+    schema = source / 'docs/schemas/fixture.schema.json'
+    outside = tmp_path / 'foreign-schema.json'
+    outside.write_bytes(schema.read_bytes())
+    schema.unlink()
+    schema.symlink_to(outside)
+    with pytest.raises(ValueError, match='scene_retirement_runtime_unproven'):
+        module.prepare(source, deps)
+    assert not (module._BOOT_ROOT / 'installation.json').exists()

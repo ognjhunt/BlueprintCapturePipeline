@@ -717,6 +717,8 @@ def prepare(source, dependencies, *, _deadline=None):
         _tree(source / 'deploy/systemd', Path('deploy/systemd'), rows, sources, deadline)
         # Worker entrypoints can import repository scripts after the UID drop.
         _tree(source / 'scripts', Path('scripts'), rows, sources, deadline)
+        # Catalog validation reopens these source-authenticated resources.
+        _tree(source / 'docs/schemas', Path('docs/schemas'), rows, sources, deadline)
         _tree(dependencies, Path('dependencies'), rows, sources, deadline)
         boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
         boot_row = _read(boot_source, deadline)
@@ -848,6 +850,7 @@ def _refresh_inputs(source, dependencies, deadline):
     _tree(source / 'src/blueprint_pipeline', Path('src/blueprint_pipeline'), rows, sources, deadline)
     _tree(source / 'deploy/systemd', Path('deploy/systemd'), rows, sources, deadline)
     _tree(source / 'scripts', Path('scripts'), rows, sources, deadline)
+    _tree(source / 'docs/schemas', Path('docs/schemas'), rows, sources, deadline)
     _tree(dependencies, Path('.'), sdk_rows, sdk_sources, deadline)
     _require(len(rows) + len(sdk_rows) <= _MAX_FILES
              and sum(row['size'] for row in (*rows.values(), *sdk_rows.values())) <= _MAX_BYTES)
@@ -1635,7 +1638,7 @@ def _signed_release(source, commit, deadline, source_manifest=None):
     _require(type(commit) is str and re.fullmatch('[0-9a-f]{40}', commit))
     source = Path(source)
     items = _authenticated_git_entries(source, commit, ('src/blueprint_pipeline', 'scripts',
-              'deploy/systemd', 'uv.lock', 'pyproject.toml'), deadline, raw_checkout=True, source_manifest=source_manifest)
+              'deploy/systemd', 'docs/schemas', 'uv.lock', 'pyproject.toml'), deadline, raw_checkout=True, source_manifest=source_manifest)
     _require(items)
     output = _encoded(items)
     root = _sdk_root() / 'release-inputs' / commit
@@ -1740,7 +1743,12 @@ def _resume_initial_intent(dependencies, deadline):
             if _read(candidate / helper, deadline) != source_rows[helper]:
                 continue
             observed = {}
-            for directory in ('src/blueprint_pipeline', 'deploy/systemd', 'scripts'):
+            directories = ('src/blueprint_pipeline', 'deploy/systemd', 'scripts')
+            # Old initial plans did not include schemas; recover their exact
+            # immutable closure before selecting a newly complete generation.
+            if any(path.startswith('docs/schemas/') for path in source_rows):
+                directories += ('docs/schemas',)
+            for directory in directories:
                 _tree(candidate / directory, Path(directory), observed, {}, deadline)
             if (observed == source_rows
                     and _read(candidate / 'scripts/scene_retirement_continuous_bootstrap.py', deadline) == plan['bootstrap']):
