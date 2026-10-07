@@ -107,10 +107,34 @@ Readers must go through `blueprint_pipeline.frames_layout`
 transparently and fails closed on unknown `schema_version` / `packaging`
 values or packed entries missing archive linkage.
 
-Producer rollout: `BlueprintCapture` `cloud/extract-frames` emits v2 only
-when `BLUEPRINT_EXTRACT_FRAMES_PACKING_ENABLED=1`; the flag stays off until
-this repo's reader is deployed, then flips on. Legacy v1 captures remain
-readable indefinitely.
+Producer rollout: native and legacy captures emit v2 when
+`BLUEPRINT_EXTRACT_FRAMES_PACKING_ENABLED=1`. Validated selected browser
+deliveries use the same packer without changing that global flag, retaining
+every extracted frame within the existing finite membership row bound.
+Legacy v1 captures remain readable.
+
+### Selected browser delivery inputs
+
+A validated website producer receipt binds the original video, manifest and
+completion marker generations. Capture publishes immutable derivatives under
+`deliveries/<semantic-delivery-key>/`, including the frame index, packing
+manifest, archives, descriptor and QA. Its handoff URI is accepted only when
+that exact key matches the validated source-finalize identity and membership
+selector. Native/app envelopes retain canonical URIs without selected-browser
+authority. No URI pattern or historical receipt grants current consent.
+
+Pipeline stages only the finite generation-pinned membership. Existing readers
+consume selected derivatives in place through verified byte snapshots and
+refuse missing, changed or cross-delivery members. A saved frame layout stays
+bound to its selection across later reads. The validated browser descriptor
+records `metadata.capture_entry_source=browser_self_capture`, selecting the
+existing website task-context and current-consent preparation branch.
+
+Consent, withdrawal, raw input and lane-resume roots remain the canonical
+capture root. Qualification enrichment writes the existing pipeline-owned
+canonical descriptor; it preserves the immutable producer descriptor in the
+selected delivery. Retained birth evidence is historical provenance, never
+execution, deletion, billing or payout permission.
 
 ## Presentation Bundle Contract
 
