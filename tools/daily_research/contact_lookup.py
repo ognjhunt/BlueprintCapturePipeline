@@ -1161,22 +1161,32 @@ def site_role_quote(site, person, sentence):
 
 def role_address_mismatch(site, person, sentence, known_names):
     """An explicit candidate role at another facility overrides unknown corporate scope."""
-    if site_role_quote(site, person, sentence):
-        return False
-    address = site.get("address") or {}
-    assigned = quoted_role_address(person, sentence)
-    assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
-    target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
-    assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
-    named_facility_mismatch = bool(assigned.get("street") and not assigned_street
-                                  and site["task_input"].get("site_name")
-                                  and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
-    return bool(named_facility_mismatch or assigned.get("city") and address.get("city")
-                         and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
-                         or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
-                         or assigned_street and target_street
-                         and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
-                         or assigned_units and target_units and assigned_units != target_units)
+    clauses = [sentence]
+    for boundary in re.finditer(r"\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE):
+        clause = re.sub(r"^\s*(?:(?:also|he|she|they)\s+)*", "", sentence[boundary.end():], flags=re.IGNORECASE)
+        if holds_title(clause, person["title"]):
+            clauses.append(clause if ss.has_phrase(ss.words(person["name"]), ss.words(clause))
+                           else person["name"] + " " + clause)
+    for clause in clauses:
+        if site_role_quote(site, person, clause):
+            continue
+        address = site.get("address") or {}
+        assigned = quoted_role_address(person, clause)
+        assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
+        target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
+        assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
+        named_facility_mismatch = bool(assigned.get("street") and not assigned_street
+                                      and site["task_input"].get("site_name")
+                                      and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
+        mismatch = bool(named_facility_mismatch or assigned.get("city") and address.get("city")
+                             and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
+                             or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
+                             or assigned_street and target_street
+                             and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
+                             or assigned_units and target_units and assigned_units != target_units)
+        if mismatch:
+            return True
+    return False
 
 
 def site_responsibility(site, person):
