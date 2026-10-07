@@ -181,8 +181,11 @@ def test_a_quoted_person_gets_one_enrichment_and_a_deliverable_email_is_kept(tmp
                     "custom": {"call": item["custom"]["call"]}}
     records = cl.load(workspace)
     record = json.loads(json.dumps(records[key]))
-    assert (record["schema_version"], record["rule_version"]) == (cl.RECORD, "blueprint.contact-lookup-rule.v1")
+    assert (record["schema_version"], record["rule_version"]) == (cl.RECORD, "blueprint.contact-lookup-rule.v2")
     (found,) = record["lookups"]
+    responsibility = found["person"].pop("site_responsibility")
+    assert responsibility == {"site_key": key, "status": "unknown", "route": "corporate_referral",
+                              "reason": "target_site_responsibility_unproven", "proof": None}
     provider = found.pop("provider")
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00", provider.pop("checked_at"))
     assert provider.pop("request_digest") == item["custom"]["call"] and re.fullmatch(r"[0-9a-f]{64}", item["custom"]["call"])
@@ -559,6 +562,100 @@ def test_current_employment_history_requires_an_explicit_current_flag():
     history["is_current"] = True
     found, reason = cl.candidate(person, ["operator-1.example"])
     assert reason is None and found["current_employment"]["field"] == "employment.all.is_current"
+
+
+@pytest.mark.parametrize("city,region", [("Other Fixture City", "Texas"), ("Fixture City", "Ohio")])
+def test_off_site_local_manager_is_held_before_enrichment(tmp_path, city, region):
+    workspace, (key,) = site_screen_out(tmp_path, [nobody(1)])
+    api = FakeFullEnrich()
+    person = searched(OTHER_PERSON)
+    person["location"].update(city=city, region=region)
+    api.people["operator-1.example"] = [person]
+    api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
+    report = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)
+    assert report["calls"]["made"] == 1
+    assert api.posts(cl.ENRICH_PATH) == []
+    record = cl.load(workspace)[key]
+    assert record["skipped"] == "target_site_location_mismatch"
+    assert record["lookups"] == [] and record["recipient"]["choice"] == "none"
+    before = stored(workspace)
+    assert lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)["calls"]["made"] == 0
+    assert stored(workspace) == before
+
+
+def qualification_site(key="site-one", street="1 Example Road", city="Fixture City", pages=()):
+    return {"site_key": key, "address": {"street": street, "city": city, "state": "TX"},
+            "task_input": {"site_name": "Synthetic Works"}, "operator": "Synthetic Operator 1",
+            "operator_domains": ["operator-1.example"], "operator_domain": "operator-1.example",
+            "person": {}, "published_person_email": False, "kept_pages": list(pages)}
+
+
+def replay_search(*people, legacy=False):
+    found = [cl.candidate(person, ["operator-1.example"])[0] for person in people]
+    if legacy:
+        found[0].pop("location_fields")
+    observation = {"candidate": found[0]}
+    if not legacy:
+        observation["candidates"] = found
+    return lambda *args: ("c" * 64, {"state": "answered", "observation": observation})
+
+
+def test_shared_company_search_is_requalified_for_each_target_site_without_calls():
+    person = searched(OTHER_PERSON)
+    calls = replay_search(person)
+    first, reason = cl.target(qualification_site(), calls)
+    assert reason is None
+    assert first["site_responsibility"]["status"] == "unknown"  # Even a matching city proves no authority.
+    assert first["site_responsibility"]["route"] == "corporate_referral"
+    second, reason = cl.target(qualification_site("site-two", city="Other Fixture City"), calls)
+    assert second is None and reason == "target_site_location_mismatch"
+
+
+def test_legacy_shared_search_is_requalified_without_rebuying_the_search():
+    person, reason = cl.target(qualification_site(city="Other Fixture City"),
+                               replay_search(searched(OTHER_PERSON), legacy=True))
+    assert person is None and reason == "target_site_location_mismatch"
+
+
+def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home_location():
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["status"] == "verified"
+    assert chosen["site_responsibility"]["proof"]["quote"] == quote
+    assert chosen["proof"]["current_employment"]["company_domain"] == "operator-1.example"
+
+
+@pytest.mark.parametrize("quote", [
+    "Jordan Fixture is Plant Manager of Synthetic Operator 1 and visited 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager of Synthetic Operator 1. The plant is at 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager at 2 Example Road, Fixture City, TX for Synthetic Operator 1.",
+    "Jordan Fixture is Plant Manager at 2 Example Road and Avery Placeholder is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1.",
+    "At 1 Example Road, Fixture City, TX, Jordan Fixture is Plant Manager of the other Synthetic Operator 1 facility.",
+])
+def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
+    site = qualification_site(pages=[("https://operator-1.example/news", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
+
+
+def test_later_site_proven_candidate_wins_over_a_company_referral():
+    quote = "Avery Placeholder is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    chosen, _ = cl.target(site, replay_search(searched(OTHER_PERSON), searched(PERSON)))
+    assert chosen["name"] == PERSON and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():
+    person = searched(OTHER_PERSON, title="Operations Director")
+    person["location"]["city"] = "Other Fixture City"
+    chosen, _ = cl.target(qualification_site(), replay_search(person))
+    assert chosen["site_responsibility"] == {
+        "site_key": "site-one", "status": "unknown", "route": "corporate_referral",
+        "reason": "target_site_location_mismatch", "proof": None}
 
 
 def test_enrichment_profile_checks_names_and_employment_history():

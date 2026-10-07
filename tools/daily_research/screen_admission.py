@@ -297,6 +297,9 @@ def lookup_recipients(record, contact, domains, person_proof=None, *, today=None
                     {key: proof[key] for key in ("url", "quote", "level", "text_sha256")} if corroborated else None}
         else:
             return []
+        kept["site_responsibility"] = person.get("site_responsibility") or {
+            "site_key": contact["site_key"], "status": "unknown", "route": "corporate_referral",
+            "reason": "target_site_responsibility_unproven", "proof": None}
     except (AttributeError, KeyError, TypeError, StopIteration):
         return []
     return [{"schema_version": RECIPIENT, "route": route, "rank": ROUTES.index(route) + 1, "label": LABELS[route],
@@ -308,6 +311,15 @@ def recipient_choice(published, looked_up=()):
     """The first available recipient in the owner's order (ROUTES), or None."""
     choices = [item for item in (published, *looked_up) if item]
     return min(choices, key=lambda item: item["rank"]) if choices else None
+
+
+def recipient_question(candidate, recipient, question):
+    """A referral asks who covers this facility; the screen's task hypothesis remains separately intact."""
+    responsibility = ((recipient or {}).get("person") or {}).get("site_responsibility") or {}
+    if responsibility.get("route") == "corporate_referral":
+        return (f"Could you direct me to the person responsible for {candidate['task']} at "
+                f"{candidate['site']} ({candidate['location']})?")
+    return question
 
 
 def admission_entry(workspace, record, stored, contact, stored_contact, lookup=None, *, today=None):
@@ -338,6 +350,9 @@ def admission_entry(workspace, record, stored, contact, stored_contact, lookup=N
                  "evidence_sha256": contact["evidence_sha256"], "rule_version": contact["rule_version"],
                  "checked_on": contact["checked_on"], "decision_role": contact["decision_role"],
                  "recipient_kind": contact["recipient"]["kind"], "email_level": contact["email"]["level"]}
+    text = recipient_question(candidate, recipient, text)
+    if not one_question(text):
+        _refuse("screen_admission_question_mismatch")
     entry = {"site_key": record["site_key"], "run_id": record["run_id"], "result_sha256": record["result_sha256"],
              "evidence_sha256": record["evidence_sha256"], "checked_on": record["checked_on"], "origin": record["origin"],
              "calibration": record["calibration"], "task_focus": record["task_focus"], "input": record["input"],
@@ -477,6 +492,28 @@ def recipient_problem(value, entry):
             wanted = "public_quote" if route == "quoted_person_looked_up_email" else "provider_sourced"
             if person.get("source") != wanted or not _text(person.get("name"), 200) or not _text(person.get("title"), 200):
                 return code
+            responsibility = person.get("site_responsibility")
+            if (not isinstance(responsibility, dict)
+                    or set(responsibility) != {"site_key", "status", "route", "reason", "proof"}
+                    or responsibility["site_key"] != entry["site_key"]):
+                return code
+            if responsibility["route"] == "corporate_referral":
+                if (responsibility["status"] != "unknown" or responsibility["proof"] is not None
+                        or responsibility["reason"] not in
+                        ("target_site_responsibility_unproven", "target_site_location_mismatch")):
+                    return code
+            elif responsibility["route"] == "site_contact":
+                scope = responsibility["proof"]
+                target = {"address": site_screen.parse_location(entry["candidate"]["location"]),
+                          "task_input": {"site_name": entry["candidate"]["site"]}}
+                if (responsibility["status"] != "verified" or responsibility["reason"] is not None
+                        or not isinstance(scope, dict) or scope.get("level") != "verified_on_page"
+                        or not _url(scope.get("url")) or not _text(scope.get("quote"), 1200)
+                        or not isinstance(scope.get("text_sha256"), str) or not HEX.fullmatch(scope["text_sha256"])
+                        or not contact_lookup.site_role_quote(target, person, scope["quote"])):
+                    return code
+            else:
+                return code
             if route == "quoted_person_looked_up_email" and (
                     not _url(person.get("url")) or person.get("level") not in site_screen.PROVEN
                     or not _text(person.get("quote"), 1200) or not isinstance(person.get("text_sha256"), str)
@@ -553,7 +590,8 @@ def entry_problem(entry):
         ordered = [check for check in verification.OPEN_CHECKS if check in checks["open_checks"]]
         if (hypothesis != {"tier": "outreach_ready", "label": LABEL, "rule_version": site_screen.SCREEN_RULE,
                            "outreach_rule_version": verification.OUTREACH_RULE_VERSION, "open_checks": ordered,
-                           "question_template": checks["question_template"], "question": checks["question"]}
+                           "question_template": checks["question_template"],
+                           "question": recipient_question(candidate, entry["recipient"], checks["question"])}
                 or len(ordered) != len(checks["open_checks"]) or not set(ALWAYS_OPEN) <= set(ordered)
                 or not one_question(checks["question"])):
             return "screen_admission_question_mismatch"
@@ -659,10 +697,12 @@ def contact_cells(recipient):
     if not recipient:
         return {"name": "", "details": "", "source_url": ""}
     person = recipient.get("person") or {}
+    responsibility = person.get("site_responsibility") or {}
     source = ((recipient.get("published") or {}).get("url") or (person.get("corroboration") or {}).get("url")
               or person.get("url") or "")
+    suffix = "; corporate referral, target-site responsibility unknown" if responsibility.get("route") == "corporate_referral" else ""
     return {"name": person.get("name", "") if recipient["route"] in PERSON_ROUTES else "",
-            "details": f"{recipient['address']} ({recipient['label']})", "source_url": source}
+            "details": f"{recipient['address']} ({recipient['label']}{suffix})", "source_url": source}
 
 
 def sheets_payload(admission_id, entries, duplicates):

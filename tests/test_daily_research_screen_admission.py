@@ -317,12 +317,14 @@ def lookup(workspace, key, **changes):
                "current_employment": {"field": "employment.current.is_current",
                "company_domain": value["address"].rpartition("@")[2], "start_at": None}}, "corroboration": {"corroborated": person.get("corroborated", False),
                **(person.get("corroboration") or {})}}
+    if "site_responsibility" in person:
+        current["site_responsibility"] = person["site_responsibility"]
     item = {"source": "provider_lookup", "usable": True, "address": value["address"], "person": current,
             "operator_domain": value["address"].rpartition("@")[2], "provider": {**provider,
             "status": "DELIVERABLE" if provider.get("status") == "valid" else "CATCH_ALL",
             "verification": provider.get("status"), "score": None}}
     value = {"schema_version": "blueprint.contact-lookup.v1" if value["schema_version"] == "blueprint.site-contact-lookup.v1" else "invalid",
-             "rule_version": "blueprint.contact-lookup-rule.v1", "site_key": key, "lookups": [item]}
+             "rule_version": "blueprint.contact-lookup-rule.v2", "site_key": key, "lookups": [item]}
     folder = workspace.root / "synthetic-lookups"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{key}.json").write_text(json.dumps(value))
@@ -361,6 +363,48 @@ def test_final_lookup_adds_provider_routes_only_with_full_provenance(tmp_path):
                     {"schema_version": "blueprint.site-contact-lookup.v0"}):
         lookup(workspace, key, **changes)
         assert built(workspace)[0]["results"][0]["recipient"]["route"] == "published_team_inbox", changes
+
+
+def test_unknown_site_responsibility_is_a_referral_in_bundle_and_sheet_question(tmp_path):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, None)])
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={
+        "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager", "corroborated": False})
+    bundle, raw, _ = built(workspace)
+    entry = bundle["results"][0]
+    recipient = entry["recipient"]
+    assert recipient["route"] == "provider_sourced_uncorroborated"
+    assert recipient["provider"]["verification_status"] == "DELIVERABLE"
+    assert recipient["person"]["site_responsibility"]["status"] == "unknown"
+    assert entry["hypothesis"]["question"].startswith("Could you direct me to the person responsible for ")
+    assert entry["candidate"]["site"] in entry["hypothesis"]["question"]
+    assert sa.load_bundle(raw) == bundle
+    assert "corporate referral, target-site responsibility unknown" in sa.contact_cells(recipient)["details"]
+    changed = json.loads(raw)
+    changed["results"][0]["hypothesis"]["question"] = entry["checks"]["question"]
+    with pytest.raises(sa.AdmissionError, match="screen_admission_question_mismatch"):
+        sa.load_bundle(canonical(changed).encode())
+    changed = json.loads(json.dumps(recipient))
+    changed["person"]["site_responsibility"] = {
+        "site_key": key, "status": "verified", "route": "site_contact", "reason": None,
+        "proof": {"url": "https://operator-1.example/team", "level": "verified_on_page", "text_sha256": "e" * 64,
+                  "quote": "Jordan Fixture is Plant Manager at 2 Example Road, Fixture City, TX."}}
+    assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
+
+
+@pytest.mark.parametrize("responsibility", [
+    {"site_key": "a" * 64, "status": "unknown", "route": "corporate_referral",
+     "reason": "target_site_responsibility_unproven", "proof": None},
+    {"site_key": None, "status": "unknown", "route": "hold",
+     "reason": "target_site_location_mismatch", "proof": None},
+])
+def test_held_or_another_site_lookup_cannot_replace_the_team_inbox(tmp_path, responsibility):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, team(1))])
+    if responsibility["site_key"] is None:
+        responsibility = {**responsibility, "site_key": key}
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={
+        "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager",
+        "corroborated": False, "site_responsibility": responsibility})
+    assert built(workspace)[0]["results"][0]["recipient"]["route"] == "published_team_inbox"
     # A published verified person email outranks every looked-up address.
     workspace, (key,) = prepared(tmp_path / "published", [(1, FOCUS_A, {})])
     lookup(workspace, key)

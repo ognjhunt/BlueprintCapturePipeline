@@ -18,8 +18,9 @@ For each contact record of the out dir (``site_screen.stage_records``, under the
 * a named person the contact stage proved by a quote (``site_screen.PROVEN``) whose dated source is at most 18 months
   old gets one work-email enrichment (``quoted_person``);
 * otherwise, and only when the run names ``PERSON_SEARCH_DECISION``, one people search on the operator's proven domain
-  for ``TITLES`` keeps the first person whom FullEnrich places at that domain now, in a listed role, and that person gets
-  one enrichment (``provider_sourced``). The employment field relied on is recorded, and the pages the site screen
+  for ``TITLES`` keeps minimal current-role candidates, qualified separately for each target facility. A proven site
+  contact takes priority over an explicitly unknown corporate referral; mismatched local managers are held. The selected
+  person gets one enrichment (``provider_sourced``). The employment field relied on is recorded, and the pages the site screen
   already read and kept for the site are checked for the person with their title (``corroboration``).
 
 A work email counts only when FullEnrich marks it ``DELIVERABLE`` (``HIGH_PROBABILITY`` is its catch-all estimate, and
@@ -54,7 +55,7 @@ from decimal import Decimal, InvalidOperation
 from tools.daily_research import site_screen as ss  # Standard library only, like this module.
 
 RECORD = "blueprint.contact-lookup.v1"
-RULE = "blueprint.contact-lookup-rule.v1"
+RULE = "blueprint.contact-lookup-rule.v2"
 RECIPIENT = "blueprint.contact-recipient.v1"
 JOURNAL = "blueprint.contact-lookup.journal.v1"
 OWNER_CEILING = "blueprint.contact-lookup.owner-ceiling.v1"
@@ -339,6 +340,7 @@ def candidate(person, operator_domains):
     place = person.get("location") if isinstance(person.get("location"), dict) else {}
     location = ", ".join(part for part in (_text(place.get(key)) for key in ("city", "region", "country")) if part)
     return {"name": name, "title": title, "location": location or None,
+            "location_fields": {key: _text(place.get(key)) for key in ("city", "region", "country")},
             "current_employment": {"field": field, "company_domain": _text(job["company"].get("domain")).lower(),
                                    "start_at": _text(job.get("start_at")) or None}}, None
 
@@ -605,8 +607,8 @@ def _rejected():
 
 
 def seal_search(site):
-    """A people search answer, kept as its count, the first current person in a listed role (only their name, title,
-    location and current employment) and the codes of the others: no other person data."""
+    """Keep minimal current-role candidates so a shared company search can be qualified for each target site.
+    Never retain rejected people's names, profiles, addresses or phone numbers."""
     def seal(status, raw):
         if status >= 400:
             return _rejected()
@@ -616,15 +618,16 @@ def seal_search(site):
             raise TypeError("people")
         metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
         credits = _credits(metadata.get("credits"))
-        chosen, passed = None, Counter()
+        candidates, passed = [], Counter()
         for person in people:
             found, code = candidate(person, site["operator_domains"])
             if found is None:
                 passed[code] += 1
-            elif chosen is None:
-                chosen = found
+            elif len(candidates) < SEARCH_LIMIT:
+                candidates.append(found)
         return {"event": "answered", "credits": amount(Decimal("0.25") * len(people) if credits is None else credits),
-                "observation": {"outcome": "searched", "people": len(people), "candidate": chosen,
+                "observation": {"outcome": "searched", "people": len(people),
+                                "candidate": candidates[0] if candidates else None, "candidates": candidates,
                                 "passed_over": dict(passed), "checked_at": ss._now()}}
     return seal
 
@@ -711,6 +714,7 @@ def lookup_site(workspace, contact, screen, *, today=None):
         kept += [(url, page["text"], page.get("sha256")) for url, page in sorted(pages.items()) if isinstance(page, dict)
                  and page.get("state") == "ok" and isinstance(page.get("text"), str) and not ss.never_fetch(url)]
     return {"site_key": contact["site_key"], "contact": contact,
+            "address": screen.get("address") or {}, "task_input": ss.contact_input(screen),
             "person": contact["person"] if isinstance(contact.get("person"), dict) else {},
             "published_person_email": choose_recipient(contact, today=today)["choice"] == "published_person_email",
             "operator": _text(screen["answers"].get("operator_identity")) or _text(screen["input"].get("operator")),
@@ -742,9 +746,11 @@ def quoted_person(site):
         return None, "person_not_current"
     if not holds_title(site.get("person_quote", ""), person.get("title")):
         return None, "person_role_unproven"
-    return {"name": person["name"], "title": person.get("title"), "location": None, "sourcing": "quoted_person",
+    found = {"name": person["name"], "title": person.get("title"), "location": None, "sourcing": "quoted_person",
             "proof": {"source": "site_contact", "url": person.get("url"), "level": person["level"],
-                      "date": person.get("date"), "current": True}, "corroboration": None}, None
+                      "date": person.get("date"), "current": True}, "corroboration": None}
+    found["site_responsibility"] = site_responsibility(site, found)
+    return found, None
 
 
 def corroborate(site, person):
@@ -767,6 +773,59 @@ def search_body(site):
             "current_position_titles": [{"value": title} for title in TITLES], "limit": SEARCH_LIMIT, "offset": 0}
 
 
+def site_role_quote(site, person, sentence):
+    """A role tied to this facility, rather than a person's visit or a company-wide name/title match."""
+    anchors = ss.site_anchors(site)
+    specific = [item for item in anchors if item["kind"] == "street"] or [
+        item for item in anchors if item["kind"] == "site_name_city"]
+    normalized = ss.words(sentence)
+    role_scope = re.search(r"\b" + re.escape(ss.words(person["name"])) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}"
+                           + re.escape(ss.words(person["title"])) + r"\s+(?:at|for|of)\s+", normalized)
+    tail = normalized[role_scope.end():] if role_scope else ""
+    # Another clause/person's facility is not this role's scope. Prefer an explicit referral when ambiguous.
+    tail = re.split(r"\b(?:and|but|while|whereas)\b|\b" + re.escape(ss.words(person["title"])) + r"\b", tail)[0]
+    scoped = [anchor for anchor in specific if
+              (anchor["kind"] == "street" and ss.has_phrase(ss._canon(anchor["street"], ss.STREET_WORDS),
+                                                           ss._canon(tail, ss.STREET_WORDS)))
+              or (anchor["kind"] == "site_name_city" and set(anchor["name"]) <= set(tail.split())
+                  and ss.has_phrase(ss._canon(anchor["city"], ss.CITY_WORDS), ss._canon(tail, ss.CITY_WORDS)))]
+    return bool(role_scope and ss.names_site(sentence, scoped)
+                and not set(normalized.split()) & {"visited", "visits", "visiting", "former", "formerly",
+                                                   "retired", "not", "attended", "attending", "said", "says",
+                                                   "discussed", "discusses", "opened", "opening", "near"})
+
+
+def site_responsibility(site, person):
+    """Location is a mismatch signal, never proof of responsibility. Only a retained role/site quote proves scope.
+    Unknown scope stays usable as an explicit corporate referral; off-site local managers are held."""
+    title = ss.words(person["title"])
+    for url, text, text_sha256 in site["kept_pages"]:
+        if not ss.names_operator(text, site["operator"]):
+            continue
+        for sentence in ss.sentences(text):
+            if site_role_quote(site, person, sentence):
+                return {"site_key": site["site_key"], "status": "verified", "route": "site_contact",
+                        "reason": None, "proof": {"url": url, "quote": _text(sentence, 1200),
+                        "level": "verified_on_page", "text_sha256": text_sha256 or ss._sha256(text.encode())}}
+    place = person.get("location_fields")
+    if not isinstance(place, dict):  # Old sealed journals kept a display location only; no new paid search.
+        parsed = ss.parse_location(person.get("location"))
+        place = {"city": parsed.get("city"), "region": parsed.get("state")}
+    address = site.get("address") or {}
+    city, target_city = place.get("city"), address.get("city")
+    region = _text(place.get("region"))
+    state = region.upper() if region.upper() in ss.STATE_NAMES else ss.STATE_CODES.get(ss.normalized(region))
+    mismatch = bool(city and target_city and ss._canon(city, ss.CITY_WORDS) != ss._canon(target_city, ss.CITY_WORDS)
+                    or state and address.get("state") and state != address["state"]
+                    or place.get("country") and ss.normalized(place["country"]) not in
+                    {"us", "usa", "united states", "united states of america"})
+    corporate = bool(set(title.split()) & {"owner", "president", "director"})
+    return {"site_key": site["site_key"], "status": "unknown",
+            "route": "hold" if mismatch and not corporate else "corporate_referral",
+            "reason": "target_site_location_mismatch" if mismatch else "target_site_responsibility_unproven",
+            "proof": None}
+
+
 def target(site, calls, search=True):
     """The person this site's enrichment is for, or (None, code). A people search, when allowed and needed, goes
     through ``calls``."""
@@ -782,12 +841,21 @@ def target(site, calls, search=True):
     found = call["observation"] if call is not None and call["state"] == "answered" else None
     if found is None or not found.get("candidate"):
         return None, code if found is None else "no_current_person_found"
-    chosen = found["candidate"]
-    person = {"name": chosen["name"], "title": chosen["title"], "location": chosen["location"],
-              "sourcing": "provider_sourced", "proof": {"source": "fullenrich_people_search", "request_digest": key,
-                                                         "current_employment": chosen["current_employment"]}}
-    person["corroboration"] = corroborate(site, person)
-    return person, None
+    candidates = found.get("candidates") if isinstance(found.get("candidates"), list) else [found["candidate"]]
+    referral = None
+    for chosen in candidates:
+        person = {"name": chosen["name"], "title": chosen["title"], "location": chosen["location"],
+                  "location_fields": chosen.get("location_fields"), "sourcing": "provider_sourced",
+                  "proof": {"source": "fullenrich_people_search", "request_digest": key,
+                            "current_employment": chosen["current_employment"]}}
+        person["corroboration"] = corroborate(site, person)
+        person["site_responsibility"] = site_responsibility(site, person)
+        route = person["site_responsibility"]["route"]
+        if route == "site_contact":
+            return person, None
+        if route == "corporate_referral" and referral is None:
+            referral = person
+    return (referral, None) if referral is not None else (None, "target_site_location_mismatch")
 
 
 def enrich_identity(site, person):
@@ -865,7 +933,7 @@ def result(site, person, key, call):
             "address": address if usable else None, "operator_domain": site["operator_domain"], "person": person}
 
 
-def usable_lookup(lookup, *, operator_domains=None):
+def usable_lookup(lookup, *, operator_domains=None, site_key=None):
     """Recheck the provider status, person label and business address at the admission boundary."""
     if not isinstance(lookup, dict) or lookup.get("source") != "provider_lookup" or lookup.get("usable") is not True:
         return False
@@ -875,6 +943,28 @@ def usable_lookup(lookup, *, operator_domains=None):
             or not isinstance(person, dict) or person.get("sourcing") not in ("quoted_person", "provider_sourced")
             or name_parts(person.get("name")) is None):
         return False
+    responsibility = person.get("site_responsibility")
+    if responsibility is not None:
+        if (not isinstance(responsibility, dict)
+                or set(responsibility) != {"site_key", "status", "route", "reason", "proof"}
+                or site_key is not None and responsibility.get("site_key") != site_key):
+            return False
+        if responsibility["route"] == "corporate_referral":
+            if (responsibility["status"] != "unknown" or responsibility["proof"] is not None
+                    or responsibility["reason"] not in
+                    ("target_site_responsibility_unproven", "target_site_location_mismatch")):
+                return False
+        elif responsibility["route"] == "site_contact":
+            proof = responsibility["proof"]
+            if (responsibility["status"] != "verified" or responsibility["reason"] is not None
+                    or not isinstance(proof, dict) or proof.get("level") != "verified_on_page"
+                    or not ss._public_url(proof.get("url")) or ss.never_fetch(proof.get("url"))
+                    or not _text(proof.get("quote"), 1200)
+                    or not isinstance(proof.get("text_sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", proof["text_sha256"])):
+                return False
+        else:
+            return False
     domain = lookup.get("operator_domain")
     if not isinstance(domain, str) or not domain:
         return False
@@ -883,7 +973,7 @@ def usable_lookup(lookup, *, operator_domains=None):
     return kept is not None and kept == address and on_domain(domain, domains)
 
 
-def _choice(rank, *, address=None, lookup=None):
+def _choice(rank, *, address=None, lookup=None, site_key=None):
     base = {"schema_version": RECIPIENT, "rank": rank, "choice": CHOICES[rank - 1]}
     if lookup is None:
         kind = {1: "person_email", 3: "team_inbox", 4: "general_inbox"}.get(rank, "none")
@@ -897,7 +987,9 @@ def _choice(rank, *, address=None, lookup=None):
         labels.append("corroborated" if corroborated else "uncorroborated")
     return {**base, "kind": "person_email", "source": "provider_lookup", "labels": labels, "address": lookup["address"],
             "person": {"name": person["name"], "title": person.get("title"), "sourcing": person["sourcing"],
-                       "corroborated": corroborated},
+                       "corroborated": corroborated, "site_responsibility": person.get("site_responsibility") or {
+                           "site_key": site_key, "status": "unknown", "route": "corporate_referral",
+                           "reason": "target_site_responsibility_unproven", "proof": None}},
             "provider": {name: provider.get(name) for name in ("name", "status", "checked_at", "request_digest")}}
 
 
@@ -925,8 +1017,8 @@ def choose_recipient(contact_record, lookups=(), *, today=None):
     if kind == "person_email":
         return _choice(1, address=address)
     for lookup in lookups if isinstance(lookups, (list, tuple)) else ():
-        if usable_lookup(lookup, operator_domains=record.get("operator_domains")):
-            return _choice(2, lookup=lookup)
+        if usable_lookup(lookup, operator_domains=record.get("operator_domains"), site_key=record.get("site_key")):
+            return _choice(2, lookup=lookup, site_key=record.get("site_key"))
     if kind in ("team_inbox", "general_inbox"):
         return _choice(3 if kind == "team_inbox" else 4, address=address)
     return _choice(5)
