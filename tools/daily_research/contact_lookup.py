@@ -919,7 +919,9 @@ def employment_contradiction(person, sentence, known_names):
                             r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?"
                             r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|step(?:ped|s|ping)?\s+down|no\s+longer)"
                             r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
-    cuts = [0] + [match.end() for match in re.finditer(r";|,\s*(?=(?:now|currently)\b)|\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE)
+    cuts = [0] + [match.end() for match in re.finditer(
+        r";|,\s*(?=(?:now|currently|then|subsequently|later|afterwards?)\b)|\b(?:and|but|while|whereas)\b",
+        sentence, re.IGNORECASE)
                   if not any(start <= match.start() < end for start, end in protected)
                   and not (match.group().lower() == "and" and (ss.words(sentence[:match.start()]) == name
                            or coordinated_subject(sentence[:match.start()], name)))] + [len(sentence)]
@@ -968,6 +970,15 @@ def employment_contradiction(person, sentence, known_names):
         if match.group("departure"):
             object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
             departure = match.group("departure").lower()
+            ended_employer = re.match(r"^(?:from|at|with)\s+(?:(?:the|an?)\s+)?(.+)$", employer)
+            if ended_employer:
+                destination = ended_employer.group(1)
+                generic = {"company", "employer", "business", "organization", "firm", "plant", "facility", "site",
+                           "job", "role", "position", "employment"}
+                if (destination.split()[0] not in generic and not holds_title(destination, person["title"])
+                        and not any(entity and (destination == entity or destination.startswith(entity + " "))
+                                    for entity in known_names)):
+                    continue  # Ending a named rival job does not end the supported current target role.
             if departure.startswith("retire") or departure in {"fired", "dismissed", "terminated", "laid off"}:
                 passive = re.search(r"\b(?:is|was|were|been|being)\s*$", ss.words(subject))
                 self_role = re.match(r"^(?:job|role|position|employment|tenure|appointment|service)\b", object_text)
@@ -1130,7 +1141,8 @@ def site_responsibility(site, person):
         for sentence in sentences:
             named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
             pronoun = bool(re.match(r"\s*(?:(?:he|she|they|his|her|their)\b"
-                                    r"|(?:now|currently)\s+(?:works?|serves|is\s+employed)\b)",
+                                    r"|(?:now|currently|then|subsequently|later|afterwards?)\s+"
+                                    r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
                                     employment_sentence(sentence), re.IGNORECASE))
             if (named or linked and pronoun) and employment_contradiction(person, sentence, known_names):
                 return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
