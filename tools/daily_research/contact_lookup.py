@@ -910,6 +910,11 @@ def employment_contradiction(person, sentence, known_names):
         if not match:
             continue
         subject = clause[:match.start()].strip()
+        reported = re.search(r"\b(?:said|stated|reported|confirmed|announced|noted|explained|told|mentioned|recalled)"
+                             r"\s+(?:that\s+)?(.+)$", ss.words(subject))
+        if reported and not (ss.has_phrase(name, reported.group(1))
+                             or re.match(r"^(?:he|she|they|his|her|their|i|my)\b", reported.group(1))):
+            continue
         possessive = re.search(r"\b(?:" + re.escape(name) + r"\s+s|his|her|their)\s+(.+)", ss.words(subject))
         if possessive:
             owned = re.sub(r"^(?:(?:the|current|former|previous|first|last)\s+)+", "", possessive.group(1))
@@ -919,7 +924,7 @@ def employment_contradiction(person, sentence, known_names):
         # introduce a subject; known personal names/pronouns continue the preceding role statement.
         named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
                  if word.isupper() or word[:1].isupper() and word[1:].islower()} - {
-            "he", "she", "they", "his", "her", "their", "now", "currently", "still", "also", "recently"}
+            "he", "she", "they", "his", "her", "their", "i", "my", "now", "currently", "still", "also", "recently"}
         named -= set(title_words(person["title"])) | TITLE_FILLER
         # A full subject immediately before its verb binds the claim despite a date/editorial preamble.
         if re.search(r"\b" + re.escape(name) + r"(?:\s+(?:is|was|has|had|have|been|an?|now|currently|recently))*$",
@@ -938,6 +943,8 @@ def employment_contradiction(person, sentence, known_names):
                     or match.group("departure").lower().startswith("step")
                     and (not employer or holds_title(employer, person["title"]))
                     or set(object_text.split()) & {"job", "role", "position", "employment", "corporation", "corp", "inc", "llc"}
+                    or re.match(r"^(?:company|employer|business|organization|firm)"
+                                r"(?:$|\s+(?:in|on|to|for|after|before|during)\b)", object_text)
                     or re.match(r"^(?:to\s+)?(?:join|work|serve|be\s+employed)\b", employer)
                     or employer.startswith("for ") and not set(object_text.split()) & {
                         "conference", "meeting", "lunch", "vacation", "trip", "training", "workshop", "airport", "home"}

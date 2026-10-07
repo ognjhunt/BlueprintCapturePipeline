@@ -787,6 +787,10 @@ def test_departure_pronoun_after_a_different_named_person_preserves_scope():
     "Jordan Fixture, the PLANT MANAGER, retired.",
     "Jordan Fixture stepped down as Plant Manager in 2025.",
     "He stepped down as Plant Manager.",
+    "Jordan Fixture left the company in 2025.",
+    "Jordan Fixture departed the company.",
+    "Jordan Fixture left his employer.",
+    "Jordan Fixture said he resigned.",
 ])
 def test_explicit_ended_employment_and_same_subject_updates_override_old_role(transition):
     quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
@@ -807,6 +811,9 @@ def test_explicit_ended_employment_and_same_subject_updates_override_old_role(tr
     "Jordan Fixture's assistant resigned.",
     "His assistant resigned.",
     "Jordan Fixture stepped down from the platform.",
+    "Jordan Fixture said the manager resigned.",
+    "Jordan Fixture confirmed an employee was terminated.",
+    "Jordan Fixture left the company meeting.",
 ])
 def test_affirming_target_employment_with_a_determiner_preserves_scope(affirmation):
     quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
