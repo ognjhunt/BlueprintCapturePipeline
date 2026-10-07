@@ -724,6 +724,27 @@ def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant
     assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
 
 
+@pytest.mark.parametrize("transition", ["Jordan Fixture resigned.", "Jordan Fixture now works for Rival Works."])
+def test_later_same_person_departure_invalidates_page_scope_proof(transition):
+    text = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+            + transition)
+    site = qualification_site(pages=[("https://operator-1.example/team", text, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
+
+
+@pytest.mark.parametrize("name", ["Jordan Fixture", "Jordan Quit"])
+def test_another_person_departure_does_not_erase_retained_scope(name):
+    text = (f"{name} is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+            "Avery Placeholder resigned.")
+    site = qualification_site(pages=[("https://operator-1.example/team", text, "d" * 64)])
+    person = searched(name)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
 def test_later_site_proven_candidate_wins_over_a_company_referral():
     quote = "Avery Placeholder is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
     site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])

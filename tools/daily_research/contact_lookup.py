@@ -52,6 +52,7 @@ import unicodedata
 from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 
 from tools.daily_research import site_screen as ss  # Standard library only, like this module.
 
@@ -873,32 +874,23 @@ def quoted_role_address(person, sentence):
     return address
 
 
-def site_role_quote(site, person, sentence):
-    """A role tied to this facility, rather than a person's visit or a company-wide name/title match."""
-    given_address = site.get("address") or {}
-    names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
-    sentence = hash_units(sentence, names)
-    street, target_units = address_units(ss.words(hash_units(given_address.get("street") or "")))
-    anchors = ss.site_anchors({**site, "address": {**given_address, "street": street}})
-    specific = [item for item in anchors if item["kind"] == "street"] or [
-        item for item in anchors if item["kind"] == "site_name_city"]
-    normalized = ss.words(sentence)
-    cased = re.sub(r"[\W_]+", " ", unicodedata.normalize("NFKC", sentence)).strip()
-    if ss.words(cased) != normalized:
-        return False
+def employment_contradiction(person, sentence, known_names):
+    """Current-role evidence cannot ignore an explicit same-person employment contradiction."""
     name = ss.words(person["name"])
-    tail, scope_offset, preposition = role_complement(person, sentence)
-    role_scope = preposition is not None
-    # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
-    known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
-    known_names |= {name.replace(" and ", " ") for name in known_names}
-    # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
+    sentence = unicodedata.normalize("NFKC", sentence)
+    protected = [match.span() for entity in known_names | {name} if entity
+                 for match in re.finditer(r"\b" + r"[\W_]+".join(re.escape(word) for word in entity.split())
+                                         + r"\b", sentence, re.IGNORECASE)]
     employment = re.compile(r"\b(?:(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at|with)\s+"
                             r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+"
                             r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?|no\s+longer)"
                             r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
-    for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.IGNORECASE)[1:]:
-        match = employment.search(clause)
+    cuts = [0] + [match.end() for match in re.finditer(r"\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE)
+                  if not any(start <= match.start() < end for start, end in protected)] + [len(sentence)]
+    for start, end in pairwise(cuts):
+        clause = sentence[start:end]
+        match = next((found for found in employment.finditer(clause)
+                      if not any(left <= start + found.start() < right for left, right in protected)), None)
         if not match:
             continue
         subject = clause[:match.start()].strip()
@@ -922,10 +914,34 @@ def site_role_quote(site, person, sentence):
                         "conference", "meeting", "lunch", "vacation", "trip", "training", "workshop", "airport", "home"}
                     or match.group("departure").lower() == "no longer"
                     and re.match(r"^(?:works?|worked|serves|employed)\b", employer)):
-                return False
+                return True
             continue
         if not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names):
-            return False
+            return True
+    return False
+
+
+def site_role_quote(site, person, sentence):
+    """A role tied to this facility, rather than a person's visit or a company-wide name/title match."""
+    given_address = site.get("address") or {}
+    names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
+    sentence = hash_units(sentence, names)
+    street, target_units = address_units(ss.words(hash_units(given_address.get("street") or "")))
+    anchors = ss.site_anchors({**site, "address": {**given_address, "street": street}})
+    specific = [item for item in anchors if item["kind"] == "street"] or [
+        item for item in anchors if item["kind"] == "site_name_city"]
+    normalized = ss.words(sentence)
+    cased = re.sub(r"[\W_]+", " ", unicodedata.normalize("NFKC", sentence)).strip()
+    if ss.words(cased) != normalized:
+        return False
+    name = ss.words(person["name"])
+    tail, scope_offset, preposition = role_complement(person, sentence)
+    role_scope = preposition is not None
+    # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
+    known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
+    known_names |= {name.replace(" and ", " ") for name in known_names}
+    if employment_contradiction(person, sentence, known_names):
+        return False
     spans = [match.span() for name in known_names if name
              for match in re.finditer(r"\b" + re.escape(name) + r"\b", tail)]
     for boundary in re.finditer(r"\b(?:and|but|while|whereas)\b|\b" + re.escape(ss.words(person["title"])) + r"\b", tail):
@@ -1001,10 +1017,18 @@ def site_responsibility(site, person):
     """Location is a mismatch signal, never proof of responsibility. Only a retained role/site quote proves scope.
     Unknown scope stays usable as an explicit corporate referral; off-site local managers are held."""
     title = ss.words(person["title"])
+    known_names = [site["task_input"].get("site_name") or "", site.get("operator") or ""]
+    known_names = {ss.words(name.replace("&", " and ")) for name in known_names} | {
+        ss.words(name) for name in known_names}
+    known_names |= {name.replace(" and ", " ") for name in known_names}
     for url, text, text_sha256 in site["kept_pages"]:
         if not ss.names_operator(text, site["operator"]):
             continue
-        for sentence in ss.sentences(text):
+        sentences = ss.sentences(text)
+        if any(ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
+               and employment_contradiction(person, sentence, known_names) for sentence in sentences):
+            continue
+        for sentence in sentences:
             if site_role_quote(site, person, sentence):
                 return {"site_key": site["site_key"], "status": "verified", "route": "site_contact",
                         "reason": None, "proof": {"url": url, "quote": _text(sentence, 1200),
@@ -1018,10 +1042,6 @@ def site_responsibility(site, person):
     assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
     target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
     assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
-    known_names = [site["task_input"].get("site_name") or "", site.get("operator") or ""]
-    known_names = {ss.words(name.replace("&", " and ")) for name in known_names} | {
-        ss.words(name) for name in known_names}
-    known_names |= {name.replace(" and ", " ") for name in known_names}
     named_facility_mismatch = bool(assigned.get("street") and not assigned_street
                                   and site["task_input"].get("site_name")
                                   and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
