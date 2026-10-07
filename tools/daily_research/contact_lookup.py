@@ -18,8 +18,9 @@ For each contact record of the out dir (``site_screen.stage_records``, under the
 * a named person the contact stage proved by a quote (``site_screen.PROVEN``) whose dated source is at most 18 months
   old gets one work-email enrichment (``quoted_person``);
 * otherwise, and only when the run names ``PERSON_SEARCH_DECISION``, one people search on the operator's proven domain
-  for ``TITLES`` keeps the first person whom FullEnrich places at that domain now, in a listed role, and that person gets
-  one enrichment (``provider_sourced``). The employment field relied on is recorded, and the pages the site screen
+  for ``TITLES`` keeps minimal current-role candidates, qualified separately for each target facility. A proven site
+  contact takes priority over an explicitly unknown corporate referral; mismatched local managers are held. The selected
+  person gets one enrichment (``provider_sourced``). The employment field relied on is recorded, and the pages the site screen
   already read and kept for the site are checked for the person with their title (``corroboration``).
 
 A work email counts only when FullEnrich marks it ``DELIVERABLE`` (``HIGH_PROBABILITY`` is its catch-all estimate, and
@@ -47,14 +48,16 @@ import re
 import secrets
 import ssl
 import time
+import unicodedata
 from collections import Counter
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 
 from tools.daily_research import site_screen as ss  # Standard library only, like this module.
 
 RECORD = "blueprint.contact-lookup.v1"
-RULE = "blueprint.contact-lookup-rule.v1"
+RULE = "blueprint.contact-lookup-rule.v2"
 RECIPIENT = "blueprint.contact-recipient.v1"
 JOURNAL = "blueprint.contact-lookup.journal.v1"
 OWNER_CEILING = "blueprint.contact-lookup.owner-ceiling.v1"
@@ -339,6 +342,7 @@ def candidate(person, operator_domains):
     place = person.get("location") if isinstance(person.get("location"), dict) else {}
     location = ", ".join(part for part in (_text(place.get(key)) for key in ("city", "region", "country")) if part)
     return {"name": name, "title": title, "location": location or None,
+            "location_fields": {key: _text(place.get(key)) for key in ("city", "region", "country")},
             "current_employment": {"field": field, "company_domain": _text(job["company"].get("domain")).lower(),
                                    "start_at": _text(job.get("start_at")) or None}}, None
 
@@ -605,8 +609,8 @@ def _rejected():
 
 
 def seal_search(site):
-    """A people search answer, kept as its count, the first current person in a listed role (only their name, title,
-    location and current employment) and the codes of the others: no other person data."""
+    """Keep minimal current-role candidates so a shared company search can be qualified for each target site.
+    Never retain rejected people's names, profiles, addresses or phone numbers."""
     def seal(status, raw):
         if status >= 400:
             return _rejected()
@@ -616,15 +620,16 @@ def seal_search(site):
             raise TypeError("people")
         metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
         credits = _credits(metadata.get("credits"))
-        chosen, passed = None, Counter()
+        candidates, passed = [], Counter()
         for person in people:
             found, code = candidate(person, site["operator_domains"])
             if found is None:
                 passed[code] += 1
-            elif chosen is None:
-                chosen = found
+            elif len(candidates) < SEARCH_LIMIT:
+                candidates.append(found)
         return {"event": "answered", "credits": amount(Decimal("0.25") * len(people) if credits is None else credits),
-                "observation": {"outcome": "searched", "people": len(people), "candidate": chosen,
+                "observation": {"outcome": "searched", "people": len(people),
+                                "candidate": candidates[0] if candidates else None, "candidates": candidates,
                                 "passed_over": dict(passed), "checked_at": ss._now()}}
     return seal
 
@@ -710,7 +715,11 @@ def lookup_site(workspace, contact, screen, *, today=None):
         pages = evidence.get("pages") if isinstance(evidence, dict) and isinstance(evidence.get("pages"), dict) else {}
         kept += [(url, page["text"], page.get("sha256")) for url, page in sorted(pages.items()) if isinstance(page, dict)
                  and page.get("state") == "ok" and isinstance(page.get("text"), str) and not ss.never_fetch(url)]
+    address = screen.get("address") or {}
+    found = ss.found_address({"address": address}, screen["answers"], screen["verification"])
+    address = {**address, **(found or {})}
     return {"site_key": contact["site_key"], "contact": contact,
+            "address": address, "task_input": ss.contact_input(screen),
             "person": contact["person"] if isinstance(contact.get("person"), dict) else {},
             "published_person_email": choose_recipient(contact, today=today)["choice"] == "published_person_email",
             "operator": _text(screen["answers"].get("operator_identity")) or _text(screen["input"].get("operator")),
@@ -742,9 +751,13 @@ def quoted_person(site):
         return None, "person_not_current"
     if not holds_title(site.get("person_quote", ""), person.get("title")):
         return None, "person_role_unproven"
-    return {"name": person["name"], "title": person.get("title"), "location": None, "sourcing": "quoted_person",
+    found = {"name": person["name"], "title": person.get("title"), "location": None, "sourcing": "quoted_person",
             "proof": {"source": "site_contact", "url": person.get("url"), "level": person["level"],
-                      "date": person.get("date"), "current": True}, "corroboration": None}, None
+                      "date": person.get("date"), "current": True}, "corroboration": None}
+    found["site_responsibility"] = site_responsibility(site, found)
+    if found["site_responsibility"]["route"] == "hold":
+        return None, "target_site_location_mismatch"
+    return found, None
 
 
 def corroborate(site, person):
@@ -767,6 +780,432 @@ def search_body(site):
             "current_position_titles": [{"value": title} for title in TITLES], "limit": SEARCH_LIMIT, "offset": 0}
 
 
+def role_scope_suffix(text, known_names, *, allow_news=True):
+    """An address's direct entity/facility qualifier must belong to this retained operator or site."""
+    remaining = ss.words(text)
+    literals = sorted(known_names | {"united states of america", "united states", "usa", "us"}, key=len, reverse=True)
+    while remaining:
+        literal = next((name for name in literals if name and
+                        (remaining == name or remaining.startswith(name + " "))), None)
+        if literal:
+            remaining = remaining[len(literal):].strip()
+            continue
+        postal = re.match(r"^\d{5}(?:\s+\d{4})?(?:\s|$)", remaining)
+        if postal:
+            remaining = remaining[postal.end():].strip()
+            continue
+        word, _, rest = remaining.partition(" ")
+        if word in {"the", "for", "of", "at", "s", "plant", "facility", "site", "factory"}:
+            remaining = rest
+            continue
+        # A separate news predicate does not erase the preceding explicit role complement.
+        return allow_news and word in {"said", "says", "announced", "visited", "visits", "discussed"}
+    return True
+
+
+UNIT = re.compile(r"\b(suite|ste|unit|building|bldg|floor|fl)\s+([a-z0-9-]+)\b", re.IGNORECASE)
+UNIT_KINDS = {"ste": "suite", "bldg": "building", "fl": "floor"}
+
+
+def hash_units(text, protected=()):
+    text = unicodedata.normalize("NFKC", text)
+    spans = [match.span() for name in protected if ss.words(name)
+             for match in re.finditer(r"\b" + r"[^a-z0-9]+".join(re.escape(word) for word in ss.words(name).split())
+                                     + r"\b", text, re.IGNORECASE)]
+    return re.sub(r"#\s*([a-z0-9-]+)\b", lambda match: match.group() if any(
+        match.start() < end and match.end() > start for start, end in spans) else "suite " + match.group(1),
+        text, flags=re.IGNORECASE)
+
+
+def address_units(text, protected=()):
+    """Unit identity is preserved while placement and standard designator spelling are normalized."""
+    spans = [match.span() for name in protected if name
+             for match in re.finditer(r"\b" + re.escape(name) + r"\b", text)]
+    units = set()
+
+    def strip(match):
+        if any(start <= match.start() < end for start, end in spans):
+            return match.group()
+        kind, value = match.groups()
+        kind = UNIT_KINDS.get(kind.lower(), kind.lower())
+        units.add((kind, value.lower().replace("-", "")))
+        return " "
+    return UNIT.sub(strip, text), units
+
+
+def role_complement(person, sentence):
+    normalized = ss.words(sentence)
+    name = ss.words(person["name"])
+    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current|now|currently|new|recently)\s+){0,5}", normalized)
+    if start:
+        description = normalized[start.end():]
+        for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
+            role = description[:preposition.start()]
+            if (holds_title(role, person["title"])
+                    and set(role.split()) <= set(title_words(person["title"])) | TITLE_FILLER):
+                offset = len(normalized[:start.end()].split()) + len(description[:preposition.end()].split())
+                return description[preposition.end():], offset, preposition.group().strip()
+    return "", 0, None
+
+
+def quoted_role_address(person, sentence):
+    tail, offset, preposition = role_complement(person, sentence)
+    if preposition is None or set(tail.split()) & {"whose", "which", "headquarters", "hq"}:
+        return {}
+    raw = unicodedata.normalize("NFKC", sentence)
+    tokens = list(re.finditer(r"[^\W_]+", raw))
+    if offset >= len(tokens) or ss.words(" ".join(token.group() for token in tokens)) != ss.words(raw):
+        return {}
+    complement = raw[tokens[offset].start():]
+    for boundary in re.finditer(r"\b(?:and|but|while|whereas|for)\b", complement, re.IGNORECASE):
+        prefix = complement[:boundary.start()].rstrip(" .;")
+        location = ss.parse_location(prefix)
+        if (location.get("city") and (location.get("state") or ss.street_anchor(location.get("street")))
+                or ss.street_anchor(prefix)):
+            complement = prefix
+            break
+    address = ss.parse_location(complement.rstrip(" .;"))
+    city, state = address.get("city"), address.get("state")
+    if not state and (ss.street_anchor(city) or UNIT.fullmatch(city or "")):
+        return {"street": complement.rstrip(" .;")}
+    if (not city or not re.search(ss.city_pattern(city), complement)
+            or not (state or ss.street_anchor(address.get("street")))):
+        return {}
+    return address
+
+
+def employment_sentence(sentence):
+    """Remove temporal/editorial preambles before identifying the employment subject."""
+    return re.sub(r"^\s*(?:(?:in|on|as\s+of|during|by)\b[^,;:.!?]{1,80},"
+                  r"|(?:update|note|correction|announcement|news)\s*:)\s*", "",
+                  unicodedata.normalize("NFKC", sentence), flags=re.IGNORECASE)
+
+
+def coordinated_subject(subject, person_name):
+    """An explicit list of named subjects includes the target; role clauses are not subject lists."""
+    subject = re.sub(r"\b(?:along\s+with|as\s+well\s+as|together\s+with)\b", "and", subject, flags=re.IGNORECASE)
+    groups = [part.strip() for part in re.split(r"\s+and\s+|,", subject, flags=re.IGNORECASE) if part.strip()]
+    if len(groups) < 2 or not any(ss.words(part) == person_name for part in groups):
+        return False
+    return all(ss.words(part) == person_name or 2 <= len(part.split()) <= 5
+               and all(word[:1].isupper() for word in part.split()) for part in groups)
+
+
+def employment_contradiction(person, sentence, known_names):
+    """True contradicts the role; None leaves multi-predicate scope unqualified; False preserves it."""
+    name = ss.words(person["name"])
+    sentence = employment_sentence(sentence)
+    if sentence.rstrip().endswith("?"):
+        return False
+    role_sentence = re.sub(r"^\s*(?:he|she|they)\b", person["name"], sentence, flags=re.IGNORECASE)
+    role_employer, _, role_preposition = role_complement(person, role_sentence)
+    role_address = quoted_role_address(person, role_sentence)
+    if role_preposition and role_address:
+        # A street-qualified role can still explicitly name a different employer.
+        employer_suffix = re.search(r"\bfor\s+(.+)$", role_employer)
+        pure_location = ss.street_anchor(role_address.get("street")) or not role_address.get("street")
+        role_employer = employer_suffix.group(1) if employer_suffix else "" if pure_location else role_employer
+    if role_preposition and role_employer:
+        employers = {role_employer, re.sub(r"^(?:the|an?)\s+", "", role_employer)}
+        if not any(entity and (value == entity or value.startswith(entity + " "))
+                   for entity in known_names for value in employers):
+            return True
+    protected = [match.span() for entity in known_names | {name} if entity
+                 for match in re.finditer(r"\b" + r"[\W_]+".join(re.escape(word) for word in entity.split())
+                                         + r"\b", sentence, re.IGNORECASE)]
+    employment = re.compile(r"\b(?:(?P<employment>works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves|served)"
+                            r"(?:\s+as\s+[^\n.,;:]{1,120}?)?\s+(?:for|by|at|with)\s+"
+                            r"|(?P<transition>join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+)"
+                            r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?"
+                            r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|step(?:ped|s|ping)?\s+down|no\s+longer)"
+                            r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
+    cuts = [0] + [match.end() for match in re.finditer(
+        r";|,\s*(?=(?:now|currently|then|subsequently|later|afterwards?)\b)|\b(?:and|but|while|whereas)\b",
+        sentence, re.IGNORECASE)
+                  if not any(start <= match.start() < end for start, end in protected)
+                  and not (match.group().lower() == "and" and (ss.words(sentence[:match.start()]) == name
+                           or coordinated_subject(sentence[:match.start()], name)))] + [len(sentence)]
+    unqualified = False
+    for start, end in pairwise(cuts):
+        clause = sentence[start:end]
+        predicates = [found for found in employment.finditer(clause)
+                      if not any(left <= start + found.start() < right for left, right in protected)]
+        match = predicates[0] if predicates else None
+        if not match:
+            continue
+        nested_end = (len(predicates) == 2 and match.group("departure") == "no longer"
+                      and predicates[1].group("employment")
+                      and not clause[match.end():predicates[1].start()].strip())
+        subject = clause[:match.start()].strip()
+        polarity = [found.group().lower() for found in re.finditer(
+            r"\b(?:not|never|may|might|will|would|could|should)\b"
+            r"|\b(?:isn|wasn|hasn|hadn|haven|doesn|didn|don|won|wouldn|shouldn|couldn|can)['’]\s*t\b", subject,
+            re.IGNORECASE) if not any(left <= start + found.start() < right for left, right in protected)]
+        uncertain = (any(word in {"may", "might", "will", "would", "could", "should"} for word in polarity)
+                     or bool(re.search(r"\b(?:plans?|planned|planning|expects?|expected|intends?|intended|scheduled|due)\s+to$",
+                                       ss.words(subject))))
+        negated = bool(polarity) and not uncertain
+        if uncertain or negated and match.group("departure"):
+            continue
+        reported = re.search(r"\b(?:said|stated|reported|confirmed|announced|noted|explained|told|mentioned|recalled)"
+                             r"\s+(?:that\s+)?(.+)$", ss.words(subject))
+        if reported and not (ss.has_phrase(name, reported.group(1))
+                             or re.match(r"^(?:he|she|they|his|her|their|i|my)\b", reported.group(1))):
+            continue
+        possessive = re.search(r"\b(?:" + re.escape(name) + r"\s+s|his|her|their)\s+(.+)", ss.words(subject))
+        if possessive:
+            owned = re.sub(r"^(?:(?:the|current|former|previous|first|last)\s+)+", "", possessive.group(1))
+            if owned.split()[0] not in {"employment", "job", "role", "position", "tenure", "appointment", "service", "contract"}:
+                continue
+        # An explicitly named different subject grants no facts about this person. Lowercase modifiers do not
+        # introduce a subject; known personal names/pronouns continue the preceding role statement.
+        named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
+                 if word.isupper() or word[:1].isupper() and word[1:].islower()} - {
+            "he", "she", "they", "his", "her", "their", "i", "my", "now", "currently", "still", "also", "recently"}
+        named -= set(title_words(person["title"])) | TITLE_FILLER
+        # A full subject immediately before its verb binds the claim despite a date/editorial preamble.
+        if re.search(r"\b" + re.escape(name) + r"(?:\s+(?:is|was|has|had|have|been|an?|now|currently|recently))*$",
+                     ss.words(subject)):
+            named = set()
+        if named and not named <= set(name.split()) and not coordinated_subject(subject, name):
+            continue
+        if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
+            continue
+        unqualified |= len(predicates) > 1 and not nested_end
+        employer = ss.words(clause[match.end():])
+        if match.group("departure"):
+            object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
+            departure = match.group("departure").lower()
+            ended_employer = re.match(r"^(?:as\s+.+?\s+(?:at|for)|from|at|with)\s+"
+                                      r"(?:(?:the|an?)\s+)?(.+)$", employer)
+            if ended_employer:
+                destination = ended_employer.group(1)
+                generic = {"company", "employer", "business", "organization", "firm", "plant", "facility", "site",
+                           "job", "role", "position", "employment"}
+                if (destination.split()[0] not in generic and not holds_title(destination, person["title"])
+                        and not any(entity and (destination == entity or destination.startswith(entity + " "))
+                                    for entity in known_names)):
+                    continue  # Ending a named rival job does not end the supported current target role.
+            if departure.startswith("retire") or departure in {"fired", "dismissed", "terminated", "laid off"}:
+                passive = re.search(r"\b(?:is|was|were|been|being)\s*$", ss.words(subject))
+                self_role = re.match(r"^(?:job|role|position|employment|tenure|appointment|service)\b", object_text)
+                circumstance = re.match(r"^(?:in|on|at|from|to|as|after|before|during|when|because|following)\b|^\d", employer)
+                if employer and not passive and not self_role and not circumstance:
+                    continue  # Retiring equipment or firing another person does not end the actor's employment.
+            if match.group("departure").lower() == "no longer":
+                ended = re.search(r"\b(?:for|by|at|with)\s+(.+)$", employer)
+                if ended:
+                    destinations = {ended.group(1), re.sub(r"^(?:the|an?)\s+", "", ended.group(1))}
+                    if not any(entity and (value == entity or value.startswith(entity + " "))
+                               for entity in known_names for value in destinations):
+                        continue
+            if (any(entity and (object_text == entity or object_text.startswith(entity + " ")) for entity in known_names)
+                    or match.group("departure").lower().startswith(("resign", "quit", "retire"))
+                    or match.group("departure").lower() in {"fired", "dismissed", "terminated", "laid off"}
+                    or match.group("departure").lower().startswith("step")
+                    and (not employer or holds_title(employer, person["title"]))
+                    or set(object_text.split()) & {"job", "role", "position", "employment", "corporation", "corp", "inc", "llc"}
+                    or re.match(r"^(?:company|employer|business|organization|firm)"
+                                r"(?:$|\s+(?:in|on|to|for|after|before|during)\b)", object_text)
+                    or re.match(r"^(?:to\s+)?(?:join|work|serve|be\s+employed)\b", employer)
+                    or employer.startswith("for ") and not set(object_text.split()) & {
+                        "conference", "meeting", "lunch", "vacation", "trip", "training", "workshop", "airport", "home"}
+                    or match.group("departure").lower() == "no longer"
+                    and (re.match(r"^(?:works?|worked|serves|employed)\b", employer)
+                         or holds_title(employer, person["title"]))):
+                return True
+            continue
+        ended = re.search(r"\b(?:to|until|through)\s+(?:\w+\s+){0,3}(?:19|20)\d{2}\b", employer)
+        past = match.group("employment") in {"worked", "served"} or re.search(r"\bwas(?:\s+an?)?$", ss.words(subject))
+        employers = {employer, re.sub(r"^(?:the|an?)\s+", "", employer)}
+        known_employer = any(entity and (value == entity or value.startswith(entity + " "))
+                             for entity in known_names for value in employers)
+        if negated:
+            if known_employer and not past:
+                return True
+            continue
+        if match.group("transition"):
+            event = re.search(r"\b(?:meeting|conference|lunch|vacation|trip|training|workshop)\b"
+                              r"(?:$|\s+(?:at|in|with|for)\b)", employer)
+            employment_like = bool(set(employer.split()) & {
+                "corporation", "corp", "inc", "llc", "ltd", "company", "industries", "works", "manufacturing"}
+                or holds_title(employer, person["title"]))
+            if event or not known_employer and not employment_like:
+                continue
+        if ended and past:
+            if known_employer:
+                return True
+            continue  # An explicitly ended rival job does not contradict current target employment.
+        if past and not known_employer:
+            continue  # Past rival employment is history, not an assertion of the current employer.
+        if not known_employer:
+            return True
+    return None if unqualified else False
+
+
+def site_role_quote(site, person, sentence):
+    """A role tied to this facility, rather than a person's visit or a company-wide name/title match."""
+    given_address = site.get("address") or {}
+    names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
+    sentence = hash_units(sentence, names)
+    street, target_units = address_units(ss.words(hash_units(given_address.get("street") or "")))
+    anchors = ss.site_anchors({**site, "address": {**given_address, "street": street}})
+    specific = [item for item in anchors if item["kind"] == "street"] or [
+        item for item in anchors if item["kind"] == "site_name_city"]
+    normalized = ss.words(sentence)
+    cased = re.sub(r"[\W_]+", " ", unicodedata.normalize("NFKC", sentence)).strip()
+    if ss.words(cased) != normalized:
+        return False
+    name = ss.words(person["name"])
+    tail, scope_offset, preposition = role_complement(person, sentence)
+    role_scope = preposition is not None
+    # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
+    known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
+    known_names |= {name.replace(" and ", " ") for name in known_names}
+    if employment_contradiction(person, sentence, known_names) is not False:
+        return False
+    spans = [match.span() for name in known_names if name
+             for match in re.finditer(r"\b" + re.escape(name) + r"\b", tail)]
+    for boundary in re.finditer(r"\b(?:and|but|while|whereas)\b|\b" + re.escape(ss.words(person["title"])) + r"\b", tail):
+        if not any(start <= boundary.start() < end for start, end in spans):
+            tail = tail[:boundary.start()]
+            break
+    cased_scope = " ".join(cased.split()[scope_offset:scope_offset + len(tail.split())])
+    tail, quoted_units = address_units(tail, known_names)
+    tail = ss.words(tail)
+    if target_units and quoted_units != target_units:
+        return False
+    address = site.get("address") or {}
+    city, state = address.get("city"), address.get("state")
+    if not city:
+        return False  # A street alone cannot distinguish facilities in different cities.
+    if state and not re.search(ss.city_pattern(city) + r"\s+" + ss.state_pattern(state), cased_scope):
+        return False
+    canonical = ss._canon(tail, ss.CITY_WORDS)
+    if city and not ss.has_phrase(ss._canon(city, ss.CITY_WORDS), canonical):
+        return False
+    if city and state and not re.search(r"\b" + re.escape(ss._canon(city, ss.CITY_WORDS)) + r"\s+(?:"
+                                       + re.escape(state.lower()) + "|"
+                                       + re.escape(ss.STATE_NAMES.get(state, state).lower()) + r")\b", canonical):
+        return False
+    # Only the direct role complement can name the facility; a company's HQ or another claim in the sentence cannot.
+    allowed = {word for name in known_names for word in name.split()}
+    allowed.update(ss.words(city or "").split())
+    allowed.update({"the", "at", "of", "for", "in", "on", "s", "plant", "facility", "site", "factory"})
+    street_tail = ss._canon(tail, ss.STREET_WORDS)
+    scoped = []
+    for anchor in specific:
+        if anchor["kind"] == "street":
+            street = ss._canon(anchor["street"], ss.STREET_WORDS)
+            if not ss.has_phrase(street, street_tail):
+                continue
+            prefix, _, _ = street_tail.partition(street)
+            if not set(prefix.split()) <= allowed:
+                continue
+            # Compare the city immediately following this street, not a suffix of another city's name.
+            suffix = ss._canon(" ".join(tail.split()[len(prefix.split()) + len(street.split()):]), ss.CITY_WORDS)
+            city_pattern = re.escape(ss._canon(city, ss.CITY_WORDS)) if city else ""
+            if state:
+                city_pattern += r"\s+(?:" + re.escape(state.lower()) + "|" + re.escape(ss.STATE_NAMES.get(state, state).lower()) + ")"
+            location_match = re.match(city_pattern + r"\b", suffix)
+            if not location_match or not role_scope_suffix(suffix[location_match.end():], known_names):
+                continue
+        else:
+            given_name = site["task_input"].get("site_name") or ""
+            exact_names = {ss.words(given_name), ss.words(given_name.replace("&", " and "))}
+            exact_names |= {name.replace(" and ", " ") for name in exact_names}
+            before_city = canonical.partition(ss._canon(anchor["city"], ss.CITY_WORDS))[0]
+            if not (any(name and tail.startswith((name + " ", "the " + name + " "))
+                        for name in exact_names)
+                    and set(before_city.split()) <= allowed
+                    and ss.has_phrase(ss._canon(anchor["city"], ss.CITY_WORDS), canonical)):
+                continue
+            location_match = re.search(re.escape(ss._canon(city, ss.CITY_WORDS)) + r"\s+(?:"
+                                       + re.escape((state or "").lower()) + "|"
+                                       + re.escape(ss.STATE_NAMES.get(state, state or "").lower()) + r")\b", canonical) if state else re.search(
+                                           re.escape(ss._canon(city, ss.CITY_WORDS)) + r"\b", canonical)
+            if not location_match or not role_scope_suffix(canonical[location_match.end():], known_names):
+                continue
+        scoped.append(anchor)
+    assertion = normalized
+    for name in sorted(known_names | {ss.words(person["name"])}, key=len, reverse=True):
+        if name:
+            assertion = re.sub(r"\b" + re.escape(name) + r"\b", " ", assertion)
+    return bool(role_scope and ss.names_site(sentence, scoped) and not sentence.rstrip().endswith("?")
+                and not set(assertion.split()) & {"former", "formerly", "retired", "not"})
+
+
+def site_responsibility(site, person):
+    """Location is a mismatch signal, never proof of responsibility. Only a retained role/site quote proves scope.
+    Unknown scope stays usable as an explicit corporate referral; off-site local managers are held."""
+    title = ss.words(person["title"])
+    known_names = [site["task_input"].get("site_name") or "", site.get("operator") or ""]
+    known_names = {ss.words(name.replace("&", " and ")) for name in known_names} | {
+        ss.words(name) for name in known_names}
+    known_names |= {name.replace(" and ", " ") for name in known_names}
+    pages = [(url, text, text_sha256, ss.sentences(text)) for url, text, text_sha256 in site["kept_pages"]]
+    # Read all retained evidence before accepting any role proof; page order cannot erase a departure.
+    unqualified = False
+    for _, _, _, sentences in pages:
+        linked = False
+        for sentence in sentences:
+            named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
+            pronoun = bool(re.match(r"\s*(?:(?:he|she|they|his|her|their)\b"
+                                    r"|(?:now|currently|then|subsequently|later|afterwards?)\s+"
+                                    r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
+                                    employment_sentence(sentence), re.IGNORECASE))
+            if named or linked and pronoun:
+                contradiction = employment_contradiction(person, sentence, known_names)
+                if contradiction is True:
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_responsibility_unproven", "proof": None}
+                unqualified |= contradiction is None
+            if named:
+                subject = ss.words(employment_sentence(sentence))
+                person_name = ss.words(person["name"])
+                linked = subject == person_name or subject.startswith(person_name + " ")
+            elif not pronoun:
+                linked = False
+    for url, text, text_sha256, sentences in pages:
+        if not ss.names_operator(text, site["operator"]):
+            continue
+        for sentence in sentences:
+            if not unqualified and site_role_quote(site, person, sentence):
+                return {"site_key": site["site_key"], "status": "verified", "route": "site_contact",
+                        "reason": None, "proof": {"url": url, "quote": _text(sentence, 1200),
+                        "level": "verified_on_page", "text_sha256": text_sha256 or ss._sha256(text.encode())}}
+    place = person.get("location_fields")
+    if not isinstance(place, dict):  # Old sealed journals kept a display location only; no new paid search.
+        parsed = ss.parse_location(person.get("location"))
+        place = {"city": parsed.get("city"), "region": parsed.get("state")}
+    address = site.get("address") or {}
+    assigned = quoted_role_address(person, site.get("person_quote") or "")
+    assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
+    target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
+    assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
+    named_facility_mismatch = bool(assigned.get("street") and not assigned_street
+                                  and site["task_input"].get("site_name")
+                                  and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
+    role_mismatch = bool(named_facility_mismatch or assigned.get("city") and address.get("city")
+                         and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
+                         or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
+                         or assigned_street and target_street
+                         and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
+                         or assigned_units and target_units and assigned_units != target_units)
+    city, target_city = place.get("city"), address.get("city")
+    region = _text(place.get("region"))
+    state = region.upper() if region.upper() in ss.STATE_NAMES else ss.STATE_CODES.get(ss.normalized(region))
+    mismatch = bool(role_mismatch or city and target_city and ss._canon(city, ss.CITY_WORDS) != ss._canon(target_city, ss.CITY_WORDS)
+                    or state and address.get("state") and state != address["state"]
+                    or place.get("country") and ss.normalized(place["country"]) not in
+                    {"us", "usa", "united states", "united states of america"})
+    corporate = bool(set(title.split()) & {"owner", "president", "director"})
+    return {"site_key": site["site_key"], "status": "unknown",
+            "route": "hold" if mismatch and not corporate else "corporate_referral",
+            "reason": "target_site_location_mismatch" if mismatch else "target_site_responsibility_unproven",
+            "proof": None}
+
+
 def target(site, calls, search=True):
     """The person this site's enrichment is for, or (None, code). A people search, when allowed and needed, goes
     through ``calls``."""
@@ -782,12 +1221,21 @@ def target(site, calls, search=True):
     found = call["observation"] if call is not None and call["state"] == "answered" else None
     if found is None or not found.get("candidate"):
         return None, code if found is None else "no_current_person_found"
-    chosen = found["candidate"]
-    person = {"name": chosen["name"], "title": chosen["title"], "location": chosen["location"],
-              "sourcing": "provider_sourced", "proof": {"source": "fullenrich_people_search", "request_digest": key,
-                                                         "current_employment": chosen["current_employment"]}}
-    person["corroboration"] = corroborate(site, person)
-    return person, None
+    candidates = found.get("candidates") if isinstance(found.get("candidates"), list) else [found["candidate"]]
+    referral = None
+    for chosen in candidates:
+        person = {"name": chosen["name"], "title": chosen["title"], "location": chosen["location"],
+                  "location_fields": chosen.get("location_fields"), "sourcing": "provider_sourced",
+                  "proof": {"source": "fullenrich_people_search", "request_digest": key,
+                            "current_employment": chosen["current_employment"]}}
+        person["corroboration"] = corroborate(site, person)
+        person["site_responsibility"] = site_responsibility(site, person)
+        route = person["site_responsibility"]["route"]
+        if route == "site_contact":
+            return person, None
+        if route == "corporate_referral" and referral is None:
+            referral = person
+    return (referral, None) if referral is not None else (None, "target_site_location_mismatch")
 
 
 def enrich_identity(site, person):
@@ -865,7 +1313,7 @@ def result(site, person, key, call):
             "address": address if usable else None, "operator_domain": site["operator_domain"], "person": person}
 
 
-def usable_lookup(lookup, *, operator_domains=None):
+def usable_lookup(lookup, *, operator_domains=None, site_key=None):
     """Recheck the provider status, person label and business address at the admission boundary."""
     if not isinstance(lookup, dict) or lookup.get("source") != "provider_lookup" or lookup.get("usable") is not True:
         return False
@@ -875,6 +1323,28 @@ def usable_lookup(lookup, *, operator_domains=None):
             or not isinstance(person, dict) or person.get("sourcing") not in ("quoted_person", "provider_sourced")
             or name_parts(person.get("name")) is None):
         return False
+    responsibility = person.get("site_responsibility")
+    if responsibility is not None:
+        if (not isinstance(responsibility, dict)
+                or set(responsibility) != {"site_key", "status", "route", "reason", "proof"}
+                or site_key is not None and responsibility.get("site_key") != site_key):
+            return False
+        if responsibility["route"] == "corporate_referral":
+            if (responsibility["status"] != "unknown" or responsibility["proof"] is not None
+                    or responsibility["reason"] not in
+                    ("target_site_responsibility_unproven", "target_site_location_mismatch")):
+                return False
+        elif responsibility["route"] == "site_contact":
+            proof = responsibility["proof"]
+            if (responsibility["status"] != "verified" or responsibility["reason"] is not None
+                    or not isinstance(proof, dict) or proof.get("level") != "verified_on_page"
+                    or not ss._public_url(proof.get("url")) or ss.never_fetch(proof.get("url"))
+                    or not _text(proof.get("quote"), 1200)
+                    or not isinstance(proof.get("text_sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", proof["text_sha256"])):
+                return False
+        else:
+            return False
     domain = lookup.get("operator_domain")
     if not isinstance(domain, str) or not domain:
         return False
@@ -883,7 +1353,7 @@ def usable_lookup(lookup, *, operator_domains=None):
     return kept is not None and kept == address and on_domain(domain, domains)
 
 
-def _choice(rank, *, address=None, lookup=None):
+def _choice(rank, *, address=None, lookup=None, site_key=None):
     base = {"schema_version": RECIPIENT, "rank": rank, "choice": CHOICES[rank - 1]}
     if lookup is None:
         kind = {1: "person_email", 3: "team_inbox", 4: "general_inbox"}.get(rank, "none")
@@ -897,7 +1367,9 @@ def _choice(rank, *, address=None, lookup=None):
         labels.append("corroborated" if corroborated else "uncorroborated")
     return {**base, "kind": "person_email", "source": "provider_lookup", "labels": labels, "address": lookup["address"],
             "person": {"name": person["name"], "title": person.get("title"), "sourcing": person["sourcing"],
-                       "corroborated": corroborated},
+                       "corroborated": corroborated, "site_responsibility": person.get("site_responsibility") or {
+                           "site_key": site_key, "status": "unknown", "route": "corporate_referral",
+                           "reason": "target_site_responsibility_unproven", "proof": None}},
             "provider": {name: provider.get(name) for name in ("name", "status", "checked_at", "request_digest")}}
 
 
@@ -925,8 +1397,8 @@ def choose_recipient(contact_record, lookups=(), *, today=None):
     if kind == "person_email":
         return _choice(1, address=address)
     for lookup in lookups if isinstance(lookups, (list, tuple)) else ():
-        if usable_lookup(lookup, operator_domains=record.get("operator_domains")):
-            return _choice(2, lookup=lookup)
+        if usable_lookup(lookup, operator_domains=record.get("operator_domains"), site_key=record.get("site_key")):
+            return _choice(2, lookup=lookup, site_key=record.get("site_key"))
     if kind in ("team_inbox", "general_inbox"):
         return _choice(3 if kind == "team_inbox" else 4, address=address)
     return _choice(5)

@@ -208,7 +208,9 @@ async function saBounded(fn,ms) {
 function saContactCells(recipient) {
   if(!recipient) return {name:'',details:'',source_url:''};
   const person=recipient.person || {};
-  return {name:SA_PERSON_ROUTES.includes(recipient.route)?person.name || '':'',details:`${recipient.address} (${recipient.label})`,
+  const suffix=person.site_responsibility?.route==='corporate_referral'
+    ?'; corporate referral, target-site responsibility unknown':'';
+  return {name:SA_PERSON_ROUTES.includes(recipient.route)?person.name || '':'',details:`${recipient.address} (${recipient.label}${suffix})`,
     source_url:recipient.published?.url || person.corroboration?.url || person.url || ''};
 }
 function paidDirectionProblem(d,control) {

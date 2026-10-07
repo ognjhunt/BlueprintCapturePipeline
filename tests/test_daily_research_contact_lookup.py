@@ -166,6 +166,58 @@ def stored(workspace):
 
 
 # --- the quoted person ----------------------------------------------------------------------------
+@pytest.mark.parametrize("preposition", ["at", "for", "of"])
+@pytest.mark.parametrize("assignment", [
+    "2 Other Road, Other Fixture City, OH",
+    "2 Other Road, Fixture City, TX",
+    "2 Other Road",
+    "2 Other Road, Suite 4",
+    "2 Other Road and he left the conference early",
+    "Other Fixture Plant, Other Fixture City, OH",
+    "Rival Fixture Works, Fixture City, TX",
+    "Said Fixture Works, Fixture City, TX",
+    "Rival and Sons, Fixture City, TX",
+    "Rival and Sons, Fixture City, TX and he discussed the plant",
+])
+def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_path, assignment, preposition):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_quote=f"{PERSON} is Plant Manager {preposition} {assignment}.")])
+    api = FakeFullEnrich()
+    result = lookup(workspace, api)
+    assert result["calls"]["made"] == 0 and api.calls == []
+    record = cl.load(workspace)[key]
+    assert record["lookups"] == [] and record["skipped"] == "target_site_location_mismatch"
+
+
+@pytest.mark.parametrize("assignment", ["Synthetic Works", "the Synthetic Works plant", "Synthetic Operator 1", "1 Example Road"])
+@pytest.mark.parametrize("preposition", ["at", "for", "of"])
+def test_named_target_or_company_role_keeps_unknown_referral_scope(assignment, preposition):
+    site = qualification_site()
+    site["person_quote"] = f"Jordan Fixture is Plant Manager {preposition} {assignment}, Fixture City, TX."
+    person = {"name": "Jordan Fixture", "title": "Plant Manager", "location": None}
+    responsibility = cl.site_responsibility(site, person)
+    assert responsibility["route"] == "corporate_referral" and responsibility["status"] == "unknown"
+
+
+@pytest.mark.parametrize("assignment", ["Synthetic Works and Sons", "Synthetic Works & Sons"])
+def test_named_target_with_conjunction_keeps_unknown_referral_scope(assignment):
+    site = qualification_site()
+    site["task_input"]["site_name"] = "Synthetic Works & Sons"
+    site["person_quote"] = f"Jordan Fixture is Plant Manager at {assignment}, Fixture City, TX."
+    responsibility = cl.site_responsibility(site, {"name": "Jordan Fixture", "title": "Plant Manager"})
+    assert responsibility["route"] == "corporate_referral" and responsibility["status"] == "unknown"
+
+
+@pytest.mark.parametrize("name", ["José García", "Zoë Fixture"])
+def test_unicode_quoted_manager_is_held_before_enrichment(tmp_path, name):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_name=name,
+                                       person_quote=f"{name} is Plant Manager at 2 Other Road, Other City, OH.")])
+    api = FakeFullEnrich()
+    assert lookup(workspace, api)["calls"]["made"] == 0 and api.calls == []
+    assert cl.load(workspace)[key]["skipped"] == "target_site_location_mismatch"
+    assert cl.site_role_quote(qualification_site(), {"name": name, "title": "Plant Manager"},
+                              f"{name} is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1.")
+
+
 def test_a_quoted_person_gets_one_enrichment_and_a_deliverable_email_is_kept(tmp_path):
     workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
     api = FakeFullEnrich()
@@ -181,8 +233,11 @@ def test_a_quoted_person_gets_one_enrichment_and_a_deliverable_email_is_kept(tmp
                     "custom": {"call": item["custom"]["call"]}}
     records = cl.load(workspace)
     record = json.loads(json.dumps(records[key]))
-    assert (record["schema_version"], record["rule_version"]) == (cl.RECORD, "blueprint.contact-lookup-rule.v1")
+    assert (record["schema_version"], record["rule_version"]) == (cl.RECORD, "blueprint.contact-lookup-rule.v2")
     (found,) = record["lookups"]
+    responsibility = found["person"].pop("site_responsibility")
+    assert responsibility == {"site_key": key, "status": "unknown", "route": "corporate_referral",
+                              "reason": "target_site_responsibility_unproven", "proof": None}
     provider = found.pop("provider")
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00", provider.pop("checked_at"))
     assert provider.pop("request_digest") == item["custom"]["call"] and re.fullmatch(r"[0-9a-f]{64}", item["custom"]["call"])
@@ -559,6 +614,440 @@ def test_current_employment_history_requires_an_explicit_current_flag():
     history["is_current"] = True
     found, reason = cl.candidate(person, ["operator-1.example"])
     assert reason is None and found["current_employment"]["field"] == "employment.all.is_current"
+
+
+@pytest.mark.parametrize("city,region", [("Other Fixture City", "Texas"), ("Fixture City", "Ohio")])
+def test_off_site_local_manager_is_held_before_enrichment(tmp_path, city, region):
+    workspace, (key,) = site_screen_out(tmp_path, [nobody(1)])
+    api = FakeFullEnrich()
+    person = searched(OTHER_PERSON)
+    person["location"].update(city=city, region=region)
+    api.people["operator-1.example"] = [person]
+    api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
+    report = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)
+    assert report["calls"]["made"] == 1
+    assert api.posts(cl.ENRICH_PATH) == []
+    record = cl.load(workspace)[key]
+    assert record["skipped"] == "target_site_location_mismatch"
+    assert record["lookups"] == [] and record["recipient"]["choice"] == "none"
+    before = stored(workspace)
+    assert lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)["calls"]["made"] == 0
+    assert stored(workspace) == before
+
+
+def qualification_site(key="site-one", street="1 Example Road", city="Fixture City", pages=()):
+    return {"site_key": key, "address": {"street": street, "city": city, "state": "TX"},
+            "task_input": {"site_name": "Synthetic Works"}, "operator": "Synthetic Operator 1",
+            "operator_domains": ["operator-1.example"], "operator_domain": "operator-1.example",
+            "person": {}, "published_person_email": False, "kept_pages": list(pages)}
+
+
+def replay_search(*people, legacy=False):
+    found = [cl.candidate(person, ["operator-1.example"])[0] for person in people]
+    if legacy:
+        found[0].pop("location_fields")
+    observation = {"candidate": found[0]}
+    if not legacy:
+        observation["candidates"] = found
+    return lambda *args: ("c" * 64, {"state": "answered", "observation": observation})
+
+
+def test_shared_company_search_is_requalified_for_each_target_site_without_calls():
+    person = searched(OTHER_PERSON)
+    calls = replay_search(person)
+    first, reason = cl.target(qualification_site(), calls)
+    assert reason is None
+    assert first["site_responsibility"]["status"] == "unknown"  # Even a matching city proves no authority.
+    assert first["site_responsibility"]["route"] == "corporate_referral"
+    second, reason = cl.target(qualification_site("site-two", city="Other Fixture City"), calls)
+    assert second is None and reason == "target_site_location_mismatch"
+
+
+def test_legacy_shared_search_is_requalified_without_rebuying_the_search():
+    person, reason = cl.target(qualification_site(city="Other Fixture City"),
+                               replay_search(searched(OTHER_PERSON), legacy=True))
+    assert person is None and reason == "target_site_location_mismatch"
+
+
+@pytest.mark.parametrize("operator_prefix", ["", "Synthetic Operator 1's "])
+def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home_location(operator_prefix):
+    quote = f"Jordan Fixture is Plant Manager at {operator_prefix}1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["status"] == "verified"
+    assert chosen["site_responsibility"]["proof"]["quote"] == quote
+    assert chosen["proof"]["current_employment"]["company_domain"] == "operator-1.example"
+
+
+@pytest.mark.parametrize("quote", [
+    "Jordan Fixture is Plant Manager of Synthetic Operator 1 and visited 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager of Synthetic Operator 1. The plant is at 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager at 2 Example Road, Fixture City, TX for Synthetic Operator 1.",
+    "Jordan Fixture is Plant Manager at 2 Example Road and Avery Placeholder is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1.",
+    "At 1 Example Road, Fixture City, TX, Jordan Fixture is Plant Manager of the other Synthetic Operator 1 facility.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Other Fixture City, TX for Synthetic Operator 1.",
+    "Jordan Fixture is Plant Manager of Synthetic Operator 1 whose headquarters are at 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, OH with customers in Fixture City, TX for Synthetic Operator 1.",
+    "Is Jordan Fixture the Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1?",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX facility of Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and works for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but he is employed by Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but now works for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and he currently works for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but He currently works for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 but now works at Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and is employed at Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 but recently joined Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and moved to Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 but left for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but left Synthetic Operator 1 for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigned from Synthetic Operator 1.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigned to join Rival Works.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but left for Acme.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but left for acme.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigned.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigns.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but resigning.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but quit.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but quits.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but quitting.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but no longer works for Synthetic Operator 1.",
+])
+def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
+    text = quote + " Synthetic Operator 1 operates the target plant."
+    site = qualification_site(pages=[("https://operator-1.example/news", text, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
+
+
+@pytest.mark.parametrize("transition", [
+    "Jordan Fixture resigned.", "Jordan Fixture now works for Rival Works.", "Jordan Fixture retired.",
+    "Jordan Fixture was fired.", "Jordan Fixture was dismissed.", "Jordan Fixture was terminated.",
+    "Jordan Fixture was laid off.", "JORDAN FIXTURE retired.",
+])
+def test_later_same_person_departure_invalidates_page_scope_proof(transition):
+    text = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+            + transition)
+    site = qualification_site(pages=[("https://operator-1.example/team", text, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
+
+
+@pytest.mark.parametrize("transition", ["Jordan Fixture retired.", "Jordan Fixture was terminated."])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_departure_on_another_retained_page_precedes_all_scope_proofs(transition, reverse):
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    pages = [("https://operator-1.example/team", quote, "d" * 64),
+             ("https://operator-1.example/update", transition, "e" * 64)]
+    person = cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0]
+    scope = cl.site_responsibility(qualification_site(pages=list(reversed(pages)) if reverse else pages), person)
+    assert scope["route"] == "hold" and scope["proof"] is None
+
+
+@pytest.mark.parametrize("transition", ["He retired.", "She was terminated.", "They resigned.",
+                                       "His employment was terminated.", "Her position was terminated."])
+def test_departure_pronoun_linked_to_named_role_invalidates_scope(transition):
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             + transition)
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "hold" and scope["proof"] is None
+
+
+def test_departure_pronoun_after_a_different_named_person_preserves_scope():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             "Avery Placeholder is Operations Director for Rival Works. She retired.")
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("transition", [
+    "Jordan Fixture worked for Synthetic Operator 1 from 2018 to 2020.",
+    "Jordan Fixture worked for Synthetic Operator 1 until 2020.",
+    "Jordan Fixture was employed at Synthetic Operator 1 until January 2020.",
+    "Jordan Fixture served for Synthetic Operator 1 from 2018 through 2020.",
+    "Jordan Fixture served as Plant Manager at Synthetic Operator 1 until 2020.",
+    "Jordan Fixture worked as Plant Manager for Synthetic Operator 1 from 2018 to 2020.",
+    "In 2025, Jordan Fixture retired.", "Update: Jordan Fixture retired.",
+    "In 2025, he retired.", "Update: she was terminated.",
+    "Jordan Fixture won an award. He retired.",
+    "Jordan Fixture is Plant Manager at Rival Works.",
+    "Jordan Fixture is Plant Manager for Rival Works.",
+    "He is Plant Manager at Rival Works.",
+    "Jordan Fixture is now Plant Manager at Rival Works.",
+    "Jordan Fixture is currently Plant Manager at Rival Works.",
+    "Jordan Fixture is the new Plant Manager at Rival Works.",
+    "Jordan Fixture is Plant Manager at 2 Other Road, Other Fixture City, OH for Rival Works.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Rival Works.",
+    "He is Plant Manager at 2 Other Road, Other Fixture City, OH for Rival Works.",
+    "Jordan Fixture is Plant Manager for Rival Works at 2 Other Road, Other Fixture City, OH.",
+    "Jordan Fixture is Plant Manager of Rival Works at 2 Other Road, Other Fixture City, OH.",
+    "Jordan Fixture is Plant Manager at Rival Works at 2 Other Road, Other Fixture City, OH.",
+    "He is Plant Manager for Rival Works at 2 Other Road, Other Fixture City, OH.",
+    "Jordan Fixture is Plant Manager at Rival Works, Other Fixture City, OH.",
+    "Jordan Fixture worked for Synthetic Operator 1; now works for Rival Works.",
+    "Jordan Fixture worked for Synthetic Operator 1; he now works for Rival Works.",
+    "Jordan Fixture worked for Synthetic Operator 1, now works for Rival Works.",
+    "Jordan Fixture worked for Synthetic Operator 1, then joined Rival Works.",
+    "Jordan Fixture worked for Synthetic Operator 1; subsequently joined Rival Works.",
+    "Jordan Fixture worked for Synthetic Operator 1, later joined Rival Works.",
+    "Jordan Fixture, the Plant Manager, retired.",
+    "Jordan Fixture, the PLANT MANAGER, retired.",
+    "Jordan Fixture stepped down as Plant Manager in 2025.",
+    "He stepped down as Plant Manager.",
+    "Jordan Fixture left the company in 2025.",
+    "Jordan Fixture departed the company.",
+    "Jordan Fixture left his employer.",
+    "Jordan Fixture said he resigned.",
+    "Jordan Fixture and Avery Placeholder resigned.",
+    "Jordan Fixture and AVERY PLACEHOLDER resigned.",
+    "Jordan Fixture and Avery Placeholder and Taylor Fixture retired.",
+    "Jordan Fixture is no longer Plant Manager.",
+    "He is no longer Plant Manager.",
+    "Jordan Fixture, along with Avery Placeholder, resigned.",
+    "Jordan Fixture as well as Avery Placeholder retired.",
+    "Jordan Fixture is no longer Plant Manager at Synthetic Operator 1.",
+])
+def test_explicit_ended_employment_and_same_subject_updates_override_old_role(transition):
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    pages = [("https://operator-1.example/team", quote, "d" * 64),
+             ("https://operator-1.example/update", quote + " " + transition, "e" * 64)]
+    scope = cl.site_responsibility(qualification_site(pages=pages),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "hold" and scope["proof"] is None
+
+
+@pytest.mark.parametrize("affirmation", [
+    "Jordan Fixture works for the Synthetic Operator 1.",
+    "Jordan Fixture serves as Plant Manager at the Synthetic Operator 1.",
+    "Jordan Fixture is Plant Manager for Synthetic Operator 1 at 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager of Synthetic Operator 1 at 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager at Synthetic Operator 1 at 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager at Synthetic Operator 1, Fixture City, TX.",
+    "Jordan Fixture is Plant Manager for 1 Example Road, Fixture City, TX.",
+    "Jordan Fixture works for Synthetic Operator 1; Avery Placeholder works for Rival Works.",
+    "Jordan Fixture retired the old assembly line.",
+    "Jordan Fixture fired a contractor.",
+    "Jordan Fixture dismissed an employee.",
+    "Jordan Fixture terminated a contractor.",
+    "Jordan Fixture resigned from Rival Works in 2015.",
+    "Jordan Fixture retired from Rival Works in 2015.",
+    "Jordan Fixture left Rival Works in 2015.",
+    "Jordan Fixture resigned as Plant Manager at Rival Works in 2015.",
+    "Jordan Fixture retired as Plant Manager for Rival Works in 2015.",
+    "Jordan Fixture worked for Rival Works, then joined Synthetic Operator 1.",
+    "Jordan Fixture joined the safety meeting.",
+    "Jordan Fixture moved to Fixture City.",
+    "Jordan Fixture worked for Rival Works from 2010 to 2015.",
+    "Jordan Fixture's predecessor retired.",
+    "Jordan Fixture's assistant resigned.",
+    "His assistant resigned.",
+    "Jordan Fixture stepped down from the platform.",
+    "Jordan Fixture said the manager resigned.",
+    "Jordan Fixture confirmed an employee was terminated.",
+    "Jordan Fixture left the company meeting.",
+    "Jordan Fixture has not resigned.",
+    "Jordan Fixture hasn't resigned.",
+    "Jordan Fixture never retired.",
+    "Jordan Fixture will retire next year.",
+    "Did Jordan Fixture retire?",
+    "Jordan Fixture plans to retire next year.",
+    "Jordan Fixture is expected to resign next year.",
+    "Jordan Fixture is scheduled to retire next year.",
+    "Jordan Fixture intends to resign next year.",
+    "Jordan Fixture no longer works for Rival Works.",
+    "Jordan Fixture is no longer Plant Manager at Rival Works.",
+])
+def test_affirming_target_employment_with_a_determiner_preserves_scope(affirmation):
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             + affirmation)
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact"
+
+
+def test_unqualified_multi_predicate_scope_uses_corporate_referral_without_site_authority():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             "Jordan Fixture worked for Synthetic Operator 1 before joining Rival Works.")
+    person = cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0]
+    person["location_fields"] = {"city": "Fixture City", "region": "Texas", "country": "United States"}
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]), person)
+    assert scope == {"site_key": qualification_site()["site_key"], "status": "unknown", "route": "corporate_referral",
+                     "reason": "target_site_responsibility_unproven", "proof": None}
+
+
+def test_another_subjects_multi_job_sentence_does_not_downgrade_supported_scope():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             "Avery Placeholder worked for Rival Works before joining Other Works and thanked Jordan Fixture.")
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact" and scope["proof"] is not None
+
+
+def test_object_name_mention_does_not_link_another_subjects_departure():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             "Avery Placeholder thanked Jordan Fixture. She retired.")
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("modifier", ["now", "currently", "the new"])
+def test_current_role_modifiers_preserve_explicit_target_scope(modifier):
+    quote = (f"Jordan Fixture is {modifier} Plant Manager at 1 Example Road, Fixture City, TX "
+             "for Synthetic Operator 1.")
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("name", ["Jordan Fixture", "Jordan Quit", "Jordan Retired"])
+@pytest.mark.parametrize("other", ["Avery Placeholder", "AVERY PLACEHOLDER"])
+@pytest.mark.parametrize("join", [". ", " while "])
+def test_another_person_departure_does_not_erase_retained_scope(name, other, join):
+    text = (f"{name} is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1"
+            + join + f"{other} resigned.")
+    site = qualification_site(pages=[("https://operator-1.example/team", text, "d" * 64)])
+    person = searched(name)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_later_site_proven_candidate_wins_over_a_company_referral():
+    quote = "Avery Placeholder is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    chosen, _ = cl.target(site, replay_search(searched(OTHER_PERSON), searched(PERSON)))
+    assert chosen["name"] == PERSON and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("field,name,prefix", [
+    ("operator", "Synthetic Smith and Sons", "Synthetic Smith and Sons' "),
+    ("operator", "Synthetic Smith & Sons", "Synthetic Smith and Sons' "),
+    ("site_name", "Synthetic Works and Foundry", "Synthetic Works and Foundry's "),
+])
+def test_known_operator_and_facility_names_preserve_their_conjunctions(field, name, prefix):
+    site = qualification_site()
+    (site if field == "operator" else site["task_input"])[field] = name
+    quote = f"Jordan Fixture is Plant Manager at {prefix}1 Example Road, Fixture City, TX for {site['operator']}."
+    site["kept_pages"] = [("https://operator-1.example/team", quote, "d" * 64)]
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_news_after_an_explicit_site_role_does_not_erase_that_role():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1, "
+             "and said the plant visited another facility this spring.")
+    site = qualification_site(pages=[("https://operator-1.example/news", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_a_street_without_target_city_does_not_establish_site_responsibility():
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    site["address"].pop("city")
+    chosen, _ = cl.target(site, replay_search(searched(OTHER_PERSON)))
+    assert chosen["site_responsibility"]["status"] == "unknown"
+    assert chosen["site_responsibility"]["route"] == "corporate_referral"
+
+
+@pytest.mark.parametrize("provider_title,quoted_title", [
+    ("Senior Plant Manager", "Plant Manager"),
+    ("Plant Manager", "Senior Plant Manager"),
+    ("Plant Manager", "Manager of the Plant"),
+])
+def test_site_role_proof_uses_the_existing_normalized_title_semantics(provider_title, quoted_title):
+    quote = f"Jordan Fixture is {quoted_title} at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON, title=provider_title)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("employment", ["works for Synthetic Operator 1", "recently joined Synthetic Operator 1",
+                                         "Avery Placeholder recently joined Rival Fixture Corporation",
+                                         "Avery Placeholder left for Rival Fixture Corporation",
+                                         "left the conference early", "departed the conference early",
+                                         "left for the conference early", "left for conference early"])
+def test_conjunction_can_restate_the_same_employer_without_losing_site_role(employment):
+    quote = f"Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 and {employment}."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("location,expected", [
+    ("Bloomington in the United States", False),
+    ("Bloomington IN", True),
+    ("Bloomington Indiana", True),
+    ("Bloomington in the United States and announced news in Bloomington IN", False),
+])
+def test_state_abbreviation_requires_case_in_the_direct_role_clause(location, expected):
+    site = qualification_site(city="Bloomington")
+    site["address"]["state"] = "IN"
+    quote = f"Jordan Fixture is Plant Manager at 1 Example Road, {location} for Synthetic Operator 1."
+    assert cl.site_role_quote(site, {"name": "Jordan Fixture", "title": "Plant Manager"}, quote) is expected
+
+
+@pytest.mark.parametrize("target,quoted", [
+    ("9 Mill Rd #4", "9 Mill Rd, Suite 4"),
+    ("9 Mill Rd, Suite 4", "9 Mill Rd #4"),
+    ("9 Mill Rd #4", "9 Mill Rd #4"),
+    ("9 Mill Rd, Suite 4", "9 Mill Rd, Suite 4"),
+    ("Suite 4, 9 Mill Rd", "9 Mill Rd, Suite 4"),
+    ("9 Mill Rd, Suite 4", "Suite 4, 9 Mill Rd"),
+    ("9 Mill Rd, Unit 4", "Unit 4, 9 Mill Rd"),
+])
+def test_site_role_preserves_units_before_or_after_the_street(target, quoted):
+    quote = f"Jordan Fixture is Plant Manager at {quoted}, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(street=target, pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+@pytest.mark.parametrize("quoted", ["9 Mill Rd, Suite 5", "9 Mill Rd #5", "9 Mill Rd"])
+def test_a_conflicting_or_missing_target_unit_grants_no_site_responsibility(quoted):
+    quote = f"Jordan Fixture is Plant Manager at {quoted}, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(street="9 Mill Rd, Suite 4", pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
+
+
+def test_hash_in_a_retained_operator_name_is_not_an_address_unit():
+    site = qualification_site()
+    site["operator"] = "#1 Manufacturing"
+    quote = "Jordan Fixture is Plant Manager at #１ Manufacturing's 1 Example Road, Fixture City, TX."
+    site["kept_pages"] = [("https://operator-1.example/team", quote, "d" * 64)]
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():
+    person = searched(OTHER_PERSON, title="Operations Director")
+    person["location"]["city"] = "Other Fixture City"
+    chosen, _ = cl.target(qualification_site(), replay_search(person))
+    assert chosen["site_responsibility"] == {
+        "site_key": "site-one", "status": "unknown", "route": "corporate_referral",
+        "reason": "target_site_location_mismatch", "proof": None}
 
 
 def test_enrichment_profile_checks_names_and_employment_history():

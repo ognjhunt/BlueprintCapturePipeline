@@ -317,12 +317,14 @@ def lookup(workspace, key, **changes):
                "current_employment": {"field": "employment.current.is_current",
                "company_domain": value["address"].rpartition("@")[2], "start_at": None}}, "corroboration": {"corroborated": person.get("corroborated", False),
                **(person.get("corroboration") or {})}}
+    if "site_responsibility" in person:
+        current["site_responsibility"] = person["site_responsibility"]
     item = {"source": "provider_lookup", "usable": True, "address": value["address"], "person": current,
             "operator_domain": value["address"].rpartition("@")[2], "provider": {**provider,
             "status": "DELIVERABLE" if provider.get("status") == "valid" else "CATCH_ALL",
             "verification": provider.get("status"), "score": None}}
     value = {"schema_version": "blueprint.contact-lookup.v1" if value["schema_version"] == "blueprint.site-contact-lookup.v1" else "invalid",
-             "rule_version": "blueprint.contact-lookup-rule.v1", "site_key": key, "lookups": [item]}
+             "rule_version": "blueprint.contact-lookup-rule.v2", "site_key": key, "lookups": [item]}
     folder = workspace.root / "synthetic-lookups"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{key}.json").write_text(json.dumps(value))
@@ -361,6 +363,128 @@ def test_final_lookup_adds_provider_routes_only_with_full_provenance(tmp_path):
                     {"schema_version": "blueprint.site-contact-lookup.v0"}):
         lookup(workspace, key, **changes)
         assert built(workspace)[0]["results"][0]["recipient"]["route"] == "published_team_inbox", changes
+
+
+def test_unknown_site_responsibility_is_a_referral_in_bundle_and_sheet_question(tmp_path):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, None)])
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={
+        "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager", "corroborated": False})
+    bundle, raw, _ = built(workspace)
+    entry = bundle["results"][0]
+    recipient = entry["recipient"]
+    assert recipient["route"] == "provider_sourced_uncorroborated"
+    assert recipient["provider"]["verification_status"] == "DELIVERABLE"
+    assert recipient["person"]["site_responsibility"]["status"] == "unknown"
+    assert entry["hypothesis"]["question"].startswith("Could you direct me to the person responsible for ")
+    assert entry["candidate"]["site"] in entry["hypothesis"]["question"]
+    assert sa.load_bundle(raw) == bundle
+    assert "corporate referral, target-site responsibility unknown" in sa.contact_cells(recipient)["details"]
+    changed = json.loads(raw)
+    changed["results"][0]["hypothesis"]["question"] = entry["checks"]["question"]
+    with pytest.raises(sa.AdmissionError, match="screen_admission_question_mismatch"):
+        sa.load_bundle(canonical(changed).encode())
+    changed = json.loads(json.dumps(recipient))
+    changed["person"]["site_responsibility"] = {
+        "site_key": key, "status": "verified", "route": "site_contact", "reason": None,
+        "proof": {"url": "https://operator-1.example/team", "level": "verified_on_page", "text_sha256": "e" * 64,
+                  "quote": "Jordan Fixture is Plant Manager at 2 Example Road, Fixture City, TX."}}
+    assert sa.recipient_problem(changed, entry) == "screen_admission_recipient_invalid"
+
+
+@pytest.mark.parametrize("reason", ["target_site_responsibility_unproven", "target_site_location_mismatch"])
+@pytest.mark.parametrize("title", ["Plant Manager", "Director"])
+@pytest.mark.parametrize("source", ["public_quote", "provider_sourced"])
+@pytest.mark.parametrize("preposition", ["at", "for", "of"])
+def test_loader_requalifies_quoted_referral_against_retained_facility(tmp_path, reason, title, source, preposition):
+    changes = {**team(1), "person_name": PERSON, "person_title": title,
+               "person_url": "https://operator-1.example/team",
+               "person_quote": f"{PERSON} is {title} at Synthetic Operator 1.", "person_date": "2026-06-01"}
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, changes)])
+    person = {"source": source, "name": PERSON, "title": title}
+    if source == "provider_sourced":
+        person.update(corroborated=True, corroboration={"url": "https://operator-1.example/team",
+                      "quote": changes["person_quote"], "level": "verified_on_page", "text_sha256": "a" * 64})
+    lookup(workspace, key, person=person)
+    bundle, _, _ = built(workspace)
+    entry = bundle["results"][0]
+    assert entry["recipient"]["route"] == ("quoted_person_looked_up_email" if source == "public_quote"
+                                           else "provider_sourced_corroborated")
+    person = entry["recipient"]["person"]
+    (person if source == "public_quote" else person["corroboration"])["quote"] = (
+        f"{PERSON} is {title} {preposition} Rival and Sons, Fixture City, TX.")
+    person["site_responsibility"]["reason"] = reason
+    raw = canonical(bundle).encode()
+    if title == "Director":
+        assert sa.load_bundle(raw) == bundle
+    else:
+        with pytest.raises(sa.AdmissionError, match="screen_admission_recipient_invalid"):
+            sa.load_bundle(raw)
+
+
+@pytest.mark.parametrize("responsibility", [
+    {"site_key": "a" * 64, "status": "unknown", "route": "corporate_referral",
+     "reason": "target_site_responsibility_unproven", "proof": None},
+    {"site_key": None, "status": "unknown", "route": "hold",
+     "reason": "target_site_location_mismatch", "proof": None},
+])
+def test_held_or_another_site_lookup_cannot_replace_the_team_inbox(tmp_path, responsibility):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, team(1))])
+    if responsibility["site_key"] is None:
+        responsibility = {**responsibility, "site_key": key}
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={
+        "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager",
+        "corroborated": False, "site_responsibility": responsibility})
+    assert built(workspace)[0]["results"][0]["recipient"]["route"] == "published_team_inbox"
+
+
+@pytest.mark.parametrize("display_location", ["Fixture City, TX", None])
+@pytest.mark.parametrize("operator_prefix", ["", "Synthetic Operator 1's "])
+def test_site_role_loader_uses_retained_physical_proof_when_display_omits_street(tmp_path, display_location, operator_prefix):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, None)])
+    lookup(workspace, key, address="jordan.fixture@operator-1.example", person={
+        "source": "provider_sourced", "name": "Jordan Fixture", "title": "Plant Manager", "corroborated": False})
+    bundle, _, _ = built(workspace)
+    entry = bundle["results"][0]
+    if display_location is None:
+        entry["input"].pop("location")
+    else:
+        entry["input"]["location"] = display_location
+    entry["candidate"]["location"] = display_location or entry["candidate"]["site"]
+    entry["result_digest"] = sa.result_digest(entry)
+    entry["recipient"]["person"]["site_responsibility"] = {
+        "site_key": key, "status": "verified", "route": "site_contact", "reason": None,
+        "proof": {"url": "https://operator-1.example/team", "level": "verified_on_page", "text_sha256": "e" * 64,
+                  "quote": f"Jordan Fixture is Plant Manager at {operator_prefix}1 Example Road, Fixture City, TX."}}
+    entry["hypothesis"]["question"] = entry["checks"]["question"]
+    assert sa.responsibility_target(entry)["address"]["street"] == "1 Example Road"
+    assert sa.load_bundle(canonical(bundle).encode()) == bundle
+    entry["checks"]["verification"]["site_identity"]["level"] = "unproven"
+    entry["result_digest"] = sa.result_digest(entry)
+    assert sa.recipient_problem(entry["recipient"], entry) == "screen_admission_recipient_invalid"
+
+
+@pytest.mark.parametrize("found_state", ["TX", None])
+def test_source_and_loader_reconstruct_the_same_proven_street_from_city_only_input(tmp_path, found_state):
+    workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, None)])
+    states, _ = workspace.states()
+    record = ss.stage_records(workspace, states, "screen")[key]
+    contact = ss.stage_records(workspace, states, "contact")[key]
+    record["address"] = {"city": "Fixture City", "state": "TX"}
+    record["input"]["location"] = "Fixture City, TX"
+    if found_state is None:
+        for field in ("site_identity", "site_identity_quote"):
+            record["answers"][field] = record["answers"][field].replace(", TX", "").replace(" TX", "")
+    source = sa.contact_lookup.lookup_site(workspace, contact, record, today=TODAY)
+    loader = sa.responsibility_target({"input": record["input"], "answers": record["answers"],
+                                      "checks": {"verification": record["verification"]}})
+    assert source["address"] == loader["address"] == {"street": "1 Example Road", "city": "Fixture City", "state": "TX"}
+    assert source["operator"] == loader["operator"] == "Synthetic Operator 1"
+    person = {"name": "Jordan Fixture", "title": "Plant Manager"}
+    for target in (source, loader):
+        assert not sa.contact_lookup.site_role_quote(
+            target, person, "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City.")
+        assert sa.contact_lookup.site_role_quote(
+            target, person, "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX.")
     # A published verified person email outranks every looked-up address.
     workspace, (key,) = prepared(tmp_path / "published", [(1, FOCUS_A, {})])
     lookup(workspace, key)

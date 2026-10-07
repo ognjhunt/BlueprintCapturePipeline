@@ -1057,6 +1057,14 @@ repository root, with `--key-file` set to a private env file. Start with
 
 ## Site-screen admission (host-owned, design section 3)
 
+Contact lookup rule v2 qualifies each person against the target facility after replaying the shared company search.
+A different provider city/state holds a local manager unless a retained person/role/facility quote proves responsibility.
+Matching location alone proves no site responsibility. Current corporate contacts and other approved people with unknown
+scope remain explicitly labelled corporate referrals; the first-email question asks who covers the named facility.
+FullEnrich DELIVERABLE/current-employment and corroborated/uncorroborated labels retain their original meanings.
+Older sealed journals are requalified without buying another search. New searches retain at most five minimal current-role
+candidates so another facility can select its own proven person. This repair never authorizes sends or fresh spend.
+
 Outreach-ready site-screen records move into the CRM as rows labelled Hypothesis and on
 to WebApp drafting (owner decisions 2026-10-05, company GCS
 `operations/recovery/2026-10-05/owner-decisions/owner-decision-screen-to-crm-and-contacts-20261005.json`
@@ -1162,10 +1170,12 @@ repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has no
   with `--person-search` naming the decision above (anything else refuses with
   `contact_lookup_person_search_reference_invalid`), one people search on the operator's
   domain for the listed roles (`TITLES`: owner, president, general manager, plant
-  manager, operations manager or director, engineering or automation manager) keeps the
-  first person FullEnrich places at that domain now (`is_current` true, or no end date
+  manager, operations manager or director, engineering or automation manager) keeps minimal
+  candidates FullEnrich places at that domain now (`is_current` true, or no end date
   in `employment.current`; historical `employment.all` entries need `is_current: true`)
-  in a listed role, and that person gets one enrichment (`provider_sourced`). The
+  in a listed role. Each facility selects its proven site contact first, otherwise an
+  explicitly unknown corporate referral; a location-mismatched local manager is held.
+  The selected person gets one enrichment (`provider_sourced`). The
   employment field relied on is recorded; a past employer never counts. The pages the
   site screen already read and kept are checked for the person with their title and the
   operator (`corroboration`, true or false; no new read, never LinkedIn).
@@ -1193,7 +1203,7 @@ repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has no
   the rest (`state: pending` until then). Without `--apply` the run admits the same calls
   and sends and writes nothing; it counts the searches, as their enrichments depend on
   the answers.
-- Records. `lookup/records/<site_key>.contact-lookup-rule.v1.json` holds each site's
+- Records. `lookup/records/<site_key>.contact-lookup-rule.v2.json` holds each site's
   lookup (`source: provider_lookup`, `label: looked_up`, FullEnrich's own `status`, its
   `valid` or `not_valid` mapping, the person with `sourcing` and proof, and the address
   only when usable) and its `recipient` from `contact_lookup.choose_recipient`, a pure
