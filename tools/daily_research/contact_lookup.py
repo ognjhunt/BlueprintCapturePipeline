@@ -237,12 +237,14 @@ def same_person(first, second):
 
 
 def title_words(title):
-    return [word for word in ss.words(title).split() if word not in TITLE_FILLER]
+    aliases = {"vp": ("vice", "president"), "coo": ("chief", "operating", "officer")}
+    return [part for word in ss.words(title).split() if word not in TITLE_FILLER
+            for part in aliases.get(word, (word,))]
 
 
 def listed_title(title):
     """True for a title holding every word of one of TITLES and no word of a role that does not decide."""
-    have = set(ss.words(title).split())
+    have = set(title_words(title))
     if "vp" in have or {"vice", "president"} <= have:
         return not have & NOT_DECIDING and "operations" in have
     return not have & NOT_DECIDING and any(set(title_words(listed)) <= have for listed in TITLES)
@@ -250,7 +252,7 @@ def listed_title(title):
 
 def holds_title(text, title):
     wanted = title_words(title)
-    return bool(wanted) and set(wanted) <= set(ss.words(text).split())
+    return bool(wanted) and set(wanted) <= set(title_words(text))
 
 
 def on_domain(domain, operator_domains):
@@ -853,7 +855,7 @@ def role_complement(person, sentence):
         for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
             role = description[:preposition.start()]
             if (holds_title(role, person["title"])
-                    and set(role.split()) <= set(title_words(person["title"])) | TITLE_FILLER):
+                    and set(title_words(role)) <= set(title_words(person["title"]))):
                 offset = len(normalized[:start.end()].split()) + len(description[:preposition.end()].split())
                 return description[preposition.end():], offset, preposition.group().strip()
     return "", 0, None

@@ -994,6 +994,10 @@ def test_a_street_without_target_city_does_not_establish_site_responsibility():
 @pytest.mark.parametrize("provider_title,quoted_title", [
     ("Senior Plant Manager", "Plant Manager"),
     ("Plant Manager", "Senior Plant Manager"),
+    ("VP Operations", "Vice President of Operations"),
+    ("Vice President of Operations", "VP Operations"),
+    ("COO", "Chief Operating Officer"),
+    ("Chief Operating Officer", "COO"),
     ("Plant Manager", "Manager of the Plant"),
 ])
 def test_site_role_proof_uses_the_existing_normalized_title_semantics(provider_title, quoted_title):
@@ -1070,8 +1074,10 @@ def test_hash_in_a_retained_operator_name_is_not_an_address_unit():
     assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
 
 
-@pytest.mark.parametrize("title", ["Operations Director", "VP Operations", "Chief Operating Officer"])
-def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority(title):
+@pytest.mark.parametrize("title,quoted_title", [("Operations Director", "Operations Director"),
+    ("VP Operations", "Vice President of Operations"), ("Vice President of Operations", "VP Operations"),
+    ("COO", "Chief Operating Officer"), ("Chief Operating Officer", "COO")])
+def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority(title, quoted_title):
     person = searched(OTHER_PERSON, title=title)
     person["location"]["city"] = "Other Fixture City"
     chosen, _ = cl.target(qualification_site(), replay_search(person))
@@ -1079,7 +1085,7 @@ def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority
         "site_key": "site-one", "status": "unknown", "route": "corporate_referral",
         "reason": "target_site_location_mismatch", "proof": None}
     site = qualification_site()
-    site["person_quote"] = f"{OTHER_PERSON} is {title} at 2 Other Road, Other Fixture City, OH."
+    site["person_quote"] = f"{OTHER_PERSON} is {quoted_title} at 2 Other Road, Other Fixture City, OH."
     held, reason = cl.target(site, replay_search(person))
     assert held is None and reason == "target_site_location_mismatch"
     for local_title in ("Site Director", "Facility Director", "Plant Director", "Production Director",
