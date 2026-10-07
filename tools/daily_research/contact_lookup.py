@@ -799,7 +799,7 @@ def role_scope_suffix(text, known_names):
     return True
 
 
-UNIT = re.compile(r"\b(suite|ste|unit|building|bldg|floor|fl)\s+([a-z0-9-]+)\b", re.I)
+UNIT = re.compile(r"\b(suite|ste|unit|building|bldg|floor|fl)\s+([a-z0-9-]+)\b", re.IGNORECASE)
 UNIT_KINDS = {"ste": "suite", "bldg": "building", "fl": "floor"}
 
 
@@ -843,8 +843,8 @@ def site_role_quote(site, person, sentence):
     known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
-    employment = re.compile(r"\b(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at)\s+", re.I)
-    for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.I)[1:]:
+    employment = re.compile(r"\b(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at)\s+", re.IGNORECASE)
+    for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.IGNORECASE)[1:]:
         match = employment.search(clause)
         if not match:
             continue
