@@ -899,7 +899,7 @@ def employment_contradiction(person, sentence, known_names):
                             r"(?:\s+as\s+[^\n.,;:]{1,120}?)?\s+(?:for|by|at|with)\s+"
                             r"|(?P<transition>join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+)"
                             r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?"
-                            r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|no\s+longer)"
+                            r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|step(?:ped|s|ping)?\s+down|no\s+longer)"
                             r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
     cuts = [0] + [match.end() for match in re.finditer(r"\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE)
                   if not any(start <= match.start() < end for start, end in protected)] + [len(sentence)]
@@ -910,6 +910,11 @@ def employment_contradiction(person, sentence, known_names):
         if not match:
             continue
         subject = clause[:match.start()].strip()
+        possessive = re.search(r"\b(?:" + re.escape(name) + r"\s+s|his|her|their)\s+(.+)", ss.words(subject))
+        if possessive:
+            owned = re.sub(r"^(?:(?:the|current|former|previous|first|last)\s+)+", "", possessive.group(1))
+            if owned.split()[0] not in {"employment", "job", "role", "position", "tenure", "appointment", "service", "contract"}:
+                continue
         # An explicitly named different subject grants no facts about this person. Lowercase modifiers do not
         # introduce a subject; known personal names/pronouns continue the preceding role statement.
         named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
@@ -930,6 +935,8 @@ def employment_contradiction(person, sentence, known_names):
             if (any(entity and (object_text == entity or object_text.startswith(entity + " ")) for entity in known_names)
                     or match.group("departure").lower().startswith(("resign", "quit", "retire"))
                     or match.group("departure").lower() in {"fired", "dismissed", "terminated", "laid off"}
+                    or match.group("departure").lower().startswith("step")
+                    and (not employer or holds_title(employer, person["title"]))
                     or set(object_text.split()) & {"job", "role", "position", "employment", "corporation", "corp", "inc", "llc"}
                     or re.match(r"^(?:to\s+)?(?:join|work|serve|be\s+employed)\b", employer)
                     or employer.startswith("for ") and not set(object_text.split()) & {
@@ -951,8 +958,11 @@ def employment_contradiction(person, sentence, known_names):
                 or holds_title(employer, person["title"]))
             if event or not known_employer and not employment_like:
                 continue
-        if (ended and past
-                or not known_employer):
+        if ended and past:
+            if known_employer:
+                return True
+            continue  # An explicitly ended rival job does not contradict current target employment.
+        if not known_employer:
             return True
     return False
 
