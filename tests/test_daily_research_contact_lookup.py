@@ -166,6 +166,20 @@ def stored(workspace):
 
 
 # --- the quoted person ----------------------------------------------------------------------------
+@pytest.mark.parametrize("assignment", [
+    "2 Other Road, Other Fixture City, OH",
+    "2 Other Road, Fixture City, TX",
+    "Other Fixture Plant, Other Fixture City, OH",
+])
+def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_path, assignment):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_quote=f"{PERSON} is Plant Manager at {assignment}.")])
+    api = FakeFullEnrich()
+    result = lookup(workspace, api)
+    assert result["calls"]["made"] == 0 and api.calls == []
+    record = cl.load(workspace)[key]
+    assert record["lookups"] == [] and record["skipped"] == "target_site_location_mismatch"
+
+
 def test_a_quoted_person_gets_one_enrichment_and_a_deliverable_email_is_kept(tmp_path):
     workspace, (key,) = site_screen_out(tmp_path, [quoted(1)])
     api = FakeFullEnrich()
@@ -745,6 +759,9 @@ def test_state_abbreviation_requires_case_in_the_direct_role_clause(location, ex
 
 
 @pytest.mark.parametrize("target,quoted", [
+    ("9 Mill Rd #4", "9 Mill Rd, Suite 4"),
+    ("9 Mill Rd, Suite 4", "9 Mill Rd #4"),
+    ("9 Mill Rd #4", "9 Mill Rd #4"),
     ("9 Mill Rd, Suite 4", "9 Mill Rd, Suite 4"),
     ("Suite 4, 9 Mill Rd", "9 Mill Rd, Suite 4"),
     ("9 Mill Rd, Suite 4", "Suite 4, 9 Mill Rd"),
@@ -759,13 +776,24 @@ def test_site_role_preserves_units_before_or_after_the_street(target, quoted):
     assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
 
 
-@pytest.mark.parametrize("quoted", ["9 Mill Rd, Suite 5", "9 Mill Rd"])
+@pytest.mark.parametrize("quoted", ["9 Mill Rd, Suite 5", "9 Mill Rd #5", "9 Mill Rd"])
 def test_a_conflicting_or_missing_target_unit_grants_no_site_responsibility(quoted):
     quote = f"Jordan Fixture is Plant Manager at {quoted}, Fixture City, TX for Synthetic Operator 1."
     site = qualification_site(street="9 Mill Rd, Suite 4", pages=[("https://operator-1.example/team", quote, "d" * 64)])
     person = searched(OTHER_PERSON)
     person["location"]["city"] = "Other Fixture City"
     assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
+
+
+def test_hash_in_a_retained_operator_name_is_not_an_address_unit():
+    site = qualification_site()
+    site["operator"] = "#1 Manufacturing"
+    quote = "Jordan Fixture is Plant Manager at #１ Manufacturing's 1 Example Road, Fixture City, TX."
+    site["kept_pages"] = [("https://operator-1.example/team", quote, "d" * 64)]
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
 
 
 def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():

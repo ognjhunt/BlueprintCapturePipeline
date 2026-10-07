@@ -754,6 +754,8 @@ def quoted_person(site):
             "proof": {"source": "site_contact", "url": person.get("url"), "level": person["level"],
                       "date": person.get("date"), "current": True}, "corroboration": None}
     found["site_responsibility"] = site_responsibility(site, found)
+    if found["site_responsibility"]["route"] == "hold":
+        return None, "target_site_location_mismatch"
     return found, None
 
 
@@ -804,6 +806,16 @@ UNIT = re.compile(r"\b(suite|ste|unit|building|bldg|floor|fl)\s+([a-z0-9-]+)\b",
 UNIT_KINDS = {"ste": "suite", "bldg": "building", "fl": "floor"}
 
 
+def hash_units(text, protected=()):
+    text = unicodedata.normalize("NFKC", text)
+    spans = [match.span() for name in protected if ss.words(name)
+             for match in re.finditer(r"\b" + r"[^a-z0-9]+".join(re.escape(word) for word in ss.words(name).split())
+                                     + r"\b", text, re.IGNORECASE)]
+    return re.sub(r"#\s*([a-z0-9-]+)\b", lambda match: match.group() if any(
+        match.start() < end and match.end() > start for start, end in spans) else "suite " + match.group(1),
+        text, flags=re.IGNORECASE)
+
+
 def address_units(text, protected=()):
     """Unit identity is preserved while placement and standard designator spelling are normalized."""
     spans = [match.span() for name in protected if name
@@ -820,10 +832,44 @@ def address_units(text, protected=()):
     return UNIT.sub(strip, text), units
 
 
+def role_complement(person, sentence):
+    normalized = ss.words(sentence)
+    name = ss.words(person["name"])
+    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}", normalized)
+    if start:
+        description = normalized[start.end():]
+        for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
+            role = description[:preposition.start()]
+            if (holds_title(role, person["title"])
+                    and set(role.split()) <= set(title_words(person["title"])) | TITLE_FILLER):
+                offset = len(normalized[:start.end()].split()) + len(description[:preposition.end()].split())
+                return description[preposition.end():], offset, preposition.group().strip()
+    return "", 0, None
+
+
+def quoted_role_address(person, sentence):
+    tail, offset, preposition = role_complement(person, sentence)
+    if preposition != "at" or set(tail.split()) & {"whose", "which", "headquarters", "hq"}:
+        return {}
+    raw = unicodedata.normalize("NFKC", sentence)
+    tokens = list(re.finditer(r"[A-Za-z0-9]+", raw))
+    if offset >= len(tokens) or ss.words(" ".join(token.group() for token in tokens)) != ss.words(raw):
+        return {}
+    complement = re.split(r"\b(?:and|but|while|whereas|for)\b", raw[tokens[offset].start():], flags=re.IGNORECASE)[0]
+    address = ss.parse_location(complement.rstrip(" .;"))
+    city, state = address.get("city"), address.get("state")
+    if (not city or not re.search(ss.city_pattern(city), complement)
+            or not (state or ss.street_anchor(address.get("street")))):
+        return {}
+    return address
+
+
 def site_role_quote(site, person, sentence):
     """A role tied to this facility, rather than a person's visit or a company-wide name/title match."""
     given_address = site.get("address") or {}
-    street, target_units = address_units(ss.words(given_address.get("street") or ""))
+    names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
+    sentence = hash_units(sentence, names)
+    street, target_units = address_units(ss.words(hash_units(given_address.get("street") or "")))
     anchors = ss.site_anchors({**site, "address": {**given_address, "street": street}})
     specific = [item for item in anchors if item["kind"] == "street"] or [
         item for item in anchors if item["kind"] == "site_name_city"]
@@ -832,19 +878,9 @@ def site_role_quote(site, person, sentence):
     if ss.words(cased) != normalized:
         return False
     name = ss.words(person["name"])
-    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}", normalized)
-    tail, role_scope, scope_offset = "", False, 0
-    if start:
-        description = normalized[start.end():]
-        for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
-            role = description[:preposition.start()]
-            if (holds_title(role, person["title"])
-                    and set(role.split()) <= set(title_words(person["title"])) | TITLE_FILLER):
-                tail, role_scope = description[preposition.end():], True
-                scope_offset = len(normalized[:start.end()].split()) + len(description[:preposition.end()].split())
-                break
+    tail, scope_offset, preposition = role_complement(person, sentence)
+    role_scope = preposition is not None
     # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
-    names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
     known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
@@ -957,10 +993,20 @@ def site_responsibility(site, person):
         parsed = ss.parse_location(person.get("location"))
         place = {"city": parsed.get("city"), "region": parsed.get("state")}
     address = site.get("address") or {}
+    assigned = quoted_role_address(person, site.get("person_quote") or "")
+    assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
+    target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
+    assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
+    role_mismatch = bool(assigned.get("city") and address.get("city")
+                         and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
+                         or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
+                         or assigned_street and target_street
+                         and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
+                         or assigned_units and target_units and assigned_units != target_units)
     city, target_city = place.get("city"), address.get("city")
     region = _text(place.get("region"))
     state = region.upper() if region.upper() in ss.STATE_NAMES else ss.STATE_CODES.get(ss.normalized(region))
-    mismatch = bool(city and target_city and ss._canon(city, ss.CITY_WORDS) != ss._canon(target_city, ss.CITY_WORDS)
+    mismatch = bool(role_mismatch or city and target_city and ss._canon(city, ss.CITY_WORDS) != ss._canon(target_city, ss.CITY_WORDS)
                     or state and address.get("state") and state != address["state"]
                     or place.get("country") and ss.normalized(place["country"]) not in
                     {"us", "usa", "united states", "united states of america"})
