@@ -881,7 +881,7 @@ def employment_contradiction(person, sentence, known_names):
     protected = [match.span() for entity in known_names | {name} if entity
                  for match in re.finditer(r"\b" + r"[\W_]+".join(re.escape(word) for word in entity.split())
                                          + r"\b", sentence, re.IGNORECASE)]
-    employment = re.compile(r"\b(?:(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at|with)\s+"
+    employment = re.compile(r"\b(?:(?P<employment>works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves|served)\s+(?:for|by|at|with)\s+"
                             r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+"
                             r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?"
                             r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|no\s+longer)"
@@ -900,6 +900,10 @@ def employment_contradiction(person, sentence, known_names):
         named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
                  if word.isupper() or word[:1].isupper() and word[1:].islower()} - {
             "he", "she", "they", "his", "her", "their", "now", "currently", "still", "also", "recently"}
+        # A full subject immediately before its verb binds the claim despite a date/editorial preamble.
+        if re.search(r"\b" + re.escape(name) + r"(?:\s+(?:is|was|has|had|have|been|an?|now|currently|recently))*$",
+                     ss.words(subject)):
+            named = set()
         if named and not named <= set(name.split()):
             continue
         if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
@@ -918,7 +922,10 @@ def employment_contradiction(person, sentence, known_names):
                     and re.match(r"^(?:works?|worked|serves|employed)\b", employer)):
                 return True
             continue
-        if not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names):
+        ended = re.search(r"\b(?:to|until|through)\s+(?:\w+\s+){0,3}(?:19|20)\d{2}\b", employer)
+        past = match.group("employment") in {"worked", "served"} or re.search(r"\bwas(?:\s+an?)?$", ss.words(subject))
+        if (ended and past
+                or not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names)):
             return True
     return False
 
@@ -1034,7 +1041,7 @@ def site_responsibility(site, person):
                 return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
                         "reason": "target_site_responsibility_unproven", "proof": None}
             if named:
-                linked = role_complement(person, sentence)[2] is not None
+                linked = True
             elif not pronoun:
                 linked = False
     for url, text, text_sha256, sentences in pages:

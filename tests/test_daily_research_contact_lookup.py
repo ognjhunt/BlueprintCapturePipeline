@@ -767,6 +767,23 @@ def test_departure_pronoun_after_a_different_named_person_preserves_scope():
     assert scope["route"] == "site_contact"
 
 
+@pytest.mark.parametrize("transition", [
+    "Jordan Fixture worked for Synthetic Operator 1 from 2018 to 2020.",
+    "Jordan Fixture worked for Synthetic Operator 1 until 2020.",
+    "Jordan Fixture was employed at Synthetic Operator 1 until January 2020.",
+    "Jordan Fixture served for Synthetic Operator 1 from 2018 through 2020.",
+    "In 2025, Jordan Fixture retired.", "Update: Jordan Fixture retired.",
+    "Jordan Fixture won an award. He retired.",
+])
+def test_explicit_ended_employment_and_same_subject_updates_override_old_role(transition):
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    pages = [("https://operator-1.example/team", quote, "d" * 64),
+             ("https://operator-1.example/update", quote + " " + transition, "e" * 64)]
+    scope = cl.site_responsibility(qualification_site(pages=pages),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "hold" and scope["proof"] is None
+
+
 @pytest.mark.parametrize("name", ["Jordan Fixture", "Jordan Quit", "Jordan Retired"])
 @pytest.mark.parametrize("other", ["Avery Placeholder", "AVERY PLACEHOLDER"])
 @pytest.mark.parametrize("join", [". ", " while "])
