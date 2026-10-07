@@ -6,10 +6,12 @@ enrichment per named, current person the contact stage proved by a quote, and re
 for up to --wait-seconds; a later run reads the rest and never sends a lookup twice. A people search on the operator's
 domain for the deciding roles runs only with --person-search naming the owner decision
 owner-decision-provider-sourced-person-20261005; its person is labelled provider_sourced. summary recomputes every
-record from the journal. The key comes only from --key-file (FULLENRICH_API_KEY=... lines); it is never printed or
-written. Output is counts and stable codes only, never names or addresses. Nothing sends, drafts or writes a CRM.
+record from the journal. Lookup uses --key-file (FULLENRICH_API_KEY=... lines). The balance-only command may also use
+the existing FULLENRICH_API_KEY environment binding, including on the daily worker. Keys are never printed or written.
+Output is counts and stable codes only, never names or addresses. Nothing sends, drafts or writes a CRM.
 """
 import argparse
+import os
 import time
 from pathlib import Path
 
@@ -53,11 +55,16 @@ def main(argv=None, *, environ=None, transport=None, monotonic=time.monotonic, s
     commands.add_parser("summary", help="Counts only, recomputed from the journal").add_argument(
         "--out", required=True, type=Path)
     commands.add_parser("balance", help="Read remaining credits only; no billed call or artifact write").add_argument(
-        "--key-file", required=True, type=Path)
+        "--key-file", type=Path, help="Optional existing key file; otherwise use the configured FULLENRICH_API_KEY")
     args = parser.parse_args(argv)
     if args.command == "balance":
-        contact_lookup.refuse_on_worker(environ)
-        client = contact_lookup.FullEnrichClient(api_key(args.key_file),
+        # This command issues exactly one unbilled GET, with no journal/artifact writes.
+        # The paid lookup worker guard remains below, before any key or out-dir access.
+        environment = os.environ if environ is None else environ
+        key = api_key(args.key_file) if args.key_file is not None else environment.get(contact_lookup.KEY_ENV)
+        if not key:
+            raise ScreenError("contact_lookup_api_key_missing")
+        client = contact_lookup.FullEnrichClient(key,
                                                  **({"transport": transport} if transport is not None else {}))
         result = client.balance()
     elif args.command == "lookup":

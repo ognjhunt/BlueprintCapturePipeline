@@ -315,8 +315,12 @@ def test_people_search_stays_off_unless_the_run_names_the_owner_decision(tmp_pat
 
 
 @pytest.mark.parametrize("corroborating", [True, False])
-def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_listed_role(tmp_path, corroborating):
-    sentence = f"{OTHER_PERSON}, plant manager of Synthetic Operator 1, opened the new lathe cell this spring."
+@pytest.mark.parametrize("provider_title", ["Plant Manager", "Production Manager", "Warehouse Manager", "Site Leader",
+                                           "Vice President of Operations", "VP Operations", "Chief Operating Officer",
+                                           "COO", "Manufacturing Engineering Manager"])
+def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_listed_role(tmp_path, corroborating,
+                                                                                      provider_title):
+    sentence = f"{OTHER_PERSON}, {provider_title} of Synthetic Operator 1, opened the new lathe cell this spring."
     kept = {"https://operator-1.example/news": sentence} if corroborating else None
     workspace, (key,) = site_screen_out(tmp_path, [nobody(1)], kept=kept)
     api = FakeFullEnrich()
@@ -325,20 +329,24 @@ def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_list
         searched("Casey Placeholder", domain="other-operator.example"),
         searched("Riley Fixture", is_current=False, end_at="2024-01-31T00:00:00Z"),  # Ended at the operator.
         searched("Morgan Fixture", title="Vice President of Sales"),  # Not a listed role.
-        searched(OTHER_PERSON),
+        searched(OTHER_PERSON, title=provider_title),
     ]
     api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
     result = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)
     (search,) = api.posts("/api/v2/people/search")
     assert search["current_company_domains"] == [{"value": "operator-1.example", "exact_match": True}]
     assert [title["value"] for title in search["current_position_titles"]] == list(cl.TITLES)
+    assert all(title["exact_match"] is False for title in search["current_position_titles"])
+    assert search["person_locations"] == [{"value": "United States", "exact_match": True}]
+    assert all(not cl.listed_title(title) for title in ("VP Sales", "VP Finance", "Human Resources Director",
+                                                       "Operations Audit Director", "Retired Plant Manager"))
     assert search["limit"] == cl.SEARCH_LIMIT
     assert [body["data"][0]["first_name"] for body in api.posts("/api/v2/contact/enrich/bulk")] == ["Jordan"]
     assert (result["calls"]["made"], result["credits"]["committed"]) == (2, "2")  # Four people at 0.25, one email.
     (found,) = cl.load(workspace)[key]["lookups"]
     person = found["person"]
     assert (found["usable"], found["address"], person["sourcing"], person["name"], person["title"], person["location"]) == (
-        True, FOUND, "provider_sourced", OTHER_PERSON, "Plant Manager", "Fixture City, Texas, United States")
+        True, FOUND, "provider_sourced", OTHER_PERSON, provider_title, "Fixture City, Texas, United States")
     assert person["proof"]["source"] == "fullenrich_people_search"
     assert person["proof"]["current_employment"] == {"field": "employment.current.is_current",
                                                      "company_domain": "operator-1.example",
@@ -663,10 +671,26 @@ def test_shared_company_search_is_requalified_for_each_target_site_without_calls
     assert second is None and reason == "target_site_location_mismatch"
 
 
-def test_legacy_shared_search_is_requalified_without_rebuying_the_search():
+def test_legacy_shared_search_is_requalified_without_rebuying_the_search(tmp_path):
     person, reason = cl.target(qualification_site(city="Other Fixture City"),
                                replay_search(searched(OTHER_PERSON), legacy=True))
     assert person is None and reason == "target_site_location_mismatch"
+    workspace, (key,) = site_screen_out(tmp_path, [nobody(1)])
+    api = FakeFullEnrich()
+    api.people["operator-1.example"] = [searched(OTHER_PERSON)]
+    api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
+    site = cl.lookup_sites(workspace, workspace.states()[0], today=TODAY)[0][0]
+    book = cl.Book(workspace)
+    bounds = cl.limits(None, LOOKUP_OWNER, "5", 10)
+    book.create_pin(bounds)
+    calls = cl.Calls(book, "apply", client=cl.FullEnrichClient(FULLENRICH_KEY, transport=api), bounds=bounds)
+    calls("search", [site["operator_domain"], list(cl.LEGACY_TITLES)], key,
+          lambda _: {"current_company_domains": [{"value": site["operator_domain"], "exact_match": True}],
+                     "current_position_titles": [{"value": title} for title in cl.LEGACY_TITLES],
+                     "limit": cl.SEARCH_LIMIT, "offset": 0}, cl.seal_search(site))
+    report = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION, max_credits="5", max_calls=10)
+    assert len(api.posts(cl.SEARCH_PATH)) == 1 and report["calls"]["known"] == 1
+    assert len(api.posts(cl.ENRICH_PATH)) == 1
 
 
 @pytest.mark.parametrize("operator_prefix", ["", "Synthetic Operator 1's "])
@@ -1082,7 +1106,8 @@ def test_quoted_person_title_must_be_supported_by_the_verified_quote(tmp_path):
     assert result["skipped"] == {"person_role_unproven": 1} and api.calls == []
 
 
-def test_balance_is_one_get_with_counts_only_output(tmp_path, capsys):
+@pytest.mark.parametrize("on_worker", [False, True])
+def test_balance_is_one_get_with_counts_only_output(tmp_path, capsys, on_worker):
     key_file = tmp_path / "synthetic-key.env"
     key_file.write_text("FULLENRICH_API_KEY=" + FULLENRICH_KEY)
     requests = []
@@ -1091,7 +1116,9 @@ def test_balance_is_one_get_with_counts_only_output(tmp_path, capsys):
         requests.append((method, path))
         return 200, json.dumps({"balance": 49.25, "ignored": FULLENRICH_KEY}).encode()
 
-    report = operator.main(["balance", "--key-file", str(key_file)], transport=transport)
+    args = ["balance"] if on_worker else ["balance", "--key-file", str(key_file)]
+    environment = {ss.WORKER_FLAG: "0", cl.KEY_ENV: FULLENRICH_KEY} if on_worker else {}
+    report = operator.main(args, transport=transport, environ=environment)
     printed = capsys.readouterr().out
     assert requests == [("GET", "/api/v2/account/credits")]
     assert report["credits_available"] == "49.25" and FULLENRICH_KEY not in printed

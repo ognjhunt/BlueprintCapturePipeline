@@ -19,7 +19,7 @@ No executables, hooks, packages or credentials are included.
 
 | Path relative to the capability directory | Bytes | SHA-256 |
 | --- | ---: | --- |
-| blueprint-evidence-qualification/SKILL.md | 10780 | 85f3061845d28f8c5d202f7ab851f46707d34b1d025cd19bd6d7b718db9fff04 |
+| blueprint-evidence-qualification/SKILL.md | 10920 | 2e88c75ce34c992bd214576926b5027c0b211bb2f18a5e1f585277a96d69b62f |
 | blueprint-evidence-qualification/references/prospect-contract.md | 2226 | 39571718234ce2f7536a56f6e8440183536c259bf9b4e9a0d54944cc9aaaf6b3 |
 | deep-research/LICENSE | 1072 | 3a9cf254e155282014880e9569b9039bc17ce6a43919df23741cf14d24481244 |
 | deep-research/SKILL.md | 5386 | 2646cdf3942d918e84febf020b289fbfb7b5cf601e43ee7e7349e6c5105941c5 |

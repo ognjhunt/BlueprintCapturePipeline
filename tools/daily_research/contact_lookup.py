@@ -70,11 +70,15 @@ SEARCH_PATH, ENRICH_PATH = "/api/v2/people/search", "/api/v2/contact/enrich/bulk
 VALID_STATUSES = frozenset({"DELIVERABLE"})
 STATUSES = frozenset({"DELIVERABLE", "HIGH_PROBABILITY", "CATCH_ALL", "INVALID"})  # FullEnrich email statuses.
 # The deciding roles a people search asks for. A kept title holds every word of one, and no word of NOT_DECIDING.
-TITLES = ("owner", "president", "general manager", "plant manager", "operations manager", "operations director",
-          "engineering manager", "automation manager")
-NOT_DECIDING = frozenset({"assistant", "associate", "intern", "coordinator", "vice", "product", "sales", "marketing",
+LEGACY_TITLES = ("owner", "president", "general manager", "plant manager", "operations manager", "operations director",
+                 "engineering manager", "automation manager")
+TITLES = (*LEGACY_TITLES, "facility manager", "facility director", "site manager", "site director", "site leader",
+          "plant director", "production manager", "production director", "warehouse manager", "warehouse director",
+          "manufacturing engineering manager", "manufacturing engineering director", "automation engineering manager",
+          "automation engineering director", "vice president operations", "vp operations", "chief operating officer", "coo")
+NOT_DECIDING = frozenset({"assistant", "associate", "intern", "coordinator", "product", "sales", "marketing",
                           "account", "accounts", "finance", "financial", "hr", "human", "talent", "recruiting",
-                          "recruiter", "legal", "customer", "former", "retired"})
+                          "recruiter", "legal", "customer", "audit", "auditor", "auditing", "former", "retired"})
 TITLE_FILLER = frozenset({"of", "the", "and", "for", "at", "senior", "sr"})
 SEARCH_LIMIT = 5  # People per search; FullEnrich bills 0.25 credit per person returned.
 MOST_CREDITS = {"search": Decimal("0.25") * SEARCH_LIMIT, "enrich": Decimal(1)}  # A found work email is 1 credit.
@@ -776,8 +780,13 @@ def corroborate(site, person):
 
 
 def search_body(site):
+    # FullEnrich v2 supports current-company domains, current titles and person locations.
+    # Person geography never proves facility responsibility; a company-wide US search
+    # keeps headquarters referrals available rather than filtering by the plant's city.
     return {"current_company_domains": [{"value": site["operator_domain"], "exact_match": True}],
-            "current_position_titles": [{"value": title} for title in TITLES], "limit": SEARCH_LIMIT, "offset": 0}
+            "current_position_titles": [{"value": title, "exact_match": False} for title in TITLES],
+            "person_locations": [{"value": "United States", "exact_match": True}],
+            "limit": SEARCH_LIMIT, "offset": 0}
 
 
 def role_scope_suffix(text, known_names, *, allow_news=True):
@@ -1199,7 +1208,8 @@ def site_responsibility(site, person):
                     or state and address.get("state") and state != address["state"]
                     or place.get("country") and ss.normalized(place["country"]) not in
                     {"us", "usa", "united states", "united states of america"})
-    corporate = bool(set(title.split()) & {"owner", "president", "director"})
+    corporate = bool(set(title.split()) & {"owner", "president", "director", "vp", "coo"}
+                     or holds_title(title, "chief operating officer"))
     return {"site_key": site["site_key"], "status": "unknown",
             "route": "hold" if mismatch and not corporate else "corporate_referral",
             "reason": "target_site_location_mismatch" if mismatch else "target_site_responsibility_unproven",
@@ -1216,7 +1226,14 @@ def target(site, calls, search=True):
     person, code = quoted_person(site)
     if person is not None or not search:
         return person, code
-    key, call = calls("search", [site["operator_domain"], list(TITLES)], site["site_key"],
+    identity = [site["operator_domain"], list(TITLES), "United States"]
+    # Reuse an existing company search; never replace a potentially billed unknown call.
+    legacy = [site["operator_domain"], list(LEGACY_TITLES)]
+    if isinstance(calls, Calls):
+        prior = calls.book.calls.get(calls.key("search", legacy))
+        if prior is not None and prior["state"] != "refused":
+            identity = legacy
+    key, call = calls("search", identity, site["site_key"],
                       lambda _: search_body(site), seal_search(site))
     found = call["observation"] if call is not None and call["state"] == "answered" else None
     if found is None or not found.get("candidate"):
