@@ -874,14 +874,22 @@ def quoted_role_address(person, sentence):
     return address
 
 
+def employment_sentence(sentence):
+    """Remove temporal/editorial preambles before identifying the employment subject."""
+    return re.sub(r"^\s*(?:(?:in|on|as\s+of|during|by)\b[^,;:.!?]{1,80},"
+                  r"|(?:update|note|correction|announcement|news)\s*:)\s*", "",
+                  unicodedata.normalize("NFKC", sentence), flags=re.IGNORECASE)
+
+
 def employment_contradiction(person, sentence, known_names):
     """Current-role evidence cannot ignore an explicit same-person employment contradiction."""
     name = ss.words(person["name"])
-    sentence = unicodedata.normalize("NFKC", sentence)
+    sentence = employment_sentence(sentence)
     protected = [match.span() for entity in known_names | {name} if entity
                  for match in re.finditer(r"\b" + r"[\W_]+".join(re.escape(word) for word in entity.split())
                                          + r"\b", sentence, re.IGNORECASE)]
-    employment = re.compile(r"\b(?:(?P<employment>works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves|served)\s+(?:for|by|at|with)\s+"
+    employment = re.compile(r"\b(?:(?P<employment>works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves|served)"
+                            r"(?:\s+as\s+[^\n.,;:]{1,120}?)?\s+(?:for|by|at|with)\s+"
                             r"|join(?:s|ed|ing)?\s+|moved\s+(?:on\s+)?to\s+"
                             r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?"
                             r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|no\s+longer)"
@@ -924,8 +932,10 @@ def employment_contradiction(person, sentence, known_names):
             continue
         ended = re.search(r"\b(?:to|until|through)\s+(?:\w+\s+){0,3}(?:19|20)\d{2}\b", employer)
         past = match.group("employment") in {"worked", "served"} or re.search(r"\bwas(?:\s+an?)?$", ss.words(subject))
+        employers = {employer, re.sub(r"^(?:the|an?)\s+", "", employer)}
         if (ended and past
-                or not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names)):
+                or not any(entity and (value == entity or value.startswith(entity + " "))
+                           for entity in known_names for value in employers)):
             return True
     return False
 
@@ -1036,7 +1046,7 @@ def site_responsibility(site, person):
         linked = False
         for sentence in sentences:
             named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
-            pronoun = bool(re.match(r"\s*(?:he|she|they|his|her|their)\b", sentence, re.IGNORECASE))
+            pronoun = bool(re.match(r"\s*(?:he|she|they|his|her|their)\b", employment_sentence(sentence), re.IGNORECASE))
             if (named or linked and pronoun) and employment_contradiction(person, sentence, known_names):
                 return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
                         "reason": "target_site_responsibility_unproven", "proof": None}
