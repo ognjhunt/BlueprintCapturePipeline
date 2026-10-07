@@ -89,7 +89,8 @@ def release_archive(commit: str = COMMIT, files: dict[str, bytes] | None = None,
 def worker_release_archive(commit: str = COMMIT, *, entries: tuple[str, ...] = ("blueprint_pipeline.remote_cpu_worker",),
                            omit: tuple[str, ...] = ()) -> bytes:
     """A recipe-v2 archive of this checkout's working tree for a real stage child: the import closure of
-    ``entries``, every schema but ``omit``, ``pyproject.toml``, and the test stages as ``src/remote_cpu_worker_stages.py``."""
+    ``entries``, every canonical and packaged schema but ``omit``, ``pyproject.toml``,
+    and the test stages as ``src/remote_cpu_worker_stages.py``."""
 
     from blueprint_pipeline.task_evaluation_production_chain_preflight import import_closure
 
@@ -97,8 +98,9 @@ def worker_release_archive(commit: str = COMMIT, *, entries: tuple[str, ...] = (
     for entry in entries:
         modules.update(import_closure(ROOT / "src", entry))
     files = {str(path.relative_to(ROOT)): path.read_bytes() for path in modules.values()}
-    files.update({str(path.relative_to(ROOT)): path.read_bytes() for path in (ROOT / "docs" / "schemas").rglob("*")
-                  if path.is_file() and str(path.relative_to(ROOT)) not in omit})
+    for schema_root in (ROOT / "docs" / "schemas", ROOT / "src" / "blueprint_pipeline" / "_catalog_schemas"):
+        files.update({str(path.relative_to(ROOT)): path.read_bytes() for path in schema_root.rglob("*")
+                      if path.is_file() and str(path.relative_to(ROOT)) not in omit})
     files["pyproject.toml"] = (ROOT / "pyproject.toml").read_bytes()
     files[f"src/{STAGES_MODULE}.py"] = (ROOT / "tests" / f"{STAGES_MODULE}.py").read_bytes()
     return release_archive(commit, files)

@@ -50,7 +50,7 @@ from tests.remote_cpu_worker_support import (
     worker_release_archive,
 )
 
-SUCCESS_SCHEMA = "docs/schemas/rigid_task_success_contract.v1.schema.json"
+SUCCESS_SCHEMA = "src/blueprint_pipeline/_catalog_schemas/rigid_task_success_contract.v1.schema.json"
 
 
 def _refused(world: WorkerWorld, argv: list[str], environ: dict[str, str]) -> int:
