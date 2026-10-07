@@ -1084,7 +1084,8 @@ def test_hash_in_a_retained_operator_name_is_not_an_address_unit():
     ("VP Operations", "Vice President of Operations"), ("Vice President of Operations", "VP Operations"),
     ("COO", "Chief Operating Officer"), ("Chief Operating Officer", "COO"),
     ("VP Operations", "V.P. of Operations"), ("COO", "C.O.O."),
-    ("VP Operations", "VP Ops"), ("COO", "Chief Operations Officer")])
+    ("VP Operations", "VP Ops"), ("COO", "Chief Operations Officer"),
+    ("V.P. of Operations", "VP Ops")])
 def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority(title, quoted_title):
     person = searched(OTHER_PERSON, title=title)
     person["location"]["city"] = "Other Fixture City"

@@ -1155,7 +1155,7 @@ def site_role_quote(site, person, sentence):
 def site_responsibility(site, person):
     """Location is a mismatch signal, never proof of responsibility. Only a retained role/site quote proves scope.
     Unknown scope stays usable as an explicit corporate referral; off-site local managers are held."""
-    title = ss.words(person["title"])
+    title = " ".join(title_words(person["title"]))
     known_names = [site["task_input"].get("site_name") or "", site.get("operator") or ""]
     known_names = {ss.words(name.replace("&", " and ")) for name in known_names} | {
         ss.words(name) for name in known_names}
