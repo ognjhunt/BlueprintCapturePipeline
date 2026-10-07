@@ -936,7 +936,6 @@ def employment_contradiction(person, sentence, known_names):
         nested_end = (len(predicates) == 2 and match.group("departure") == "no longer"
                       and predicates[1].group("employment")
                       and not clause[match.end():predicates[1].start()].strip())
-        unqualified |= len(predicates) > 1 and not nested_end
         subject = clause[:match.start()].strip()
         polarity = [found.group().lower() for found in re.finditer(
             r"\b(?:not|never|may|might|will|would|could|should)\b"
@@ -972,6 +971,7 @@ def employment_contradiction(person, sentence, known_names):
             continue
         if set(ss.words(subject).split()) & {"company", "operator", "team", "workers", "employees"}:
             continue
+        unqualified |= len(predicates) > 1 and not nested_end
         employer = ss.words(clause[match.end():])
         if match.group("departure"):
             object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)

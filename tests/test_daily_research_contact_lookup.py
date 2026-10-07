@@ -882,6 +882,14 @@ def test_unqualified_multi_predicate_scope_uses_corporate_referral_without_site_
                      "reason": "target_site_responsibility_unproven", "proof": None}
 
 
+def test_another_subjects_multi_job_sentence_does_not_downgrade_supported_scope():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             "Avery Placeholder worked for Rival Works before joining Other Works and thanked Jordan Fixture.")
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
+                                   cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
+    assert scope["route"] == "site_contact" and scope["proof"] is not None
+
+
 def test_object_name_mention_does_not_link_another_subjects_departure():
     quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
              "Avery Placeholder thanked Jordan Fixture. She retired.")
