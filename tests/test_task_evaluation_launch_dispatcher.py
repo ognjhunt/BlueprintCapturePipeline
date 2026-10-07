@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import threading
 import types
 from contextlib import nullcontext
@@ -2815,6 +2816,102 @@ def test_public_catalog_accepts_more_than_one_hundred_bounded_profiles(
         load_public_launch_profile_catalog(
             tmp_path / "catalog-101.json", max_profiles=100
         )
+
+
+def test_public_catalog_reuses_validation_without_sharing_mutable_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = public_launch_profile_descriptor(_profile(tmp_path))
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    dispatcher_module._validated_public_launch_profile_catalog.cache_clear()
+    original = dispatcher_module.validate_public_launch_profile_descriptor
+    calls = []
+
+    def validate(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(dispatcher_module, "validate_public_launch_profile_descriptor", validate)
+    first = load_public_launch_profile_catalog(catalog_path)
+    first["profiles"][0]["required_controls"]["watchdog_required"] = False
+    first["profiles"].clear()
+
+    second = load_public_launch_profile_catalog(catalog_path)
+
+    assert second["profiles"] == [descriptor]
+    assert len(calls) == 1
+
+
+def test_public_catalog_revalidates_changed_bytes_with_identical_file_metadata(
+    tmp_path: Path,
+) -> None:
+    descriptor = public_launch_profile_descriptor(_profile(tmp_path))
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    assert load_public_launch_profile_catalog(catalog_path)["profiles"] == [descriptor]
+    before = catalog_path.stat()
+    descriptor["profile_digest"] = "sha256:" + "z" * 64
+    _write(catalog_path, [descriptor])
+    os.utime(catalog_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert catalog_path.stat().st_size == before.st_size
+    assert catalog_path.stat().st_mtime_ns == before.st_mtime_ns
+
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(catalog_path)
+
+
+def test_public_catalog_cache_preserves_current_path_and_limit_checks(
+    tmp_path: Path,
+) -> None:
+    descriptor = public_launch_profile_descriptor(_profile(tmp_path))
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    assert load_public_launch_profile_catalog(catalog_path)["profiles"] == [descriptor]
+
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(catalog_path, max_profiles=0)
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(catalog_path, max_bytes=catalog_path.stat().st_size - 1)
+    retained = tmp_path / "retained.json"
+    catalog_path.rename(retained)
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(catalog_path)
+    catalog_path.symlink_to(retained)
+    with pytest.raises(TaskEvaluationLaunchError, match="public_catalog_invalid"):
+        load_public_launch_profile_catalog(catalog_path)
+
+
+def test_public_catalog_concurrent_reads_share_one_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = public_launch_profile_descriptor(_profile(tmp_path))
+    catalog_path = tmp_path / "catalog.json"
+    _write(catalog_path, [descriptor])
+    dispatcher_module._validated_public_launch_profile_catalog.cache_clear()
+    original = dispatcher_module.validate_public_launch_profile_descriptor
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def validate(value):
+        calls.append(value)
+        entered.set()
+        assert release.wait(timeout=5)
+        return original(value)
+
+    monkeypatch.setattr(dispatcher_module, "validate_public_launch_profile_descriptor", validate)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(load_public_launch_profile_catalog, catalog_path) for _ in range(4)]
+        try:
+            assert entered.wait(timeout=5)
+        finally:
+            release.set()
+        results = [future.result(timeout=5) for future in futures]
+
+    assert len(calls) == 1
+    assert all(result["profiles"] == [descriptor] for result in results)
+    assert len({id(result["profiles"][0]) for result in results}) == 4
 
 
 def test_public_descriptor_requires_bounded_authorization_projection(

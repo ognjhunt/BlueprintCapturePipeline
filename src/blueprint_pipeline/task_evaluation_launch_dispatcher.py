@@ -20,8 +20,11 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Mapping, Sequence
 
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
@@ -896,22 +899,15 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
 
 PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES = 4 * 1024 * 1024
 PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES = 2048
+_PUBLIC_CATALOG_VALIDATION_LOCK = Lock()
 
 
-def load_public_launch_profile_catalog(
-    path_value: str | Path,
-    *,
-    max_bytes: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
-    max_profiles: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
+@lru_cache(maxsize=1)
+def _validated_public_launch_profile_catalog(
+    payload: bytes, max_profiles: int,
 ) -> dict[str, Any]:
-    """Load a publisher-generated catalog without exposing its filesystem path."""
-    source_input = Path(path_value).expanduser()
-    if source_input.is_symlink():
-        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
-    source = source_input.resolve()
-    if not source.is_file() or source.stat().st_size > max_bytes:
-        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
-    value = json.loads(source.read_text(encoding="utf-8"))
+    """Reuse full validation only for the identical bounded catalog bytes."""
+    value = json.loads(payload.decode("utf-8"))
     if not isinstance(value, list) or len(value) > max_profiles:
         raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
     profiles: list[dict[str, Any]] = []
@@ -928,6 +924,31 @@ def load_public_launch_profile_catalog(
         "schema_version": LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION,
         "profiles": profiles,
     }
+
+
+def load_public_launch_profile_catalog(
+    path_value: str | Path,
+    *,
+    max_bytes: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
+    max_profiles: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
+) -> dict[str, Any]:
+    """Read current bytes, fail closed, and isolate callers from cached data."""
+    source_input = Path(path_value).expanduser()
+    if source_input.is_symlink():
+        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+    source = source_input.resolve()
+    if not source.is_file() or source.stat().st_size > max_bytes:
+        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+    with source.open("rb") as stream:
+        payload = stream.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+    # Serialize cache misses so concurrent health/catalog requests do not repeat
+    # the same expensive nested schema validation. Every request still reopens
+    # the file; byte changes, removal, symlinks and stricter limits fail closed.
+    with _PUBLIC_CATALOG_VALIDATION_LOCK:
+        catalog = _validated_public_launch_profile_catalog(payload, max_profiles)
+    return deepcopy(catalog)
 
 
 def validate_launch_request_against_public_catalog(
