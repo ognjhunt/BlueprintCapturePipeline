@@ -193,7 +193,9 @@ class ClaudeMessagesModel(Model):
             raise ClaudeModelBoundaryError("claude_tool_choice_unsupported")
         messages = _messages(input)
         kwargs: dict[str, Any] = {"model": self.model, "max_tokens": model_settings.max_tokens,
-                                  "inference_geo": "us", "messages": messages}
+                                  "messages": messages}
+        if self.model != "claude-haiku-5-5":
+            kwargs["inference_geo"] = "us"
         if system_instructions:
             kwargs["system"] = system_instructions
         if tools:

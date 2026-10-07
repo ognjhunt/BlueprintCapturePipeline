@@ -99,6 +99,7 @@ class HaikuAgentsSDKInvoker:
         if (sdk_model(spec.model) != MODEL or not 1 <= spec.max_turns <= 12
                 or not 256 <= spec.max_output_tokens <= 16000
                 or not 0 < self.maximum_cost_usd <= 5
+                or spec.processing_region != "default"
                 or spec.hosted_tools or spec.cache_policy is not None
                 or spec.stable_developer_prefix or spec.scene_static_prefix):
             raise AgentsSDKInvocationBlocked("haiku_sdk_spec_unsupported")

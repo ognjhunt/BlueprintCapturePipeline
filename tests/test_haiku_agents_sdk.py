@@ -56,6 +56,7 @@ def test_real_sdk_tool_loop_native_schema_thinking_usage_and_reservations(monkey
     assert len(result.usage["provider_calls"]) == 2
     assert result.cost_usd == pytest.approx(0.000077)
     assert calls[0]["output_config"]["effort"] == "max"
+    assert "inference_geo" not in calls[0]
     assert "minLength" not in json.dumps(calls[0]["output_config"]["format"]["schema"])
     assert "minLength" in calls[0]["system"]
     assert calls[1]["messages"][1]["content"][0] == {"type": "thinking", "thinking": "", "signature": "opaque-signed"}
@@ -131,3 +132,14 @@ def test_constrained_tool_arguments_are_repaired_before_local_invocation(monkeyp
     assert "minimum" not in json.dumps(calls[0]["tools"][0]["input_schema"])
     assert "minimum" in calls[0]["tools"][0]["description"]
     assert "haiku_sdk_tool_arguments_invalid" in calls[1]["messages"][2]["content"][0]["content"]
+
+
+@pytest.mark.parametrize("region", ["us", "global", "eu"])
+def test_unqualified_processing_region_fails_before_inference(monkeypatch, tmp_path, region):
+    monkeypatch.setattr(transport, "_post_message", lambda *_: pytest.fail("must not call provider"))
+    spec = AgentsSDKAgentSpec(run_id="region-fixture", capability="inspect", name="Inspector",
+        instructions="Inspect", model=transport.MODEL, max_turns=1, max_output_tokens=4000,
+        processing_region=region, output_type=Output)
+    with pytest.raises(RuntimeError, match="spec_unsupported"):
+        HaikuAgentsSDKInvoker(audit_root=tmp_path, allow_live_invocation=True, maximum_cost_usd=1).invoke(spec, "Inspect")
+    assert not list(tmp_path.rglob("inference_reservations"))
