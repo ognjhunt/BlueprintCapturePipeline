@@ -899,7 +899,11 @@ def employment_contradiction(person, sentence, known_names):
         return False
     role_sentence = re.sub(r"^\s*(?:he|she|they)\b", person["name"], sentence, flags=re.IGNORECASE)
     role_employer, _, role_preposition = role_complement(person, role_sentence)
-    if role_preposition and not quoted_role_address(person, role_sentence):
+    if role_preposition and quoted_role_address(person, role_sentence):
+        # A street-qualified role can still explicitly name a different employer.
+        employer_suffix = re.search(r"\bfor\s+(.+)$", role_employer)
+        role_employer = employer_suffix.group(1) if employer_suffix else ""
+    if role_preposition and role_employer:
         employers = {role_employer, re.sub(r"^(?:the|an?)\s+", "", role_employer)}
         if not any(entity and (value == entity or value.startswith(entity + " "))
                    for entity in known_names for value in employers):
