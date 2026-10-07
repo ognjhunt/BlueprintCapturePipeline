@@ -1159,6 +1159,26 @@ def site_role_quote(site, person, sentence):
                 and not set(assertion.split()) & {"former", "formerly", "retired", "not"})
 
 
+def role_address_mismatch(site, person, sentence, known_names):
+    """An explicit candidate role at another facility overrides unknown corporate scope."""
+    if site_role_quote(site, person, sentence):
+        return False
+    address = site.get("address") or {}
+    assigned = quoted_role_address(person, sentence)
+    assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
+    target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
+    assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
+    named_facility_mismatch = bool(assigned.get("street") and not assigned_street
+                                  and site["task_input"].get("site_name")
+                                  and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
+    return bool(named_facility_mismatch or assigned.get("city") and address.get("city")
+                         and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
+                         or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
+                         or assigned_street and target_street
+                         and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
+                         or assigned_units and target_units and assigned_units != target_units)
+
+
 def site_responsibility(site, person):
     """Location is a mismatch signal, never proof of responsibility. Only a retained role/site quote proves scope.
     Unknown scope stays usable as an explicit corporate referral; off-site local managers are held."""
@@ -1168,6 +1188,11 @@ def site_responsibility(site, person):
         ss.words(name) for name in known_names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     pages = [(url, text, text_sha256, ss.sentences(text)) for url, text, text_sha256 in site["kept_pages"]]
+    role_quotes = [site.get("person_quote") or ""] + [sentence for _, _, _, sentences in pages for sentence in sentences]
+    role_mismatch = any(role_address_mismatch(site, person, sentence, known_names) for sentence in role_quotes)
+    if role_mismatch:
+        return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                "reason": "target_site_location_mismatch", "proof": None}
     # Read all retained evidence before accepting any role proof; page order cannot erase a departure.
     unqualified = False
     for _, _, _, sentences in pages:
@@ -1203,19 +1228,6 @@ def site_responsibility(site, person):
         parsed = ss.parse_location(person.get("location"))
         place = {"city": parsed.get("city"), "region": parsed.get("state")}
     address = site.get("address") or {}
-    assigned = quoted_role_address(person, site.get("person_quote") or "")
-    assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
-    target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
-    assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
-    named_facility_mismatch = bool(assigned.get("street") and not assigned_street
-                                  and site["task_input"].get("site_name")
-                                  and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
-    role_mismatch = bool(named_facility_mismatch or assigned.get("city") and address.get("city")
-                         and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
-                         or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
-                         or assigned_street and target_street
-                         and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
-                         or assigned_units and target_units and assigned_units != target_units)
     city, target_city = place.get("city"), address.get("city")
     region = _text(place.get("region"))
     state = region.upper() if region.upper() in ss.STATE_NAMES else ss.STATE_CODES.get(ss.normalized(region))
