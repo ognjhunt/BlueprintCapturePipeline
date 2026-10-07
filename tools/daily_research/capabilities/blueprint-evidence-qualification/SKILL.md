@@ -7,6 +7,15 @@ description: Qualify real robot-site task opportunities and check evidence, comm
 
 Start with the site, recurring physical task, and decision to be made. Identify the constraints that could rule out a match. Work within the requested search/time budget; a bounded unsuccessful search establishes a gap, never that contrary evidence does not exist.
 
+## Site candidates and contacts
+
+- Start site discovery from the existing OSHA ranked establishment universe. Preserve the source record, operator, physical address and site/task identity. Ranking supplies candidates, not verified tasks, contacts or outreach authority. Use web sources to corroborate the exact operator/site/task rather than replacing the ranked inventory with broad company searches.
+- For a person contact, default to the existing authorized FullEnrich employer/person search and work-email enrichment/verification route. Reuse retained lookup results before any new call. Use the web for role/site corroboration and fallback published business contact routes. Missing access or credits is a reported gap, not permission to create credentials, buy credits, expand provider calls or ignore an existing hold/ceiling.
+- Look for current plant/facility, operations, production or warehouse leaders, relevant manufacturing/automation engineering, or the owner of a small business. Exclude unrelated sales, HR and audit roles, former employees and managers explicitly responsible for another location. A matching employer or title alone does not prove responsibility for the target facility; retain evidence tying the role and person to that facility.
+- Distinguish a proven direct facility lead, a corporate referral with explicitly unknown facility responsibility, and a generic team/general routing address. A corporate-referral draft asks who covers the named facility; it does not claim that the recipient runs it. Keep other-location managers held and reuse the existing recipient qualification/fallback functions.
+- Keep mailbox deliverability, current employment, corroboration and role/site authority separate. FullEnrich's DELIVERABLE status verifies its email assessment, not facility responsibility. Retain provider labels, dates, digests and original evidence; never invent an address or upgrade unknown responsibility to verified authority.
+- This research guidance grants no new spend or outreach authority. A separate explicitly authorized draft workflow uses existing Gmail drafts, keeps them unsent, and checks fresh suppression, prior contacts/send receipts and existing draft/sent-message duplicates before creating another draft. Preserve site/task identity and all existing founder holds.
+
 ## Qualification
 
 - Describe the actual task, objects/materials, volume, manual bottleneck, and existing automation. Unknown details stay unknown. A business category alone does not establish a task or a need.
