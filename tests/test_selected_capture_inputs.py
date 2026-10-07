@@ -74,6 +74,27 @@ def staged_capture(tmp_path, monkeypatch, *, withdrawn=False):
     return root, target, handoff, storage
 
 
+def test_actual_web_owner_fixture_satisfies_strict_consumer_source_digest():
+    import copy
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    owner = json.loads((FIXTURES / "capture-delivery-browser-web-owner-granted.json").read_text())
+    def validate(value):
+        return observer.validate_observation(value, bucket=value["bucket"], scene_id=value["scene_id"],
+            capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"],
+            now_epoch=value["observed_at_epoch"])
+    assert validate(owner) == owner
+    for field in ("completion_marker", "producer_delivery"):
+        changed = copy.deepcopy(owner)
+        target = changed[field] if field == "completion_marker" else changed[field]["raw_video"]
+        if field == "completion_marker":
+            target["sha256"] = "sha256:" + "0" * 64
+        else:
+            target["crc32c"] = "AAAAAA=="
+        changed["observation_digest"] = cross_runtime_canonical_digest(changed, digest_field="observation_digest")
+        with pytest.raises(ValueError, match="capture_owner_observation_digest_invalid"):
+            validate(changed)
+
+
 def test_real_selected_staging_feeds_existing_capture_and_frame_readers(tmp_path, monkeypatch):
     root, target, handoff, storage = staged_capture(tmp_path, monkeypatch)
     context = resolve_local_capture_context(target)
