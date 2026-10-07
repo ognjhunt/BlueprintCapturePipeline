@@ -892,7 +892,7 @@ def coordinated_subject(subject, person_name):
 
 
 def employment_contradiction(person, sentence, known_names):
-    """Current-role evidence cannot ignore an explicit same-person employment contradiction."""
+    """True contradicts the role; None leaves multi-predicate scope unqualified; False preserves it."""
     name = ss.words(person["name"])
     sentence = employment_sentence(sentence)
     if sentence.rstrip().endswith("?"):
@@ -925,12 +925,18 @@ def employment_contradiction(person, sentence, known_names):
                   if not any(start <= match.start() < end for start, end in protected)
                   and not (match.group().lower() == "and" and (ss.words(sentence[:match.start()]) == name
                            or coordinated_subject(sentence[:match.start()], name)))] + [len(sentence)]
+    unqualified = False
     for start, end in pairwise(cuts):
         clause = sentence[start:end]
-        match = next((found for found in employment.finditer(clause)
-                      if not any(left <= start + found.start() < right for left, right in protected)), None)
+        predicates = [found for found in employment.finditer(clause)
+                      if not any(left <= start + found.start() < right for left, right in protected)]
+        match = predicates[0] if predicates else None
         if not match:
             continue
+        nested_end = (len(predicates) == 2 and match.group("departure") == "no longer"
+                      and predicates[1].group("employment")
+                      and not clause[match.end():predicates[1].start()].strip())
+        unqualified |= len(predicates) > 1 and not nested_end
         subject = clause[:match.start()].strip()
         polarity = [found.group().lower() for found in re.finditer(
             r"\b(?:not|never|may|might|will|would|could|should)\b"
@@ -970,7 +976,8 @@ def employment_contradiction(person, sentence, known_names):
         if match.group("departure"):
             object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
             departure = match.group("departure").lower()
-            ended_employer = re.match(r"^(?:from|at|with)\s+(?:(?:the|an?)\s+)?(.+)$", employer)
+            ended_employer = re.match(r"^(?:as\s+.+?\s+(?:at|for)|from|at|with)\s+"
+                                      r"(?:(?:the|an?)\s+)?(.+)$", employer)
             if ended_employer:
                 destination = ended_employer.group(1)
                 generic = {"company", "employer", "business", "organization", "firm", "plant", "facility", "site",
@@ -1029,9 +1036,11 @@ def employment_contradiction(person, sentence, known_names):
             if known_employer:
                 return True
             continue  # An explicitly ended rival job does not contradict current target employment.
+        if past and not known_employer:
+            continue  # Past rival employment is history, not an assertion of the current employer.
         if not known_employer:
             return True
-    return False
+    return None if unqualified else False
 
 
 def site_role_quote(site, person, sentence):
@@ -1053,7 +1062,7 @@ def site_role_quote(site, person, sentence):
     # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
     known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
-    if employment_contradiction(person, sentence, known_names):
+    if employment_contradiction(person, sentence, known_names) is not False:
         return False
     spans = [match.span() for name in known_names if name
              for match in re.finditer(r"\b" + re.escape(name) + r"\b", tail)]
@@ -1136,6 +1145,7 @@ def site_responsibility(site, person):
     known_names |= {name.replace(" and ", " ") for name in known_names}
     pages = [(url, text, text_sha256, ss.sentences(text)) for url, text, text_sha256 in site["kept_pages"]]
     # Read all retained evidence before accepting any role proof; page order cannot erase a departure.
+    unqualified = False
     for _, _, _, sentences in pages:
         linked = False
         for sentence in sentences:
@@ -1144,9 +1154,12 @@ def site_responsibility(site, person):
                                     r"|(?:now|currently|then|subsequently|later|afterwards?)\s+"
                                     r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
                                     employment_sentence(sentence), re.IGNORECASE))
-            if (named or linked and pronoun) and employment_contradiction(person, sentence, known_names):
-                return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
-                        "reason": "target_site_responsibility_unproven", "proof": None}
+            if named or linked and pronoun:
+                contradiction = employment_contradiction(person, sentence, known_names)
+                if contradiction is True:
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_responsibility_unproven", "proof": None}
+                unqualified |= contradiction is None
             if named:
                 subject = ss.words(employment_sentence(sentence))
                 person_name = ss.words(person["name"])
@@ -1157,7 +1170,7 @@ def site_responsibility(site, person):
         if not ss.names_operator(text, site["operator"]):
             continue
         for sentence in sentences:
-            if site_role_quote(site, person, sentence):
+            if not unqualified and site_role_quote(site, person, sentence):
                 return {"site_key": site["site_key"], "status": "verified", "route": "site_contact",
                         "reason": None, "proof": {"url": url, "quote": _text(sentence, 1200),
                         "level": "verified_on_page", "text_sha256": text_sha256 or ss._sha256(text.encode())}}

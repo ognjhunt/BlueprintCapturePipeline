@@ -839,6 +839,9 @@ def test_explicit_ended_employment_and_same_subject_updates_override_old_role(tr
     "Jordan Fixture resigned from Rival Works in 2015.",
     "Jordan Fixture retired from Rival Works in 2015.",
     "Jordan Fixture left Rival Works in 2015.",
+    "Jordan Fixture resigned as Plant Manager at Rival Works in 2015.",
+    "Jordan Fixture retired as Plant Manager for Rival Works in 2015.",
+    "Jordan Fixture worked for Rival Works, then joined Synthetic Operator 1.",
     "Jordan Fixture joined the safety meeting.",
     "Jordan Fixture moved to Fixture City.",
     "Jordan Fixture worked for Rival Works from 2010 to 2015.",
@@ -867,6 +870,16 @@ def test_affirming_target_employment_with_a_determiner_preserves_scope(affirmati
     scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]),
                                    cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0])
     assert scope["route"] == "site_contact"
+
+
+def test_unqualified_multi_predicate_scope_uses_corporate_referral_without_site_authority():
+    quote = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
+             "Jordan Fixture worked for Synthetic Operator 1 before joining Rival Works.")
+    person = cl.candidate(searched(OTHER_PERSON), ["operator-1.example"])[0]
+    person["location_fields"] = {"city": "Fixture City", "region": "Texas", "country": "United States"}
+    scope = cl.site_responsibility(qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)]), person)
+    assert scope == {"site_key": qualification_site()["site_key"], "status": "unknown", "route": "corporate_referral",
+                     "reason": "target_site_responsibility_unproven", "proof": None}
 
 
 def test_object_name_mention_does_not_link_another_subjects_departure():
