@@ -20,8 +20,10 @@ import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Mapping, Sequence
 
 from . import task_evaluation_policy_canary_setup as policy_canary_setup
@@ -896,6 +898,7 @@ def validate_public_launch_profile_descriptor(value: Mapping[str, Any]) -> list[
 
 PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES = 4 * 1024 * 1024
 PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES = 2048
+_PUBLIC_CATALOG_VALIDATION_LOCK = Lock()
 
 
 def load_public_launch_profile_catalog(
@@ -904,30 +907,27 @@ def load_public_launch_profile_catalog(
     max_bytes: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
     max_profiles: int = PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
 ) -> dict[str, Any]:
-    """Load a publisher-generated catalog without exposing its filesystem path."""
+    """Read current bytes, fail closed, and isolate callers from cached data."""
+    from .task_evaluation_launch_catalog import _validated_public_launch_profile_catalog
+
     source_input = Path(path_value).expanduser()
     if source_input.is_symlink():
         raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
     source = source_input.resolve()
     if not source.is_file() or source.stat().st_size > max_bytes:
         raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
-    value = json.loads(source.read_text(encoding="utf-8"))
-    if not isinstance(value, list) or len(value) > max_profiles:
+    with source.open("rb") as stream:
+        payload = stream.read(max_bytes + 1)
+    if len(payload) > max_bytes:
         raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
-    profiles: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in value:
-        descriptor = _mapping(item)
-        blockers = validate_public_launch_profile_descriptor(descriptor)
-        key = (str(descriptor.get("profile_id") or ""), str(descriptor.get("profile_digest") or ""))
-        if blockers or key in seen:
-            raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
-        seen.add(key)
-        profiles.append(descriptor)
-    return {
-        "schema_version": LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION,
-        "profiles": profiles,
-    }
+    # Serialize cache misses so concurrent health/catalog requests do not repeat
+    # the same expensive nested schema validation. Every request still reopens
+    # the file; byte changes, removal, symlinks and stricter limits fail closed.
+    with _PUBLIC_CATALOG_VALIDATION_LOCK:
+        catalog = _validated_public_launch_profile_catalog(
+            payload, max_profiles, validate_public_launch_profile_descriptor,
+        )
+    return deepcopy(catalog)
 
 
 def validate_launch_request_against_public_catalog(

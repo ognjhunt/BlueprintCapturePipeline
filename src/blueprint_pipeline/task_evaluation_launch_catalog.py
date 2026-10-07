@@ -29,11 +29,13 @@ import json
 import os
 import stat
 import tempfile
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .task_evaluation_launch_dispatcher import (
+    LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION,
     PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_BYTES,
     PUBLIC_LAUNCH_PROFILE_CATALOG_MAX_PROFILES,
     TaskEvaluationLaunchError,
@@ -49,6 +51,28 @@ SCHEMA_VERSION = "task_evaluation_launch_catalog_reconciliation.v1"
 
 class LaunchCatalogError(TaskEvaluationLaunchError):
     """The published directory cannot be projected into a catalog."""
+
+
+@lru_cache(maxsize=1)
+def _validated_public_launch_profile_catalog(
+    payload: bytes, max_profiles: int,
+    validate_descriptor: Callable[[Mapping[str, Any]], list[str]],
+) -> dict[str, Any]:
+    """Reuse full validation only for identical bytes, limits and validator."""
+    value = json.loads(payload.decode("utf-8"))
+    if not isinstance(value, list) or len(value) > max_profiles:
+        raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+    profiles: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        descriptor = dict(item) if isinstance(item, Mapping) else {}
+        blockers = validate_descriptor(descriptor)
+        key = (str(descriptor.get("profile_id") or ""), str(descriptor.get("profile_digest") or ""))
+        if blockers or key in seen:
+            raise TaskEvaluationLaunchError("launch_profile_public_catalog_invalid")
+        seen.add(key)
+        profiles.append(descriptor)
+    return {"schema_version": LAUNCH_PROFILE_CATALOG_SCHEMA_VERSION, "profiles": profiles}
 
 
 def _read(path: Path) -> dict[str, Any]:
