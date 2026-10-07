@@ -157,7 +157,8 @@ def _normalized_descriptor_source(
     """
 
     try:
-        payload = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        from ..task_evaluation_scene_retirement_generations import read_selected_capture_input_bytes
+        payload = json.loads(read_selected_capture_input_bytes(descriptor_path))
     except (OSError, ValueError):
         payload = None
     if not isinstance(payload, Mapping):

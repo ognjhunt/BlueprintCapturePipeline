@@ -291,16 +291,16 @@ def write_text(path: Path, content: str) -> None:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    from ..task_evaluation_scene_retirement_generations import read_selected_capture_input_bytes
+    data = json.loads(read_selected_capture_input_bytes(path))
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object at {path}, got {type(data).__name__}")
     return data
 
 
 def read_json_any(path: Path) -> Any:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    from ..task_evaluation_scene_retirement_generations import read_selected_capture_input_bytes
+    return json.loads(read_selected_capture_input_bytes(path))
 
 
 def optional_read_json(path: Path) -> dict[str, Any] | None:

@@ -4409,8 +4409,13 @@ def run_qualification_pipeline(
         bucket = parsed_uri.bucket
         descriptor_path = resolve_gs_uri_to_path(descriptor_gcs_uri, config.gcs_root)
         storage_root = infer_storage_root_from_scene_path(descriptor_path)
-        capture_root = descriptor_path.parent
+        from .local_capture import resolve_local_capture_context
+        capture_root = resolve_local_capture_context(descriptor_path).capture_root
         descriptor = CaptureDescriptor.from_file(descriptor_path)
+        # Producer members remain immutable. Enrichment uses the established
+        # pipeline-owned canonical descriptor, while birth evidence stays in
+        # the selected delivery and never becomes current consent.
+        descriptor_output_path = capture_root / "capture_descriptor.json"
         scene_id = descriptor.scene_id
         capture_id = descriptor.capture_id
         pipeline_prefix = to_pipeline_prefix(scene_id, capture_id)
@@ -4451,7 +4456,7 @@ def run_qualification_pipeline(
             manifest_path = resolve_gs_uri_to_path(manifest_uri, storage_root)
             try:
                 stage_result = ensure_object_index_stage(
-                    capture_root=descriptor_path.parent,
+                    capture_root=capture_root,
                     force_rebuild=parse_bool(os.getenv("OBJECT_INDEX_FORCE_REBUILD"), default=False),
                 )
             except Exception as exc:  # noqa: BLE001 - qualification must degrade but record the blocker
@@ -4480,14 +4485,14 @@ def run_qualification_pipeline(
                 object_index_entries = load_object_index(object_index_uri, gcs_root=storage_root)
             _extend_unique(
                 object_index_runtime_blockers,
-                _object_index_runtime_blockers(descriptor_path.parent),
+                _object_index_runtime_blockers(capture_root),
             )
         except Exception as exc:  # noqa: BLE001 - keep qualification running, but do not hide the crash
             manifest = None
             object_index_uri = None
             object_index_entries = []
             grounding_payload = None
-            object_index_runtime_blockers = _object_index_runtime_blockers(descriptor_path.parent)
+            object_index_runtime_blockers = _object_index_runtime_blockers(capture_root)
             _append_unique(
                 object_index_runtime_blockers,
                 _object_index_exception_blocker("object_index_load", exc),
@@ -4697,7 +4702,7 @@ def run_qualification_pipeline(
             capture_fidelity_review = {"status": "not_run", "reason": "website_task_analysis_owns_media_review"}
         else:
             capture_fidelity_review = infer_capture_fidelity_review(
-                capture_root=descriptor_path.parent,
+                capture_root=capture_root,
                 raw_video_path=raw_video_path,
                 keyframe_path=_resolve_optional_uri_to_path(descriptor.keyframe_uri, storage_root),
                 descriptor=descriptor.to_dict(),
@@ -4885,11 +4890,11 @@ def run_qualification_pipeline(
             "prepared_views": clean_plate.get("prepared_views"),
         }
         descriptor_payload["metadata"] = metadata_payload
-        write_json(descriptor_path, descriptor_payload)
+        write_json(descriptor_output_path, descriptor_payload)
         descriptor = CaptureDescriptor.from_dict(descriptor_payload)
         if _should_run_default_geometry_stage(descriptor):
             build_geometry_stage_contract(capture_root)
-            descriptor = CaptureDescriptor.from_file(descriptor_path)
+            descriptor = CaptureDescriptor.from_file(descriptor_output_path)
         qualification_brief = _build_qualification_brief(
             descriptor=descriptor,
             scorecard=scorecard,
@@ -5273,7 +5278,7 @@ def run_qualification_pipeline(
         metadata_payload["canonical_site_package_uri"] = site_package_result["canonical_site_package_uri"]
         metadata_payload["provider_adapter_inputs"] = dict(site_package_result["provider_adapter_input_uris"])
         descriptor_payload["metadata"] = metadata_payload
-        write_json(descriptor_path, descriptor_payload)
+        write_json(descriptor_output_path, descriptor_payload)
         descriptor = CaptureDescriptor.from_dict(descriptor_payload)
 
         qualification_state = derive_webapp_qualification_state(
@@ -5373,7 +5378,7 @@ def run_qualification_pipeline(
             metadata_payload = dict(descriptor_payload.get("metadata") or {})
             metadata_payload["worldlabs_request_manifest_uri"] = worldlabs_request_manifest_uri
             descriptor_payload["metadata"] = metadata_payload
-            write_json(descriptor_path, descriptor_payload)
+            write_json(descriptor_output_path, descriptor_payload)
             descriptor = CaptureDescriptor.from_dict(descriptor_payload)
         if not preview_requested or not preview_input_ready:
             write_json(pipeline_dir / "provider_run_manifest.json", provider_run)

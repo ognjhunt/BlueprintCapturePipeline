@@ -1640,9 +1640,11 @@ def build_capture_bundle_records(
     temporal_alignment = sidecars["temporal_alignment"]
     pose_alignment_declaration = sidecars["pose_alignment_declaration"]
 
-    frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/frames/index.jsonl"
-    frames_dir = capture_root / "frames"
-    frames_path = frames_dir / "index.jsonl"
+    from .task_evaluation_scene_retirement_generations import capture_birth_input_path
+
+    frames_path = capture_birth_input_path(capture_root, "frames/index.jsonl")
+    frames_dir = frames_path.parent
+    frames_index_uri = f"gs://{bucket}/scenes/{scene_id}/captures/{capture_id}/{frames_path.relative_to(capture_root).as_posix()}"
     frame_index_payload = {
         "schema_version": "v1",
         "scene_id": scene_id,

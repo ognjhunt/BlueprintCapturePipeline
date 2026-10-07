@@ -492,3 +492,93 @@ def capture_birth_source_projection(path):
             'delivery_key': owner['producer_delivery']['delivery_key'],
             'raw_video': video,
         }
+
+
+def _capture_birth_input(path, relative_path):
+    """Resolve finite historical membership; it grants no current consent.
+
+    Historical membership and local bytes must both match the active original
+    generation. Legacy captures keep their existing canonical input paths.
+    """
+    _require(type(relative_path) is str and (
+        relative_path in {'capture_descriptor.json', 'qa_report.json'}
+        or relative_path.startswith('frames/') and relative_path.count('/') == 1
+        and relative_path.split('/')[1] not in {'', '.', '..'}
+        and '\\' not in relative_path and '\x00' not in relative_path),
+             'scene_capture_input_kind_invalid')
+    root = Path(path)
+    source = capture_birth_source_projection(root)
+    if source is None:
+        return root / relative_path, None
+    reference = source['source_membership_raw_ref']
+    raw = _bytes(_canonical(reference['path']))
+    _require(len(raw) == reference['size_bytes']
+             and 'sha256:' + hashlib.sha256(raw).hexdigest() == reference['sha256'],
+             'scene_capture_membership_changed')
+    membership = json.loads(raw)
+    selected_relative = f"deliveries/{membership['delivery_key']}/{relative_path}"
+    rows = [row for row in membership['derived'] if row['relative_path'] == selected_relative]
+    _require(len(rows) == 1, 'scene_capture_selected_input_missing')
+    row = rows[0]
+    selected = root / selected_relative
+    return selected, row
+
+
+def capture_birth_input_bytes(path, relative_path, *, expected_path=None):
+    """Consume the same bytes whose finite membership digest was verified.
+
+    The returned immutable snapshot cannot race a caller reopening a replaced
+    path. Legacy captures retain their ordinary file read behavior.
+    """
+    with scene_access(path):
+        selected, row = _capture_birth_input(path, relative_path)
+        _require(expected_path is None or selected == Path(expected_path),
+                 'scene_capture_selected_input_mismatch')
+        if row is None:
+            return selected.read_bytes()
+        return _capture_birth_selected_bytes(selected, row)
+
+
+def _capture_birth_selected_bytes(selected, row):
+    with scene_access(), _opened(selected) as (descriptor, info):
+        _require(info.st_size == row['size_bytes'], 'scene_capture_selected_input_changed')
+        digest = hashlib.sha256()
+        chunks = []
+        while data := os.read(descriptor, 1024 * 1024):
+            digest.update(data)
+            chunks.append(data)
+        raw = b''.join(chunks)
+        _require(len(raw) == row['size_bytes']
+                 and 'sha256:' + digest.hexdigest() == row['sha256'],
+                 'scene_capture_selected_input_changed')
+        return raw
+
+
+def capture_birth_input_path(path, relative_path):
+    """Return a verified location for identity/URI use, never a read capability."""
+    with scene_access(path):
+        selected, row = _capture_birth_input(path, relative_path)
+        if row is not None:
+            _capture_birth_selected_bytes(selected, row)
+        return selected
+
+
+def read_selected_capture_input_bytes(path):
+    """Verify selected descriptors/QA when existing JSON readers consume them.
+
+    Ordinary pipeline-owned outputs and legacy paths keep their current
+    semantics. Only the exact selected delivery namespace uses birth evidence.
+    """
+    path = Path(path)
+    if (path.name in {'capture_descriptor.json', 'qa_report.json'}
+            and len(path.parents) >= 6
+            and path.parent.parent.name == 'deliveries'
+            and path.parents[3].name == 'captures'
+            and path.parents[5].name == 'scenes'):
+        root = path.parents[2]
+        with scene_access(root):
+            selected, row = _capture_birth_input(root, path.name)
+            _require(row is not None and selected == path,
+                     'scene_capture_selected_input_mismatch')
+            return _capture_birth_selected_bytes(selected, row)
+    return path.read_bytes()
