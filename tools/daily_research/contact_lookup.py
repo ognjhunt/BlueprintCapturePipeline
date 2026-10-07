@@ -779,7 +779,7 @@ def search_body(site):
             "current_position_titles": [{"value": title} for title in TITLES], "limit": SEARCH_LIMIT, "offset": 0}
 
 
-def role_scope_suffix(text, known_names):
+def role_scope_suffix(text, known_names, *, allow_news=True):
     """An address's direct entity/facility qualifier must belong to this retained operator or site."""
     remaining = ss.words(text)
     literals = sorted(known_names | {"united states of america", "united states", "usa", "us"}, key=len, reverse=True)
@@ -798,7 +798,7 @@ def role_scope_suffix(text, known_names):
             remaining = rest
             continue
         # A separate news predicate does not erase the preceding explicit role complement.
-        return word in {"said", "says", "announced", "visited", "visits", "discussed"}
+        return allow_news and word in {"said", "says", "announced", "visited", "visits", "discussed"}
     return True
 
 
@@ -997,7 +997,14 @@ def site_responsibility(site, person):
     assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
     target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
     assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
-    role_mismatch = bool(assigned.get("city") and address.get("city")
+    known_names = [site["task_input"].get("site_name") or "", site.get("operator") or ""]
+    known_names = {ss.words(name.replace("&", " and ")) for name in known_names} | {
+        ss.words(name) for name in known_names}
+    known_names |= {name.replace(" and ", " ") for name in known_names}
+    named_facility_mismatch = bool(assigned.get("street") and not assigned_street
+                                  and site["task_input"].get("site_name")
+                                  and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
+    role_mismatch = bool(named_facility_mismatch or assigned.get("city") and address.get("city")
                          and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
                          or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
                          or assigned_street and target_street

@@ -170,6 +170,8 @@ def stored(workspace):
     "2 Other Road, Other Fixture City, OH",
     "2 Other Road, Fixture City, TX",
     "Other Fixture Plant, Other Fixture City, OH",
+    "Rival Fixture Works, Fixture City, TX",
+    "Said Fixture Works, Fixture City, TX",
 ])
 def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_path, assignment):
     workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_quote=f"{PERSON} is Plant Manager at {assignment}.")])
@@ -178,6 +180,15 @@ def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_p
     assert result["calls"]["made"] == 0 and api.calls == []
     record = cl.load(workspace)[key]
     assert record["lookups"] == [] and record["skipped"] == "target_site_location_mismatch"
+
+
+@pytest.mark.parametrize("assignment", ["Synthetic Works", "the Synthetic Works plant", "Synthetic Operator 1"])
+def test_named_target_or_company_role_keeps_unknown_referral_scope(assignment):
+    site = qualification_site()
+    site["person_quote"] = f"Jordan Fixture is Plant Manager at {assignment}, Fixture City, TX."
+    person = {"name": "Jordan Fixture", "title": "Plant Manager", "location": None}
+    responsibility = cl.site_responsibility(site, person)
+    assert responsibility["route"] == "corporate_referral" and responsibility["status"] == "unknown"
 
 
 def test_a_quoted_person_gets_one_enrichment_and_a_deliverable_email_is_kept(tmp_path):
