@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 from urllib.parse import urlparse
 
+from . import robot_eval_closure_decisions as _closure_decisions
+from .action_normalization import build_action_normalization_from_trace
 from .agent_operator_runtime import (
     LIVE_AGENTS_SDK_ENV,
     OperatorExecutor,
@@ -40,56 +42,68 @@ from .agent_operator_runtime import (
     proof_effect,
     run_agents_sdk_operator,
 )
-from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
 from .arena_result_ingest import build_arena_result_ingest
-from .action_normalization import build_action_normalization_from_trace
 from .benchmark_protocol import execute_benchmark_protocol_request
-from .core.common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
-from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
-from .episode_spec import build_episode_specs
-from .evaluator_qualification_workflow import build_evaluator_qualification_workflow
-from .evaluation_run import compile_evaluation_run
-from .failure_diagnosis_contract import (
-    FAILURE_LABEL_PROOF_EFFECT,
-    dedupe as _dedupe_refs,
-    evidence_refs as _failure_evidence_refs,
-    failure_root_cause_category as _failure_root_cause_category,
-    frame_or_clip_refs as _failure_frame_or_clip_refs,
-    remediation_candidate as _failure_remediation_candidate,
-    review_status_for_failure_label as _failure_review_status,
-)
-from .local_capture import resolve_local_capture_context
-from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
-from .core.pipeline_settings import PipelineSettings
 from .canonical_training_quality_pipeline import (
     run_canonical_training_quality_from_request,
 )
-from .robot_eval_gpu_startup_pipeline import build_gpu_startup_pipeline_plan
-from . import robot_eval_closure_decisions as _closure_decisions
+from .core.common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
+from .core.pipeline_settings import PipelineSettings
+from .core.security_controls import contained_path, strict_identifier
+from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
+from .episode_spec import build_episode_specs
+from .evaluation_run import compile_evaluation_run
+from .evaluator_qualification_workflow import build_evaluator_qualification_workflow
+from .failure_diagnosis_contract import (
+    FAILURE_LABEL_PROOF_EFFECT,
+)
+from .failure_diagnosis_contract import (
+    dedupe as _dedupe_refs,
+)
+from .failure_diagnosis_contract import (
+    evidence_refs as _failure_evidence_refs,
+)
+from .failure_diagnosis_contract import (
+    failure_root_cause_category as _failure_root_cause_category,
+)
+from .failure_diagnosis_contract import (
+    frame_or_clip_refs as _failure_frame_or_clip_refs,
+)
+from .failure_diagnosis_contract import (
+    remediation_candidate as _failure_remediation_candidate,
+)
+from .failure_diagnosis_contract import (
+    review_status_for_failure_label as _failure_review_status,
+)
+from .haiku_agents_sdk import MODEL as HAIKU_MODEL
+from .haiku_agents_sdk import sdk_credentials_present, sdk_model
+from .live_robot_eval_closure import build_live_robot_eval_closure_manifest
+from .local_capture import resolve_local_capture_context
+from .openai_successor_models import OPENAI_REASONING_EFFORT
 from .robot_eval_claim_contracts import robot_eval_job_claim_boundary
+from .robot_eval_dataset import build_real_site_robot_eval_dataset
+from .robot_eval_evaluation_run_adapter import (
+    build_robot_eval_evaluation_run_spec,
+    execute_robot_eval_cli_evaluation_run,
+    execute_robot_eval_request_as_evaluation_run,
+)
 from .robot_eval_execution import (
-    build_scenario_eval_matrix,
     build_deployment_validation_bundle,
     build_policy_execution_bundle,
     build_robot_pov_observation_bundle,
+    build_scenario_eval_matrix,
     build_simulator_command_artifacts,
     default_test_policy_package_from_request,
     fingerprint_execution_artifacts,
 )
-from .sc3_eval_protocol import SC3_EVAL_PROTOCOL_ARTIFACT, build_sc3_eval_protocol_artifact
-from .robot_eval_dataset import build_real_site_robot_eval_dataset
+from .robot_eval_gpu_startup_pipeline import build_gpu_startup_pipeline_plan
 from .robot_eval_job_request_contract import (
     ROBOT_EVAL_JOB_REQUEST_INBOX_CONTRACT,
     ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION,
 )
-from .robot_eval_evaluation_run_adapter import (
-    build_robot_eval_evaluation_run_spec,
-    execute_robot_eval_request_as_evaluation_run,
-    execute_robot_eval_cli_evaluation_run,
-)
+from .sc3_eval_protocol import SC3_EVAL_PROTOCOL_ARTIFACT, build_sc3_eval_protocol_artifact
 from .scene_asset_preflight import build_scene_asset_preflight
 from .scene_placement.robot_profile import DEFAULT_ROBOT_ID, get_robot_profile
-from .core.security_controls import contained_path, strict_identifier
 from .simulation_automation import build_simulation_automation
 from .site_eval_director import build_site_eval_director
 from .success_claim_contracts import (
@@ -112,7 +126,6 @@ from .wam_eval_substrate import (
 from .wam_fixture_evaluator import run_wam_eval_job
 from .wam_provider_runtime import parse_wam_provider_commands
 from .wam_score_claim_gate import WAM_SCORE_CLAIM_GATE_SCHEMA_VERSION
-
 
 JOB_REQUEST_SCHEMA_VERSION = ROBOT_EVAL_JOB_REQUEST_SCHEMA_VERSION
 PUBLIC_CLAIM_UPGRADE_ALLOWED_FIELD = "public_claim_upgrade_allowed"
@@ -431,9 +444,10 @@ class AgentsSdkRobotEvalJobAdapter:
 
     agents_sdk_available: bool | None = None
     openai_api_key: str | None = None
+    anthropic_api_key: str | None = None
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
-    model: str = OPENAI_TEXT_MODEL
+    model: str = HAIKU_MODEL
     reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
@@ -443,11 +457,10 @@ class AgentsSdkRobotEvalJobAdapter:
             if self.agents_sdk_available is not None
             else bool(self.executor is not None) or _module_available(("agents", "openai_agents"))
         )
-        api_key_present = bool(
-            _string(self.openai_api_key)
-            if self.openai_api_key is not None
-            else _string(os.getenv("OPENAI_API_KEY"))
-        )
+        model = sdk_model(self.model)
+        provider = "anthropic" if model == HAIKU_MODEL else "openai"
+        api_key_present = sdk_credentials_present(model, openai_api_key=self.openai_api_key,
+                                                 anthropic_api_key=self.anthropic_api_key)
         env_allowed = (
             bool(self.live_env_allowed)
             if self.live_env_allowed is not None
@@ -458,7 +471,7 @@ class AgentsSdkRobotEvalJobAdapter:
         if not agents_available:
             blockers.append("missing_openai_agents_sdk")
         if not api_key_present:
-            blockers.append("missing_openai_api_key")
+            blockers.append(f"missing_{provider}_api_key")
         if not self.allow_live_operator:
             blockers.append("missing_cli_allow_live_agent_operator")
         if not env_allowed:
@@ -472,7 +485,8 @@ class AgentsSdkRobotEvalJobAdapter:
                 live_output = run_agents_sdk_operator(
                     OperatorRunConfig(
                         adapter="openai_agents_sdk_robot_eval_job",
-                        model=self.model,
+                        model=model,
+                        anthropic_api_key=self.anthropic_api_key,
                         reasoning_effort=self.reasoning_effort,
                         prompt=_agents_sdk_robot_eval_job_prompt(plan_context),
                         plan_context=plan_context,
@@ -522,7 +536,8 @@ class AgentsSdkRobotEvalJobAdapter:
             "operator_ledger": operator_ledger,
             "request": {
                 "purpose": "headless_robot_eval_job_orchestration_live_operator",
-                "model": self.model,
+                "model": model,
+                "provider": provider,
                 "reasoning_effort": self.reasoning_effort,
                 "job_id": _string(plan_context.get("job_id")),
                 "capture_root": _string(plan_context.get("capture_root")),
@@ -546,7 +561,9 @@ class AgentsSdkRobotEvalJobAdapter:
             },
             "evidence": {
                 "openai_agents_sdk_available": bool(agents_available),
-                "openai_api_key_present": api_key_present,
+                "openai_api_key_present": api_key_present if provider == "openai" else False,
+                "anthropic_api_key_present": api_key_present if provider == "anthropic" else False,
+                "provider": provider, "model": model,
                 "cli_allow_live_operator": self.allow_live_operator,
                 LIVE_AGENTS_SDK_ENV: env_allowed,
                 "legacy_env_BLUEPRINT_ALLOW_AGENTS_SDK_JOB_ORCHESTRATION": _env_truthy(

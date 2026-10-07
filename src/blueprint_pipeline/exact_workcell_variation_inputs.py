@@ -27,8 +27,7 @@ from .exact_workcell_variation_matrix import (
 )
 from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, AgentsSDKInvoker
 
-
-DEFAULT_VARIATION_AGENT_MODEL = "gpt-6-luna"
+DEFAULT_VARIATION_AGENT_MODEL = "claude-haiku-5-5"
 DEFAULT_VARIATION_AGENT_REASONING_EFFORT = "max"
 
 
@@ -62,7 +61,7 @@ class ExactWorkcellVariationAgentOutput(BaseModel):
 
 @dataclass
 class AgentsSDKVariationProposalAgent:
-    """Canonical OpenAI Agents SDK adapter for bounded variation proposals."""
+    """Canonical local Agents SDK adapter for bounded variation proposals."""
 
     invoker: AgentsSDKInvoker
     run_id: str
@@ -73,6 +72,11 @@ class AgentsSDKVariationProposalAgent:
     _observed_model_identity: str | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
+        from .haiku_agents_sdk import sdk_model
+        self.model = sdk_model(self.model)
+        from .task_evaluation_supervisor.agents_sdk import OpenAIAgentsSDKInvoker
+        if self.model == DEFAULT_VARIATION_AGENT_MODEL and isinstance(self.invoker, OpenAIAgentsSDKInvoker):
+            raise ExactWorkcellVariationError(["variation_agent_native_haiku_invoker_required"])
         if not self.run_id.strip():
             raise ExactWorkcellVariationError(["variation_agent_run_id_missing"])
         if not self.model.strip():
@@ -91,7 +95,7 @@ class AgentsSDKVariationProposalAgent:
     @property
     def model_identity(self) -> str:
         return self._observed_model_identity or (
-            f"openai-agents-sdk:{self.model}:reasoning={self.reasoning_effort}"
+            f"{'anthropic' if self.model == DEFAULT_VARIATION_AGENT_MODEL else 'openai'}-agents-sdk:{self.model}:reasoning={self.reasoning_effort}"
         )
 
     def propose(self, *, brief: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -112,7 +116,8 @@ class AgentsSDKVariationProposalAgent:
             output_type=ExactWorkcellVariationAgentOutput,
         )
         invocation = self.invoker.invoke(spec, canonical_json({"brief": brief}))
-        if invocation.model != self.model or not invocation.provider.strip():
+        if (invocation.model != self.model or not invocation.provider.strip()
+                or (self.model == DEFAULT_VARIATION_AGENT_MODEL and invocation.provider != "anthropic")):
             raise ExactWorkcellVariationError(
                 ["variation_agent_runtime_identity_mismatch"]
             )

@@ -15,7 +15,6 @@ from typing import Any, Callable, Dict, Mapping, Sequence
 from .common import utc_now_iso
 from .openai_prompt_cache import supports_explicit_prompt_caching
 
-
 LIVE_AGENTS_SDK_ENV = "BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS"
 LIVE_CODEX_SDK_ENV = "BLUEPRINT_ALLOW_LIVE_CODEX_SDK_OPERATORS"
 CODEX_CLI_HOST_OAUTH_ENV = "BLUEPRINT_ALLOW_CODEX_CLI_HOST_OAUTH"
@@ -33,6 +32,7 @@ class OperatorRunConfig:
     plan_context: Mapping[str, Any]
     reasoning_effort: str | None = None
     executor: OperatorExecutor | None = None
+    anthropic_api_key: str | None = None
     sandbox: str | None = None
     cwd: str | None = None
     timeout_seconds: int = 120
@@ -177,6 +177,30 @@ def run_agents_sdk_operator(config: OperatorRunConfig) -> Dict[str, Any]:
     except ImportError as exc:
         raise RuntimeError("missing_openai_agents_sdk") from exc
 
+    from .haiku_agents_sdk import MODEL, budgeted_sdk_model, sdk_model
+    selected_model = sdk_model(config.model)
+    if selected_model == MODEL:
+        from agents import ModelSettings, RunConfig
+        audit_path = string(config.plan_context.get("capture_root") or config.plan_context.get("run_root"))
+        if not audit_path:
+            raise RuntimeError("haiku_sdk_durable_audit_root_required")
+        native_model, client = budgeted_sdk_model(audit_root=Path(audit_path),
+            capability=config.adapter, effort=config.reasoning_effort or "medium",
+            api_key=config.anthropic_api_key)
+        agent = Agent(name=config.adapter, model=native_model,
+            model_settings=ModelSettings(store=False, max_tokens=16000, parallel_tool_calls=False),
+            instructions=("You are a Blueprint pipeline operator. Inspect manifest context, "
+                "choose safe next deterministic commands, summarize blockers, and never claim "
+                "proof booleans are true unless deterministic accepted artifacts already say so."))
+        async def _native_run() -> Any:
+            return await Runner.run(agent, config.prompt, max_turns=1,
+                run_config=RunConfig(tracing_disabled=True, trace_include_sensitive_data=False))
+        result = asyncio.run(_native_run())
+        return {"final_output": string(getattr(result, "final_output", result)),
+                "decisions": [], "tool_call_summaries": _summarize_result_items(result),
+                "commands_chosen": [], "refusals": [], "blockers": [],
+                "raw_result_type": type(result).__name__, "provider": "anthropic",
+                "model": MODEL, "provider_calls": client.receipts}
     model_settings = None
     if config.reasoning_effort or supports_explicit_prompt_caching(config.model):
         from agents import ModelSettings
@@ -363,6 +387,9 @@ def completed_operator_ledger(
         "blockers": list(output.get("blockers") or []),
         "final_output": string(output.get("final_output")),
         "raw_result_type": string(output.get("raw_result_type")),
+        **({"provider": output["provider"], "model": output.get("model"),
+            "provider_calls": list(output.get("provider_calls") or [])}
+           if output.get("provider") == "anthropic" else {}),
         "proof_effect": proof_effect(
             deterministic_artifacts_required=proof_artifacts_required
         ),

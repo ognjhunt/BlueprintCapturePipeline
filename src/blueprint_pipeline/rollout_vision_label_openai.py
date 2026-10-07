@@ -1,4 +1,4 @@
-"""OpenAI-backed rollout vision labeling command hook.
+"""Haiku-backed rollout vision labeling command hook (legacy OpenAI entrypoint retained).
 
 This command is intended to be called by ``blueprint-ingest-arena-results`` via
 ``BLUEPRINT_ROLLOUT_VISION_LABELING_COMMAND``. It writes
@@ -16,24 +16,26 @@ import mimetypes
 import os
 import re
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any
 
 from .arena_result_ingest import COMMAND_VISION_LABELS_SCHEMA_VERSION
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
-from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
+from .haiku_vision_judge import MODEL as HAIKU_MODEL
+from .haiku_vision_judge import anthropic_key, judge_json, replacement_model
 from .openai_prompt_cache import (
     cache_policy_evidence,
     direct_prompt_cache_request,
     stable_judge_developer_prefix,
     usage_and_cost_receipt,
 )
-
+from .openai_successor_models import OPENAI_REASONING_EFFORT
 
 OUTPUT_FILENAME = "rollout_vision_labels.command.json"
 GATE_ENV = "BLUEPRINT_ALLOW_ROLLOUT_VISION_LABELING"
 MODEL_ENV = "BLUEPRINT_ROLLOUT_VISION_OPENAI_MODEL"
-DEFAULT_MODEL = OPENAI_TEXT_MODEL
+DEFAULT_MODEL = HAIKU_MODEL
 
 
 def _string(value: Any) -> str:
@@ -44,19 +46,19 @@ def _truthy(value: Any) -> bool:
     return _string(value).lower() in {"1", "true", "yes", "on"}
 
 
-def _mapping(value: Any) -> Dict[str, Any]:
+def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
-def _read_mapping(path: Path) -> Dict[str, Any]:
+def _read_mapping(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     payload = read_json_any(path)
     return dict(payload) if isinstance(payload, Mapping) else {}
 
 
-def _clip_by_attempt(clips_manifest: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
-    clips: Dict[str, Dict[str, Any]] = {}
+def _clip_by_attempt(clips_manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    clips: dict[str, dict[str, Any]] = {}
     for clip in clips_manifest.get("clips", []) or []:
         if not isinstance(clip, Mapping):
             continue
@@ -71,7 +73,7 @@ def _safe_stem(value: str) -> str:
     return cleaned or "attempt"
 
 
-def _extract_keyframe(*, output_dir: Path, clip: Mapping[str, Any], clip_id: str) -> Dict[str, Any]:
+def _extract_keyframe(*, output_dir: Path, clip: Mapping[str, Any], clip_id: str) -> dict[str, Any]:
     clip_path_text = _string(clip.get("clip_path") or clip.get("source_video_path"))
     if not clip_path_text:
         return {"status": "blocked", "reason": "missing_clip_path", "path": None}
@@ -123,7 +125,7 @@ def _data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def _parse_json_text(text: str) -> Dict[str, Any]:
+def _parse_json_text(text: str) -> dict[str, Any]:
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```(?:json)?", "", stripped, flags=re.IGNORECASE).strip()
@@ -143,13 +145,9 @@ def _openai_label(
     clip: Mapping[str, Any],
     keyframe_path: Path,
     expected_reuse_count: int = 0,
-    provider_calls: List[Dict[str, Any]] | None = None,
-) -> Dict[str, Any]:
-    try:
-        from openai import OpenAI
-    except ImportError as exc:  # pragma: no cover - depends on optional env
-        raise RuntimeError("missing_openai_package") from exc
-
+    audit_root: Path | None = None,
+    provider_calls: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     output_contract = {
         "object_state": "short visible-state description",
         "contact": "visible contact evidence or unknown",
@@ -180,46 +178,58 @@ def _openai_label(
             "scenario_id": clip.get("scenario_id"),
         },
     }
-    client = OpenAI()
     stable_prefix = stable_judge_developer_prefix(
         purpose=purpose,
         output_contract=output_contract,
         claim_boundary="review_required_visual_label_not_physical_or_controls_proof",
         contract_version="rollout-vision-label-v2",
     )
-    policy, cache_request = direct_prompt_cache_request(
-        model=model,
-        family="rollout_vision_label",
-        contract_version="rollout-vision-label-v2",
-        stable_developer_prefix=stable_prefix,
-        output_schema=output_contract,
-        dynamic_input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": json.dumps(prompt, sort_keys=True)},
-                    {"type": "input_image", "image_url": _data_url(keyframe_path)},
-                ],
-            }
-        ],
-        reasoning_effort=OPENAI_REASONING_EFFORT,
-        expected_reuse_count=expected_reuse_count,
-        expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
-        dynamic_suffix_fields=("label_context", "keyframe_image"),
-    )
-    response = client.responses.create(
-        model=model,
-        reasoning={"effort": OPENAI_REASONING_EFFORT},
-        **cache_request,
-    )
-    if provider_calls is not None:
-        provider_calls.append(
-            {
-                "cache_policy": cache_policy_evidence(policy),
-                "usage": usage_and_cost_receipt(response, model=model),
-            }
+    if model == HAIKU_MODEL:
+        if audit_root is None:
+            raise RuntimeError("haiku_audit_root_required")
+        payload, provider_call = judge_json(system=stable_prefix, content=[{"type": "input_text", "text": json.dumps(prompt, sort_keys=True)}, {"type": "input_image", "image_url": _data_url(keyframe_path)}],
+            api_key=anthropic_key()[0], audit_root=audit_root, capability="rollout_vision_label")
+        if provider_calls is not None:
+            provider_calls.append(provider_call)
+    else:
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - optional legacy provider
+            raise RuntimeError("missing_openai_package") from exc
+        client = OpenAI()
+        policy, cache_request = direct_prompt_cache_request(
+            model=model,
+            family="rollout_vision_label",
+            contract_version="rollout-vision-label-v2",
+            stable_developer_prefix=stable_prefix,
+            output_schema=output_contract,
+            dynamic_input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": json.dumps(prompt, sort_keys=True)},
+                        {"type": "input_image", "image_url": _data_url(keyframe_path)},
+                    ],
+                }
+            ],
+            reasoning_effort=OPENAI_REASONING_EFFORT,
+            expected_reuse_count=expected_reuse_count,
+            expected_reuse_probability=1.0 if expected_reuse_count > 0 else 0.0,
+            dynamic_suffix_fields=("label_context", "keyframe_image"),
         )
-    payload = _parse_json_text(getattr(response, "output_text", "") or "{}")
+        response = client.responses.create(
+            model=model,
+            reasoning={"effort": OPENAI_REASONING_EFFORT},
+            **cache_request,
+        )
+        if provider_calls is not None:
+            provider_calls.append(
+                {
+                    "cache_policy": cache_policy_evidence(policy),
+                    "usage": usage_and_cost_receipt(response, model=model),
+                }
+            )
+        payload = _parse_json_text(getattr(response, "output_text", "") or "{}")
     return payload
 
 
@@ -230,7 +240,7 @@ def _fallback_label(
     keyframe: Mapping[str, Any],
     model: str,
     openai_payload: Mapping[str, Any] | None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     source_label_id = _string(label.get("label_id"))
     attempt_id = _string(label.get("attempt_id"))
     evidence = openai_payload or {}
@@ -249,9 +259,9 @@ def _fallback_label(
         if isinstance(evidence.get("failure_evidence"), list)
         else label.get("failure_categories", []),
         "confidence": evidence.get("confidence") if isinstance(evidence.get("confidence"), (int, float)) else None,
-        "label_source": "openai_responses_vision",
+        "label_source": "anthropic_messages_vision" if model == HAIKU_MODEL else "openai_responses_vision",
         "model": model,
-        "reasoning_effort": OPENAI_REASONING_EFFORT,
+        "reasoning_effort": "medium" if model == HAIKU_MODEL else OPENAI_REASONING_EFFORT,
         "visual_evidence_used": keyframe_completed,
         "evidence_refs": [
             ref
@@ -271,10 +281,10 @@ def build_openai_rollout_vision_labels(
     model: str | None = None,
     max_labels: int = 20,
     require_visual_evidence: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     resolved_output = Path(output_dir).resolve()
     generated_at = utc_now_iso()
-    model_name = _string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL
+    model_name = replacement_model(_string(model or os.getenv(MODEL_ENV)) or DEFAULT_MODEL)
     failure_labels = _read_mapping(resolved_output / "failure_labels.json")
     clips_manifest = _read_mapping(resolved_output / "clips_manifest.json")
     clips = _clip_by_attempt(clips_manifest)
@@ -283,14 +293,14 @@ def build_openai_rollout_vision_labels(
         for item in failure_labels.get("labels", []) or []
         if isinstance(item, Mapping)
     ][:max_labels]
-    blockers: List[str] = []
-    labels: List[Dict[str, Any]] = []
-    provider_calls: List[Dict[str, Any]] = []
-    keyframes: List[Dict[str, Any]] = []
+    blockers: list[str] = []
+    labels: list[dict[str, Any]] = []
+    provider_calls: list[dict[str, Any]] = []
+    keyframes: list[dict[str, Any]] = []
     if not _truthy(os.getenv(GATE_ENV)):
         blockers.append(f"missing_env_{GATE_ENV}")
-    if not _string(os.getenv("OPENAI_API_KEY")):
-        blockers.append("missing_openai_api_key")
+    if not (anthropic_key()[0] if model_name == HAIKU_MODEL else _string(os.getenv("OPENAI_API_KEY"))):
+        blockers.append("missing_anthropic_api_key" if model_name == HAIKU_MODEL else "missing_openai_api_key")
     if not raw_labels:
         blockers.append("missing_failure_labels")
 
@@ -311,10 +321,11 @@ def build_openai_rollout_vision_labels(
                 clip=clip,
                 keyframe_path=Path(str(keyframe["path"])),
                 expected_reuse_count=max(0, len(raw_labels) - 1),
+                **({"audit_root": resolved_output} if model_name == HAIKU_MODEL else {}),
                 provider_calls=provider_calls,
             )
-        except Exception as exc:  # pragma: no cover - live provider behavior
-            blockers.append(f"openai_labeling_failed:{type(exc).__name__}")
+        except Exception as exc:  # noqa: BLE001 - normalize provider failures without private bodies
+            blockers.append(f"{'anthropic' if model_name == HAIKU_MODEL else 'openai'}_labeling_failed:{type(exc).__name__}")
             break
         labels.append(
             _fallback_label(
@@ -335,9 +346,9 @@ def build_openai_rollout_vision_labels(
         "schema_version": COMMAND_VISION_LABELS_SCHEMA_VERSION,
         "generated_at": generated_at,
         "status": "completed_review_required" if labels and not blockers else "blocked_review_required",
-        "provider": "openai",
+        "provider": "anthropic" if model_name == HAIKU_MODEL else "openai",
         "model": model_name,
-        "reasoning_effort": OPENAI_REASONING_EFFORT,
+        "reasoning_effort": "medium" if model_name == HAIKU_MODEL else OPENAI_REASONING_EFFORT,
         "blockers": sorted(set(blockers)),
         "label_count": len(labels),
         "labels": labels,

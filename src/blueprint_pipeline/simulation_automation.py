@@ -23,6 +23,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
 
+from . import nvidia_siggraph_automation_evidence as nvidia_evidence
 from .agent_operator_runtime import (
     CODEX_CLI_HOST_OAUTH_ENV,
     LIVE_AGENTS_SDK_ENV,
@@ -30,7 +31,6 @@ from .agent_operator_runtime import (
     OperatorExecutor,
     OperatorRunConfig,
     blocked_operator_ledger,
-    codex_cli_path as resolve_codex_cli_path,
     completed_operator_ledger,
     env_truthy,
     external_action_gates,
@@ -39,15 +39,18 @@ from .agent_operator_runtime import (
     run_codex_cli_operator,
     run_codex_sdk_operator,
 )
+from .agent_operator_runtime import (
+    codex_cli_path as resolve_codex_cli_path,
+)
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .cpu_simulator_preflight import CPU_BACKENDS, build_cpu_simulator_preflight
 from .episode_spec import EpisodeSpecAgentAdapter, FakeEpisodeSpecAgentAdapter, build_episode_specs
+from .haiku_agents_sdk import MODEL as HAIKU_MODEL
+from .haiku_agents_sdk import sdk_credentials_present, sdk_model
 from .local_capture import resolve_local_capture_context
 from .openai_successor_models import OPENAI_REASONING_EFFORT, OPENAI_TEXT_MODEL
-from . import nvidia_siggraph_automation_evidence as nvidia_evidence
-from .scene_asset_preflight import build_scene_asset_preflight
 from .scenario_variation_instantiator import build_scenario_variation_instances
-
+from .scene_asset_preflight import build_scene_asset_preflight
 
 SIMULATION_AUTOMATION_SCHEMA_VERSION = "simulation_automation_plan.v1"
 SIMULATION_AUTOMATION_RUN_SCHEMA_VERSION = "simulation_automation_run_manifest.v1"
@@ -377,9 +380,10 @@ class AgentsSdkCodexMCPAdapter:
     sandbox: str = "workspace-write"
     agents_sdk_available: bool | None = None
     openai_api_key: str | None = None
+    anthropic_api_key: str | None = None
     live_env_allowed: bool | None = None
     allow_live_operator: bool = False
-    model: str = OPENAI_TEXT_MODEL
+    model: str = HAIKU_MODEL
     reasoning_effort: str = OPENAI_REASONING_EFFORT
     executor: OperatorExecutor | None = None
 
@@ -393,11 +397,10 @@ class AgentsSdkCodexMCPAdapter:
             if self.agents_sdk_available is not None
             else bool(self.executor is not None) or bool(agents_package)
         )
-        api_key_present = bool(
-            _string(self.openai_api_key)
-            if self.openai_api_key is not None
-            else _string(os.getenv("OPENAI_API_KEY"))
-        )
+        model = sdk_model(self.model)
+        provider = "anthropic" if model == HAIKU_MODEL else "openai"
+        api_key_present = sdk_credentials_present(model, openai_api_key=self.openai_api_key,
+                                                 anthropic_api_key=self.anthropic_api_key)
         env_allowed = (
             bool(self.live_env_allowed)
             if self.live_env_allowed is not None
@@ -405,6 +408,9 @@ class AgentsSdkCodexMCPAdapter:
         )
         request = {
             "agent_type": "openai_agents_sdk",
+            "provider": provider,
+            "model": model,
+            "reasoning_effort": self.reasoning_effort,
             "mcp_server": "codex",
             "workspace": str(plan_context.get("repo_root") or ""),
             "sandbox": self.sandbox if self.sandbox in {"read-only", "workspace-write"} else "read-only",
@@ -422,7 +428,7 @@ class AgentsSdkCodexMCPAdapter:
         if not agents_available:
             blockers.append("missing_openai_agents_sdk")
         if not api_key_present:
-            blockers.append("missing_openai_api_key")
+            blockers.append(f"missing_{provider}_api_key")
         if not self.allow_live_operator:
             blockers.append("missing_cli_allow_live_agents_sdk_operator")
         if not env_allowed:
@@ -435,7 +441,8 @@ class AgentsSdkCodexMCPAdapter:
                 live_output = run_agents_sdk_operator(
                     OperatorRunConfig(
                         adapter="openai_agents_sdk_simulation_operator",
-                        model=self.model,
+                        model=model,
+                        anthropic_api_key=self.anthropic_api_key,
                         reasoning_effort=self.reasoning_effort,
                         prompt=_agents_sdk_simulation_operator_prompt(plan_context),
                         plan_context=plan_context,
@@ -476,7 +483,9 @@ class AgentsSdkCodexMCPAdapter:
                 ],
                 "evidence": {
                     "openai_agents_sdk_available": bool(agents_available),
-                    "openai_api_key_present": api_key_present,
+                    "openai_api_key_present": api_key_present if provider == "openai" else False,
+                    "anthropic_api_key_present": api_key_present if provider == "anthropic" else False,
+                    "provider": provider, "model": model,
                     "cli_allow_live_operator": self.allow_live_operator,
                     LIVE_AGENTS_SDK_ENV: env_allowed,
                     **external_action_gates(),
@@ -505,7 +514,9 @@ class AgentsSdkCodexMCPAdapter:
             "diagnostics": [],
             "evidence": {
                 "openai_agents_sdk_available": bool(agents_available),
-                "openai_api_key_present": api_key_present,
+                "openai_api_key_present": api_key_present if provider == "openai" else False,
+                "anthropic_api_key_present": api_key_present if provider == "anthropic" else False,
+                "provider": provider, "model": model,
                 "cli_allow_live_operator": self.allow_live_operator,
                 LIVE_AGENTS_SDK_ENV: env_allowed,
                 **external_action_gates(),

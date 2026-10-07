@@ -417,7 +417,7 @@ def test_missing_agents_sdk_codex_sdk_api_and_live_gates_write_blocked_operator_
         capture_root=capture_root,
         agents_adapter=AgentsSdkSiteEvalDirectorAdapter(
             agents_sdk_available=False,
-            openai_api_key="",
+            anthropic_api_key="",
         ),
         codex_adapter=CodexSdkCodeMaintainerAdapter(
             codex_sdk_available=False,
@@ -439,7 +439,7 @@ def test_missing_agents_sdk_codex_sdk_api_and_live_gates_write_blocked_operator_
     assert result["status"] == "review_ready"
     assert agents_manifest["status"] == "blocked"
     assert "missing_openai_agents_sdk" in agents_manifest["blockers"]
-    assert "missing_openai_api_key" in agents_manifest["blockers"]
+    assert "missing_anthropic_api_key" in agents_manifest["blockers"]
     assert "missing_cli_allow_live_agents_sdk_operator" in agents_manifest["blockers"]
     assert "missing_env_BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS" in agents_manifest["blockers"]
     assert agents_manifest["agent_authority"] == "live_operator_when_gated"
@@ -724,7 +724,7 @@ def test_site_eval_agents_sdk_operator_success_and_failures(monkeypatch) -> None
     )
     success = AgentsSdkSiteEvalDirectorAdapter(
         agents_sdk_available=True,
-        openai_api_key="key",
+        anthropic_api_key="key",
         live_env_allowed=True,
         allow_live_operator=True,
     ).build_request_manifest(plan_context=context)
@@ -737,7 +737,7 @@ def test_site_eval_agents_sdk_operator_success_and_failures(monkeypatch) -> None
     monkeypatch.setattr(sed, "run_agents_sdk_operator", raise_runtime)
     runtime_failure = AgentsSdkSiteEvalDirectorAdapter(
         agents_sdk_available=True,
-        openai_api_key="key",
+        anthropic_api_key="key",
         live_env_allowed=True,
         allow_live_operator=True,
     ).build_request_manifest(plan_context=context)
@@ -750,7 +750,7 @@ def test_site_eval_agents_sdk_operator_success_and_failures(monkeypatch) -> None
     monkeypatch.setattr(sed, "run_agents_sdk_operator", raise_value)
     generic_failure = AgentsSdkSiteEvalDirectorAdapter(
         agents_sdk_available=True,
-        openai_api_key="key",
+        anthropic_api_key="key",
         live_env_allowed=True,
         allow_live_operator=True,
     ).build_request_manifest(plan_context=context)

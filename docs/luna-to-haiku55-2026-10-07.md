@@ -1,0 +1,74 @@
+# GPT-6 Luna to Claude Haiku 5.5 audit
+
+Scope: the owner corrected the original Sol request to **GPT-6 Luna** and explicitly included local Agents SDK calls. Sol, Astra, Opus, Gemini, older Luna versions, and this coding session's model are unchanged. This is a source and routing audit, not proof of every deployed model override or historical invocation.
+
+## Implemented ordinary inference
+
+| Repository / purpose | Evidence | Result |
+| --- | --- | --- |
+| Web: qualification, outbound outreach, waitlist/support triage, post-signup scheduling | `server/agents/provider-config.ts:280`, `:367`, `server/agents/runtime.ts:717` | Only resolved or explicitly requested OpenAI GPT-6 Luna selections switch to native Anthropic Haiku. Existing other-provider and non-Luna overrides survive. Actual provider/model are persisted before execution. |
+| Web: payout exceptions, preview diagnosis, capture dispatch, robot capability extraction, site task brief reading when selected as OpenAI Luna | Same resolver and explicit-task normalization | Same targeted substitution. These lanes can instead resolve to other configured providers; source defaults do not prove live calls. |
+| Web: site-task follow-up selection | `server/utils/siteTaskFollowUp.ts:47` | Native Messages call, bounded input/output, disabled thinking at low effort, eligible-ID allowlist and deterministic fallback. |
+| Web: Anthropic structured adapter and company-history tools | `server/agents/adapters/anthropic-agent-sdk.ts:62` | Native endpoint, no redirects/retries, per-turn usage/pricing, cumulative output/time/cost bounds, signed assistant blocks and tool results preserved, original Zod validation and review behavior retained. Despite its historical adapter name, this code directly calls Anthropic Messages; it is not OpenAI's hosted Agents API. |
+| Pipeline: rollout keyframe labels | `src/blueprint_pipeline/rollout_vision_label_openai.py:38`, `:190` | Native Haiku default; legacy entrypoint/CLI/env names and review-only output contracts retained. Explicit non-Luna OpenAI models remain supported. |
+| Pipeline: WAM episode consistency and generated-video success labels | `src/blueprint_pipeline/wam_episode_consistency_label_openai.py:33`, `:298`; `wam_generated_video_success_label_openai.py:44`, `:252` | Same native substitution over local sampled frames and trace/task context. Existing opt-in gates and proof ceilings retained. |
+
+## Implemented local Agents SDK paths
+
+| Purpose | Source | Provider integration |
+| --- | --- | --- |
+| Site-evaluation director | Pipeline `site_eval_director.py:146`, `:154` | Local `Agent`/`Runner` now receive the native Claude model when the configured model is Luna or default Haiku. Existing CLI/live/key gates retained; credentials checked for actual provider. |
+| Simulation operator | Pipeline `simulation_automation.py:377`, `:386` | Same native SDK bridge. The historical class mentions Codex MCP, but the existing common runtime attaches no MCP server or tools; it produces advisory operator text. It is distinct from the separate Codex maintainer. |
+| Robot-evaluation job operator | Pipeline `robot_eval_job_orchestrator.py:442`, `:450` | Same native bridge and deterministic proof boundaries. |
+| Exact-workcell variation proposer | Pipeline `exact_workcell_variation_inputs.py:30`, `:64` | Native Haiku default, max effort, one bounded turn and original Pydantic output. `HaikuAgentsSDKInvoker` supplies provider wiring; an OpenAI-only invoker is rejected before sending. No production constructor was found; the existing source consumer is a fixture test. |
+| Shared model/runtime | Pipeline `agent_operator_runtime.py:173`, `haiku_agents_sdk.py`, `task_object_claude_model.py` | Native Messages translation, signed-thinking/tool-result round trips, strict-provider schema adaptation with original local constraints, private tracing disabled, no hosted OpenAI tools/server continuation. Durable per-call reservations retain unknown outcomes and prohibit same-identity replay. |
+| Staged worker dependency closure | Pipeline `single_g1_kitchen_episode_runpod.py:273`, `claude_native_transport.py`, `inference_reservations.py` | Transport and ledger extracted into leaves; legacy Opus/supervisor imports remain compatible. New helpers are included in the hash-pinned overlay. An isolated overlay import test uses pre-migration leaf prerequisites without an Agents/supervisor package. |
+
+## Held for separate migrations
+
+| Purpose / API | Concrete source | Why held / migration option |
+| --- | --- | --- |
+| Web communications drafts, Gmail read profiles, company-history sessions | `server/agents/communications-contract.ts:8`, `communications-saved-agent.ts:11`, `communications-api.ts:388` | **Hosted OpenAI Agents API**: saved-agent identity/configuration digests, session model checks, vault credentials, scoped Gmail/Notion MCP profiles, session/run usage and draft revision reconciliation. Claude is not a model-string substitution in these hosted sessions. Option: retain hosted Luna or move orchestration/session/tool/credential/receipt state to a local SDK or another hosted provider in a separately scoped project. |
+| Web communications reader/drafter MCP model registry | `server/agents/mcp-connections.ts:23-24`; `scripts/communications-preflight.mjs:7` | Hosted communications profiles above. Researcher Sol unchanged. |
+| Web stateful operator thread | `server/agents/provider-config.ts:374`, `:388`; OpenAI Responses adapter | **Direct Responses, not hosted Agents API or local Python Agents SDK**. Uses response continuation/state and a separate operator tool loop. Held pending a native conversation/tool-state adapter. Its existing Luna fallback is preserved. |
+| Pipeline site-eval and simulation Codex maintainers; content advisory review | `site_eval_director.py:293`, `simulation_automation.py:208`, `adp_content_agents_codex_advisory_review.py:218`, `:289` | **Codex SDK/CLI harness**, not ordinary Agents SDK. Uses OpenAI model selection and Codex OAuth/sandbox/CLI execution. Claude requires another harness; no harness redesign authorized. |
+| NVIDIA Content Agents backend and hosted model preflight | `adp_content_agents_vast.py:90`, `content_agents_execution_route.py:204`, `hosted_model_inference_preflight.py:32` | OpenAI/LangChain provider backend inside vendor/container runtime. Requires backend, key, tool/schema, packaging and pricing qualification. Its preflight performs paid synthetic inference and was not run. |
+
+The retained `openai_successor_models.py:3` Luna constant feeds those OpenAI/Codex/vendor paths and is not blindly renamed. OpenAI prompt-cache pricing, temperature compatibility, SDK image allowlists and historical receipts remain OpenAI-specific. The disabled Web research-learning classifier's model metadata now names Haiku; it remains disabled.
+
+## Ops, configuration and deployment limits
+
+- No literal GPT-6 Luna model selection was found in versioned `ops/` or `.agents/` configuration in either target repo. Paperclip configurations select Codex, Claude Sonnet or Hermes/DeepSeek; these are outside scope. Anthropic-compatible DeepSeek example settings are not native Anthropic credentials.
+- Render workspace `tea-d4vnh4be5dus73aim4o0` was explicitly authorized. Web `srv-d4vnmk3e5dus73aiohk0` and worker `srv-d9t8gg1t0dsc73am9q70` have manual deployments. Read-only metadata confirmed the prior Web release at `a99f86eb9977ce9822397bf7a6108a751508a22f`; this does not establish deployed env values or native Haiku account entitlement.
+- Available Render reads do not expose sanitized model/key-presence env metadata. Existing Web runtime-connectivity and Pipeline operator-status routes, plus Anthropic model metadata, were blocked by this workspace's egress proxy (CONNECT 403). Deployed model overrides, native key coverage, account model access and Pipeline runtime version remain unverified. No env writes or active-job restarts were performed.
+- Merge and deployment must use the shared release owner's coordinated SHA, preserving active Gmail recovery/upload work and founder send/spend holds. Do not infer a live migration from source grep or a merged PR.
+
+## Provider syntax, pricing and quality
+
+Official model ID is `claude-haiku-5-5`, released 2026-10-07. It accepts text/images and tools with text output, supports adaptive thinking, and has a 1M context and 128K maximum output. Native Messages uses `model`, `max_tokens`, `system`, `messages`, `output_config`, base64 image sources, and `tool_use` / `tool_result`; signed thinking must round-trip unchanged.
+
+Official rates at up to 100,000 total input tokens are $0.10/M input and $0.50/M output; above that threshold they are $0.50/M and $2.50/M. Native cache partitions/TTL and US inference's 1.1 multiplier are accounted for separately. Estimates are not provider invoices. Budget reservations conservatively use the expensive tier; no free-credit eligibility or paid-test authority is assumed. Pipeline caching is disabled in these new adapters. Web uses actual per-response native usage instead of applying a context threshold to a multi-call aggregate.
+
+There has been no paid provider quality evaluation. Schema/tool contract tests establish integration behavior, not Haiku/Luna semantic equivalence. Vision and qualification outputs retain human-review and development-only/proof ceilings. Smaller-model decisions, tokenizer differences and thinking token consumption need a separately admitted fixture/canary evaluation before making stronger quality claims.
+
+## Private processing activation
+
+Existing Web Anthropic code already supports company-history records and structured task data. Pipeline native capture enrichment covers capture text, while existing signed Opus authority covers specific scene-authoring geometry/appearance. Source review could not establish that the new SDK operators' serialized capture/evaluation/job/policy manifests or WAM generated rollout frames/action traces are covered by that same Anthropic authority. This is an **unverified private-processing authorization**, not proof that consent is absent. Report/resolve the existing scope and provider-terms coverage before enabling those opt-in live calls. No new live inference or new private category was transmitted during this work; gates, output truth boundaries and credentials were preserved.
+
+## Official sources
+
+- [Anthropic model overview](https://platform.claude.com/docs/en/models/haiku-5-5/overview)
+- [Messages API syntax](https://platform.claude.com/docs/en/api/messages/create)
+- [Haiku prompting and effort](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-haiku-5-5)
+- [Structured output / strict tool limitations](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)
+- [Vision limits](https://platform.claude.com/docs/en/build-with-claude/vision)
+- [Pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+- [OpenAI Agents SDK custom models](https://openai.github.io/openai-agents-python/models/#non-openai-models)
+
+## Validation evidence for the review candidate
+
+Independent provider review verified fixes to the held Web operator fallback, staged native dependency closure, constrained-tool translation/local validation and declared production `jsonschema` dependency. Its independent offline SDK/overlay/transport run passed 86 tests, with no remaining P1/P2 source defects reported. This is not deployment or consent attestation.
+
+Local checks: Web TypeScript and 134 final focused tests passed after rebasing; previous server coverage passed 7,444 tests (716 files, one skip) before final focused additions. Graphify refresh passed. Full Web build is compile-only with `BLUEPRINT_ALLOW_UNCONFIGURED_CLIENT_BUILD=1`; no local Firebase configuration is present and that output must never be served. Pipeline native/Opus regression selection passed 110 tests, SDK/operator selection passed 93, and final isolated overlay/SDK selection passed eight. Regenerated `uv.lock` with required uv 0.10.7; lock consistency passed. New provider/overlay files pass Ruff; a baseline comparison found no new diagnostics in changed legacy files (553 existing diagnostics under this container's broader Ruff rules).
+
+An expanded Pipeline selection passed 539 tests but had an initially missing local `tenacity` package and one existing workspace-lock test failure. The exact failing test also fails on unchanged main: the sandbox mounts `/` and `/tmp` owned by uid 65534, while the test workspace is uid 1000; the production lock's owner-safety check rejects that ancestry. The guard was not weakened. Hosted CI must validate the ordinary runner environment. A repository-wide hermetic diagnostic also requires local optional CPU dependencies; no paid/GPU/live provider tests were run.

@@ -15,9 +15,11 @@ from agents.items import ModelResponse
 from agents.models.interface import Model
 from agents.usage import Usage
 from openai.types.responses import (
-    ResponseFunctionToolCall, ResponseOutputMessage, ResponseOutputText, ResponseReasoningItem,
+    ResponseFunctionToolCall,
+    ResponseOutputMessage,
+    ResponseOutputText,
+    ResponseReasoningItem,
 )
-
 
 MODEL = "claude-opus-5-5"
 _IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
@@ -168,11 +170,14 @@ def _usage(value: Any) -> Usage:
 class ClaudeMessagesModel(Model):
     """Translate one stateless Claude Messages call into an Agents SDK response."""
 
-    def __init__(self, *, client):
+    def __init__(self, *, client, model: str = MODEL, effort: str = "medium"):
         if client is None:
             raise ClaudeModelBoundaryError("claude_scoped_client_required")
         # The future worker must construct this client from its admitted _FILE
         # secret. Disable provider SDK retries even if its caller forgot to.
+        if model not in {MODEL, "claude-haiku-5-5"} or effort not in {"low", "medium", "high", "xhigh", "max"}:
+            raise ClaudeModelBoundaryError("claude_model_or_effort_unqualified")
+        self.model, self.effort = model, effort
         self.client = client.with_options(max_retries=0) if hasattr(client, "with_options") else client
 
     async def get_response(self, system_instructions, input, model_settings, tools,
@@ -180,14 +185,14 @@ class ClaudeMessagesModel(Model):
                            conversation_id, prompt):
         if previous_response_id or conversation_id or prompt or handoffs:
             raise ClaudeModelBoundaryError("claude_server_context_forbidden")
-        if model_settings.store is not False or model_settings.max_tokens is None or not 0 < model_settings.max_tokens <= 12000:
+        if model_settings.store is not False or model_settings.max_tokens is None or not 0 < model_settings.max_tokens <= (16000 if self.model == "claude-haiku-5-5" else 12000):
             raise ClaudeModelBoundaryError("claude_bounded_local_request_required")
         if model_settings.temperature is not None or model_settings.top_p is not None:
             raise ClaudeModelBoundaryError("claude_unqualified_sampling_setting")
         if model_settings.tool_choice not in (None, "auto"):
             raise ClaudeModelBoundaryError("claude_tool_choice_unsupported")
         messages = _messages(input)
-        kwargs: dict[str, Any] = {"model": MODEL, "max_tokens": model_settings.max_tokens,
+        kwargs: dict[str, Any] = {"model": self.model, "max_tokens": model_settings.max_tokens,
                                   "inference_geo": "us", "messages": messages}
         if system_instructions:
             kwargs["system"] = system_instructions
@@ -200,18 +205,29 @@ class ClaudeMessagesModel(Model):
                         or not isinstance(schema, dict)):
                     raise ClaudeModelBoundaryError("claude_local_tool_invalid")
                 names.add(name)
-                definitions.append({"name": name, "description": tool.description,
+                description = tool.description
+                if self.model == "claude-haiku-5-5":
+                    from .claude_opus_authoring_invoker import _provider_output_schema
+                    description += "\nRequired complete argument schema: " + json.dumps(schema, ensure_ascii=True)
+                    schema = _provider_output_schema(schema)
+                definitions.append({"name": name, "description": description,
                                     "input_schema": schema, "strict": True})
             kwargs["tools"] = definitions
             kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
         # Opus 5.5 has adaptive thinking. Signed blocks must round-trip intact
         # on each tool continuation; omit readable thinking from local receipts.
         kwargs["thinking"] = {"type": "adaptive", "display": "omitted"}
-        kwargs["output_config"] = {"effort": "medium"}
+        kwargs["output_config"] = {"effort": self.effort}
         if output_schema is not None:
             schema = output_schema.json_schema()
             if not isinstance(schema, dict):
                 raise ClaudeModelBoundaryError("claude_output_schema_invalid")
+            if self.model == "claude-haiku-5-5":
+                from .claude_opus_authoring_invoker import _provider_output_schema
+                # Full constraints remain visible in the prompt and are checked by Pydantic.
+                kwargs["system"] = (kwargs.get("system", "") + "\nRequired complete output schema: "
+                                    + json.dumps(schema, ensure_ascii=True))
+                schema = _provider_output_schema(schema)
             kwargs["output_config"]["format"] = {"type": "json_schema", "schema": schema}
         result = await self.client.messages.create(**kwargs)
         if result.stop_reason not in {"end_turn", "tool_use"}:
