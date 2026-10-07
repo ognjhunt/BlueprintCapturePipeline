@@ -724,7 +724,11 @@ def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant
     assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
 
 
-@pytest.mark.parametrize("transition", ["Jordan Fixture resigned.", "Jordan Fixture now works for Rival Works."])
+@pytest.mark.parametrize("transition", [
+    "Jordan Fixture resigned.", "Jordan Fixture now works for Rival Works.", "Jordan Fixture retired.",
+    "Jordan Fixture was fired.", "Jordan Fixture was dismissed.", "Jordan Fixture was terminated.",
+    "Jordan Fixture was laid off.", "JORDAN FIXTURE retired.",
+])
 def test_later_same_person_departure_invalidates_page_scope_proof(transition):
     text = ("Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
             + transition)
@@ -734,10 +738,12 @@ def test_later_same_person_departure_invalidates_page_scope_proof(transition):
     assert cl.target(site, replay_search(person)) == (None, "target_site_location_mismatch")
 
 
-@pytest.mark.parametrize("name", ["Jordan Fixture", "Jordan Quit"])
-def test_another_person_departure_does_not_erase_retained_scope(name):
-    text = (f"{name} is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1. "
-            "Avery Placeholder resigned.")
+@pytest.mark.parametrize("name", ["Jordan Fixture", "Jordan Quit", "Jordan Retired"])
+@pytest.mark.parametrize("other", ["Avery Placeholder", "AVERY PLACEHOLDER"])
+@pytest.mark.parametrize("join", [". ", " while "])
+def test_another_person_departure_does_not_erase_retained_scope(name, other, join):
+    text = (f"{name} is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1"
+            + join + f"{other} resigned.")
     site = qualification_site(pages=[("https://operator-1.example/team", text, "d" * 64)])
     person = searched(name)
     person["location"]["city"] = "Other Fixture City"
