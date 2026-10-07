@@ -806,13 +806,28 @@ def site_role_quote(site, person, sentence):
     specific = [item for item in anchors if item["kind"] == "street"] or [
         item for item in anchors if item["kind"] == "site_name_city"]
     normalized = ss.words(sentence)
-    role_scope = re.search(r"\b" + re.escape(ss.words(person["name"])) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}"
-                           + re.escape(ss.words(person["title"])) + r"\s+(?:at|for|of)\s+", normalized)
-    tail = normalized[role_scope.end():] if role_scope else ""
+    name = ss.words(person["name"])
+    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current)\s+){0,5}", normalized)
+    tail, role_scope = "", False
+    if start:
+        description = normalized[start.end():]
+        for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
+            role = description[:preposition.start()]
+            if (holds_title(role, person["title"])
+                    and set(role.split()) <= set(title_words(person["title"])) | TITLE_FILLER):
+                tail, role_scope = description[preposition.end():], True
+                break
     # A conjunction inside a known entity name is not a clause boundary (including '&' / 'and' spellings).
     names = [site.get("operator") or "", site["task_input"].get("site_name") or ""]
     known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
+    # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
+    employment = re.compile(r"\b(?:and|but|while|whereas)\s+(?:(?:he|she|they|" + re.escape(name)
+                            + r")\s+)?(?:works?|worked|is employed|is an? employee|serves)\s+(?:for|by)\s+")
+    for match in employment.finditer(tail):
+        employer = tail[match.end():]
+        if not any(entity and (employer == entity or employer.startswith(entity + " ")) for entity in known_names):
+            return False
     spans = [match.span() for name in known_names if name
              for match in re.finditer(r"\b" + re.escape(name) + r"\b", tail)]
     for boundary in re.finditer(r"\b(?:and|but|while|whereas)\b|\b" + re.escape(ss.words(person["title"])) + r"\b", tail):

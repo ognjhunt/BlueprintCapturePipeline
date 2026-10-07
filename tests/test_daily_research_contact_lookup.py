@@ -641,6 +641,8 @@ def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home
     "Is Jordan Fixture the Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1?",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Rival Fixture Corporation.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX facility of Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and works for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but he is employed by Rival Fixture Corporation.",
 ])
 def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
     text = quote + " Synthetic Operator 1 operates the target plant."
@@ -690,6 +692,29 @@ def test_a_street_without_target_city_does_not_establish_site_responsibility():
     chosen, _ = cl.target(site, replay_search(searched(OTHER_PERSON)))
     assert chosen["site_responsibility"]["status"] == "unknown"
     assert chosen["site_responsibility"]["route"] == "corporate_referral"
+
+
+@pytest.mark.parametrize("provider_title,quoted_title", [
+    ("Senior Plant Manager", "Plant Manager"),
+    ("Plant Manager", "Senior Plant Manager"),
+    ("Plant Manager", "Manager of the Plant"),
+])
+def test_site_role_proof_uses_the_existing_normalized_title_semantics(provider_title, quoted_title):
+    quote = f"Jordan Fixture is {quoted_title} at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON, title=provider_title)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+
+
+def test_conjunction_can_restate_the_same_employer_without_losing_site_role():
+    quote = "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and works for Synthetic Operator 1."
+    site = qualification_site(pages=[("https://operator-1.example/team", quote, "d" * 64)])
+    person = searched(OTHER_PERSON)
+    person["location"]["city"] = "Other Fixture City"
+    chosen, reason = cl.target(site, replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
 
 
 def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():
