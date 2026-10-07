@@ -883,6 +883,7 @@ def employment_sentence(sentence):
 
 def coordinated_subject(subject, person_name):
     """An explicit list of named subjects includes the target; role clauses are not subject lists."""
+    subject = re.sub(r"\b(?:along\s+with|as\s+well\s+as|together\s+with)\b", "and", subject, flags=re.IGNORECASE)
     groups = [part.strip() for part in re.split(r"\s+and\s+|,", subject, flags=re.IGNORECASE) if part.strip()]
     if len(groups) < 2 or not any(ss.words(part) == person_name for part in groups):
         return False
@@ -927,7 +928,9 @@ def employment_contradiction(person, sentence, known_names):
             r"\b(?:not|never|may|might|will|would|could|should)\b"
             r"|\b(?:isn|wasn|hasn|hadn|haven|doesn|didn|don|won|wouldn|shouldn|couldn|can)['’]\s*t\b", subject,
             re.IGNORECASE) if not any(left <= start + found.start() < right for left, right in protected)]
-        uncertain = any(word in {"may", "might", "will", "would", "could", "should"} for word in polarity)
+        uncertain = (any(word in {"may", "might", "will", "would", "could", "should"} for word in polarity)
+                     or bool(re.search(r"\b(?:plans?|planned|planning|expects?|expected|intends?|intended|scheduled|due)\s+to$",
+                                       ss.words(subject))))
         negated = bool(polarity) and not uncertain
         if uncertain or negated and match.group("departure"):
             continue
@@ -958,6 +961,13 @@ def employment_contradiction(person, sentence, known_names):
         employer = ss.words(clause[match.end():])
         if match.group("departure"):
             object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
+            if match.group("departure").lower() == "no longer":
+                ended = re.search(r"\b(?:for|by|at|with)\s+(.+)$", employer)
+                if ended:
+                    destinations = {ended.group(1), re.sub(r"^(?:the|an?)\s+", "", ended.group(1))}
+                    if not any(entity and (value == entity or value.startswith(entity + " "))
+                               for entity in known_names for value in destinations):
+                        continue
             if (any(entity and (object_text == entity or object_text.startswith(entity + " ")) for entity in known_names)
                     or match.group("departure").lower().startswith(("resign", "quit", "retire"))
                     or match.group("departure").lower() in {"fired", "dismissed", "terminated", "laid off"}
