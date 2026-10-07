@@ -339,7 +339,9 @@ def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_list
     assert all(title["exact_match"] is False for title in search["current_position_titles"])
     assert search["person_locations"] == [{"value": "United States", "exact_match": True}]
     assert all(not cl.listed_title(title) for title in ("VP Sales", "VP Finance", "Human Resources Director",
-                                                       "Operations Audit Director", "Retired Plant Manager"))
+                                                       "Operations Audit Director", "Retired Plant Manager",
+                                                       "Vice President Strategy", "Vice President Procurement",
+                                                       "Vice President Quality", "VP Quality"))
     assert search["limit"] == cl.SEARCH_LIMIT
     assert [body["data"][0]["first_name"] for body in api.posts("/api/v2/contact/enrich/bulk")] == ["Jordan"]
     assert (result["calls"]["made"], result["credits"]["committed"]) == (2, "2")  # Four people at 0.25, one email.
@@ -671,26 +673,29 @@ def test_shared_company_search_is_requalified_for_each_target_site_without_calls
     assert second is None and reason == "target_site_location_mismatch"
 
 
-def test_legacy_shared_search_is_requalified_without_rebuying_the_search(tmp_path):
+@pytest.mark.parametrize("legacy_title", ["Plant Manager", "Operations Audit Director", "Vice President Strategy"])
+def test_legacy_shared_search_is_requalified_without_rebuying_the_search(tmp_path, legacy_title, monkeypatch):
     person, reason = cl.target(qualification_site(city="Other Fixture City"),
                                replay_search(searched(OTHER_PERSON), legacy=True))
     assert person is None and reason == "target_site_location_mismatch"
     workspace, (key,) = site_screen_out(tmp_path, [nobody(1)])
     api = FakeFullEnrich()
-    api.people["operator-1.example"] = [searched(OTHER_PERSON)]
+    api.people["operator-1.example"] = [searched(OTHER_PERSON, title=legacy_title)]
     api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
     site = cl.lookup_sites(workspace, workspace.states()[0], today=TODAY)[0][0]
     book = cl.Book(workspace)
     bounds = cl.limits(None, LOOKUP_OWNER, "5", 10)
     book.create_pin(bounds)
     calls = cl.Calls(book, "apply", client=cl.FullEnrichClient(FULLENRICH_KEY, transport=api), bounds=bounds)
-    calls("search", [site["operator_domain"], list(cl.LEGACY_TITLES)], key,
-          lambda _: {"current_company_domains": [{"value": site["operator_domain"], "exact_match": True}],
-                     "current_position_titles": [{"value": title} for title in cl.LEGACY_TITLES],
-                     "limit": cl.SEARCH_LIMIT, "offset": 0}, cl.seal_search(site))
+    with monkeypatch.context() as old_rules:
+        old_rules.setattr(cl, "listed_title", lambda title: True)
+        calls("search", [site["operator_domain"], list(cl.LEGACY_TITLES)], key,
+              lambda _: {"current_company_domains": [{"value": site["operator_domain"], "exact_match": True}],
+                         "current_position_titles": [{"value": title} for title in cl.LEGACY_TITLES],
+                         "limit": cl.SEARCH_LIMIT, "offset": 0}, cl.seal_search(site))
     report = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION, max_credits="5", max_calls=10)
     assert len(api.posts(cl.SEARCH_PATH)) == 1 and report["calls"]["known"] == 1
-    assert len(api.posts(cl.ENRICH_PATH)) == 1
+    assert len(api.posts(cl.ENRICH_PATH)) == (1 if legacy_title == "Plant Manager" else 0)
 
 
 @pytest.mark.parametrize("operator_prefix", ["", "Synthetic Operator 1's "])

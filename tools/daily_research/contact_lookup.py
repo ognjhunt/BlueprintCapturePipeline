@@ -243,6 +243,8 @@ def title_words(title):
 def listed_title(title):
     """True for a title holding every word of one of TITLES and no word of a role that does not decide."""
     have = set(ss.words(title).split())
+    if "vp" in have or {"vice", "president"} <= have:
+        return not have & NOT_DECIDING and "operations" in have
     return not have & NOT_DECIDING and any(set(title_words(listed)) <= have for listed in TITLES)
 
 
@@ -1241,6 +1243,8 @@ def target(site, calls, search=True):
     candidates = found.get("candidates") if isinstance(found.get("candidates"), list) else [found["candidate"]]
     referral = None
     for chosen in candidates:
+        if not listed_title(chosen["title"]):
+            continue  # Requalify retained paid results under the current role rules too.
         person = {"name": chosen["name"], "title": chosen["title"], "location": chosen["location"],
                   "location_fields": chosen.get("location_fields"), "sourcing": "provider_sourced",
                   "proof": {"source": "fullenrich_people_search", "request_digest": key,
