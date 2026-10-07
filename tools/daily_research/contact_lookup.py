@@ -915,6 +915,9 @@ def site_role_quote(site, person, sentence):
             object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
             if (any(entity and (object_text == entity or object_text.startswith(entity + " ")) for entity in known_names)
                     or set(object_text.split()) & {"job", "role", "position", "employment", "corporation", "corp", "inc", "llc"}
+                    or re.match(r"^(?:to\s+)?(?:join|work|serve|be\s+employed)\b", employer)
+                    or employer.startswith("for ") and not set(object_text.split()) & {
+                        "conference", "meeting", "lunch", "vacation", "trip", "training", "workshop", "airport", "home"}
                     or match.group("departure").lower() == "no longer"
                     and re.match(r"^(?:works?|worked|serves|employed)\b", employer)):
                 return False
