@@ -899,13 +899,12 @@ def employment_contradiction(person, sentence, known_names):
         return False
     role_sentence = re.sub(r"^\s*(?:he|she|they)\b", person["name"], sentence, flags=re.IGNORECASE)
     role_employer, _, role_preposition = role_complement(person, role_sentence)
-    if role_preposition and quoted_role_address(person, role_sentence):
+    role_address = quoted_role_address(person, role_sentence)
+    if role_preposition and role_address:
         # A street-qualified role can still explicitly name a different employer.
         employer_suffix = re.search(r"\bfor\s+(.+)$", role_employer)
-        employer_prefix = re.match(r"(.+?)\s+at\s+\d+\b", role_employer)
-        role_employer = (employer_suffix.group(1) if employer_suffix else employer_prefix.group(1)
-                         if employer_prefix else role_employer
-                         if role_preposition in {"for", "of"} and not re.match(r"^\d+\s", role_employer) else "")
+        pure_location = ss.street_anchor(role_address.get("street")) or not role_address.get("street")
+        role_employer = employer_suffix.group(1) if employer_suffix else "" if pure_location else role_employer
     if role_preposition and role_employer:
         employers = {role_employer, re.sub(r"^(?:the|an?)\s+", "", role_employer)}
         if not any(entity and (value == entity or value.startswith(entity + " "))
@@ -920,7 +919,7 @@ def employment_contradiction(person, sentence, known_names):
                             r"|(?P<departure>left|leaves|leaving|depart(?:ed|ing)?|resign(?:ed|s|ing)?|quit(?:s|ting)?"
                             r"|retire(?:d|s|ing)?|fired|dismissed|terminated|laid\s+off|step(?:ped|s|ping)?\s+down|no\s+longer)"
                             r"(?=\s|[.,;:]|$)\s*)", re.IGNORECASE)
-    cuts = [0] + [match.end() for match in re.finditer(r"\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE)
+    cuts = [0] + [match.end() for match in re.finditer(r";|,\s*(?=(?:now|currently)\b)|\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE)
                   if not any(start <= match.start() < end for start, end in protected)
                   and not (match.group().lower() == "and" and (ss.words(sentence[:match.start()]) == name
                            or coordinated_subject(sentence[:match.start()], name)))] + [len(sentence)]
@@ -968,6 +967,13 @@ def employment_contradiction(person, sentence, known_names):
         employer = ss.words(clause[match.end():])
         if match.group("departure"):
             object_text = re.sub(r"^(?:(?:the|his|her|their|our|from|as|for)\s+)+", "", employer)
+            departure = match.group("departure").lower()
+            if departure.startswith("retire") or departure in {"fired", "dismissed", "terminated", "laid off"}:
+                passive = re.search(r"\b(?:is|was|were|been|being)\s*$", ss.words(subject))
+                self_role = re.match(r"^(?:job|role|position|employment|tenure|appointment|service)\b", object_text)
+                circumstance = re.match(r"^(?:in|on|at|from|to|as|after|before|during|when|because|following)\b|^\d", employer)
+                if employer and not passive and not self_role and not circumstance:
+                    continue  # Retiring equipment or firing another person does not end the actor's employment.
             if match.group("departure").lower() == "no longer":
                 ended = re.search(r"\b(?:for|by|at|with)\s+(.+)$", employer)
                 if ended:
@@ -1123,7 +1129,9 @@ def site_responsibility(site, person):
         linked = False
         for sentence in sentences:
             named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
-            pronoun = bool(re.match(r"\s*(?:he|she|they|his|her|their)\b", employment_sentence(sentence), re.IGNORECASE))
+            pronoun = bool(re.match(r"\s*(?:(?:he|she|they|his|her|their)\b"
+                                    r"|(?:now|currently)\s+(?:works?|serves|is\s+employed)\b)",
+                                    employment_sentence(sentence), re.IGNORECASE))
             if (named or linked and pronoun) and employment_contradiction(person, sentence, known_names):
                 return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
                         "reason": "target_site_responsibility_unproven", "proof": None}
