@@ -326,7 +326,7 @@ def responsibility_target(entry):
     """The retained physical-site evidence, including a proven street omitted from the CRM display location."""
     given = {"address": site_screen.parse_location(entry["input"].get("location"))}
     found = site_screen.found_address(given, entry["answers"], entry["checks"]["verification"])
-    return {"address": found or given["address"],
+    return {"address": {**given["address"], **(found or {})},
             "operator": entry["answers"].get("operator_identity") or entry["input"].get("operator") or "",
             "task_input": {"site_name": entry["input"].get("site_name") or ""}}
 

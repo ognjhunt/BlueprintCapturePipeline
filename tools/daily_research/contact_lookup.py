@@ -714,7 +714,8 @@ def lookup_site(workspace, contact, screen, *, today=None):
         kept += [(url, page["text"], page.get("sha256")) for url, page in sorted(pages.items()) if isinstance(page, dict)
                  and page.get("state") == "ok" and isinstance(page.get("text"), str) and not ss.never_fetch(url)]
     address = screen.get("address") or {}
-    address = ss.found_address({"address": address}, screen["answers"], screen["verification"]) or address
+    found = ss.found_address({"address": address}, screen["answers"], screen["verification"])
+    address = {**address, **(found or {})}
     return {"site_key": contact["site_key"], "contact": contact,
             "address": address, "task_input": ss.contact_input(screen),
             "person": contact["person"] if isinstance(contact.get("person"), dict) else {},
@@ -842,7 +843,7 @@ def site_role_quote(site, person, sentence):
     known_names = {ss.words(name.replace("&", " and ")) for name in names} | {ss.words(name) for name in names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     # An elliptical conjunction still refers to this person; do not discard contradictory employment evidence.
-    employment = re.compile(r"\b(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by)\s+", re.I)
+    employment = re.compile(r"\b(?:works?|worked|(?:is\s+)?employed|(?:is\s+an?\s+)?employee|serves)\s+(?:for|by|at)\s+", re.I)
     for clause in re.split(r"\b(?:and|but|while|whereas)\b", sentence, flags=re.I)[1:]:
         match = employment.search(clause)
         if not match:

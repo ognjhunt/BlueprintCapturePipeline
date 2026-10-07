@@ -433,18 +433,28 @@ def test_site_role_loader_uses_retained_physical_proof_when_display_omits_street
     assert sa.recipient_problem(entry["recipient"], entry) == "screen_admission_recipient_invalid"
 
 
-def test_source_and_loader_reconstruct_the_same_proven_street_from_city_only_input(tmp_path):
+@pytest.mark.parametrize("found_state", ["TX", None])
+def test_source_and_loader_reconstruct_the_same_proven_street_from_city_only_input(tmp_path, found_state):
     workspace, (key,) = prepared(tmp_path, [(1, FOCUS_A, None)])
     states, _ = workspace.states()
     record = ss.stage_records(workspace, states, "screen")[key]
     contact = ss.stage_records(workspace, states, "contact")[key]
     record["address"] = {"city": "Fixture City", "state": "TX"}
     record["input"]["location"] = "Fixture City, TX"
+    if found_state is None:
+        for field in ("site_identity", "site_identity_quote"):
+            record["answers"][field] = record["answers"][field].replace(", TX", "").replace(" TX", "")
     source = sa.contact_lookup.lookup_site(workspace, contact, record, today=TODAY)
     loader = sa.responsibility_target({"input": record["input"], "answers": record["answers"],
                                       "checks": {"verification": record["verification"]}})
     assert source["address"] == loader["address"] == {"street": "1 Example Road", "city": "Fixture City", "state": "TX"}
     assert source["operator"] == loader["operator"] == "Synthetic Operator 1"
+    person = {"name": "Jordan Fixture", "title": "Plant Manager"}
+    for target in (source, loader):
+        assert not sa.contact_lookup.site_role_quote(
+            target, person, "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City.")
+        assert sa.contact_lookup.site_role_quote(
+            target, person, "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX.")
     # A published verified person email outranks every looked-up address.
     workspace, (key,) = prepared(tmp_path / "published", [(1, FOCUS_A, {})])
     lookup(workspace, key)

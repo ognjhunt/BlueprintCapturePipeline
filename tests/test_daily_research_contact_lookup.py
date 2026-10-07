@@ -646,6 +646,8 @@ def test_specific_role_and_site_quote_can_qualify_a_person_with_a_different_home
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but now works for Rival Fixture Corporation.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and he currently works for Rival Fixture Corporation.",
     "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX but He currently works for Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX for Synthetic Operator 1 but now works at Rival Fixture Corporation.",
+    "Jordan Fixture is Plant Manager at 1 Example Road, Fixture City, TX and is employed at Rival Fixture Corporation.",
 ])
 def test_company_title_city_and_visits_do_not_prove_responsibility_at_this_plant(quote):
     text = quote + " Synthetic Operator 1 operates the target plant."
