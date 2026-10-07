@@ -1,0 +1,12 @@
+{
+  "observed_at": "2026-10-07T21:30:29Z",
+  "source_commit": "dee58dde55e9a36f8b309cac78ad69897152183a",
+  "deployed_source_commit": "89938271a5c92fc0473b01326733199e0b456444",
+  "listener_state": "inactive",
+  "listener_timer_state": "enabled_inactive",
+  "intake_state": "active",
+  "existing_deployment_preserved_operator_freeze": true,
+  "post_fix_listener_execution_proven": false,
+  "next_release_custody_proven": false,
+  "evidence_boundary": "Sanitized read-only metadata summary. Internal receipt locators, runtime invocation identifiers and authority/proof references remain private. This is not clearance for another release."
+}
