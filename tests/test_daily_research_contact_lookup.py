@@ -1123,6 +1123,13 @@ def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority
             chosen, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", linked_match, "c" * 64)]),
                                        replay_search(person))
             assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+    for unclear in (f"Avery introduced {OTHER_PERSON}, who is {quoted_title} at 2 Other Road, Other Fixture City, OH.",
+                    f"{OTHER_PERSON} introduced Avery Placeholder. She is {quoted_title} at 2 Other Road, Other Fixture City, OH."):
+        ambiguous_site = qualification_site(pages=[("https://operator-1.example/team", matching + " " + unclear, "b" * 64)])
+        held, _ = cl.target(ambiguous_site, replay_search(person))
+        assert held is None
+        candidate, _ = cl.candidate(person, ["operator-1.example"])
+        assert cl.site_responsibility(ambiguous_site, candidate)["reason"] == "target_site_responsibility_unproven"
     departed = f"{OTHER_PERSON} ({quoted_title}) now works for Rival Fixture Corporation."
     departed_site = qualification_site(pages=[("https://operator-1.example/update", departed, "e" * 64)])
     held, _ = cl.target(departed_site, replay_search(person))

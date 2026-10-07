@@ -1206,6 +1206,7 @@ def site_responsibility(site, person):
     unqualified = False
     for _, _, _, sentences in pages:
         linked = False
+        subject = ""
         for sentence in sentences:
             named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
             pronoun = bool(re.match(r"\s*(?:(?:he|she|they|his|her|their)\b"
@@ -1213,12 +1214,17 @@ def site_responsibility(site, person):
                                     r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
                                     employment_sentence(sentence), re.IGNORECASE))
             if named or linked and pronoun:
+                if not named and holds_title(sentence, person["title"]) and not holds_title(subject, person["title"]):
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_responsibility_unproven", "proof": None}
                 scoped = sentence if named else re.sub(r"^\s*(?:he|she|they)\b", person["name"],
                                                        employment_sentence(sentence), flags=re.IGNORECASE)
                 if role_address_mismatch(site, person, scoped, known_names):
                     return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
                             "reason": "target_site_location_mismatch", "proof": None}
-                if (not named and holds_title(sentence, person["title"])
+                if (holds_title(sentence, person["title"])
+                        and (ss.parse_location(scoped.rstrip(" .;")).get("state")
+                             or re.search(r"\b(?:at|for|of)\s+\d+\s+\S", scoped, re.IGNORECASE))
                         and re.search(r"\b(?:at|for|of)\b", sentence, re.IGNORECASE)
                         and not quoted_role_address(person, scoped)
                         and not site_role_quote(site, person, scoped)):
