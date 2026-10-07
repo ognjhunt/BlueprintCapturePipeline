@@ -394,7 +394,8 @@ def test_unknown_site_responsibility_is_a_referral_in_bundle_and_sheet_question(
 @pytest.mark.parametrize("reason", ["target_site_responsibility_unproven", "target_site_location_mismatch"])
 @pytest.mark.parametrize("title", ["Plant Manager", "Director"])
 @pytest.mark.parametrize("source", ["public_quote", "provider_sourced"])
-def test_loader_requalifies_quoted_referral_against_retained_facility(tmp_path, reason, title, source):
+@pytest.mark.parametrize("preposition", ["at", "for", "of"])
+def test_loader_requalifies_quoted_referral_against_retained_facility(tmp_path, reason, title, source, preposition):
     changes = {**team(1), "person_name": PERSON, "person_title": title,
                "person_url": "https://operator-1.example/team",
                "person_quote": f"{PERSON} is {title} at Synthetic Operator 1.", "person_date": "2026-06-01"}
@@ -410,7 +411,7 @@ def test_loader_requalifies_quoted_referral_against_retained_facility(tmp_path, 
                                            else "provider_sourced_corroborated")
     person = entry["recipient"]["person"]
     (person if source == "public_quote" else person["corroboration"])["quote"] = (
-        f"{PERSON} is {title} at Rival and Sons, Fixture City, TX.")
+        f"{PERSON} is {title} {preposition} Rival and Sons, Fixture City, TX.")
     person["site_responsibility"]["reason"] = reason
     raw = canonical(bundle).encode()
     if title == "Director":

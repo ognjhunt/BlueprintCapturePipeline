@@ -849,7 +849,7 @@ def role_complement(person, sentence):
 
 def quoted_role_address(person, sentence):
     tail, offset, preposition = role_complement(person, sentence)
-    if preposition != "at" or set(tail.split()) & {"whose", "which", "headquarters", "hq"}:
+    if preposition is None or set(tail.split()) & {"whose", "which", "headquarters", "hq"}:
         return {}
     raw = unicodedata.normalize("NFKC", sentence)
     tokens = list(re.finditer(r"[A-Za-z0-9]+", raw))

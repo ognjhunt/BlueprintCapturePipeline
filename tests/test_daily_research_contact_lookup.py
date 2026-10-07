@@ -166,6 +166,7 @@ def stored(workspace):
 
 
 # --- the quoted person ----------------------------------------------------------------------------
+@pytest.mark.parametrize("preposition", ["at", "for", "of"])
 @pytest.mark.parametrize("assignment", [
     "2 Other Road, Other Fixture City, OH",
     "2 Other Road, Fixture City, TX",
@@ -175,8 +176,8 @@ def stored(workspace):
     "Rival and Sons, Fixture City, TX",
     "Rival and Sons, Fixture City, TX and he discussed the plant",
 ])
-def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_path, assignment):
-    workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_quote=f"{PERSON} is Plant Manager at {assignment}.")])
+def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_path, assignment, preposition):
+    workspace, (key,) = site_screen_out(tmp_path, [quoted(1, person_quote=f"{PERSON} is Plant Manager {preposition} {assignment}.")])
     api = FakeFullEnrich()
     result = lookup(workspace, api)
     assert result["calls"]["made"] == 0 and api.calls == []
@@ -185,9 +186,10 @@ def test_quoted_manager_at_another_facility_is_held_before_paid_enrichment(tmp_p
 
 
 @pytest.mark.parametrize("assignment", ["Synthetic Works", "the Synthetic Works plant", "Synthetic Operator 1"])
-def test_named_target_or_company_role_keeps_unknown_referral_scope(assignment):
+@pytest.mark.parametrize("preposition", ["at", "for", "of"])
+def test_named_target_or_company_role_keeps_unknown_referral_scope(assignment, preposition):
     site = qualification_site()
-    site["person_quote"] = f"Jordan Fixture is Plant Manager at {assignment}, Fixture City, TX."
+    site["person_quote"] = f"Jordan Fixture is Plant Manager {preposition} {assignment}, Fixture City, TX."
     person = {"name": "Jordan Fixture", "title": "Plant Manager", "location": None}
     responsibility = cl.site_responsibility(site, person)
     assert responsibility["route"] == "corporate_referral" and responsibility["status"] == "unknown"
