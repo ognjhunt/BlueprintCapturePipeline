@@ -1169,8 +1169,8 @@ repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has no
   (`quoted_person`); an undated or older one is `person_not_current`. Otherwise, only
   with `--person-search` naming the decision above (anything else refuses with
   `contact_lookup_person_search_reference_invalid`), one people search on the operator's
-  domain for the listed roles (`TITLES`: owner, president, general manager, plant
-  manager, operations manager or director, engineering or automation manager) keeps minimal
+  domain for current facility/site/plant, production, warehouse, operations and relevant
+  manufacturing/automation engineering leaders, plus owner, president and COO roles, keeps minimal
   candidates FullEnrich places at that domain now (`is_current` true, or no end date
   in `employment.current`; historical `employment.all` entries need `is_current: true`)
   in a listed role. Each facility selects its proven site contact first, otherwise an
@@ -1179,6 +1179,19 @@ repository's `tools/` even with `PYTHONPATH=.`); the repository's `.venv` has no
   employment field relied on is recorded; a past employer never counts. The pages the
   site screen already read and kept are checked for the person with their title and the
   operator (`corroboration`, true or false; no new read, never LinkedIn).
+- The request uses the official [FullEnrich v2 search filters](https://docs.fullenrich.com/api/v2/people/search/post):
+  exact current employer domain, tolerant current-position titles and US person geography.
+  Person city/state is not a facility-assignment filter: company-wide search keeps corporate
+  referrals available, and post-response current-employment and facility-responsibility checks
+  remain mandatory. A VP of Operations is eligible; sales, HR, audit, finance and retired roles
+  remain excluded. An existing sealed company search is reused under its original journal key,
+  including an unknown potentially billed call; expanded filters do not silently rebuy it.
+- `python tools/daily_research/operators/contact-lookup.py balance` uses the existing
+  `FULLENRICH_API_KEY` environment binding, or the existing `--key-file` when supplied.
+  It performs one unbilled credit-balance GET and prints only the finite balance and check time,
+  without writing artifacts. This read-only command is supported on the daily worker; paid
+  `lookup` still refuses there before key/out-dir access until the shared admission path,
+  owner allowance and worker lease are integrated. An account balance grants no spending authority.
 - An email counts only when FullEnrich marks it `DELIVERABLE` (`HIGH_PROBABILITY` is its
   catch-all estimate, and `CATCH_ALL` and `INVALID` do not count either), it is on the
   operator's domain or a subdomain, never free mail, its local part names the person

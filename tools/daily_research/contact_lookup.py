@@ -70,11 +70,15 @@ SEARCH_PATH, ENRICH_PATH = "/api/v2/people/search", "/api/v2/contact/enrich/bulk
 VALID_STATUSES = frozenset({"DELIVERABLE"})
 STATUSES = frozenset({"DELIVERABLE", "HIGH_PROBABILITY", "CATCH_ALL", "INVALID"})  # FullEnrich email statuses.
 # The deciding roles a people search asks for. A kept title holds every word of one, and no word of NOT_DECIDING.
-TITLES = ("owner", "president", "general manager", "plant manager", "operations manager", "operations director",
-          "engineering manager", "automation manager")
-NOT_DECIDING = frozenset({"assistant", "associate", "intern", "coordinator", "vice", "product", "sales", "marketing",
+LEGACY_TITLES = ("owner", "president", "general manager", "plant manager", "operations manager", "operations director",
+                 "engineering manager", "automation manager")
+TITLES = (*LEGACY_TITLES, "facility manager", "facility director", "site manager", "site director", "site leader",
+          "plant director", "production manager", "production director", "warehouse manager", "warehouse director",
+          "manufacturing engineering manager", "manufacturing engineering director", "automation engineering manager",
+          "automation engineering director", "vice president operations", "vp operations", "chief operating officer", "coo")
+NOT_DECIDING = frozenset({"assistant", "associate", "intern", "coordinator", "product", "sales", "marketing",
                           "account", "accounts", "finance", "financial", "hr", "human", "talent", "recruiting",
-                          "recruiter", "legal", "customer", "former", "retired"})
+                          "recruiter", "legal", "customer", "audit", "auditor", "auditing", "former", "retired"})
 TITLE_FILLER = frozenset({"of", "the", "and", "for", "at", "senior", "sr"})
 SEARCH_LIMIT = 5  # People per search; FullEnrich bills 0.25 credit per person returned.
 MOST_CREDITS = {"search": Decimal("0.25") * SEARCH_LIMIT, "enrich": Decimal(1)}  # A found work email is 1 credit.
@@ -233,18 +237,26 @@ def same_person(first, second):
 
 
 def title_words(title):
-    return [word for word in ss.words(title).split() if word not in TITLE_FILLER]
+    normalized = ss.words(title)
+    normalized = re.sub(r"\bv p\b", "vp", normalized)
+    normalized = re.sub(r"\bc o o\b", "coo", normalized)
+    normalized = re.sub(r"\bchief (?:operations|ops) officer\b", "chief operating officer", normalized)
+    aliases = {"vp": ("vice", "president"), "coo": ("chief", "operating", "officer"), "ops": ("operations",)}
+    return [part for word in normalized.split() if word not in TITLE_FILLER
+            for part in aliases.get(word, (word,))]
 
 
 def listed_title(title):
     """True for a title holding every word of one of TITLES and no word of a role that does not decide."""
-    have = set(ss.words(title).split())
+    have = set(title_words(title))
+    if "vp" in have or {"vice", "president"} <= have:
+        return not have & NOT_DECIDING and "operations" in have
     return not have & NOT_DECIDING and any(set(title_words(listed)) <= have for listed in TITLES)
 
 
 def holds_title(text, title):
     wanted = title_words(title)
-    return bool(wanted) and set(wanted) <= set(ss.words(text).split())
+    return bool(wanted) and set(wanted) <= set(title_words(text))
 
 
 def on_domain(domain, operator_domains):
@@ -776,8 +788,13 @@ def corroborate(site, person):
 
 
 def search_body(site):
+    # FullEnrich v2 supports current-company domains, current titles and person locations.
+    # Person geography never proves facility responsibility; a company-wide US search
+    # keeps headquarters referrals available rather than filtering by the plant's city.
     return {"current_company_domains": [{"value": site["operator_domain"], "exact_match": True}],
-            "current_position_titles": [{"value": title} for title in TITLES], "limit": SEARCH_LIMIT, "offset": 0}
+            "current_position_titles": [{"value": title, "exact_match": False} for title in TITLES],
+            "person_locations": [{"value": "United States", "exact_match": True}],
+            "limit": SEARCH_LIMIT, "offset": 0}
 
 
 def role_scope_suffix(text, known_names, *, allow_news=True):
@@ -836,13 +853,13 @@ def address_units(text, protected=()):
 def role_complement(person, sentence):
     normalized = ss.words(sentence)
     name = ss.words(person["name"])
-    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|as|our|current|now|currently|new|recently)\s+){0,5}", normalized)
+    start = re.search(r"\b" + re.escape(name) + r"\s+(?:(?:is|the|a|serves|serving|being|also|as|our|current|now|currently|new|recently)\s+){0,5}", normalized)
     if start:
         description = normalized[start.end():]
         for preposition in re.finditer(r"\b(?:at|for|of)\s+", description):
             role = description[:preposition.start()]
             if (holds_title(role, person["title"])
-                    and set(role.split()) <= set(title_words(person["title"])) | TITLE_FILLER):
+                    and set(title_words(role)) <= set(title_words(person["title"]))):
                 offset = len(normalized[:start.end()].split()) + len(description[:preposition.end()].split())
                 return description[preposition.end():], offset, preposition.group().strip()
     return "", 0, None
@@ -962,7 +979,14 @@ def employment_contradiction(person, sentence, known_names):
         named = {ss.words(word) for word in re.findall(r"\b[^\W\d_]+\b", subject)
                  if word.isupper() or word[:1].isupper() and word[1:].islower()} - {
             "he", "she", "they", "his", "her", "their", "i", "my", "now", "currently", "still", "also", "recently"}
-        named -= set(title_words(person["title"])) | TITLE_FILLER
+        role_words = set(title_words(person["title"])) | set(ss.words(person["title"]).split())
+        if {"vice", "president"} <= role_words:
+            role_words |= {"vp", "v", "p"}
+        if {"chief", "operating", "officer"} <= role_words:
+            role_words |= {"coo", "c", "o", "operations", "ops"}
+        if "operations" in role_words:
+            role_words.add("ops")
+        named -= role_words | TITLE_FILLER
         # A full subject immediately before its verb binds the claim despite a date/editorial preamble.
         if re.search(r"\b" + re.escape(name) + r"(?:\s+(?:is|was|has|had|have|been|an?|now|currently|recently))*$",
                      ss.words(subject)):
@@ -1135,26 +1159,89 @@ def site_role_quote(site, person, sentence):
                 and not set(assertion.split()) & {"former", "formerly", "retired", "not"})
 
 
+def role_address_mismatch(site, person, sentence, known_names):
+    """An explicit candidate role at another facility overrides unknown corporate scope."""
+    clauses = [sentence]
+    for boundary in re.finditer(r"\b(?:and|but|while|whereas)\b", sentence, re.IGNORECASE):
+        clause = re.sub(r"^\s*(?:(?:also|he|she|they)\s+)*", "", sentence[boundary.end():], flags=re.IGNORECASE)
+        if holds_title(clause, person["title"]):
+            clauses.append(clause if ss.has_phrase(ss.words(person["name"]), ss.words(clause))
+                           else person["name"] + " " + clause)
+    for clause in clauses:
+        if site_role_quote(site, person, clause):
+            continue
+        address = site.get("address") or {}
+        assigned = quoted_role_address(person, clause)
+        assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
+        target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
+        assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
+        named_facility_mismatch = bool(assigned.get("street") and not assigned_street
+                                      and site["task_input"].get("site_name")
+                                      and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
+        mismatch = bool(named_facility_mismatch or assigned.get("city") and address.get("city")
+                             and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
+                             or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
+                             or assigned_street and target_street
+                             and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
+                             or assigned_units and target_units and assigned_units != target_units)
+        if mismatch:
+            return True
+    return False
+
+
 def site_responsibility(site, person):
     """Location is a mismatch signal, never proof of responsibility. Only a retained role/site quote proves scope.
     Unknown scope stays usable as an explicit corporate referral; off-site local managers are held."""
-    title = ss.words(person["title"])
+    title = " ".join(title_words(person["title"]))
     known_names = [site["task_input"].get("site_name") or "", site.get("operator") or ""]
     known_names = {ss.words(name.replace("&", " and ")) for name in known_names} | {
         ss.words(name) for name in known_names}
     known_names |= {name.replace(" and ", " ") for name in known_names}
     pages = [(url, text, text_sha256, ss.sentences(text)) for url, text, text_sha256 in site["kept_pages"]]
+    role_mismatch = role_address_mismatch(site, person, site.get("person_quote") or "", known_names)
+    if role_mismatch:
+        return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                "reason": "target_site_location_mismatch", "proof": None}
     # Read all retained evidence before accepting any role proof; page order cannot erase a departure.
     unqualified = False
     for _, _, _, sentences in pages:
         linked = False
+        subject = ""
         for sentence in sentences:
             named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
+            other_subject = re.match(r"\s*([A-Z][^\W\d_]+(?:\s+[A-Z][^\W\d_]+){0,3})\s+(?:is|serves|works)\b", sentence)
+            if (not named and other_subject
+                    and ss.words(other_subject.group(1)) not in {"he", "she", "they", "his", "her", "their"}
+                    and not holds_title(other_subject.group(1), person["title"])):
+                linked = False
             pronoun = bool(re.match(r"\s*(?:(?:he|she|they|his|her|their)\b"
                                     r"|(?:now|currently|then|subsequently|later|afterwards?)\s+"
                                     r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
                                     employment_sentence(sentence), re.IGNORECASE))
+            if (linked and not named and not pronoun and holds_title(sentence, person["title"])
+                    and (ss.parse_location(sentence.rstrip(" .;")).get("state")
+                         or re.search(r"\b(?:at|for|of)\s+\d+\s+\S", sentence, re.IGNORECASE))):
+                return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                        "reason": "target_site_responsibility_unproven", "proof": None}
             if named or linked and pronoun:
+                if (not named and holds_title(sentence, person["title"]) and not holds_title(subject, person["title"])
+                        and not any(subject == ss.words(person["name"]) + " works for " + employer
+                                    for employer in known_names if employer)):
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_responsibility_unproven", "proof": None}
+                scoped = sentence if named else re.sub(r"^\s*(?:he|she|they)\b", person["name"],
+                                                       employment_sentence(sentence), flags=re.IGNORECASE)
+                if role_address_mismatch(site, person, scoped, known_names):
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_location_mismatch", "proof": None}
+                if (holds_title(sentence, person["title"])
+                        and (ss.parse_location(scoped.rstrip(" .;")).get("state")
+                             or re.search(r"\b(?:at|for|of)\s+\d+\s+\S", scoped, re.IGNORECASE))
+                        and re.search(r"\b(?:at|for|of)\b", sentence, re.IGNORECASE)
+                        and not quoted_role_address(person, scoped)
+                        and not site_role_quote(site, person, scoped)):
+                    return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                            "reason": "target_site_responsibility_unproven", "proof": None}
                 contradiction = employment_contradiction(person, sentence, known_names)
                 if contradiction is True:
                     return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
@@ -1179,19 +1266,6 @@ def site_responsibility(site, person):
         parsed = ss.parse_location(person.get("location"))
         place = {"city": parsed.get("city"), "region": parsed.get("state")}
     address = site.get("address") or {}
-    assigned = quoted_role_address(person, site.get("person_quote") or "")
-    assigned_street, assigned_units = address_units(ss.words(hash_units(assigned.get("street") or "")))
-    target_street, target_units = address_units(ss.words(hash_units(address.get("street") or "")))
-    assigned_street, target_street = ss.street_anchor(assigned_street), ss.street_anchor(target_street)
-    named_facility_mismatch = bool(assigned.get("street") and not assigned_street
-                                  and site["task_input"].get("site_name")
-                                  and not role_scope_suffix(assigned["street"], known_names, allow_news=False))
-    role_mismatch = bool(named_facility_mismatch or assigned.get("city") and address.get("city")
-                         and ss._canon(assigned["city"], ss.CITY_WORDS) != ss._canon(address["city"], ss.CITY_WORDS)
-                         or assigned.get("state") and address.get("state") and assigned["state"] != address["state"]
-                         or assigned_street and target_street
-                         and ss._canon(assigned_street, ss.STREET_WORDS) != ss._canon(target_street, ss.STREET_WORDS)
-                         or assigned_units and target_units and assigned_units != target_units)
     city, target_city = place.get("city"), address.get("city")
     region = _text(place.get("region"))
     state = region.upper() if region.upper() in ss.STATE_NAMES else ss.STATE_CODES.get(ss.normalized(region))
@@ -1199,9 +1273,11 @@ def site_responsibility(site, person):
                     or state and address.get("state") and state != address["state"]
                     or place.get("country") and ss.normalized(place["country"]) not in
                     {"us", "usa", "united states", "united states of america"})
-    corporate = bool(set(title.split()) & {"owner", "president", "director"})
+    corporate = bool((set(title.split()) & {"owner", "president", "director", "vp", "coo"}
+                      or holds_title(title, "chief operating officer"))
+                     and not set(title.split()) & {"site", "facility", "plant", "production", "warehouse"})
     return {"site_key": site["site_key"], "status": "unknown",
-            "route": "hold" if mismatch and not corporate else "corporate_referral",
+            "route": "hold" if role_mismatch or mismatch and not corporate else "corporate_referral",
             "reason": "target_site_location_mismatch" if mismatch else "target_site_responsibility_unproven",
             "proof": None}
 
@@ -1216,7 +1292,14 @@ def target(site, calls, search=True):
     person, code = quoted_person(site)
     if person is not None or not search:
         return person, code
-    key, call = calls("search", [site["operator_domain"], list(TITLES)], site["site_key"],
+    identity = [site["operator_domain"], list(TITLES), "United States"]
+    # Reuse an existing company search; never replace a potentially billed unknown call.
+    legacy = [site["operator_domain"], list(LEGACY_TITLES)]
+    if isinstance(calls, Calls):
+        prior = calls.book.calls.get(calls.key("search", legacy))
+        if prior is not None and prior["state"] != "refused":
+            identity = legacy
+    key, call = calls("search", identity, site["site_key"],
                       lambda _: search_body(site), seal_search(site))
     found = call["observation"] if call is not None and call["state"] == "answered" else None
     if found is None or not found.get("candidate"):
@@ -1224,6 +1307,8 @@ def target(site, calls, search=True):
     candidates = found.get("candidates") if isinstance(found.get("candidates"), list) else [found["candidate"]]
     referral = None
     for chosen in candidates:
+        if not listed_title(chosen["title"]):
+            continue  # Requalify retained paid results under the current role rules too.
         person = {"name": chosen["name"], "title": chosen["title"], "location": chosen["location"],
                   "location_fields": chosen.get("location_fields"), "sourcing": "provider_sourced",
                   "proof": {"source": "fullenrich_people_search", "request_digest": key,

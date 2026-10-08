@@ -414,11 +414,8 @@ def test_loader_requalifies_quoted_referral_against_retained_facility(tmp_path, 
         f"{PERSON} is {title} {preposition} Rival and Sons, Fixture City, TX.")
     person["site_responsibility"]["reason"] = reason
     raw = canonical(bundle).encode()
-    if title == "Director":
-        assert sa.load_bundle(raw) == bundle
-    else:
-        with pytest.raises(sa.AdmissionError, match="screen_admission_recipient_invalid"):
-            sa.load_bundle(raw)
+    with pytest.raises(sa.AdmissionError, match="screen_admission_recipient_invalid"):
+        sa.load_bundle(raw)
 
 
 @pytest.mark.parametrize("responsibility", [

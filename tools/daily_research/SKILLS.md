@@ -9,6 +9,9 @@ The saved template inventory retains the four instruction-only files approved
 September 30, 2026. Their historical mounted hashes remain in the [preserved validation receipt](https://app.notion.com/p/3eb80154161d81b4a0ddff9bdcfe5af6).
 The October 3 user-requested verification revision updates only the two Blueprint
 instruction files via hash-bound session overrides; the saved template is unchanged.
+The October 7 contact-routing revision updates the qualification instructions and their
+existing byte/hash binding; future authorized sessions receive these release bytes
+through the same inline override path. It adds no provider, tool, spend or send authority.
 The original Blueprint files and license were recovered from preserved inline review
 text; deep-research was fetched from its original immutable source commit
 `42dd24080fce6d731d00e2a1134f398c3da4171b`. Its MIT notice is preserved.
@@ -16,7 +19,7 @@ No executables, hooks, packages or credentials are included.
 
 | Path relative to the capability directory | Bytes | SHA-256 |
 | --- | ---: | --- |
-| blueprint-evidence-qualification/SKILL.md | 7585 | 708d1ef90a6df642c1d54863e777b2fbeb154b06447df1c9ee8188a98f4f1f3f |
+| blueprint-evidence-qualification/SKILL.md | 11213 | 9fc47ee2c08d9fe107c004ddf556957563faaa1a2ab9a31278f5f8db769c4110 |
 | blueprint-evidence-qualification/references/prospect-contract.md | 2226 | 39571718234ce2f7536a56f6e8440183536c259bf9b4e9a0d54944cc9aaaf6b3 |
 | deep-research/LICENSE | 1072 | 3a9cf254e155282014880e9569b9039bc17ce6a43919df23741cf14d24481244 |
 | deep-research/SKILL.md | 5386 | 2646cdf3942d918e84febf020b289fbfb7b5cf601e43ee7e7349e6c5105941c5 |

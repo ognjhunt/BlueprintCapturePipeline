@@ -315,8 +315,12 @@ def test_people_search_stays_off_unless_the_run_names_the_owner_decision(tmp_pat
 
 
 @pytest.mark.parametrize("corroborating", [True, False])
-def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_listed_role(tmp_path, corroborating):
-    sentence = f"{OTHER_PERSON}, plant manager of Synthetic Operator 1, opened the new lathe cell this spring."
+@pytest.mark.parametrize("provider_title", ["Plant Manager", "Production Manager", "Warehouse Manager", "Site Leader",
+                                           "Vice President of Operations", "VP Operations", "Chief Operating Officer",
+                                           "COO", "Manufacturing Engineering Manager"])
+def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_listed_role(tmp_path, corroborating,
+                                                                                      provider_title):
+    sentence = f"{OTHER_PERSON}, {provider_title} of Synthetic Operator 1, opened the new lathe cell this spring."
     kept = {"https://operator-1.example/news": sentence} if corroborating else None
     workspace, (key,) = site_screen_out(tmp_path, [nobody(1)], kept=kept)
     api = FakeFullEnrich()
@@ -325,20 +329,26 @@ def test_people_search_keeps_only_a_person_working_at_the_operator_now_in_a_list
         searched("Casey Placeholder", domain="other-operator.example"),
         searched("Riley Fixture", is_current=False, end_at="2024-01-31T00:00:00Z"),  # Ended at the operator.
         searched("Morgan Fixture", title="Vice President of Sales"),  # Not a listed role.
-        searched(OTHER_PERSON),
+        searched(OTHER_PERSON, title=provider_title),
     ]
     api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
     result = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION)
     (search,) = api.posts("/api/v2/people/search")
     assert search["current_company_domains"] == [{"value": "operator-1.example", "exact_match": True}]
     assert [title["value"] for title in search["current_position_titles"]] == list(cl.TITLES)
+    assert all(title["exact_match"] is False for title in search["current_position_titles"])
+    assert search["person_locations"] == [{"value": "United States", "exact_match": True}]
+    assert all(not cl.listed_title(title) for title in ("VP Sales", "VP Finance", "Human Resources Director",
+                                                       "Operations Audit Director", "Retired Plant Manager",
+                                                       "Vice President Strategy", "Vice President Procurement",
+                                                       "Vice President Quality", "VP Quality"))
     assert search["limit"] == cl.SEARCH_LIMIT
     assert [body["data"][0]["first_name"] for body in api.posts("/api/v2/contact/enrich/bulk")] == ["Jordan"]
     assert (result["calls"]["made"], result["credits"]["committed"]) == (2, "2")  # Four people at 0.25, one email.
     (found,) = cl.load(workspace)[key]["lookups"]
     person = found["person"]
     assert (found["usable"], found["address"], person["sourcing"], person["name"], person["title"], person["location"]) == (
-        True, FOUND, "provider_sourced", OTHER_PERSON, "Plant Manager", "Fixture City, Texas, United States")
+        True, FOUND, "provider_sourced", OTHER_PERSON, provider_title, "Fixture City, Texas, United States")
     assert person["proof"]["source"] == "fullenrich_people_search"
     assert person["proof"]["current_employment"] == {"field": "employment.current.is_current",
                                                      "company_domain": "operator-1.example",
@@ -663,10 +673,29 @@ def test_shared_company_search_is_requalified_for_each_target_site_without_calls
     assert second is None and reason == "target_site_location_mismatch"
 
 
-def test_legacy_shared_search_is_requalified_without_rebuying_the_search():
+@pytest.mark.parametrize("legacy_title", ["Plant Manager", "Operations Audit Director", "Vice President Strategy"])
+def test_legacy_shared_search_is_requalified_without_rebuying_the_search(tmp_path, legacy_title, monkeypatch):
     person, reason = cl.target(qualification_site(city="Other Fixture City"),
                                replay_search(searched(OTHER_PERSON), legacy=True))
     assert person is None and reason == "target_site_location_mismatch"
+    workspace, (key,) = site_screen_out(tmp_path, [nobody(1)])
+    api = FakeFullEnrich()
+    api.people["operator-1.example"] = [searched(OTHER_PERSON, title=legacy_title)]
+    api.emails[("Jordan", "Fixture", "operator-1.example")] = (FOUND, "DELIVERABLE", profile(OTHER_PERSON))
+    site = cl.lookup_sites(workspace, workspace.states()[0], today=TODAY)[0][0]
+    book = cl.Book(workspace)
+    bounds = cl.limits(None, LOOKUP_OWNER, "5", 10)
+    book.create_pin(bounds)
+    calls = cl.Calls(book, "apply", client=cl.FullEnrichClient(FULLENRICH_KEY, transport=api), bounds=bounds)
+    with monkeypatch.context() as old_rules:
+        old_rules.setattr(cl, "listed_title", lambda title: True)
+        calls("search", [site["operator_domain"], list(cl.LEGACY_TITLES)], key,
+              lambda _: {"current_company_domains": [{"value": site["operator_domain"], "exact_match": True}],
+                         "current_position_titles": [{"value": title} for title in cl.LEGACY_TITLES],
+                         "limit": cl.SEARCH_LIMIT, "offset": 0}, cl.seal_search(site))
+    report = lookup(workspace, api, person_search=cl.PERSON_SEARCH_DECISION, max_credits="5", max_calls=10)
+    assert len(api.posts(cl.SEARCH_PATH)) == 1 and report["calls"]["known"] == 1
+    assert len(api.posts(cl.ENRICH_PATH)) == (1 if legacy_title == "Plant Manager" else 0)
 
 
 @pytest.mark.parametrize("operator_prefix", ["", "Synthetic Operator 1's "])
@@ -965,6 +994,16 @@ def test_a_street_without_target_city_does_not_establish_site_responsibility():
 @pytest.mark.parametrize("provider_title,quoted_title", [
     ("Senior Plant Manager", "Plant Manager"),
     ("Plant Manager", "Senior Plant Manager"),
+    ("VP Operations", "Vice President of Operations"),
+    ("Vice President of Operations", "VP Operations"),
+    ("COO", "Chief Operating Officer"),
+    ("Chief Operating Officer", "COO"),
+    ("VP Operations", "V.P. of Operations"),
+    ("V.P. of Operations", "VP Operations"),
+    ("COO", "C.O.O."),
+    ("C.O.O.", "COO"),
+    ("VP Operations", "VP Ops"),
+    ("COO", "Chief Operations Officer"),
     ("Plant Manager", "Manager of the Plant"),
 ])
 def test_site_role_proof_uses_the_existing_normalized_title_semantics(provider_title, quoted_title):
@@ -1041,13 +1080,82 @@ def test_hash_in_a_retained_operator_name_is_not_an_address_unit():
     assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
 
 
-def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority():
-    person = searched(OTHER_PERSON, title="Operations Director")
+@pytest.mark.parametrize("title,quoted_title", [("Operations Director", "Operations Director"),
+    ("VP Operations", "Vice President of Operations"), ("Vice President of Operations", "VP Operations"),
+    ("COO", "Chief Operating Officer"), ("Chief Operating Officer", "COO"),
+    ("VP Operations", "V.P. of Operations"), ("COO", "C.O.O."),
+    ("VP Operations", "VP Ops"), ("COO", "Chief Operations Officer"),
+    ("V.P. of Operations", "VP Ops")])
+def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority(title, quoted_title):
+    person = searched(OTHER_PERSON, title=title)
     person["location"]["city"] = "Other Fixture City"
     chosen, _ = cl.target(qualification_site(), replay_search(person))
     assert chosen["site_responsibility"] == {
         "site_key": "site-one", "status": "unknown", "route": "corporate_referral",
         "reason": "target_site_location_mismatch", "proof": None}
+    site = qualification_site()
+    site["person_quote"] = f"{OTHER_PERSON} is {quoted_title} at 2 Other Road, Other Fixture City, OH."
+    held, reason = cl.target(site, replay_search(person))
+    assert held is None and reason == "target_site_location_mismatch"
+    conflicting = f"{OTHER_PERSON} is {quoted_title} at 2 Other Road, Other Fixture City, OH for Synthetic Operator 1."
+    matching = f"{OTHER_PERSON} is {quoted_title} at 1 Example Road, Fixture City, TX for Synthetic Operator 1."
+    other_page = ("https://operator-1.example/other-site", conflicting, "f" * 64)
+    target_page = ("https://operator-1.example/target-site", matching, "a" * 64)
+    for pages in ([other_page], [target_page, other_page], [other_page, target_page]):
+        held, reason = cl.target(qualification_site(pages=pages), replay_search(person))
+        assert held is None and reason == "target_site_location_mismatch"
+    for continuation in ("but also", "but is also", "and he is also", "while serving as"):
+        same_sentence = (matching.rstrip(".") + f", {continuation} {quoted_title} at "
+                         "2 Other Road, Other Fixture City, OH for Synthetic Operator 1.")
+        held, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", same_sentence, "b" * 64)]),
+                                replay_search(person))
+        assert held is None and reason == "target_site_location_mismatch"
+    for pronoun in ("He", "She", "They"):
+        continuation = "are" if pronoun == "They" else "is"
+        linked_quote = (matching + f" {pronoun} {continuation} {quoted_title} at "
+                        "2 Other Road, Other Fixture City, OH for Synthetic Operator 1.")
+        held, _ = cl.target(qualification_site(pages=[("https://operator-1.example/team", linked_quote, "c" * 64)]),
+                            replay_search(person))
+        assert held is None
+        if pronoun != "They":
+            linked_match = (matching + f" {pronoun} is {quoted_title} at Synthetic Operator 1's "
+                            "1 Example Road, Fixture City, TX.")
+            chosen, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", linked_match, "c" * 64)]),
+                                       replay_search(person))
+            assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+    for unclear in (f"Avery introduced {OTHER_PERSON}, who is {quoted_title} at 2 Other Road, Other Fixture City, OH.",
+                    f"{OTHER_PERSON} introduced Avery Placeholder. She is {quoted_title} at 2 Other Road, Other Fixture City, OH."):
+        ambiguous_site = qualification_site(pages=[("https://operator-1.example/team", matching + " " + unclear, "b" * 64)])
+        held, _ = cl.target(ambiguous_site, replay_search(person))
+        assert held is None
+        candidate, _ = cl.candidate(person, ["operator-1.example"])
+        assert cl.site_responsibility(ambiguous_site, candidate)["reason"] == "target_site_responsibility_unproven"
+    employment_then_role = (f"{OTHER_PERSON} works for Synthetic Operator 1. He is {quoted_title} at "
+                            "1 Example Road, Fixture City, TX for Synthetic Operator 1.")
+    chosen, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", employment_then_role, "d" * 64)]),
+                               replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "corporate_referral"
+    assert chosen["site_responsibility"]["status"] == "unknown"
+    for fragment in ("also", "while serving as"):
+        fragmented = (matching.rstrip(".") + f"; {fragment} {quoted_title} at "
+                      "2 Other Road, Other Fixture City, OH for Synthetic Operator 1.")
+        held, _ = cl.target(qualification_site(pages=[("https://operator-1.example/team", fragmented, "e" * 64)]),
+                            replay_search(person))
+        assert held is None
+    other_subject = (matching.rstrip(".") + f"; Avery Placeholder is also {quoted_title} at "
+                     "2 Other Road, Other Fixture City, OH for Synthetic Operator 1.")
+    chosen, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", other_subject, "f" * 64)]),
+                               replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
+    departed = f"{OTHER_PERSON} ({quoted_title}) now works for Rival Fixture Corporation."
+    departed_site = qualification_site(pages=[("https://operator-1.example/update", departed, "e" * 64)])
+    held, _ = cl.target(departed_site, replay_search(person))
+    assert held is None
+    for local_title in ("Site Director", "Facility Director", "Plant Director", "Production Director",
+                        "Warehouse Director"):
+        person["employment"]["current"]["title"] = local_title
+        held, reason = cl.target(qualification_site(), replay_search(person))
+        assert held is None and reason == "target_site_location_mismatch"
 
 
 def test_enrichment_profile_checks_names_and_employment_history():
@@ -1082,7 +1190,8 @@ def test_quoted_person_title_must_be_supported_by_the_verified_quote(tmp_path):
     assert result["skipped"] == {"person_role_unproven": 1} and api.calls == []
 
 
-def test_balance_is_one_get_with_counts_only_output(tmp_path, capsys):
+@pytest.mark.parametrize("on_worker", [False, True])
+def test_balance_is_one_get_with_counts_only_output(tmp_path, capsys, on_worker):
     key_file = tmp_path / "synthetic-key.env"
     key_file.write_text("FULLENRICH_API_KEY=" + FULLENRICH_KEY)
     requests = []
@@ -1091,7 +1200,9 @@ def test_balance_is_one_get_with_counts_only_output(tmp_path, capsys):
         requests.append((method, path))
         return 200, json.dumps({"balance": 49.25, "ignored": FULLENRICH_KEY}).encode()
 
-    report = operator.main(["balance", "--key-file", str(key_file)], transport=transport)
+    args = ["balance"] if on_worker else ["balance", "--key-file", str(key_file)]
+    environment = {ss.WORKER_FLAG: "0", cl.KEY_ENV: FULLENRICH_KEY} if on_worker else {}
+    report = operator.main(args, transport=transport, environ=environment)
     printed = capsys.readouterr().out
     assert requests == [("GET", "/api/v2/account/credits")]
     assert report["credits_available"] == "49.25" and FULLENRICH_KEY not in printed
