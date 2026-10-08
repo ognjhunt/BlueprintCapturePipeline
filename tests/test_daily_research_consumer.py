@@ -1312,7 +1312,7 @@ def publish_as_agent(consumer, api, ledger, *, complete=False):
 def identity_digests(record, tmp):
     """sha256 per artifact class of one synthetic flow. The temporary directory, lease owners, blob
     hashes, learning observations, the owner control document and the shadow-mode outreach file are
-    normalized away; main's fixture (dd2d404f) was recorded with this same function."""
+    normalized away; the fixture was recorded with this same function and reviewed instruction bytes."""
     import hashlib as _hashlib
     import json as _json
 
@@ -1377,7 +1377,7 @@ def identity_record(tmp, kwargs, agent, outreach):
 @pytest.mark.parametrize("variant", [None, "disabled", "screen_only"])
 def test_shadow_mode_matches_main_in_every_flow_row_status_store_and_payload(tmp_path, variant):
     """The reviewer's side-by-side flows: absent, disabled or screen-only, every row, status line, CRM
-    row, file, store document, create payload and publication event equals main's, except the one
+    row, file, store document, create payload and publication event equals the reviewed baseline, except the one
     shadow file a completed run adds outside the row."""
     document = json.loads(SHADOW_IDENTITY.read_text())
     assert document["fixture_only"] is True and len(document["source_commit"]) == 40
