@@ -1213,6 +1213,11 @@ def site_responsibility(site, person):
                                     r"|(?:now|currently|then|subsequently|later|afterwards?)\s+"
                                     r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
                                     employment_sentence(sentence), re.IGNORECASE))
+            if (linked and not named and not pronoun and holds_title(sentence, person["title"])
+                    and (ss.parse_location(sentence.rstrip(" .;")).get("state")
+                         or re.search(r"\b(?:at|for|of)\s+\d+\s+\S", sentence, re.IGNORECASE))):
+                return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
+                        "reason": "target_site_responsibility_unproven", "proof": None}
             if named or linked and pronoun:
                 if (not named and holds_title(sentence, person["title"]) and not holds_title(subject, person["title"])
                         and not any(subject == ss.words(person["name"]) + " works for " + employer
