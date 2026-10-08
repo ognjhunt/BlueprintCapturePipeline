@@ -1142,6 +1142,11 @@ def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority
         held, _ = cl.target(qualification_site(pages=[("https://operator-1.example/team", fragmented, "e" * 64)]),
                             replay_search(person))
         assert held is None
+    other_subject = (matching.rstrip(".") + f"; Avery Placeholder is also {quoted_title} at "
+                     "2 Other Road, Other Fixture City, OH for Synthetic Operator 1.")
+    chosen, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", other_subject, "f" * 64)]),
+                               replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "site_contact"
     departed = f"{OTHER_PERSON} ({quoted_title}) now works for Rival Fixture Corporation."
     departed_site = qualification_site(pages=[("https://operator-1.example/update", departed, "e" * 64)])
     held, _ = cl.target(departed_site, replay_search(person))
