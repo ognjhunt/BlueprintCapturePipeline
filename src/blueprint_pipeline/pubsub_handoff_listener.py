@@ -1610,7 +1610,18 @@ def _finish_terminal_authority_ending(
 def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None) -> dict[str, Any]:
     import sys
     from .pubsub_handoff_scene_operations import _process_handoff_payload_body
-    return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest)
+    try:
+        return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest)
+    finally:
+        # Separate durable wake-up only; never let delivery reopen or fail processing.
+        try:
+            from .website_preparation_status import retain_preparation_wakeup
+            handoff = parse_handoff_payload(payload)
+            root = _handoff_capture_root(handoff, storage_root=storage_root)
+            if root.is_dir():
+                retain_preparation_wakeup(root)
+        except Exception:
+            logger.debug("pubsub_handoff.preparation_wakeup_unavailable")
 
 
 class _AckDeadlineHeartbeat:

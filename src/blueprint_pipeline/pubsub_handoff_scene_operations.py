@@ -282,6 +282,13 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
 
 
 def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):
+    # This existing scheduled drain is also the durable delivery retry owner.
+    # It reads committed ledgers; no provider processing is reopened by delivery.
+    from .website_preparation_status import reconcile_preparation_wakeups
+    try:
+        reconcile_preparation_wakeups(storage_root, limit=1)
+    except Exception:
+        _listener.logger.debug("pubsub_handoff.preparation_delivery_retry_unavailable")
     from google.cloud import pubsub_v1
     subscriber = pubsub_v1.SubscriberClient()
     subscription_resource = _listener._canonical_subscription_resource(subscription)

@@ -2605,6 +2605,9 @@ def create_app() -> FastAPI:
     from .website_capture_withdrawal_http import register_server_website_withdrawal_routes
     register_server_website_withdrawal_routes(app, require_admission=_require_admission,
         manifest_path_provider=_manifest_path, resolve_client_root=_server_capture_root_for_client)
+    from .website_preparation_status_http import register_website_preparation_status_routes
+    register_website_preparation_status_routes(app, require_admission=_require_admission,
+        manifest_path_provider=_manifest_path, resolve_client_root=_server_capture_root_for_client)
 
     @app.post("/api/live-pipeline/job-requests", dependencies=[Depends(_require_admission)])
     async def intake_job_request(request: Request) -> Dict[str, Any]:
