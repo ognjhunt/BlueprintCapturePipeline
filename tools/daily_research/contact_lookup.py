@@ -1214,7 +1214,9 @@ def site_responsibility(site, person):
                                     r"(?:works?|serves|is\s+employed|join(?:s|ed|ing)?|moved|resigned|retired)\b)",
                                     employment_sentence(sentence), re.IGNORECASE))
             if named or linked and pronoun:
-                if not named and holds_title(sentence, person["title"]) and not holds_title(subject, person["title"]):
+                if (not named and holds_title(sentence, person["title"]) and not holds_title(subject, person["title"])
+                        and not any(subject == ss.words(person["name"]) + " works for " + employer
+                                    for employer in known_names if employer)):
                     return {"site_key": site["site_key"], "status": "unknown", "route": "hold",
                             "reason": "target_site_responsibility_unproven", "proof": None}
                 scoped = sentence if named else re.sub(r"^\s*(?:he|she|they)\b", person["name"],

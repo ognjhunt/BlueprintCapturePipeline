@@ -1130,6 +1130,12 @@ def test_off_site_corporate_contact_is_explicitly_a_referral_not_local_authority
         assert held is None
         candidate, _ = cl.candidate(person, ["operator-1.example"])
         assert cl.site_responsibility(ambiguous_site, candidate)["reason"] == "target_site_responsibility_unproven"
+    employment_then_role = (f"{OTHER_PERSON} works for Synthetic Operator 1. He is {quoted_title} at "
+                            "1 Example Road, Fixture City, TX for Synthetic Operator 1.")
+    chosen, reason = cl.target(qualification_site(pages=[("https://operator-1.example/team", employment_then_role, "d" * 64)]),
+                               replay_search(person))
+    assert reason is None and chosen["site_responsibility"]["route"] == "corporate_referral"
+    assert chosen["site_responsibility"]["status"] == "unknown"
     departed = f"{OTHER_PERSON} ({quoted_title}) now works for Rival Fixture Corporation."
     departed_site = qualification_site(pages=[("https://operator-1.example/update", departed, "e" * 64)])
     held, _ = cl.target(departed_site, replay_search(person))
