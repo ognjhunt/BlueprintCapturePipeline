@@ -21,13 +21,17 @@ from tests.test_task_evaluation_scene_configuration_submission import production
 
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
-          max_total_spend_usd=None):
+          max_total_spend_usd=None, success_criteria=None):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
     if articulated:
         from tests.test_website_task_preparation import _assembly_inputs
         args.update(_assembly_inputs(capture))
+    if success_criteria is not None:
+        args["task_context"]["success_criteria"] = copy.deepcopy(success_criteria)
+        args["task_context"]["context_digest"] = canonical_digest(
+            args["task_context"], digest_field="context_digest")
     now = time.time()
     args["now"] = now
     args["spend"] = copy.deepcopy(args["spend"])
@@ -54,6 +58,8 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
             task_context_digest=args["task_context"]["context_digest"])
         args["spend"]["authority_digest"] = canonical_digest(args["spend"], digest_field="authority_digest")
     preparation = compile_website_scene_preparation(**args)
+    if success_criteria is not None:
+        assert preparation["status"] == "intake_ready", preparation["blockers"]
     if development:
         from blueprint_pipeline.website_development_test import prepare_development_test, ENV
         monkeypatch.setenv(ENV, json.dumps([args["task_context"]["context_digest"]]))

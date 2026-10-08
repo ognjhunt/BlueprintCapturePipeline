@@ -64,6 +64,11 @@ PHYSICS_PRIORS = {"density_kg_m3": [50.0, 2500.0], "envelope_fill": [0.2, 1.0],
 DIMENSION_RELATIVE_ERROR = 0.25
 
 
+def _owner_targets_require_translation(owner_targets: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
+    from .task_evaluation_scene_execution_scope import scene_preparation_only
+    return owner_targets["status"] != "not_supplied" and not scene_preparation_only(request)
+
+
 def _source_points(source_geometry: Mapping[str, Any], *, per_frame: int = 4000) -> np.ndarray:
     points = []
     for frame in source_geometry["frames"]:
@@ -1053,11 +1058,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                       "claim_scope": CLAIM_CEILING},
         "consent": consent,
     }
-    # A prose target has no verified translation into these development scorers.
-    # Keep the owner's bar visible and refuse a claim that the fixed controls meet it.
+    # Scene preparation may build geometry while the owner's target is unknown
+    # or untranslated. It selects no policy and cannot claim the target was met.
+    # Retain the translation refusal for an evaluation request.
     from .website_task_evidence import owner_success_criteria
     owner_targets = owner_success_criteria(task_context)
-    if owner_targets["status"] != "not_supplied":
+    if _owner_targets_require_translation(owner_targets, request):
         blockers.append("website_owner_success_criteria_translation_required")
     if not blockers:
         try:
