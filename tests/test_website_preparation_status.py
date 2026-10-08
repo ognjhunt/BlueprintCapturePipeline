@@ -354,3 +354,53 @@ def test_arbitrary_or_unbound_200_cannot_consume_durable_delivery(prepared_sourc
     monkeypatch.setattr(context_reader, "website_webapp_request", lambda **kwargs: ack)
     assert status_reader.reconcile_preparation_wakeups(root.parents[4])["delivered"] == 0
     assert json.loads((root / status_reader.DELIVERY_FILE).read_text())["state"] == "pending"
+
+
+@pytest.mark.parametrize("transition", ["preparing_to_failed", "failed_to_new_attempt"])
+def test_old_receipt_cannot_acknowledge_already_new_pending_revision(prepared_source, monkeypatch, transition):
+    root = prepared_source[0]
+    if transition == "preparing_to_failed":
+        old = _acceptance(prepared_source)
+        _finish(prepared_source)
+    else:
+        _finish(prepared_source)
+        old = _acceptance(prepared_source)
+        prepared_source[5]()
+    current = status_reader.read_preparation_status(capture_root=root, selectors=prepared_source[3])
+    assert old["status_digest"] != current["status_digest"]
+    monkeypatch.setattr(context_reader, "website_webapp_request", lambda **kwargs: old)
+    assert status_reader.reconcile_preparation_wakeups(root.parents[4])["delivered"] == 0
+    delivery = json.loads((root / status_reader.DELIVERY_FILE).read_text())
+    assert delivery["state"] == "pending" and delivery["revision"] == current["revision"]
+    assert delivery["last_error_type"] == "PreparationStatusUnavailable"
+
+
+def test_receipt_newer_than_preflight_matches_fresh_status(prepared_source, monkeypatch):
+    root = prepared_source[0]
+    _finish(prepared_source)
+    def advance_without_retention(**kwargs):
+        prepared_source[5]()
+        return _acceptance(prepared_source)
+    monkeypatch.setattr(context_reader, "website_webapp_request", advance_without_retention)
+    assert status_reader.reconcile_preparation_wakeups(root.parents[4])["delivered"] == 1
+    delivery = json.loads((root / status_reader.DELIVERY_FILE).read_text())
+    assert delivery["state"] == "delivered" and delivery["acceptance"]["state"] == "preparing"
+
+
+def test_ledger_change_after_postflight_cannot_commit_old_receipt(prepared_source, monkeypatch):
+    root = prepared_source[0]
+    _finish(prepared_source)
+    monkeypatch.setattr(context_reader, "website_webapp_request", lambda **kwargs: _acceptance(prepared_source))
+    read = status_reader.read_preparation_status
+    calls = 0
+    def advance_after_snapshot(**kwargs):
+        nonlocal calls
+        result = read(**kwargs)
+        calls += 1
+        # Preflight, callback's own read, then postflight authority read.
+        if calls == 3:
+            prepared_source[5]()
+        return result
+    monkeypatch.setattr(status_reader, "read_preparation_status", advance_after_snapshot)
+    assert status_reader.reconcile_preparation_wakeups(root.parents[4])["delivered"] == 0
+    assert json.loads((root / status_reader.DELIVERY_FILE).read_text())["state"] == "pending"

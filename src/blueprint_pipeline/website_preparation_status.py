@@ -189,7 +189,7 @@ def validate_acceptance(value: Any, selected: Mapping[str, str]) -> dict[str, An
 
 def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dict[str, int]:
     """Existing listener tick retries delivery independently of provider work."""
-    from .handoff_job_state import _existing_job_ledger_lock
+    from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .website_task_context import website_webapp_request
     counts = {"attempted": 0, "delivered": 0, "unavailable": 0}
     storage_root = Path(storage_root)
@@ -218,9 +218,15 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
             counts["attempted"] += 1
             error = None
             acceptance = None
+            current_status = None
             try:
                 acceptance = validate_acceptance(website_webapp_request(capture_id=selected["capture_id"],
                     operation="preparation-status", payload=selected), selected)
+                # The callback may legitimately commit a newer status than our
+                # preflight. Verify against fresh authority, never an old receipt.
+                current_status = read_preparation_status(capture_root=root, selectors=selected)
+                _require(acceptance["status_digest"] == current_status["status_digest"]
+                         and acceptance["state"] == current_status["state"])
             except Exception as exc:
                 error = type(exc).__name__  # Private retry bookkeeping only, never raw response/error.
             # Network is over. Under lock update only the still-current delivery;
@@ -228,6 +234,10 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
             with _existing_job_ledger_lock(root) as lock_state:
                 if lock_state != "ledger_present" or _read(path) != delivery:
                     continue
+                if error is None:
+                    ledger = _read_job_ledger(root)
+                    _require(current_status is not None and ledger.get("revision") == current_status["revision"]
+                             and ledger.get("attempt_count") == current_status["attempt_count"])
                 write_json(path, {**delivery, "state": "pending" if error else "delivered",
                                   "delivery_attempt_count": delivery.get("delivery_attempt_count", 0) + 1,
                                   "last_error_type": error, "acceptance": acceptance})
