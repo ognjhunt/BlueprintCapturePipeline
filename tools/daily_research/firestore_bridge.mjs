@@ -785,7 +785,7 @@ export class Store {
     const cleanup=metadata.cleanup_binding_digest ? {cleanup_manifest:{binding_digest:metadata.cleanup_binding_digest,
       archive:metadata.cleanup_archive,delete_claimed:metadata.cleanup_delete_claimed===true,
       delete_confirmation:metadata.cleanup_delete_confirmation || null}} : {};
-    return {schema_version: 'blueprint.research-snapshot.v1', row, files, missing_files: missing,...publication,...cleanup};
+    return {schema_version: 'blueprint.research-snapshot.v1', source_row_json, row, files, missing_files: missing,...publication,...cleanup};
   }
   async importRun(row) {
     if (!dateOK(row?.date) || row.run_key !== `blueprint-researcher:${row.date}` || !row.metadata)
