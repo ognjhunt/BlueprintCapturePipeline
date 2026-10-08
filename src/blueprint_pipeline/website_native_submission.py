@@ -192,9 +192,19 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                     scale_authority=preparation["coordinate_frame"].get("scale_authority", "registration_estimate"))
     if development:
         template["test_environment"] = development
-    template["owner_success_contract_authority"] = {"confirmation_status": "confirmed",
+    from .website_task_evidence import owner_success_criteria
+    owner_targets = owner_success_criteria(context)
+    template["owner_success_criteria"] = owner_targets
+    # Fixed development controls do not translate or confirm the operator's bar.
+    # The native adapter retains this authority; owner-scoring admission refuses
+    # proposal_only until an actual translated success contract is confirmed.
+    template["owner_success_contract_authority"] = {
+        "confirmation_status": "proposal_only",
         "accepted_by": intent["request"]["owner"]["user_id"],
-        "authority_reference": "scene-intent:" + intent["intent_digest"]}
+        "authority_reference": "scene-intent:" + intent["intent_digest"],
+        "basis": "fixed_development_control_not_translated_owner_target",
+        "scorer_translation_verified": False,
+        "owner_success_criteria": owner_targets}
     if not articulated:
         template["success"]["surface_target"] = target
         success["surface_target"] = target

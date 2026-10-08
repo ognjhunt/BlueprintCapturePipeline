@@ -151,8 +151,9 @@ def test_owner_targets_and_weight_statements_reach_compiler_without_becoming_sco
     context["operator_task_details"] = {"item_weight": "about 5 lb, not weighed", "item_make_model": "ACME X2"}
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     result = _compile(tmp_path, task_context=context)
-    assert result["status"] == "needs_input"
-    assert "website_owner_success_criteria_translation_required" in result["blockers"]
+    assert result["status"] == "intake_ready"
+    assert result["intake_request"]["execution"]["purpose"] == "scene_preparation"
+    assert result["intake_request"]["execution"]["policy_candidates"] == []
     assert result["owner_success_criteria"]["targets"] == context["success_criteria"]
     assert result["owner_success_criteria"]["scorer_translation_verified"] is False
     assert "about 5 lb, not weighed" in json.dumps(result)
