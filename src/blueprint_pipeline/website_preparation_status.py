@@ -172,6 +172,21 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
                           "delivery_attempt_count": 0})
 
 
+def validate_acceptance(value: Any, selected: Mapping[str, str]) -> dict[str, Any]:
+    """Require the source-bound receipt issued only after the WebApp commit."""
+    fields = SELECTORS | {"schema_version", "accepted", "status_digest", "state",
+                          "native_execution_complete", "correlation_id"}
+    _require(type(value) is dict and set(value) == fields)
+    _require(value["schema_version"] == "website_preparation_status_acceptance.v1"
+             and value["accepted"] is True and value["native_execution_complete"] is False)
+    _require(all(value[key] == selected[key] for key in SELECTORS))
+    digest = value["status_digest"]
+    _require(type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None)
+    _require(value["state"] in {"preparing", "awaiting_inputs", "failed_retryable", "authority_ended", "handed_off"})
+    _require(value["correlation_id"] == "bp-prep-" + digest.removeprefix("sha256:")[:16])
+    return dict(value)
+
+
 def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dict[str, int]:
     """Existing listener tick retries delivery independently of provider work."""
     from .pubsub_handoff_listener import _existing_job_ledger_lock
@@ -202,8 +217,10 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
             read_preparation_status(capture_root=root, selectors=selected)
             counts["attempted"] += 1
             error = None
+            acceptance = None
             try:
-                website_webapp_request(capture_id=selected["capture_id"], operation="preparation-status", payload=selected)
+                acceptance = validate_acceptance(website_webapp_request(capture_id=selected["capture_id"],
+                    operation="preparation-status", payload=selected), selected)
             except Exception as exc:
                 error = type(exc).__name__  # Private retry bookkeeping only, never raw response/error.
             # Network is over. Under lock update only the still-current delivery;
@@ -213,7 +230,7 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
                     continue
                 write_json(path, {**delivery, "state": "pending" if error else "delivered",
                                   "delivery_attempt_count": delivery.get("delivery_attempt_count", 0) + 1,
-                                  "last_error_type": error})
+                                  "last_error_type": error, "acceptance": acceptance})
             counts["delivered"] += int(error is None)
         except Exception:
             counts["unavailable"] += 1

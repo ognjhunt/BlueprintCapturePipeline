@@ -190,7 +190,7 @@ def test_durable_delivery_retry_never_reopens_provider_work(prepared_source, mon
         calls.append(kwargs)
         if len(calls) == 1:
             raise TimeoutError("PRIVATE response")
-        return {"accepted": True}
+        return _acceptance(prepared_source)
     monkeypatch.setattr(context_reader, "website_webapp_request", sink)
     storage_root = root.parents[4]
     assert status_reader.reconcile_preparation_wakeups(storage_root)["attempted"] == 1
@@ -209,7 +209,7 @@ def test_new_revision_pending_is_not_consumed_by_delayed_delivery(prepared_sourc
     def delayed(**kwargs):
         prepared_source[5]()
         status_reader.retain_preparation_wakeup(root)
-        return {"accepted": True}
+        return _acceptance(prepared_source)
     monkeypatch.setattr(context_reader, "website_webapp_request", delayed)
     assert status_reader.reconcile_preparation_wakeups(root.parents[4])["delivered"] == 0
     pending = json.loads((root / status_reader.DELIVERY_FILE).read_text())
@@ -229,11 +229,15 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
                "source_finalize": {**delivery["source_finalize"], "event_id": "synthetic-finalize", "event_source": "synthetic-storage"},
                "source_membership_selector": birth["source_membership_selector"]}
     selected["source_payload_sha256"] = listener.payload_sha256(payload)
+    write_json(root / "raw/manifest.json", {"capture_source": "browser_self_capture",
+        "site_submission_id": owner["request_id"], "scene_id": owner["scene_id"], "capture_id": owner["capture_id"]})
     # Existing captured-member fixture, explicitly fake download/staging seam;
     # actual owner validation, lease, handoff refusal and final ledger execute.
     monkeypatch.setattr(listener, "stage_handoff_capture", lambda *args, **kwargs: root)
     runner_calls = []
     def held(**kwargs):
+        assert kwargs["pipeline_lane"] == "qualification" and kwargs["run_evaluation_prep"] is False
+        assert kwargs["resume_completed_stages"] is True
         runner_calls.append(kwargs)
         result = prepare_website_scene_handoff(descriptor={"scene_id": owner["scene_id"], "capture_id": owner["capture_id"],
             "metadata": {"site_task_context": context}}, clean_plate={"privacy_verified": True, "status": "noop"},
@@ -241,7 +245,8 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
         assert result["status"] == "awaiting_inputs" and result["blockers"] == ["website_reconstruction_pending"]
         raise PipelineError("website_reconstruction_pending") from StageError("website_scene_preparation", "website_reconstruction_pending")
     with pytest.raises(PipelineError, match="website_reconstruction_pending"):
-        listener.process_handoff_payload(payload, storage_root=root.parents[4], provider="openai", run_e2e=held)
+        listener.process_handoff_payload(payload, storage_root=root.parents[4], provider="openai", run_e2e=held,
+                                         run_e2e_enabled=False, stage_control_plane=True)
     assert len(runner_calls) == 1
     pending = json.loads((root / status_reader.DELIVERY_FILE).read_text())
     assert pending["state"] == "pending" and pending["selectors"] == selected
@@ -255,7 +260,7 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
         # Wake-up consumption must reopen the real signed latest-read route.
         actual = _post(prepared_source, body=kwargs["payload"], nonce="wakeup-latest")
         assert actual.status_code == 200 and actual.json()["state"] == "failed_retryable"
-        return {"accepted": True}
+        return _acceptance(prepared_source)
     monkeypatch.setattr(context_reader, "website_webapp_request", sink)
     assert status_reader.reconcile_preparation_wakeups(root.parents[4])["delivered"] == 1
     assert len(calls) == 1
@@ -263,6 +268,8 @@ def test_actual_worker_refusal_retains_wakeup_and_signed_current_failure(prepare
         trace = {"layer": "actual source-selected worker/lease/handoff refusal/signed current-status API/durable delivery",
                  "simulation": ["owned synthetic member fixture", "fake source download/staging", "fake owner/context HTTP", "local wakeup sink"],
                  "provider_calls": 0, "new_unique_case_credit": 0, "payload": payload,
+                 "worker_flags": {"run_e2e_enabled": False, "stage_control_plane": True},
+                 "runner_lane": runner_calls[0]["pipeline_lane"], "website_manifest_source": "browser_self_capture",
                  "selectors": selected, "status": response.json(), "pending_delivery": pending,
                  "final_delivery": json.loads((root / status_reader.DELIVERY_FILE).read_text()),
                  "ledger": listener._read_job_ledger(root), "native_or_assessment_completion": False}
@@ -314,3 +321,36 @@ def test_bounded_reconcile_scan_is_fair_across_restarts(tmp_path, monkeypatch):
         status_reader.reconcile_preparation_wakeups(tmp_path, limit=1)
     assert visited == roots
     assert json.loads((tmp_path / ".website_preparation_delivery_cursor.json").read_text())["schema_version"] == "website_preparation_delivery_cursor.v1"
+
+
+def _acceptance(source):
+    status = status_reader.read_preparation_status(capture_root=source[0], selectors=source[3])
+    return {"schema_version": "website_preparation_status_acceptance.v1", "accepted": True,
+            **source[3], "status_digest": status["status_digest"], "state": status["state"],
+            "native_execution_complete": False,
+            "correlation_id": "bp-prep-" + status["status_digest"].removeprefix("sha256:")[:16]}
+
+
+@pytest.mark.parametrize("fault", ["arbitrary_200", "not_accepted", "wrong_source", "native_complete",
+                                  "bad_digest", "wrong_correlation", "extra_sensitive_field"])
+def test_arbitrary_or_unbound_200_cannot_consume_durable_delivery(prepared_source, monkeypatch, fault):
+    root = prepared_source[0]
+    _finish(prepared_source)
+    ack = _acceptance(prepared_source)
+    if fault == "arbitrary_200":
+        ack = {}
+    elif fault == "not_accepted":
+        ack["accepted"] = False
+    elif fault == "wrong_source":
+        ack["producer_delivery_key"] = "sha256:" + "9" * 64
+    elif fault == "native_complete":
+        ack["native_execution_complete"] = True
+    elif fault == "bad_digest":
+        ack["status_digest"] = "PRIVATE unverified provider result"
+    elif fault == "wrong_correlation":
+        ack["correlation_id"] = "bp-prep-" + "9" * 16
+    else:
+        ack["private_error"] = "PRIVATE body"
+    monkeypatch.setattr(context_reader, "website_webapp_request", lambda **kwargs: ack)
+    assert status_reader.reconcile_preparation_wakeups(root.parents[4])["delivered"] == 0
+    assert json.loads((root / status_reader.DELIVERY_FILE).read_text())["state"] == "pending"
