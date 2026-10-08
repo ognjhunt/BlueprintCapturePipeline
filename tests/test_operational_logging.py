@@ -71,6 +71,17 @@ def test_run_e2e_logs_start_completion_and_preflight_failure(
         "run_capture_pipeline",
         lambda **kwargs: {"status": "completed", "lanes": [kwargs["lane"]]},
     )
+    # The happy-path logging fixture needs a successful required supervisor;
+    # an empty synthetic capture correctly returns a blocked real supervisor.
+    monkeypatch.setattr(
+        run_e2e,
+        "run_capture_build_supervisor",
+        lambda **_kwargs: {
+            "status": "non_spend_complete",
+            "agent_harness": "openai_agents_sdk",
+            "capture_build_alone_can_start_run": True,
+        },
+    )
     monkeypatch.setattr(
         run_e2e,
         "run_agent_review",
