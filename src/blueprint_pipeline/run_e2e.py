@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from typing import List, Optional
 
+from .handoff_job_state import required_stage_result_blocker
 from .agent_runtime.orchestrator import run_agent_review
 from .agent_runtime.openai_phase2 import OpenAIPhase2Config
 from .capture_orchestrator import (
@@ -306,27 +307,6 @@ def _stage_result_status(value: Any) -> str | None:
     if isinstance(value, Mapping):
         status = _string(value.get("status"))
         return status or None
-    return None
-
-
-def required_stage_result_blocker(stage: str, value: Any) -> str | None:
-    """Required execution results must prove success before completion or reuse.
-
-    Readiness and optional trust outputs may truthfully remain blocked. These
-    two stages, however, are always executed by run_end_to_end.
-    """
-    successful = {
-        "capture_pipeline": {"completed"},
-        "task_evaluation_supervisor": {
-            "non_spend_complete", "advise_complete", "shadow_complete",
-            "preauthorized_complete",
-        },
-    }
-    if stage not in successful:
-        return None
-    status = _stage_result_status(value) or "missing_status"
-    if status not in successful[stage]:
-        return f"required_stage_not_complete:{stage}:{status}"
     return None
 
 

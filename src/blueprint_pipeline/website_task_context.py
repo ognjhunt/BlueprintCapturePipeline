@@ -108,7 +108,7 @@ def load_current_website_task_context(
 def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Use the existing signed transport for private preparation control data."""
     if operation not in {"task-context", "scene-sponsorship", "prepared-scene", "visual-scene",
-                         "preparation-spend", "preparation-settlement", "agent-execution-offer", "task-item-evidence"}:
+                         "preparation-spend", "preparation-settlement", "agent-execution-offer", "task-item-evidence", "preparation-status"}:
         raise ValueError("website_control_operation_invalid")
     configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:
