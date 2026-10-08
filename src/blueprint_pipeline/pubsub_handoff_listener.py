@@ -31,7 +31,18 @@ from .pubsub_handoff_disk_admission import (  # noqa: F401 - native bodies resol
     staging_manifest_row as _staging_manifest_row,
 )
 from .decision_evidence_contracts import canonical_digest
-from .run_e2e import run_end_to_end, required_stage_result_blocker
+from .run_e2e import run_end_to_end
+from .handoff_job_state import (  # noqa: F401 - compatibility exports and shared durability primitives
+    JOB_LEDGER_FILENAME,
+    JOB_LEDGER_SCHEMA_VERSION,
+    JOB_OUTPUT_COMMIT_FILENAME,
+    JOB_OUTPUT_COMMIT_SCHEMA_VERSION,
+    _existing_job_ledger_lock,
+    _output_commit,
+    _read_job_ledger,
+    _retained_required_stage_blockers,
+    required_stage_result_blocker,
+)
 from .core.security_controls import (
     SecurityValidationError,
     contained_path,
@@ -441,10 +452,6 @@ def _stage_control_plane_input(
     return result
 
 
-JOB_LEDGER_FILENAME = "pipeline_job_ledger.json"
-JOB_OUTPUT_COMMIT_FILENAME = "pipeline_job_output_commit.json"
-JOB_LEDGER_SCHEMA_VERSION = "pipeline_job_ledger.v1"
-JOB_OUTPUT_COMMIT_SCHEMA_VERSION = "pipeline_job_output_commit.v1"
 JOB_STATUS_SCHEMA_VERSION = "pipeline_job_status.v1"
 TERMINAL_AUTHORITY_STATUS = "terminal_authority_ended"
 JOB_TERMINAL_RECEIPT_FILENAME = "pipeline_job_terminal_receipt.json"
@@ -585,27 +592,6 @@ def _enqueue_capture_reconstruction_if_configured(
     }
 
 
-def _read_job_ledger(capture_root: Path) -> dict[str, Any]:
-    ledger_path = capture_root / JOB_LEDGER_FILENAME
-    if not ledger_path.is_file():
-        return {}
-    try:
-        loaded = json.loads(ledger_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:  # ValueError: invalid JSON or not UTF-8
-        return {
-            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
-            "status": "corrupt",
-            "ledger_read_error": type(exc).__name__,
-        }
-    if not isinstance(loaded, dict):
-        return {
-            "schema_version": JOB_LEDGER_SCHEMA_VERSION,
-            "status": "corrupt",
-            "ledger_read_error": "not_mapping",
-        }
-    return loaded
-
-
 class HandoffCaptureRetired(PipelineError):
     """The capture's workspace was retired (or removed) while this process reached for its lock."""
 
@@ -649,41 +635,6 @@ def _locked_job_ledger(capture_root: Path, *, create: bool = True) -> Iterator[d
             yield _read_job_ledger(capture_root)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-@contextmanager
-def _existing_job_ledger_lock(capture_root: Path) -> Iterator[str]:
-    """Hold the ledger lock of a capture that already exists, creating nothing.
-
-    Yields "ledger_present" while the lock is held and the ledger exists,
-    otherwise "capture_absent" or "ledger_absent". A capture whose workspace was
-    retired (or never staged) must not be brought back by recording something
-    about it.
-
-    Contract: anything that deletes a capture root (scene workspace retirement)
-    must hold this same flock, on the capture's .pipeline_job_ledger.json.lock,
-    for the whole deletion. A writer here then either finishes before the
-    deletion starts or finds the ledger gone once it gets the lock.
-    """
-
-    def absence() -> str:
-        return "ledger_absent" if capture_root.is_dir() else "capture_absent"
-
-    try:
-        descriptor: int | None = os.open(capture_root / f".{JOB_LEDGER_FILENAME}.lock", os.O_RDONLY)
-    except (FileNotFoundError, NotADirectoryError):
-        descriptor = None
-    if descriptor is None:
-        yield absence()
-        return
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        try:
-            yield "ledger_present" if (capture_root / JOB_LEDGER_FILENAME).is_file() else absence()
-        finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)
 
 
 def _commit_job_ledger(
@@ -1005,39 +956,6 @@ def _ended_delivery_keys(ledger: Mapping[str, Any]) -> set[str]:
             keys.add(_string(row.get('terminal_producer_delivery_key')))
     keys.discard('')
     return keys
-
-
-def _retained_required_stage_blockers(capture_root: Path) -> list[str]:
-    retained = _read_optional_json_object(
-        capture_root / "pipeline" / "run_e2e_stage_ledger.json"
-    )
-    blockers = []
-    for stage, entry in _mapping(retained.get("stages")).items():
-        if "result_snapshot" not in _mapping(entry):
-            continue
-        blocker = required_stage_result_blocker(stage, entry["result_snapshot"])
-        if blocker:
-            blockers.append(blocker)
-    return blockers
-
-
-def _output_commit(
-    capture_root: Path,
-    *,
-    scene_id: str,
-    capture_id: str,
-) -> dict[str, Any]:
-    commit = _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME)
-    if (
-        commit.get("schema_version") != JOB_OUTPUT_COMMIT_SCHEMA_VERSION
-        or commit.get("status") != "committed"
-        or commit.get("scene_id") != scene_id
-        or commit.get("capture_id") != capture_id
-        or not _string(commit.get("result_sha256"))
-        or _retained_required_stage_blockers(capture_root)
-    ):
-        return {}
-    return commit
 
 
 def _write_output_commit(

@@ -68,7 +68,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any])
     """Read an as-of snapshot; refuse missing, changed or unverified authority."""
     from .capture_original_owner_observer import load_original_owner_observation
     from .consent_takedown import read_consent_state
-    from .pubsub_handoff_listener import _read_job_ledger, _output_commit
+    from .handoff_job_state import _read_job_ledger, _output_commit
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     from .website_task_context import load_current_website_task_context, validate_website_task_context
 
@@ -143,7 +143,7 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
     Reconciliation scans actual ledgers too, closing the crash gap between a
     ledger commit and this separate durable delivery record.
     """
-    from .pubsub_handoff_listener import _existing_job_ledger_lock, _read_job_ledger
+    from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     root = _root(capture_root)
     birth = capture_birth_source_projection(root)
@@ -189,7 +189,7 @@ def validate_acceptance(value: Any, selected: Mapping[str, str]) -> dict[str, An
 
 def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dict[str, int]:
     """Existing listener tick retries delivery independently of provider work."""
-    from .pubsub_handoff_listener import _existing_job_ledger_lock
+    from .handoff_job_state import _existing_job_ledger_lock
     from .website_task_context import website_webapp_request
     counts = {"attempted": 0, "delivered": 0, "unavailable": 0}
     storage_root = Path(storage_root)
