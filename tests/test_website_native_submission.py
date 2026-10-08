@@ -21,14 +21,14 @@ from tests.test_task_evaluation_scene_configuration_submission import production
 
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
-          max_total_spend_usd=None, success_criteria=None):
+          max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
     if articulated:
         from tests.test_website_task_preparation import _assembly_inputs
         args.update(_assembly_inputs(capture))
-    if success_criteria is not None:
+    if success_criteria is not None or include_null_success_criteria:
         args["task_context"]["success_criteria"] = copy.deepcopy(success_criteria)
         args["task_context"]["context_digest"] = canonical_digest(
             args["task_context"], digest_field="context_digest")

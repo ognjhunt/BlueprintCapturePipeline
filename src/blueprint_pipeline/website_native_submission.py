@@ -199,7 +199,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     # The native adapter retains this authority; owner-scoring admission refuses
     # proposal_only until an actual translated success contract is confirmed.
     template["owner_success_contract_authority"] = {
-        "confirmation_status": "confirmed" if owner_targets["status"] == "not_supplied" else "proposal_only",
+        "confirmation_status": "proposal_only",
         "accepted_by": intent["request"]["owner"]["user_id"],
         "authority_reference": "scene-intent:" + intent["intent_digest"],
         "basis": "fixed_development_control_not_translated_owner_target",

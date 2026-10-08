@@ -20,6 +20,31 @@ EXPLICIT = {"successDefinition": "Arrives intact", "successRate": 95,
             "cycleTimeSeconds": 30, "unknown": False}
 
 
+@pytest.mark.parametrize("include_null", [False, True], ids=["omitted", "explicit-null"])
+def test_absent_targets_cannot_confirm_development_controls(tmp_path, monkeypatch, include_null):
+    from blueprint_pipeline.website_native_submission import materialize_website_submission
+    from blueprint_pipeline.task_evaluation_rigid_owner_contract import _derive_configured_owner_success_contract
+    from blueprint_pipeline.adp_task_scoring import TaskNeutralScoringError
+
+    kwargs, _ = setup(tmp_path, monkeypatch, include_null_success_criteria=include_null)
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"] / "configuration"
+    template = json.loads((root / "task.json").read_text())
+    success = json.loads((root / "success.json").read_text())
+    assert success["owner_success_contract_required"] is True
+    assert template["success"]["owner_success_contract_required"] is True
+    authority = template["owner_success_contract_authority"]
+    assert authority["owner_success_criteria"]["status"] == "not_supplied"
+    assert authority["confirmation_status"] == "proposal_only"
+    assert authority["scorer_translation_verified"] is False
+    # Use the emitted required flag and authority, never a test-invented flag.
+    with pytest.raises(TaskNeutralScoringError, match="configured_owner_success_contract_authority_missing"):
+        _derive_configured_owner_success_contract({
+            "configured_success_criteria": success,
+            "configured_owner_authority": authority,
+        }, site_id="synthetic-site", task_id=template["task_identity"]["id"])
+
+
 @pytest.mark.parametrize("criteria", [UNKNOWN, EXPLICIT], ids=["unknown-null", "explicit-95pct-30sec"])
 def test_scene_only_preparation_retains_owner_targets_without_evaluating_them(tmp_path, criteria):
     args = _arguments(tmp_path)
