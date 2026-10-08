@@ -9,8 +9,25 @@ from blueprint_pipeline.common import PipelineError
 from blueprint_pipeline.run_e2e import main, run_end_to_end
 
 
+@pytest.fixture
+def completed_capture_supervisor(monkeypatch):
+    """These tests exercise orchestration after a successful supervisor run.
+
+    A synthetic empty capture otherwise correctly returns a blocked supervisor.
+    The required-stage regression suite exercises that refusal separately.
+    """
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.run_capture_build_supervisor",
+        lambda **_kwargs: {
+            "status": "non_spend_complete",
+            "agent_harness": "openai_agents_sdk",
+            "capture_build_alone_can_start_run": True,
+        },
+    )
+
+
 def test_run_e2e_supports_opt_in_agent_review_and_standalone_evaluation_prep(
-    monkeypatch, tmp_path: Path
+    completed_capture_supervisor, monkeypatch, tmp_path: Path
 ) -> None:
     capture_root = tmp_path / "capture"
     capture_root.mkdir()
@@ -79,7 +96,7 @@ def test_run_e2e_supports_opt_in_agent_review_and_standalone_evaluation_prep(
 
 
 def test_run_e2e_supports_full_lane_and_optional_cosmos_validation(
-    monkeypatch, tmp_path: Path
+    completed_capture_supervisor, monkeypatch, tmp_path: Path
 ) -> None:
     capture_root = tmp_path / "capture"
     capture_root.mkdir()

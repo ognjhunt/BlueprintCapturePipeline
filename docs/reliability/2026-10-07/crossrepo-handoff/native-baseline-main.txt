@@ -1,0 +1,478 @@
+OFFLINE: network syscalls denied; environment cleared; no live credentials
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
+rootdir: /workspace/BlueprintCapturePipeline
+configfile: pyproject.toml
+collected 26 items
+
+tests/test_capture_generation_birth.py FFFF..FFFFF.F.                    [ 53%]
+tests/test_scene_retirement_special_lifetimes.py FFF                     [ 65%]
+tests/test_selected_capture_inputs.py .FFFFFFFF                          [100%]
+
+=================================== FAILURES ===================================
+________ test_capture_birth_retains_original_proofs_before_empty_target ________
+tests/test_capture_generation_birth.py:108: in test_capture_birth_retains_original_proofs_before_empty_target
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+src/blueprint_pipeline/task_evaluation_scene_retirement_generations.py:289: in birth_capture_member
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+______ test_normal_capture_birth_prepares_absent_parent_under_owned_root _______
+tests/test_capture_generation_birth.py:136: in test_normal_capture_birth_prepares_absent_parent_under_owned_root
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+src/blueprint_pipeline/task_evaluation_scene_retirement_generations.py:289: in birth_capture_member
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+____ test_capture_birth_source_projection_reopens_exact_retained_membership ____
+tests/test_capture_generation_birth.py:150: in test_capture_birth_source_projection_reopens_exact_retained_membership
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+src/blueprint_pipeline/task_evaluation_scene_retirement_generations.py:289: in birth_capture_member
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+_ test_native_website_registration_binds_original_delivery_and_sponsor_rights __
+tests/test_capture_generation_birth.py:175: in test_native_website_registration_binds_original_delivery_and_sponsor_rights
+    born = birth_capture_member(target, observation=owner,
+src/blueprint_pipeline/task_evaluation_scene_retirement_generations.py:289: in birth_capture_member
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+____ test_active_capture_refuses_another_valid_delivery_on_occupied_target _____
+tests/test_capture_generation_birth.py:288: in test_active_capture_refuses_another_valid_delivery_on_occupied_target
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+src/blueprint_pipeline/task_evaluation_scene_retirement_generations.py:289: in birth_capture_member
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+_______ test_app_bundle_member_requires_exact_server_completion_receipt ________
+tests/test_capture_generation_birth.py:326: in test_app_bundle_member_requires_exact_server_completion_receipt
+    with pytest.raises(ValueError, match='capture_membership_receipt_mismatch'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: Regex pattern did not match.
+E     Expected regex: 'capture_membership_receipt_mismatch'
+E     Actual message: 'scene_retirement_access_unsafe'
+__________ test_retired_capture_requires_new_raw_delivery_and_marker ___________
+tests/test_capture_generation_birth.py:339: in test_retired_capture_requires_new_raw_delivery_and_marker
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+src/blueprint_pipeline/task_evaluation_scene_retirement_generations.py:289: in birth_capture_member
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+_ test_direct_selected_stage_reads_only_pinned_members_without_prefix_list[False] _
+tests/test_capture_generation_birth.py:448: in test_direct_selected_stage_reads_only_pinned_members_without_prefix_list
+    staged = listener.stage_handoff_capture(listener.parse_handoff_payload(payload),
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+_ test_direct_selected_stage_reads_only_pinned_members_without_prefix_list[True] _
+tests/test_capture_generation_birth.py:448: in test_direct_selected_stage_reads_only_pinned_members_without_prefix_list
+    staged = listener.stage_handoff_capture(listener.parse_handoff_payload(payload),
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+__ test_retired_capture_selector_uses_original_producer_key_before_any_stage ___
+tests/test_capture_generation_birth.py:535: in test_retired_capture_selector_uses_original_producer_key_before_any_stage
+    result = listener.process_handoff_payload(payload, storage_root=target.parents[4],
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+____ test_real_special_reader_holds_scene_fence_through_its_body[listener] _____
+tests/test_scene_retirement_special_lifetimes.py:37: in test_real_special_reader_holds_scene_fence_through_its_body
+    assert entered.wait(3),errors
+E   AssertionError: [SceneRetirementAccessError('scene_retirement_access_unsafe')]
+E   assert False
+E    +  where False = wait(3)
+E    +    where wait = <threading.Event at 0x7ff588cd19d0: unset>.wait
+______ test_real_special_reader_holds_scene_fence_through_its_body[owner] ______
+tests/test_scene_retirement_special_lifetimes.py:37: in test_real_special_reader_holds_scene_fence_through_its_body
+    assert entered.wait(3),errors
+E   AssertionError: [SceneRetirementAccessError('scene_retirement_access_unsafe')]
+E   assert False
+E    +  where False = wait(3)
+E    +    where wait = <threading.Event at 0x7ff588cd0b90: unset>.wait
+___ test_real_special_reader_holds_scene_fence_through_its_body[settlement] ____
+tests/test_scene_retirement_special_lifetimes.py:37: in test_real_special_reader_holds_scene_fence_through_its_body
+    assert entered.wait(3),errors
+E   AssertionError: [SceneRetirementAccessError('scene_retirement_access_unsafe')]
+E   assert False
+E    +  where False = wait(3)
+E    +    where wait = <threading.Event at 0x7ff588cd3a70: unset>.wait
+_____ test_real_selected_staging_feeds_existing_capture_and_frame_readers ______
+tests/test_selected_capture_inputs.py:99: in test_real_selected_staging_feeds_existing_capture_and_frame_readers
+    root, target, handoff, storage = staged_capture(tmp_path, monkeypatch)
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_selected_capture_inputs.py:73: in staged_capture
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+_ test_actual_selected_source_staging_rejects_current_withdrawal_before_payload_writes _
+tests/test_selected_capture_inputs.py:115: in test_actual_selected_source_staging_rejects_current_withdrawal_before_payload_writes
+    with pytest.raises(ValueError, match="capture_owner"):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: Regex pattern did not match.
+E     Expected regex: 'capture_owner'
+E     Actual message: 'scene_retirement_access_unsafe'
+_ test_actual_selected_descriptor_rechecks_canonical_late_withdrawal_before_preparation _
+tests/test_selected_capture_inputs.py:125: in test_actual_selected_descriptor_rechecks_canonical_late_withdrawal_before_preparation
+    root, target, _, _ = staged_capture(tmp_path, monkeypatch)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_selected_capture_inputs.py:73: in staged_capture
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+______ test_selected_input_damage_refuses_canonical_fallback[index_bytes] ______
+tests/test_selected_capture_inputs.py:145: in test_selected_input_damage_refuses_canonical_fallback
+    _, target, _, _ = staged_capture(tmp_path, monkeypatch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_selected_capture_inputs.py:73: in staged_capture
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+___ test_selected_input_damage_refuses_canonical_fallback[descriptor_bytes] ____
+tests/test_selected_capture_inputs.py:145: in test_selected_input_damage_refuses_canonical_fallback
+    _, target, _, _ = staged_capture(tmp_path, monkeypatch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_selected_capture_inputs.py:73: in staged_capture
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+________ test_selected_input_damage_refuses_canonical_fallback[symlink] ________
+tests/test_selected_capture_inputs.py:145: in test_selected_input_damage_refuses_canonical_fallback
+    _, target, _, _ = staged_capture(tmp_path, monkeypatch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_selected_capture_inputs.py:73: in staged_capture
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+________ test_selected_input_damage_refuses_canonical_fallback[missing] ________
+tests/test_selected_capture_inputs.py:145: in test_selected_input_damage_refuses_canonical_fallback
+    _, target, _, _ = staged_capture(tmp_path, monkeypatch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_selected_capture_inputs.py:73: in staged_capture
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+______ test_selected_lookup_rejects_unregistered_or_cross_namespace_paths ______
+tests/test_selected_capture_inputs.py:163: in test_selected_lookup_rejects_unregistered_or_cross_namespace_paths
+    _, target, _, _ = staged_capture(tmp_path, monkeypatch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_selected_capture_inputs.py:73: in staged_capture
+    target = listener.stage_handoff_capture(handoff, storage_root=root, storage_client=storage)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:294: in admitted
+    with scene_access(*paths):
+         ^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:258: in scene_access
+    policy = _policy()
+             ^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:206: in _policy
+    value = _document(_bytes(selected, protected=True, required_mode=0o644))
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:142: in _bytes
+    with _opened(path, protected=protected) as (fd, before):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py:137: in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:108: in _opened
+    _require(info.st_uid in {0, _POLICY_UID})
+src/blueprint_pipeline/task_evaluation_scene_retirement_lifetime.py:37: in _require
+    raise SceneRetirementAccessError(code)
+E   blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe
+=========================== short test summary info ============================
+FAILED tests/test_capture_generation_birth.py::test_capture_birth_retains_original_proofs_before_empty_target
+FAILED tests/test_capture_generation_birth.py::test_normal_capture_birth_prepares_absent_parent_under_owned_root
+FAILED tests/test_capture_generation_birth.py::test_capture_birth_source_projection_reopens_exact_retained_membership
+FAILED tests/test_capture_generation_birth.py::test_native_website_registration_binds_original_delivery_and_sponsor_rights
+FAILED tests/test_capture_generation_birth.py::test_active_capture_refuses_another_valid_delivery_on_occupied_target
+FAILED tests/test_capture_generation_birth.py::test_app_bundle_member_requires_exact_server_completion_receipt
+FAILED tests/test_capture_generation_birth.py::test_retired_capture_requires_new_raw_delivery_and_marker
+FAILED tests/test_capture_generation_birth.py::test_direct_selected_stage_reads_only_pinned_members_without_prefix_list[False]
+FAILED tests/test_capture_generation_birth.py::test_direct_selected_stage_reads_only_pinned_members_without_prefix_list[True]
+FAILED tests/test_capture_generation_birth.py::test_retired_capture_selector_uses_original_producer_key_before_any_stage
+FAILED tests/test_scene_retirement_special_lifetimes.py::test_real_special_reader_holds_scene_fence_through_its_body[listener]
+FAILED tests/test_scene_retirement_special_lifetimes.py::test_real_special_reader_holds_scene_fence_through_its_body[owner]
+FAILED tests/test_scene_retirement_special_lifetimes.py::test_real_special_reader_holds_scene_fence_through_its_body[settlement]
+FAILED tests/test_selected_capture_inputs.py::test_real_selected_staging_feeds_existing_capture_and_frame_readers
+FAILED tests/test_selected_capture_inputs.py::test_actual_selected_source_staging_rejects_current_withdrawal_before_payload_writes
+FAILED tests/test_selected_capture_inputs.py::test_actual_selected_descriptor_rechecks_canonical_late_withdrawal_before_preparation
+FAILED tests/test_selected_capture_inputs.py::test_selected_input_damage_refuses_canonical_fallback[index_bytes]
+FAILED tests/test_selected_capture_inputs.py::test_selected_input_damage_refuses_canonical_fallback[descriptor_bytes]
+FAILED tests/test_selected_capture_inputs.py::test_selected_input_damage_refuses_canonical_fallback[symlink]
+FAILED tests/test_selected_capture_inputs.py::test_selected_input_damage_refuses_canonical_fallback[missing]
+FAILED tests/test_selected_capture_inputs.py::test_selected_lookup_rejects_unregistered_or_cross_namespace_paths
+======================== 21 failed, 5 passed in 13.02s =========================

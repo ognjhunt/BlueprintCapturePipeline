@@ -1,0 +1,17 @@
+OFFLINE: network syscalls denied; environment cleared; no live credentials
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
+rootdir: /workspace/work/crossrepo-handoff
+configfile: pyproject.toml
+collected 170 items
+
+tests/test_handoff_required_stage_results.py .......................     [ 13%]
+tests/test_run_e2e.py ......                                             [ 17%]
+tests/test_run_e2e_coverage.py ............                              [ 24%]
+tests/test_lane_resume.py ............                                   [ 31%]
+tests/test_pubsub_handoff_listener.py .................................. [ 51%]
+..................................................................       [ 90%]
+tests/test_capture_original_owner_observer.py .....                      [ 92%]
+tests/test_browser_delivery_handoff_uri.py ............                  [100%]
+
+============================= 170 passed in 7.30s ==============================

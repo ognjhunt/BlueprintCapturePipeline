@@ -31,7 +31,7 @@ from .pubsub_handoff_disk_admission import (  # noqa: F401 - native bodies resol
     staging_manifest_row as _staging_manifest_row,
 )
 from .decision_evidence_contracts import canonical_digest
-from .run_e2e import run_end_to_end
+from .run_e2e import run_end_to_end, required_stage_result_blocker
 from .core.security_controls import (
     SecurityValidationError,
     contained_path,
@@ -796,12 +796,10 @@ def _claim_job_lease(
             if live_receipt.exists() or live_receipt.is_symlink():
                 _set_aside(live_receipt, "superseded")
         if status == "completed":
-            retained = _read_optional_json_object(capture_root / "pipeline" / "run_e2e_stage_ledger.json")
-            capture_result = _mapping(_mapping(_mapping(retained.get("stages")).get("capture_pipeline")).get("result_snapshot"))
-            if capture_result.get("status") != "completed_with_lane_failures":
+            if not _retained_required_stage_blockers(capture_root):
                 return "completed", dict(ledger)
-            # Older acknowledgements treated this status as success. Preserve
-            # the old receipt while reopening only that explicitly failed run.
+            # Older acknowledgements ignored required-stage result failures.
+            # Preserve the receipt; only the incomplete stage loses resume eligibility.
             old_commit = _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME)
             if old_commit:
                 write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, {
@@ -1009,6 +1007,20 @@ def _ended_delivery_keys(ledger: Mapping[str, Any]) -> set[str]:
     return keys
 
 
+def _retained_required_stage_blockers(capture_root: Path) -> list[str]:
+    retained = _read_optional_json_object(
+        capture_root / "pipeline" / "run_e2e_stage_ledger.json"
+    )
+    blockers = []
+    for stage, entry in _mapping(retained.get("stages")).items():
+        if "result_snapshot" not in _mapping(entry):
+            continue
+        blocker = required_stage_result_blocker(stage, entry["result_snapshot"])
+        if blocker:
+            blockers.append(blocker)
+    return blockers
+
+
 def _output_commit(
     capture_root: Path,
     *,
@@ -1022,6 +1034,7 @@ def _output_commit(
         or commit.get("scene_id") != scene_id
         or commit.get("capture_id") != capture_id
         or not _string(commit.get("result_sha256"))
+        or _retained_required_stage_blockers(capture_root)
     ):
         return {}
     return commit
@@ -1310,6 +1323,12 @@ def _handoff_capture_root(
 def _handoff_result_disposition(result: Mapping[str, Any]) -> tuple[str, list[str]]:
     """Map pipeline/job results to Pub/Sub acknowledgement semantics."""
 
+    if "task_evaluation_supervisor" in result:
+        blocker = required_stage_result_blocker(
+            "task_evaluation_supervisor", result["task_evaluation_supervisor"]
+        )
+        if blocker:
+            return "retryable_blocked", [blocker]
     statuses: list[str] = []
     for value in (
         result.get("status"),
@@ -1331,6 +1350,12 @@ def _handoff_result_disposition(result: Mapping[str, Any]) -> tuple[str, list[st
     ]
     if retryable:
         return "retryable_blocked", retryable
+    if "pipeline_status" in result:
+        blocker = required_stage_result_blocker(
+            "capture_pipeline", {"status": result["pipeline_status"]}
+        )
+        if blocker:
+            return "retryable_blocked", [blocker]
     if statuses and all(
         status in _HANDOFF_TERMINAL_SUCCESS_STATUSES
         or status.startswith("completed")

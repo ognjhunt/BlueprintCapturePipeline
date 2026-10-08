@@ -1,0 +1,107 @@
+OFFLINE: network syscalls denied; environment cleared; no live credentials
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
+rootdir: /workspace/work/crossrepo-handoff
+configfile: pyproject.toml
+collected 17 items
+
+tests/test_handoff_required_stage_results.py FFFFFFFFFFFFF....           [100%]
+
+=================================== FAILURES ===================================
+____________ test_required_supervisor_prevents_success_ack[blocked] ____________
+tests/test_handoff_required_stage_results.py:23: in test_required_supervisor_prevents_success_ack
+    assert disposition == 'retryable_blocked'
+E   AssertionError: assert 'terminal_success' == 'retryable_blocked'
+E     
+E     - retryable_blocked
+E     + terminal_success
+____________ test_required_supervisor_prevents_success_ack[failed] _____________
+tests/test_handoff_required_stage_results.py:23: in test_required_supervisor_prevents_success_ack
+    assert disposition == 'retryable_blocked'
+E   AssertionError: assert 'terminal_success' == 'retryable_blocked'
+E     
+E     - retryable_blocked
+E     + terminal_success
+___________ test_required_supervisor_prevents_success_ack[disabled] ____________
+tests/test_handoff_required_stage_results.py:23: in test_required_supervisor_prevents_success_ack
+    assert disposition == 'retryable_blocked'
+E   AssertionError: assert 'terminal_success' == 'retryable_blocked'
+E     
+E     - retryable_blocked
+E     + terminal_success
+__________ test_required_supervisor_prevents_success_ack[not_started] __________
+tests/test_handoff_required_stage_results.py:23: in test_required_supervisor_prevents_success_ack
+    assert disposition == 'retryable_blocked'
+E   AssertionError: assert 'terminal_success' == 'retryable_blocked'
+E     
+E     - retryable_blocked
+E     + terminal_success
+____________ test_required_supervisor_prevents_success_ack[unknown] ____________
+tests/test_handoff_required_stage_results.py:23: in test_required_supervisor_prevents_success_ack
+    assert disposition == 'retryable_blocked'
+E   AssertionError: assert 'terminal_success' == 'retryable_blocked'
+E     
+E     - retryable_blocked
+E     + terminal_success
+_____________ test_required_supervisor_prevents_success_ack[None] ______________
+tests/test_handoff_required_stage_results.py:23: in test_required_supervisor_prevents_success_ack
+    assert disposition == 'retryable_blocked'
+E   AssertionError: assert 'terminal_success' == 'retryable_blocked'
+E     
+E     - retryable_blocked
+E     + terminal_success
+_ test_required_supervisor_prevents_success_ack[preauthorized_complete_with_failures] _
+tests/test_handoff_required_stage_results.py:23: in test_required_supervisor_prevents_success_ack
+    assert disposition == 'retryable_blocked'
+E   AssertionError: assert 'terminal_success' == 'retryable_blocked'
+E     
+E     - retryable_blocked
+E     + terminal_success
+_ test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[blocked] _
+tests/test_handoff_required_stage_results.py:47: in test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage
+    with pytest.raises(PipelineError, match='required_stage_not_complete:task_evaluation_supervisor'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE PipelineError
+_ test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[failed] _
+tests/test_handoff_required_stage_results.py:47: in test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage
+    with pytest.raises(PipelineError, match='required_stage_not_complete:task_evaluation_supervisor'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE PipelineError
+_ test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[not_started] _
+tests/test_handoff_required_stage_results.py:47: in test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage
+    with pytest.raises(PipelineError, match='required_stage_not_complete:task_evaluation_supervisor'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE PipelineError
+_ test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[None] _
+tests/test_handoff_required_stage_results.py:47: in test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage
+    with pytest.raises(PipelineError, match='required_stage_not_complete:task_evaluation_supervisor'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE PipelineError
+_______________ test_old_required_failure_snapshot_is_not_reused _______________
+tests/test_handoff_required_stage_results.py:62: in test_old_required_failure_snapshot_is_not_reused
+    assert run_e2e._completed_stage_resume_snapshot(ledger, stage='capture_pipeline') is None
+E   AssertionError: assert {'status': 'completed_with_lane_failures'} is None
+E    +  where {'status': 'completed_with_lane_failures'} = <function _completed_stage_resume_snapshot at 0x7fd83f5a5ee0>({'stages': {'capture_pipeline': {'status': 'completed', 'resume_result_snapshot_available': True, 'result_snapshot': {'status': 'completed_with_lane_failures'}}}}, stage='capture_pipeline')
+E    +    where <function _completed_stage_resume_snapshot at 0x7fd83f5a5ee0> = run_e2e._completed_stage_resume_snapshot
+_________ test_old_supervisor_completion_reopens_but_preserves_receipt _________
+tests/test_handoff_required_stage_results.py:72: in test_old_supervisor_completion_reopens_but_preserves_receipt
+    assert status == 'claimed'
+E   AssertionError: assert 'completed' == 'claimed'
+E     
+E     - claimed
+E     + completed
+=========================== short test summary info ============================
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_prevents_success_ack[blocked]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_prevents_success_ack[failed]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_prevents_success_ack[disabled]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_prevents_success_ack[not_started]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_prevents_success_ack[unknown]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_prevents_success_ack[None]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_prevents_success_ack[preauthorized_complete_with_failures]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[blocked]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[failed]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[not_started]
+FAILED tests/test_handoff_required_stage_results.py::test_required_supervisor_failure_retains_prefix_and_retries_only_failed_stage[None]
+FAILED tests/test_handoff_required_stage_results.py::test_old_required_failure_snapshot_is_not_reused
+FAILED tests/test_handoff_required_stage_results.py::test_old_supervisor_completion_reopens_but_preserves_receipt
+========================= 13 failed, 4 passed in 1.20s =========================

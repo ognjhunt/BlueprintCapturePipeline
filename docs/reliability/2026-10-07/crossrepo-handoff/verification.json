@@ -1,0 +1,111 @@
+{
+  "schema_version": "crossrepo_reliability_local_evidence.v1",
+  "baseline_commit": "89938271a5c92fc0473b01326733199e0b456444",
+  "development_only": true,
+  "model_provider_calls": 0,
+  "network_execution": "kernel_seccomp_denied",
+  "focused": {
+    "passed": 170,
+    "failed": 0,
+    "seconds": 7.3
+  },
+  "ci_impacted": {
+    "passed": 351,
+    "failed": 21,
+    "deselected": 5,
+    "seconds": 41.84,
+    "requires_full_suite": false
+  },
+  "baseline_native_on_unchanged_main": {
+    "passed": 5,
+    "failed": 21,
+    "seconds": 13.02
+  },
+  "failures": [
+    {
+      "test": "tests.test_capture_generation_birth::test_capture_birth_retains_original_proofs_before_empty_target",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_normal_capture_birth_prepares_absent_parent_under_owned_root",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_capture_birth_source_projection_reopens_exact_retained_membership",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_native_website_registration_binds_original_delivery_and_sponsor_rights",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_active_capture_refuses_another_valid_delivery_on_occupied_target",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_app_bundle_member_requires_exact_server_completion_receipt",
+      "reason": "AssertionError: Regex pattern did not match.\n  Expected regex: 'capture_membership_receipt_mismatch'\n  Actual message: 'scene_retirement_access_unsafe'"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_retired_capture_requires_new_raw_delivery_and_marker",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_direct_selected_stage_reads_only_pinned_members_without_prefix_list[False]",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_direct_selected_stage_reads_only_pinned_members_without_prefix_list[True]",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_capture_generation_birth::test_retired_capture_selector_uses_original_producer_key_before_any_stage",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_scene_retirement_special_lifetimes::test_real_special_reader_holds_scene_fence_through_its_body[listener]",
+      "reason": "AssertionError: [SceneRetirementAccessError('scene_retirement_access_unsafe')]\nassert False\n +  where False = wait(3)\n +    where wait = <threading.Event at 0x7fc0c91a4920: unset>.wait"
+    },
+    {
+      "test": "tests.test_scene_retirement_special_lifetimes::test_real_special_reader_holds_scene_fence_through_its_body[owner]",
+      "reason": "AssertionError: [SceneRetirementAccessError('scene_retirement_access_unsafe')]\nassert False\n +  where False = wait(3)\n +    where wait = <threading.Event at 0x7fc0c91a7a40: unset>.wait"
+    },
+    {
+      "test": "tests.test_scene_retirement_special_lifetimes::test_real_special_reader_holds_scene_fence_through_its_body[settlement]",
+      "reason": "AssertionError: [SceneRetirementAccessError('scene_retirement_access_unsafe')]\nassert False\n +  where False = wait(3)\n +    where wait = <threading.Event at 0x7fc0c8eda570: unset>.wait"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_real_selected_staging_feeds_existing_capture_and_frame_readers",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_actual_selected_source_staging_rejects_current_withdrawal_before_payload_writes",
+      "reason": "AssertionError: Regex pattern did not match.\n  Expected regex: 'capture_owner'\n  Actual message: 'scene_retirement_access_unsafe'"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_actual_selected_descriptor_rechecks_canonical_late_withdrawal_before_preparation",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_selected_input_damage_refuses_canonical_fallback[index_bytes]",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_selected_input_damage_refuses_canonical_fallback[descriptor_bytes]",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_selected_input_damage_refuses_canonical_fallback[symlink]",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_selected_input_damage_refuses_canonical_fallback[missing]",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    },
+    {
+      "test": "tests.test_selected_capture_inputs::test_selected_lookup_rejects_unregistered_or_cross_namespace_paths",
+      "reason": "blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError: scene_retirement_access_unsafe"
+    }
+  ],
+  "release_claim": false
+}

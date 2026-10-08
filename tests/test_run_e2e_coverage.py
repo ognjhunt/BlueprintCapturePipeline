@@ -17,8 +17,25 @@ def _capture_root(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.fixture
+def completed_capture_supervisor(monkeypatch):
+    """These tests exercise orchestration after a successful supervisor run.
+
+    A synthetic empty capture otherwise correctly returns a blocked supervisor.
+    The required-stage regression suite exercises that refusal separately.
+    """
+    monkeypatch.setattr(
+        "blueprint_pipeline.run_e2e.run_capture_build_supervisor",
+        lambda **_kwargs: {
+            "status": "non_spend_complete",
+            "agent_harness": "openai_agents_sdk",
+            "capture_build_alone_can_start_run": True,
+        },
+    )
+
+
 def test_run_end_to_end_materializes_raw_and_threads_optional_lanes(
-    monkeypatch, tmp_path: Path
+    completed_capture_supervisor, monkeypatch, tmp_path: Path
 ) -> None:
     capture_root = _capture_root(tmp_path)
     raw_root = capture_root / "raw"
@@ -172,7 +189,7 @@ def test_run_end_to_end_blocks_preflight_and_missing_descriptor(
 
 
 def test_run_end_to_end_uses_existing_descriptor_without_optional_lanes(
-    monkeypatch, tmp_path: Path
+    completed_capture_supervisor, monkeypatch, tmp_path: Path
 ) -> None:
     capture_root = _capture_root(tmp_path)
     (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
@@ -207,7 +224,7 @@ def test_run_end_to_end_uses_existing_descriptor_without_optional_lanes(
 
 
 def test_retry_rematerializes_restaged_descriptor_before_resuming_pipeline(
-    monkeypatch, tmp_path: Path
+    completed_capture_supervisor, monkeypatch, tmp_path: Path
 ) -> None:
     capture_root = _capture_root(tmp_path)
     raw_root = capture_root / "raw"
@@ -258,7 +275,7 @@ def test_retry_rematerializes_restaged_descriptor_before_resuming_pipeline(
     assert calls == {"materialization": 3, "pipeline": 2}
 
 
-def test_run_end_to_end_resumes_completed_stage_snapshots(monkeypatch, tmp_path: Path) -> None:
+def test_run_end_to_end_resumes_completed_stage_snapshots(completed_capture_supervisor, monkeypatch, tmp_path: Path) -> None:
     capture_root = _capture_root(tmp_path)
     (capture_root / "capture_descriptor.json").write_text("{}", encoding="utf-8")
     calls = {"preflight": 0, "pipeline": 0, "review": 0}
@@ -356,7 +373,7 @@ def test_run_end_to_end_reruns_only_supervisor_when_inference_profile_changes(
             agent_inference_budget_usd=kwargs["agent_inference_budget_usd"],
         )
         return {
-            "status": "blocked",
+            "status": "non_spend_complete",
             "run_id": f"supervisor-attempt-{calls['supervisor']}",
             "agent_harness": "openai_agents_sdk",
             "capture_build_alone_can_start_run": True,
@@ -396,7 +413,7 @@ def test_run_end_to_end_reruns_only_supervisor_when_inference_profile_changes(
 
 
 def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
-    monkeypatch,
+    completed_capture_supervisor, monkeypatch,
     tmp_path: Path,
 ) -> None:
     capture_root = _capture_root(tmp_path)
@@ -457,7 +474,7 @@ def test_run_end_to_end_invalidates_resume_when_capture_inputs_change(
 
 
 def test_run_end_to_end_threads_robot_eval_job_and_provider_race_summary(
-    monkeypatch,
+    completed_capture_supervisor, monkeypatch,
     tmp_path: Path,
 ) -> None:
     capture_root = _capture_root(tmp_path)
