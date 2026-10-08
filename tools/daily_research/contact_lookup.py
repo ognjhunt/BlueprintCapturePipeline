@@ -1210,7 +1210,9 @@ def site_responsibility(site, person):
         for sentence in sentences:
             named = ss.has_phrase(ss.words(person["name"]), ss.words(sentence))
             other_subject = re.match(r"\s*([A-Z][^\W\d_]+(?:\s+[A-Z][^\W\d_]+){0,3})\s+(?:is|serves|works)\b", sentence)
-            if not named and other_subject and not holds_title(other_subject.group(1), person["title"]):
+            if (not named and other_subject
+                    and ss.words(other_subject.group(1)) not in {"he", "she", "they", "his", "her", "their"}
+                    and not holds_title(other_subject.group(1), person["title"])):
                 linked = False
             pronoun = bool(re.match(r"\s*(?:(?:he|she|they|his|her|their)\b"
                                     r"|(?:now|currently|then|subsequently|later|afterwards?)\s+"
