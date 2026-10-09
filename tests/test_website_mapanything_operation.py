@@ -182,11 +182,11 @@ def test_bootstrap_failure_upload_is_bound_and_does_not_send_signed_url(monkeypa
     assert "hidden" not in json.dumps(body)
 
 
-def _controller_profile(tmp_path, monkeypatch):
+def _controller_profile(tmp_path, monkeypatch, hard_ttl_seconds=1800):
     from blueprint_pipeline import website_geometry_dispatch as dispatch
     value = {"schema_version": "website_mapanything_runtime.v1", "source_commit": SHA,
              "worker_image_digest": IMAGE, "maximum_cost_usd": 2.0,
-             "max_hourly_rate_usd": 1.5, "hard_ttl_seconds": 1800, "minimum_gpu_ram_mb": 80000,
+             "max_hourly_rate_usd": 1.5, "hard_ttl_seconds": hard_ttl_seconds, "minimum_gpu_ram_mb": 80000,
              "runtime_files": [{"path": str(p), "digest": "sha256:" + sha256_file(p)}
                                for p in sorted((tmp_path / "runtime").iterdir())]}
     path = tmp_path / "profile.json"
@@ -207,11 +207,12 @@ def test_controller_runtime_profile_rejects_stale_release_and_changed_wheels(pac
 
 
 @pytest.mark.parametrize("uncertain", [False, True])
-def test_controller_owns_geometry_funding_allocator_and_restart_without_second_rental(packet, tmp_path, monkeypatch, uncertain):
+@pytest.mark.parametrize("hard_ttl_seconds", [900, 901])
+def test_controller_owns_geometry_funding_allocator_and_restart_without_second_rental(packet, tmp_path, monkeypatch, uncertain, hard_ttl_seconds):
     from types import SimpleNamespace
     from blueprint_pipeline import website_geometry_dispatch as dispatch
     path, _, _ = packet
-    _controller_profile(tmp_path, monkeypatch)
+    _controller_profile(tmp_path, monkeypatch, hard_ttl_seconds=hard_ttl_seconds)
     events, closes = [], []
     task = {"context_digest": DIGEST}
     handle = object()
@@ -219,6 +220,8 @@ def test_controller_owns_geometry_funding_allocator_and_restart_without_second_r
         "expires_at_epoch": 9_999_999_999, "authority_digest": DIGEST})
     def arm(**kwargs):
         events.append("watchdog")
+        assert kwargs["max_live_minutes"] == 15
+        assert kwargs["max_live_minutes"] * 60 <= hard_ttl_seconds
         from blueprint_pipeline.vast_independent_watchdog_control import validate_independent_vast_watchdog_names
         validate_independent_vast_watchdog_names(pod_name_prefix=kwargs["pod_name_prefix"],
                                                 resource_name_exact=kwargs["resource_name_exact"])
@@ -263,6 +266,13 @@ def test_controller_owns_geometry_funding_allocator_and_restart_without_second_r
         request = json.loads(Path(args.provider_launch_request).read_text())
         assert request["operation"] == "website_mapanything"
         assert request["retry_cap"] == 0 and request["max_spend_usd"] == 2
+        assert request["hard_ttl_seconds"] == args.reconstruction_hard_ttl_seconds == hard_ttl_seconds - 120
+        from blueprint_pipeline.reconstruction_vast_operation import _watchdog_valid
+        import os
+        watchdog = {"status": "armed", "independent_process": True, "pid": os.getpid(),
+                    "deadline_epoch": 900, "name_prefix": dispatch.NAME_PREFIX}
+        assert _watchdog_valid(watchdog, now_epoch=1, hard_ttl_seconds=request["hard_ttl_seconds"])
+        assert not _watchdog_valid(watchdog, now_epoch=122, hard_ttl_seconds=request["hard_ttl_seconds"])
         assert args.execute is True and not hasattr(args, "experimental_branch_diagnostic")
         if uncertain:
             raise TimeoutError("controller lost allocation response")

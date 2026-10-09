@@ -391,9 +391,17 @@ def run_website_scene_geometry(*, source_video: Path, output_root: Path, capture
                                backend: str | None = None,
                                maximum_frames: int | None = None) -> dict[str, Any]:
     """Prepare source views; provider pose/depth never implies finished scene assets."""
-    if task_context is not None and (task_context.get("capture_id") != capture_id
-                                    or task_context.get("confirmed") is not True):
-        raise ValueError("website_geometry_task_capture_mismatch")
+    if task_context is not None:
+        if task_context.get("capture_id") != capture_id:
+            raise ValueError("website_geometry_task_capture_mismatch")
+        if task_context.get("confirmed") is not True:
+            if any(not isinstance(task_context.get(key), str) or not task_context[key].strip()
+                   for key in ("request_id", "scene_id")):
+                raise ValueError("website_task_context_identity_mismatch")
+            from .website_task_context_contracts import validate_website_task_context
+            validate_website_task_context(task_context,
+                request_id=task_context.get("request_id"), scene_id=task_context.get("scene_id"),
+                capture_id=capture_id, purpose="scene_preparation")
     inputs = prepare_website_geometry_inputs(source_video=source_video, output_root=output_root,
                                            capture_id=capture_id, maximum_frames=maximum_frames)
     selected = backend or os.getenv("BLUEPRINT_WEBSITE_GEOMETRY_BACKEND") or (

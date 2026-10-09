@@ -164,6 +164,8 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
             settle_prior_website_vast_attempts(output_root=output_root,
                 attempted_count=attempt_index, task_context=dict(task_context))
         profile = load_profile(source_commit=source_commit)
+        # Reserve controller preflight time inside the independent wall deadline.
+        worker_ttl = max(1, profile["hard_ttl_seconds"] - 120)
         binding = canonical_digest({"input_digest": inputs["digest"], "runtime": profile,
                                     "task_context_digest": task_context["context_digest"]})
         authority = load_website_scene_sponsorship(task_context=task_context, now=time.time())
@@ -176,14 +178,14 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
         request = build_canary_request_from_operation_bundle(operation_bundle=receipt, request_fields={
             "schema_version": "reconstruction_gpu_canary_request.v1", "worker_stack_manifest_digest": canonical_digest(profile["runtime_files"]),
             "deterministic_configuration_digest": binding, "max_spend_usd": profile["maximum_cost_usd"],
-            "hard_ttl_seconds": profile["hard_ttl_seconds"], "retry_cap": 0,
+            "hard_ttl_seconds": worker_ttl, "retry_cap": 0,
             "authority_id": "website-" + binding[7:31], "proof_effect": "none",
             "candidate_may_read_hidden_heldout": False, "trainer_may_grade_heldout": False})
         write_json(root / "request.json", request)
         canonical_receipt, _ = _canonical_receipt_file(root, receipt)
         name = reconstruction_resource_name(request["operation"], request["request_digest"])
         handoff, handle = arm_independent_vast_watchdog(job_dir=root,
-            max_live_minutes=math.ceil(profile["hard_ttl_seconds"] / 60) + 2,
+            max_live_minutes=math.floor(profile["hard_ttl_seconds"] / 60),
             generated_at=utc_now_iso(), pod_name_prefix=NAME_PREFIX, resource_name_exact=name)
         if handle is None:
             raise ValueError("website_mapanything_watchdog_not_armed")
@@ -220,7 +222,7 @@ def dispatch_geometry(*, input_manifest: Path, output_root: Path, task_context: 
                 provider_launch_request=str(root / "request.json"), preflight_bundle=str(root / "preflight.json"),
                 admission_out=str(root / "admission.json"), bound_request_out=str(root / "bound-request.json"),
                 adapter_output=str(root / "adapter-result.json"), reconstruction_max_spend_usd=profile["maximum_cost_usd"],
-                reconstruction_hard_ttl_seconds=profile["hard_ttl_seconds"], reconstruction_retry_cap=0,
+                reconstruction_hard_ttl_seconds=worker_ttl, reconstruction_retry_cap=0,
                 reconstruction_authority_id=request["authority_id"],
                 reconstruction_operation_bundle_receipt=str(canonical_receipt),
                 reconstruction_operation_receipt_url_file=str(root / "receipt-transport/provider_bundle_url.txt"),

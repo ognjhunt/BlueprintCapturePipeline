@@ -301,8 +301,10 @@ def test_inference_requests_the_upstream_validity_mask(tmp_path, monkeypatch):
     assert result["valid_pixel_fraction"] == 1.0
 
 
-def test_confirmed_website_task_uses_controller_allocator_instead_of_manual_result_override(geometry_case, monkeypatch):
+@pytest.mark.parametrize("preparation", [False, True])
+def test_website_task_uses_controller_allocator_instead_of_manual_result_override(geometry_case, monkeypatch, preparation):
     from blueprint_pipeline import paid_resource_allocator as allocator
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     kwargs, calls = geometry_case
     invoked = []
     monkeypatch.setenv("BLUEPRINT_WEBSITE_GEOMETRY_RESULT", "/manual/result.json")
@@ -311,9 +313,27 @@ def test_confirmed_website_task_uses_controller_allocator_instead_of_manual_resu
         return {"status": "estimated", "controller": True}
     monkeypatch.setattr(allocator, "run_sponsored_website_geometry", dispatch)
     task = {"capture_id": kwargs["capture_id"], "confirmed": True}
+    if preparation:
+        task.update(schema_version="website_site_task_context.v1", request_id="req1", scene_id="site-req1",
+                    purpose="scene_preparation", description="Move the carton", confirmed=False, confirmed_at=None)
+        task["context_digest"] = canonical_digest(task, digest_field="context_digest")
     assert geometry.run_website_scene_geometry(**kwargs, task_context=task)["controller"] is True
     assert invoked[0]["task_context"] == task
     assert not calls
+    if preparation:
+        assert task["confirmed"] is False
+        monkeypatch.setattr(geometry, "prepare_website_geometry_inputs", lambda **_kwargs: pytest.fail("must reject before decode"))
+        for changed, reason in [({"request_id": None}, "identity_mismatch"),
+                                ({"scene_id": " "}, "identity_mismatch"),
+                                ({"purpose": "evaluation"}, "purpose_mismatch"),
+                                ({"confirmed": "false"}, "confirmation_invalid"),
+                                ({"confirmed_at": "2026-10-09T23:00:00Z"}, "confirmation_invalid")]:
+            invalid = {**task, **changed}
+            invalid["context_digest"] = canonical_digest(invalid, digest_field="context_digest")
+            with pytest.raises(ValueError, match=reason):
+                geometry.run_website_scene_geometry(**kwargs, task_context=invalid)
+        with pytest.raises(ValueError, match="digest_mismatch"):
+            geometry.run_website_scene_geometry(**kwargs, task_context={**task, "description": "Changed"})
     with pytest.raises(ValueError, match="task_capture_mismatch"):
         geometry.run_website_scene_geometry(**kwargs, task_context={**task, "capture_id": "other"})
 
