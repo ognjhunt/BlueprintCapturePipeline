@@ -88,7 +88,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -191,9 +191,13 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                 and prior_retired['status'] == _listener.TERMINAL_AUTHORITY_STATUS else ()),
             retired_ended_producer_delivery_keys=(prior_retired['producer_delivery_keys']
                 if producer_delivery_key is not None and prior_retired is not None else ()),
+            **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}),
             **({'expected_assessment_resume': expected_assessment_resume} if expected_assessment_resume is not None else {}))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
+    if claim_status == 'prior_delivery_effects_unresolved':
+        return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
+                'blockers': ['selected_handoff_existing_state_requires_reconciliation']}
     if claim_status == 'assessment_resume_changed':
         return {'schema_version': 'v1', 'status': 'assessment_resume_changed', 'queue_disposition': 'retryable',
                 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
